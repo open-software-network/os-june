@@ -1,7 +1,7 @@
 use super::{
-    current_time_ms, finish_pairing, frontend_response, has_pending_pairing,
-    load_or_create_identity, pairing_for_mobile, relay_websocket_url, CompanionRuntime,
-    FrontendIntent, StoredIdentity,
+    begin_frontend_activity, current_time_ms, finish_frontend_activity, finish_pairing,
+    frontend_response, has_pending_pairing, load_or_create_identity, pairing_for_mobile,
+    relay_websocket_url, CompanionRuntime, FrontendIntent, StoredIdentity,
 };
 use crate::{commands::repositories, db::repositories::Repositories, domain::types::AppError};
 use futures_util::{SinkExt, StreamExt};
@@ -656,6 +656,12 @@ async fn dispatch_request(
                     )
                 })?
                 .insert(operation_id, sender);
+            if let Err(error) =
+                begin_frontend_activity(&app.state::<CompanionRuntime>(), operation_id)
+            {
+                remove_pending(app, operation_id);
+                return Err(error);
+            }
             if app
                 .emit(
                     "june://companion-request",
@@ -667,6 +673,7 @@ async fn dispatch_request(
                 .is_err()
             {
                 remove_pending(app, operation_id);
+                finish_frontend_activity(&app.state::<CompanionRuntime>(), operation_id)?;
                 return Err(AppError::new(
                     "companion_frontend_unavailable",
                     "Open June on this Mac and try again.",

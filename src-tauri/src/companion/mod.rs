@@ -34,6 +34,7 @@ pub struct CompanionRuntime {
     pub controller: Controller,
     pairings: Mutex<HashMap<Uuid, PendingPairing>>,
     pending_frontend: Mutex<HashMap<Uuid, oneshot::Sender<ResultPayload>>>,
+    active_frontend_operations: Mutex<HashSet<Uuid>>,
     inflight_operations: Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>,
     event_sender: Mutex<Option<mpsc::Sender<Event>>>,
     transport_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
@@ -51,6 +52,7 @@ impl Default for CompanionRuntime {
             controller: Controller::default(),
             pairings: Mutex::default(),
             pending_frontend: Mutex::default(),
+            active_frontend_operations: Mutex::default(),
             inflight_operations: Mutex::default(),
             event_sender: Mutex::default(),
             transport_task: Mutex::default(),
@@ -588,19 +590,58 @@ pub fn companion_complete_frontend_request(
                 "Companion response lock failed.",
             )
         })?
-        .remove(&operation_id)
-        .ok_or_else(|| {
-            AppError::new(
-                "companion_request_expired",
-                "The companion request already expired.",
-            )
-        })?;
+        .remove(&operation_id);
+    finish_frontend_activity(&runtime, operation_id)?;
+    let Some(sender) = sender else {
+        return Err(AppError::new(
+            "companion_request_expired",
+            "The companion request already expired.",
+        ));
+    };
     sender.send(result).map_err(|_| {
         AppError::new(
             "companion_request_expired",
             "The companion request already expired.",
         )
     })
+}
+
+fn begin_frontend_activity(runtime: &CompanionRuntime, operation_id: Uuid) -> Result<(), AppError> {
+    let inserted = runtime
+        .active_frontend_operations
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "companion_frontend_unavailable",
+                "Companion activity lock failed.",
+            )
+        })?
+        .insert(operation_id);
+    if inserted {
+        runtime.account_activity.fetch_add(1, Ordering::AcqRel);
+    }
+    Ok(())
+}
+
+fn finish_frontend_activity(
+    runtime: &CompanionRuntime,
+    operation_id: Uuid,
+) -> Result<(), AppError> {
+    let removed = runtime
+        .active_frontend_operations
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "companion_frontend_unavailable",
+                "Companion activity lock failed.",
+            )
+        })?
+        .remove(&operation_id);
+    if removed {
+        runtime.account_activity.fetch_sub(1, Ordering::AcqRel);
+        runtime.account_activity_changed.notify_one();
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1109,5 +1150,21 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!runtime.pairings.lock().unwrap().contains_key(&pairing_id));
+    }
+
+    #[test]
+    fn frontend_activity_survives_a_dropped_transport_waiter_until_completion() {
+        let runtime = CompanionRuntime::default();
+        let operation_id = Uuid::new_v4();
+        let (_sender, receiver) = oneshot::channel::<ResultPayload>();
+
+        begin_frontend_activity(&runtime, operation_id).unwrap();
+        begin_frontend_activity(&runtime, operation_id).unwrap();
+        drop(receiver);
+        assert_eq!(runtime.account_activity.load(Ordering::Acquire), 1);
+
+        finish_frontend_activity(&runtime, operation_id).unwrap();
+        finish_frontend_activity(&runtime, operation_id).unwrap();
+        assert_eq!(runtime.account_activity.load(Ordering::Acquire), 0);
     }
 }

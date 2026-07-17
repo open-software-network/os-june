@@ -40,11 +40,13 @@ interrupted cross-boundary mutation completed.
   completed history.
 - OS Accounts sign-out stops new companion work and waits for the active
   account-operation barrier, including relay dispatch and pairing approval,
-  before it revokes account-scoped local authorization. Relay connection and
-  send operations are time-bounded; if the joined transport or account work
-  is cancellation-aware and force-joined within the shutdown bound. If pairing
-  or other account work cannot stop within its bound, logout fails without
-  clearing tokens.
+  before it revokes account-scoped local authorization. Frontend execution is
+  tracked independently of the relay waiter, so aborting transport cannot hide
+  an emitted or queued React operation from that barrier. Relay connection and
+  send operations are time-bounded; the transport is cancellation-aware and
+  force-joined within the shutdown bound. If frontend, pairing, or other
+  account work cannot stop within its bound, logout fails without clearing
+  tokens.
 
 ## Consequences
 

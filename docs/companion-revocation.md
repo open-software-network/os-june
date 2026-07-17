@@ -35,7 +35,9 @@ Desktop OS Accounts sign-out is the account boundary: June first stops the
 relay transport and waits for the active account-operation barrier, including
 pairing creation and approval. Pairing insertion is synchronized with the
 logout boundary so an in-flight relay response cannot recreate QR state after
-the map is cleared. June then marks that account's local rows revoked and
+the map is cleared. Frontend execution remains in the barrier even if its relay
+waiter is cancelled, so emitted or queued companion work must finish before the
+account changes. June then marks that account's local rows revoked and
 removes its Keychain identity without requiring a token refresh or network
 access. It then
 best-effort revokes every locally known companion plus the account-scoped
