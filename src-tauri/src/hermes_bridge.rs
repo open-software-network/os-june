@@ -9873,44 +9873,113 @@ fn authorize_live_github_broker_for_child(
     child: &mut Child,
     generation: u64,
 ) -> Result<(), AppError> {
-    authorize_github_broker_for_child_with(broker, child, generation, Child::try_wait)
+    authorize_github_broker_for_child_with(
+        broker,
+        child,
+        generation,
+        child_liveness_without_reaping,
+        |child| {
+            let _ = child.kill();
+            let _ = child.wait();
+        },
+    )
 }
 
-fn authorize_github_broker_for_child_with<F>(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChildLiveness {
+    Running,
+    Exited,
+}
+
+#[cfg(target_os = "macos")]
+fn child_has_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: `child.id()` is passed with Darwin's `P_PID` id type, `info` is
+    // a correctly aligned, writable `siginfo_t` output buffer, and the flags
+    // request only exited state without consuming it (`WNOWAIT`). `child`
+    // remains borrowed for the call, so its process handle cannot be dropped.
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            child.id(),
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful `waitid` initialized the supplied `siginfo_t`. The
+    // buffer started zeroed as required for portable WNOHANG detection when
+    // there is no waitable state; in that case `si_pid` remains zero.
+    let info = unsafe { info.assume_init() };
+    Ok(info.si_pid != 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn child_has_exited_without_reaping(child: &mut Child) -> io::Result<bool> {
+    child.try_wait().map(|status| status.is_some())
+}
+
+fn child_liveness_without_reaping(child: &mut Child) -> io::Result<ChildLiveness> {
+    child_has_exited_without_reaping(child).map(|exited| {
+        if exited {
+            ChildLiveness::Exited
+        } else {
+            ChildLiveness::Running
+        }
+    })
+}
+
+fn authorize_github_broker_for_child_with<F, C>(
     broker: Option<&GitHubReadBroker>,
     child: &mut Child,
     generation: u64,
     mut child_status: F,
+    mut cleanup_child: C,
 ) -> Result<(), AppError>
 where
-    F: FnMut(&mut Child) -> io::Result<Option<std::process::ExitStatus>>,
+    F: FnMut(&mut Child) -> io::Result<ChildLiveness>,
+    C: FnMut(&mut Child),
 {
     let Some(broker) = broker else {
         return Ok(());
     };
-    if !matches!(child_status(child), Ok(None)) {
-        return Err(fail_github_child_start(broker, child, generation));
+    if !matches!(child_status(child), Ok(ChildLiveness::Running)) {
+        return Err(fail_github_child_start(
+            broker,
+            child,
+            generation,
+            &mut cleanup_child,
+        ));
     }
     if let Err(error) = broker.authorize_interactive(child.id(), generation) {
         broker.revoke_interactive(child.id(), generation);
-        let _ = child.kill();
-        let _ = child.wait();
+        cleanup_child(child);
         return Err(AppError::new("hermes_bridge_start_failed", error.code));
     }
-    if !matches!(child_status(child), Ok(None)) {
-        return Err(fail_github_child_start(broker, child, generation));
+    if !matches!(child_status(child), Ok(ChildLiveness::Running)) {
+        return Err(fail_github_child_start(
+            broker,
+            child,
+            generation,
+            &mut cleanup_child,
+        ));
     }
     Ok(())
 }
 
-fn fail_github_child_start(
+fn fail_github_child_start<C>(
     broker: &GitHubReadBroker,
     child: &mut Child,
     generation: u64,
-) -> AppError {
+    cleanup_child: &mut C,
+) -> AppError
+where
+    C: FnMut(&mut Child),
+{
     broker.revoke_interactive(child.id(), generation);
-    let _ = child.kill();
-    let _ = child.wait();
+    cleanup_child(child);
     AppError::new(
         "hermes_bridge_start_failed",
         "The June-managed Hermes runtime exited during startup.",
@@ -19800,48 +19869,93 @@ mcp_servers:
         let mut child = Command::new("/usr/bin/true")
             .spawn()
             .expect("spawn immediately exiting child");
-        child.wait().expect("reap immediately exiting child");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !child_has_exited_without_reaping(&mut child).expect("probe exiting child") {
+            assert!(
+                Instant::now() < deadline,
+                "immediate child did not become waitable"
+            );
+            std::thread::yield_now();
+        }
 
         let error = authorize_live_github_broker_for_child(Some(&broker), &mut child, 62)
             .expect_err("a dead dashboard must never receive broker admission");
 
         assert_eq!(error.code, "hermes_bridge_start_failed");
         assert_eq!(broker.admission_for_bridge_test(), (None, 62, false));
-        assert!(
-            matches!(child.try_wait(), Ok(Some(_))),
-            "child stays reaped"
+        assert_eq!(
+            child_has_exited_without_reaping(&mut child)
+                .expect_err("child was reaped after rejection")
+                .raw_os_error(),
+            Some(libc::ECHILD)
         );
     }
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn child_exit_immediately_after_github_authorization_is_revoked() {
+    async fn child_exit_after_github_authorization_is_revoked_before_reap() {
         let socket_dir = tempfile::tempdir().expect("socket dir");
         let broker = task_five_test_broker(socket_dir.path(), 63).await;
         let socket_path = broker.socket_path().to_path_buf();
         let mut child = spawn_task_five_child();
         let child_pid = child.id();
         let mut checks = 0;
+        let mut cleanup_saw_revoked_waitable_child = false;
 
-        let error =
-            authorize_github_broker_for_child_with(Some(&broker), &mut child, 63, |child| {
+        let error = authorize_github_broker_for_child_with(
+            Some(&broker),
+            &mut child,
+            63,
+            |child| {
                 checks += 1;
                 if checks == 1 {
-                    Ok(None)
+                    Ok(ChildLiveness::Running)
                 } else {
                     child.kill().expect("kill between authorization checks");
-                    child.wait().map(Some)
+                    let deadline = Instant::now() + Duration::from_secs(2);
+                    while !child_has_exited_without_reaping(child)? {
+                        assert!(
+                            Instant::now() < deadline,
+                            "killed child did not become waitable"
+                        );
+                        std::thread::yield_now();
+                    }
+                    assert!(
+                        !broker.revoked_for_bridge_test(),
+                        "post-authorization fixture must observe active admission"
+                    );
+                    Ok(ChildLiveness::Exited)
                 }
-            })
-            .expect_err("post-authorization child exit must revoke admission");
+            },
+            |child| {
+                assert!(
+                    broker.revoked_for_bridge_test(),
+                    "broker admission must be revoked before child cleanup"
+                );
+                assert!(
+                    child_has_exited_without_reaping(child)
+                        .expect("probe exited child before cleanup"),
+                    "child pid must remain waitable until after revocation"
+                );
+                child.wait().expect("reap child after revocation");
+                cleanup_saw_revoked_waitable_child = true;
+            },
+        )
+        .expect_err("post-authorization child exit must revoke admission");
 
         assert_eq!(checks, 2);
+        assert!(cleanup_saw_revoked_waitable_child);
         assert_eq!(error.code, "hermes_bridge_start_failed");
         assert_eq!(
             broker.admission_for_bridge_test(),
             (Some(child_pid), 63, false)
         );
-        assert!(matches!(child.try_wait(), Ok(Some(_))), "child was waited");
+        assert_eq!(
+            child_has_exited_without_reaping(&mut child)
+                .expect_err("child pid must no longer be waitable after cleanup")
+                .raw_os_error(),
+            Some(libc::ECHILD)
+        );
         assert_task_five_socket_rejects(&socket_path).await;
     }
 
@@ -19852,11 +19966,17 @@ mcp_servers:
         let broker = task_five_test_broker(socket_dir.path(), 64).await;
         let mut child = spawn_task_five_child();
 
-        let error =
-            authorize_github_broker_for_child_with(Some(&broker), &mut child, 64, |_child| {
-                Err(io::Error::other("private liveness fixture"))
-            })
-            .expect_err("liveness error must fail before authorization");
+        let error = authorize_github_broker_for_child_with(
+            Some(&broker),
+            &mut child,
+            64,
+            |_child| Err(io::Error::other("private liveness fixture")),
+            |child| {
+                let _ = child.kill();
+                let _ = child.wait();
+            },
+        )
+        .expect_err("liveness error must fail before authorization");
 
         assert_eq!(error.code, "hermes_bridge_start_failed");
         assert!(!error.message.contains("private liveness fixture"));

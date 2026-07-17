@@ -175,6 +175,11 @@ impl GitHubReadBroker {
     }
 
     #[cfg(test)]
+    pub(super) fn revoked_for_bridge_test(&self) -> bool {
+        *self.state_tx.borrow() == AdmissionState::Revoked
+    }
+
+    #[cfg(test)]
     pub(super) fn poison_admission_for_bridge_test(&self) {
         let admission = self.admission.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
