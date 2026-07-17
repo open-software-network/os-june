@@ -72,7 +72,10 @@ launcher="$bin_dir/$launcher_name"
 tmp_launcher="$bin_dir/.June-launcher.tmp"
 
 rm -f "$tmp_launcher"
-cp "$binary" "$tmp_launcher"
+# Keep the product-named launcher and Cargo's canonical binary on the same
+# inode. The Computer use helper verifies this identity before accepting the
+# private peer, including issue-suffixed Codex and Claude development names.
+ln "$binary" "$tmp_launcher"
 chmod +x "$tmp_launcher"
 mv -f "$tmp_launcher" "$launcher"
 

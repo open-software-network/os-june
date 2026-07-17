@@ -229,3 +229,18 @@ the hidden window.
 This keeps the user-visible contract simple: one authorization to use an app
 for the current task, no separate prompt to restore it, and June plus the
 target window in the same Stage Manager group when restoration succeeds.
+
+## Addendum - isolated development app names (2026-07-17)
+
+Parallel agent worktrees need distinct development app names and bundle
+identifiers so macOS, Tauri, and the user can distinguish them. Issue branches
+owned by a supported harness therefore launch as `June JUN-<number> Codex` or
+`June JUN-<number> Claude` while the normal development identity remains
+`June`.
+
+The Computer use helper accepts those names only inside this checkout's Cargo
+target tree and only when the launcher is the same filesystem object as the
+canonical `os-june` binary. The development runner creates that launcher as a
+hard link after every build. A copied or independently built executable with
+an allowed-looking name is rejected. Packaged helper verification remains
+unchanged.

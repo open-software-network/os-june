@@ -58,15 +58,18 @@ that exact identifier, and removes stale debug staging copies before Tauri
 copies the signed bundle again. This provides a fresh permission walkthrough
 on every dev restart without changing another worktree's TCC state.
 
-The Tauri dev runner executes a byte-identical copy of Cargo's `os-june` binary
-as `target/**/June`. The authenticated helper accepts those two exact development
-host names only when they are inside this checkout's Cargo target tree. If the
-Plugins surface reports that the driver stopped while the default self-test
-passes, rerun the self-test through the live launcher to check this boundary:
+The Tauri dev runner executes a hard-linked product-name alias of Cargo's
+`os-june` binary. The normal alias is `target/**/June`; supported issue
+worktrees use a visible name such as `target/**/June JUN-278 Codex`. The
+authenticated helper accepts only the generated name shapes inside this
+checkout's Cargo target tree and requires the alias to share the canonical
+binary's filesystem identity. If the Plugins surface reports that the driver
+stopped while the default self-test passes, rerun the self-test through the
+exact live launcher to check this boundary:
 
 ```sh
 node scripts/computer-use-self-test.mjs --permissions-only \
-  --host src-tauri/target/debug/June
+  --host "src-tauri/target/debug/June JUN-278 Codex"
 ```
 
 The launch log prints the effective identifier and reset result. The production

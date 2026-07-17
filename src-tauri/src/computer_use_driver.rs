@@ -329,10 +329,50 @@ fn development_process_path_is_june(
     process_path: &std::path::Path,
     target_root: &std::path::Path,
 ) -> bool {
-    process_path.starts_with(target_root)
-        && process_path
-            .file_name()
-            .is_some_and(|name| name == "os-june" || name == "June")
+    if !process_path.starts_with(target_root) {
+        return false;
+    }
+    let Some(name) = process_path.file_name() else {
+        return false;
+    };
+    if name == "os-june" {
+        return true;
+    }
+    if !development_launcher_name_is_allowed(name) {
+        return false;
+    }
+
+    // The dev runner creates its product-named launcher as a hard link to the
+    // canonical Cargo binary. Requiring the same device and inode keeps the
+    // human-readable suffix from widening this trust boundary to another
+    // executable that merely copied an allowed name into target/.
+    let Some(profile_dir) = process_path.parent() else {
+        return false;
+    };
+    same_file(process_path, &profile_dir.join("os-june"))
+}
+
+#[cfg(target_os = "macos")]
+fn development_launcher_name_is_allowed(name: &std::ffi::OsStr) -> bool {
+    if name == "June" {
+        return true;
+    }
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let mut parts = name.split(' ');
+    let (Some(product), Some(issue), Some(harness), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    let Some(issue_number) = issue.strip_prefix("JUN-") else {
+        return false;
+    };
+    product == "June"
+        && !issue_number.is_empty()
+        && issue_number.bytes().all(|byte| byte.is_ascii_digit())
+        && matches!(harness, "Codex" | "Claude")
 }
 
 #[cfg(target_os = "macos")]
@@ -422,9 +462,12 @@ fn process_path(pid: libc::pid_t) -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn same_file(left: &std::path::Path, right: &std::path::Path) -> bool {
-    let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
-    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
-    left == right
+    use std::os::unix::fs::MetadataExt;
+
+    let (Ok(left), Ok(right)) = (std::fs::metadata(left), std::fs::metadata(right)) else {
+        return false;
+    };
+    left.dev() == right.dev() && left.ino() == right.ino()
 }
 
 #[cfg(target_os = "macos")]
@@ -723,10 +766,6 @@ mod tests {
             std::path::Path::new("/repo/src-tauri/target/debug/os-june"),
             target,
         ));
-        assert!(development_process_path_is_june(
-            std::path::Path::new("/repo/src-tauri/target/debug/June"),
-            target,
-        ));
         assert!(!development_process_path_is_june(
             std::path::Path::new("/repo/src-tauri/target/debug/june-lookalike"),
             target,
@@ -734,6 +773,43 @@ mod tests {
         assert!(!development_process_path_is_june(
             std::path::Path::new("/tmp/target/debug/June"),
             target,
+        ));
+
+        assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "June"
+        )));
+        assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "June JUN-278 Codex"
+        )));
+        assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "June JUN-00278 Claude"
+        )));
+        assert!(!development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "June JUN-278 Unknown"
+        )));
+        assert!(!development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "June JUN-two Codex"
+        )));
+    }
+
+    #[test]
+    fn development_peer_accepts_the_issue_suffixed_tauri_launcher() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let target = workspace.path().join("target");
+        let profile = target.join("debug");
+        std::fs::create_dir_all(&profile).expect("debug profile");
+        let cargo_binary = profile.join("os-june");
+        std::fs::write(&cargo_binary, b"june development binary").expect("cargo binary");
+        let launcher = profile.join("June JUN-278 Codex");
+        std::fs::hard_link(&cargo_binary, &launcher).expect("Tauri launcher");
+
+        assert!(development_process_path_is_june(&launcher, &target));
+
+        let copied_lookalike = profile.join("June JUN-279 Codex");
+        std::fs::copy(&cargo_binary, &copied_lookalike).expect("copied lookalike");
+        assert!(!development_process_path_is_june(
+            &copied_lookalike,
+            &target
         ));
     }
 
