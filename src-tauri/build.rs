@@ -1,3 +1,7 @@
+mod hermes_manifest;
+
+use hermes_manifest::parse_provides_tools;
+
 const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
 const JUNE_GITHUB_PLUGIN_MANIFEST: &str = "resources/hermes-plugins/june_github/plugin.yaml";
@@ -70,35 +74,6 @@ fn validate_june_github_plugin_manifest() {
             tools.len()
         );
     }
-}
-
-fn parse_provides_tools(manifest: &str) -> Result<Vec<String>, &'static str> {
-    let mut in_block = false;
-    let mut tools = Vec::new();
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-        if !in_block {
-            if trimmed == "provides_tools:" {
-                in_block = true;
-            }
-            continue;
-        }
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some(name) = trimmed.strip_prefix("- ") else {
-            break;
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            return Err("provides_tools contains an empty name");
-        }
-        tools.push(name.to_string());
-    }
-    if !in_block || tools.is_empty() {
-        return Err("provides_tools block is missing or empty");
-    }
-    Ok(tools)
 }
 
 /// `tauri_build::build()` validates every `bundle.resources` source path at

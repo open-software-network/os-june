@@ -23,7 +23,12 @@ function Sync-JunePlugins([string]$AgentDirectory) {
     }
   }
 
-  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $destination
+  if (Test-Path -LiteralPath $destination) {
+    Remove-Item -LiteralPath $destination -Recurse -Force
+  }
+  if (Test-Path -LiteralPath $destination) {
+    Fail "Could not remove the previous June GitHub plugin overlay."
+  }
   New-Item -ItemType Directory -Force -Path $destination | Out-Null
   foreach ($file in @("plugin.yaml", "__init__.py")) {
     $sourceFile = Join-Path $source $file
@@ -34,6 +39,17 @@ function Sync-JunePlugins([string]$AgentDirectory) {
     if ($sourceHash -ne $destinationHash) {
       Fail "June GitHub plugin overlay SHA-256 mismatch: $file."
     }
+  }
+
+  $expectedEntries = @("plugin.yaml", "__init__.py")
+  $entries = @(Get-ChildItem -LiteralPath $destination -Force)
+  foreach ($entry in $entries) {
+    if ($entry.PSIsContainer -or $expectedEntries -notcontains $entry.Name) {
+      Fail "Unexpected June GitHub plugin overlay entry: $($entry.Name)."
+    }
+  }
+  if ($entries.Count -ne $expectedEntries.Count) {
+    Fail "June GitHub plugin overlay must contain exactly plugin.yaml and __init__.py."
   }
 }
 

@@ -40,6 +40,8 @@ const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
     "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
+const MANAGED_HERMES_INTEGRITY_FILE: &str = "hermes-runtime-integrity-v1.json";
+const MANAGED_HERMES_INTEGRITY_SCHEMA: u32 = 1;
 const BUNDLED_HERMES_SKILLS_RESOURCE_DIR: &str = "native/hermes-skills";
 const BUNDLED_HERMES_PLUGINS_RESOURCE_DIR: &str = "native/hermes-plugins";
 const JUNE_GITHUB_PLUGIN_DIR_NAME: &str = "june_github";
@@ -546,6 +548,23 @@ enum HermesCommandSource {
     ManagedRuntime,
     UserLocalFallback,
     PathFallback,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedHermesRuntimeMetadata {
+    source: String,
+    commit: String,
+    install_dir: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedHermesIntegrityRecord {
+    schema: u32,
+    commit: String,
+    source_tarball_sha256: String,
+    tree_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1098,7 +1117,7 @@ async fn start_hermes_bridge_inner(
     let hermes_home = resolve_june_hermes_home(app)?;
     let command_resolution = resolve_hermes_command(app, &hermes_home).await?;
     let command = command_resolution.command;
-    let _command_source = command_resolution.source;
+    let command_source = command_resolution.source;
     let default_cwd = hermes_home.join("workspace");
     std::fs::create_dir_all(&default_cwd)
         .map_err(|error| AppError::new("hermes_bridge_workspace_failed", error.to_string()))?;
@@ -1209,6 +1228,14 @@ async fn start_hermes_bridge_inner(
         "--port",
         port_string.as_str(),
     ];
+
+    // This is the last userspace integrity check before exec. A hostile
+    // same-user process can still race a filesystem mutation into the narrow
+    // verify-to-spawn window; eliminating that residual race requires an OS
+    // primitive that binds verification to exec. The ordinary agent cannot:
+    // its managed runtime tree is no longer a sandbox write root.
+    let _github_plugin_verified =
+        verify_runtime_immediately_before_spawn(app, command_source).await?;
 
     let mut cmd = match &sandbox_profile {
         Some(profile_path) => {
@@ -2355,21 +2382,70 @@ fn write_managed_skill_file(
     Ok(())
 }
 
-#[cfg(windows)]
-fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
-    match fs::rename(temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            fs::remove_file(path)?;
-            fs::rename(temp_path, path)
-        }
+#[cfg(any(windows, test))]
+fn replace_file_with_atomic_existing<F>(
+    temp_path: &Path,
+    path: &Path,
+    replace_existing: F,
+) -> io::Result<()>
+where
+    F: FnOnce(&Path, &Path) -> io::Result<()>,
+{
+    match fs::symlink_metadata(path) {
+        Ok(_) => replace_existing(path, temp_path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => fs::rename(temp_path, path),
         Err(error) => Err(error),
     }
+}
+
+#[cfg(windows)]
+fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    replace_file_with_atomic_existing(temp_path, path, |destination, replacement| {
+        const REPLACEFILE_WRITE_THROUGH: u32 = 0x0000_0001;
+
+        #[link(name = "Kernel32")]
+        extern "system" {
+            fn ReplaceFileW(
+                replaced_file_name: *const u16,
+                replacement_file_name: *const u16,
+                backup_file_name: *const u16,
+                replace_flags: u32,
+                exclude: *mut std::ffi::c_void,
+                reserved: *mut std::ffi::c_void,
+            ) -> i32;
+        }
+
+        let destination: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let replacement: Vec<u16> = replacement
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        // SAFETY: both path buffers are explicitly NUL-terminated and remain
+        // alive for the call. The optional backup/exclusion pointers are null,
+        // as required when those features are unused. ReplaceFileW replaces an
+        // existing destination atomically; failure leaves both files intact.
+        let replaced = unsafe {
+            ReplaceFileW(
+                destination.as_ptr(),
+                replacement.as_ptr(),
+                std::ptr::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        if replaced == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(not(windows))]
@@ -5664,6 +5740,7 @@ pub async fn open_hermes_tui_debug(
     let hermes_home = resolve_june_hermes_home(&app)?;
     let command_resolution = resolve_hermes_command(&app, &hermes_home).await?;
     let command = command_resolution.command;
+    let command_source = command_resolution.source;
 
     // Mirror the dashboard spawn's mode resolution: unrestricted => no jail;
     // otherwise prepare the Seatbelt profile (None when the jail can't engage
@@ -5696,6 +5773,8 @@ pub async fn open_hermes_tui_debug(
 
     let token = random_token();
     let args = hermes_tui_resume_args(&session_id);
+    let _github_plugin_verified =
+        verify_runtime_immediately_before_spawn(&app, command_source).await?;
     let script = build_hermes_tui_debug_launcher_script(
         &command,
         &args,
@@ -5876,51 +5955,37 @@ async fn resolve_hermes_command(
         });
     }
 
-    let managed_install_dir = managed_hermes_runtime_dir(app)?.join("hermes-agent");
-    let managed_command = hermes_venv_command(&managed_install_dir.join("venv"));
-    if managed_command.exists() && managed_hermes_runtime_current(app)? {
-        let _ = github_plugin_verified_for_source(app, HermesCommandSource::ManagedRuntime)?;
-        ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
-        return Ok(HermesCommandResolution {
-            command: managed_command.to_string_lossy().into_owned(),
-            source: HermesCommandSource::ManagedRuntime,
-        });
-    }
-
-    if let Err(error) = install_managed_hermes_runtime(app, hermes_home).await {
-        if let Some(command) = user_local_hermes_command() {
-            eprintln!(
-                "failed to install June-managed Hermes runtime; using existing user-local Hermes fallback: {}",
-                error.message
-            );
-            return Ok(HermesCommandResolution {
-                command: command.to_string_lossy().into_owned(),
-                source: HermesCommandSource::UserLocalFallback,
-            });
-        }
-        return Err(error);
-    }
-
-    if managed_command.exists() {
-        let _ = github_plugin_verified_for_source(app, HermesCommandSource::ManagedRuntime)?;
-        ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
-        return Ok(HermesCommandResolution {
-            command: managed_command.to_string_lossy().into_owned(),
-            source: HermesCommandSource::ManagedRuntime,
-        });
-    }
-
-    if let Some(command) = user_local_hermes_command() {
-        return Ok(HermesCommandResolution {
-            command: command.to_string_lossy().into_owned(),
-            source: HermesCommandSource::UserLocalFallback,
-        });
-    }
-
-    Ok(HermesCommandResolution {
-        command: "hermes".to_string(),
-        source: HermesCommandSource::PathFallback,
+    let managed_runtime_dir = managed_hermes_runtime_dir(app)?;
+    let integrity_path = managed_hermes_integrity_path(app)?;
+    match resolve_managed_hermes_command_with(&managed_runtime_dir, &integrity_path, || {
+        install_managed_hermes_runtime(app, hermes_home)
     })
+    .await
+    {
+        Ok(managed_command) => Ok(HermesCommandResolution {
+            command: managed_command.to_string_lossy().into_owned(),
+            source: HermesCommandSource::ManagedRuntime,
+        }),
+        Err(error) => {
+            if let Some(command) = user_local_hermes_command() {
+                eprintln!(
+                    "failed to verify or install June-managed Hermes runtime; using existing user-local Hermes fallback: {}",
+                    error.message
+                );
+                Ok(HermesCommandResolution {
+                    command: command.to_string_lossy().into_owned(),
+                    source: HermesCommandSource::UserLocalFallback,
+                })
+            } else if error.code == "hermes_runtime_command_missing" {
+                Ok(HermesCommandResolution {
+                    command: "hermes".to_string(),
+                    source: HermesCommandSource::PathFallback,
+                })
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
@@ -5959,12 +6024,348 @@ fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
         .join("hermes-runtime"))
 }
 
+fn managed_hermes_integrity_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("hermes_runtime_home_failed", error.to_string()))?
+        .join(MANAGED_HERMES_INTEGRITY_FILE))
+}
+
 fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
-    let metadata_path = managed_hermes_runtime_dir(app)?.join("runtime.json");
-    let Ok(metadata) = fs::read_to_string(metadata_path) else {
-        return Ok(false);
+    managed_hermes_runtime_current_at(
+        &managed_hermes_runtime_dir(app)?,
+        &managed_hermes_integrity_path(app)?,
+    )
+}
+
+async fn resolve_managed_hermes_command_with<F, Fut>(
+    runtime_dir: &Path,
+    integrity_path: &Path,
+    installer: F,
+) -> Result<PathBuf, AppError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    let runtime_for_check = runtime_dir.to_path_buf();
+    let integrity_for_check = integrity_path.to_path_buf();
+    let current = tokio::task::spawn_blocking(move || {
+        managed_hermes_runtime_current_at(&runtime_for_check, &integrity_for_check)
+    })
+    .await
+    .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))??;
+
+    if !current {
+        remove_managed_install_path(integrity_path)?;
+        installer().await?;
+    }
+
+    let install_dir = runtime_dir.join("hermes-agent");
+    sync_managed_june_github_plugin(&install_dir)?;
+    ensure_managed_hermes_sitecustomize(&install_dir)?;
+    let command = hermes_venv_command(&install_dir.join("venv"));
+    let command_metadata = fs::symlink_metadata(&command).map_err(|error| {
+        AppError::new(
+            "hermes_runtime_command_missing",
+            format!("Managed Hermes command is unavailable: {error}"),
+        )
+    })?;
+    if !command_metadata.is_file() || metadata_is_symlink_or_reparse(&command_metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_command_missing",
+            "Managed Hermes command is not a trusted regular file.",
+        ));
+    }
+
+    if !current {
+        let runtime_for_seal = runtime_dir.to_path_buf();
+        let integrity_for_seal = integrity_path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            seal_managed_hermes_runtime(&runtime_for_seal, &integrity_for_seal)
+        })
+        .await
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))??;
+    }
+
+    let runtime_for_final = runtime_dir.to_path_buf();
+    let integrity_for_final = integrity_path.to_path_buf();
+    let verified = tokio::task::spawn_blocking(move || {
+        managed_hermes_runtime_current_at(&runtime_for_final, &integrity_for_final)
+    })
+    .await
+    .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))??;
+    if !verified {
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            "Managed Hermes runtime changed while it was being prepared.",
+        ));
+    }
+
+    Ok(command)
+}
+
+fn managed_hermes_runtime_current_at(
+    runtime_dir: &Path,
+    integrity_path: &Path,
+) -> Result<bool, AppError> {
+    let integrity_metadata = match fs::symlink_metadata(integrity_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_integrity_failed",
+                error.to_string(),
+            ));
+        }
     };
-    Ok(metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#)))
+    if !integrity_metadata.is_file() || metadata_is_symlink_or_reparse(&integrity_metadata) {
+        return Ok(false);
+    }
+    let record: ManagedHermesIntegrityRecord = match fs::read(integrity_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        Some(record) => record,
+        None => return Ok(false),
+    };
+    if record.schema != MANAGED_HERMES_INTEGRITY_SCHEMA
+        || record.commit != HERMES_AGENT_INSTALL_COMMIT
+        || record.source_tarball_sha256 != HERMES_SOURCE_TARBALL_SHA256
+    {
+        return Ok(false);
+    }
+    if !managed_runtime_metadata_is_current(runtime_dir)? {
+        return Ok(false);
+    }
+    let digest = match managed_runtime_tree_digest(runtime_dir) {
+        Ok(digest) => digest,
+        Err(error) if error.code == "hermes_runtime_integrity_failed" => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(digest == record.tree_sha256)
+}
+
+fn managed_runtime_metadata_is_current(runtime_dir: &Path) -> Result<bool, AppError> {
+    let metadata_path = runtime_dir.join("runtime.json");
+    let path_metadata = match fs::symlink_metadata(&metadata_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_integrity_failed",
+                error.to_string(),
+            ));
+        }
+    };
+    if !path_metadata.is_file() || metadata_is_symlink_or_reparse(&path_metadata) {
+        return Ok(false);
+    }
+    let metadata: ManagedHermesRuntimeMetadata = match fs::read(&metadata_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    {
+        Some(metadata) => metadata,
+        None => return Ok(false),
+    };
+    Ok(metadata.source == "NousResearch/hermes-agent"
+        && metadata.commit == HERMES_AGENT_INSTALL_COMMIT
+        && Path::new(&metadata.install_dir) == runtime_dir.join("hermes-agent"))
+}
+
+fn seal_managed_hermes_runtime(runtime_dir: &Path, integrity_path: &Path) -> Result<(), AppError> {
+    if !managed_runtime_metadata_is_current(runtime_dir)? {
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            "Managed Hermes runtime metadata is not canonical.",
+        ));
+    }
+    let record = ManagedHermesIntegrityRecord {
+        schema: MANAGED_HERMES_INTEGRITY_SCHEMA,
+        commit: HERMES_AGENT_INSTALL_COMMIT.to_string(),
+        source_tarball_sha256: HERMES_SOURCE_TARBALL_SHA256.to_string(),
+        tree_sha256: managed_runtime_tree_digest(runtime_dir)?,
+    };
+    let bytes = serde_json::to_vec(&record)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    let parent = integrity_path.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_runtime_integrity_failed",
+            "Managed Hermes integrity path has no parent.",
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    let temp_path = parent.join(format!(
+        ".{}.{}.tmp",
+        MANAGED_HERMES_INTEGRITY_FILE,
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        replace_file(&temp_path, integrity_path)?;
+        #[cfg(unix)]
+        fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            error.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn managed_runtime_tree_digest(runtime_dir: &Path) -> Result<String, AppError> {
+    validate_managed_runtime_critical_paths(runtime_dir)?;
+    let mut hasher = Sha256::new();
+    hash_managed_runtime_entry(runtime_dir, runtime_dir, &mut hasher)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    Ok(hex_lower(&hasher.finalize()))
+}
+
+fn validate_managed_runtime_critical_paths(runtime_dir: &Path) -> Result<(), AppError> {
+    let install_dir = runtime_dir.join("hermes-agent");
+    let command = hermes_venv_command(&install_dir.join("venv"));
+    let command_parent = command.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_runtime_integrity_failed",
+            "Managed Hermes command has no parent.",
+        )
+    })?;
+    for directory in [
+        runtime_dir.to_path_buf(),
+        install_dir.clone(),
+        install_dir.join("hermes_cli"),
+        install_dir.join("tools"),
+        install_dir.join("plugins"),
+        install_dir
+            .join("plugins")
+            .join(JUNE_GITHUB_PLUGIN_DIR_NAME),
+        install_dir.join("venv"),
+        command_parent.to_path_buf(),
+    ] {
+        require_plain_managed_path(&directory, true)?;
+    }
+    for file in [
+        runtime_dir.join("runtime.json"),
+        command,
+        install_dir.join("hermes_cli").join("plugins.py"),
+        install_dir.join("tools").join("registry.py"),
+        install_dir
+            .join("plugins")
+            .join(JUNE_GITHUB_PLUGIN_DIR_NAME)
+            .join("plugin.yaml"),
+        install_dir
+            .join("plugins")
+            .join(JUNE_GITHUB_PLUGIN_DIR_NAME)
+            .join("__init__.py"),
+    ] {
+        require_plain_managed_path(&file, false)?;
+    }
+    Ok(())
+}
+
+fn require_plain_managed_path(path: &Path, directory: bool) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    let expected_kind = if directory {
+        metadata.is_dir()
+    } else {
+        metadata.is_file()
+    };
+    if !expected_kind || metadata_is_symlink_or_reparse(&metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            format!(
+                "Managed Hermes critical path is not a plain {}: {}",
+                if directory { "directory" } else { "file" },
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn hash_managed_runtime_entry(
+    root: &Path,
+    path: &Path,
+    tree_hasher: &mut Sha256,
+) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    let relative = path.strip_prefix(root).map_err(io::Error::other)?;
+    let relative = relative.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "managed runtime contains a non-UTF-8 path",
+        )
+    })?;
+    if metadata.file_type().is_symlink() || metadata_is_symlink_or_reparse(&metadata) {
+        let target = fs::read_link(path)?;
+        let target = target.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "managed runtime contains a non-UTF-8 symlink target",
+            )
+        })?;
+        tree_hasher.update(b"L\0");
+        tree_hasher.update(relative.as_bytes());
+        tree_hasher.update(b"\0");
+        tree_hasher.update(target.as_bytes());
+        tree_hasher.update(b"\0");
+        return Ok(());
+    }
+    if metadata.is_dir() {
+        tree_hasher.update(b"D\0");
+        tree_hasher.update(relative.as_bytes());
+        tree_hasher.update(b"\0");
+        let mut entries: Vec<_> = fs::read_dir(path)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            hash_managed_runtime_entry(root, &entry.path(), tree_hasher)?;
+        }
+        return Ok(());
+    }
+    if metadata.is_file() {
+        let mut file = fs::File::open(path)?;
+        let mut file_hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            file_hasher.update(&buffer[..read]);
+        }
+        tree_hasher.update(b"F\0");
+        tree_hasher.update(relative.as_bytes());
+        tree_hasher.update(b"\0");
+        tree_hasher.update(metadata.len().to_le_bytes());
+        tree_hasher.update(file_hasher.finalize());
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "managed runtime contains an unsupported filesystem entry",
+    ))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    bytes.iter().fold(
+        String::with_capacity(bytes.len() * 2),
+        |mut output, byte| {
+            let _ = write!(output, "{byte:02x}");
+            output
+        },
+    )
 }
 
 fn user_local_hermes_command() -> Option<PathBuf> {
@@ -5991,9 +6392,18 @@ fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
 }
 
 fn sync_managed_june_github_plugin(install_dir: &Path) -> Result<PathBuf, AppError> {
+    let install_metadata = fs::symlink_metadata(install_dir)
+        .map_err(|error| AppError::new("hermes_github_plugin_sync_failed", error.to_string()))?;
+    if !install_metadata.is_dir() || metadata_is_symlink_or_reparse(&install_metadata) {
+        return Err(AppError::new(
+            "hermes_github_plugin_sync_failed",
+            "Managed Hermes install path is not a trusted directory.",
+        ));
+    }
+
     let plugins_dir = install_dir.join("plugins");
     match fs::symlink_metadata(&plugins_dir) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(metadata) if metadata.is_dir() && !metadata_is_symlink_or_reparse(&metadata) => {}
         Ok(_) => {
             return Err(AppError::new(
                 "hermes_github_plugin_sync_failed",
@@ -6014,26 +6424,8 @@ fn sync_managed_june_github_plugin(install_dir: &Path) -> Result<PathBuf, AppErr
     }
 
     let plugin_dir = plugins_dir.join(JUNE_GITHUB_PLUGIN_DIR_NAME);
-    match fs::symlink_metadata(&plugin_dir) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-        Ok(metadata) if metadata.is_dir() => {
-            fs::remove_dir_all(&plugin_dir).map_err(|error| {
-                AppError::new("hermes_github_plugin_sync_failed", error.to_string())
-            })?;
-        }
-        Ok(_) => {
-            fs::remove_file(&plugin_dir).map_err(|error| {
-                AppError::new("hermes_github_plugin_sync_failed", error.to_string())
-            })?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(AppError::new(
-                "hermes_github_plugin_sync_failed",
-                error.to_string(),
-            ));
-        }
-    }
+    remove_managed_install_path(&plugin_dir)
+        .map_err(|error| AppError::new("hermes_github_plugin_sync_failed", error.message))?;
     fs::create_dir_all(&plugin_dir)
         .map_err(|error| AppError::new("hermes_github_plugin_sync_failed", error.to_string()))?;
 
@@ -6048,6 +6440,52 @@ fn sync_managed_june_github_plugin(install_dir: &Path) -> Result<PathBuf, AppErr
     }
 
     Ok(plugin_dir)
+}
+
+fn metadata_is_symlink_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+fn remove_managed_install_path(path: &Path) -> Result<(), AppError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                error.to_string(),
+            ));
+        }
+    };
+    let result = if metadata_is_symlink_or_reparse(&metadata) {
+        #[cfg(windows)]
+        {
+            if metadata.is_dir() {
+                fs::remove_dir(path)
+            } else {
+                fs::remove_file(path)
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            fs::remove_file(path)
+        }
+    } else if metadata.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    };
+    result.map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
 }
 
 fn atomic_replace_plugin_file(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
@@ -6098,6 +6536,37 @@ fn atomic_replace_plugin_file(path: &Path, bytes: &[u8]) -> Result<(), AppError>
 }
 
 fn june_github_plugin_matches_embedded(plugin_dir: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(plugin_dir) else {
+        return false;
+    };
+    if !metadata.is_dir() || metadata_is_symlink_or_reparse(&metadata) {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(plugin_dir) else {
+        return false;
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            return false;
+        };
+        if !metadata.is_file() || metadata_is_symlink_or_reparse(&metadata) {
+            return false;
+        }
+        names.push(entry.file_name());
+    }
+    names.sort();
+    if names
+        != [
+            std::ffi::OsString::from("__init__.py"),
+            std::ffi::OsString::from("plugin.yaml"),
+        ]
+    {
+        return false;
+    }
     JUNE_GITHUB_PLUGIN_FILES
         .iter()
         .all(|(name, bytes)| fs::read(plugin_dir.join(name)).is_ok_and(|actual| actual == *bytes))
@@ -6148,6 +6617,31 @@ where
         | HermesCommandSource::UserLocalFallback
         | HermesCommandSource::PathFallback => Ok(false),
     }
+}
+
+async fn verify_runtime_immediately_before_spawn(
+    app: &AppHandle,
+    source: HermesCommandSource,
+) -> Result<bool, AppError> {
+    let github_verified = github_plugin_verified_for_source(app, source)?;
+    if source != HermesCommandSource::ManagedRuntime {
+        return Ok(github_verified);
+    }
+
+    let runtime_dir = managed_hermes_runtime_dir(app)?;
+    let integrity_path = managed_hermes_integrity_path(app)?;
+    let verified = tokio::task::spawn_blocking(move || {
+        managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
+    })
+    .await
+    .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))??;
+    if !verified {
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            "Managed Hermes runtime failed the final pre-spawn integrity check.",
+        ));
+    }
+    Ok(github_verified)
 }
 
 const HERMES_SITE_CUSTOMIZE: &str = include_str!("hermes/sitecustomize.py");
@@ -6266,12 +6760,14 @@ async fn install_managed_hermes_runtime_unix(
 ) -> Result<(), AppError> {
     let runtime_dir = managed_hermes_runtime_dir(app)?;
     let install_dir = runtime_dir.join("hermes-agent");
+    // This path is reached only when the external full-tree integrity record
+    // is absent or mismatched. Remove the entire old writable-era runtime
+    // without following a symlink/reparse point, then rebuild from the
+    // checksum-pinned source archive. Partial repair would preserve untrusted
+    // launchers, loaders, bytecode, or dependencies.
+    remove_managed_install_path(&runtime_dir)?;
     fs::create_dir_all(&runtime_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    if install_dir.exists() && !managed_hermes_runtime_current(app)? {
-        fs::remove_dir_all(&install_dir)
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    }
     let install_log = runtime_dir.join("install.log");
 
     let log_file = fs::OpenOptions::new()
@@ -6355,12 +6851,9 @@ async fn install_managed_hermes_runtime_windows(
 ) -> Result<(), AppError> {
     let runtime_dir = managed_hermes_runtime_dir(app)?;
     let install_dir = runtime_dir.join("hermes-agent");
+    remove_managed_install_path(&runtime_dir)?;
     fs::create_dir_all(&runtime_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    if install_dir.exists() && !managed_hermes_runtime_current(app)? {
-        fs::remove_dir_all(&install_dir)
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    }
     let install_log = runtime_dir.join("install.log");
 
     let log_file = fs::OpenOptions::new()
@@ -6721,7 +7214,15 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
     let image_source_key_path = image_source_capability_secret_path(&app_data_dir);
-    let write_roots = sandbox_write_roots(hermes_home);
+    let mut protected_write_paths = vec![managed_hermes_runtime_dir(app).ok()?];
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        protected_write_paths.push(resource_dir);
+    }
+    let write_roots = sandbox_write_roots_with_tmpdir(
+        hermes_home,
+        std::env::var_os("TMPDIR").as_deref(),
+        &protected_write_paths,
+    );
     let config_write_path = sandbox_config_write_path(hermes_home);
     let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     // Block the jailed agent from reading the connector token stores: the
@@ -6815,7 +7316,11 @@ fn env_flag_enabled(name: &str) -> bool {
 /// arbitrary directory — a project-dir feature would need an explicit, validated
 /// grant instead.
 #[cfg(target_os = "macos")]
-fn sandbox_write_roots(hermes_home: &Path) -> Vec<PathBuf> {
+fn sandbox_write_roots_with_tmpdir(
+    hermes_home: &Path,
+    tmpdir: Option<&std::ffi::OsStr>,
+    protected_paths: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut roots = vec![
         hermes_home.to_path_buf(),
         // Shared temp dirs, used mainly as a fallback when $TMPDIR is unset.
@@ -6825,9 +7330,13 @@ fn sandbox_write_roots(hermes_home: &Path) -> Vec<PathBuf> {
     // The per-session temp dir (resolves under /private/var/folders). The Python
     // runtime and its children use it for scratch files and multiprocessing
     // sockets; scoping to it keeps other apps' caches out of the jail.
-    if let Some(tmpdir) = std::env::var_os("TMPDIR") {
-        if !tmpdir.is_empty() {
-            roots.push(PathBuf::from(tmpdir));
+    if let Some(tmpdir) = tmpdir.and_then(|tmpdir| validated_macos_tmpdir(tmpdir, hermes_home)) {
+        let overlaps_protected = protected_paths.iter().any(|protected| {
+            let protected = std::fs::canonicalize(protected).unwrap_or_else(|_| protected.clone());
+            tmpdir.starts_with(&protected) || protected.starts_with(&tmpdir)
+        });
+        if !overlaps_protected {
+            roots.push(tmpdir);
         }
     }
     let mut canonical: Vec<PathBuf> = Vec::with_capacity(roots.len());
@@ -6838,6 +7347,34 @@ fn sandbox_write_roots(hermes_home: &Path) -> Vec<PathBuf> {
         }
     }
     canonical
+}
+
+#[cfg(target_os = "macos")]
+fn validated_macos_tmpdir(tmpdir: &std::ffi::OsStr, owner_path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    if tmpdir.is_empty() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(PathBuf::from(tmpdir)).ok()?;
+    let tmp_uid = fs::metadata(&canonical).ok()?.uid();
+    let owner_uid = fs::metadata(owner_path).ok()?.uid();
+    macos_tmpdir_shape_and_owner_is_safe(&canonical, tmp_uid, owner_uid).then_some(canonical)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tmpdir_shape_and_owner_is_safe(path: &Path, tmp_uid: u32, owner_uid: u32) -> bool {
+    if tmp_uid != owner_uid {
+        return false;
+    }
+    let Ok(relative) = path.strip_prefix("/private/var/folders") else {
+        return false;
+    };
+    let components: Vec<_> = relative.components().collect();
+    components.len() >= 3
+        && components[2] == Component::Normal(std::ffi::OsStr::new("T"))
+        && matches!(components[0], Component::Normal(_))
+        && matches!(components[1], Component::Normal(_))
 }
 
 /// The Hermes config file the jailed runtime persists through `save_config`,
@@ -11496,6 +12033,45 @@ mod tests {
 
     mod github_plugin_tests {
         use super::*;
+        use std::ffi::OsString;
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        fn seed_fake_managed_runtime(runtime_dir: &Path) {
+            let install_dir = runtime_dir.join("hermes-agent");
+            let command = hermes_venv_command(&install_dir.join("venv"));
+            fs::create_dir_all(command.parent().expect("command parent")).expect("command dir");
+            fs::write(&command, b"trusted launcher").expect("launcher");
+            fs::create_dir_all(install_dir.join("hermes_cli")).expect("hermes_cli");
+            fs::write(
+                install_dir.join("hermes_cli").join("plugins.py"),
+                b"trusted loader",
+            )
+            .expect("loader");
+            fs::create_dir_all(install_dir.join("tools")).expect("tools");
+            fs::write(
+                install_dir.join("tools").join("registry.py"),
+                b"trusted registry",
+            )
+            .expect("registry");
+            fs::create_dir_all(
+                install_dir
+                    .join("venv")
+                    .join("lib")
+                    .join("python3.11")
+                    .join("site-packages"),
+            )
+            .expect("site-packages");
+            fs::write(
+                runtime_dir.join("runtime.json"),
+                format!(
+                    r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","installDir":"{}"}}"#,
+                    install_dir.to_string_lossy()
+                ),
+            )
+            .expect("runtime metadata");
+            sync_managed_june_github_plugin(&install_dir).expect("plugin overlay");
+            ensure_managed_hermes_sitecustomize(&install_dir).expect("sitecustomize");
+        }
 
         #[test]
         fn managed_github_plugin_overlay_replaces_tampered_files_with_embedded_bytes() {
@@ -11508,6 +12084,17 @@ mod tests {
             fs::create_dir_all(&plugin_dir).expect("plugin dir");
             fs::write(plugin_dir.join("plugin.yaml"), b"tampered").expect("tampered manifest");
             fs::write(plugin_dir.join("__init__.py"), b"tampered").expect("tampered source");
+            fs::create_dir_all(plugin_dir.join("__pycache__")).expect("bytecode cache");
+            fs::write(
+                plugin_dir
+                    .join("__pycache__")
+                    .join("__init__.cpython-311.pyc"),
+                b"stale bytecode",
+            )
+            .expect("stale bytecode");
+            fs::write(plugin_dir.join("unexpected.py"), b"unexpected").expect("extra source");
+            fs::write(plugin_dir.join(".plugin.yaml.abandoned.tmp"), b"temp")
+                .expect("temp residue");
 
             let synced = sync_managed_june_github_plugin(&runtime.path().join("hermes-agent"))
                 .expect("sync managed plugin");
@@ -11520,6 +12107,159 @@ mod tests {
             assert_eq!(
                 fs::read(synced.join("__init__.py")).expect("read source"),
                 JUNE_GITHUB_PLUGIN_SOURCE
+            );
+            let mut entries: Vec<_> = fs::read_dir(&synced)
+                .expect("plugin entries")
+                .map(|entry| entry.expect("plugin entry").file_name())
+                .collect();
+            entries.sort();
+            assert_eq!(
+                entries,
+                vec![OsString::from("__init__.py"), OsString::from("plugin.yaml")]
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_plugin_overlay_rejects_symlinked_install_root_and_components() {
+            use std::os::unix::fs::symlink;
+
+            let runtime = tempfile::tempdir().expect("runtime tempdir");
+            let actual_install = runtime.path().join("actual-hermes-agent");
+            fs::create_dir_all(actual_install.join("plugins")).expect("actual plugins");
+            let linked_install = runtime.path().join("linked-hermes-agent");
+            symlink(&actual_install, &linked_install).expect("install symlink");
+            assert!(
+                sync_managed_june_github_plugin(&linked_install).is_err(),
+                "a symlinked managed install root must be rejected"
+            );
+
+            let ordinary_install = runtime.path().join("ordinary-hermes-agent");
+            fs::create_dir_all(&ordinary_install).expect("ordinary install");
+            symlink(
+                actual_install.join("plugins"),
+                ordinary_install.join("plugins"),
+            )
+            .expect("plugins symlink");
+            assert!(
+                sync_managed_june_github_plugin(&ordinary_install).is_err(),
+                "a symlinked plugins component must be rejected"
+            );
+        }
+
+        #[test]
+        fn managed_integrity_rejects_modified_launcher_and_loader() {
+            let app_data = tempfile::tempdir().expect("app data");
+            let runtime_dir = app_data.path().join("hermes-runtime");
+            fs::create_dir_all(&runtime_dir).expect("runtime dir");
+            seed_fake_managed_runtime(&runtime_dir);
+            let integrity_path = app_data.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            seal_managed_hermes_runtime(&runtime_dir, &integrity_path).expect("seal runtime");
+            assert!(
+                managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
+                    .expect("verify runtime")
+            );
+
+            let install_dir = runtime_dir.join("hermes-agent");
+            fs::write(
+                hermes_venv_command(&install_dir.join("venv")),
+                b"tampered launcher",
+            )
+            .expect("tamper launcher");
+            assert!(
+                !managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
+                    .expect("reject launcher"),
+                "a modified managed launcher must invalidate the runtime"
+            );
+
+            seed_fake_managed_runtime(&runtime_dir);
+            seal_managed_hermes_runtime(&runtime_dir, &integrity_path).expect("reseal runtime");
+            fs::write(
+                install_dir.join("hermes_cli").join("plugins.py"),
+                b"tampered loader",
+            )
+            .expect("tamper loader");
+            assert!(
+                !managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
+                    .expect("reject loader"),
+                "a modified managed plugin loader must invalidate the runtime"
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_integrity_rejects_symlinked_critical_component() {
+            use std::os::unix::fs::symlink;
+
+            let app_data = tempfile::tempdir().expect("app data");
+            let runtime_dir = app_data.path().join("hermes-runtime");
+            fs::create_dir_all(&runtime_dir).expect("runtime dir");
+            seed_fake_managed_runtime(&runtime_dir);
+            let install_dir = runtime_dir.join("hermes-agent");
+            let external = app_data.path().join("external-hermes-cli");
+            fs::create_dir_all(&external).expect("external loader dir");
+            fs::write(external.join("plugins.py"), b"external loader").expect("external loader");
+            fs::remove_dir_all(install_dir.join("hermes_cli")).expect("remove loader dir");
+            symlink(&external, install_dir.join("hermes_cli")).expect("loader symlink");
+
+            let integrity_path = app_data.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            assert!(
+                seal_managed_hermes_runtime(&runtime_dir, &integrity_path).is_err(),
+                "critical directory symlinks must never be sealed as trusted"
+            );
+        }
+
+        #[tokio::test]
+        async fn cached_managed_resolver_reinstalls_tampered_runtime_before_returning_command() {
+            let app_data = tempfile::tempdir().expect("app data");
+            let runtime_dir = app_data.path().join("hermes-runtime");
+            fs::create_dir_all(&runtime_dir).expect("runtime dir");
+            seed_fake_managed_runtime(&runtime_dir);
+            let integrity_path = app_data.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            seal_managed_hermes_runtime(&runtime_dir, &integrity_path).expect("seal runtime");
+            fs::write(
+                runtime_dir
+                    .join("hermes-agent")
+                    .join("hermes_cli")
+                    .join("plugins.py"),
+                b"tampered loader",
+            )
+            .expect("tamper loader");
+
+            let repaired = Arc::new(AtomicBool::new(false));
+            let repaired_for_install = Arc::clone(&repaired);
+            let runtime_for_install = runtime_dir.clone();
+            let resolved = resolve_managed_hermes_command_with(
+                &runtime_dir,
+                &integrity_path,
+                move || async move {
+                    repaired_for_install.store(true, AtomicOrdering::SeqCst);
+                    remove_managed_install_path(&runtime_for_install.join("hermes-agent"))?;
+                    seed_fake_managed_runtime(&runtime_for_install);
+                    Ok(())
+                },
+            )
+            .await
+            .expect("resolve repaired runtime");
+
+            assert!(repaired.load(AtomicOrdering::SeqCst));
+            assert_eq!(
+                resolved,
+                hermes_venv_command(&runtime_dir.join("hermes-agent").join("venv"))
+            );
+            assert_eq!(
+                fs::read(
+                    runtime_dir
+                        .join("hermes-agent")
+                        .join("hermes_cli")
+                        .join("plugins.py")
+                )
+                .expect("repaired loader"),
+                b"trusted loader"
+            );
+            assert!(
+                managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
+                    .expect("verify repaired runtime")
             );
         }
 
@@ -11559,7 +12299,11 @@ mod tests {
                 .join("Resources")
                 .join(BUNDLED_HERMES_PLUGINS_RESOURCE_DIR)
                 .join(JUNE_GITHUB_PLUGIN_DIR_NAME);
-            let roots = sandbox_write_roots(&hermes_home);
+            let roots = sandbox_write_roots_with_tmpdir(
+                &hermes_home,
+                None,
+                &[managed_runtime.clone(), resource_plugin.clone()],
+            );
 
             assert!(!roots.contains(&managed_runtime));
             assert!(!roots.contains(&resource_plugin));
@@ -11580,6 +12324,94 @@ mod tests {
                 "(subpath {})",
                 sbpl_quote(&resource_plugin.to_string_lossy())
             )));
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn hostile_tmpdir_inside_runtime_or_resources_is_not_a_write_root() {
+            let root = tempfile::tempdir().expect("root");
+            let hermes_home = root.path().join("hermes-home");
+            let runtime = root.path().join("hermes-runtime");
+            let resources = root
+                .path()
+                .join("June.app")
+                .join("Contents")
+                .join("Resources");
+            fs::create_dir_all(&hermes_home).expect("home");
+            fs::create_dir_all(&runtime).expect("runtime");
+            fs::create_dir_all(&resources).expect("resources");
+            let protected = vec![runtime.clone(), resources.clone()];
+
+            for hostile in [
+                runtime.clone(),
+                runtime.join("attacker-temp"),
+                resources.clone(),
+                resources.join("attacker-temp"),
+            ] {
+                fs::create_dir_all(&hostile).expect("hostile tmpdir");
+                let roots = sandbox_write_roots_with_tmpdir(
+                    &hermes_home,
+                    Some(hostile.as_os_str()),
+                    &protected,
+                );
+                let hostile = hostile.canonicalize().expect("canonical hostile tmpdir");
+                assert!(
+                    !roots.iter().any(|root| root == &hostile),
+                    "hostile TMPDIR was granted: {}",
+                    hostile.display()
+                );
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn system_tmpdir_must_belong_to_the_runtime_user() {
+            let system_tmp = Path::new("/private/var/folders/qm/user-token/T");
+            assert!(macos_tmpdir_shape_and_owner_is_safe(system_tmp, 501, 501));
+            assert!(!macos_tmpdir_shape_and_owner_is_safe(system_tmp, 501, 502));
+        }
+
+        #[test]
+        fn windows_atomic_replace_failure_preserves_existing_destination() {
+            let dir = tempfile::tempdir().expect("replace tempdir");
+            let destination = dir.path().join("plugin.py");
+            let replacement = dir.path().join("plugin.py.tmp");
+            fs::write(&destination, b"trusted old bytes").expect("old destination");
+            fs::write(&replacement, b"new bytes").expect("replacement");
+
+            let error = replace_file_with_atomic_existing(
+                &replacement,
+                &destination,
+                |_destination, _replacement| {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "injected ReplaceFileW failure",
+                    ))
+                },
+            )
+            .expect_err("replacement must fail");
+
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(
+                fs::read(&destination).expect("old bytes"),
+                b"trusted old bytes"
+            );
+            assert_eq!(fs::read(&replacement).expect("new bytes"), b"new bytes");
+        }
+
+        #[test]
+        fn windows_bundler_plugin_sync_is_strict_and_exact() {
+            let script = include_str!("../../scripts/bundle-hermes-runtime-windows.ps1");
+            let sync = script
+                .split("function Sync-JunePlugins")
+                .nth(1)
+                .and_then(|tail| tail.split("function Invoke-Native").next())
+                .expect("Sync-JunePlugins function");
+
+            assert!(!sync.contains("SilentlyContinue"));
+            assert!(sync.contains("Remove-Item -LiteralPath"));
+            assert!(sync.contains("Get-ChildItem -LiteralPath"));
+            assert!(sync.contains("Unexpected June GitHub plugin overlay entry"));
         }
 
         #[test]
@@ -15740,7 +16572,7 @@ mcp_servers:
     fn write_roots_are_scoped_and_exclude_the_var_folders_blanket() {
         let hermes_home = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let runtime_dir = PathBuf::from("/Users/test/Library/Application Support/june/runtime");
-        let roots = sandbox_write_roots(&hermes_home);
+        let roots = sandbox_write_roots_with_tmpdir(&hermes_home, None, &[]);
 
         assert!(roots.contains(&hermes_home), "workspace root missing");
         assert!(
