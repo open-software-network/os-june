@@ -287,9 +287,7 @@ describe("routineTrustModeFromToolsets", () => {
     expect(routineTrustModeFromToolsets(["web", "june_gmail"])).toBe("read_only");
     expect(routineTrustModeFromToolsets(["web", "june_linear"])).toBe("read_only");
     expect(routineTrustModeFromToolsets(["june_gmail", "june_gmail_actions"])).toBe("approval");
-    expect(routineTrustModeFromToolsets(["june_notion", "june_notion_actions"])).toBe(
-      "approval",
-    );
+    expect(routineTrustModeFromToolsets(["june_notion", "june_notion_actions"])).toBe("approval");
     expect(routineTrustModeFromToolsets(["june_gmail", "june_gcal_auto_ab12cd34"])).toBe(
       "autonomous",
     );

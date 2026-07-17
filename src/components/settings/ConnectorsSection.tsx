@@ -153,7 +153,11 @@ function NotionConnectorRow({
 }: NotionConnectorRowProps) {
   const state = notionConnectorState(account);
   const details = {
-    disconnected: { subtitle: NOTION_CONNECTOR_BLURB, statusLabel: "Preview", statusTone: "warning" },
+    disconnected: {
+      subtitle: NOTION_CONNECTOR_BLURB,
+      statusLabel: "Preview",
+      statusTone: "warning",
+    },
     connected: { subtitle: NOTION_CONNECTED_BLURB, statusLabel: "Connected", statusTone: "ok" },
     reconnect_required: {
       subtitle: NOTION_RECONNECT_BLURB,
