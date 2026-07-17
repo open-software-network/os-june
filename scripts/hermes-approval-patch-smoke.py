@@ -370,6 +370,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         failed_reset_session = {
             "session_key": "failed-reset-key",
             "agent": object(),
+            "agent_error": "stale lazy Hermes build failure",
             "attached_images": ["still-owned.png"],
             "history_lock": threading.Lock(),
             "prompt_generation": 19,
@@ -391,6 +392,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert failed_reset_session["reset_generation"] == 5, failed_reset_session
         assert failed_reset_session["running"] is True, failed_reset_session
         assert failed_reset_session["attached_images"] == ["still-owned.png"]
+        assert failed_reset_session["agent_error"] == "stale lazy Hermes build failure"
         namespace["_make_agent"] = make_hermes_agent_for_reset
         reset_session = {
             "session_key": "reset-session-key",
@@ -446,6 +448,13 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert "stale-before-reset.png" not in reset_session["attached_images"]
         assert reset_session["prompt_generation"] == 8, reset_session
         assert reset_session["reset_generation"] == 3, reset_session
+
+        # A successful replacement after an earlier lazy-build error must make
+        # the session attachable and ready again instead of retaining 5032 state.
+        reset_session["agent_error"] = "stale lazy Hermes build failure"
+        namespace["_make_agent"] = lambda *_args, **_kwargs: object()
+        namespace["_reset_session_agent"]("reset-session", reset_session)
+        assert reset_session["agent_error"] is None, reset_session
 
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,

@@ -139,3 +139,4 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #825 | Adversarial (codex, worker convergence) | 2 | 2 | found the lazy build worker was not generation-fenced and failed reset did not restore prompt ownership; drove worker serialization, rollback, and executable coverage |
 | #825 | Adversarial (codex, epoch convergence) | 2 | 2 | found slow construction held the attachment lock and prompt generations wrongly invalidated ordinary lazy builds; drove construction outside the lock plus a reset-only build epoch |
 | #825 | Spec (final convergence) | 1 | 1 | reproduced the prompt-generation build suppression as a permanently ready session with no Hermes instance; confirmed the need for a distinct reset epoch |
+| #825 | Adversarial (codex, recovery convergence) | 1 | 1 | found successful reset retained a stale lazy-build error and kept recovered sessions unusable; drove explicit error clearing plus failure-to-reset smoke coverage |

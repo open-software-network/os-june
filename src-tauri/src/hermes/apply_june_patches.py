@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v8"
+PATCH_SET = "june-approval-memory-v9"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "f54df076324bec2aaf01bce906a785d048aaf0a444a9af70b0f4b9b9c1bf6d52",
+    "tui_gateway/server.py": "ca0029cec1d9d2c6801c45098e7911873a3ed128fc83b827c25442cc1f68bf31",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -1072,6 +1072,10 @@ def patch_server(source: str) -> str:
         finally:
             _clear_session_context(tokens)
         session["agent"] = new_agent
+        # A successful replacement supersedes any failure published by the
+        # prior lazy Hermes build. Attachment and readiness checks must observe
+        # the recovered session, not reject it with the obsolete error.
+        session["agent_error"] = None
         session["config_model_seen"] = _config_model_target()
         session["attached_images"] = []
         session["edit_snapshots"] = {}
