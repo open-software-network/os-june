@@ -201,7 +201,7 @@ const CONNECTED_BLURB = "This account is ready. Tokens stay in your Mac's Keycha
 const RECONNECT_BLURB: Readonly<Record<ConnectorProvider, string>> = Object.freeze({
   google: "Google needs you to sign in again before June can use this account.",
   linear: "Linear needs you to sign in again before June can use this workspace.",
-  notion: "Notion needs you to connect again before June can use this workspace.",
+  notion: "Notion needs you to connect again before June can use its hosted MCP tools.",
 });
 
 export function accountStatusMeta(

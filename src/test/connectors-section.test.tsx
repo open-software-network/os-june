@@ -138,7 +138,8 @@ describe("ConnectorsSection", () => {
     const connect = await findEnabledConnect("Connect Notion");
     expect(screen.getByText("Notion")).toBeInTheDocument();
     expect(screen.getByText("Preview")).toBeInTheDocument();
-    expect(screen.getByText(/Create pages with approval/i)).toBeInTheDocument();
+    expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
+    expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();
     expect(screen.getByText(/Notion may allow access beyond selected pages/i)).toBeInTheDocument();
 
     await userEvent.click(connect);
@@ -162,8 +163,9 @@ describe("ConnectorsSection", () => {
     ]);
     render(<ConnectorsSection />);
 
-    expect(await screen.findByText("Preview connected")).toBeInTheDocument();
-    expect(screen.getByText(/Create pages with approval/i)).toBeInTheDocument();
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+    expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
+    expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();
 
     mocks.connectorsList.mockResolvedValue([]);
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
@@ -188,6 +190,9 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
 
     expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Reconnect Notion to restore search, read, and approved page actions/i),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
   });
@@ -212,7 +217,7 @@ describe("ConnectorsSection", () => {
     // connector servers, triggers, and grants all bind to that single account.
     expect(screen.queryByRole("button", { name: "Connect Google" })).toBeNull();
     expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
-    expect(screen.getByText(/Connect Google and Linear in local mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Connect your accounts in local mode/i)).toBeInTheDocument();
   });
 
   it("connects an account from the feature-bundle dialog and applies the runtime", async () => {

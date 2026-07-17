@@ -58,10 +58,13 @@ const PROVIDER_BLURBS = {
 } satisfies Record<OAuthConnectorProvider, string>;
 
 const NOTION_CONNECTOR_BLURB =
-  "Hosted preview. Create pages with approval. Notion may allow access beyond selected pages.";
+  "Hosted preview. Search and read Notion content. Create and update pages with approval. Notion may allow access beyond selected pages.";
 
 const NOTION_CONNECTED_BLURB =
-  "Preview connected. Create pages with approval. Notion may allow access beyond selected pages.";
+  "Search and read Notion content. Create and update pages with approval. Notion may allow access beyond selected pages.";
+
+const NOTION_RECONNECT_BLURB =
+  "Reconnect Notion to restore search, read, and approved page actions.";
 
 type NotionConnectorRowProps = {
   account: ConnectorAccount | null;
@@ -151,9 +154,9 @@ function NotionConnectorRow({
   const state = notionConnectorState(account);
   const details = {
     disconnected: { subtitle: NOTION_CONNECTOR_BLURB, statusLabel: "Preview", statusTone: "warning" },
-    connected: { subtitle: NOTION_CONNECTED_BLURB, statusLabel: "Preview connected", statusTone: "ok" },
+    connected: { subtitle: NOTION_CONNECTED_BLURB, statusLabel: "Connected", statusTone: "ok" },
     reconnect_required: {
-      subtitle: NOTION_CONNECTOR_BLURB,
+      subtitle: NOTION_RECONNECT_BLURB,
       statusLabel: "Reconnect needed",
       statusTone: "warning",
     },
@@ -624,7 +627,7 @@ export function ConnectorsSection() {
       <SettingsPageHeader
         id="connectors-heading"
         title="Connectors"
-        blurb="Connect Google and Linear in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses connector content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
+        blurb="Connect your accounts in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses connector content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
       />
 
       {notConfigured ? (
