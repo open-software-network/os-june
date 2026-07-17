@@ -343,6 +343,82 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert stale_build_session["agent"] is reset_owned_agent
         assert stale_build_session["agent_error"] is None
 
+        # A successful reset can finish while the obsolete lazy build is still
+        # constructing. The replacement Hermes instance must publish readiness
+        # after its slash worker swap instead of waiting for that stale build.
+        obsolete_build_started = threading.Event()
+        obsolete_build_release = threading.Event()
+        obsolete_build_closed = threading.Event()
+        reset_during_build_calls = 0
+
+        class ObsoleteHermes:
+            def close(self) -> None:
+                obsolete_build_closed.set()
+
+        replacement_hermes = types.SimpleNamespace(model="replacement-model")
+
+        def make_reset_during_obsolete_build(*_args, **_kwargs):
+            nonlocal reset_during_build_calls
+            reset_during_build_calls += 1
+            if reset_during_build_calls == 1:
+                obsolete_build_started.set()
+                assert obsolete_build_release.wait(2), (
+                    "obsolete Hermes build was not released"
+                )
+                return ObsoleteHermes()
+            return replacement_hermes
+
+        namespace.update(
+            {
+                "_make_agent": make_reset_during_obsolete_build,
+                "_config_model_target": lambda: "replacement-model",
+                "_load_show_reasoning": lambda: False,
+                "_load_tool_progress_mode": lambda: "compact",
+                "_session_info": lambda hermes, _session: {
+                    "model": hermes.model
+                },
+                "_emit": lambda *_args: None,
+                "_restart_slash_worker": lambda *_args: None,
+            }
+        )
+        reset_during_build_session = {
+            "agent": None,
+            "agent_build_lock": threading.Lock(),
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "attached_images": ["pre-reset.png"],
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 1,
+            "prompt_generation": 0,
+            "reset_generation": 0,
+            "running": False,
+            "session_key": "reset-during-build-key",
+        }
+        namespace["_sessions"]["reset-during-build"] = reset_during_build_session
+        namespace["_start_agent_build"](
+            "reset-during-build", reset_during_build_session
+        )
+        assert obsolete_build_started.wait(1), "obsolete Hermes build did not start"
+        reset_info = namespace["_reset_session_agent"](
+            "reset-during-build", reset_during_build_session
+        )
+        assert reset_info == {"model": "replacement-model"}
+        assert reset_during_build_session["agent"] is replacement_hermes
+        assert reset_during_build_session["agent_ready"].is_set(), (
+            "successful reset did not publish Hermes readiness"
+        )
+        namespace["_start_agent_build"](
+            "reset-during-build", reset_during_build_session
+        )
+        assert reset_during_build_session["agent_ready"].is_set()
+        obsolete_build_release.set()
+        assert obsolete_build_closed.wait(1), (
+            "obsolete Hermes instance was not rejected after reset"
+        )
+        assert reset_during_build_session["agent"] is replacement_hermes
+
         # Publication releases history_lock before any setup that can acquire
         # _sessions_lock, while the independent publication lock keeps reset
         # from interleaving between the Hermes instance and slash worker swaps.

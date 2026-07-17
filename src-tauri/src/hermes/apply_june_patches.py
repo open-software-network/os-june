@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v11"
+PATCH_SET = "june-approval-memory-v12"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "7b541a491948e98be37a1ddf0cccbdd35f60562e8ce568e1c68b9027a7a6a537",
+    "tui_gateway/server.py": "8e1b335effd44f46b1b3660f95a448f69d2fbf1ac69bf2643179844d0ae61242",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -1112,6 +1112,11 @@ def patch_server(source: str) -> str:
             info = _session_info(new_agent, session)
         _emit("session.info", sid, info)
         _restart_slash_worker(sid, session)
+        # Reset has fully published its replacement Hermes instance and slash
+        # worker. It owns readiness even if an obsolete lazy build is still in
+        # slow construction and will only observe reset_generation later.
+        if ready := session.get("agent_ready"):
+            ready.set()
     return info
 ''',
         "session reset ownership",
