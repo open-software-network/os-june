@@ -38,11 +38,12 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
 - [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
 - [adr/0028](adr/0028-june-companion-trust-boundaries.md) - original companion trust boundaries, relay-first E2EE, and desktop authority
-- [adr/0029](adr/0029-june-companion-native-swiftui.md) - native SwiftUI companion presentation; its mobile-login decision is superseded by ADR 0030 and then ADR 0033
-- [adr/0030](adr/0030-companion-desktop-authorized-device-credential.md) - desktop-authorized pairing and revocable device credentials; its no-mobile-login decision is superseded by ADR 0033
+- [adr/0029](adr/0029-june-companion-native-swiftui.md) - native SwiftUI companion presentation; its mobile-login decision is superseded by ADRs 0030, 0033, and 0034
+- [adr/0030](adr/0030-companion-desktop-authorized-device-credential.md) - desktop-authorized pairing and revocable device credentials; its authorization model is current again through ADR 0034
 - [adr/0031](adr/0031-companion-device-generates-relay-credential.md) - companion-generated relay credentials; June API receives and stores only their hashes
 - [adr/0032](adr/0032-companion-relay-single-replica-mvp.md) - the MVP relay is single-replica until pairing and live routing have shared cross-instance state
 - [adr/0033](adr/0033-companion-native-os-accounts-login.md) - native system-browser OS Accounts login plus same-user desktop pairing
+- [adr/0034](adr/0034-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
 
 ## Enforceable rules (spec/)
 

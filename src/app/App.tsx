@@ -1714,7 +1714,7 @@ export function App() {
   useEffect(() => {
     type CompanionFocusTarget =
       | "settings"
-      | { agent: { sessionId?: string | null } }
+      | { agent: { storedSessionId?: string | null } }
       | { note: { noteId: string } };
     let aborted = false;
     let unlisten: (() => void) | undefined;
@@ -1732,7 +1732,9 @@ export function App() {
         return;
       }
       setAgentOrigin(undefined);
-      setActiveAgentSession(target.agent.sessionId ? { id: target.agent.sessionId } : undefined);
+      setActiveAgentSession(
+        target.agent.storedSessionId ? { id: target.agent.storedSessionId } : undefined,
+      );
       setActiveView("agent");
     }).then((cleanup) => {
       if (aborted) cleanup();
@@ -1798,10 +1800,10 @@ export function App() {
             return;
           }
           case "agentMessagesList": {
-            const { sessionId, cursor, limit } = payload.intent.data;
+            const { storedSessionId, cursor, limit } = payload.intent.data;
             const knownSession =
-              agentMenuBarSessionsRef.current.some((session) => session.id === sessionId) ||
-              (await listHermesSessions()).some((session) => session.id === sessionId);
+              agentMenuBarSessionsRef.current.some((session) => session.id === storedSessionId) ||
+              (await listHermesSessions()).some((session) => session.id === storedSessionId);
             if (!knownSession) {
               await companionCompleteFrontendRequest(payload.operationId, {
                 type: "error",
@@ -1814,7 +1816,7 @@ export function App() {
               return;
             }
             const messages = companionAgentMessagesFromHermes(
-              await listHermesSessionMessages(sessionId),
+              await listHermesSessionMessages(storedSessionId),
             );
             const page = companionByteBoundedPage([...messages].reverse(), cursor, limit);
             page?.items.reverse();
@@ -1828,7 +1830,7 @@ export function App() {
           case "agentCancel": {
             if (companionFrontendConsumerAvailable()) return;
             queueCompanionFrontendRequest(payload);
-            const sessionId = payload.intent.data.sessionId;
+            const sessionId = payload.intent.data.storedSessionId;
             setAgentOrigin(undefined);
             setActiveAgentSession(sessionId ? { id: sessionId } : undefined);
             setActiveView("agent");

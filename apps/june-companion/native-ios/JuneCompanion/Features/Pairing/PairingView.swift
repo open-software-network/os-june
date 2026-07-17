@@ -10,10 +10,10 @@ struct PairingView: View {
                 VStack(alignment: .leading, spacing: 32) {
                     JuneBrandLockup()
                     VStack(alignment: .leading, spacing: 14) {
-                        Text(model.snapshot.connection == .revoked ? "Link June again" : "Link June on your Mac")
+                        Text(model.snapshot.connection == .revoked ? "Connect June again" : "Connect to June on your Mac")
                             .font(JuneFont.hero)
                             .accessibilityAddTraits(.isHeader)
-                        Text("You are signed in as @\(model.accountProfile?.handle ?? "unknown"). Link a Mac signed in to the same OS Accounts user.")
+                        Text("Scan a code from a signed-in June Desktop. Your Mac will approve this device and grant only companion access.")
                             .font(JuneFont.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -43,7 +43,7 @@ struct PairingView: View {
                     Button("Enter code for simulator") { showsManualPairing = true }
                         .buttonStyle(JuneSecondaryButtonStyle())
 #endif
-                    Text("Your Mac must still approve this device. Account sign-in alone never grants desktop control.")
+                    Text("The code expires after five minutes. Your Mac must approve this device before it can connect.")
                         .font(JuneFont.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

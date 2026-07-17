@@ -5,76 +5,6 @@ import XCTest
 
 @MainActor
 final class AuthAndModelTests: XCTestCase {
-    func testOSAccountsAuthorizationUsesPKCES256AndExactMobileRedirect() throws {
-        let configuration = AppConfiguration(
-            accountsOrigin: try XCTUnwrap(URL(string: "https://accounts.opensoftware.co")),
-            accountsAPIOrigin: try XCTUnwrap(URL(string: "https://accounts-api.opensoftware.co")),
-            accountsClientID: "ocl_companion_test",
-            accountsRedirectURI: try XCTUnwrap(URL(string: "junecompanion://auth/callback"))
-        )
-        var call = 0
-        let request = try AccountOAuth.makeAuthorizationRequest(configuration: configuration) { count in
-            defer { call += 1 }
-            return [UInt8](repeating: call == 0 ? 7 : 9, count: count)
-        }
-        let query = try XCTUnwrap(URLComponents(url: request.url, resolvingAgainstBaseURL: false))
-        let values = Dictionary(uniqueKeysWithValues: (query.queryItems ?? []).compactMap { item in
-            item.value.map { (item.name, $0) }
-        })
-
-        XCTAssertEqual(request.url.scheme, "https")
-        XCTAssertEqual(request.url.host, "accounts.opensoftware.co")
-        XCTAssertEqual(request.url.path, "/login")
-        XCTAssertEqual(values["client_id"], "ocl_companion_test")
-        XCTAssertEqual(values["redirect_uri"], "junecompanion://auth/callback")
-        XCTAssertEqual(values["scope"], "profile:read")
-        XCTAssertEqual(values["state"], request.state)
-        XCTAssertEqual(values["code_challenge_method"], "S256")
-        XCTAssertFalse(request.verifier.contains("="))
-        XCTAssertFalse(try XCTUnwrap(values["code_challenge"]).contains("="))
-    }
-
-    func testOSAccountsCallbackRequiresExactRouteAndSingleMatchingState() throws {
-        let redirect = try XCTUnwrap(URL(string: "junecompanion://auth/callback"))
-        let valid = try XCTUnwrap(URL(string: "junecompanion://auth/callback?code=one&state=expected"))
-        XCTAssertEqual(
-            try AccountOAuth.authorizationCode(
-                from: valid,
-                expectedState: "expected",
-                redirectURI: redirect
-            ),
-            "one"
-        )
-
-        for invalid in [
-            "junecompanion://auth/other?code=one&state=expected",
-            "junecompanion://auth/callback?code=one&state=wrong",
-            "junecompanion://auth/callback?code=one&state=expected&state=expected",
-            "junecompanion://auth/callback?code=one&code=two&state=expected",
-        ] {
-            XCTAssertThrowsError(
-                try AccountOAuth.authorizationCode(
-                    from: XCTUnwrap(URL(string: invalid)),
-                    expectedState: "expected",
-                    redirectURI: redirect
-                )
-            )
-        }
-    }
-
-    func testOSAccountsProductionTokenEnvelopeDecodesSnakeCase() throws {
-        let data = Data(
-            #"{"success":true,"data":{"access_token":"access","refresh_token":"refresh"},"error_code":null,"message":null}"#.utf8
-        )
-        let envelope = try JSONDecoder().decode(
-            AccountEnvelope<AccountTokenPair>.self,
-            from: data
-        )
-
-        XCTAssertEqual(envelope.data?.accessToken, "access")
-        XCTAssertEqual(envelope.data?.refreshToken, "refresh")
-    }
-
     func testPairingProofIsDeterministicAndDoesNotExposeSecret() {
         let secret = Data((0..<32).map(UInt8.init))
         let proof = PairingProof.make(secret: secret)
@@ -100,6 +30,34 @@ final class AuthAndModelTests: XCTestCase {
         )
         XCTAssertNotEqual(credential.hash, decoded.map { Array(SHA256.hash(data: $0)) })
         XCTAssertNotEqual(credential.hash, decoded.map(Array.init))
+    }
+
+    func testPairingPayloadRejectsExpiredAndMalformedSecretsWithoutEchoingThem() throws {
+        let secret = Data(repeating: 7, count: 32).base64EncodedString()
+          .replacingOccurrences(of: "+", with: "-")
+          .replacingOccurrences(of: "/", with: "_")
+          .replacingOccurrences(of: "=", with: "")
+        let expired = #"{"version":1,"pairingId":"00000000-0000-0000-0000-000000000001","pairingSecret":"\#(secret)","relayUrl":"wss://api.example.test/v1/companion/relay","expiresAtMs":999}"#
+
+        XCTAssertThrowsError(try PairingPayloadValidation.decode(expired, now: 1_000)) { error in
+            XCTAssertFalse(error.localizedDescription.contains(secret))
+        }
+
+        let malformed = #"{"version":1,"pairingId":"00000000-0000-0000-0000-000000000001","pairingSecret":"sensitive-invalid-secret","relayUrl":"wss://api.example.test/v1/companion/relay","expiresAtMs":2000}"#
+        XCTAssertThrowsError(try PairingPayloadValidation.decode(malformed, now: 1_000)) { error in
+            XCTAssertFalse(error.localizedDescription.contains("sensitive-invalid-secret"))
+        }
+    }
+
+    func testSecureStoreRoundTripAndDeletionUseAnIsolatedAccount() throws {
+        let account = "test.\(UUID().uuidString)"
+        let value = Data("secret".utf8)
+        defer { SecureStore.shared.delete(account: account) }
+
+        try SecureStore.shared.save(value, account: account)
+        XCTAssertEqual(try SecureStore.shared.read(account: account), value)
+        SecureStore.shared.delete(account: account)
+        XCTAssertNil(try SecureStore.shared.read(account: account))
     }
 
     func testInboundFrameValidationRejectsReplayExpiryAndCapabilityConfusion() throws {
@@ -144,6 +102,45 @@ final class AuthAndModelTests: XCTestCase {
         XCTAssertThrowsError(try CompanionWireValidation.frame(confused, after: 2, now: now))
     }
 
+    func testAmbiguousMutationRetriesKeepTheSameOperationID() throws {
+        let firstBody: [String: Any] = [
+          "type": "agentSend",
+          "data": ["storedSessionId": "stored-1", "message": "Plan the week"],
+        ]
+        let sameBodyDifferentOrder: [String: Any] = [
+          "data": ["message": "Plan the week", "storedSessionId": "stored-1"],
+          "type": "agentSend",
+        ]
+        let firstKey = try MutationOperationIdentity.digest(
+          capability: "agentChat",
+          body: firstBody
+        )
+        let retryKey = try MutationOperationIdentity.digest(
+          capability: "agentChat",
+          body: sameBodyDifferentOrder
+        )
+        var pending: [String: PendingMutation] = [:]
+        let first = MutationOperationIdentity.operationID(for: firstKey, pending: &pending)
+        let retry = MutationOperationIdentity.operationID(for: retryKey, pending: &pending)
+
+        XCTAssertEqual(firstKey, retryKey)
+        XCTAssertEqual(first, retry)
+        pending.removeValue(forKey: firstKey)
+        XCTAssertNotEqual(
+          first,
+          MutationOperationIdentity.operationID(for: firstKey, pending: &pending)
+        )
+        XCTAssertFalse(
+          MutationOperationIdentity.shouldResolve(resultType: "error", retryable: true)
+        )
+        XCTAssertTrue(
+          MutationOperationIdentity.shouldResolve(resultType: "error", retryable: false)
+        )
+        XCTAssertTrue(
+          MutationOperationIdentity.shouldResolve(resultType: "accepted", retryable: false)
+        )
+    }
+
     func testSnapshotDecodesCompanionProtocolContract() throws {
         let json = #"""
         {
@@ -185,6 +182,8 @@ final class AuthAndModelTests: XCTestCase {
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "CompanionLocalBearerToken"))
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "OS_ACCOUNTS_APP_API_KEY"))
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "JUNE_ACCOUNTS_CLIENT_ID"))
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "JUNE_COMPANION_ACCOUNTS_CLIENT_ID"))
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "JUNE_COMPANION_ACCOUNTS_REDIRECT_URI"))
     }
 
     func testAgentEventsAreBufferedUntilANewSessionIsAccepted() throws {
@@ -242,7 +241,7 @@ private func agentEvent(
     text: String? = nil,
     status: String? = nil
 ) throws -> String {
-    var data: [String: Any] = ["sessionId": sessionID]
+    var data: [String: Any] = ["storedSessionId": sessionID]
     if let text { data["text"] = text }
     if let status { data["status"] = status }
     let payload: [String: Any] = [

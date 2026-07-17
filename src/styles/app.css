@@ -17316,7 +17316,7 @@ button.memory-project:hover {
    * the count badge sits at a consistent distance in both places. The chevron
    * is absolutely positioned, so this only spaces the label from the count. */
   gap: var(--sp-2);
-  min-width: 220px;
+  min-width: var(--companion-pairing-copy-min-w);
   height: var(--control-lg);
   padding: 0 32px 0 var(--sp-3);
   border: 1px solid var(--border);
@@ -26814,10 +26814,10 @@ button.connector-approvals-info {
 
 .companion-pairing-qr {
   display: block;
-  width: min(256px, 100%);
+  width: min(var(--companion-pairing-qr-size), 100%);
   border: var(--sp-1) solid var(--background);
   border-radius: var(--r-lg);
-  background: white;
+  background: var(--companion-pairing-qr-canvas);
 }
 
 .companion-device-list {
@@ -26858,7 +26858,7 @@ button.connector-approvals-info {
 .companion-name-input {
   height: var(--control-lg);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
+  border: var(--line-width) solid var(--border);
   border-radius: var(--r-sm);
   background: var(--background);
   color: var(--foreground);
@@ -26868,23 +26868,11 @@ button.connector-approvals-info {
 
 .companion-name-input:focus {
   outline: none;
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  box-shadow: 0 0 0 var(--focus-outline-width) var(--focus-ring);
 }
 
 .companion-empty-device {
   text-align: center;
-}
-
-@media (max-width: 720px) {
-  .companion-pairing-card,
-  .companion-device-heading {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .companion-device-actions {
-    justify-content: flex-start;
-  }
 }
 
 @media print {

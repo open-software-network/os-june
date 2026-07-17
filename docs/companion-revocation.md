@@ -31,6 +31,13 @@ revoked device cannot reconnect, route/receive frames, or register a push token.
 Relinking creates fresh device identity state through a new desktop-approved QR
 pairing.
 
+Desktop OS Accounts sign-out is the account boundary: June first stops the
+relay transport, best-effort revokes every locally known companion plus the
+account-scoped desktop identity, marks that account's local rows revoked, and
+removes its Keychain identity before clearing account tokens. Another user on
+the same Mac receives a different desktop device id and cannot see the prior
+user's local companion rows.
+
 If the relay database is unavailable, production companion endpoints fail
 closed. The desktop must not report successful revocation until the relay
 write succeeds.

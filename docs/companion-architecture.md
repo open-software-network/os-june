@@ -28,12 +28,11 @@ loading/error/conflict state, and typed decrypted DTOs. The application model
 never receives tokens, private keys, session keys, APNs tokens, or raw
 encrypted frames.
 
-The Swift service layer owns system-browser OS Accounts login, PKCE, token
-exchange and refresh, Keychain token storage, the proof-gated pairing exchange, Keychain device
+The Swift service layer owns the proof-gated pairing exchange, Keychain device
 credential and identity, biometric/passcode gating, QR scanning, reachability,
 WebSocket reconnect, encryption calls, APNs registration, lifecycle locking,
-encrypted cache IO, and redacted errors. It receives only the companion's
-account grant and never receives the desktop's OS Accounts session.
+encrypted cache IO, and redacted errors. It has no OS Accounts client, callback,
+or token and never receives the desktop's account session.
 
 Rust owns the shared Noise state machine, the versioned protocol, the closed
 desktop allowlist, note compare-and-swap, durable linked-device metadata, and
@@ -41,8 +40,15 @@ the blind relay. The companion generates its device credential and sends only
 the hash of its encoded authorization value during pairing. June API stores
 that hash; it hashes the same UTF-8 value when verifying a `Device`
 authorization header and never stores the credential or QR secret.
-The relay also requires a mobile OS Accounts bearer on new pairing proposals
-and verifies that it names the same user who created the desktop pairing.
+The signed-in Desktop creates each pending pairing under its current OS Accounts
+user. The short-lived QR proof authorizes one phone proposal to that pairing;
+the relay takes the account only from the authenticated Desktop creation and
+never from the phone.
+Desktop device identities are keyed by OS Accounts user rather than a global
+`current` Keychain slot, and local linked-device lists are filtered by that
+same user id. Desktop sign-out disconnects the relay, revokes the user's
+grants, marks local rows revoked, and removes that account's desktop identity
+before tokens are cleared.
 
 The always-mounted desktop app shell handles sanitized agent session and
 message reads without changing the visible Mac view. Agent send and cancel

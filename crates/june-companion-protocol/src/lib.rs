@@ -90,12 +90,12 @@ pub enum Body {
     NoteEdit(NoteEditRequest),
     AgentSessionsList(PageRequest),
     AgentMessagesList {
-        session_id: String,
+        stored_session_id: String,
         page: PageRequest,
     },
     AgentSend(AgentSendRequest),
     AgentCancel {
-        session_id: String,
+        stored_session_id: String,
     },
     SettingsGet,
     SettingsEditSafe(SafeSettingsPatch),
@@ -143,13 +143,16 @@ impl Body {
     fn validate(&self) -> Result<(), ProtocolError> {
         match self {
             Self::NotesList(page) | Self::AgentSessionsList(page) => page.validate(),
-            Self::AgentMessagesList { session_id, page } => {
-                validate_id(session_id)?;
+            Self::AgentMessagesList {
+                stored_session_id,
+                page,
+            } => {
+                validate_id(stored_session_id)?;
                 page.validate()
             }
             Self::NoteGet { note_id }
             | Self::AgentCancel {
-                session_id: note_id,
+                stored_session_id: note_id,
             }
             | Self::RecordingPause {
                 session_id: note_id,
@@ -163,11 +166,16 @@ impl Body {
             Self::NoteEdit(request) => request.validate(),
             Self::AgentSend(request) => request.validate(),
             Self::SettingsEditSafe(patch) if patch.is_empty() => Err(ProtocolError::EmptyPatch),
-            Self::Event(Event::AgentDelta { session_id, text }) => {
-                validate_id(session_id)?;
+            Self::Event(Event::AgentDelta {
+                stored_session_id,
+                text,
+            }) => {
+                validate_id(stored_session_id)?;
                 validate_text(text, MAX_TEXT_BYTES)
             }
-            Self::Event(Event::AgentStatus { session_id, .. }) => validate_id(session_id),
+            Self::Event(Event::AgentStatus {
+                stored_session_id, ..
+            }) => validate_id(stored_session_id),
             _ => Ok(()),
         }
     }
@@ -228,14 +236,14 @@ impl NoteEditRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSendRequest {
-    pub session_id: Option<String>,
+    pub stored_session_id: Option<String>,
     pub message: String,
 }
 
 impl AgentSendRequest {
     fn validate(&self) -> Result<(), ProtocolError> {
-        if let Some(session_id) = &self.session_id {
-            validate_id(session_id)?;
+        if let Some(stored_session_id) = &self.stored_session_id {
+            validate_id(stored_session_id)?;
         }
         validate_text(&self.message, MAX_TEXT_BYTES)
     }
@@ -265,7 +273,7 @@ pub enum DictationStyle {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FocusTarget {
-    Agent { session_id: Option<String> },
+    Agent { stored_session_id: Option<String> },
     Note { note_id: String },
     Settings,
 }
@@ -285,7 +293,7 @@ pub enum ResultPayload {
     Note(NoteRecord),
     AgentSessions(Page<AgentSession>),
     AgentMessages(Page<AgentMessage>),
-    AgentAccepted { session_id: String },
+    AgentAccepted { stored_session_id: String },
     Settings(SafeSettings),
     Recording(ActiveRecordingSnapshot),
     Device(DeviceSelf),
@@ -430,11 +438,11 @@ pub enum FailureCode {
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum Event {
     AgentDelta {
-        session_id: String,
+        stored_session_id: String,
         text: String,
     },
     AgentStatus {
-        session_id: String,
+        stored_session_id: String,
         status: AgentStatus,
     },
     NotesChanged {
@@ -633,7 +641,7 @@ mod tests {
             100,
             Capability::AgentChat,
             Body::AgentSend(AgentSendRequest {
-                session_id: None,
+                stored_session_id: None,
                 message,
             }),
         );

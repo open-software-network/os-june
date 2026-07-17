@@ -31,6 +31,13 @@ the relay hashes that representation and compares it without retaining the
 plaintext. Noise separately authenticates the device's private key and protects
 all content.
 
+The signed-in Desktop creates the pending pairing under its OS Accounts user.
+The matching QR proof authorizes one phone proposal to that exact pairing, so
+the phone neither supplies an account id nor carries an account bearer. The
+relay binds the proposed device to the user already fixed by Desktop creation,
+and explicit Desktop approval remains required before the device credential or
+link becomes active.
+
 During an explicit pairing, the authenticated desktop may establish its relay
 socket while the pairing is still pending, but pending phones remain unable to
 connect or route frames. Before the relay exposes approval to the phone, the
@@ -60,6 +67,8 @@ display text as June Desktop: machine context, provider routing details,
 reasoning, tool calls/results, approvals, secrets, and media internals stay on
 the Mac. The always-mounted app shell serves reads even when the Agent screen
 is closed. Send and cancel intents wake the existing Agent workspace.
+Agent wire fields use `storedSessionId` explicitly; `sessionId` remains
+reserved for contexts where the stored/runtime distinction is not present.
 
 Agent transcript pagination starts with the newest page and walks backward;
 items within each page remain chronological so the mobile client can prepend
@@ -77,12 +86,16 @@ connectors, updates, account deletion, or adding a device.
 
 ## Idempotency and reconnect
 
-Mutations carry stable client operation ids. The desktop persists encrypted
-response results keyed by device/operation and returns the prior result on a
-retry. Results expire after seven days and are capped at 1,024 per device;
-revocation removes prior results. Sequence state resets only after a fresh
-authenticated Noise session. The client refreshes cursor-based lists after
-foreground/reconnect. No offline control request is replayed.
+Mutations carry stable client operation ids. The native client keeps an
+unresolved id in Keychain for seven days and reuses it after an ambiguous
+disconnect or relaunch. The desktop reserves an in-flight id before dispatch,
+persists response results keyed by device/operation, and returns the prior
+result on a retry. Results expire after seven days and are capped at 1,024 per
+device; revocation removes prior results. Sequence state resets only after a
+fresh authenticated Noise session. The client reuses a healthy transport,
+retires stale Noise keys when a fresh authenticated handshake arrives, and
+refreshes cursor-based lists after foreground/reconnect. No offline control
+request is replayed.
 
 Note edits carry `expectedRevision`; SQLite updates atomically only at that
 revision. A mismatch returns a typed conflict with the current note.

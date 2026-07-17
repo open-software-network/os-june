@@ -52,12 +52,8 @@ struct RootView: View {
   private var content: some View {
     if model.isStarting {
       ProgressStateView(title: "Opening June", detail: "Restoring this device securely.")
-    } else if model.accountProfile == nil {
-      OnboardingView(model: model)
     } else {
       switch model.snapshot.connection {
-      case .signedOut:
-        OnboardingView(model: model)
       case .unpaired, .revoked:
         PairingView(model: model)
       case .locked:
@@ -241,7 +237,7 @@ private struct HistorySidebar: View {
       .safeAreaInset(edge: .bottom) {
         HStack(spacing: 10) {
           VStack(alignment: .leading, spacing: 2) {
-            Text(model.accountProfile?.handle ?? "OS Accounts")
+            Text("June Desktop")
               .font(JuneFont.subheadline)
               .lineLimit(1)
             ConnectionLabel(state: model.snapshot.connection)

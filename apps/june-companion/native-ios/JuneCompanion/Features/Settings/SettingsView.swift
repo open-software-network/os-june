@@ -6,7 +6,6 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage("companion.appearance") private var storedAppearance = JuneAppearance.system.rawValue
     @State private var confirmsRevoke = false
-    @State private var confirmsSignOut = false
 
     var body: some View {
         NavigationStack {
@@ -26,15 +25,6 @@ struct SettingsView: View {
                     }
                     Button("Open June on Mac", action: model.focusMac)
                         .disabled(model.snapshot.connection != .ready)
-                }
-
-                Section("OS Accounts") {
-                    if let profile = model.accountProfile {
-                        LabeledContent("Signed in", value: "@\(profile.handle)")
-                    }
-                    Button("Sign out and unlink", role: .destructive) {
-                        confirmsSignOut = true
-                    }
                 }
 
                 if let settings = model.snapshot.safeSettings {
@@ -117,15 +107,6 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("You will need a new pairing code from your Mac to link this device again.")
-            }
-            .alert("Sign out and unlink?", isPresented: $confirmsSignOut) {
-                Button("Sign out", role: .destructive) {
-                    model.signOutAndUnlink()
-                    dismiss()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This revokes this device, invalidates the OS Accounts session when possible, and clears local account tokens.")
             }
         }
         .accessibilityIdentifier("settings-screen")

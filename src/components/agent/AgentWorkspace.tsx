@@ -3100,7 +3100,7 @@ export function AgentWorkspace({
           case "agentMessagesList":
             return;
           case "agentSend": {
-            const { sessionId: requestedSessionId, message } = payload.intent.data;
+            const { storedSessionId: requestedSessionId, message } = payload.intent.data;
             const explicitSession = requestedSessionId
               ? hermesSessionItemsRef.current.find((session) => session.id === requestedSessionId)
               : undefined;
@@ -3113,12 +3113,12 @@ export function AgentWorkspace({
             if (!sessionId) throw new Error("June could not identify the agent session.");
             await companionCompleteFrontendRequest(payload.operationId, {
               type: "agentAccepted",
-              data: { sessionId },
+              data: { storedSessionId: sessionId },
             });
             return;
           }
           case "agentCancel":
-            await stopHermesSession(payload.intent.data.sessionId);
+            await stopHermesSession(payload.intent.data.storedSessionId);
             await companionCompleteFrontendRequest(payload.operationId, { type: "accepted" });
             return;
         }
@@ -6877,7 +6877,7 @@ export function AgentWorkspace({
       ) {
         void companionPublishAgentEvent({
           type: "delta",
-          data: { sessionId: storedSessionId, text: storedClassified.delta },
+          data: { storedSessionId, text: storedClassified.delta },
         }).catch(() => undefined);
       }
       // Feature 15: record every inbound frame (raw type + the kind it
@@ -6975,7 +6975,7 @@ export function AgentWorkspace({
         void companionPublishAgentEvent({
           type: "status",
           data: {
-            sessionId: storedSessionId,
+            storedSessionId,
             status: status === "received" || status === "starting" ? "running" : status,
           },
         }).catch(() => undefined);

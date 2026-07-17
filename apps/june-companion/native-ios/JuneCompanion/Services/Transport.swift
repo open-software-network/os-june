@@ -14,6 +14,34 @@ struct PairingPayload: Codable {
   let expiresAtMs: UInt64
 }
 
+struct ValidatedPairingPayload {
+  let payload: PairingPayload
+  let secret: Data
+}
+
+enum PairingPayloadValidation {
+  static func decode(
+    _ payloadJSON: String,
+    now: UInt64 = currentMilliseconds()
+  ) throws -> ValidatedPairingPayload {
+    guard let data = payloadJSON.data(using: .utf8) else {
+      throw CompanionNativeError.invalidData("The pairing code is invalid.")
+    }
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    guard let payload = try? decoder.decode(PairingPayload.self, from: data) else {
+      throw CompanionNativeError.invalidData("The pairing code is invalid.")
+    }
+    guard payload.version == 1, payload.expiresAtMs > now else {
+      throw CompanionNativeError.invalidData("The pairing code expired or uses an unsupported version.")
+    }
+    guard let secret = Data(base64URL: payload.pairingSecret), secret.count == 32 else {
+      throw CompanionNativeError.invalidData("The pairing secret is invalid.")
+    }
+    return ValidatedPairingPayload(payload: payload, secret: secret)
+  }
+}
+
 enum PairingProof {
   static func make(secret: Data) -> [UInt8] {
     Array(SHA256.hash(data: secret))
@@ -62,7 +90,6 @@ struct LinkedConfiguration: Codable {
   let desktopDeviceID: UUID
   let desktopPublicKey: [UInt8]
   let linkedAt: Date
-  let accountUserID: String?
 }
 
 private struct RelayEnvelope: Codable {
@@ -165,14 +192,13 @@ final class PairingAPI {
     payload: PairingPayload,
     identity: DeviceIdentity,
     pairingProof: [UInt8],
-    deviceCredentialHash: [UInt8],
-    accountAccessToken: String
+    deviceCredentialHash: [UInt8]
   ) async throws -> PairingStatusWire {
     try await request(
       relayURL: payload.relayUrl,
-      path: "/v1/companion/pairings/\(payload.pairingId.uuidString)/propose-authenticated",
+      path: "/v1/companion/pairings/\(payload.pairingId.uuidString)/propose",
       method: "POST",
-      authorization: .bearer(accountAccessToken),
+      authorization: nil,
       body: [
         "mobileDeviceId": identity.deviceID.uuidString,
         "mobilePublicKey": identity.publicKey,
@@ -279,12 +305,10 @@ final class PairingAPI {
 }
 
 private enum CompanionHTTPAuthorization {
-  case bearer(String)
   case device(String)
 
   var headerValue: String {
     switch self {
-    case .bearer(let token): "Bearer \(token)"
     case .device(let credential): "Device \(credential)"
     }
   }
@@ -307,6 +331,12 @@ final class CompanionTransport {
   private struct PendingRequest {
     let capability: String
     let continuation: CheckedContinuation<Data, Error>
+  }
+
+  func isConnected(to desktopDeviceID: UUID) -> Bool {
+    connectionID != nil
+      && self.desktopDeviceID == desktopDeviceID
+      && crypto?.isReady == true
   }
 
   func connect(
@@ -379,7 +409,11 @@ final class CompanionTransport {
     }
   }
 
-  func request(capability: String, body: [String: Any]) async throws -> Data {
+  func request(
+    operationID: UUID,
+    capability: String,
+    body: [String: Any]
+  ) async throws -> Data {
     guard let crypto, crypto.isReady else {
       throw CompanionNativeError.unavailable("Your Mac is offline.")
     }
@@ -388,7 +422,6 @@ final class CompanionTransport {
       throw CompanionNativeError.unavailable("Reconnect to establish a fresh secure session.")
     }
     sequence += 1
-    let operationID = UUID()
     let now = currentMilliseconds()
     let object: [String: Any] = [
       "version": 1,

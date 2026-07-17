@@ -131,38 +131,45 @@ impl Repositories {
 
     pub async fn upsert_companion_device(
         &self,
+        account_user_id: &str,
         id: &str,
         display_name: &str,
         public_key: &[u8],
     ) -> Result<CompanionDeviceRecord, sqlx::error::Error> {
         let now = timestamp();
         query(
-            "INSERT INTO companion_devices (id, display_name, public_key, linked_at)
-             VALUES (?, ?, ?, ?)
+            "INSERT INTO companion_devices (account_user_id, id, display_name, public_key, linked_at)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
+               account_user_id = excluded.account_user_id,
                display_name = excluded.display_name,
                public_key = excluded.public_key,
-               revoked_at = NULL",
+               revoked_at = NULL
+             WHERE companion_devices.account_user_id = excluded.account_user_id
+                OR companion_devices.account_user_id = ''",
         )
+        .bind(account_user_id)
         .bind(id)
         .bind(display_name)
         .bind(public_key)
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        self.companion_device(id)
+        self.companion_device(account_user_id, id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
     }
 
     pub async fn companion_device(
         &self,
+        account_user_id: &str,
         id: &str,
     ) -> Result<Option<CompanionDeviceRecord>, sqlx::error::Error> {
         let row = query(
             "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
-             FROM companion_devices WHERE id = ?",
+             FROM companion_devices WHERE account_user_id = ? AND id = ?",
         )
+        .bind(account_user_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
@@ -171,11 +178,15 @@ impl Repositories {
 
     pub async fn list_companion_devices(
         &self,
+        account_user_id: &str,
     ) -> Result<Vec<CompanionDeviceRecord>, sqlx::error::Error> {
         let rows = query(
             "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
-             FROM companion_devices ORDER BY linked_at DESC",
+             FROM companion_devices
+             WHERE account_user_id = ?
+             ORDER BY linked_at DESC",
         )
+        .bind(account_user_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(companion_device_from_row).collect())
@@ -183,58 +194,124 @@ impl Repositories {
 
     pub async fn rename_companion_device(
         &self,
+        account_user_id: &str,
         id: &str,
         display_name: &str,
     ) -> Result<(), sqlx::error::Error> {
-        query("UPDATE companion_devices SET display_name = ? WHERE id = ? AND revoked_at IS NULL")
-            .bind(display_name)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        query(
+            "UPDATE companion_devices SET display_name = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(display_name)
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub async fn revoke_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
+    pub async fn revoke_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
         let mut transaction = self.pool.begin().await?;
-        query("UPDATE companion_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
-            .bind(timestamp())
-            .bind(id)
-            .execute(&mut *transaction)
-            .await?;
-        query("DELETE FROM companion_operations WHERE device_id = ?")
-            .bind(id)
-            .execute(&mut *transaction)
-            .await?;
+        query(
+            "UPDATE companion_devices SET revoked_at = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id IN (
+               SELECT id FROM companion_devices WHERE account_user_id = ? AND id = ?
+             )",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
         transaction.commit().await?;
         Ok(())
     }
 
-    pub async fn delete_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
-        query("DELETE FROM companion_devices WHERE id = ?")
+    pub async fn revoke_companion_devices_for_account(
+        &self,
+        account_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "UPDATE companion_devices
+             SET revoked_at = ?
+             WHERE account_user_id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id IN (
+               SELECT id FROM companion_devices WHERE account_user_id = ?
+             )",
+        )
+        .bind(account_user_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM companion_devices WHERE account_user_id = ? AND id = ?")
+            .bind(account_user_id)
             .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
-    pub async fn touch_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
-        query("UPDATE companion_devices SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL")
-            .bind(timestamp())
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+    pub async fn touch_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE companion_devices SET last_seen_at = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
     pub async fn companion_operation(
         &self,
+        account_user_id: &str,
         device_id: &str,
         operation_id: &str,
     ) -> Result<Option<Vec<u8>>, sqlx::error::Error> {
         let row = query(
-            "SELECT response FROM companion_operations
-             WHERE device_id = ? AND operation_id = ?",
+            "SELECT operations.response
+             FROM companion_operations AS operations
+             JOIN companion_devices AS devices ON devices.id = operations.device_id
+             WHERE devices.account_user_id = ?
+               AND devices.revoked_at IS NULL
+               AND operations.device_id = ?
+               AND operations.operation_id = ?",
         )
+        .bind(account_user_id)
         .bind(device_id)
         .bind(operation_id)
         .fetch_optional(&self.pool)
@@ -244,6 +321,7 @@ impl Repositories {
 
     pub async fn remember_companion_operation(
         &self,
+        account_user_id: &str,
         device_id: &str,
         operation_id: &str,
         response: &[u8],
@@ -251,12 +329,19 @@ impl Repositories {
         let mut transaction = self.pool.begin().await?;
         query(
             "INSERT OR IGNORE INTO companion_operations
-             (device_id, operation_id, response, created_at) VALUES (?, ?, ?, ?)",
+             (device_id, operation_id, response, created_at)
+             SELECT ?, ?, ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )",
         )
         .bind(device_id)
         .bind(operation_id)
         .bind(response)
         .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
         .execute(&mut *transaction)
         .await?;
         query("DELETE FROM companion_operations WHERE created_at < ?")
@@ -6173,13 +6258,14 @@ mod tests {
         let repos = test_repositories().await;
         let device_id = Uuid::new_v4().to_string();
         repos
-            .upsert_companion_device(&device_id, "iPhone", &[4; 32])
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
             .await
             .expect("create companion device");
 
         for index in 0..=MAX_COMPANION_OPERATIONS_PER_DEVICE {
             repos
                 .remember_companion_operation(
+                    "usr_test",
                     &device_id,
                     &format!("operation-{index:04}"),
                     b"accepted",
@@ -6189,7 +6275,7 @@ mod tests {
         }
         assert_eq!(
             repos
-                .companion_operation(&device_id, "operation-0000")
+                .companion_operation("usr_test", &device_id, "operation-0000")
                 .await
                 .expect("read pruned operation"),
             None
@@ -6197,6 +6283,7 @@ mod tests {
         assert_eq!(
             repos
                 .companion_operation(
+                    "usr_test",
                     &device_id,
                     &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
                 )
@@ -6207,18 +6294,95 @@ mod tests {
         );
 
         repos
-            .revoke_companion_device(&device_id)
+            .revoke_companion_device("usr_test", &device_id)
             .await
             .expect("revoke companion device");
         assert_eq!(
             repos
                 .companion_operation(
+                    "usr_test",
                     &device_id,
                     &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
                 )
                 .await
                 .expect("read revoked operation"),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_device_mutations_are_account_scoped() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_owner", &device_id, "Owner phone", &[4; 32])
+            .await
+            .expect("create owner device");
+        repos
+            .remember_companion_operation("usr_owner", &device_id, "operation-1", b"accepted")
+            .await
+            .expect("remember owner operation");
+
+        assert!(repos
+            .companion_device("usr_other", &device_id)
+            .await
+            .expect("look up other account")
+            .is_none());
+        assert!(repos
+            .upsert_companion_device("usr_other", &device_id, "Other phone", &[4; 32])
+            .await
+            .is_err());
+        repos
+            .rename_companion_device("usr_other", &device_id, "Renamed")
+            .await
+            .expect("ignore cross-account rename");
+        repos
+            .touch_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account touch");
+        repos
+            .revoke_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account revoke");
+        repos
+            .delete_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account delete");
+        assert!(repos
+            .companion_operation("usr_other", &device_id, "operation-1")
+            .await
+            .expect("ignore cross-account operation read")
+            .is_none());
+        repos
+            .remember_companion_operation(
+                "usr_other",
+                &device_id,
+                "cross-account-operation",
+                b"unexpected",
+            )
+            .await
+            .expect("ignore cross-account operation write");
+        assert!(repos
+            .companion_operation("usr_owner", &device_id, "cross-account-operation")
+            .await
+            .expect("read owner operation history")
+            .is_none());
+
+        let owner = repos
+            .companion_device("usr_owner", &device_id)
+            .await
+            .expect("look up owner account")
+            .expect("owner device remains");
+        assert_eq!(owner.display_name, "Owner phone");
+        assert!(owner.last_seen_at.is_none());
+        assert!(owner.revoked_at.is_none());
+        assert_eq!(
+            repos
+                .companion_operation("usr_owner", &device_id, "operation-1")
+                .await
+                .expect("read owner operation")
+                .as_deref(),
+            Some(b"accepted".as_slice())
         );
     }
 

@@ -2444,8 +2444,8 @@ export type CompanionAgentStatus =
   | "cancelled";
 
 export type CompanionAgentEventRequest =
-  | { type: "delta"; data: { sessionId: string; text: string } }
-  | { type: "status"; data: { sessionId: string; status: CompanionAgentStatus } };
+  | { type: "delta"; data: { storedSessionId: string; text: string } }
+  | { type: "status"; data: { storedSessionId: string; status: CompanionAgentStatus } };
 
 export async function companionPublishAgentEvent(request: CompanionAgentEventRequest) {
   return invoke<void>("companion_publish_agent_event", { request });
@@ -2455,10 +2455,10 @@ export type CompanionFrontendIntent =
   | { type: "agentSessionsList"; data: { cursor?: string; limit: number } }
   | {
       type: "agentMessagesList";
-      data: { sessionId: string; cursor?: string; limit: number };
+      data: { storedSessionId: string; cursor?: string; limit: number };
     }
-  | { type: "agentSend"; data: { sessionId?: string; message: string } }
-  | { type: "agentCancel"; data: { sessionId: string } };
+  | { type: "agentSend"; data: { storedSessionId?: string; message: string } }
+  | { type: "agentCancel"; data: { storedSessionId: string } };
 
 export type CompanionFrontendRequest = {
   operationId: string;
@@ -2492,7 +2492,7 @@ export type CompanionResultPayload =
         nextCursor?: string;
       };
     }
-  | { type: "agentAccepted"; data: { sessionId: string } }
+  | { type: "agentAccepted"; data: { storedSessionId: string } }
   | {
       type: "error";
       data: {

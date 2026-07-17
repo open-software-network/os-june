@@ -25,6 +25,7 @@ const capabilityLabels: Record<CompanionCapability, string> = {
   devicesReadSelf: "Read this device",
   devicesRevokeSelf: "Unlink this device",
 };
+const companionCapabilities = Object.keys(capabilityLabels) as CompanionCapability[];
 
 export function LinkedDevicesSection() {
   const [devices, setDevices] = useState<LinkedCompanionDevice[]>([]);
@@ -133,8 +134,8 @@ export function LinkedDevicesSection() {
           Linked devices
         </h2>
         <p className="settings-page-blurb">
-          Link an iPhone or iPad after signing in to the same OS Accounts account. Every link also
-          needs explicit approval on this Mac.
+          Link an iPhone or iPad from this signed-in Mac. Every link needs explicit approval here,
+          and the companion never receives your account session.
         </p>
       </header>
 
@@ -176,6 +177,14 @@ export function LinkedDevicesSection() {
               {status?.state === "waitingForApproval" ? (
                 <>
                   <span>{status.mobileDisplayName ?? "A companion"} is asking to link.</span>
+                  <span>This device will receive these capabilities:</span>
+                  <ul className="companion-capabilities" aria-label="Capabilities to approve">
+                    {companionCapabilities.map((capability) => (
+                      <li className="companion-capability" key={capability}>
+                        {capabilityLabels[capability]}
+                      </li>
+                    ))}
+                  </ul>
                   <button
                     type="button"
                     className="primary-action primary-solid"

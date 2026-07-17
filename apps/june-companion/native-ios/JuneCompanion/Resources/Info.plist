@@ -18,29 +18,8 @@
   <string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>CFBundleURLName</key>
-			<string>OS Accounts callback</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>junecompanion</string>
-			</array>
-		</dict>
-	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>JUNE_COMPANION_ACCOUNTS_API_ORIGIN</key>
-	<string>$(JUNE_COMPANION_ACCOUNTS_API_ORIGIN)</string>
-	<key>JUNE_COMPANION_ACCOUNTS_CLIENT_ID</key>
-	<string>$(JUNE_COMPANION_ACCOUNTS_CLIENT_ID)</string>
-	<key>JUNE_COMPANION_ACCOUNTS_ORIGIN</key>
-	<string>$(JUNE_COMPANION_ACCOUNTS_ORIGIN)</string>
-	<key>JUNE_COMPANION_ACCOUNTS_REDIRECT_URI</key>
-	<string>$(JUNE_COMPANION_ACCOUNTS_REDIRECT_URI)</string>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
   <key>LSRequiresIPhoneOS</key>

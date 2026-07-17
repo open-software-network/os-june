@@ -2,7 +2,6 @@ import Foundation
 import SwiftUI
 
 enum ConnectionState: String, Codable, Sendable {
-    case signedOut
     case unpaired
     case locked
     case connecting
@@ -13,7 +12,6 @@ enum ConnectionState: String, Codable, Sendable {
 
     var title: String {
         switch self {
-        case .signedOut: "Not linked"
         case .unpaired: "Not linked"
         case .locked: "Locked"
         case .connecting: "Connecting"
@@ -31,7 +29,6 @@ enum ConnectionState: String, Codable, Sendable {
         case .locked: "lock"
         case .offline: "desktopcomputer.trianglebadge.exclamationmark"
         case .revoked: "xmark.shield"
-        case .signedOut: "link.badge.plus"
         case .unpaired: "link.badge.plus"
         case .error: "exclamationmark.triangle"
         }
@@ -129,7 +126,6 @@ final class AppModel: ObservableObject {
     private static let truncatedAgentMessageSuffix = "\n\n[Response truncated on companion]"
 
     @Published private(set) var snapshot = CompanionSnapshotModel.unpaired
-    @Published private(set) var accountProfile: AccountProfile?
     @Published private(set) var isStarting = true
     @Published var selectedNote: NoteRecordModel?
     @Published var noteConflict: NoteConflictModel?
@@ -141,19 +137,14 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let service: CompanionService
-    private let accountService: AccountAuthenticationService
     private let decoder = JSONDecoder()
     private var bufferedAgentStreams: [String: BufferedAgentStream] = [:]
     private var bufferedAgentStreamOrder: [String] = []
     private var nextMessageCursor: String?
     private var refreshRequested = false
 
-    init(
-        service: CompanionService = .shared,
-        accountService: AccountAuthenticationService = .shared
-    ) {
+    init(service: CompanionService = .shared) {
         self.service = service
-        self.accountService = accountService
         service.eventSink = { [weak self] type, payload in
             Task { @MainActor in self?.receive(type: type, payload: payload) }
         }
@@ -161,60 +152,16 @@ final class AppModel: ObservableObject {
 
     func bootstrap() async {
         defer { isStarting = false }
-        accountProfile = accountService.restoredProfile()
-        guard let accountProfile else {
-            snapshot = CompanionSnapshotModel(connection: .signedOut, notes: [], agentSessions: [])
-            return
-        }
-        snapshot = .unpaired
         do {
             snapshot = try decode(
                 CompanionSnapshotModel.self,
-                from: try await service.prepare(accountUserID: accountProfile.id)
+                from: try service.snapshotJSON()
             )
             if snapshot.connection == .ready {
                 await refresh()
             }
         } catch {
             present(error)
-        }
-    }
-
-    var isAccountSignInConfigured: Bool { accountService.isConfigured }
-
-    func signIn() {
-        perform {
-            let profile = try await self.accountService.signIn()
-            self.accountProfile = profile
-            self.snapshot = .unpaired
-            self.snapshot = try self.decode(
-                CompanionSnapshotModel.self,
-                from: try await self.service.prepare(accountUserID: profile.id)
-            )
-        }
-    }
-
-    func signOutAndUnlink() {
-        perform {
-            var revocationError: Error?
-            if ![.signedOut, .unpaired, .revoked].contains(self.snapshot.connection) {
-                do {
-                    try await self.service.revokeThisDevice()
-                } catch {
-                    // Revocation is already recorded for retry by the native
-                    // service. Account logout must still clear mobile tokens.
-                    revocationError = error
-                }
-            }
-            await self.accountService.signOut()
-            self.accountProfile = nil
-            self.snapshot = CompanionSnapshotModel(
-                connection: .signedOut,
-                notes: [],
-                agentSessions: []
-            )
-            self.resetConversationState()
-            if let revocationError { throw revocationError }
         }
     }
 
@@ -369,7 +316,7 @@ final class AppModel: ObservableObject {
                         message: message
                     )
                 )
-                self.acceptAgentSession(result.sessionId, fallbackTitle: message)
+                self.acceptAgentSession(result.storedSessionId, fallbackTitle: message)
             } catch {
                 self.messages.removeAll { $0.id == optimistic.id }
                 if self.draft.isEmpty {
@@ -439,9 +386,9 @@ final class AppModel: ObservableObject {
         if let note = selectedNote {
             target = ["type": "note", "data": ["noteId": note.id]]
         } else if let selectedSessionID {
-            target = ["type": "agent", "data": ["sessionId": selectedSessionID]]
+            target = ["type": "agent", "data": ["storedSessionId": selectedSessionID]]
         } else {
-            target = ["type": "agent", "data": ["sessionId": NSNull()]]
+            target = ["type": "agent", "data": ["storedSessionId": NSNull()]]
         }
         perform {
             let data = try JSONSerialization.data(withJSONObject: target)
@@ -517,7 +464,7 @@ final class AppModel: ObservableObject {
     private func apply(_ event: CompanionEvent) {
         switch event.type {
         case "agentDelta":
-            guard let sessionID = event.data?.sessionId,
+            guard let sessionID = event.data?.storedSessionId,
                   let text = event.data?.text
             else { return }
             if selectedSessionID == sessionID {
@@ -526,7 +473,7 @@ final class AppModel: ObservableObject {
                 bufferAgentDelta(text, sessionID: sessionID)
             }
         case "agentStatus":
-            guard let sessionID = event.data?.sessionId,
+            guard let sessionID = event.data?.storedSessionId,
                   let rawStatus = event.data?.status,
                   let status = AgentStatusModel(rawValue: rawStatus)
             else { return }
@@ -649,7 +596,7 @@ private struct ConflictEnvelope: Codable {
 }
 
 private struct AgentAccepted: Codable {
-    let sessionId: String
+    let storedSessionId: String
 }
 
 private struct EventFrame: Codable {
@@ -667,7 +614,7 @@ private struct CompanionEvent: Codable {
 }
 
 private struct CompanionEventData: Codable {
-    let sessionId: String?
+    let storedSessionId: String?
     let text: String?
     let status: String?
 }

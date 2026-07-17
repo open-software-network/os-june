@@ -19,26 +19,44 @@ use std::{
     },
     time::Duration,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::sync::{mpsc, oneshot, Notify};
 use uuid::Uuid;
 
 pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendIntent};
 
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
-const KEYCHAIN_ACCOUNT: &str = "current";
 const MAX_DEVICE_NAME_BYTES: usize = 128;
 const PAIRING_RELAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Default)]
 pub struct CompanionRuntime {
     pub controller: Controller,
     pairings: Mutex<HashMap<Uuid, PendingPairing>>,
     pending_frontend: Mutex<HashMap<Uuid, oneshot::Sender<ResultPayload>>>,
+    inflight_operations: Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>,
     event_sender: Mutex<Option<mpsc::Sender<Event>>>,
     transport_started: AtomicBool,
     relay_connected: AtomicBool,
     relay_connection_changed: Notify,
+    account_transport_enabled: AtomicBool,
+    account_session_changed: Notify,
+}
+
+impl Default for CompanionRuntime {
+    fn default() -> Self {
+        Self {
+            controller: Controller::default(),
+            pairings: Mutex::default(),
+            pending_frontend: Mutex::default(),
+            inflight_operations: Mutex::default(),
+            event_sender: Mutex::default(),
+            transport_started: AtomicBool::new(false),
+            relay_connected: AtomicBool::new(false),
+            relay_connection_changed: Notify::new(),
+            account_transport_enabled: AtomicBool::new(true),
+            account_session_changed: Notify::new(),
+        }
+    }
 }
 
 struct PendingPairing {
@@ -50,6 +68,7 @@ struct PendingPairing {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredIdentity {
+    account_user_id: String,
     device_id: Uuid,
     private_key_b64: String,
     public_key_b64: String,
@@ -148,7 +167,8 @@ pub struct RenameDeviceRequest {
 pub async fn companion_begin_pairing(
     runtime: State<'_, CompanionRuntime>,
 ) -> Result<PairingQrPayload, AppError> {
-    let identity = load_or_create_identity()?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
+    let identity = load_or_create_identity(&account_user_id)?;
     let mut secret = [0_u8; KEY_BYTES];
     OsRng.fill_bytes(&mut secret);
     let status: PairingStatus = companion_post(
@@ -264,8 +284,9 @@ pub async fn companion_approve_pairing(
         .clone()
         .unwrap_or_else(|| "iPhone".to_string());
     let repos = repositories(&app).await?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
     let mobile_id = mobile_device_id.to_string();
-    let existing = repos.companion_device(&mobile_id).await?;
+    let existing = repos.companion_device(&account_user_id, &mobile_id).await?;
     if existing.as_ref().is_some_and(|device| {
         device.revoked_at.is_some() || device.public_key.as_slice() != public_key.as_slice()
     }) {
@@ -278,7 +299,7 @@ pub async fn companion_approve_pairing(
     mark_pairing_mobile(&runtime, pairing_id, mobile_device_id)?;
     if inserted_locally {
         if let Err(error) = repos
-            .upsert_companion_device(&mobile_id, &display_name, &public_key)
+            .upsert_companion_device(&account_user_id, &mobile_id, &display_name, &public_key)
             .await
         {
             clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
@@ -290,7 +311,9 @@ pub async fn companion_approve_pairing(
     if let Err(error) = wait_for_relay_connection(&runtime).await {
         clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
         if inserted_locally {
-            repos.delete_companion_device(&mobile_id).await?;
+            repos
+                .delete_companion_device(&account_user_id, &mobile_id)
+                .await?;
         }
         return Err(error);
     }
@@ -308,7 +331,9 @@ pub async fn companion_approve_pairing(
         Ok(_) => {
             clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
             if inserted_locally {
-                repos.delete_companion_device(&mobile_id).await?;
+                repos
+                    .delete_companion_device(&account_user_id, &mobile_id)
+                    .await?;
             }
             return Err(AppError::new(
                 "companion_pairing_expired",
@@ -323,7 +348,9 @@ pub async fn companion_approve_pairing(
                 Ok(_) => {
                     clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
                     if inserted_locally {
-                        repos.delete_companion_device(&mobile_id).await?;
+                        repos
+                            .delete_companion_device(&account_user_id, &mobile_id)
+                            .await?;
                     }
                     return Err(error);
                 }
@@ -339,7 +366,7 @@ pub async fn companion_approve_pairing(
     };
     if !inserted_locally {
         if let Err(error) = repos
-            .upsert_companion_device(&mobile_id, &display_name, &public_key)
+            .upsert_companion_device(&account_user_id, &mobile_id, &display_name, &public_key)
             .await
         {
             tracing::warn!(%error, "failed to refresh linked companion display metadata");
@@ -422,9 +449,10 @@ fn has_pending_pairing(runtime: &CompanionRuntime) -> bool {
 
 #[tauri::command]
 pub async fn companion_list_devices(app: AppHandle) -> Result<Vec<LinkedDeviceDto>, AppError> {
+    let account_user_id = crate::os_accounts::current_user_id().await?;
     Ok(repositories(&app)
         .await?
-        .list_companion_devices()
+        .list_companion_devices(&account_user_id)
         .await?
         .into_iter()
         .map(|device| LinkedDeviceDto {
@@ -468,17 +496,22 @@ pub async fn companion_rename_device(
     }
     repositories(&app)
         .await?
-        .rename_companion_device(&request.device_id, name)
+        .rename_companion_device(
+            &crate::os_accounts::current_user_id().await?,
+            &request.device_id,
+            name,
+        )
         .await?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn companion_revoke_device(app: AppHandle, device_id: Uuid) -> Result<(), AppError> {
+    let account_user_id = crate::os_accounts::current_user_id().await?;
     revoke_device_remote(device_id).await?;
     repositories(&app)
         .await?
-        .revoke_companion_device(&device_id.to_string())
+        .revoke_companion_device(&account_user_id, &device_id.to_string())
         .await?;
     Ok(())
 }
@@ -526,11 +559,11 @@ pub fn companion_complete_frontend_request(
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum CompanionAgentEventRequest {
     Delta {
-        session_id: String,
+        stored_session_id: String,
         text: String,
     },
     Status {
-        session_id: String,
+        stored_session_id: String,
         status: AgentStatus,
     },
 }
@@ -540,12 +573,17 @@ pub async fn companion_publish_agent_event(
     runtime: State<'_, CompanionRuntime>,
     request: CompanionAgentEventRequest,
 ) -> Result<(), AppError> {
-    let (session_id, text) = match &request {
-        CompanionAgentEventRequest::Delta { session_id, text } => (session_id, Some(text)),
-        CompanionAgentEventRequest::Status { session_id, .. } => (session_id, None),
+    let (stored_session_id, text) = match &request {
+        CompanionAgentEventRequest::Delta {
+            stored_session_id,
+            text,
+        } => (stored_session_id, Some(text)),
+        CompanionAgentEventRequest::Status {
+            stored_session_id, ..
+        } => (stored_session_id, None),
     };
-    if session_id.is_empty()
-        || session_id.len() > 256
+    if stored_session_id.is_empty()
+        || stored_session_id.len() > 256
         || text.is_some_and(|text| text.is_empty() || text.len() > MAX_TEXT_BYTES)
     {
         return Err(AppError::new(
@@ -554,12 +592,20 @@ pub async fn companion_publish_agent_event(
         ));
     }
     let event = match request {
-        CompanionAgentEventRequest::Delta { session_id, text } => {
-            Event::AgentDelta { session_id, text }
-        }
-        CompanionAgentEventRequest::Status { session_id, status } => {
-            Event::AgentStatus { session_id, status }
-        }
+        CompanionAgentEventRequest::Delta {
+            stored_session_id,
+            text,
+        } => Event::AgentDelta {
+            stored_session_id,
+            text,
+        },
+        CompanionAgentEventRequest::Status {
+            stored_session_id,
+            status,
+        } => Event::AgentStatus {
+            stored_session_id,
+            status,
+        },
     };
     let sender = runtime
         .event_sender
@@ -587,6 +633,48 @@ pub async fn companion_publish_agent_event(
 
 pub fn start(app: &AppHandle) {
     transport::start(app);
+}
+
+pub async fn prepare_account_logout(app: &AppHandle) {
+    let runtime = app.state::<CompanionRuntime>();
+    runtime
+        .account_transport_enabled
+        .store(false, Ordering::Release);
+    runtime.account_session_changed.notify_waiters();
+    if let Ok(mut pairings) = runtime.pairings.lock() {
+        pairings.clear();
+    }
+
+    let Ok(account_user_id) = crate::os_accounts::current_user_id().await else {
+        return;
+    };
+    if let Ok(repos) = repositories(app).await {
+        if let Ok(devices) = repos.list_companion_devices(&account_user_id).await {
+            for device in devices
+                .into_iter()
+                .filter(|device| device.revoked_at.is_none())
+            {
+                if let Ok(device_id) = Uuid::parse_str(&device.id) {
+                    let _ = revoke_device_remote(device_id).await;
+                }
+            }
+        }
+        let _ = repos
+            .revoke_companion_devices_for_account(&account_user_id)
+            .await;
+    }
+    if let Ok(Some(identity)) = load_identity(&account_user_id) {
+        let _ = revoke_device_remote(identity.device_id).await;
+    }
+    remove_identity(&account_user_id);
+}
+
+pub fn resume_account_transport(app: &AppHandle) {
+    let runtime = app.state::<CompanionRuntime>();
+    runtime
+        .account_transport_enabled
+        .store(true, Ordering::Release);
+    runtime.account_session_changed.notify_waiters();
 }
 
 pub fn pairing_secret(
@@ -747,16 +835,29 @@ where
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn load_or_create_identity() -> Result<StoredIdentity, AppError> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+fn load_identity(account_user_id: &str) -> Result<Option<StoredIdentity>, AppError> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account_user_id)
         .map_err(|_| AppError::new("companion_keychain_unavailable", "Keychain is unavailable."))?;
     if let Ok(encoded) = entry.get_password() {
         if let Ok(identity) = serde_json::from_str::<StoredIdentity>(&encoded) {
-            if identity.private_key().is_ok() && identity.public_key().is_ok() {
-                return Ok(identity);
+            if identity.account_user_id == account_user_id
+                && identity.private_key().is_ok()
+                && identity.public_key().is_ok()
+            {
+                return Ok(Some(identity));
             }
         }
     }
+    Ok(None)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn load_or_create_identity(account_user_id: &str) -> Result<StoredIdentity, AppError> {
+    if let Some(identity) = load_identity(account_user_id)? {
+        return Ok(identity);
+    }
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account_user_id)
+        .map_err(|_| AppError::new("companion_keychain_unavailable", "Keychain is unavailable."))?;
     let generated = generate_identity().map_err(|_| {
         AppError::new(
             "companion_identity_failed",
@@ -764,6 +865,7 @@ fn load_or_create_identity() -> Result<StoredIdentity, AppError> {
         )
     })?;
     let identity = StoredIdentity {
+        account_user_id: account_user_id.to_string(),
         device_id: Uuid::new_v4(),
         private_key_b64: STANDARD_NO_PAD.encode(generated.private.as_slice()),
         public_key_b64: STANDARD_NO_PAD.encode(&generated.public),
@@ -783,8 +885,23 @@ fn load_or_create_identity() -> Result<StoredIdentity, AppError> {
     Ok(identity)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn remove_identity(account_user_id: &str) {
+    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, account_user_id) {
+        let _ = entry.delete_credential();
+    }
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn load_or_create_identity() -> Result<StoredIdentity, AppError> {
+fn remove_identity(_account_user_id: &str) {}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn load_identity(_account_user_id: &str) -> Result<Option<StoredIdentity>, AppError> {
+    Ok(None)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn load_or_create_identity(_account_user_id: &str) -> Result<StoredIdentity, AppError> {
     Err(AppError::new(
         "companion_platform_unsupported",
         "June companion linking is available on supported desktop platforms.",

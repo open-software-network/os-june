@@ -101,10 +101,6 @@ pub fn router(state: ApiState) -> Router {
             post(handlers::companion::propose_pairing),
         )
         .route(
-            "/v1/companion/pairings/{pairing_id}/propose-authenticated",
-            post(handlers::companion::propose_pairing_authenticated),
-        )
-        .route(
             "/v1/companion/pairings/{pairing_id}/mobile-status",
             post(handlers::companion::mobile_pairing_status),
         )

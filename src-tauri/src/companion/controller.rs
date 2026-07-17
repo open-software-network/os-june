@@ -29,16 +29,16 @@ pub enum FrontendIntent {
         limit: u16,
     },
     AgentMessagesList {
-        session_id: String,
+        stored_session_id: String,
         cursor: Option<String>,
         limit: u16,
     },
     AgentSend {
-        session_id: Option<String>,
+        stored_session_id: Option<String>,
         message: String,
     },
     AgentCancel {
-        session_id: String,
+        stored_session_id: String,
     },
     RecordingPause {
         session_id: String,
@@ -66,6 +66,7 @@ impl Controller {
         &self,
         app: &AppHandle,
         repositories: &Repositories,
+        account_user_id: &str,
         device_id: &str,
         frame: Frame,
         now_ms: u64,
@@ -73,9 +74,19 @@ impl Controller {
         frame
             .validate(now_ms)
             .map_err(|error| AppError::new("companion_frame_invalid", error.to_string()))?;
+        let active_device = repositories
+            .companion_device(account_user_id, device_id)
+            .await?
+            .is_some_and(|device| device.revoked_at.is_none());
+        if !active_device {
+            return Err(AppError::new(
+                "unauthorized",
+                "This linked device is no longer authorized.",
+            ));
+        }
         let operation_id = frame.operation_id.to_string();
         if let Some(encoded) = repositories
-            .companion_operation(device_id, &operation_id)
+            .companion_operation(account_user_id, device_id, &operation_id)
             .await?
         {
             let response = serde_json::from_slice(&encoded).map_err(|_| {
@@ -85,16 +96,6 @@ impl Controller {
                 )
             })?;
             return Ok(ControllerOutcome::Immediate(response));
-        }
-        let active_device = repositories
-            .companion_device(device_id)
-            .await?
-            .is_some_and(|device| device.revoked_at.is_none());
-        if !active_device {
-            return Err(AppError::new(
-                "unauthorized",
-                "This linked device is no longer authorized.",
-            ));
         }
         self.accept_sequence(device_id, frame.sequence)?;
         let capability = frame.capability;
@@ -196,7 +197,7 @@ impl Controller {
             }
             Body::DeviceGetSelf => {
                 let device = repositories
-                    .companion_device(device_id)
+                    .companion_device(account_user_id, device_id)
                     .await?
                     .ok_or_else(|| {
                         AppError::new("companion_device_not_found", "Linked device was not found.")
@@ -210,7 +211,9 @@ impl Controller {
                 // This mirrors revocation in Desktop's local device list. The
                 // companion performs the authoritative Device-authenticated
                 // relay revocation before deleting its credential and identity.
-                repositories.revoke_companion_device(device_id).await?;
+                repositories
+                    .revoke_companion_device(account_user_id, device_id)
+                    .await?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::AgentSessionsList(page) => {
@@ -219,19 +222,20 @@ impl Controller {
                     limit: page.limit,
                 })
             }
-            Body::AgentMessagesList { session_id, page } => {
-                ControllerOutcome::Frontend(FrontendIntent::AgentMessagesList {
-                    session_id,
-                    cursor: page.cursor,
-                    limit: page.limit,
-                })
-            }
+            Body::AgentMessagesList {
+                stored_session_id,
+                page,
+            } => ControllerOutcome::Frontend(FrontendIntent::AgentMessagesList {
+                stored_session_id,
+                cursor: page.cursor,
+                limit: page.limit,
+            }),
             Body::AgentSend(request) => ControllerOutcome::Frontend(FrontendIntent::AgentSend {
-                session_id: request.session_id,
+                stored_session_id: request.stored_session_id,
                 message: request.message,
             }),
-            Body::AgentCancel { session_id } => {
-                ControllerOutcome::Frontend(FrontendIntent::AgentCancel { session_id })
+            Body::AgentCancel { stored_session_id } => {
+                ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
             }
             Body::RecordingPause { session_id } => {
                 commands::pause_recording(app.clone(), SessionRequest { session_id }).await?;
@@ -293,7 +297,7 @@ impl Controller {
                 )
             })?;
             repositories
-                .remember_companion_operation(device_id, &operation_id, &encoded)
+                .remember_companion_operation(account_user_id, device_id, &operation_id, &encoded)
                 .await?;
         }
         Ok(outcome)
@@ -436,7 +440,7 @@ mod tests {
         let allowed = [
             Body::NotesList(PageRequest::default()),
             Body::AgentSend(AgentSendRequest {
-                session_id: None,
+                stored_session_id: None,
                 message: "Hello".to_string(),
             }),
             Body::RecordingPause {

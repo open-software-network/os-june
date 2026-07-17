@@ -512,8 +512,6 @@ the account snapshot until the grant lands rather than assuming credits are
 present the instant the plan changes.
 _Avoid_: top-up (a user-initiated purchase), refill.
 
-### Desktop shell & updates
-
 ### June companion
 
 **June Companion**:
@@ -526,21 +524,17 @@ _Avoid_: mobile June, Tauri mobile, WebView companion.
 **Linked device**:
 One phone, tablet, or desktop installation with its own stable device id and
 Curve25519 identity, explicitly approved by the user for a fixed capability
-set. The companion and desktop authenticate the same OS Accounts user
-independently; the companion never receives or copies the desktop session.
+set. The link belongs to the OS Accounts user authenticated by the desktop that
+created and approved its pairing. The companion never receives or copies the
+desktop session and does not sign in separately.
 _Avoid_: session, login, trusted account.
 
 **Companion pairing**:
-The five-minute, desktop-approved QR flow that authenticates the two device
-identities and establishes a **linked device** relationship. The QR provisioning
-secret is single-use state for pairing, not a reusable device credential.
+The five-minute, desktop-approved QR flow that authorizes the companion under
+the desktop's current account, authenticates the two device identities, and
+establishes a **linked device** relationship. The QR provisioning secret is
+single-use state for pairing, not a reusable device credential.
 _Avoid_: login, sync, invite.
-
-**Companion account session**:
-The public-client OS Accounts grant created by system-browser login on one
-companion device. It proves user identity and relay eligibility but cannot
-control a Mac without separate **companion pairing** and desktop approval.
-_Avoid_: desktop session, device credential, pairing.
 
 **Device credential**:
 The random opaque credential a companion generates locally during pairing. It
@@ -561,6 +555,8 @@ A versioned, capability-scoped, expiring application message encrypted between
 linked devices. Only routing metadata and ciphertext are visible to the
 **companion relay**.
 _Avoid_: raw command, Hermes frame, Tauri command.
+
+### Desktop shell & updates
 
 **Release channel**:
 The updater track: `stable` or `rc` (shipped in PR #529; see

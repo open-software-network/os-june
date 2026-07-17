@@ -17,6 +17,36 @@ private struct PendingPairingRevocation: Codable {
   let deviceID: UUID
 }
 
+struct PendingMutation: Codable {
+  let operationID: UUID
+  let createdAt: Date
+}
+
+enum MutationOperationIdentity {
+  static func digest(capability: String, body: [String: Any]) throws -> String {
+    let canonical = try JSONSerialization.data(
+      withJSONObject: ["capability": capability, "body": body],
+      options: [.sortedKeys]
+    )
+    return SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined()
+  }
+
+  static func operationID(
+    for mutationKey: String,
+    pending: inout [String: PendingMutation],
+    now: Date = Date()
+  ) -> UUID {
+    if let existing = pending[mutationKey] { return existing.operationID }
+    let operationID = UUID()
+    pending[mutationKey] = PendingMutation(operationID: operationID, createdAt: now)
+    return operationID
+  }
+
+  static func shouldResolve(resultType: String?, retryable: Bool) -> Bool {
+    resultType != "error" || !retryable
+  }
+}
+
 enum JSONValue: Codable {
   case string(String), unsignedInteger(UInt64), signedInteger(Int64), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
 
@@ -60,8 +90,17 @@ final class CompanionService {
   private var reconnectAttempt = 0
   private var reconnectTask: Task<Void, Never>?
   private let pendingRevocationAccount = "pending.pairing-revocation"
+  private let pendingMutationsAccount = "pending.mutations"
+  private var pendingMutations: [String: PendingMutation] = [:]
 
   private init() {
+    // Pre-release builds briefly stored a mobile OS Accounts grant. Pairing is
+    // now the phone's authorization, so remove any legacy token on upgrade.
+    SecureStore.shared.delete(account: "os-accounts.tokens")
+    pendingMutations = (try? SecureStore.shared.read(account: pendingMutationsAccount))
+      .flatMap { try? JSONDecoder().decode([String: PendingMutation].self, from: $0) }
+      ?? [:]
+    prunePendingMutations()
     linked = try? SecureStore.shared.read(account: "linked.configuration")
       .flatMap {try? JSONDecoder().decode(LinkedConfiguration.self, from: $0)}
     if linked != nil {
@@ -93,31 +132,11 @@ final class CompanionService {
 
   func snapshotJSON() throws -> String { try jsonString(snapshot) }
 
-  func prepare(accountUserID: String) async throws -> String {
-    if let linked, linked.accountUserID != accountUserID {
-      // Pre-account builds and links created for another account must be
-      // revoked before this signed-in user can pair a replacement device.
-      try await revokeThisDevice()
-      snapshot = Snapshot(connection: "unpaired", notes: [], agentSessions: [])
-      emitSnapshot()
-    }
-    return try snapshotJSON()
-  }
-
   func pair(payloadJSON: String) async throws -> String {
     _ = try await reconcilePendingRevocation()
-    guard let data = payloadJSON.data(using: .utf8) else { throw CompanionNativeError.invalidData("The pairing code is invalid.") }
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-    guard let payload = try? decoder.decode(PairingPayload.self, from: data) else {
-      throw CompanionNativeError.invalidData("The pairing code is invalid.")
-    }
-    guard payload.version == 1, payload.expiresAtMs > currentMilliseconds() else {
-      throw CompanionNativeError.invalidData("The pairing code expired or uses an unsupported version.")
-    }
-    guard let secretData = Data(base64URL: payload.pairingSecret), secretData.count == 32 else {
-      throw CompanionNativeError.invalidData("The pairing secret is invalid.")
-    }
+    let validated = try PairingPayloadValidation.decode(payloadJSON)
+    let payload = validated.payload
+    let secretData = validated.secret
     var secret = [UInt8](secretData)
     defer { secret.indices.forEach {secret[$0] = 0} }
     let pairingProof = PairingProof.make(secret: secretData)
@@ -134,7 +153,7 @@ final class CompanionService {
         deviceID: identity.deviceID
       )
       cleanupRecorded = true
-      let accountUserID = try await proposeAuthenticatedPairing(
+      _ = try await pairingAPI.propose(
         payload: payload,
         identity: identity,
         pairingProof: pairingProof,
@@ -162,8 +181,7 @@ final class CompanionService {
         relayURL: payload.relayUrl,
         desktopDeviceID: approved.desktopDeviceId,
         desktopPublicKey: approved.desktopPublicKey,
-        linkedAt: Date(),
-        accountUserID: accountUserID
+        linkedAt: Date()
       )
       try SecureStore.shared.save(
         JSONEncoder().encode(configuration),
@@ -196,25 +214,6 @@ final class CompanionService {
       throw error
     }
     return try await refresh()
-  }
-
-  private func proposeAuthenticatedPairing(
-    payload: PairingPayload,
-    identity: DeviceIdentity,
-    pairingProof: [UInt8],
-    deviceCredentialHash: [UInt8]
-  ) async throws -> String {
-    // Keep the account bearer scoped to this authenticated proposal. The
-    // long-lived relay connection uses the separately approved device grant.
-    let authorization = try await AccountAuthenticationService.shared.authorization()
-    _ = try await pairingAPI.propose(
-      payload: payload,
-      identity: identity,
-      pairingProof: pairingProof,
-      deviceCredentialHash: deviceCredentialHash,
-      accountAccessToken: authorization.accessToken
-    )
-    return authorization.profile.id
   }
 
   func unlock() async throws -> Bool {
@@ -263,7 +262,7 @@ final class CompanionService {
     let response = try await request(capability: "notesEdit", body: [
       "type": "noteEdit",
       "data": ["noteId": id, "expectedRevision": revision, "title": title, "editedContent": content],
-    ])
+    ], mutation: true)
     if resultType(response) == "conflict", let conflict = resultData(response) {
       return try jsonString(["conflict": conflict])
     }
@@ -276,7 +275,7 @@ final class CompanionService {
   }
 
   func listAgentMessages(sessionID: String, cursor: String?) async throws -> String {
-    let response = try await request(capability: "agentRead", body: ["type": "agentMessagesList", "data": ["sessionId": sessionID, "page": ["cursor": optionalJSON(cursor), "limit": 100]]])
+    let response = try await request(capability: "agentRead", body: ["type": "agentMessagesList", "data": ["storedSessionId": sessionID, "page": ["cursor": optionalJSON(cursor), "limit": 100]]])
     return try jsonString(resultData(response) ?? [:])
   }
 
@@ -284,16 +283,16 @@ final class CompanionService {
     guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw CompanionNativeError.invalidData("Enter a message first.")
     }
-    let response = try await request(capability: "agentChat", body: ["type": "agentSend", "data": ["sessionId": optionalJSON(sessionID), "message": message]])
-    return try jsonString(resultData(response) ?? ["sessionId": sessionID ?? ""])
+    let response = try await request(capability: "agentChat", body: ["type": "agentSend", "data": ["storedSessionId": optionalJSON(sessionID), "message": message]], mutation: true)
+    return try jsonString(resultData(response) ?? ["storedSessionId": sessionID ?? ""])
   }
 
   func cancelAgent(sessionID: String) async throws {
-    _ = try await request(capability: "agentCancel", body: ["type": "agentCancel", "data": ["sessionId": sessionID]])
+    _ = try await request(capability: "agentCancel", body: ["type": "agentCancel", "data": ["storedSessionId": sessionID]], mutation: true)
   }
 
   func setSafeSettings(style: String, imageSafeMode: Bool) async throws -> String {
-    let response = try await request(capability: "settingsEditSafe", body: ["type": "settingsEditSafe", "data": ["dictationStyle": style, "imageSafeMode": imageSafeMode]])
+    let response = try await request(capability: "settingsEditSafe", body: ["type": "settingsEditSafe", "data": ["dictationStyle": style, "imageSafeMode": imageSafeMode]], mutation: true)
     return try jsonString(resultData(response) ?? [:])
   }
 
@@ -305,14 +304,14 @@ final class CompanionService {
     case "stop": type = "recordingStop"
     default: throw CompanionNativeError.invalidData("That recording control is not allowed.")
     }
-    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["sessionId": sessionID]])
+    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["sessionId": sessionID]], mutation: true)
   }
 
   func focusDesktop(targetJSON: String) async throws {
     guard let data = targetJSON.data(using: .utf8), let target = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       throw CompanionNativeError.invalidData("The focus target is invalid.")
     }
-    _ = try await request(capability: "appFocus", body: ["type": "appFocus", "data": ["target": target]])
+    _ = try await request(capability: "appFocus", body: ["type": "appFocus", "data": ["target": target]], mutation: true)
   }
 
   func revokeThisDevice() async throws {
@@ -325,7 +324,7 @@ final class CompanionService {
     )
     // Mirror revocation in Desktop's local list, then require the
     // authoritative relay revocation to succeed before deleting local keys.
-    _ = try? await request(capability: "devicesRevokeSelf", body: ["type": "deviceRevokeSelf"])
+    _ = try? await request(capability: "devicesRevokeSelf", body: ["type": "deviceRevokeSelf"], mutation: true)
     try await pairingAPI.revoke(
       relayURL: linked.relayURL,
       deviceID: identity.deviceID,
@@ -383,6 +382,7 @@ final class CompanionService {
   private func ensureConnected(allowLocked: Bool = false) async throws {
     guard unlocked || allowLocked else { snapshot.connection = linked == nil ? "unpaired" : "locked"; throw CompanionNativeError.unavailable("Unlock June Companion first.") }
     guard let linked else { snapshot.connection = "unpaired"; throw CompanionNativeError.unavailable("Link this device from June on your Mac.") }
+    if transport.isConnected(to: linked.desktopDeviceID) { return }
     let credential = try deviceCredential()
     let identity = try DeviceIdentityService.shared.identity()
     let crypto = try CompanionCryptoSession(linkedInitiator: true, localPrivate: identity.privateKey, remotePublic: linked.desktopPublicKey)
@@ -403,22 +403,97 @@ final class CompanionService {
     )
   }
 
-  private func request(capability: String, body: [String: Any]) async throws -> [String: Any] {
-    do {
-      let data = try await transport.request(capability: capability, body: body)
+  private func request(
+    capability: String,
+    body: [String: Any],
+    mutation: Bool = false
+  ) async throws -> [String: Any] {
+    let mutationKey = mutation
+      ? try MutationOperationIdentity.digest(capability: capability, body: body)
+      : nil
+    let operationID: UUID
+    if let mutationKey {
+      operationID = self.operationID(for: mutationKey)
+    } else {
+      operationID = UUID()
+    }
+    for attempt in 0..<2 {
+      let data: Data
+      do {
+        data = try await transport.request(
+          operationID: operationID,
+          capability: capability,
+          body: body
+        )
+      } catch {
+        if attempt == 0, !(error is CancellationError) {
+          transport.disconnect()
+          do {
+            try await ensureConnected()
+            continue
+          } catch {
+            // Report the reconnect failure below while retaining the mutation
+            // operation id for a later user or lifecycle retry.
+          }
+        }
+        snapshot.connection = "offline"
+        emitSnapshot()
+        throw error
+      }
       guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         throw CompanionNativeError.invalidData("The Mac response was invalid.")
       }
       if resultType(object) == "error" {
-        let message = resultData(object)?["message"] as? String
+        let failure = resultData(object)
+        let retryable = failure?["retryable"] as? Bool == true
+        if MutationOperationIdentity.shouldResolve(
+          resultType: "error",
+          retryable: retryable
+        ), let mutationKey {
+          resolveMutation(mutationKey)
+        }
+        let message = failure?["message"] as? String
           ?? "The Mac rejected the companion request."
         throw CompanionNativeError.unavailable(message)
       }
+      if let mutationKey { resolveMutation(mutationKey) }
       return object
-    } catch {
-      snapshot.connection = "offline"
-      emitSnapshot()
-      throw error
+    }
+    throw CompanionNativeError.unavailable("Your Mac is offline.")
+  }
+
+  private func operationID(for mutationKey: String) -> UUID {
+    prunePendingMutations()
+    let operationID = MutationOperationIdentity.operationID(
+      for: mutationKey,
+      pending: &pendingMutations
+    )
+    persistPendingMutations()
+    return operationID
+  }
+
+  private func resolveMutation(_ mutationKey: String) {
+    pendingMutations.removeValue(forKey: mutationKey)
+    persistPendingMutations()
+  }
+
+  private func prunePendingMutations() {
+    let cutoff = Date().addingTimeInterval(-7 * 24 * 60 * 60)
+    pendingMutations = pendingMutations.filter { $0.value.createdAt >= cutoff }
+    persistPendingMutations()
+  }
+
+  private func persistPendingMutations() {
+    guard !pendingMutations.isEmpty else {
+      SecureStore.shared.delete(account: pendingMutationsAccount)
+      return
+    }
+    if let encoded = try? JSONEncoder().encode(pendingMutations) {
+      try? SecureStore.shared.save(
+        encoded,
+        account: pendingMutationsAccount,
+        accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
     }
   }
 
@@ -448,6 +523,8 @@ final class CompanionService {
     SecureStore.shared.delete(account: "device.credential")
     SecureStore.shared.delete(account: "cache.key")
     SecureStore.shared.delete(account: pendingRevocationAccount)
+    SecureStore.shared.delete(account: pendingMutationsAccount)
+    pendingMutations.removeAll()
     DeviceIdentityService.shared.delete()
     if let url = try? cacheURL() {
       try? FileManager.default.removeItem(at: url)
@@ -685,7 +762,7 @@ final class CompanionService {
   }
 }
 
-private extension Data {
+extension Data {
   init?(base64URL value: String) {
     var value = value.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
     value += String(repeating: "=", count: (4 - value.count % 4) % 4)

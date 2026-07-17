@@ -42,6 +42,27 @@ struct RelayConnectionGuard<'a> {
     runtime: &'a CompanionRuntime,
 }
 
+struct InflightOperationGuard {
+    app: AppHandle,
+    operation_id: Uuid,
+}
+
+impl Drop for InflightOperationGuard {
+    fn drop(&mut self) {
+        let waiters = self
+            .app
+            .state::<CompanionRuntime>()
+            .inflight_operations
+            .lock()
+            .ok()
+            .and_then(|mut operations| operations.remove(&self.operation_id))
+            .unwrap_or_default();
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
+    }
+}
+
 impl Drop for RelayConnectionGuard<'_> {
     fn drop(&mut self) {
         self.runtime.relay_connected.store(false, Ordering::Release);
@@ -77,9 +98,20 @@ pub(super) fn start(app: &AppHandle) {
 async fn reconnect_loop(app: AppHandle) {
     let mut attempt = 0_u32;
     loop {
-        let has_active_device = match repositories(&app).await {
-            Ok(repos) => repos
-                .list_companion_devices()
+        if !app
+            .state::<CompanionRuntime>()
+            .account_transport_enabled
+            .load(Ordering::Acquire)
+        {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        let has_active_device = match (
+            repositories(&app).await,
+            crate::os_accounts::current_user_id().await,
+        ) {
+            (Ok(repos), Ok(account_user_id)) => repos
+                .list_companion_devices(&account_user_id)
                 .await
                 .map(|devices| {
                     devices
@@ -87,7 +119,7 @@ async fn reconnect_loop(app: AppHandle) {
                         .any(|device| device.revoked_at.is_none())
                 })
                 .unwrap_or(false),
-            Err(_) => false,
+            _ => false,
         };
         if !has_active_device && !has_pending_pairing(&app.state::<CompanionRuntime>()) {
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -110,7 +142,8 @@ async fn reconnect_loop(app: AppHandle) {
 }
 
 async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
-    let identity = load_or_create_identity()?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
+    let identity = load_or_create_identity(&account_user_id)?;
     let token = crate::os_accounts::access_token().await?;
     let separator = if relay_websocket_url().contains('?') {
         '&'
@@ -177,8 +210,8 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
             event = event_receiver.recv() => {
                 let Some(event) = event else { return Ok(()); };
                 match event {
-                    Event::AgentDelta { session_id, text } => {
-                        let pending = pending_deltas.entry(session_id.clone()).or_default();
+                    Event::AgentDelta { stored_session_id, text } => {
+                        let pending = pending_deltas.entry(stored_session_id.clone()).or_default();
                         if pending.len().saturating_add(text.len()) > june_companion_protocol::MAX_TEXT_BYTES {
                             let ready = std::mem::take(pending);
                             if !ready.is_empty() {
@@ -188,7 +221,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                                     &mut socket,
                                     &mut peers,
                                     &mut outbound_sequence,
-                                    Event::AgentDelta { session_id: session_id.clone(), text: ready },
+                                    Event::AgentDelta { stored_session_id: stored_session_id.clone(), text: ready },
                                 ).await?;
                             }
                         }
@@ -205,7 +238,10 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                 }
             }
             _ = delta_tick.tick() => {
-                for (session_id, text) in pending_deltas.drain() {
+                if !runtime.account_transport_enabled.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                for (stored_session_id, text) in pending_deltas.drain() {
                     if text.is_empty() { continue; }
                     publish_event(
                         &repos,
@@ -213,10 +249,11 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                         &mut socket,
                         &mut peers,
                         &mut outbound_sequence,
-                        Event::AgentDelta { session_id, text },
+                        Event::AgentDelta { stored_session_id, text },
                     ).await?;
                 }
             }
+            _ = runtime.account_session_changed.notified() => return Ok(()),
         }
     }
 }
@@ -233,7 +270,7 @@ async fn publish_event(
     let peer_ids: Vec<Uuid> = peers.keys().copied().collect();
     for peer_id in peer_ids {
         let active = repos
-            .companion_device(&peer_id.to_string())
+            .companion_device(&identity.account_user_id, &peer_id.to_string())
             .await?
             .is_some_and(|device| device.revoked_at.is_none());
         if !active {
@@ -294,7 +331,7 @@ async fn receive_envelope(
 
     if let std::collections::hash_map::Entry::Vacant(entry) = peers.entry(peer_id) {
         let device = repos
-            .companion_device(&peer_id.to_string())
+            .companion_device(&identity.account_user_id, &peer_id.to_string())
             .await?
             .filter(|device| device.revoked_at.is_none())
             .ok_or_else(|| transport_error("The linked device is unavailable."))?;
@@ -328,7 +365,7 @@ async fn receive_envelope(
             pairing_id: pairing.map(|(pairing_id, _)| pairing_id),
         };
         if peer.crypto.is_transport_ready() {
-            authenticate_peer(app, repos, peer_id, &mut peer).await?;
+            authenticate_peer(app, repos, &identity.account_user_id, peer_id, &mut peer).await?;
         }
         entry.insert(peer);
         return Ok(());
@@ -337,17 +374,57 @@ async fn receive_envelope(
     let peer = peers
         .get_mut(&peer_id)
         .ok_or_else(|| transport_error("The linked device session disappeared."))?;
-    let plaintext = peer
-        .crypto
-        .read(&envelope.ciphertext)
-        .map_err(|_| transport_error("The encrypted companion frame was rejected."))?;
-    if !peer.crypto.is_transport_ready() {
+    let was_transport_ready = peer.crypto.is_transport_ready();
+    let plaintext = match peer.crypto.read(&envelope.ciphertext) {
+        Ok(plaintext) => plaintext,
+        Err(_) if was_transport_ready => {
+            // A mobile reconnect starts a fresh Noise handshake while the
+            // desktop relay socket can stay open. Retire the stale peer
+            // transport only when the same ciphertext authenticates as a new
+            // pairing or linked-device handshake.
+            let runtime = app.state::<CompanionRuntime>();
+            let pairing = pairing_for_mobile(&runtime, peer_id)?;
+            let mut replacement = if let Some((_, secret)) = pairing {
+                Session::pairing(false, &identity.private_key()?, &secret)
+            } else {
+                Session::linked(false, &identity.private_key()?, &peer.expected_public_key)
+            }
+            .map_err(|_| transport_error("The secure companion session could not restart."))?;
+            let handshake_payload = replacement
+                .read(&envelope.ciphertext)
+                .map_err(|_| transport_error("The encrypted companion frame was rejected."))?;
+            if !handshake_payload.is_empty() {
+                return Err(transport_error(
+                    "The linked device handshake carried unexpected data.",
+                ));
+            }
+            let response = replacement
+                .write(&[])
+                .map_err(|_| transport_error("The linked device handshake was rejected."))?;
+            send_envelope(socket, identity.device_id, peer_id, response).await?;
+            peer.crypto = replacement;
+            peer.pairing_id = pairing.map(|(pairing_id, _)| pairing_id);
+            if peer.crypto.is_transport_ready() {
+                authenticate_peer(app, repos, &identity.account_user_id, peer_id, peer).await?;
+            }
+            return Ok(());
+        }
+        Err(_) => {
+            return Err(transport_error("The linked device handshake was rejected."));
+        }
+    };
+    if !was_transport_ready {
         if !plaintext.is_empty() {
             return Err(transport_error(
                 "The linked device handshake carried unexpected data.",
             ));
         }
-        authenticate_peer(app, repos, peer_id, peer).await?;
+        if !peer.crypto.is_transport_ready() {
+            return Err(transport_error(
+                "The linked device handshake did not finish.",
+            ));
+        }
+        authenticate_peer(app, repos, &identity.account_user_id, peer_id, peer).await?;
         return Ok(());
     }
 
@@ -355,7 +432,8 @@ async fn receive_envelope(
         .map_err(|_| transport_error("The encrypted companion request is invalid."))?;
     let operation_id = frame.operation_id;
     let capability = frame.capability;
-    let result = dispatch_request(app, repos, peer_id, frame).await;
+    let _operation_guard = reserve_operation(app, operation_id).await?;
+    let result = dispatch_request(app, repos, &identity.account_user_id, peer_id, frame).await;
     let response = match result {
         Ok(response) => response,
         Err(error) => Response {
@@ -363,6 +441,17 @@ async fn receive_envelope(
             result: ResultPayload::Error(protocol_failure(&error)),
         },
     };
+    if should_cache_response(&response) {
+        repos
+            .remember_companion_operation(
+                &identity.account_user_id,
+                &peer_id.to_string(),
+                &operation_id.to_string(),
+                &serde_json::to_vec(&response)
+                    .map_err(|_| transport_error("The companion response could not be saved."))?,
+            )
+            .await?;
+    }
     *outbound_sequence = outbound_sequence.saturating_add(1);
     let response_frame = Frame::new(
         operation_id,
@@ -397,9 +486,43 @@ async fn receive_envelope(
     send_envelope(socket, identity.device_id, peer_id, encrypted).await
 }
 
+async fn reserve_operation(
+    app: &AppHandle,
+    operation_id: Uuid,
+) -> Result<InflightOperationGuard, AppError> {
+    loop {
+        let receiver = {
+            let runtime = app.state::<CompanionRuntime>();
+            let mut operations = runtime
+                .inflight_operations
+                .lock()
+                .map_err(|_| transport_error("The companion operation lock failed."))?;
+            if let std::collections::hash_map::Entry::Occupied(mut entry) =
+                operations.entry(operation_id)
+            {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                entry.get_mut().push(sender);
+                Some(receiver)
+            } else {
+                operations.insert(operation_id, Vec::new());
+                None
+            }
+        };
+        if let Some(receiver) = receiver {
+            let _ = receiver.await;
+        } else {
+            return Ok(InflightOperationGuard {
+                app: app.clone(),
+                operation_id,
+            });
+        }
+    }
+}
+
 async fn authenticate_peer(
     app: &AppHandle,
     repos: &Repositories,
+    account_user_id: &str,
     peer_id: Uuid,
     peer: &mut PeerSession,
 ) -> Result<(), AppError> {
@@ -409,7 +532,9 @@ async fn authenticate_peer(
     app.state::<CompanionRuntime>()
         .controller
         .reset_sequence(&peer_id.to_string());
-    repos.touch_companion_device(&peer_id.to_string()).await?;
+    repos
+        .touch_companion_device(account_user_id, &peer_id.to_string())
+        .await?;
     if let Some(pairing_id) = peer.pairing_id.take() {
         finish_pairing(&app.state::<CompanionRuntime>(), pairing_id);
     }
@@ -419,6 +544,7 @@ async fn authenticate_peer(
 async fn dispatch_request(
     app: &AppHandle,
     repos: &Repositories,
+    account_user_id: &str,
     peer_id: Uuid,
     frame: Frame,
 ) -> Result<Response, AppError> {
@@ -427,7 +553,14 @@ async fn dispatch_request(
     match app
         .state::<CompanionRuntime>()
         .controller
-        .dispatch(app, repos, &peer_id.to_string(), frame, current_time_ms())
+        .dispatch(
+            app,
+            repos,
+            account_user_id,
+            &peer_id.to_string(),
+            frame,
+            current_time_ms(),
+        )
         .await?
     {
         super::ControllerOutcome::Immediate(response) => Ok(response),
@@ -477,6 +610,7 @@ async fn dispatch_request(
             let response = frontend_response(capability, result);
             repos
                 .remember_companion_operation(
+                    account_user_id,
                     &peer_id.to_string(),
                     &operation_id.to_string(),
                     &serde_json::to_vec(&response).map_err(|_| {
@@ -550,6 +684,93 @@ fn protocol_failure(error: &AppError) -> ProtocolFailure {
     }
 }
 
+fn should_cache_response(response: &Response) -> bool {
+    !matches!(
+        &response.result,
+        ResultPayload::Error(ProtocolFailure {
+            retryable: true,
+            ..
+        })
+    )
+}
+
 fn transport_error(message: &str) -> AppError {
     AppError::new("companion_transport_unavailable", message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use june_companion_crypto::{generate_identity, KEY_BYTES};
+    use june_companion_protocol::Capability;
+
+    #[test]
+    fn final_pairing_handshake_read_is_not_an_application_frame() {
+        let mobile = generate_identity().unwrap();
+        let desktop = generate_identity().unwrap();
+        let secret = [7_u8; KEY_BYTES];
+        let mut initiator = Session::pairing(true, &mobile.private, &secret).unwrap();
+        let mut responder = Session::pairing(false, &desktop.private, &secret).unwrap();
+
+        let first = initiator.write(&[]).unwrap();
+        assert_eq!(responder.read(&first).unwrap(), b"");
+        let second = responder.write(&[]).unwrap();
+        assert_eq!(initiator.read(&second).unwrap(), b"");
+        let third = initiator.write(&[]).unwrap();
+
+        let was_transport_ready = responder.is_transport_ready();
+        let plaintext = responder.read(&third).unwrap();
+        assert!(!was_transport_ready);
+        assert!(responder.is_transport_ready());
+        assert!(plaintext.is_empty());
+    }
+
+    #[test]
+    fn fresh_linked_handshake_replaces_stale_transport_keys() {
+        let mobile = generate_identity().unwrap();
+        let desktop = generate_identity().unwrap();
+        let secret = [7_u8; KEY_BYTES];
+        let mut old_mobile = Session::pairing(true, &mobile.private, &secret).unwrap();
+        let mut old_desktop = Session::pairing(false, &desktop.private, &secret).unwrap();
+        let first = old_mobile.write(&[]).unwrap();
+        old_desktop.read(&first).unwrap();
+        let second = old_desktop.write(&[]).unwrap();
+        old_mobile.read(&second).unwrap();
+        let third = old_mobile.write(&[]).unwrap();
+        old_desktop.read(&third).unwrap();
+
+        let mut new_mobile = Session::linked(true, &mobile.private, &desktop.public).unwrap();
+        let reconnect_first = new_mobile.write(&[]).unwrap();
+        assert!(old_desktop.read(&reconnect_first).is_err());
+
+        let mut new_desktop = Session::linked(false, &desktop.private, &mobile.public).unwrap();
+        assert_eq!(new_desktop.read(&reconnect_first).unwrap(), b"");
+        let reconnect_second = new_desktop.write(&[]).unwrap();
+        assert_eq!(new_mobile.read(&reconnect_second).unwrap(), b"");
+        assert!(new_desktop.is_transport_ready());
+        assert!(new_mobile.is_transport_ready());
+    }
+
+    #[test]
+    fn retryable_failures_are_not_cached_as_final_operation_results() {
+        let response = Response {
+            capability: Capability::AgentChat,
+            result: ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::MacOffline,
+                message: "Open June on your Mac and try again.".to_string(),
+                retryable: true,
+            }),
+        };
+        assert!(!should_cache_response(&response));
+
+        let response = Response {
+            capability: Capability::AgentChat,
+            result: ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::InvalidRequest,
+                message: "That request is invalid.".to_string(),
+                retryable: false,
+            }),
+        };
+        assert!(should_cache_response(&response));
+    }
 }

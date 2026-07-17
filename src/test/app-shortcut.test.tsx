@@ -537,7 +537,11 @@ describe("App shortcuts", () => {
         operationId: cursor ? "operation-older" : "operation-latest",
         intent: {
           type: "agentMessagesList",
-          data: { sessionId: "session-companion", limit: 2, ...(cursor ? { cursor } : {}) },
+          data: {
+            storedSessionId: "session-companion",
+            limit: 2,
+            ...(cursor ? { cursor } : {}),
+          },
         },
       };
       act(() => {
@@ -570,6 +574,34 @@ describe("App shortcuts", () => {
         },
       }),
     );
+  });
+
+  it("opens the stored agent session requested by the companion", async () => {
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        last_active: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-focus")).toBe(
+        true,
+      ),
+    );
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-focus") {
+          handler({ payload: { agent: { storedSessionId: "session-companion" } } });
+        }
+      }
+    });
+
+    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
   });
 
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {

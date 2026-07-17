@@ -633,10 +633,12 @@ pub async fn os_accounts_status_local() -> Result<AccountStatus, AppError> {
 
 #[tauri::command]
 pub async fn os_accounts_login(
+    app: tauri::AppHandle,
     flow: tauri::State<'_, LoginFlow>,
 ) -> Result<AccountStatus, AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
+        crate::companion::resume_account_transport(&app);
         return Ok(local_dev_account_status());
     }
     let cfg = Config::load();
@@ -677,6 +679,7 @@ pub async fn os_accounts_login(
     let code = await_authorization_code(&cfg, &flow, &login_url, &csrf).await?;
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
     store_tokens(&StoredAccount::new(pair, None)).await?;
+    crate::companion::resume_account_transport(&app);
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     // Warm the cache from first sign-in so the next launch fast-path paints the
     // real identity instead of fallbacks.
@@ -713,11 +716,15 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn os_accounts_logout(request: Option<AccountsLogoutRequest>) -> Result<(), AppError> {
+pub async fn os_accounts_logout(
+    app: tauri::AppHandle,
+    request: Option<AccountsLogoutRequest>,
+) -> Result<(), AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
         return Ok(());
     }
+    crate::companion::prepare_account_logout(&app).await;
     let cfg = Config::load();
     if let Some(pair) = load_tokens().await {
         let _ = http_client()
@@ -1504,6 +1511,18 @@ pub async fn access_token() -> Result<String, AppError> {
     }
     set_cached_signed_in(true);
     Ok(pair.access_token.clone())
+}
+
+pub(crate) async fn current_user_id() -> Result<String, AppError> {
+    if local_dev_enabled() {
+        return Ok(local_dev_user_id());
+    }
+    access_token_subject(&access_token().await?).ok_or_else(|| {
+        AppError::new(
+            "os_accounts_identity_invalid",
+            "The OS Accounts session has no user identity.",
+        )
+    })
 }
 
 const ACCESS_TOKEN_REFRESH_SKEW_SECS: i64 = 30;

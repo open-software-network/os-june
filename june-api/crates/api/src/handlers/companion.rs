@@ -311,45 +311,16 @@ pub(crate) async fn propose_pairing(
         &request.device_credential_hash,
         "invalid_device_credential_hash",
     )?;
-    let response = state.companion().propose_pairing(
+    let response = state.companion().propose_pairing(PairingProposal {
         pairing_id,
-        DeviceRegistration {
+        mobile: DeviceRegistration {
             device_id: request.mobile_device_id,
             public_key,
             display_name: request.display_name,
             credential_hash: Some(credential_hash),
         },
-        &pairing_proof,
-    )?;
-    Ok(Json(ApiResponse::ok(response)))
-}
-
-pub(crate) async fn propose_pairing_authenticated(
-    State(state): State<ApiState>,
-    headers: HeaderMap,
-    Path(pairing_id): Path<Uuid>,
-    Json(request): Json<ProposePairingRequest>,
-) -> Result<Json<ApiResponse<PairingResponse>>, ApiError> {
-    let user_id = companion_user(&state, &headers).await?;
-    let public_key = validate_device(&request.mobile_public_key, &request.display_name)?;
-    let pairing_proof = validate_secret(&request.pairing_proof, "invalid_pairing_proof")?;
-    let credential_hash = validate_secret(
-        &request.device_credential_hash,
-        "invalid_device_credential_hash",
-    )?;
-    let response = state.companion().propose_pairing_for_user(
-        &user_id,
-        PairingProposal {
-            pairing_id,
-            mobile: DeviceRegistration {
-                device_id: request.mobile_device_id,
-                public_key,
-                display_name: request.display_name,
-                credential_hash: Some(credential_hash),
-            },
-            proof: pairing_proof,
-        },
-    )?;
+        proof: pairing_proof,
+    })?;
     Ok(Json(ApiResponse::ok(response)))
 }
 
@@ -663,35 +634,7 @@ impl CompanionRelay {
         })
     }
 
-    fn propose_pairing(
-        &self,
-        pairing_id: Uuid,
-        mobile: DeviceRegistration,
-        proof: &[u8; SECRET_BYTES],
-    ) -> Result<PairingResponse, ApiError> {
-        self.propose_pairing_with_user(
-            None,
-            PairingProposal {
-                pairing_id,
-                mobile,
-                proof: *proof,
-            },
-        )
-    }
-
-    fn propose_pairing_for_user(
-        &self,
-        user_id: &UserId,
-        proposal: PairingProposal,
-    ) -> Result<PairingResponse, ApiError> {
-        self.propose_pairing_with_user(Some(user_id), proposal)
-    }
-
-    fn propose_pairing_with_user(
-        &self,
-        expected_user_id: Option<&UserId>,
-        proposal: PairingProposal,
-    ) -> Result<PairingResponse, ApiError> {
+    fn propose_pairing(&self, proposal: PairingProposal) -> Result<PairingResponse, ApiError> {
         let PairingProposal {
             pairing_id,
             mobile,
@@ -721,12 +664,7 @@ impl CompanionRelay {
             {
                 return Err(ApiError::bad_request("pairing_already_claimed"));
             }
-            let user_id = pairing.user_id.clone();
-            if expected_user_id.is_some_and(|expected| expected != &user_id) {
-                // Do not reveal whether the pairing exists for another account.
-                return Err(ApiError::not_found("pairing_not_found"));
-            }
-            user_id
+            pairing.user_id.clone()
         };
         if state.pairings.iter().any(|(candidate_id, pairing)| {
             *candidate_id != pairing_id && pairing.mobile_device_id == Some(mobile_device_id)
@@ -740,6 +678,20 @@ impl CompanionRelay {
             .ok_or_else(|| ApiError::not_found("pairing_not_found"))?
             .mobile_device_id = Some(mobile_device_id);
         pairing_response(&state, pairing_id).ok_or_else(|| ApiError::not_found("pairing_not_found"))
+    }
+
+    #[cfg(test)]
+    fn propose_pairing_for_test(
+        &self,
+        pairing_id: Uuid,
+        mobile: DeviceRegistration,
+        proof: &[u8; SECRET_BYTES],
+    ) -> Result<PairingResponse, ApiError> {
+        self.propose_pairing(PairingProposal {
+            pairing_id,
+            mobile,
+            proof: *proof,
+        })
     }
 
     fn mobile_pairing_status(
@@ -1508,7 +1460,7 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
@@ -1531,7 +1483,7 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
@@ -1543,7 +1495,7 @@ mod tests {
     }
 
     #[test]
-    fn authenticated_phone_must_match_the_desktop_account() {
+    fn pairing_proof_binds_the_phone_to_the_desktop_account() {
         let relay = CompanionRelay::default();
         let desktop = Uuid::new_v4();
         let mobile = Uuid::new_v4();
@@ -1552,29 +1504,19 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
 
-        assert!(
-            relay
-                .propose_pairing_for_user(
-                    &UserId("usr_someone_else".to_string()),
-                    PairingProposal {
-                        pairing_id: pairing.pairing_id,
-                        mobile: mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
-                        proof,
-                    },
-                )
-                .is_err()
-        );
-
         relay
-            .propose_pairing_for_user(
-                &user(),
-                PairingProposal {
-                    pairing_id: pairing.pairing_id,
-                    mobile: mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
-                    proof,
-                },
-            )
+            .propose_pairing(PairingProposal {
+                pairing_id: pairing.pairing_id,
+                mobile: mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
+                proof,
+            })
             .unwrap();
+
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.devices[&mobile].user_id, user());
     }
 
     #[tokio::test]
@@ -1590,7 +1532,7 @@ mod tests {
 
         assert!(
             relay
-                .propose_pairing(
+                .propose_pairing_for_test(
                     pairing.pairing_id,
                     mobile_device(mobile, [2; 32], "iPhone", credential),
                     &[4; SECRET_BYTES],
@@ -1598,7 +1540,7 @@ mod tests {
                 .is_err()
         );
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", credential),
                 &proof,
@@ -1779,7 +1721,7 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
@@ -1817,7 +1759,7 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
@@ -1861,7 +1803,7 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
@@ -1905,7 +1847,7 @@ mod tests {
             .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
             .unwrap();
         relay
-            .propose_pairing(
+            .propose_pairing_for_test(
                 pairing.pairing_id,
                 mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
                 &proof,
