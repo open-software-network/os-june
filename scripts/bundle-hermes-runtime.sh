@@ -131,7 +131,7 @@ run_self_test() {
     run_for_arch "$arch" "$selftest/hermes/bin/python3" \
       "$root/scripts/hermes-approval-patch-smoke.py" \
       "$selftest/hermes/hermes-agent" \
-      || die "self-test failed: $arch June Hermes approval protocol"
+      || die "self-test failed: $arch June Hermes compatibility protocol"
     HERMES_PLUGIN_ROOT="$selftest/hermes/hermes-agent/plugins" \
       run_for_arch "$arch" "$selftest/hermes/bin/python3" \
       -c "import os, sys; sys.path.insert(0, os.environ['HERMES_PLUGIN_ROOT']); from cron import jobs; assert '/hermes-agent/cron/jobs.py' in jobs.__file__.replace('\\\\', '/'), jobs.__file__" \
@@ -238,10 +238,15 @@ unpacked="$(find "$work" -maxdepth 1 -type d -name 'hermes-agent-*' | head -1)"
 [ -n "$unpacked" ] || die "tarball did not contain a hermes-agent directory"
 mkdir -p "$out"
 mv "$unpacked" "$out/hermes-agent"
+upstream_smoke="$work/hermes-agent-upstream-smoke"
+cp -R "$out/hermes-agent" "$upstream_smoke"
 
 # Apply June's sealed compatibility patch to the exact pinned sources. The
 # patcher verifies each upstream and post-patch file hash and fails on drift.
 /usr/bin/python3 "$root/src-tauri/src/hermes/apply_june_patches.py" "$out/hermes-agent"
+/usr/bin/python3 "$root/scripts/hermes-approval-patch-smoke.py" \
+  "$out/hermes-agent" --upstream-root "$upstream_smoke"
+rm -rf "$upstream_smoke"
 
 # Dev-only weight the runtime never imports. Conservative on purpose: web/ and
 # ui-tui/ stay (hermes resolves them relative to its project root), and they

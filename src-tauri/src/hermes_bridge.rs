@@ -24,6 +24,13 @@ use tokio::{
 
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
+#[cfg(target_os = "macos")]
+const HERMES_RUNTIME_OWNER_RECORD_PREFIX: &str = "hermes-runtime-owner-";
+#[cfg(target_os = "macos")]
+const HERMES_ORPHAN_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
+const HERMES_RUNTIME_LAUNCH_BARRIER_SCRIPT: &str =
+    "IFS= read -r _june_runtime_release || exit 1; exec \"$@\"";
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
 // Set to 1/true/yes to spawn Hermes without the macOS Seatbelt jail. An escape
 // hatch for debugging a runtime that won't boot under the profile — leaving the
@@ -34,8 +41,12 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v2";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
+    (
+        "agent/agent_init.py",
+        "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
+    ),
     (
         "tools/approval.py",
         "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
@@ -46,7 +57,23 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+        "988e462b640f0da4e47b8164b5ca433021ace080fccfe55322b5b284c7c944ac",
+    ),
+    (
+        "cron/scheduler.py",
+        "2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa",
+    ),
+    (
+        "model_tools.py",
+        "d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d",
+    ),
+    (
+        "utils.py",
+        "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
+    ),
+    (
+        "gateway/platforms/telegram.py",
+        "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =
@@ -428,9 +455,109 @@ const HERMES_CONFIG_FILE: &str = "config.yaml";
 /// target and the temp, and the temp is named with a random suffix
 /// (`.config_<random>.tmp`), so it must be granted via a prefix regex rather
 /// than a literal — exactly like `AGENT_CLI_STATE_FILE_PREFIXES` does for
-/// Claude Code's `.claude.json.<hash>` atomic writes. The prefix is relative to
-/// `$HERMES_HOME`; the trailing wildcard covers the random suffix.
+/// Claude Code's `.claude.json.<hash>` atomic writes. The profile joins this
+/// basename beside the resolved config target; its wildcard covers the random
+/// suffix without granting the target's whole directory.
 const HERMES_CONFIG_ATOMIC_TEMP_PREFIX: &str = ".config_";
+const HERMES_CONFIG_CORRUPT_BACKUP_PREFIX: &str = "config.yaml.corrupt-";
+const HERMES_CONFIG_WRITER_LOCK_FILE: &str = ".june-config.lock";
+
+/// Cross-process advisory lock shared with June's sealed Hermes
+/// `utils.atomic_yaml_write` patch. The Rust host and every pinned Hermes
+/// config writer take this lock around config.yaml replacement. The Hermes
+/// patch also reconciles Memory's deny from the file while holding this lock,
+/// so a stale snapshot cannot erase that policy. OS locks are released
+/// automatically if either process crashes.
+struct HermesConfigWriterLock {
+    file: fs::File,
+    #[cfg(target_os = "windows")]
+    overlapped: Box<windows::Win32::System::IO::OVERLAPPED>,
+}
+
+impl HermesConfigWriterLock {
+    fn acquire(config_path: &Path) -> Result<Self, AppError> {
+        let parent = config_path.parent().ok_or_else(|| {
+            AppError::new(
+                "hermes_bridge_config_failed",
+                "Hermes config path has no parent directory.",
+            )
+        })?;
+        fs::create_dir_all(parent)
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+        let lock_path = parent.join(HERMES_CONFIG_WRITER_LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(AppError::new(
+                    "hermes_bridge_config_failed",
+                    io::Error::last_os_error().to_string(),
+                ));
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows::Win32::{
+                Foundation::HANDLE,
+                Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK},
+                System::IO::OVERLAPPED,
+            };
+            // LockFileEx and Python's msvcrt.locking both allow a range beyond
+            // EOF. Keep the coordination file data-free: initializing a byte
+            // before taking the first lock would itself create a race.
+            let mut overlapped = Box::<OVERLAPPED>::default();
+            unsafe {
+                LockFileEx(
+                    HANDLE(file.as_raw_handle()),
+                    LOCKFILE_EXCLUSIVE_LOCK,
+                    None,
+                    1,
+                    0,
+                    overlapped.as_mut(),
+                )
+            }
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+            return Ok(Self { file, overlapped });
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        Ok(Self { file })
+    }
+}
+
+impl Drop for HermesConfigWriterLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::UnlockFileEx};
+            let _ = unsafe {
+                UnlockFileEx(
+                    HANDLE(self.file.as_raw_handle()),
+                    None,
+                    1,
+                    0,
+                    self.overlapped.as_mut(),
+                )
+            };
+        }
+    }
+}
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
@@ -468,11 +595,12 @@ pub struct HermesBridge {
     /// multi-process access). Starting one mode never disturbs the other.
     processes: Mutex<HashMap<bool, HermesProcess>>,
     /// Serializes the whole start sequence (config sync, runtime install,
-    /// spawn, readiness wait). Concurrent starts would otherwise write
-    /// `config.yaml` concurrently and could run two installers at once.
-    /// This must be an async mutex because it is held across awaits; the
-    /// `processes` mutex above is std::sync and must never be held across
-    /// an await.
+    /// spawn, readiness wait) and every June-mediated `config.yaml` writer:
+    /// direct policy edits plus mutating dashboard requests. Concurrent starts
+    /// would otherwise run two installers, while uncoordinated whole-file
+    /// config writes could erase each other. This must be an async mutex
+    /// because it is held across awaits; the `processes` mutex above is
+    /// std::sync and must never be held across an await.
     start_lock: tokio::sync::Mutex<()>,
     /// Monotonic id assigned to each spawned Hermes process so a start
     /// attempt only tears down the exact process it launched (and not a
@@ -497,8 +625,9 @@ pub struct HermesBridge {
     shutting_down: AtomicBool,
     /// Number of starts currently between spawning a runtime child and either
     /// registering it into `processes` or reaping it. `shutdown` waits for this
-    /// to reach zero before draining, so a child spawned but not-yet-registered
-    /// can never be orphaned by the drain-then-restart (JUN-338).
+    /// to reach zero for up to the bounded shutdown timeout before draining.
+    /// Ownership records recover the residual case where a spawn completes but
+    /// remains unregistered after that timeout (JUN-339).
     starts_in_progress: AtomicUsize,
 }
 
@@ -523,6 +652,59 @@ struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
+    /// Exact ownership record for this process group. It is removed only after
+    /// the group leader has been reaped, so every stop path cleans up its own
+    /// mode's record without touching the other runtime.
+    ownership_record: Option<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HermesRuntimeOwnershipRecord {
+    app_pid: u32,
+    app_start: String,
+    runtime_pid: u32,
+    runtime_start: String,
+    full_mode: bool,
+}
+
+#[cfg(target_os = "macos")]
+enum HermesStartTimeProbe {
+    Unknown,
+    Gone,
+    StartedAt(String),
+}
+
+#[cfg(target_os = "macos")]
+enum HermesProcessGroupProbe {
+    Unknown,
+    Gone,
+    Group(u32),
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HermesOwnerLiveness {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HermesRuntimeMatch {
+    MatchesRecord,
+    GoneOrReused,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HermesOwnershipAction {
+    Skip,
+    DeleteStale,
+    Reap,
+    Abort,
 }
 
 struct SharedProviderProxy {
@@ -944,6 +1126,7 @@ fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>
         .lock()
         .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
     let mut connections = Vec::new();
+    let mut exited_processes = Vec::new();
     for full_mode in [false, true] {
         let exited = match guard.get_mut(&full_mode) {
             None => continue,
@@ -959,10 +1142,19 @@ fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>
             },
         };
         if exited {
-            guard.remove(&full_mode);
+            if let Some(process) = guard.remove(&full_mode) {
+                exited_processes.push(process);
+            }
         } else if let Some(process) = guard.get(&full_mode) {
             connections.push(process.connection.clone());
         }
+    }
+    drop(guard);
+    for process in exited_processes {
+        // `try_wait` already reaped the leader, but a worker may still be
+        // alive in its process group. Use the normal group-aware teardown
+        // before removing this runtime's ownership record.
+        shutdown_hermes_process(Some(process));
     }
     Ok(connections)
 }
@@ -1006,6 +1198,16 @@ pub async fn start_hermes_bridge(
 pub fn start_on_app_start(app: &tauri::App) {
     let app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
+        // Recovery is an app-start responsibility, not a runtime-availability
+        // responsibility. A stale or missing managed install must not leave a
+        // previously recorded process group running indefinitely.
+        if let Err(error) = reap_orphaned_hermes_runtimes(&app).await {
+            eprintln!(
+                "failed to recover June agent runtimes during app startup: {}",
+                error.message
+            );
+            return;
+        }
         if !hermes_runtime_available_for_auto_start(&app) {
             return;
         }
@@ -1131,10 +1333,11 @@ async fn start_hermes_bridge_inner(
     let _start_guard = bridge.start_lock.lock().await;
 
     // Count this start as in-progress for the whole spawn->register window so a
-    // concurrent `shutdown` waits for it (below) before draining, and a child we
-    // spawn can never be orphaned by a drain-then-restart (JUN-338). Dropped
-    // explicitly once the child is registered or reaped, before the readiness
-    // wait, so teardown never blocks on the (up to 45s) readiness timeout.
+    // concurrent `shutdown` waits for it (below) before draining. Ownership
+    // records cover the residual case where this window exceeds the bounded
+    // shutdown wait (JUN-339). Dropped explicitly once the child is registered
+    // or reaped, before the readiness wait, so teardown never blocks on the (up
+    // to 45s) readiness timeout.
     let start_progress = StartInProgressGuard::new(&bridge.starts_in_progress);
 
     // Bail fast if the app is tearing down: no point building a runtime the
@@ -1160,6 +1363,12 @@ async fn start_hermes_bridge_inner(
     {
         return Ok(status_for(connections, Some(full_mode)));
     }
+
+    // Recover only process groups named by June's own ownership records. This
+    // runs before every replacement spawn (including app auto-start), so a
+    // runtime that outlived the bounded JUN-338 shutdown window self-heals on
+    // the next launch without a name-wide process sweep.
+    reap_orphaned_hermes_runtimes(app).await?;
 
     let port = pick_port()?;
     let token = random_token();
@@ -1276,6 +1485,31 @@ async fn start_hermes_bridge_inner(
         port_string.as_str(),
     ];
 
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        // Spawn a tiny blocked group leader first. The shell cannot execute
+        // the runtime until its ownership record is durable; if June exits in
+        // that window, pipe EOF makes the shell terminate instead of leaving
+        // an unrecorded runtime behind. `exec` preserves its pid and group.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(HERMES_RUNTIME_LAUNCH_BARRIER_SCRIPT)
+            .arg("june-agent-runtime");
+        match &sandbox_profile {
+            Some(profile_path) => {
+                cmd.arg(SANDBOX_EXEC_PATH)
+                    .arg("-f")
+                    .arg(profile_path)
+                    .arg(&command)
+                    .args(hermes_args);
+            }
+            None => {
+                cmd.arg(&command).args(hermes_args);
+            }
+        }
+        cmd
+    };
+    #[cfg(not(target_os = "macos"))]
     let mut cmd = match &sandbox_profile {
         Some(profile_path) => {
             let mut cmd = Command::new(SANDBOX_EXEC_PATH);
@@ -1291,9 +1525,11 @@ async fn start_hermes_bridge_inner(
             cmd
         }
     };
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    #[cfg(target_os = "macos")]
+    cmd.stdin(Stdio::piped());
+    #[cfg(not(target_os = "macos"))]
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
     apply_isolated_hermes_env(
         &mut cmd,
         &hermes_home,
@@ -1328,6 +1564,10 @@ async fn start_hermes_bridge_inner(
             format!("Could not start the June-managed Hermes runtime. {error}"),
         )
     })?;
+    // Persist ownership before any later operation can lose this Child handle.
+    // If identity probing or the atomic write fails, this helper reaps the new
+    // process group and returns the start error instead of leaving it untracked.
+    let ownership_record = record_spawned_hermes_runtime(app, &mut child, full_mode)?;
     let pid = child.id();
     let connection = HermesBridgeConnection {
         base_url: base_url.clone(),
@@ -1350,7 +1590,7 @@ async fn start_hermes_bridge_inner(
         let mut guard = match bridge.processes.lock() {
             Ok(guard) => guard,
             Err(_) => {
-                reap_unregistered_child(&mut child);
+                reap_unregistered_child(&mut child, ownership_record.as_deref());
                 return Err(AppError::new(
                     "hermes_bridge_unavailable",
                     "Hermes bridge lock failed.",
@@ -1364,7 +1604,7 @@ async fn start_hermes_bridge_inner(
         // of leaking it.
         if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(existing.child.try_wait(), Ok(None)) {
-                reap_unregistered_child(&mut child);
+                reap_unregistered_child(&mut child, ownership_record.as_deref());
                 drop(guard);
                 return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
@@ -1376,18 +1616,28 @@ async fn start_hermes_bridge_inner(
         // spawned instead of registering it.
         if bridge.shutting_down.load(Ordering::SeqCst) {
             drop(guard);
-            reap_unregistered_child(&mut child);
+            reap_unregistered_child(&mut child, ownership_record.as_deref());
             return Err(AppError::new(
                 "hermes_bridge_shutting_down",
                 "June is shutting down; Hermes runtime start skipped.",
             ));
         }
+        // The macOS child has remained blocked on a parent-owned pipe through
+        // the ownership write and every registration check. Release it only
+        // while holding the same lock shutdown uses to drain the map: teardown
+        // must now either observe the inserted process or have latched
+        // `shutting_down` above, in which case the child was never released.
+        // This also closes Tauri's relaunch handoff, where the replacement can
+        // begin while the exiting owner still probes alive.
+        #[cfg(target_os = "macos")]
+        release_recorded_hermes_runtime(&mut child, ownership_record.as_deref())?;
         guard.insert(
             full_mode,
             HermesProcess {
                 generation,
                 child,
                 connection: connection.clone(),
+                ownership_record,
             },
         );
     }
@@ -1646,7 +1896,20 @@ pub async fn connectors_apply_runtime(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
-    reapply_hermes_runtime(&app, &bridge).await
+    reapply_hermes_runtime(&app, &bridge)
+        .await
+        .map_err(runtime_apply_command_error)
+}
+
+fn runtime_apply_command_error(error: AppError) -> AppError {
+    tracing::warn!(
+        ?error,
+        "runtime apply command failed; returning June-owned user-facing copy",
+    );
+    AppError::new(
+        "runtime_apply_failed",
+        "June could not finish applying this change. Try again or restart June.",
+    )
 }
 
 /// Serializes `reapply_hermes_runtime` so two rapid settings toggles cannot
@@ -1657,6 +1920,24 @@ pub async fn connectors_apply_runtime(
 /// `config.yaml` from the persisted settings file, serializing also guarantees
 /// the last reapply to run reads the last-persisted value.
 static REAPPLY_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Apply June's native-memory toolset policy without requiring a live bridge
+/// connection. The launchd routine gateway can remain alive after both bridge
+/// modes stop, but it reloads config.yaml before every cron run, so this direct
+/// shared-config mutation closes the gateway-only window immediately.
+pub(crate) async fn apply_memory_runtime_policy(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+) -> Result<(), AppError> {
+    // Serialize against spawn-time config rendering and every June-mediated
+    // dashboard mutation. Read the authoritative setting only after acquiring
+    // the writer lock: a caller that persisted an older toggle can never apply
+    // its stale argument after a newer toggle has won.
+    let _start_guard = bridge.start_lock.lock().await;
+    let hermes_home = resolve_june_hermes_home(app)?;
+    let settings_path = crate::commands::memory_settings_path(app)?;
+    apply_persisted_memory_policy_file(&hermes_home.join(HERMES_CONFIG_FILE), &settings_path)
+}
 
 /// Re-render `config.yaml` for every live runtime and restart the routine
 /// gateway so a settings change that feeds the rendered config (connector MCP
@@ -2522,19 +2803,38 @@ fn write_managed_skill_file(
 
 #[cfg(windows)]
 pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
-    match fs::rename(temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            fs::remove_file(path)?;
-            fs::rename(temp_path, path)
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        REPLACEFILE_WRITE_THROUGH,
+    };
+
+    let temp_wide: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // ReplaceFileW keeps the destination's ACL and other security metadata.
+    // A missing destination has no metadata to preserve, so fall back to the
+    // replace-existing move used for first creation. Both are same-volume,
+    // write-through swaps with no visibility gap.
+    unsafe {
+        if path.exists() {
+            ReplaceFileW(
+                PCWSTR(path_wide.as_ptr()),
+                PCWSTR(temp_wide.as_ptr()),
+                PCWSTR::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                None,
+                None,
+            )
+        } else {
+            MoveFileExW(
+                PCWSTR(temp_wide.as_ptr()),
+                PCWSTR(path_wide.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
         }
-        Err(error) => Err(error),
     }
+    .map_err(|_| io::Error::last_os_error())
 }
 
 #[cfg(not(windows))]
@@ -3646,6 +3946,19 @@ async fn hermes_api_json(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
+    // Hermes dashboard mutations may rewrite the same config.yaml that June
+    // renders at spawn and edits for Memory. The app-side lock avoids overlap
+    // with other June requests while the pinned Hermes writer's file lock and
+    // stale-snapshot reconciliation preserve the current Memory deny across
+    // the separate dashboard process. One HTTP round-trip holds this guard for
+    // at most HERMES_API_REQUEST_TIMEOUT; FIFO wait can still include earlier
+    // queued mutations, so increasing that bound also increases Memory-toggle
+    // latency and must be reviewed as part of this serialization contract.
+    let _config_write_guard = if hermes_request_may_write(&method) {
+        Some(bridge.start_lock.lock().await)
+    } else {
+        None
+    };
     let connections = live_connections(bridge)?;
     let Some(connection) = connections.first() else {
         return Err(AppError::new(
@@ -3691,6 +4004,19 @@ pub async fn hermes_admin_request(
     let method = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
         .map_err(|_| AppError::new("hermes_admin_invalid_method", "Unsupported HTTP method."))?;
 
+    // Every foundation admin mutation reaches the separate dashboard process
+    // here. Avoid overlapping it with other June mutations; the pinned Hermes
+    // writer separately locks the file and reconciles the current Memory deny
+    // before replacing config.yaml. Each request holds this guard for at most
+    // HERMES_API_REQUEST_TIMEOUT, but FIFO wait can include earlier queued
+    // mutations; keep that aggregate delay in mind for settings operations
+    // that need the same lock.
+    let _config_write_guard = if hermes_request_may_write(&method) {
+        Some(bridge.start_lock.lock().await)
+    } else {
+        None
+    };
+
     let connections = live_connections(&bridge)?;
     let Some(connection) = connections
         .iter()
@@ -3702,6 +4028,10 @@ pub async fn hermes_admin_request(
         ));
     };
     hermes_connection_json(connection, method, &path, body).await
+}
+
+fn hermes_request_may_write(method: &reqwest::Method) -> bool {
+    !matches!(method.as_str(), "GET" | "HEAD")
 }
 
 /// How long June waits for the `hermes mcp login` CLI to finish before
@@ -5975,7 +6305,7 @@ async fn hermes_connection_json(
         // source-search timeout) so a slow but successful response — partial
         // results included — wins over a proxy-level timeout that would
         // otherwise surface as a misleading "could not reach Hermes" error.
-        .timeout(Duration::from_secs(45))
+        .timeout(HERMES_API_REQUEST_TIMEOUT)
         .build()
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
     let mut request = client
@@ -6006,6 +6336,11 @@ async fn hermes_connection_json(
     serde_json::from_str(&text)
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))
 }
+
+/// Total request budget for one Hermes dashboard round-trip. Mutating requests
+/// hold `HermesBridge::start_lock` for this interval to serialize whole-tree
+/// config writes with spawn and direct Memory-policy changes.
+const HERMES_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Stops every runtime process. The shared provider proxy stays up — it is
 /// process-independent and the next start reuses it; `shutdown()` is the
@@ -6042,8 +6377,8 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
     Ok(())
 }
 
-fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
-    if let Some(process) = process.as_mut() {
+fn shutdown_hermes_process(process: Option<HermesProcess>) {
+    if let Some(mut process) = process {
         // Sweep the runtime's process group first so any worker subprocess it
         // forked dies with it rather than detaching and outliving the app (the
         // child spawns into its own group; see the spawn site). Then kill and
@@ -6051,7 +6386,27 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
         #[cfg(unix)]
         kill_process_group(process.child.id());
         let _ = process.child.kill();
-        let _ = process.child.wait();
+        match process.child.wait() {
+            Ok(_) => {
+                if let Err(error) =
+                    remove_hermes_ownership_record(process.ownership_record.as_deref())
+                {
+                    tracing::warn!(
+                        %error,
+                        "Hermes runtime was reaped but its ownership record could not be removed"
+                    );
+                }
+            }
+            Err(error) => {
+                // Retain the record when the leader was not confirmed reaped;
+                // the next startup must make the fail-closed recovery decision.
+                tracing::warn!(
+                    %error,
+                    pid = process.child.id(),
+                    "Hermes runtime leader could not be reaped; retaining ownership record"
+                );
+            }
+        }
     }
 }
 
@@ -6060,11 +6415,499 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
 /// short-circuit, a teardown handshake) can drop the `Child` and detach it. The
 /// child spawns into its own process group, so this also reaps any worker it
 /// forked (JUN-338).
-fn reap_unregistered_child(child: &mut Child) {
+fn reap_unregistered_child(child: &mut Child, ownership_record: Option<&Path>) {
     #[cfg(unix)]
     kill_process_group(child.id());
     let _ = child.kill();
-    let _ = child.wait();
+    if child.wait().is_ok() {
+        if let Err(error) = remove_hermes_ownership_record(ownership_record) {
+            tracing::warn!(
+                %error,
+                "Unregistered Hermes runtime was reaped but its ownership record could not be removed"
+            );
+        }
+    }
+}
+
+fn remove_hermes_ownership_record(path: Option<&Path>) -> io::Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_ownership_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path().app_config_dir().map_err(|error| {
+        AppError::new(
+            "hermes_runtime_owner_unrecordable",
+            format!("Could not prepare June's agent runtime: {error}"),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_mode_slug(full_mode: bool) -> &'static str {
+    if full_mode {
+        "unrestricted"
+    } else {
+        "sandboxed"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_ownership_path(
+    directory: &Path,
+    record: &HermesRuntimeOwnershipRecord,
+) -> PathBuf {
+    directory.join(format!(
+        "{HERMES_RUNTIME_OWNER_RECORD_PREFIX}{}-{}-{}.json",
+        record.app_pid,
+        hermes_runtime_mode_slug(record.full_mode),
+        record.runtime_pid,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_hermes_start_time(pid: u32) -> HermesStartTimeProbe {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("lstart=")
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Err(_) => HermesStartTimeProbe::Unknown,
+        Ok(output) if !output.status.success() => {
+            if failed_hermes_ps_proves_pid_gone(&output) {
+                HermesStartTimeProbe::Gone
+            } else {
+                HermesStartTimeProbe::Unknown
+            }
+        }
+        Ok(output) => {
+            let started = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if started.is_empty() {
+                HermesStartTimeProbe::Gone
+            } else {
+                HermesStartTimeProbe::StartedAt(started)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_hermes_process_group(pid: u32) -> HermesProcessGroupProbe {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("pgid=")
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Err(_) => HermesProcessGroupProbe::Unknown,
+        Ok(output) if !output.status.success() => {
+            if failed_hermes_ps_proves_pid_gone(&output) {
+                HermesProcessGroupProbe::Gone
+            } else {
+                HermesProcessGroupProbe::Unknown
+            }
+        }
+        Ok(output) => {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                HermesProcessGroupProbe::Gone
+            } else {
+                match trimmed.parse::<u32>() {
+                    Ok(group) => HermesProcessGroupProbe::Group(group),
+                    Err(_) => HermesProcessGroupProbe::Unknown,
+                }
+            }
+        }
+    }
+}
+
+/// With this fixed, valid `ps` invocation macOS reports an absent pid as exit
+/// 1 with no output. Any diagnostic text, signal exit, or other status is an
+/// indeterminate probe and must fail closed instead of authorizing a kill.
+#[cfg(target_os = "macos")]
+fn failed_hermes_ps_proves_pid_gone(output: &std::process::Output) -> bool {
+    failed_hermes_ps_result_proves_pid_gone(output.status.code(), &output.stdout, &output.stderr)
+}
+
+#[cfg(target_os = "macos")]
+fn failed_hermes_ps_result_proves_pid_gone(
+    status_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> bool {
+    status_code == Some(1)
+        && stdout.iter().all(|byte| byte.is_ascii_whitespace())
+        && stderr.iter().all(|byte| byte.is_ascii_whitespace())
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_owner_liveness(
+    probe: &HermesStartTimeProbe,
+    recorded_start: &str,
+) -> HermesOwnerLiveness {
+    match probe {
+        HermesStartTimeProbe::Unknown => HermesOwnerLiveness::Unknown,
+        HermesStartTimeProbe::Gone => HermesOwnerLiveness::Dead,
+        HermesStartTimeProbe::StartedAt(started) if started == recorded_start => {
+            HermesOwnerLiveness::Alive
+        }
+        HermesStartTimeProbe::StartedAt(_) => HermesOwnerLiveness::Dead,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_match(
+    start_probe: &HermesStartTimeProbe,
+    recorded_start: &str,
+    group_probe: &HermesProcessGroupProbe,
+    recorded_pid: u32,
+) -> HermesRuntimeMatch {
+    match start_probe {
+        HermesStartTimeProbe::Unknown => HermesRuntimeMatch::Unknown,
+        HermesStartTimeProbe::Gone => HermesRuntimeMatch::GoneOrReused,
+        HermesStartTimeProbe::StartedAt(started) if started != recorded_start => {
+            HermesRuntimeMatch::GoneOrReused
+        }
+        HermesStartTimeProbe::StartedAt(_) => match group_probe {
+            HermesProcessGroupProbe::Unknown => HermesRuntimeMatch::Unknown,
+            // It exited between the start-time and process-group probes.
+            HermesProcessGroupProbe::Gone => HermesRuntimeMatch::GoneOrReused,
+            HermesProcessGroupProbe::Group(group) if *group == recorded_pid => {
+                HermesRuntimeMatch::MatchesRecord
+            }
+            // Exact recorded process but no longer the expected group leader.
+            // Never address its group by a stale assumption.
+            HermesProcessGroupProbe::Group(_) => HermesRuntimeMatch::Unknown,
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decide_hermes_ownership_action(
+    owner: HermesOwnerLiveness,
+    runtime: HermesRuntimeMatch,
+) -> HermesOwnershipAction {
+    match owner {
+        HermesOwnerLiveness::Alive => HermesOwnershipAction::Skip,
+        HermesOwnerLiveness::Unknown => HermesOwnershipAction::Abort,
+        HermesOwnerLiveness::Dead => match runtime {
+            HermesRuntimeMatch::MatchesRecord => HermesOwnershipAction::Reap,
+            HermesRuntimeMatch::GoneOrReused => HermesOwnershipAction::DeleteStale,
+            HermesRuntimeMatch::Unknown => HermesOwnershipAction::Abort,
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_hermes_runtime_ownership_record(
+    directory: &Path,
+    record: &HermesRuntimeOwnershipRecord,
+) -> Result<PathBuf, AppError> {
+    fs::create_dir_all(directory)
+        .map_err(|error| AppError::new("hermes_runtime_owner_unrecordable", error.to_string()))?;
+    let path = hermes_runtime_ownership_path(directory, record);
+    let temporary = directory.join(format!(
+        ".{HERMES_RUNTIME_OWNER_RECORD_PREFIX}{}-{}-{}.json.tmp",
+        record.app_pid,
+        hermes_runtime_mode_slug(record.full_mode),
+        record.runtime_pid,
+    ));
+    let serialized = serde_json::to_vec(record)
+        .map_err(|error| AppError::new("hermes_runtime_owner_unrecordable", error.to_string()))?;
+    let write = (|| -> io::Result<()> {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&serialized)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &path)
+    })();
+    if let Err(error) = write {
+        let _ = fs::remove_file(&temporary);
+        return Err(AppError::new(
+            "hermes_runtime_owner_unrecordable",
+            error.to_string(),
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+fn record_spawned_hermes_runtime_in_dir(
+    directory: &Path,
+    child: &mut Child,
+    full_mode: bool,
+) -> Result<PathBuf, AppError> {
+    let result = (|| {
+        let app_pid = std::process::id();
+        let HermesStartTimeProbe::StartedAt(app_start) = probe_hermes_start_time(app_pid) else {
+            return Err(AppError::new(
+                "hermes_runtime_owner_unrecordable",
+                "Could not read this app's process start time.",
+            ));
+        };
+        let runtime_pid = child.id();
+        let HermesStartTimeProbe::StartedAt(runtime_start) = probe_hermes_start_time(runtime_pid)
+        else {
+            return Err(AppError::new(
+                "hermes_runtime_owner_unrecordable",
+                "Could not verify the June agent runtime process.",
+            ));
+        };
+        if !matches!(
+            probe_hermes_process_group(runtime_pid),
+            HermesProcessGroupProbe::Group(group) if group == runtime_pid
+        ) {
+            return Err(AppError::new(
+                "hermes_runtime_owner_unrecordable",
+                "Could not verify the June agent runtime process.",
+            ));
+        }
+        write_hermes_runtime_ownership_record(
+            directory,
+            &HermesRuntimeOwnershipRecord {
+                app_pid,
+                app_start,
+                runtime_pid,
+                runtime_start,
+                full_mode,
+            },
+        )
+    })();
+    match result {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            reap_unregistered_child(child, None);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn record_spawned_hermes_runtime(
+    app: &AppHandle,
+    child: &mut Child,
+    full_mode: bool,
+) -> Result<Option<PathBuf>, AppError> {
+    let directory = match hermes_runtime_ownership_dir(app) {
+        Ok(directory) => directory,
+        Err(error) => {
+            reap_unregistered_child(child, None);
+            return Err(error);
+        }
+    };
+    record_spawned_hermes_runtime_in_dir(&directory, child, full_mode).map(Some)
+}
+
+#[cfg(target_os = "macos")]
+fn release_recorded_hermes_runtime(
+    child: &mut Child,
+    ownership_record: Option<&Path>,
+) -> Result<(), AppError> {
+    let release = (|| -> io::Result<()> {
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "June agent runtime launch barrier was unavailable",
+            )
+        })?;
+        stdin.write_all(b"start\n")?;
+        stdin.flush()
+    })();
+    if let Err(error) = release {
+        tracing::warn!(
+            %error,
+            pid = child.id(),
+            "Recorded Hermes runtime could not be released from its launch barrier"
+        );
+        reap_unregistered_child(child, ownership_record);
+        return Err(AppError::new(
+            "hermes_runtime_launch_failed",
+            "Could not start the June agent runtime.",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn record_spawned_hermes_runtime(
+    _app: &AppHandle,
+    _child: &mut Child,
+    _full_mode: bool,
+) -> Result<Option<PathBuf>, AppError> {
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+async fn reap_orphaned_hermes_runtimes(app: &AppHandle) -> Result<(), AppError> {
+    let directory = hermes_runtime_ownership_dir(app)
+        .map_err(|error| AppError::new("hermes_runtime_reap_failed", error.message))?;
+    tauri::async_runtime::spawn_blocking(move || reap_orphaned_hermes_runtimes_in_dir(&directory))
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify existing June agent runtimes: {error}"),
+            )
+        })?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn reap_orphaned_hermes_runtimes(_app: &AppHandle) -> Result<(), AppError> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn read_hermes_runtime_ownership_record(
+    path: &Path,
+) -> Result<Option<HermesRuntimeOwnershipRecord>, AppError> {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        // Normal shutdown can remove a record after `read_dir` yielded it.
+        // Its disappearance proves there is no longer a record to recover.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify an existing June agent runtime: {error}"),
+            ));
+        }
+    };
+    serde_json::from_slice(&raw).map(Some).map_err(|error| {
+        AppError::new(
+            "hermes_runtime_reap_failed",
+            format!("Could not verify an existing June agent runtime: {error}"),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn reap_orphaned_hermes_runtimes_in_dir(directory: &Path) -> Result<(), AppError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify existing June agent runtimes: {error}"),
+            ));
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify existing June agent runtimes: {error}"),
+            )
+        })?;
+        let path = entry.path();
+        let is_record = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(HERMES_RUNTIME_OWNER_RECORD_PREFIX) && name.ends_with(".json")
+            });
+        if !is_record {
+            continue;
+        }
+        let Some(record) = read_hermes_runtime_ownership_record(&path)? else {
+            continue;
+        };
+        if path.file_name() != hermes_runtime_ownership_path(directory, &record).file_name() {
+            return Err(AppError::new(
+                "hermes_runtime_reap_failed",
+                "Could not verify an existing June agent runtime.",
+            ));
+        }
+
+        let owner =
+            hermes_owner_liveness(&probe_hermes_start_time(record.app_pid), &record.app_start);
+        let action = if owner == HermesOwnerLiveness::Alive {
+            HermesOwnershipAction::Skip
+        } else {
+            let runtime = hermes_runtime_match(
+                &probe_hermes_start_time(record.runtime_pid),
+                &record.runtime_start,
+                &probe_hermes_process_group(record.runtime_pid),
+                record.runtime_pid,
+            );
+            decide_hermes_ownership_action(owner, runtime)
+        };
+        match action {
+            HermesOwnershipAction::Skip => {}
+            HermesOwnershipAction::DeleteStale => {
+                remove_hermes_ownership_record(Some(&path)).map_err(|error| {
+                    AppError::new("hermes_runtime_reap_failed", error.to_string())
+                })?;
+            }
+            HermesOwnershipAction::Reap => {
+                kill_process_group(record.runtime_pid);
+                if !wait_for_recorded_hermes_runtime_exit(
+                    record.runtime_pid,
+                    &record.runtime_start,
+                    HERMES_ORPHAN_EXIT_TIMEOUT,
+                )? {
+                    return Err(AppError::new(
+                        "hermes_runtime_orphan_stuck",
+                        "A previous June agent runtime could not be stopped.",
+                    ));
+                }
+                remove_hermes_ownership_record(Some(&path)).map_err(|error| {
+                    AppError::new("hermes_runtime_reap_failed", error.to_string())
+                })?;
+            }
+            HermesOwnershipAction::Abort => {
+                return Err(AppError::new(
+                    "hermes_runtime_reap_failed",
+                    "Could not verify an existing June agent runtime.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_recorded_hermes_runtime_exit(
+    pid: u32,
+    recorded_start: &str,
+    timeout: Duration,
+) -> Result<bool, AppError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match probe_hermes_start_time(pid) {
+            HermesStartTimeProbe::Unknown => {
+                return Err(AppError::new(
+                    "hermes_runtime_reap_failed",
+                    "Could not confirm a previous June agent runtime stopped.",
+                ));
+            }
+            HermesStartTimeProbe::Gone => return Ok(true),
+            HermesStartTimeProbe::StartedAt(started) if started != recorded_start => {
+                // The recorded leader is gone and the pid has already been
+                // reused. Never signal the replacement process.
+                return Ok(true);
+            }
+            HermesStartTimeProbe::StartedAt(_) => {}
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Best-effort SIGKILL to a whole process group, addressed by the leader's pid
@@ -6173,10 +7016,12 @@ fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
     let Ok(metadata) = fs::read_to_string(metadata_path) else {
         return Ok(false);
     };
-    Ok(
-        metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#))
-            && metadata.contains(&format!(r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#)),
-    )
+    Ok(hermes_runtime_metadata_is_current(&metadata))
+}
+
+fn hermes_runtime_metadata_is_current(metadata: &str) -> bool {
+    metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#))
+        && metadata.contains(&format!(r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#))
 }
 
 fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
@@ -6806,7 +7651,7 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let image_source_key_path = image_source_capability_secret_path(&app_data_dir);
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
     let config_write_path = sandbox_config_write_path(hermes_home);
-    let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
+    let config_temp_prefix = sandbox_config_temp_prefix(&config_write_path);
     // Block the jailed agent from reading the connector token stores: the
     // Keychain is already denied above; add the dev plaintext connector token
     // files (debug builds' fallback custody, one per provider) explicitly.
@@ -6934,20 +7779,25 @@ fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
     canonical
 }
 
-/// The Hermes config file the jailed runtime persists through `save_config`,
-/// as an absolute path under `$HERMES_HOME`. Returned separately from the broad
-/// write roots so the grant is auditable and scoped to exactly this one file.
+/// The Hermes config target the jailed runtime persists through `save_config`.
+/// Resolve an existing symlink exactly as both atomic writers do so a target
+/// outside `$HERMES_HOME` receives the narrow file grant instead of failing
+/// inside Seatbelt or replacing the symlink itself.
 #[cfg(target_os = "macos")]
 fn sandbox_config_write_path(hermes_home: &Path) -> PathBuf {
-    hermes_home.join(HERMES_CONFIG_FILE)
+    let path = hermes_home.join(HERMES_CONFIG_FILE);
+    hermes_config_replacement_target(&path).unwrap_or(path)
 }
 
-/// Absolute atomic-temp prefix for `config.yaml` writes under `$HERMES_HOME`
-/// (e.g. `…/hermes/.config_`). Granted as a regex prefix so the random suffix
-/// in `.config_<random>.tmp` is covered.
+/// Absolute atomic-temp prefix beside the resolved config target (for example,
+/// `…/.config_`). Granted as a regex prefix so the random suffix in
+/// `.config_<random>.tmp` is covered without widening the target directory.
 #[cfg(target_os = "macos")]
-fn sandbox_config_temp_prefix(hermes_home: &Path) -> PathBuf {
-    hermes_home.join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
+fn sandbox_config_temp_prefix(config_write_path: &Path) -> PathBuf {
+    config_write_path
+        .parent()
+        .unwrap_or(config_write_path)
+        .join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
 }
 
 /// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
@@ -6989,10 +7839,10 @@ fn build_sandbox_profile(
     // through Hermes' `save_config` whenever an admin surface mutates skills,
     // toolsets, or MCP servers. That write is atomic: a `.config_<random>.tmp`
     // is streamed then `os.replace`d onto config.yaml, which needs write+unlink
-    // on the target and the temp. The temp already lives under a write root
-    // ($HERMES_HOME), but spell out both the config file and its random-suffixed
-    // temp prefix explicitly so the grant is auditable and survives any future
-    // tightening of the broad roots. Nothing outside $HERMES_HOME is widened.
+    // on the target and the temp. Spell out both the resolved config file and
+    // its random-suffixed temp prefix so an external symlink target works
+    // without granting its whole directory. The explicit grants also stay
+    // auditable if the broad roots are tightened later.
     out.push_str(";; Hermes' own config.yaml: the jailed runtime persists admin changes\n");
     out.push_str(";; through save_config (atomic temp + os.replace). Grant the file and its\n");
     out.push_str(";; random-suffixed atomic temp; everything else stays under the write jail.\n");
@@ -7585,6 +8435,7 @@ fn sync_hermes_config_with_external_dirs(
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
     let config_path = hermes_home.join("config.yaml");
+    let _config_lock = HermesConfigWriterLock::acquire(&config_path)?;
     let external_skill_dirs =
         effective_external_skill_dirs_from_config(&config_path, default_external_skill_dirs);
     let connector_base = june_connector_mcp.and_then(|configs| configs.base.as_ref());
@@ -7604,6 +8455,9 @@ fn sync_hermes_config_with_external_dirs(
             .map(|configs| configs.autos.as_slice())
             .unwrap_or(&[]),
     };
+    let memory_enabled = mcp_configs.context.map_or(true, |context| {
+        june_memory_enabled(&context.memory_settings_path)
+    });
     let cron_toolsets = cron_platform_toolsets(&mcp_configs);
     let config = render_hermes_config(
         &model,
@@ -7623,9 +8477,29 @@ fn sync_hermes_config_with_external_dirs(
     // wiped them on every June spawn. June's rendered keys still win — the
     // provider proxy port/token legitimately change per spawn — but every key
     // June does not render survives.
-    let merged = merge_hermes_config(&config_path, &config);
-    std::fs::write(config_path, merged)
-        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
+    let source_backup_created =
+        preserve_replaced_hermes_config_if_needed(&config_path, memory_enabled)?;
+    let mut merged =
+        serde_yaml::from_str::<serde_yaml::Value>(&merge_hermes_config(&config_path, &config))
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let repaired_invalid_shape = apply_memory_toolset_policy(&mut merged, memory_enabled);
+    if repaired_invalid_shape && !source_backup_created {
+        match fs::read(&config_path) {
+            Ok(existing) => {
+                backup_corrupt_hermes_config(&config_path, &existing)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(AppError::new(
+                    "hermes_bridge_config_failed",
+                    error.to_string(),
+                ))
+            }
+        }
+    }
+    let merged = serde_yaml::to_string(&merged)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    write_hermes_config_atomic(&config_path, &merged)
 }
 
 /// Deep-merges June's freshly rendered config over the existing `config.yaml`,
@@ -7654,6 +8528,291 @@ fn merge_hermes_config(existing_path: &std::path::Path, rendered: &str) -> Strin
     prune_connector_mcp_servers(&mut existing);
     let merged = deep_merge_yaml(existing, overlay);
     serde_yaml::to_string(&merged).unwrap_or_else(|_| rendered.to_string())
+}
+
+/// Mutates only June's global native-memory policy. Every other agent setting,
+/// user-added MCP server, skill setting, and unrelated disabled toolset stays
+/// intact. `memory` is normalized to at most one entry while disabled and is
+/// the only entry removed when memory is re-enabled.
+fn apply_memory_toolset_policy(config: &mut serde_yaml::Value, memory_enabled: bool) -> bool {
+    let serde_yaml::Value::Mapping(root) = config else {
+        return false;
+    };
+    let agent_key = serde_yaml::Value::String("agent".to_string());
+    let disabled_key = serde_yaml::Value::String("disabled_toolsets".to_string());
+
+    if memory_enabled {
+        let Some(agent) = root.get_mut(&agent_key) else {
+            return false;
+        };
+        let Some(agent) = agent.as_mapping_mut() else {
+            return false;
+        };
+        let Some(disabled) = agent.get_mut(&disabled_key) else {
+            return false;
+        };
+        let Some(disabled) = disabled.as_sequence_mut() else {
+            return false;
+        };
+        disabled.retain(|item| item.as_str() != Some("memory"));
+        if disabled.is_empty() {
+            agent.remove(&disabled_key);
+        }
+        return false;
+    }
+
+    let mut repaired_invalid_shape = false;
+    let agent = root
+        .entry(agent_key)
+        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    if !agent.is_mapping() {
+        *agent = serde_yaml::Value::Mapping(Default::default());
+        repaired_invalid_shape = true;
+    }
+    let agent = agent
+        .as_mapping_mut()
+        .expect("agent was normalized to a mapping");
+    let disabled = agent.entry(disabled_key).or_insert_with(|| {
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("memory".to_string())])
+    });
+    let Some(disabled) = disabled.as_sequence_mut() else {
+        *disabled =
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("memory".to_string())]);
+        return true;
+    };
+    disabled.retain(|item| item.as_str() != Some("memory"));
+    disabled.push(serde_yaml::Value::String("memory".to_string()));
+    repaired_invalid_shape
+}
+
+fn hermes_config_has_invalid_root(config: &serde_yaml::Value) -> bool {
+    !config.is_mapping()
+}
+
+fn memory_policy_has_invalid_shape(config: &serde_yaml::Value) -> bool {
+    let Some(agent) = config.get("agent") else {
+        return false;
+    };
+    let Some(agent) = agent.as_mapping() else {
+        return true;
+    };
+    agent
+        .get(serde_yaml::Value::String("disabled_toolsets".to_string()))
+        .is_some_and(|disabled| !disabled.is_sequence())
+}
+
+/// Preserve config text before a normal spawn replaces YAML that cannot be
+/// safely merged or must repair a malformed disabled-toolset shape. This is
+/// especially important while Memory is off: fail closed with a valid global
+/// denylist, but retain the original bytes beside config.yaml for diagnosis.
+fn preserve_replaced_hermes_config_if_needed(
+    config_path: &Path,
+    memory_enabled: bool,
+) -> Result<bool, AppError> {
+    let existing = match fs::read_to_string(config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_bridge_config_failed",
+                error.to_string(),
+            ))
+        }
+    };
+    let parsed = serde_yaml::from_str::<serde_yaml::Value>(&existing);
+    let needs_backup = match parsed {
+        Ok(ref config) => {
+            hermes_config_has_invalid_root(config)
+                || (!memory_enabled && memory_policy_has_invalid_shape(config))
+        }
+        Err(_) => true,
+    };
+    if needs_backup {
+        backup_corrupt_hermes_config(config_path, existing.as_bytes())?;
+    }
+    Ok(needs_backup)
+}
+
+/// Narrow, connection-independent config mutation used by the Memory toggle.
+/// Missing and corrupt files fail closed while disabling: June writes a valid
+/// minimal policy, preserving corrupt bytes first. Enabling against corrupt
+/// YAML leaves it untouched; no deny can be safely identified or removed, and
+/// the setting permits memory in that state anyway.
+fn update_hermes_memory_policy_file(
+    config_path: &Path,
+    memory_enabled: bool,
+) -> Result<(), AppError> {
+    let _config_lock = HermesConfigWriterLock::acquire(config_path)?;
+    let existing = match fs::read_to_string(config_path) {
+        Ok(existing) => Some(existing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_bridge_config_failed",
+                error.to_string(),
+            ))
+        }
+    };
+    if memory_enabled && existing.is_none() {
+        return Ok(());
+    }
+
+    let mut config = match existing.as_deref() {
+        Some(raw) => match serde_yaml::from_str::<serde_yaml::Value>(raw) {
+            Ok(config) if config.is_mapping() => config,
+            Ok(_) | Err(_) if memory_enabled => return Ok(()),
+            Ok(_) | Err(_) => {
+                backup_corrupt_hermes_config(config_path, raw.as_bytes())?;
+                serde_yaml::Value::Mapping(Default::default())
+            }
+        },
+        None => serde_yaml::Value::Mapping(Default::default()),
+    };
+    let repaired_invalid_shape = apply_memory_toolset_policy(&mut config, memory_enabled);
+    if repaired_invalid_shape {
+        if let Some(raw) = existing.as_deref() {
+            backup_corrupt_hermes_config(config_path, raw.as_bytes())?;
+        }
+    }
+    let serialized = serde_yaml::to_string(&config)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    write_hermes_config_atomic(config_path, &serialized)
+}
+
+/// Re-read the fail-closed authoritative setting at the point of mutation.
+/// Keeping the setting out of the caller's arguments prevents an older toggle
+/// from overwriting a newer one after waiting for the shared config writer lock.
+fn apply_persisted_memory_policy_file(
+    config_path: &Path,
+    settings_path: &Path,
+) -> Result<(), AppError> {
+    update_hermes_memory_policy_file(config_path, june_memory_enabled(settings_path))
+}
+
+fn backup_corrupt_hermes_config(config_path: &Path, contents: &[u8]) -> Result<PathBuf, AppError> {
+    let parent = config_path.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_bridge_config_failed",
+            "Hermes config path has no parent directory.",
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let backup_path = parent.join(format!(
+        "{HERMES_CONFIG_CORRUPT_BACKUP_PREFIX}{}.bak",
+        uuid::Uuid::new_v4()
+    ));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut backup = options
+        .open(&backup_path)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    backup
+        .write_all(contents)
+        .and_then(|_| backup.sync_all())
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    Ok(backup_path)
+}
+
+fn write_hermes_config_atomic(config_path: &Path, contents: &str) -> Result<(), AppError> {
+    let target_path = hermes_config_replacement_target(config_path)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let parent = target_path.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_bridge_config_failed",
+            "Hermes config path has no parent directory.",
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let temporary_path = parent.join(format!(
+        "{HERMES_CONFIG_ATOMIC_TEMP_PREFIX}{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // config.yaml contains on-device provider proxy and connector
+            // credentials. Match Hermes' mkstemp writer so a new file is never
+            // briefly broader than owner-only before final metadata is applied.
+            options.mode(0o600);
+        }
+        let mut temporary = options.open(&temporary_path)?;
+        preserve_hermes_config_metadata(&target_path, &temporary)?;
+        temporary.write_all(contents.as_bytes())?;
+        temporary.sync_all()?;
+        drop(temporary);
+        replace_file(&temporary_path, &target_path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(AppError::new(
+            "hermes_bridge_config_failed",
+            error.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve an existing symlink before replacing config.yaml. Replacing the link
+/// itself would detach managed/dotfile-backed Hermes homes and leave the real
+/// config unchanged. A dangling link fails closed instead of being destroyed.
+fn hermes_config_replacement_target(config_path: &Path) -> io::Result<PathBuf> {
+    match fs::symlink_metadata(config_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(config_path),
+        Ok(_) => Ok(config_path.to_path_buf()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(config_path.to_path_buf()),
+        Err(error) => Err(error),
+    }
+}
+
+fn preserve_hermes_config_metadata(target_path: &Path, temporary: &fs::File) -> io::Result<()> {
+    let metadata = match fs::metadata(target_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    temporary.set_permissions(metadata.permissions())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // Preserve the existing file's ACL in addition to its POSIX mode. The
+        // content is deliberately excluded; only COPYFILE_SECURITY metadata is
+        // copied onto the still-empty temporary file before secret bytes land.
+        const COPYFILE_SECURITY: u32 = (1 << 0) | (1 << 1);
+        extern "C" {
+            fn fcopyfile(
+                from: libc::c_int,
+                to: libc::c_int,
+                state: *mut libc::c_void,
+                flags: u32,
+            ) -> libc::c_int;
+        }
+        let source = fs::File::open(target_path)?;
+        let result = unsafe {
+            fcopyfile(
+                source.as_raw_fd(),
+                temporary.as_raw_fd(),
+                std::ptr::null_mut(),
+                COPYFILE_SECURITY,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    Ok(())
 }
 
 /// Removes June's connector MCP server entries (`june_gmail`, `june_gcal`,
@@ -12571,10 +13730,523 @@ assert capped["has_more"] is True, capped
             .spawn()
             .expect("spawn unregistered child");
 
-        reap_unregistered_child(&mut child);
+        reap_unregistered_child(&mut child, None);
 
         // Already reaped by the helper; a second wait resolves immediately.
         assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hermes_test_record(
+        app_pid: u32,
+        app_start: impl Into<String>,
+        runtime_pid: u32,
+        runtime_start: impl Into<String>,
+        full_mode: bool,
+    ) -> HermesRuntimeOwnershipRecord {
+        HermesRuntimeOwnershipRecord {
+            app_pid,
+            app_start: app_start.into(),
+            runtime_pid,
+            runtime_start: runtime_start.into(),
+            full_mode,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hermes_test_started_at(pid: u32) -> String {
+        match probe_hermes_start_time(pid) {
+            HermesStartTimeProbe::StartedAt(started) => started,
+            HermesStartTimeProbe::Unknown => panic!("process start time was indeterminate"),
+            HermesStartTimeProbe::Gone => panic!("test process exited before identity probe"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn gone_hermes_test_pid() -> u32 {
+        let mut process = Command::new("/usr/bin/true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn short-lived test process");
+        let pid = process.id();
+        process.wait().expect("reap short-lived test process");
+        assert!(matches!(
+            probe_hermes_start_time(pid),
+            HermesStartTimeProbe::Gone
+        ));
+        pid
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_hermes_test_process_group() -> Child {
+        use std::os::unix::process::CommandExt as _;
+
+        Command::new("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn disposable Hermes test process group")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_blocked_hermes_test_process_group() -> Child {
+        use std::os::unix::process::CommandExt as _;
+
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(HERMES_RUNTIME_LAUNCH_BARRIER_SCRIPT)
+            .arg("june-agent-runtime-test")
+            .arg("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn blocked disposable Hermes test process group")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hermes_test_process(
+        child: Child,
+        ownership_record: PathBuf,
+        full_mode: bool,
+        generation: u64,
+    ) -> HermesProcess {
+        let mut connection = oauth_test_connection();
+        connection.pid = child.id();
+        connection.full_mode = full_mode;
+        HermesProcess {
+            generation,
+            child,
+            connection,
+            ownership_record: Some(ownership_record),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct DetachedHermesTestProcessGroup(u32);
+
+    #[cfg(target_os = "macos")]
+    impl Drop for DetachedHermesTestProcessGroup {
+        fn drop(&mut self) {
+            kill_process_group(self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_detached_hermes_test_process_group() -> DetachedHermesTestProcessGroup {
+        // The short-lived Python parent exits after printing the child's pid,
+        // leaving the new-session child adopted by launchd. This mirrors a
+        // runtime whose owning June process crashed, so startup recovery can
+        // kill it and observe the leader disappear without this test retaining
+        // a Child handle that would keep it as a zombie.
+        let output = Command::new("python3")
+            .arg("-c")
+            .arg(
+                "import subprocess; p = subprocess.Popen(['/bin/sleep', '300'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid, flush=True)",
+            )
+            .output()
+            .expect("spawn detached disposable process group");
+        assert!(
+            output.status.success(),
+            "detached process launcher failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let pid = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u32>()
+            .expect("parse detached process pid");
+        assert!(matches!(
+            probe_hermes_process_group(pid),
+            HermesProcessGroupProbe::Group(group) if group == pid
+        ));
+        DetachedHermesTestProcessGroup(pid)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn exited_hermes_leader_reaps_surviving_group_before_record_cleanup() {
+        use std::os::unix::process::CommandExt as _;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut leader = Command::new("python3")
+            .arg("-c")
+            .arg(
+                "import subprocess; p = subprocess.Popen(['/bin/sleep', '300'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid, flush=True)",
+            )
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn leader with surviving worker");
+        let group_pid = leader.id();
+        let _cleanup = DetachedHermesTestProcessGroup(group_pid);
+        let mut worker_output = String::new();
+        leader
+            .stdout
+            .take()
+            .expect("take leader stdout")
+            .read_to_string(&mut worker_output)
+            .expect("read worker pid");
+        let worker_pid = worker_output
+            .trim()
+            .parse::<u32>()
+            .expect("parse worker pid");
+        let worker_start = hermes_test_started_at(worker_pid);
+        assert!(matches!(
+            probe_hermes_process_group(worker_pid),
+            HermesProcessGroupProbe::Group(group) if group == group_pid
+        ));
+
+        let record = hermes_test_record(std::process::id(), "owner", group_pid, "runtime", false);
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+        let bridge = HermesBridge::default();
+        bridge
+            .processes
+            .lock()
+            .expect("lock processes")
+            .insert(false, hermes_test_process(leader, path.clone(), false, 1));
+
+        let connections = live_connections(&bridge).expect("collect live connections");
+
+        assert!(connections.is_empty());
+        assert!(bridge.processes.lock().expect("lock processes").is_empty());
+        assert!(!path.exists());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match probe_hermes_start_time(worker_pid) {
+                HermesStartTimeProbe::Gone => break,
+                HermesStartTimeProbe::StartedAt(started) if started != worker_start => break,
+                HermesStartTimeProbe::StartedAt(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                HermesStartTimeProbe::StartedAt(_) => {
+                    panic!("surviving Hermes worker was not killed")
+                }
+                HermesStartTimeProbe::Unknown => panic!("worker identity became indeterminate"),
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn live_hermes_owner_skips_its_runtime_record() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut child = spawn_hermes_test_process_group();
+        let app_pid = std::process::id();
+        let record = HermesRuntimeOwnershipRecord {
+            app_pid,
+            app_start: hermes_test_started_at(app_pid),
+            runtime_pid: child.id(),
+            runtime_start: hermes_test_started_at(child.id()),
+            full_mode: false,
+        };
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        assert_eq!(
+            decide_hermes_ownership_action(
+                HermesOwnerLiveness::Alive,
+                HermesRuntimeMatch::MatchesRecord,
+            ),
+            HermesOwnershipAction::Skip
+        );
+        reap_orphaned_hermes_runtimes_in_dir(directory.path()).expect("live owner must be skipped");
+        assert!(path.exists());
+        assert!(child.try_wait().expect("probe runtime").is_none());
+
+        shutdown_hermes_process(Some(hermes_test_process(child, path.clone(), false, 0)));
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dead_hermes_owner_with_exact_runtime_identity_reaps() {
+        assert_eq!(
+            decide_hermes_ownership_action(
+                HermesOwnerLiveness::Dead,
+                HermesRuntimeMatch::MatchesRecord,
+            ),
+            HermesOwnershipAction::Reap
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dead_hermes_owner_with_gone_runtime_deletes_stale_record() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let gone_pid = gone_hermes_test_pid();
+        let record = hermes_test_record(gone_pid, "dead-owner", gone_pid, "gone", false);
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        reap_orphaned_hermes_runtimes_in_dir(directory.path())
+            .expect("delete stale ownership record");
+
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reused_hermes_owner_pid_counts_as_dead() {
+        assert_eq!(
+            hermes_owner_liveness(
+                &HermesStartTimeProbe::StartedAt("new-process".to_string()),
+                "original-owner",
+            ),
+            HermesOwnerLiveness::Dead
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reused_hermes_runtime_pid_is_never_killed() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut unrelated = spawn_hermes_test_process_group();
+        let record = hermes_test_record(
+            gone_hermes_test_pid(),
+            "dead-owner",
+            unrelated.id(),
+            "different-runtime-start",
+            false,
+        );
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        reap_orphaned_hermes_runtimes_in_dir(directory.path())
+            .expect("discard reused-pid ownership record");
+
+        assert!(!path.exists());
+        assert!(matches!(unrelated.try_wait(), Ok(None)));
+        kill_process_group(unrelated.id());
+        unrelated.wait().expect("reap unrelated test process");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unknown_hermes_owner_or_runtime_identity_aborts() {
+        assert_eq!(
+            hermes_owner_liveness(&HermesStartTimeProbe::Unknown, "owner"),
+            HermesOwnerLiveness::Unknown
+        );
+        assert_eq!(
+            hermes_runtime_match(
+                &HermesStartTimeProbe::StartedAt("runtime".to_string()),
+                "runtime",
+                &HermesProcessGroupProbe::Unknown,
+                42,
+            ),
+            HermesRuntimeMatch::Unknown
+        );
+        assert_eq!(
+            hermes_runtime_match(
+                &HermesStartTimeProbe::StartedAt("runtime".to_string()),
+                "runtime",
+                &HermesProcessGroupProbe::Group(41),
+                42,
+            ),
+            HermesRuntimeMatch::Unknown
+        );
+        assert_eq!(
+            decide_hermes_ownership_action(
+                HermesOwnerLiveness::Unknown,
+                HermesRuntimeMatch::MatchesRecord,
+            ),
+            HermesOwnershipAction::Abort
+        );
+        assert_eq!(
+            decide_hermes_ownership_action(HermesOwnerLiveness::Dead, HermesRuntimeMatch::Unknown,),
+            HermesOwnershipAction::Abort
+        );
+        assert!(failed_hermes_ps_result_proves_pid_gone(Some(1), b"", b""));
+        assert!(!failed_hermes_ps_result_proves_pid_gone(
+            Some(1),
+            b"",
+            b"permission denied"
+        ));
+        assert!(!failed_hermes_ps_result_proves_pid_gone(Some(2), b"", b""));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn multiple_hermes_runtime_records_for_one_app_pid_do_not_overwrite() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let sandboxed = hermes_test_record(100, "owner", 200, "sandboxed", false);
+        let unrestricted = hermes_test_record(100, "owner", 201, "unrestricted", true);
+
+        let sandboxed_path = write_hermes_runtime_ownership_record(directory.path(), &sandboxed)
+            .expect("write sandboxed record");
+        let unrestricted_path =
+            write_hermes_runtime_ownership_record(directory.path(), &unrestricted)
+                .expect("write unrestricted record");
+
+        assert_ne!(sandboxed_path, unrestricted_path);
+        assert!(sandboxed_path.exists());
+        assert!(unrestricted_path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hermes_runtime_record_creation_is_atomic_and_cleanup_is_exact() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let record = hermes_test_record(100, "owner", 200, "runtime", false);
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        let persisted: HermesRuntimeOwnershipRecord =
+            serde_json::from_slice(&fs::read(&path).expect("read persisted record"))
+                .expect("parse persisted record");
+        assert_eq!(persisted, record);
+        let names = fs::read_dir(directory.path())
+            .expect("list record directory")
+            .map(|entry| {
+                entry
+                    .expect("read record entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![path.file_name().unwrap().to_string_lossy()]);
+
+        remove_hermes_ownership_record(Some(&path)).expect("remove exact record");
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_hermes_runtime_record_between_scan_and_read_is_ignored() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory
+            .path()
+            .join(format!("{HERMES_RUNTIME_OWNER_RECORD_PREFIX}removed.json"));
+
+        let record = read_hermes_runtime_ownership_record(&path)
+            .expect("a concurrently removed record must be ignored");
+
+        assert!(record.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn malformed_hermes_runtime_record_aborts_and_is_retained() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join(format!(
+            "{HERMES_RUNTIME_OWNER_RECORD_PREFIX}malformed.json"
+        ));
+        fs::write(&path, b"not-json").expect("write malformed record");
+
+        let error = reap_orphaned_hermes_runtimes_in_dir(directory.path())
+            .expect_err("malformed record must fail closed");
+
+        assert_eq!(error.code, "hermes_runtime_reap_failed");
+        assert!(path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spawn_record_failure_reaps_the_unregistered_child() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let not_a_directory = directory.path().join("record-dir");
+        fs::write(&not_a_directory, b"file").expect("create invalid record directory");
+        let mut child = spawn_blocked_hermes_test_process_group();
+
+        let error = record_spawned_hermes_runtime_in_dir(&not_a_directory, &mut child, false)
+            .expect_err("record failure must fail the spawn");
+
+        assert_eq!(error.code, "hermes_runtime_owner_unrecordable");
+        assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_barrier_exits_if_the_owner_dies_before_record_release() {
+        let mut child = spawn_blocked_hermes_test_process_group();
+
+        drop(child.stdin.take());
+        let status = child.wait().expect("wait for launch barrier");
+
+        assert!(!status.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn normal_shutdown_removes_only_its_own_runtime_record() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = spawn_hermes_test_process_group();
+        let mut second = spawn_hermes_test_process_group();
+        let app_pid = std::process::id();
+        let app_start = hermes_test_started_at(app_pid);
+        let first_record = hermes_test_record(
+            app_pid,
+            app_start.clone(),
+            first.id(),
+            hermes_test_started_at(first.id()),
+            false,
+        );
+        let second_record = hermes_test_record(
+            app_pid,
+            app_start,
+            second.id(),
+            hermes_test_started_at(second.id()),
+            true,
+        );
+        let first_path = write_hermes_runtime_ownership_record(directory.path(), &first_record)
+            .expect("write first record");
+        let second_path = write_hermes_runtime_ownership_record(directory.path(), &second_record)
+            .expect("write second record");
+
+        shutdown_hermes_process(Some(hermes_test_process(
+            first,
+            first_path.clone(),
+            false,
+            1,
+        )));
+
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+        assert!(matches!(second.try_wait(), Ok(None)));
+
+        shutdown_hermes_process(Some(hermes_test_process(
+            second,
+            second_path.clone(),
+            true,
+            2,
+        )));
+        assert!(!second_path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retained_crash_record_is_reaped_on_the_next_startup() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let detached = spawn_detached_hermes_test_process_group();
+        let record = hermes_test_record(
+            gone_hermes_test_pid(),
+            "dead-owner",
+            detached.0,
+            hermes_test_started_at(detached.0),
+            false,
+        );
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write retained crash record");
+
+        reap_orphaned_hermes_runtimes_in_dir(directory.path()).expect("reap retained crash record");
+
+        assert!(!path.exists());
+        assert!(matches!(
+            probe_hermes_start_time(detached.0),
+            HermesStartTimeProbe::Gone
+        ));
     }
 
     #[test]
@@ -14362,6 +16034,287 @@ mcp_servers:
     }
 
     #[test]
+    fn memory_policy_adds_and_removes_only_the_native_memory_deny() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"agent:
+  max_turns: 42
+  disabled_toolsets: [browser, memory, memory]
+skills:
+  config:
+    user-skill:
+      enabled: true
+mcp_servers:
+  user_server:
+    url: https://example.com/mcp
+"#,
+        )
+        .expect("valid config");
+
+        apply_memory_toolset_policy(&mut config, false);
+        let disabled = config["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list");
+        assert_eq!(
+            disabled
+                .iter()
+                .filter(|item| item.as_str() == Some("memory"))
+                .count(),
+            1,
+        );
+        assert!(disabled.iter().any(|item| item.as_str() == Some("browser")));
+
+        apply_memory_toolset_policy(&mut config, true);
+        let disabled = config["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("other deny remains");
+        assert_eq!(disabled.len(), 1);
+        assert_eq!(disabled[0], "browser");
+        assert_eq!(config["agent"]["max_turns"], 42);
+        assert_eq!(config["skills"]["config"]["user-skill"]["enabled"], true);
+        assert_eq!(
+            config["mcp_servers"]["user_server"]["url"],
+            "https://example.com/mcp"
+        );
+    }
+
+    #[test]
+    fn direct_memory_policy_update_preserves_gateway_only_config_state() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"agent:
+  max_turns: 12
+  disabled_toolsets: [browser]
+skills:
+  external_dirs: [/tmp/shared-skills]
+mcp_servers:
+  user_server:
+    url: https://example.com/mcp
+"#,
+        )
+        .expect("seed config");
+
+        // This path takes no HermesBridgeConnection: it is the exact mutation
+        // used when only the launchd routine gateway remains alive.
+        update_hermes_memory_policy_file(&config_path, false).expect("disable memory");
+        let disabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read disabled config"),
+        )
+        .expect("disabled config parses");
+        assert!(disabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
+        assert_eq!(disabled["agent"]["max_turns"], 12);
+        assert_eq!(disabled["skills"]["external_dirs"][0], "/tmp/shared-skills");
+        assert_eq!(
+            disabled["mcp_servers"]["user_server"]["url"],
+            "https://example.com/mcp"
+        );
+
+        update_hermes_memory_policy_file(&config_path, true).expect("enable memory");
+        let enabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read enabled config"),
+        )
+        .expect("enabled config parses");
+        let disabled = enabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("browser deny remains");
+        assert_eq!(
+            disabled,
+            &[serde_yaml::Value::String("browser".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_config_write_preserves_symlink_target_and_private_mode() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let managed = home.path().join("managed");
+        std::fs::create_dir_all(&managed).expect("managed dir");
+        let target = managed.join("config.yaml");
+        std::fs::write(&target, "agent:\n  max_turns: 3\n").expect("seed target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("private mode");
+        let link = home.path().join("config.yaml");
+        symlink(&target, &link).expect("config symlink");
+
+        write_hermes_config_atomic(&link, "agent:\n  disabled_toolsets: [memory]\n")
+            .expect("atomic config write");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target contents"),
+            "agent:\n  disabled_toolsets: [memory]\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&target)
+                .expect("target metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_atomic_config_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home.path().join("config.yaml");
+        write_hermes_config_atomic(&config, "agent:\n  disabled_toolsets: [memory]\n")
+            .expect("atomic config write");
+        assert_eq!(
+            std::fs::metadata(&config)
+                .expect("config metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn atomic_config_write_preserves_macos_acl() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home.path().join("config.yaml");
+        std::fs::write(&config, "agent:\n  max_turns: 3\n").expect("seed config");
+        let chmod = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg("everyone allow read")
+            .arg(&config)
+            .status()
+            .expect("apply test ACL");
+        assert!(chmod.success());
+
+        write_hermes_config_atomic(&config, "agent:\n  disabled_toolsets: [memory]\n")
+            .expect("atomic config write");
+
+        let listing = std::process::Command::new("/bin/ls")
+            .arg("-le")
+            .arg(&config)
+            .output()
+            .expect("list config ACL");
+        assert!(listing.status.success());
+        assert!(String::from_utf8_lossy(&listing.stdout).contains("allow read"));
+    }
+
+    #[test]
+    fn direct_memory_policy_update_reads_the_latest_persisted_toggle() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        let settings_path = home.path().join("memory-settings.json");
+        std::fs::write(&config_path, "agent:\n  disabled_toolsets: [browser]\n")
+            .expect("seed config");
+
+        std::fs::write(&settings_path, r#"{"enabled":false}"#).expect("persist disabled setting");
+        apply_persisted_memory_policy_file(&config_path, &settings_path)
+            .expect("apply latest disabled setting");
+        let disabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read disabled config"),
+        )
+        .expect("disabled config parses");
+        assert!(disabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
+
+        // This newer persisted value is the only policy input. There is no
+        // stale caller-provided bool that an older waiter can apply later.
+        std::fs::write(&settings_path, r#"{"enabled":true}"#).expect("persist enabled setting");
+        apply_persisted_memory_policy_file(&config_path, &settings_path)
+            .expect("apply latest enabled setting");
+        let enabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read enabled config"),
+        )
+        .expect("enabled config parses");
+        assert_eq!(
+            enabled["agent"]["disabled_toolsets"]
+                .as_sequence()
+                .expect("browser deny remains"),
+            &[serde_yaml::Value::String("browser".to_string())],
+        );
+    }
+
+    #[test]
+    fn dashboard_mutations_are_classified_as_config_writers() {
+        assert!(!hermes_request_may_write(&reqwest::Method::GET));
+        assert!(!hermes_request_may_write(&reqwest::Method::HEAD));
+        assert!(hermes_request_may_write(&reqwest::Method::POST));
+        assert!(hermes_request_may_write(&reqwest::Method::PUT));
+        assert!(hermes_request_may_write(&reqwest::Method::PATCH));
+        assert!(hermes_request_may_write(&reqwest::Method::DELETE));
+    }
+
+    #[test]
+    fn memory_off_repairs_missing_or_corrupt_config_fail_closed() {
+        let missing_home = tempfile::tempdir().expect("missing tempdir");
+        let missing = missing_home.path().join("config.yaml");
+        update_hermes_memory_policy_file(&missing, false).expect("repair missing config");
+        let repaired: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&missing).expect("read repaired missing config"),
+        )
+        .expect("missing replacement parses");
+        assert_eq!(repaired["agent"]["disabled_toolsets"][0], "memory");
+
+        let corrupt_home = tempfile::tempdir().expect("corrupt tempdir");
+        let corrupt = corrupt_home.path().join("config.yaml");
+        let original = b": invalid yaml: [";
+        std::fs::write(&corrupt, original).expect("seed corrupt config");
+        update_hermes_memory_policy_file(&corrupt, false).expect("repair corrupt config");
+        let repaired: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&corrupt).expect("read repaired corrupt config"),
+        )
+        .expect("corrupt replacement parses");
+        assert_eq!(repaired["agent"]["disabled_toolsets"][0], "memory");
+
+        let entries: Vec<PathBuf> = std::fs::read_dir(corrupt_home.path())
+            .expect("read config directory")
+            .map(|entry| entry.expect("directory entry").path())
+            .collect();
+        let backup = entries
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(HERMES_CONFIG_CORRUPT_BACKUP_PREFIX)
+                            && name.ends_with(".bak")
+                    })
+            })
+            .expect("corrupt backup");
+        assert_eq!(std::fs::read(backup).expect("read backup"), original);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(backup)
+                    .expect("backup metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+            );
+        }
+        assert!(!entries.iter().any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(HERMES_CONFIG_ATOMIC_TEMP_PREFIX))
+        }));
+    }
+
+    #[test]
     fn merge_hermes_config_prunes_stale_connector_servers() {
         let home = tempfile::tempdir().expect("tempdir");
         let config_path = home.path().join("config.yaml");
@@ -15225,6 +17178,19 @@ mcp_servers:
     }
 
     #[test]
+    fn managed_runtime_provenance_rejects_the_previous_patch_set() {
+        let current = format!(
+            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"{HERMES_RUNTIME_PATCH_SET}"}}"#
+        );
+        assert!(hermes_runtime_metadata_is_current(&current));
+
+        let previous = format!(
+            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"june-approval-v1"}}"#
+        );
+        assert!(!hermes_runtime_metadata_is_current(&previous));
+    }
+
+    #[test]
     fn gateway_start_spawns_the_bare_hermes_cli_outside_the_sandbox() {
         let connection = HermesBridgeConnection {
             base_url: "http://127.0.0.1:1".to_string(),
@@ -15297,6 +17263,21 @@ mcp_servers:
 
         assert_eq!(error.code, "hermes_gateway_start_failed");
         assert!(error.message.contains("exited"));
+    }
+
+    #[test]
+    fn runtime_apply_command_error_hides_embedded_runtime_details() {
+        let error = runtime_apply_command_error(AppError::new(
+            "hermes_bridge_start_failed",
+            "Hermes runtime failed to start.",
+        ));
+
+        assert_eq!(error.code, "runtime_apply_failed");
+        assert_eq!(
+            error.message,
+            "June could not finish applying this change. Try again or restart June."
+        );
+        assert!(!error.message.contains("Hermes"));
     }
 
     #[test]
@@ -15571,37 +17552,40 @@ mcp_servers:
         .expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
-        assert!(config.contains("platform_toolsets:"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&config).expect("valid config YAML");
         // Naming any MCP server flips cron's auto-include into an allowlist, so
         // every built-in READ server that must stay available to routines is
         // listed explicitly alongside the sandboxed toolsets, plus the
         // connector READ servers (june_linear joins the ambient reads exactly
         // like the gmail/gcal read servers). The base toolset gate still holds.
-        let cron_line = format!(
-            "cron: [{}, june_context, june_web, june_image, june_recorder, june_video, june_gmail, june_gcal, june_linear]",
-            CRON_SANDBOXED_TOOLSETS.join(", ")
-        );
-        assert!(
-            config.contains(&cron_line),
-            "cron allowlist mismatch:\n{config}"
-        );
+        let cron = parsed["platform_toolsets"]["cron"]
+            .as_sequence()
+            .expect("cron allowlist");
+        let expected: Vec<serde_yaml::Value> = CRON_SANDBOXED_TOOLSETS
+            .iter()
+            .copied()
+            .chain([
+                "june_context",
+                "june_web",
+                "june_image",
+                "june_recorder",
+                "june_video",
+                "june_gmail",
+                "june_gcal",
+                "june_linear",
+            ])
+            .map(|toolset| serde_yaml::Value::String(toolset.to_string()))
+            .collect();
+        assert_eq!(cron, &expected, "cron allowlist mismatch:\n{config}");
         // The connector ACTION servers and per-job AUTO servers are NEVER in
         // the cron default: approval and autonomy are opted into per job by
-        // trust-mode enabled_toolsets. The exact cron_line match above (it ends
-        // at `june_linear]`) already proves no action/auto server is in the
-        // list; these guard the substrings directly too.
-        assert!(!config.contains("june_gmail_actions,"));
-        assert!(!config.contains("june_gcal_actions,"));
-        assert!(!config.contains("june_gcal_actions]"));
-        assert!(!config.contains("june_linear_actions,"));
-        assert!(!config.contains("june_linear_actions]"));
-        assert!(!config.contains("_auto_]"));
-        assert!(!config.contains("_auto_,"));
+        // trust-mode enabled_toolsets. The exact sequence match above proves
+        // no action or auto server is in the list.
         // The auto server IS registered under mcp_servers, just not in cron.
-        assert!(config.contains("  june_gmail_auto_ab12cd34:\n"));
+        assert!(parsed["mcp_servers"]["june_gmail_auto_ab12cd34"].is_mapping());
         // The Linear actions server is registered under mcp_servers too,
         // reachable only through approval-mode enabled_toolsets.
-        assert!(config.contains("  june_linear_actions:\n"));
+        assert!(parsed["mcp_servers"]["june_linear_actions"].is_mapping());
         for toolset in [
             "terminal",
             "file",
@@ -15654,6 +17638,110 @@ mcp_servers:
         assert!(cron_platform_toolsets(&configs)
             .split(", ")
             .any(|toolset| toolset == "memory"));
+    }
+
+    #[test]
+    fn config_sync_self_heals_the_persisted_global_memory_policy() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let settings = home.path().join("memory-settings.json");
+        let config_path = home.path().join("config.yaml");
+        let invalid_source = b"agent:\n  disabled_toolsets: not-a-list\nskills:\n  config:\n    user-skill:\n      enabled: true\n";
+        std::fs::write(&config_path, invalid_source).expect("seed invalid policy shape");
+        let mut context = test_june_context_mcp_config();
+        context.memory_settings_path = settings.clone();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
+
+        std::fs::write(&settings, r#"{"enabled":false}"#).expect("disable memory");
+        sync_hermes_config_with_external_dirs(
+            home.path(),
+            4242,
+            "proxy-token",
+            "memory-proxy-token",
+            "recorder-proxy-token",
+            "connector-proxy-token",
+            false,
+            &context,
+            &web,
+            &image,
+            None,
+            &recorder,
+            None,
+            &[],
+        )
+        .expect("sync disabled config");
+        let mut disabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read disabled config"),
+        )
+        .expect("disabled config parses");
+        assert!(disabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
+        assert_eq!(disabled["skills"]["config"]["user-skill"]["enabled"], true);
+        let backups = std::fs::read_dir(home.path())
+            .expect("read config directory")
+            .map(|entry| entry.expect("directory entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(HERMES_CONFIG_CORRUPT_BACKUP_PREFIX)
+                            && name.ends_with(".bak")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1, "spawn repair archives source once");
+        assert_eq!(
+            std::fs::read(&backups[0]).expect("read policy-shape backup"),
+            invalid_source,
+        );
+        disabled["agent"]["disabled_toolsets"] = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("browser".to_string()),
+            serde_yaml::Value::String("memory".to_string()),
+        ]);
+        std::fs::write(
+            &config_path,
+            serde_yaml::to_string(&disabled).expect("serialize user config"),
+        )
+        .expect("add unrelated deny");
+
+        std::fs::write(&settings, r#"{"enabled":true}"#).expect("enable memory");
+        sync_hermes_config_with_external_dirs(
+            home.path(),
+            4242,
+            "proxy-token",
+            "memory-proxy-token",
+            "recorder-proxy-token",
+            "connector-proxy-token",
+            false,
+            &context,
+            &web,
+            &image,
+            None,
+            &recorder,
+            None,
+            &[],
+        )
+        .expect("sync enabled config");
+        let enabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read enabled config"),
+        )
+        .expect("enabled config parses");
+        let remaining = enabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("browser deny remains");
+        assert_eq!(
+            remaining,
+            &[serde_yaml::Value::String("browser".to_string())]
+        );
+        assert!(enabled["platform_toolsets"]["cron"]
+            .as_sequence()
+            .expect("cron allowlist")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
     }
 
     #[tokio::test]
@@ -16494,7 +18582,7 @@ mcp_servers:
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16547,11 +18635,95 @@ mcp_servers:
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn sandbox_profile_allows_only_an_external_config_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = std::fs::canonicalize(dir.path()).expect("canonicalize home");
+        let workspace = home.join("workspace");
+        let external = home.join("external-config");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&external).expect("external config dir");
+        let target = external.join("managed-config.yaml");
+        std::fs::write(&target, "agent: {}\n").expect("target config");
+        symlink(&target, workspace.join(HERMES_CONFIG_FILE)).expect("config symlink");
+
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
+        assert_eq!(config_path, target);
+        assert_eq!(
+            config_temp_prefix,
+            external.join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
+        );
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            &[],
+            false,
+        );
+        assert!(profile.contains(&format!(
+            "(literal {})",
+            sbpl_quote(&target.to_string_lossy())
+        )));
+        assert!(profile.contains(&format!(
+            "(regex #\"^{}.*$\")",
+            sbpl_regex_escape(&config_temp_prefix.to_string_lossy())
+        )));
+        assert!(!profile.contains(&format!(
+            "(subpath {})",
+            sbpl_quote(&external.to_string_lossy())
+        )));
+
+        let profile_path = home.join("external-config-test.sb");
+        std::fs::write(&profile_path, profile).expect("profile");
+        let temporary = external.join(".config_external-test.tmp");
+        let write = std::process::Command::new(SANDBOX_EXEC_PATH)
+            .arg("-f")
+            .arg(&profile_path)
+            .arg("/bin/bash")
+            .arg("-c")
+            .arg(format!(
+                "printf changed > {} && mv {} {}",
+                sbpl_shell_quote(&temporary),
+                sbpl_shell_quote(&temporary),
+                sbpl_shell_quote(&target),
+            ))
+            .output()
+            .expect("run sandboxed atomic replacement");
+        assert!(
+            write.status.success(),
+            "resolved config replacement should be allowed: {}",
+            String::from_utf8_lossy(&write.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("updated target"),
+            "changed"
+        );
+
+        let denied = std::process::Command::new(SANDBOX_EXEC_PATH)
+            .arg("-f")
+            .arg(&profile_path)
+            .arg("/bin/bash")
+            .arg("-c")
+            .arg(format!(
+                "printf denied > {}",
+                sbpl_shell_quote(&external.join("unrelated.txt"))
+            ))
+            .output()
+            .expect("run sandboxed unrelated write");
+        assert!(!denied.status.success());
+        assert!(!external.join("unrelated.txt").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn sandbox_profile_opt_in_grants_agent_cli_state_only() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16619,7 +18791,7 @@ mcp_servers:
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile_text = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16728,7 +18900,7 @@ mcp_servers:
         let workspace = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16790,7 +18962,7 @@ mcp_servers:
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile_text = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
