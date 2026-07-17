@@ -58,7 +58,7 @@ enum FrameDisposition {
     Close,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Clone)]
 struct ConnectionSelectGate {
     reached: Arc<tokio::sync::Notify>,
@@ -548,7 +548,7 @@ async fn serve_admitted_connection(
     serve_admitted_connection_inner(stream, executor, state, request_deadline, None).await
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 async fn serve_admitted_connection_with_gate(
     stream: UnixStream,
     executor: RequestExecutor,
