@@ -24,6 +24,13 @@ use tokio::{
 
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
+#[cfg(target_os = "macos")]
+const HERMES_RUNTIME_OWNER_RECORD_PREFIX: &str = "hermes-runtime-owner-";
+#[cfg(target_os = "macos")]
+const HERMES_ORPHAN_EXIT_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
+const HERMES_RUNTIME_LAUNCH_BARRIER_SCRIPT: &str =
+    "IFS= read -r _june_runtime_release || exit 1; exec \"$@\"";
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
 // Set to 1/true/yes to spawn Hermes without the macOS Seatbelt jail. An escape
 // hatch for debugging a runtime that won't boot under the profile — leaving the
@@ -497,8 +504,9 @@ pub struct HermesBridge {
     shutting_down: AtomicBool,
     /// Number of starts currently between spawning a runtime child and either
     /// registering it into `processes` or reaping it. `shutdown` waits for this
-    /// to reach zero before draining, so a child spawned but not-yet-registered
-    /// can never be orphaned by the drain-then-restart (JUN-338).
+    /// to reach zero for up to the bounded shutdown timeout before draining.
+    /// Ownership records recover the residual case where a spawn completes but
+    /// remains unregistered after that timeout (JUN-339).
     starts_in_progress: AtomicUsize,
 }
 
@@ -523,6 +531,59 @@ struct HermesProcess {
     generation: u64,
     child: Child,
     connection: HermesBridgeConnection,
+    /// Exact ownership record for this process group. It is removed only after
+    /// the group leader has been reaped, so every stop path cleans up its own
+    /// mode's record without touching the other runtime.
+    ownership_record: Option<PathBuf>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct HermesRuntimeOwnershipRecord {
+    app_pid: u32,
+    app_start: String,
+    runtime_pid: u32,
+    runtime_start: String,
+    full_mode: bool,
+}
+
+#[cfg(target_os = "macos")]
+enum HermesStartTimeProbe {
+    Unknown,
+    Gone,
+    StartedAt(String),
+}
+
+#[cfg(target_os = "macos")]
+enum HermesProcessGroupProbe {
+    Unknown,
+    Gone,
+    Group(u32),
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HermesOwnerLiveness {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HermesRuntimeMatch {
+    MatchesRecord,
+    GoneOrReused,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HermesOwnershipAction {
+    Skip,
+    DeleteStale,
+    Reap,
+    Abort,
 }
 
 struct SharedProviderProxy {
@@ -944,6 +1005,7 @@ fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>
         .lock()
         .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
     let mut connections = Vec::new();
+    let mut exited_processes = Vec::new();
     for full_mode in [false, true] {
         let exited = match guard.get_mut(&full_mode) {
             None => continue,
@@ -959,10 +1021,19 @@ fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>
             },
         };
         if exited {
-            guard.remove(&full_mode);
+            if let Some(process) = guard.remove(&full_mode) {
+                exited_processes.push(process);
+            }
         } else if let Some(process) = guard.get(&full_mode) {
             connections.push(process.connection.clone());
         }
+    }
+    drop(guard);
+    for process in exited_processes {
+        // `try_wait` already reaped the leader, but a worker may still be
+        // alive in its process group. Use the normal group-aware teardown
+        // before removing this runtime's ownership record.
+        shutdown_hermes_process(Some(process));
     }
     Ok(connections)
 }
@@ -1006,6 +1077,16 @@ pub async fn start_hermes_bridge(
 pub fn start_on_app_start(app: &tauri::App) {
     let app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
+        // Recovery is an app-start responsibility, not a runtime-availability
+        // responsibility. A stale or missing managed install must not leave a
+        // previously recorded process group running indefinitely.
+        if let Err(error) = reap_orphaned_hermes_runtimes(&app).await {
+            eprintln!(
+                "failed to recover June agent runtimes during app startup: {}",
+                error.message
+            );
+            return;
+        }
         if !hermes_runtime_available_for_auto_start(&app) {
             return;
         }
@@ -1131,10 +1212,11 @@ async fn start_hermes_bridge_inner(
     let _start_guard = bridge.start_lock.lock().await;
 
     // Count this start as in-progress for the whole spawn->register window so a
-    // concurrent `shutdown` waits for it (below) before draining, and a child we
-    // spawn can never be orphaned by a drain-then-restart (JUN-338). Dropped
-    // explicitly once the child is registered or reaped, before the readiness
-    // wait, so teardown never blocks on the (up to 45s) readiness timeout.
+    // concurrent `shutdown` waits for it (below) before draining. Ownership
+    // records cover the residual case where this window exceeds the bounded
+    // shutdown wait (JUN-339). Dropped explicitly once the child is registered
+    // or reaped, before the readiness wait, so teardown never blocks on the (up
+    // to 45s) readiness timeout.
     let start_progress = StartInProgressGuard::new(&bridge.starts_in_progress);
 
     // Bail fast if the app is tearing down: no point building a runtime the
@@ -1160,6 +1242,12 @@ async fn start_hermes_bridge_inner(
     {
         return Ok(status_for(connections, Some(full_mode)));
     }
+
+    // Recover only process groups named by June's own ownership records. This
+    // runs before every replacement spawn (including app auto-start), so a
+    // runtime that outlived the bounded JUN-338 shutdown window self-heals on
+    // the next launch without a name-wide process sweep.
+    reap_orphaned_hermes_runtimes(app).await?;
 
     let port = pick_port()?;
     let token = random_token();
@@ -1276,6 +1364,31 @@ async fn start_hermes_bridge_inner(
         port_string.as_str(),
     ];
 
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        // Spawn a tiny blocked group leader first. The shell cannot execute
+        // the runtime until its ownership record is durable; if June exits in
+        // that window, pipe EOF makes the shell terminate instead of leaving
+        // an unrecorded runtime behind. `exec` preserves its pid and group.
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(HERMES_RUNTIME_LAUNCH_BARRIER_SCRIPT)
+            .arg("june-agent-runtime");
+        match &sandbox_profile {
+            Some(profile_path) => {
+                cmd.arg(SANDBOX_EXEC_PATH)
+                    .arg("-f")
+                    .arg(profile_path)
+                    .arg(&command)
+                    .args(hermes_args);
+            }
+            None => {
+                cmd.arg(&command).args(hermes_args);
+            }
+        }
+        cmd
+    };
+    #[cfg(not(target_os = "macos"))]
     let mut cmd = match &sandbox_profile {
         Some(profile_path) => {
             let mut cmd = Command::new(SANDBOX_EXEC_PATH);
@@ -1291,9 +1404,11 @@ async fn start_hermes_bridge_inner(
             cmd
         }
     };
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    #[cfg(target_os = "macos")]
+    cmd.stdin(Stdio::piped());
+    #[cfg(not(target_os = "macos"))]
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
     apply_isolated_hermes_env(
         &mut cmd,
         &hermes_home,
@@ -1328,6 +1443,10 @@ async fn start_hermes_bridge_inner(
             format!("Could not start the June-managed Hermes runtime. {error}"),
         )
     })?;
+    // Persist ownership before any later operation can lose this Child handle.
+    // If identity probing or the atomic write fails, this helper reaps the new
+    // process group and returns the start error instead of leaving it untracked.
+    let ownership_record = record_spawned_hermes_runtime(app, &mut child, full_mode)?;
     let pid = child.id();
     let connection = HermesBridgeConnection {
         base_url: base_url.clone(),
@@ -1350,7 +1469,7 @@ async fn start_hermes_bridge_inner(
         let mut guard = match bridge.processes.lock() {
             Ok(guard) => guard,
             Err(_) => {
-                reap_unregistered_child(&mut child);
+                reap_unregistered_child(&mut child, ownership_record.as_deref());
                 return Err(AppError::new(
                     "hermes_bridge_unavailable",
                     "Hermes bridge lock failed.",
@@ -1364,7 +1483,7 @@ async fn start_hermes_bridge_inner(
         // of leaking it.
         if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(existing.child.try_wait(), Ok(None)) {
-                reap_unregistered_child(&mut child);
+                reap_unregistered_child(&mut child, ownership_record.as_deref());
                 drop(guard);
                 return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
@@ -1376,18 +1495,28 @@ async fn start_hermes_bridge_inner(
         // spawned instead of registering it.
         if bridge.shutting_down.load(Ordering::SeqCst) {
             drop(guard);
-            reap_unregistered_child(&mut child);
+            reap_unregistered_child(&mut child, ownership_record.as_deref());
             return Err(AppError::new(
                 "hermes_bridge_shutting_down",
                 "June is shutting down; Hermes runtime start skipped.",
             ));
         }
+        // The macOS child has remained blocked on a parent-owned pipe through
+        // the ownership write and every registration check. Release it only
+        // while holding the same lock shutdown uses to drain the map: teardown
+        // must now either observe the inserted process or have latched
+        // `shutting_down` above, in which case the child was never released.
+        // This also closes Tauri's relaunch handoff, where the replacement can
+        // begin while the exiting owner still probes alive.
+        #[cfg(target_os = "macos")]
+        release_recorded_hermes_runtime(&mut child, ownership_record.as_deref())?;
         guard.insert(
             full_mode,
             HermesProcess {
                 generation,
                 child,
                 connection: connection.clone(),
+                ownership_record,
             },
         );
     }
@@ -6042,8 +6171,8 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
     Ok(())
 }
 
-fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
-    if let Some(process) = process.as_mut() {
+fn shutdown_hermes_process(process: Option<HermesProcess>) {
+    if let Some(mut process) = process {
         // Sweep the runtime's process group first so any worker subprocess it
         // forked dies with it rather than detaching and outliving the app (the
         // child spawns into its own group; see the spawn site). Then kill and
@@ -6051,7 +6180,27 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
         #[cfg(unix)]
         kill_process_group(process.child.id());
         let _ = process.child.kill();
-        let _ = process.child.wait();
+        match process.child.wait() {
+            Ok(_) => {
+                if let Err(error) =
+                    remove_hermes_ownership_record(process.ownership_record.as_deref())
+                {
+                    tracing::warn!(
+                        %error,
+                        "Hermes runtime was reaped but its ownership record could not be removed"
+                    );
+                }
+            }
+            Err(error) => {
+                // Retain the record when the leader was not confirmed reaped;
+                // the next startup must make the fail-closed recovery decision.
+                tracing::warn!(
+                    %error,
+                    pid = process.child.id(),
+                    "Hermes runtime leader could not be reaped; retaining ownership record"
+                );
+            }
+        }
     }
 }
 
@@ -6060,11 +6209,499 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
 /// short-circuit, a teardown handshake) can drop the `Child` and detach it. The
 /// child spawns into its own process group, so this also reaps any worker it
 /// forked (JUN-338).
-fn reap_unregistered_child(child: &mut Child) {
+fn reap_unregistered_child(child: &mut Child, ownership_record: Option<&Path>) {
     #[cfg(unix)]
     kill_process_group(child.id());
     let _ = child.kill();
-    let _ = child.wait();
+    if child.wait().is_ok() {
+        if let Err(error) = remove_hermes_ownership_record(ownership_record) {
+            tracing::warn!(
+                %error,
+                "Unregistered Hermes runtime was reaped but its ownership record could not be removed"
+            );
+        }
+    }
+}
+
+fn remove_hermes_ownership_record(path: Option<&Path>) -> io::Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_ownership_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path().app_config_dir().map_err(|error| {
+        AppError::new(
+            "hermes_runtime_owner_unrecordable",
+            format!("Could not prepare June's agent runtime: {error}"),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_mode_slug(full_mode: bool) -> &'static str {
+    if full_mode {
+        "unrestricted"
+    } else {
+        "sandboxed"
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_ownership_path(
+    directory: &Path,
+    record: &HermesRuntimeOwnershipRecord,
+) -> PathBuf {
+    directory.join(format!(
+        "{HERMES_RUNTIME_OWNER_RECORD_PREFIX}{}-{}-{}.json",
+        record.app_pid,
+        hermes_runtime_mode_slug(record.full_mode),
+        record.runtime_pid,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn probe_hermes_start_time(pid: u32) -> HermesStartTimeProbe {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("lstart=")
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Err(_) => HermesStartTimeProbe::Unknown,
+        Ok(output) if !output.status.success() => {
+            if failed_hermes_ps_proves_pid_gone(&output) {
+                HermesStartTimeProbe::Gone
+            } else {
+                HermesStartTimeProbe::Unknown
+            }
+        }
+        Ok(output) => {
+            let started = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if started.is_empty() {
+                HermesStartTimeProbe::Gone
+            } else {
+                HermesStartTimeProbe::StartedAt(started)
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn probe_hermes_process_group(pid: u32) -> HermesProcessGroupProbe {
+    let output = Command::new("/bin/ps")
+        .arg("-p")
+        .arg(pid.to_string())
+        .arg("-o")
+        .arg("pgid=")
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Err(_) => HermesProcessGroupProbe::Unknown,
+        Ok(output) if !output.status.success() => {
+            if failed_hermes_ps_proves_pid_gone(&output) {
+                HermesProcessGroupProbe::Gone
+            } else {
+                HermesProcessGroupProbe::Unknown
+            }
+        }
+        Ok(output) => {
+            let raw = String::from_utf8_lossy(&output.stdout);
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                HermesProcessGroupProbe::Gone
+            } else {
+                match trimmed.parse::<u32>() {
+                    Ok(group) => HermesProcessGroupProbe::Group(group),
+                    Err(_) => HermesProcessGroupProbe::Unknown,
+                }
+            }
+        }
+    }
+}
+
+/// With this fixed, valid `ps` invocation macOS reports an absent pid as exit
+/// 1 with no output. Any diagnostic text, signal exit, or other status is an
+/// indeterminate probe and must fail closed instead of authorizing a kill.
+#[cfg(target_os = "macos")]
+fn failed_hermes_ps_proves_pid_gone(output: &std::process::Output) -> bool {
+    failed_hermes_ps_result_proves_pid_gone(output.status.code(), &output.stdout, &output.stderr)
+}
+
+#[cfg(target_os = "macos")]
+fn failed_hermes_ps_result_proves_pid_gone(
+    status_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> bool {
+    status_code == Some(1)
+        && stdout.iter().all(|byte| byte.is_ascii_whitespace())
+        && stderr.iter().all(|byte| byte.is_ascii_whitespace())
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_owner_liveness(
+    probe: &HermesStartTimeProbe,
+    recorded_start: &str,
+) -> HermesOwnerLiveness {
+    match probe {
+        HermesStartTimeProbe::Unknown => HermesOwnerLiveness::Unknown,
+        HermesStartTimeProbe::Gone => HermesOwnerLiveness::Dead,
+        HermesStartTimeProbe::StartedAt(started) if started == recorded_start => {
+            HermesOwnerLiveness::Alive
+        }
+        HermesStartTimeProbe::StartedAt(_) => HermesOwnerLiveness::Dead,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hermes_runtime_match(
+    start_probe: &HermesStartTimeProbe,
+    recorded_start: &str,
+    group_probe: &HermesProcessGroupProbe,
+    recorded_pid: u32,
+) -> HermesRuntimeMatch {
+    match start_probe {
+        HermesStartTimeProbe::Unknown => HermesRuntimeMatch::Unknown,
+        HermesStartTimeProbe::Gone => HermesRuntimeMatch::GoneOrReused,
+        HermesStartTimeProbe::StartedAt(started) if started != recorded_start => {
+            HermesRuntimeMatch::GoneOrReused
+        }
+        HermesStartTimeProbe::StartedAt(_) => match group_probe {
+            HermesProcessGroupProbe::Unknown => HermesRuntimeMatch::Unknown,
+            // It exited between the start-time and process-group probes.
+            HermesProcessGroupProbe::Gone => HermesRuntimeMatch::GoneOrReused,
+            HermesProcessGroupProbe::Group(group) if *group == recorded_pid => {
+                HermesRuntimeMatch::MatchesRecord
+            }
+            // Exact recorded process but no longer the expected group leader.
+            // Never address its group by a stale assumption.
+            HermesProcessGroupProbe::Group(_) => HermesRuntimeMatch::Unknown,
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decide_hermes_ownership_action(
+    owner: HermesOwnerLiveness,
+    runtime: HermesRuntimeMatch,
+) -> HermesOwnershipAction {
+    match owner {
+        HermesOwnerLiveness::Alive => HermesOwnershipAction::Skip,
+        HermesOwnerLiveness::Unknown => HermesOwnershipAction::Abort,
+        HermesOwnerLiveness::Dead => match runtime {
+            HermesRuntimeMatch::MatchesRecord => HermesOwnershipAction::Reap,
+            HermesRuntimeMatch::GoneOrReused => HermesOwnershipAction::DeleteStale,
+            HermesRuntimeMatch::Unknown => HermesOwnershipAction::Abort,
+        },
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_hermes_runtime_ownership_record(
+    directory: &Path,
+    record: &HermesRuntimeOwnershipRecord,
+) -> Result<PathBuf, AppError> {
+    fs::create_dir_all(directory)
+        .map_err(|error| AppError::new("hermes_runtime_owner_unrecordable", error.to_string()))?;
+    let path = hermes_runtime_ownership_path(directory, record);
+    let temporary = directory.join(format!(
+        ".{HERMES_RUNTIME_OWNER_RECORD_PREFIX}{}-{}-{}.json.tmp",
+        record.app_pid,
+        hermes_runtime_mode_slug(record.full_mode),
+        record.runtime_pid,
+    ));
+    let serialized = serde_json::to_vec(record)
+        .map_err(|error| AppError::new("hermes_runtime_owner_unrecordable", error.to_string()))?;
+    let write = (|| -> io::Result<()> {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(&serialized)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &path)
+    })();
+    if let Err(error) = write {
+        let _ = fs::remove_file(&temporary);
+        return Err(AppError::new(
+            "hermes_runtime_owner_unrecordable",
+            error.to_string(),
+        ));
+    }
+    Ok(path)
+}
+
+#[cfg(target_os = "macos")]
+fn record_spawned_hermes_runtime_in_dir(
+    directory: &Path,
+    child: &mut Child,
+    full_mode: bool,
+) -> Result<PathBuf, AppError> {
+    let result = (|| {
+        let app_pid = std::process::id();
+        let HermesStartTimeProbe::StartedAt(app_start) = probe_hermes_start_time(app_pid) else {
+            return Err(AppError::new(
+                "hermes_runtime_owner_unrecordable",
+                "Could not read this app's process start time.",
+            ));
+        };
+        let runtime_pid = child.id();
+        let HermesStartTimeProbe::StartedAt(runtime_start) = probe_hermes_start_time(runtime_pid)
+        else {
+            return Err(AppError::new(
+                "hermes_runtime_owner_unrecordable",
+                "Could not verify the June agent runtime process.",
+            ));
+        };
+        if !matches!(
+            probe_hermes_process_group(runtime_pid),
+            HermesProcessGroupProbe::Group(group) if group == runtime_pid
+        ) {
+            return Err(AppError::new(
+                "hermes_runtime_owner_unrecordable",
+                "Could not verify the June agent runtime process.",
+            ));
+        }
+        write_hermes_runtime_ownership_record(
+            directory,
+            &HermesRuntimeOwnershipRecord {
+                app_pid,
+                app_start,
+                runtime_pid,
+                runtime_start,
+                full_mode,
+            },
+        )
+    })();
+    match result {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            reap_unregistered_child(child, None);
+            Err(error)
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn record_spawned_hermes_runtime(
+    app: &AppHandle,
+    child: &mut Child,
+    full_mode: bool,
+) -> Result<Option<PathBuf>, AppError> {
+    let directory = match hermes_runtime_ownership_dir(app) {
+        Ok(directory) => directory,
+        Err(error) => {
+            reap_unregistered_child(child, None);
+            return Err(error);
+        }
+    };
+    record_spawned_hermes_runtime_in_dir(&directory, child, full_mode).map(Some)
+}
+
+#[cfg(target_os = "macos")]
+fn release_recorded_hermes_runtime(
+    child: &mut Child,
+    ownership_record: Option<&Path>,
+) -> Result<(), AppError> {
+    let release = (|| -> io::Result<()> {
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "June agent runtime launch barrier was unavailable",
+            )
+        })?;
+        stdin.write_all(b"start\n")?;
+        stdin.flush()
+    })();
+    if let Err(error) = release {
+        tracing::warn!(
+            %error,
+            pid = child.id(),
+            "Recorded Hermes runtime could not be released from its launch barrier"
+        );
+        reap_unregistered_child(child, ownership_record);
+        return Err(AppError::new(
+            "hermes_runtime_launch_failed",
+            "Could not start the June agent runtime.",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn record_spawned_hermes_runtime(
+    _app: &AppHandle,
+    _child: &mut Child,
+    _full_mode: bool,
+) -> Result<Option<PathBuf>, AppError> {
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+async fn reap_orphaned_hermes_runtimes(app: &AppHandle) -> Result<(), AppError> {
+    let directory = hermes_runtime_ownership_dir(app)
+        .map_err(|error| AppError::new("hermes_runtime_reap_failed", error.message))?;
+    tauri::async_runtime::spawn_blocking(move || reap_orphaned_hermes_runtimes_in_dir(&directory))
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify existing June agent runtimes: {error}"),
+            )
+        })?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn reap_orphaned_hermes_runtimes(_app: &AppHandle) -> Result<(), AppError> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn read_hermes_runtime_ownership_record(
+    path: &Path,
+) -> Result<Option<HermesRuntimeOwnershipRecord>, AppError> {
+    let raw = match fs::read(path) {
+        Ok(raw) => raw,
+        // Normal shutdown can remove a record after `read_dir` yielded it.
+        // Its disappearance proves there is no longer a record to recover.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify an existing June agent runtime: {error}"),
+            ));
+        }
+    };
+    serde_json::from_slice(&raw).map(Some).map_err(|error| {
+        AppError::new(
+            "hermes_runtime_reap_failed",
+            format!("Could not verify an existing June agent runtime: {error}"),
+        )
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn reap_orphaned_hermes_runtimes_in_dir(directory: &Path) -> Result<(), AppError> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify existing June agent runtimes: {error}"),
+            ));
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            AppError::new(
+                "hermes_runtime_reap_failed",
+                format!("Could not verify existing June agent runtimes: {error}"),
+            )
+        })?;
+        let path = entry.path();
+        let is_record = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(HERMES_RUNTIME_OWNER_RECORD_PREFIX) && name.ends_with(".json")
+            });
+        if !is_record {
+            continue;
+        }
+        let Some(record) = read_hermes_runtime_ownership_record(&path)? else {
+            continue;
+        };
+        if path.file_name() != hermes_runtime_ownership_path(directory, &record).file_name() {
+            return Err(AppError::new(
+                "hermes_runtime_reap_failed",
+                "Could not verify an existing June agent runtime.",
+            ));
+        }
+
+        let owner =
+            hermes_owner_liveness(&probe_hermes_start_time(record.app_pid), &record.app_start);
+        let action = if owner == HermesOwnerLiveness::Alive {
+            HermesOwnershipAction::Skip
+        } else {
+            let runtime = hermes_runtime_match(
+                &probe_hermes_start_time(record.runtime_pid),
+                &record.runtime_start,
+                &probe_hermes_process_group(record.runtime_pid),
+                record.runtime_pid,
+            );
+            decide_hermes_ownership_action(owner, runtime)
+        };
+        match action {
+            HermesOwnershipAction::Skip => {}
+            HermesOwnershipAction::DeleteStale => {
+                remove_hermes_ownership_record(Some(&path)).map_err(|error| {
+                    AppError::new("hermes_runtime_reap_failed", error.to_string())
+                })?;
+            }
+            HermesOwnershipAction::Reap => {
+                kill_process_group(record.runtime_pid);
+                if !wait_for_recorded_hermes_runtime_exit(
+                    record.runtime_pid,
+                    &record.runtime_start,
+                    HERMES_ORPHAN_EXIT_TIMEOUT,
+                )? {
+                    return Err(AppError::new(
+                        "hermes_runtime_orphan_stuck",
+                        "A previous June agent runtime could not be stopped.",
+                    ));
+                }
+                remove_hermes_ownership_record(Some(&path)).map_err(|error| {
+                    AppError::new("hermes_runtime_reap_failed", error.to_string())
+                })?;
+            }
+            HermesOwnershipAction::Abort => {
+                return Err(AppError::new(
+                    "hermes_runtime_reap_failed",
+                    "Could not verify an existing June agent runtime.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_recorded_hermes_runtime_exit(
+    pid: u32,
+    recorded_start: &str,
+    timeout: Duration,
+) -> Result<bool, AppError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match probe_hermes_start_time(pid) {
+            HermesStartTimeProbe::Unknown => {
+                return Err(AppError::new(
+                    "hermes_runtime_reap_failed",
+                    "Could not confirm a previous June agent runtime stopped.",
+                ));
+            }
+            HermesStartTimeProbe::Gone => return Ok(true),
+            HermesStartTimeProbe::StartedAt(started) if started != recorded_start => {
+                // The recorded leader is gone and the pid has already been
+                // reused. Never signal the replacement process.
+                return Ok(true);
+            }
+            HermesStartTimeProbe::StartedAt(_) => {}
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Best-effort SIGKILL to a whole process group, addressed by the leader's pid
@@ -12571,10 +13208,523 @@ assert capped["has_more"] is True, capped
             .spawn()
             .expect("spawn unregistered child");
 
-        reap_unregistered_child(&mut child);
+        reap_unregistered_child(&mut child, None);
 
         // Already reaped by the helper; a second wait resolves immediately.
         assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hermes_test_record(
+        app_pid: u32,
+        app_start: impl Into<String>,
+        runtime_pid: u32,
+        runtime_start: impl Into<String>,
+        full_mode: bool,
+    ) -> HermesRuntimeOwnershipRecord {
+        HermesRuntimeOwnershipRecord {
+            app_pid,
+            app_start: app_start.into(),
+            runtime_pid,
+            runtime_start: runtime_start.into(),
+            full_mode,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hermes_test_started_at(pid: u32) -> String {
+        match probe_hermes_start_time(pid) {
+            HermesStartTimeProbe::StartedAt(started) => started,
+            HermesStartTimeProbe::Unknown => panic!("process start time was indeterminate"),
+            HermesStartTimeProbe::Gone => panic!("test process exited before identity probe"),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn gone_hermes_test_pid() -> u32 {
+        let mut process = Command::new("/usr/bin/true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn short-lived test process");
+        let pid = process.id();
+        process.wait().expect("reap short-lived test process");
+        assert!(matches!(
+            probe_hermes_start_time(pid),
+            HermesStartTimeProbe::Gone
+        ));
+        pid
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_hermes_test_process_group() -> Child {
+        use std::os::unix::process::CommandExt as _;
+
+        Command::new("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn disposable Hermes test process group")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_blocked_hermes_test_process_group() -> Child {
+        use std::os::unix::process::CommandExt as _;
+
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(HERMES_RUNTIME_LAUNCH_BARRIER_SCRIPT)
+            .arg("june-agent-runtime-test")
+            .arg("/bin/sleep")
+            .arg("300")
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn blocked disposable Hermes test process group")
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hermes_test_process(
+        child: Child,
+        ownership_record: PathBuf,
+        full_mode: bool,
+        generation: u64,
+    ) -> HermesProcess {
+        let mut connection = oauth_test_connection();
+        connection.pid = child.id();
+        connection.full_mode = full_mode;
+        HermesProcess {
+            generation,
+            child,
+            connection,
+            ownership_record: Some(ownership_record),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct DetachedHermesTestProcessGroup(u32);
+
+    #[cfg(target_os = "macos")]
+    impl Drop for DetachedHermesTestProcessGroup {
+        fn drop(&mut self) {
+            kill_process_group(self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn spawn_detached_hermes_test_process_group() -> DetachedHermesTestProcessGroup {
+        // The short-lived Python parent exits after printing the child's pid,
+        // leaving the new-session child adopted by launchd. This mirrors a
+        // runtime whose owning June process crashed, so startup recovery can
+        // kill it and observe the leader disappear without this test retaining
+        // a Child handle that would keep it as a zombie.
+        let output = Command::new("python3")
+            .arg("-c")
+            .arg(
+                "import subprocess; p = subprocess.Popen(['/bin/sleep', '300'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid, flush=True)",
+            )
+            .output()
+            .expect("spawn detached disposable process group");
+        assert!(
+            output.status.success(),
+            "detached process launcher failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let pid = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<u32>()
+            .expect("parse detached process pid");
+        assert!(matches!(
+            probe_hermes_process_group(pid),
+            HermesProcessGroupProbe::Group(group) if group == pid
+        ));
+        DetachedHermesTestProcessGroup(pid)
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn exited_hermes_leader_reaps_surviving_group_before_record_cleanup() {
+        use std::os::unix::process::CommandExt as _;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut leader = Command::new("python3")
+            .arg("-c")
+            .arg(
+                "import subprocess; p = subprocess.Popen(['/bin/sleep', '300'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(p.pid, flush=True)",
+            )
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn leader with surviving worker");
+        let group_pid = leader.id();
+        let _cleanup = DetachedHermesTestProcessGroup(group_pid);
+        let mut worker_output = String::new();
+        leader
+            .stdout
+            .take()
+            .expect("take leader stdout")
+            .read_to_string(&mut worker_output)
+            .expect("read worker pid");
+        let worker_pid = worker_output
+            .trim()
+            .parse::<u32>()
+            .expect("parse worker pid");
+        let worker_start = hermes_test_started_at(worker_pid);
+        assert!(matches!(
+            probe_hermes_process_group(worker_pid),
+            HermesProcessGroupProbe::Group(group) if group == group_pid
+        ));
+
+        let record = hermes_test_record(std::process::id(), "owner", group_pid, "runtime", false);
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+        let bridge = HermesBridge::default();
+        bridge
+            .processes
+            .lock()
+            .expect("lock processes")
+            .insert(false, hermes_test_process(leader, path.clone(), false, 1));
+
+        let connections = live_connections(&bridge).expect("collect live connections");
+
+        assert!(connections.is_empty());
+        assert!(bridge.processes.lock().expect("lock processes").is_empty());
+        assert!(!path.exists());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match probe_hermes_start_time(worker_pid) {
+                HermesStartTimeProbe::Gone => break,
+                HermesStartTimeProbe::StartedAt(started) if started != worker_start => break,
+                HermesStartTimeProbe::StartedAt(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                HermesStartTimeProbe::StartedAt(_) => {
+                    panic!("surviving Hermes worker was not killed")
+                }
+                HermesStartTimeProbe::Unknown => panic!("worker identity became indeterminate"),
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn live_hermes_owner_skips_its_runtime_record() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut child = spawn_hermes_test_process_group();
+        let app_pid = std::process::id();
+        let record = HermesRuntimeOwnershipRecord {
+            app_pid,
+            app_start: hermes_test_started_at(app_pid),
+            runtime_pid: child.id(),
+            runtime_start: hermes_test_started_at(child.id()),
+            full_mode: false,
+        };
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        assert_eq!(
+            decide_hermes_ownership_action(
+                HermesOwnerLiveness::Alive,
+                HermesRuntimeMatch::MatchesRecord,
+            ),
+            HermesOwnershipAction::Skip
+        );
+        reap_orphaned_hermes_runtimes_in_dir(directory.path()).expect("live owner must be skipped");
+        assert!(path.exists());
+        assert!(child.try_wait().expect("probe runtime").is_none());
+
+        shutdown_hermes_process(Some(hermes_test_process(child, path.clone(), false, 0)));
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dead_hermes_owner_with_exact_runtime_identity_reaps() {
+        assert_eq!(
+            decide_hermes_ownership_action(
+                HermesOwnerLiveness::Dead,
+                HermesRuntimeMatch::MatchesRecord,
+            ),
+            HermesOwnershipAction::Reap
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dead_hermes_owner_with_gone_runtime_deletes_stale_record() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let gone_pid = gone_hermes_test_pid();
+        let record = hermes_test_record(gone_pid, "dead-owner", gone_pid, "gone", false);
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        reap_orphaned_hermes_runtimes_in_dir(directory.path())
+            .expect("delete stale ownership record");
+
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reused_hermes_owner_pid_counts_as_dead() {
+        assert_eq!(
+            hermes_owner_liveness(
+                &HermesStartTimeProbe::StartedAt("new-process".to_string()),
+                "original-owner",
+            ),
+            HermesOwnerLiveness::Dead
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reused_hermes_runtime_pid_is_never_killed() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let mut unrelated = spawn_hermes_test_process_group();
+        let record = hermes_test_record(
+            gone_hermes_test_pid(),
+            "dead-owner",
+            unrelated.id(),
+            "different-runtime-start",
+            false,
+        );
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        reap_orphaned_hermes_runtimes_in_dir(directory.path())
+            .expect("discard reused-pid ownership record");
+
+        assert!(!path.exists());
+        assert!(matches!(unrelated.try_wait(), Ok(None)));
+        kill_process_group(unrelated.id());
+        unrelated.wait().expect("reap unrelated test process");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unknown_hermes_owner_or_runtime_identity_aborts() {
+        assert_eq!(
+            hermes_owner_liveness(&HermesStartTimeProbe::Unknown, "owner"),
+            HermesOwnerLiveness::Unknown
+        );
+        assert_eq!(
+            hermes_runtime_match(
+                &HermesStartTimeProbe::StartedAt("runtime".to_string()),
+                "runtime",
+                &HermesProcessGroupProbe::Unknown,
+                42,
+            ),
+            HermesRuntimeMatch::Unknown
+        );
+        assert_eq!(
+            hermes_runtime_match(
+                &HermesStartTimeProbe::StartedAt("runtime".to_string()),
+                "runtime",
+                &HermesProcessGroupProbe::Group(41),
+                42,
+            ),
+            HermesRuntimeMatch::Unknown
+        );
+        assert_eq!(
+            decide_hermes_ownership_action(
+                HermesOwnerLiveness::Unknown,
+                HermesRuntimeMatch::MatchesRecord,
+            ),
+            HermesOwnershipAction::Abort
+        );
+        assert_eq!(
+            decide_hermes_ownership_action(HermesOwnerLiveness::Dead, HermesRuntimeMatch::Unknown,),
+            HermesOwnershipAction::Abort
+        );
+        assert!(failed_hermes_ps_result_proves_pid_gone(Some(1), b"", b""));
+        assert!(!failed_hermes_ps_result_proves_pid_gone(
+            Some(1),
+            b"",
+            b"permission denied"
+        ));
+        assert!(!failed_hermes_ps_result_proves_pid_gone(Some(2), b"", b""));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn multiple_hermes_runtime_records_for_one_app_pid_do_not_overwrite() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let sandboxed = hermes_test_record(100, "owner", 200, "sandboxed", false);
+        let unrestricted = hermes_test_record(100, "owner", 201, "unrestricted", true);
+
+        let sandboxed_path = write_hermes_runtime_ownership_record(directory.path(), &sandboxed)
+            .expect("write sandboxed record");
+        let unrestricted_path =
+            write_hermes_runtime_ownership_record(directory.path(), &unrestricted)
+                .expect("write unrestricted record");
+
+        assert_ne!(sandboxed_path, unrestricted_path);
+        assert!(sandboxed_path.exists());
+        assert!(unrestricted_path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hermes_runtime_record_creation_is_atomic_and_cleanup_is_exact() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let record = hermes_test_record(100, "owner", 200, "runtime", false);
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write ownership record");
+
+        let persisted: HermesRuntimeOwnershipRecord =
+            serde_json::from_slice(&fs::read(&path).expect("read persisted record"))
+                .expect("parse persisted record");
+        assert_eq!(persisted, record);
+        let names = fs::read_dir(directory.path())
+            .expect("list record directory")
+            .map(|entry| {
+                entry
+                    .expect("read record entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![path.file_name().unwrap().to_string_lossy()]);
+
+        remove_hermes_ownership_record(Some(&path)).expect("remove exact record");
+        assert!(!path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn missing_hermes_runtime_record_between_scan_and_read_is_ignored() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory
+            .path()
+            .join(format!("{HERMES_RUNTIME_OWNER_RECORD_PREFIX}removed.json"));
+
+        let record = read_hermes_runtime_ownership_record(&path)
+            .expect("a concurrently removed record must be ignored");
+
+        assert!(record.is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn malformed_hermes_runtime_record_aborts_and_is_retained() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join(format!(
+            "{HERMES_RUNTIME_OWNER_RECORD_PREFIX}malformed.json"
+        ));
+        fs::write(&path, b"not-json").expect("write malformed record");
+
+        let error = reap_orphaned_hermes_runtimes_in_dir(directory.path())
+            .expect_err("malformed record must fail closed");
+
+        assert_eq!(error.code, "hermes_runtime_reap_failed");
+        assert!(path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn spawn_record_failure_reaps_the_unregistered_child() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let not_a_directory = directory.path().join("record-dir");
+        fs::write(&not_a_directory, b"file").expect("create invalid record directory");
+        let mut child = spawn_blocked_hermes_test_process_group();
+
+        let error = record_spawned_hermes_runtime_in_dir(&not_a_directory, &mut child, false)
+            .expect_err("record failure must fail the spawn");
+
+        assert_eq!(error.code, "hermes_runtime_owner_unrecordable");
+        assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_barrier_exits_if_the_owner_dies_before_record_release() {
+        let mut child = spawn_blocked_hermes_test_process_group();
+
+        drop(child.stdin.take());
+        let status = child.wait().expect("wait for launch barrier");
+
+        assert!(!status.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn normal_shutdown_removes_only_its_own_runtime_record() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let first = spawn_hermes_test_process_group();
+        let mut second = spawn_hermes_test_process_group();
+        let app_pid = std::process::id();
+        let app_start = hermes_test_started_at(app_pid);
+        let first_record = hermes_test_record(
+            app_pid,
+            app_start.clone(),
+            first.id(),
+            hermes_test_started_at(first.id()),
+            false,
+        );
+        let second_record = hermes_test_record(
+            app_pid,
+            app_start,
+            second.id(),
+            hermes_test_started_at(second.id()),
+            true,
+        );
+        let first_path = write_hermes_runtime_ownership_record(directory.path(), &first_record)
+            .expect("write first record");
+        let second_path = write_hermes_runtime_ownership_record(directory.path(), &second_record)
+            .expect("write second record");
+
+        shutdown_hermes_process(Some(hermes_test_process(
+            first,
+            first_path.clone(),
+            false,
+            1,
+        )));
+
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+        assert!(matches!(second.try_wait(), Ok(None)));
+
+        shutdown_hermes_process(Some(hermes_test_process(
+            second,
+            second_path.clone(),
+            true,
+            2,
+        )));
+        assert!(!second_path.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retained_crash_record_is_reaped_on_the_next_startup() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let detached = spawn_detached_hermes_test_process_group();
+        let record = hermes_test_record(
+            gone_hermes_test_pid(),
+            "dead-owner",
+            detached.0,
+            hermes_test_started_at(detached.0),
+            false,
+        );
+        let path = write_hermes_runtime_ownership_record(directory.path(), &record)
+            .expect("write retained crash record");
+
+        reap_orphaned_hermes_runtimes_in_dir(directory.path()).expect("reap retained crash record");
+
+        assert!(!path.exists());
+        assert!(matches!(
+            probe_hermes_start_time(detached.0),
+            HermesStartTimeProbe::Gone
+        ));
     }
 
     #[test]
