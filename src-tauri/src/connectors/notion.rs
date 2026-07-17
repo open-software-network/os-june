@@ -10,11 +10,12 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{sync::OnceLock, time::Duration};
+use std::{future::Future, sync::OnceLock, time::Duration};
 use tauri::AppHandle;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    sync::Mutex as AsyncMutex,
 };
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -56,6 +57,11 @@ const NOTION_ACTION_TOOL_ALLOWLIST: &[&str] = &["notion-create-pages", "notion-u
 const NOTION_ACTIONS_SERVER_NAME: &str = "june_notion_actions";
 
 static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+static CREDENTIAL_LIFECYCLE_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+
+fn credential_lifecycle_lock() -> &'static AsyncMutex<()> {
+    CREDENTIAL_LIFECYCLE_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
 
 fn http_client() -> Result<&'static reqwest::Client, AppError> {
     HTTP_CLIENT
@@ -224,7 +230,7 @@ struct TokenResponse {
     expires_in: Option<i64>,
 }
 
-#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct StoredNotionConnection {
     access_token: String,
     #[serde(default)]
@@ -243,6 +249,12 @@ struct StoredNotionConnection {
 struct TokenErrorBody {
     #[serde(default)]
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshFailureKind {
+    ReconnectRequired,
+    Retryable,
 }
 
 pub async fn status() -> Result<NotionConnectionStatus, AppError> {
@@ -340,15 +352,16 @@ pub async fn connect(flow: &NotionConnectFlow) -> Result<NotionConnection, AppEr
         client_secret: registration.client_secret.clone(),
         endpoint: MCP_ENDPOINT.to_string(),
     };
-    store::store(&stored).await?;
-    if let Err(error) = verify_hosted_mcp_discovery(&stored.access_token).await {
-        let _ = store::delete().await;
-        return Err(error);
+    verify_hosted_mcp_discovery(&stored.access_token).await?;
+    {
+        let _guard = credential_lifecycle_lock().lock().await;
+        store::store(&stored).await?;
     }
     Ok(connection())
 }
 
 pub async fn disconnect() -> Result<(), AppError> {
+    let _guard = credential_lifecycle_lock().lock().await;
     store::delete().await
 }
 
@@ -366,16 +379,18 @@ async fn verify_hosted_mcp_discovery(access_token: &str) -> Result<(), AppError>
 }
 
 pub async fn list_tools() -> Result<NotionToolInventory, AppError> {
-    let stored = load_connected().await?;
-    let client = McpHttpClient::new(stored.access_token.clone());
-    client.initialize().await?;
-    let (tools, bytes) = client.tools_list().await?;
+    let (tools, bytes, session_established) = run_with_fresh_client(|client| async move {
+        client.initialize().await?;
+        let (tools, bytes) = client.tools_list().await?;
+        Ok((tools, bytes, client.session_id().is_some()))
+    })
+    .await?;
     Ok(NotionToolInventory {
         endpoint: MCP_ENDPOINT.to_string(),
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
         tool_count: tools.len(),
         tools,
-        session_established: client.session_id().is_some(),
+        session_established,
         inventory_bytes: bytes,
     })
 }
@@ -391,10 +406,11 @@ pub async fn mcp_action_tool_list() -> Result<NotionMcpToolList, AppError> {
 async fn filtered_mcp_tool_list(
     allowed: fn(&str) -> Option<&'static str>,
 ) -> Result<NotionMcpToolList, AppError> {
-    let stored = load_connected().await?;
-    let client = McpHttpClient::new(stored.access_token.clone());
-    client.initialize().await?;
-    let tools = client.hosted_tools_list().await?;
+    let tools = run_with_fresh_client(|client| async move {
+        client.initialize().await?;
+        client.hosted_tools_list().await
+    })
+    .await?;
     Ok(NotionMcpToolList {
         tools: filter_allowed_tools(tools, allowed),
     })
@@ -445,10 +461,14 @@ async fn call_hosted_tool_unchecked(
     tool_name: &str,
     arguments: serde_json::Value,
 ) -> Result<NotionHostedToolCallResult, AppError> {
-    let stored = load_connected().await?;
-    let client = McpHttpClient::new(stored.access_token.clone());
-    client.initialize().await?;
-    let result = client.call_tool(tool_name, arguments).await?;
+    let result = run_with_fresh_client(|client| {
+        let arguments = arguments.clone();
+        async move {
+            client.initialize().await?;
+            client.call_tool(tool_name, arguments).await
+        }
+    })
+    .await?;
     Ok(NotionHostedToolCallResult {
         tool_name: tool_name.to_string(),
         result,
@@ -456,19 +476,155 @@ async fn call_hosted_tool_unchecked(
 }
 
 async fn load_connected() -> Result<StoredNotionConnection, AppError> {
-    let stored = store::load().await?.ok_or_else(|| {
+    store::load().await?.ok_or_else(|| {
         AppError::new(
             "notion_not_connected",
             "Connect Notion before using Notion tools.",
         )
-    })?;
-    if notion_token_expired_at(&stored, now_unix()) {
-        return Err(AppError::new(
-            "notion_token_expired",
-            "Reconnect Notion before using Notion tools.",
-        ));
+    })
+}
+
+async fn load_connected_with_fresh_token() -> Result<StoredNotionConnection, AppError> {
+    let stored = load_connected().await?;
+    if !notion_token_expired_at(&stored, now_unix()) {
+        return Ok(stored);
     }
-    Ok(stored)
+    refresh_connected_token(false).await
+}
+
+async fn refresh_connected_token(force: bool) -> Result<StoredNotionConnection, AppError> {
+    let _guard = credential_lifecycle_lock().lock().await;
+    let stored = load_connected().await?;
+    if !force && !notion_token_expired_at(&stored, now_unix()) {
+        return Ok(stored);
+    }
+    let refreshed = refresh_stored_connection(&stored).await?;
+    store::store(&refreshed).await?;
+    Ok(refreshed)
+}
+
+async fn refresh_stored_connection(
+    stored: &StoredNotionConnection,
+) -> Result<StoredNotionConnection, AppError> {
+    let refresh_token = stored
+        .refresh_token
+        .as_deref()
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(reconnect_required)?;
+    let tokens = refresh_token_request(
+        &stored.client_id,
+        stored.client_secret.as_deref(),
+        refresh_token,
+    )
+    .await?;
+    Ok(merge_refreshed_tokens(stored, tokens, now_unix()))
+}
+
+async fn refresh_token_request(
+    client_id: &str,
+    client_secret: Option<&str>,
+    refresh_token: &str,
+) -> Result<TokenResponse, AppError> {
+    let mut form = vec![
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", client_id),
+        ("resource", EXPECTED_RESOURCE),
+    ];
+    if let Some(secret) = client_secret.filter(|secret| !secret.is_empty()) {
+        form.push(("client_secret", secret));
+    }
+    let response = http_client()?
+        .post(EXPECTED_TOKEN_ENDPOINT)
+        .timeout(HTTP_TIMEOUT)
+        .form(&form)
+        .send()
+        .await
+        .map_err(|_| refresh_failed(RefreshFailureKind::Retryable, None))?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|_| refresh_failed(RefreshFailureKind::Retryable, None))?;
+    if (200..300).contains(&status) {
+        if let Ok(tokens) = serde_json::from_str::<TokenResponse>(&body) {
+            if !tokens.access_token.is_empty() {
+                return Ok(tokens);
+            }
+        }
+        tracing::warn!(
+            status,
+            "notion token refresh returned an incomplete response"
+        );
+        return Err(refresh_failed(RefreshFailureKind::Retryable, None));
+    }
+    let error_code = serde_json::from_str::<TokenErrorBody>(&body)
+        .ok()
+        .and_then(|body| body.error);
+    let kind = match error_code.as_deref() {
+        Some("invalid_grant") => RefreshFailureKind::ReconnectRequired,
+        _ if status >= 500 => RefreshFailureKind::Retryable,
+        _ => RefreshFailureKind::Retryable,
+    };
+    tracing::warn!(status, error_code = ?error_code, "notion token refresh failed");
+    Err(refresh_failed(kind, error_code))
+}
+
+fn merge_refreshed_tokens(
+    stored: &StoredNotionConnection,
+    tokens: TokenResponse,
+    now: i64,
+) -> StoredNotionConnection {
+    StoredNotionConnection {
+        access_token: tokens.access_token.clone(),
+        refresh_token: tokens
+            .refresh_token
+            .clone()
+            .filter(|token| !token.trim().is_empty())
+            .or_else(|| stored.refresh_token.clone()),
+        expires_at_unix: tokens.expires_in.map(|expires| now + expires.max(0)),
+        client_id: stored.client_id.clone(),
+        client_secret: stored.client_secret.clone(),
+        endpoint: MCP_ENDPOINT.to_string(),
+    }
+}
+
+fn reconnect_required() -> AppError {
+    AppError::new(
+        "notion_reconnect_required",
+        "Reconnect Notion before using Notion tools.",
+    )
+}
+
+fn refresh_failed(kind: RefreshFailureKind, error_code: Option<String>) -> AppError {
+    match kind {
+        RefreshFailureKind::ReconnectRequired => reconnect_required(),
+        RefreshFailureKind::Retryable => {
+            let message = match error_code {
+                Some(code) => format!("Could not refresh the Notion connection ({code})."),
+                None => {
+                    "Could not refresh the Notion connection. Try again in a moment.".to_string()
+                }
+            };
+            AppError::new("notion_token_refresh_failed", message)
+        }
+    }
+}
+
+async fn run_with_fresh_client<T, F, Fut>(operation: F) -> Result<T, AppError>
+where
+    F: Fn(McpHttpClient) -> Fut,
+    Fut: Future<Output = Result<T, AppError>>,
+{
+    let stored = load_connected_with_fresh_token().await?;
+    let client = McpHttpClient::new(stored.access_token.clone());
+    match operation(client).await {
+        Err(error) if error.code == "notion_mcp_unauthorized" => {
+            let refreshed = refresh_connected_token(true).await?;
+            operation(McpHttpClient::new(refreshed.access_token.clone())).await
+        }
+        result => result,
+    }
 }
 
 fn notion_token_expired_at(stored: &StoredNotionConnection, now: i64) -> bool {
@@ -808,10 +964,14 @@ impl McpHttpClient {
             )
         })?;
         if !response.status().is_success() {
-            tracing::warn!(
-                status = response.status().as_u16(),
-                "notion MCP request failed"
-            );
+            let status = response.status().as_u16();
+            tracing::warn!(status, "notion MCP request failed");
+            if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(AppError::new(
+                    "notion_mcp_unauthorized",
+                    "Notion rejected the saved connection. June will refresh it and retry.",
+                ));
+            }
             return Err(AppError::new(
                 "notion_mcp_request_failed",
                 "Notion hosted MCP did not accept the request.",
@@ -1013,18 +1173,15 @@ fn preflight_update_page_arguments(arguments: &serde_json::Value) -> Result<(), 
             "Notion page updates require object arguments.",
         ));
     };
-    if find_update_page_target(arguments).is_none() {
+    if update_page_target(arguments).is_none() {
         return Err(AppError::new(
             "notion_update_page_missing_target",
-            "Notion page updates require a target page id or URL.",
+            "Notion page updates require a top-level page_id target.",
         ));
     }
-    let has_change = object.iter().any(|(key, value)| {
-        !matches!(
-            key.as_str(),
-            "page_id" | "pageId" | "page" | "id" | "url" | "page_url" | "pageUrl"
-        ) && !value.is_null()
-    });
+    let has_change = object
+        .iter()
+        .any(|(key, value)| key.as_str() != "page_id" && !value.is_null());
     if !has_change {
         return Err(AppError::new(
             "notion_update_page_empty",
@@ -1061,9 +1218,8 @@ fn summarize_update_page_action(_arguments: &serde_json::Value) -> String {
 }
 
 fn preview_update_page_action(arguments: &serde_json::Value) -> String {
-    let target = find_update_page_target(arguments).unwrap_or_else(|| "Unknown".to_string());
-    let title = find_first_string_by_key(arguments, &["title", "name"])
-        .unwrap_or_else(|| "Not specified".to_string());
+    let target = update_page_target(arguments).unwrap_or_else(|| "Unknown".to_string());
+    let title = update_page_title(arguments).unwrap_or_else(|| "Not specified".to_string());
     let changes = summarize_update_change_keys(arguments);
     format!(
         "Operation: update Notion page | Target: {} | Title: {} | Changes: {}",
@@ -1080,12 +1236,7 @@ fn summarize_update_change_keys(arguments: &serde_json::Value) -> String {
     let keys: Vec<&str> = object
         .keys()
         .map(String::as_str)
-        .filter(|key| {
-            !matches!(
-                *key,
-                "page_id" | "pageId" | "page" | "id" | "url" | "page_url" | "pageUrl"
-            )
-        })
+        .filter(|key| *key != "page_id")
         .take(6)
         .collect();
     if keys.is_empty() {
@@ -1095,13 +1246,24 @@ fn summarize_update_change_keys(arguments: &serde_json::Value) -> String {
     }
 }
 
-fn find_update_page_target(arguments: &serde_json::Value) -> Option<String> {
-    find_first_string_by_key(
-        arguments,
-        &[
-            "page_id", "pageId", "page", "id", "url", "page_url", "pageUrl",
-        ],
-    )
+fn update_page_target(arguments: &serde_json::Value) -> Option<String> {
+    arguments
+        .as_object()
+        .and_then(|object| object.get("page_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn update_page_title(arguments: &serde_json::Value) -> Option<String> {
+    arguments
+        .as_object()
+        .and_then(|object| object.get("title").or_else(|| object.get("name")))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn create_pages_count(arguments: &serde_json::Value) -> Option<usize> {
@@ -1538,6 +1700,94 @@ mod tests {
 
         stored.expires_at_unix = Some(999);
         assert!(notion_token_expired_at(&stored, 1_000));
+    }
+
+    #[test]
+    fn merge_refreshed_tokens_rotates_refresh_and_expiry() {
+        let stored = stored_connection();
+        let merged = merge_refreshed_tokens(
+            &stored,
+            TokenResponse {
+                access_token: "new-access".to_string(),
+                refresh_token: Some("new-refresh".to_string()),
+                expires_in: Some(300),
+            },
+            1_000,
+        );
+
+        assert_eq!(merged.access_token, "new-access");
+        assert_eq!(merged.refresh_token.as_deref(), Some("new-refresh"));
+        assert_eq!(merged.expires_at_unix, Some(1_300));
+        assert_eq!(merged.client_id, stored.client_id);
+    }
+
+    #[test]
+    fn merge_refreshed_tokens_preserves_refresh_when_omitted_and_clears_expiry() {
+        let stored = stored_connection();
+        let merged = merge_refreshed_tokens(
+            &stored,
+            TokenResponse {
+                access_token: "new-access".to_string(),
+                refresh_token: None,
+                expires_in: None,
+            },
+            1_000,
+        );
+
+        assert_eq!(merged.access_token, "new-access");
+        assert_eq!(merged.refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(merged.expires_at_unix, None);
+    }
+
+    #[test]
+    fn update_page_target_is_top_level_page_id_only() {
+        let arguments = serde_json::json!({
+            "page_id": " page-123 ",
+            "content": { "id": "block-456", "url": "https://nested.invalid" },
+            "title": "Updated title"
+        });
+
+        assert_eq!(update_page_target(&arguments).as_deref(), Some("page-123"));
+        assert!(preflight_update_page_arguments(&arguments).is_ok());
+        assert!(preview_update_page_action(&arguments).contains("Target: page-123"));
+    }
+
+    #[test]
+    fn update_page_target_rejects_nested_or_alias_targets() {
+        let nested_only = serde_json::json!({
+            "content": { "page_id": "nested-page", "id": "nested-id" },
+            "title": "Updated title"
+        });
+        let alias_only = serde_json::json!({
+            "pageId": "camel-page",
+            "title": "Updated title"
+        });
+
+        assert_eq!(update_page_target(&nested_only), None);
+        assert_eq!(update_page_target(&alias_only), None);
+        assert_eq!(
+            preflight_update_page_arguments(&nested_only)
+                .unwrap_err()
+                .code,
+            "notion_update_page_missing_target"
+        );
+        assert_eq!(
+            preflight_update_page_arguments(&alias_only)
+                .unwrap_err()
+                .code,
+            "notion_update_page_missing_target"
+        );
+    }
+
+    fn stored_connection() -> StoredNotionConnection {
+        StoredNotionConnection {
+            access_token: "access".to_string(),
+            refresh_token: Some("refresh".to_string()),
+            expires_at_unix: Some(900),
+            client_id: "client".to_string(),
+            client_secret: Some("secret".to_string()),
+            endpoint: MCP_ENDPOINT.to_string(),
+        }
     }
 
     #[test]
