@@ -23,6 +23,9 @@ control authority, linked-device grants, and APNs signing material.
   Desktop-created pairing fixes the OS Accounts user; the phone cannot supply
   or change it. Noise XXpsk3 authenticates possession of the pairing secret and
   both device identities.
+- Mobile rejects bootstrap expiries beyond five minutes plus one minute of
+  clock skew, also enforces a monotonic local wait deadline, and lets the user
+  cancel an in-flight pairing.
 - A manually copied code can be observed by software with clipboard access.
   Desktop clears it on pairing termination or when the settings surface closes
   if it has not been replaced, while expiry and explicit device approval remain

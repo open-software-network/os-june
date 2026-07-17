@@ -142,6 +142,7 @@ final class AppModel: ObservableObject {
     private var bufferedAgentStreamOrder: [String] = []
     private var nextMessageCursor: String?
     private var refreshRequested = false
+    private var pairingTask: Task<Void, Never>?
 
     init(service: CompanionService = .shared) {
         self.service = service
@@ -166,7 +167,7 @@ final class AppModel: ObservableObject {
     }
 
     func scanAndPair() {
-        perform {
+        performPairing {
             guard #available(iOS 16.0, *) else {
                 throw CompanionNativeError.unavailable("QR scanning requires iOS 16 or later.")
             }
@@ -179,12 +180,16 @@ final class AppModel: ObservableObject {
     }
 
     func pair(pairingCode: String) {
-        perform {
+        performPairing {
             self.snapshot = try self.decode(
                 CompanionSnapshotModel.self,
                 from: try await self.service.pair(payloadJSON: pairingCode)
             )
         }
+    }
+
+    func cancelPairing() {
+        pairingTask?.cancel()
     }
 
     func unlock() {
@@ -428,6 +433,27 @@ final class AppModel: ObservableObject {
             defer { finishWorking() }
             do { try await operation() }
             catch { present(error) }
+        }
+    }
+
+    private func performPairing(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard !isWorking else { return }
+        isWorking = true
+        errorMessage = nil
+        pairingTask = Task { @MainActor in
+            defer {
+                pairingTask = nil
+                finishWorking()
+            }
+            do {
+                try await operation()
+            } catch is CancellationError {
+                return
+            } catch CompanionNativeError.cancelled {
+                return
+            } catch {
+                present(error)
+            }
         }
     }
 

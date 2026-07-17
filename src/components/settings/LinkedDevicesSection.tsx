@@ -262,7 +262,14 @@ export function LinkedDevicesSection() {
               <details className="companion-manual-pairing">
                 <summary>Enter a code instead</summary>
                 <p>In June Companion, choose Enter pairing code, then type or paste this code.</p>
-                <code>{pairing.pairingCode}</code>
+                <code
+                  onCopy={() => {
+                    copiedPairingCodeRef.current = pairing.pairingCode;
+                    setPairingCodeCopied(true);
+                  }}
+                >
+                  {pairing.pairingCode}
+                </code>
                 <button
                   type="button"
                   className="primary-action"

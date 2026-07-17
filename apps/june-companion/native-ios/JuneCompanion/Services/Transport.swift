@@ -22,6 +22,7 @@ struct ValidatedPairingPayload {
 enum PairingPayloadValidation {
   private static let maxPairingCodeBytes = 4_096
   private static let maxPairingPayloadBytes = 3_072
+  static let maxPairingLifetimeMilliseconds: UInt64 = 6 * 60 * 1_000
 
   static func decode(
     _ pairingCode: String,
@@ -52,7 +53,10 @@ enum PairingPayloadValidation {
     guard let payload = try? decoder.decode(PairingPayload.self, from: data) else {
       throw CompanionNativeError.invalidData("The pairing code is invalid.")
     }
-    guard payload.version == 1, payload.expiresAtMs > now else {
+    let maximumExpiry = now + min(maxPairingLifetimeMilliseconds, UInt64.max - now)
+    guard payload.version == 1,
+          payload.expiresAtMs > now,
+          payload.expiresAtMs <= maximumExpiry else {
       throw CompanionNativeError.invalidData("The pairing code expired or uses an unsupported version.")
     }
     guard let secret = Data(base64URL: payload.pairingSecret), secret.count == 32 else {
@@ -233,7 +237,16 @@ final class PairingAPI {
     payload: PairingPayload,
     pairingProof: [UInt8]
   ) async throws -> PairingStatusWire {
-    while currentMilliseconds() < payload.expiresAtMs {
+    let now = currentMilliseconds()
+    let remainingMilliseconds = payload.expiresAtMs > now ? payload.expiresAtMs - now : 0
+    let localDeadline = ContinuousClock.now.advanced(
+      by: .milliseconds(Int64(min(
+        remainingMilliseconds,
+        PairingPayloadValidation.maxPairingLifetimeMilliseconds
+      )))
+    )
+    while currentMilliseconds() < payload.expiresAtMs && ContinuousClock.now < localDeadline {
+      try Task.checkCancellation()
       let status: PairingStatusWire = try await request(
         relayURL: payload.relayUrl,
         path: "/v1/companion/pairings/\(payload.pairingId.uuidString)/mobile-status",

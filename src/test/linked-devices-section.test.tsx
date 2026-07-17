@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LinkedDevicesSection } from "../components/settings/LinkedDevicesSection";
@@ -81,6 +81,18 @@ describe("LinkedDevicesSection", () => {
 
     await waitFor(() => expect(mocks.readClipboardText).toHaveBeenCalled());
     expect(mocks.writeClipboardText).not.toHaveBeenCalledWith("");
+  });
+
+  it("tracks copying the selectable code so cancellation clears it", async () => {
+    const user = userEvent.setup();
+    render(<LinkedDevicesSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
+    await user.click(screen.getByText("Enter a code instead"));
+    fireEvent.copy(screen.getByText("manual-pairing-bootstrap-code"));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
   });
 
   it("clears a clipboard write that finishes after pairing is cancelled", async () => {

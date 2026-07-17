@@ -32,17 +32,21 @@ struct PairingView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 10) {
-                    Button(action: model.scanAndPair) {
-                        JunePrimaryButtonLabel(title: "Scan pairing code", systemImage: "qrcode.viewfinder")
-                    }
-                    .buttonStyle(JuneSolidButtonStyle())
-                    .disabled(model.isWorking)
-                    .accessibilityIdentifier("scan-pairing-code")
+                    if model.isWorking {
+                        Button("Cancel pairing", action: model.cancelPairing)
+                            .buttonStyle(JuneSecondaryButtonStyle())
+                            .accessibilityIdentifier("cancel-pairing")
+                    } else {
+                        Button(action: model.scanAndPair) {
+                            JunePrimaryButtonLabel(title: "Scan pairing code", systemImage: "qrcode.viewfinder")
+                        }
+                        .buttonStyle(JuneSolidButtonStyle())
+                        .accessibilityIdentifier("scan-pairing-code")
 
-                    Button("Enter pairing code") { showsManualPairing = true }
-                        .buttonStyle(JuneSecondaryButtonStyle())
-                        .disabled(model.isWorking)
-                        .accessibilityIdentifier("enter-pairing-code")
+                        Button("Enter pairing code") { showsManualPairing = true }
+                            .buttonStyle(JuneSecondaryButtonStyle())
+                            .accessibilityIdentifier("enter-pairing-code")
+                    }
                     Text("The code expires after five minutes. Your Mac must approve this device before it can connect.")
                         .font(JuneFont.footnote)
                         .foregroundStyle(.secondary)

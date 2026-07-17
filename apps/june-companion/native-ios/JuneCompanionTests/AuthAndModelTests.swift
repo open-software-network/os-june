@@ -79,6 +79,18 @@ final class AuthAndModelTests: XCTestCase {
         }
     }
 
+    func testPairingCodeRejectsAnExpiryBeyondTheFiveMinuteWindowAndClockSkew() {
+        let now: UInt64 = 1_000
+        let secret = Data(repeating: 4, count: 32).base64EncodedString()
+          .replacingOccurrences(of: "+", with: "-")
+          .replacingOccurrences(of: "/", with: "_")
+          .replacingOccurrences(of: "=", with: "")
+        let expiry = now + PairingPayloadValidation.maxPairingLifetimeMilliseconds + 1
+        let payloadJSON = #"{"version":1,"pairingId":"00000000-0000-0000-0000-000000000003","pairingSecret":"\#(secret)","relayUrl":"wss://api.example.test/v1/companion/relay","expiresAtMs":\#(expiry)}"#
+
+        XCTAssertThrowsError(try PairingPayloadValidation.decode(payloadJSON, now: now))
+    }
+
     func testSecureStoreRoundTripAndDeletionUseAnIsolatedAccount() throws {
         let account = "test.\(UUID().uuidString)"
         let value = Data("secret".utf8)
