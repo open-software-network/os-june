@@ -142,8 +142,12 @@ and non-Python shebangs fail. No fallback returns the literal ambient command
 
 Fixtures cover a direct console script, a pipx-style symlink chain, a controlled
 `env python3` shebang, interpreter symlinks, missing execute bits, malformed
-shebangs, and loops. Fallback remains categorically GitHub-ineligible and all
-first-party configuration is regenerated with the resolved interpreter.
+shebangs, and loops. One exact uv-generated `/bin/sh` trampoline is admitted:
+it must use the bounded three-line `'''exec' '<absolute-python>' "$0" "$@"`
+shape, and the resolved Python executable must be the launcher's sibling.
+General shell and multi-command shapes remain rejected. Fallback remains
+categorically GitHub-ineligible and all first-party configuration is regenerated
+with the resolved interpreter.
 
 Fallback admission distinguishes integrity states explicitly:
 
@@ -157,6 +161,10 @@ Fallback admission distinguishes integrity states explicitly:
 Managed admission is sticky in `HermesBridge` for the entire app lifetime.
 Stopping or draining every runtime process does not reopen missing-record or
 legacy fallback after any managed admission in that app process.
+Observing a valid schema-2 record also makes the trust requirement sticky before
+repair begins. A failed repair that removes the old record therefore cannot turn
+the next attempt into a missing-record fallback; a later successful clean repair
+publishes a new schema-2 record normally.
 
 ## Loader environment boundary
 

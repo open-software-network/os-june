@@ -265,3 +265,29 @@ Every other OS, architecture, or libc tuple fails closed. The Hermes source rema
 - A live artifact download, npm install/build, packaged-app restart, and dashboard render remains Task 8. It is deliberately not claimed here and was not attempted as part of this Task 4 remediation.
 - Windows GitHub exposure remains compile-time fail-closed. Native Windows parity is outside this Unix managed-install remediation.
 - The narrow same-user verify-to-exec race remains as previously documented. This change removes the duplicate steady-state digest without claiming that a userspace byte check can bind measurement atomically to `exec`.
+
+## Final reviewer follow-up remediation
+
+Follow-up commit base: `a9901104`
+
+### Final follow-up RED evidence
+
+- A two-attempt regression seeded and sealed a schema-2 runtime, tampered a critical loader, injected a first repair failure, and retried with the integrity record now missing. It initially failed to compile because no app-lifetime schema-2 trust requirement survived destructive repair.
+- An Application Support fixture using the installed uv console-script shape (`#!/bin/sh` plus its three-line quoted `exec` trampoline) initially failed with `Fallback Hermes shebang is not a supported Python interpreter`.
+
+### Final follow-up fixes
+
+- Reading a valid schema-2 record sets a sticky `HermesBridge` trust requirement before prediction or repair. Fallback policy now combines that state with the existing successful-managed-admission guard, so removal of an invalid record during a failed repair cannot make the next attempt downgrade-eligible. A later clean repair still publishes and reads a new schema-2 record.
+- The fallback resolver admits only uv's exact bounded `/bin/sh` trampoline shape. It requires the quoted absolute Python path, literal `"$0" "$@"`, exact closing line, a Python-named executable, and final canonical interpreter containment beside the selected Hermes launcher. Added shell commands and non-sibling interpreters fail closed; general shell and multi-command launchers remain rejected.
+- The superseded third-review design and implementation plan now route readers to the final-admission documents and identify the historical archive-link, dashboard-asset, fallback-lifetime, and extraction statements that no longer define the contract. The current design records both follow-up rules.
+
+### Final follow-up GREEN evidence
+
+- Focused schema-two retry regression: 1 passed, 0 failed, 977 filtered. It proves tamper, failed first repair, no fallback on the second attempt, then a successful clean repair with a replacement schema-2 record.
+- Focused uv trampoline regression: 1 passed, 0 failed, 977 filtered. It covers an Application Support path containing spaces plus injected commands, malformed closing syntax, and a non-sibling absolute interpreter.
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --manifest-path src-tauri/Cargo.toml --lib github_plugin -- --nocapture`: 47 passed, 0 failed, 931 filtered.
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo check --manifest-path src-tauri/Cargo.toml --lib`: passed.
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings`: passed.
+- Rust formatting and `git diff --check`: passed.
+
+The parent removed only disposable Cargo output before this pass. Verification retained the existing low-disk profile (`CARGO_INCREMENTAL=0`, stripped test/dev debug information, and `--lib` for the full isolation suite); no product data or user app state was touched.

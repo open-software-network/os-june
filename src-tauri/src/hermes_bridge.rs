@@ -478,6 +478,10 @@ pub struct HermesBridge {
     /// admission, stopping its process must never reopen legacy/missing-record
     /// downgrade fallback until the app itself restarts.
     managed_runtime_ever_admitted: AtomicBool,
+    /// Sticky for this app lifetime as soon as a schema-2 record is observed.
+    /// A failed repair may remove that record before replacement, but must not
+    /// turn the next attempt into downgrade-eligible "missing" state.
+    managed_schema_two_trust_required: AtomicBool,
     /// One local provider proxy shared by both runtime processes. The
     /// runtime reads its model endpoint from the single shared
     /// `HERMES_HOME/config.yaml` (no per-process override exists upstream),
@@ -6204,6 +6208,7 @@ async fn resolve_hermes_command(
 
     let managed_runtime_dir = managed_hermes_runtime_dir(app)?;
     let integrity_path = managed_hermes_integrity_path(app)?;
+    remember_schema_two_trust_requirement(bridge, &integrity_path)?;
     if predicted_current_managed_resolution(&managed_runtime_dir, &integrity_path)?.is_some() {
         let commands = managed_runtime_commands(&managed_runtime_dir);
         return Ok(HermesCommandResolution {
@@ -6212,10 +6217,7 @@ async fn resolve_hermes_command(
             managed_final_admitted: false,
         });
     }
-    let fallback_permitted = managed_fallback_allowed_by_policy(
-        managed_fallback_permitted(&integrity_path),
-        bridge.managed_runtime_ever_admitted.load(Ordering::SeqCst),
-    );
+    let fallback_permitted = managed_fallback_allowed_for_bridge(bridge, &integrity_path);
     match resolve_managed_hermes_command_with(&managed_runtime_dir, &integrity_path, || {
         install_managed_hermes_runtime(app, hermes_home)
     })
@@ -6317,6 +6319,28 @@ fn managed_fallback_allowed_by_policy(
     managed_process_admitted: bool,
 ) -> bool {
     integrity_state_permits_fallback && !managed_process_admitted
+}
+
+fn remember_schema_two_trust_requirement(
+    bridge: &HermesBridge,
+    integrity_path: &Path,
+) -> Result<(), AppError> {
+    if read_managed_hermes_integrity_record(integrity_path)?.is_some() {
+        bridge
+            .managed_schema_two_trust_required
+            .store(true, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+fn managed_fallback_allowed_for_bridge(bridge: &HermesBridge, integrity_path: &Path) -> bool {
+    managed_fallback_allowed_by_policy(
+        managed_fallback_permitted(integrity_path),
+        bridge.managed_runtime_ever_admitted.load(Ordering::SeqCst)
+            || bridge
+                .managed_schema_two_trust_required
+                .load(Ordering::SeqCst),
+    )
 }
 
 fn predicted_current_managed_resolution(
@@ -10067,7 +10091,8 @@ fn hermes_python_command_with_path(
     }
     let first_line = std::str::from_utf8(first_line)
         .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?
-        .trim_end_matches('\r')
+        .trim_end_matches('\r');
+    let shebang = first_line
         .strip_prefix("#!")
         .ok_or_else(|| {
             AppError::new(
@@ -10076,7 +10101,8 @@ fn hermes_python_command_with_path(
             )
         })?
         .trim();
-    let tokens: Vec<_> = first_line.split_ascii_whitespace().collect();
+    let tokens: Vec<_> = shebang.split_ascii_whitespace().collect();
+    let mut uv_sibling_required = false;
     let interpreter = match tokens.as_slice() {
         ["/usr/bin/env", python] if python.to_ascii_lowercase().starts_with("python") => {
             executable_from_search_path(Path::new(python), search_path).ok_or_else(|| {
@@ -10095,6 +10121,55 @@ fn hermes_python_command_with_path(
         {
             PathBuf::from(python)
         }
+        ["/bin/sh"] if first_line == "#!/bin/sh" => {
+            let mut lines = bytes.split(|byte| *byte == b'\n');
+            let _shebang = lines.next();
+            let exec_line = lines.next().ok_or_else(|| {
+                AppError::new(
+                    "hermes_runtime_command_missing",
+                    "Fallback Hermes uv trampoline is incomplete.",
+                )
+            })?;
+            let closing_line = lines.next().ok_or_else(|| {
+                AppError::new(
+                    "hermes_runtime_command_missing",
+                    "Fallback Hermes uv trampoline is incomplete.",
+                )
+            })?;
+            let exec_line = std::str::from_utf8(exec_line).map_err(|error| {
+                AppError::new("hermes_runtime_command_missing", error.to_string())
+            })?;
+            let python = exec_line
+                .strip_prefix("'''exec' '")
+                .and_then(|line| line.strip_suffix("' \"$0\" \"$@\""))
+                .filter(|python| !python.is_empty() && !python.contains('\''))
+                .ok_or_else(|| {
+                    AppError::new(
+                        "hermes_runtime_command_missing",
+                        "Fallback Hermes uv trampoline is not exact.",
+                    )
+                })?;
+            if closing_line != b"' '''" {
+                return Err(AppError::new(
+                    "hermes_runtime_command_missing",
+                    "Fallback Hermes uv trampoline is not exact.",
+                ));
+            }
+            let python = PathBuf::from(python);
+            if !python.is_absolute()
+                || !python
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.to_ascii_lowercase().starts_with("python"))
+            {
+                return Err(AppError::new(
+                    "hermes_runtime_command_missing",
+                    "Fallback Hermes uv trampoline has no absolute Python interpreter.",
+                ));
+            }
+            uv_sibling_required = true;
+            python
+        }
         _ => {
             return Err(AppError::new(
                 "hermes_runtime_command_missing",
@@ -10104,6 +10179,12 @@ fn hermes_python_command_with_path(
     };
     let interpreter = resolve_bounded_executable_symlinks(&interpreter)?;
     ensure_unix_executable(&interpreter, "Python interpreter")?;
+    if uv_sibling_required && interpreter.parent() != hermes.parent() {
+        return Err(AppError::new(
+            "hermes_runtime_command_missing",
+            "Fallback Hermes uv trampoline Python is not its sibling.",
+        ));
+    }
     if !interpreter
         .file_name()
         .and_then(|name| name.to_str())
@@ -15203,6 +15284,57 @@ esac
 
         #[cfg(unix)]
         #[test]
+        fn fallback_interpreter_accepts_only_exact_uv_shell_trampoline_with_spaces() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = tempfile::tempdir().expect("uv trampoline fixture");
+            let bin = temp
+                .path()
+                .join("Library/Application Support/June managed/venv/bin");
+            fs::create_dir_all(&bin).expect("uv trampoline bin");
+            let python = bin.join("python3");
+            fs::write(&python, b"python fixture").expect("uv sibling Python");
+            let mut python_mode = fs::metadata(&python)
+                .expect("Python metadata")
+                .permissions();
+            python_mode.set_mode(0o755);
+            fs::set_permissions(&python, python_mode).expect("Python executable mode");
+
+            let hermes = bin.join("hermes");
+            let exact = format!(
+                "#!/bin/sh\n'''exec' '{}' \"$0\" \"$@\"\n' '''\n# -*- coding: utf-8 -*-\nfrom hermes_cli.main import main\n",
+                python.display()
+            );
+            fs::write(&hermes, &exact).expect("uv Hermes trampoline");
+            let mut hermes_mode = fs::metadata(&hermes)
+                .expect("Hermes metadata")
+                .permissions();
+            hermes_mode.set_mode(0o755);
+            fs::set_permissions(&hermes, hermes_mode).expect("Hermes executable mode");
+
+            assert_eq!(
+                PathBuf::from(
+                    hermes_python_command_with_path(&hermes, None)
+                        .expect("exact uv trampoline interpreter")
+                ),
+                python.canonicalize().expect("canonical sibling Python")
+            );
+
+            for hostile in [
+                exact.replace("\"$@\"", "\"$@\"; touch /tmp/poison"),
+                exact.replace("' '''", "' '''; touch /tmp/poison"),
+                exact.replace(python.to_string_lossy().as_ref(), "/usr/bin/python3"),
+            ] {
+                fs::write(&hermes, hostile).expect("hostile uv trampoline");
+                assert!(
+                    hermes_python_command_with_path(&hermes, None).is_err(),
+                    "non-exact or non-sibling shell trampoline must fail closed"
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
         fn managed_archive_validation_rejects_every_unsafe_entry_class() {
             let cases: &[(&str, &[(&str, u8)])] = &[
                 ("absolute", &[("/root/escape", b'f')]),
@@ -15768,6 +15900,66 @@ esac
             assert!(
                 managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
                     .expect("verify repaired runtime")
+            );
+        }
+
+        #[tokio::test]
+        async fn failed_schema_two_repair_keeps_retry_downgrade_closed() {
+            let app_data = tempfile::tempdir().expect("schema-two retry fixture");
+            let runtime_dir = app_data.path().join("hermes-runtime");
+            fs::create_dir_all(&runtime_dir).expect("runtime dir");
+            seed_fake_managed_runtime(&runtime_dir);
+            let integrity_path = app_data.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            seal_managed_hermes_runtime(&runtime_dir, &integrity_path).expect("seal runtime");
+
+            fs::write(
+                runtime_dir
+                    .join("hermes-agent")
+                    .join("hermes_cli")
+                    .join("plugins.py"),
+                b"tampered loader",
+            )
+            .expect("tamper loader");
+
+            let bridge = HermesBridge::default();
+            remember_schema_two_trust_requirement(&bridge, &integrity_path)
+                .expect("remember schema-two trust requirement");
+            let first =
+                resolve_managed_hermes_command_with(&runtime_dir, &integrity_path, || async {
+                    Err(AppError::new(
+                        "hermes_runtime_install_failed",
+                        "injected first repair failure",
+                    ))
+                })
+                .await;
+            assert!(first.is_err());
+            assert!(!integrity_path.exists(), "failed repair removed old record");
+            assert!(
+                !managed_fallback_allowed_for_bridge(&bridge, &integrity_path),
+                "second attempt must not downgrade after observing schema two"
+            );
+
+            let runtime_for_retry = runtime_dir.clone();
+            let repaired = resolve_managed_hermes_command_with(
+                &runtime_dir,
+                &integrity_path,
+                move || async move {
+                    remove_managed_install_path(&runtime_for_retry)?;
+                    fs::create_dir_all(&runtime_for_retry).map_err(|error| {
+                        AppError::new("hermes_runtime_install_failed", error.to_string())
+                    })?;
+                    seed_fake_managed_runtime(&runtime_for_retry);
+                    Ok(())
+                },
+            )
+            .await
+            .expect("second clean repair succeeds");
+            assert_eq!(repaired, managed_runtime_commands(&runtime_dir).hermes);
+            assert!(
+                read_managed_hermes_integrity_record(&integrity_path)
+                    .expect("repaired record")
+                    .is_some(),
+                "successful repair must publish a new schema-two record"
             );
         }
 

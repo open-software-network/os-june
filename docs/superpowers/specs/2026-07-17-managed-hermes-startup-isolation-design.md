@@ -1,5 +1,12 @@
 # Managed Hermes startup isolation design
 
+> **Superseded:** The current design is
+> [Managed Hermes final admission remediation](2026-07-17-managed-hermes-final-admission-remediation-design.md).
+> This document records the third-review checkpoint only. Its categorical
+> link rejection, path-reopened extraction, missing-dashboard-assets, and
+> process-map admission statements are historical and must not be used as the
+> current implementation contract.
+
 **Date:** 2026-07-17
 
 **Scope:** Third security-review remediation for Task 4 GitHub capability
