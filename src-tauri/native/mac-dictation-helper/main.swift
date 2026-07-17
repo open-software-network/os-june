@@ -1709,12 +1709,7 @@ final class DictationController {
         // never calling back); erroring not_listening here would wedge the
         // pending flag until a helper restart.
         if startPending && !isListening {
-            dictationStartGeneration += 1
-            let interruptedStartCue = RecordingCuePlayer.cancel(.start)
-            resetRecordingState()
-            if interruptedStartCue {
-                RecordingCuePlayer.play(.stop)
-            }
+            cancelAndResetRecording()
             emit("recording_discarded", ["reason": "start_cancelled"])
             return
         }
@@ -1788,13 +1783,10 @@ final class DictationController {
     func discard() {
         // Cancel any start still waiting on the permission prompt — the
         // graze is over, so a later grant must not open the microphone.
-        dictationStartGeneration += 1
-        startPending = false
         // The HUD shows on listening_started, so a discard that interrupts a
         // live recording (a grazed push-to-talk key, a signed-out session)
         // must announce itself or the HUD stays stuck on "Listening".
-        let wasListening = isListening
-        resetRecordingState()
+        let wasListening = cancelAndResetRecording()
         if wasListening {
             emit("recording_discarded")
         }
@@ -2158,6 +2150,18 @@ final class DictationController {
         }
         try? FileManager.default.removeItem(at: micTestSampleURL)
         self.micTestSampleURL = nil
+    }
+
+    @discardableResult
+    private func cancelAndResetRecording() -> Bool {
+        dictationStartGeneration += 1
+        let interruptedStartCue = RecordingCuePlayer.cancel(.start)
+        let wasListening = isListening
+        resetRecordingState()
+        if interruptedStartCue {
+            RecordingCuePlayer.play(.stop)
+        }
+        return wasListening
     }
 
     private func resetRecordingState(keepRecordingFile: Bool = false) {

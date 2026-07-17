@@ -472,6 +472,41 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
+  it("does not let a delayed start error hide a newer listening state", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    mocks.hide.mockClear();
+
+    let resolvePlacement: ((placement: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return new Promise<string>((resolve) => {
+          resolvePlacement = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const startError = emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "microphone_permission_missing",
+        message: "Microphone permission is required.",
+      },
+    });
+    expect(hudElement().dataset.state).toBe("error");
+
+    void emit("dictation-event", { type: "listening_started" });
+    expect(hudElement().dataset.state).toBe("listening");
+
+    resolvePlacement?.("below");
+    await startError;
+    await vi.advanceTimersByTimeAsync(2_200);
+
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
   it("uses agent-style frostless chrome for the compact listening pill", async () => {
     await loadHud();
 
