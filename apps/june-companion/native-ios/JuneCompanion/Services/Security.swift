@@ -52,6 +52,21 @@ final class SecureStore: @unchecked Sendable {
     return data
   }
 
+  func migrateAccessibility(account: String, to accessible: CFString) throws {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+    ]
+    let status = SecItemUpdate(
+      query as CFDictionary,
+      [kSecAttrAccessible as String: accessible] as CFDictionary
+    )
+    guard status == errSecSuccess || status == errSecItemNotFound else {
+      throw CompanionNativeError.unavailable("Secure storage is unavailable.")
+    }
+  }
+
   func delete(account: String) {
     SecItemDelete([
       kSecClass as String: kSecClassGenericPassword,
@@ -145,14 +160,24 @@ final class DeviceIdentityService {
   func identity() throws -> DeviceIdentity {
     if let data = try SecureStore.shared.read(account: account),
        let identity = try? JSONDecoder().decode(DeviceIdentity.self, from: data),
-       identity.privateKey.count == 32, identity.publicKey.count == 32 { return identity }
+       identity.privateKey.count == 32, identity.publicKey.count == 32 {
+      try SecureStore.shared.migrateAccessibility(
+        account: account,
+        to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
+      return identity
+    }
     var privateKey = [UInt8](repeating: 0, count: 32)
     var publicKey = [UInt8](repeating: 0, count: 32)
     guard june_crypto_generate_identity(&privateKey, &publicKey) == 0 else {
       throw CompanionNativeError.unavailable("A device identity could not be generated.")
     }
     let identity = DeviceIdentity(deviceID: UUID(), privateKey: privateKey, publicKey: publicKey)
-    try SecureStore.shared.save(JSONEncoder().encode(identity), account: account)
+    try SecureStore.shared.save(
+      JSONEncoder().encode(identity),
+      account: account,
+      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
     return identity
   }
 

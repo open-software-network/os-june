@@ -17,10 +17,14 @@ targets an offline phone, the relay sends `{ "aps": { "content-available": 1
 } }` with background push type and priority 5. There is no visible or sensitive
 notification content. If iOS grants background execution while the Keychain is
 available, the companion refreshes its encrypted cache, returns to the locked
-state, and disconnects. Native transport requests honor task cancellation, and
-the background refresh cancels after 20 seconds so the app reports no data
-instead of overrunning its wake window. iOS may decline to wake the app;
-foreground reconnect and resynchronization must still work.
+state, and disconnects. The linked configuration, device identity, device
+credential, cache key, and encrypted cache file use the after-first-unlock
+protection class required for that background path; the app still requires
+device-owner authentication before displaying the cache. Native transport
+requests honor task cancellation, and the background refresh cancels after 20
+seconds so the app reports no data instead of overrunning its wake window. iOS
+may decline to wake the app; foreground reconnect and resynchronization must
+still work.
 
 Do not add PushKit, VoIP claims, background audio, notification content, or an
 APNs key to the mobile bundle. Remove invalid/unregistered device tokens during

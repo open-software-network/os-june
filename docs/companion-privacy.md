@@ -27,5 +27,7 @@ UserDefaults under required-reason category CA92.1. The companion does not use
 those values for tracking and declares no tracking domains.
 
 The phone's recent snapshot cache is AES-GCM encrypted with a random Keychain
-key and complete file protection. It supports rendering only and is not
-offline synchronization.
+key. Both the key and cache file use after-first-unlock device-only protection
+so a content-free background push can refresh the cache while the screen is
+locked. June still requires device-owner authentication before rendering it.
+The cache supports rendering only and is not offline synchronization.

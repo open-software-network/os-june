@@ -13,12 +13,14 @@ struct Snapshot: Codable {
 }
 
 enum JSONValue: Codable {
-  case string(String), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
+  case string(String), unsignedInteger(UInt64), signedInteger(Int64), number(Double), bool(Bool), object([String: JSONValue]), array([JSONValue]), null
 
   init(from decoder: Decoder) throws {
     let container = try decoder.singleValueContainer()
     if container.decodeNil() { self = .null }
     else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+    else if let value = try? container.decode(UInt64.self) { self = .unsignedInteger(value) }
+    else if let value = try? container.decode(Int64.self) { self = .signedInteger(value) }
     else if let value = try? container.decode(Double.self) { self = .number(value) }
     else if let value = try? container.decode(String.self) { self = .string(value) }
     else if let value = try? container.decode([String: JSONValue].self) { self = .object(value) }
@@ -29,6 +31,8 @@ enum JSONValue: Codable {
     var container = encoder.singleValueContainer()
     switch self {
     case .string(let value): try container.encode(value)
+    case .unsignedInteger(let value): try container.encode(value)
+    case .signedInteger(let value): try container.encode(value)
     case .number(let value): try container.encode(value)
     case .bool(let value): try container.encode(value)
     case .object(let value): try container.encode(value)
@@ -54,6 +58,12 @@ final class CompanionService {
   private init() {
     linked = try? SecureStore.shared.read(account: "linked.configuration")
       .flatMap {try? JSONDecoder().decode(LinkedConfiguration.self, from: $0)}
+    if linked != nil {
+      try? SecureStore.shared.migrateAccessibility(
+        account: "linked.configuration",
+        to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
+    }
     snapshot = restoredSnapshot()
     NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
       Task { @MainActor in self.lock() }
@@ -113,7 +123,11 @@ final class CompanionService {
         eventHandler: handleTransportEvent
       )
       let configuration = LinkedConfiguration(relayURL: payload.relayUrl, desktopDeviceID: approved.desktopDeviceId, desktopPublicKey: approved.desktopPublicKey, linkedAt: Date())
-      try SecureStore.shared.save(JSONEncoder().encode(configuration), account: "linked.configuration")
+      try SecureStore.shared.save(
+        JSONEncoder().encode(configuration),
+        account: "linked.configuration",
+        accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
       linked = configuration
       unlocked = true
       snapshot.connection = "ready"
@@ -466,15 +480,28 @@ final class CompanionService {
   private func persistSnapshot() throws {
     let plaintext = try JSONEncoder().encode(snapshot)
     let key: SymmetricKey
-    if let stored = try SecureStore.shared.read(account: "cache.key") { key = SymmetricKey(data: stored) }
+    if let stored = try SecureStore.shared.read(account: "cache.key") {
+      try SecureStore.shared.migrateAccessibility(
+        account: "cache.key",
+        to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
+      key = SymmetricKey(data: stored)
+    }
     else {
       let data = Data((0..<32).map {_ in UInt8.random(in: .min ... .max)})
-      try SecureStore.shared.save(data, account: "cache.key")
+      try SecureStore.shared.save(
+        data,
+        account: "cache.key",
+        accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      )
       key = SymmetricKey(data: data)
     }
     let sealed = try AES.GCM.seal(plaintext, using: key).combined!
     let url = try cacheURL()
-    try sealed.write(to: url, options: [.atomic, .completeFileProtection])
+    try sealed.write(
+      to: url,
+      options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+    )
   }
 
   private func restoredSnapshot() -> Snapshot {

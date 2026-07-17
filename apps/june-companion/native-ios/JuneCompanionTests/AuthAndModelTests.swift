@@ -88,6 +88,25 @@ final class AuthAndModelTests: XCTestCase {
         XCTAssertEqual(snapshot.safeSettings, SafeSettingsModel(dictationStyle: "formal", imageSafeMode: true))
     }
 
+    func testCachedSnapshotPreservesUInt64NoteRevisions() throws {
+        let revision: UInt64 = 9_007_199_254_740_993
+        let json = """
+        {
+          "connection":"locked",
+          "notes":[{"id":"note-1","title":"Plan","preview":"Next steps","revision":\(revision),"updatedAt":"2026-07-16T10:00:00Z"}],
+          "agentSessions":[]
+        }
+        """
+
+        let cached = try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8))
+        let restored = try JSONDecoder().decode(
+            CompanionSnapshotModel.self,
+            from: JSONEncoder().encode(cached)
+        )
+
+        XCTAssertEqual(restored.notes.first?.revision, revision)
+    }
+
     func testBuildHasNoBearerTokenConfiguration() {
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "CompanionLocalBearerToken"))
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "OS_ACCOUNTS_APP_API_KEY"))

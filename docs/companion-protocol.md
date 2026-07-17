@@ -30,6 +30,17 @@ presents the credential with the `Device` scheme; the relay compares its hash
 without retaining the plaintext. Noise separately authenticates the device's
 private key and protects all content.
 
+During an explicit pairing, the authenticated desktop may establish its relay
+socket while the pairing is still pending, but pending phones remain unable to
+connect or route frames. Before the relay exposes approval to the phone, the
+desktop validates and stores the proposed device identity, marks the Noise
+pairing secret ready locally, and confirms that relay socket is connected. A
+confirmed remote approval failure rolls back that local readiness; an unknown
+network outcome preserves it so an approved phone is never stranded between
+the two boundaries. The relay also refuses to start its bounded persistence
+step in the final 16 seconds of the pairing window and rechecks expiry before
+activating the in-memory link.
+
 ## Capabilities
 
 The only grants are notes read/edit, agent read/chat/cancel, safe settings

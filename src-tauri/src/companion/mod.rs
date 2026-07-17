@@ -13,10 +13,14 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    sync::{atomic::AtomicBool, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::Duration,
 };
 use tauri::{AppHandle, State};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 use uuid::Uuid;
 
 pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendIntent};
@@ -24,6 +28,7 @@ pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendI
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
 const KEYCHAIN_ACCOUNT: &str = "current";
 const MAX_DEVICE_NAME_BYTES: usize = 128;
+const PAIRING_RELAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct CompanionRuntime {
@@ -32,6 +37,8 @@ pub struct CompanionRuntime {
     pending_frontend: Mutex<HashMap<Uuid, oneshot::Sender<ResultPayload>>>,
     event_sender: Mutex<Option<mpsc::Sender<Event>>>,
     transport_started: AtomicBool,
+    relay_connected: AtomicBool,
+    relay_connection_changed: Notify,
 }
 
 struct PendingPairing {
@@ -229,48 +236,188 @@ pub async fn companion_approve_pairing(
             ));
         }
     }
-    let status: PairingStatus = companion_post(
-        &format!("/v1/companion/pairings/{pairing_id}/approve"),
-        &ApprovePairingRequest { mobile_device_id },
-    )
-    .await?;
-    let public_key = status.mobile_public_key.clone().ok_or_else(|| {
+    let proposed: PairingStatus =
+        companion_get(&format!("/v1/companion/pairings/{pairing_id}")).await?;
+    let already_approved = proposed.state == PairingState::Approved;
+    if (!already_approved && proposed.state != PairingState::WaitingForApproval)
+        || proposed.mobile_device_id != Some(mobile_device_id)
+    {
+        return Err(AppError::new(
+            "companion_pairing_invalid",
+            "The phone is not waiting for approval.",
+        ));
+    }
+    let public_key = proposed.mobile_public_key.clone().ok_or_else(|| {
         AppError::new(
             "companion_pairing_invalid",
             "The phone public key is missing.",
         )
     })?;
-    let display_name = status
+    if public_key.len() != KEY_BYTES {
+        return Err(AppError::new(
+            "companion_pairing_invalid",
+            "The phone public key is invalid.",
+        ));
+    }
+    let display_name = proposed
         .mobile_display_name
         .clone()
         .unwrap_or_else(|| "iPhone".to_string());
-    let local_result = async {
-        repositories(&app)
-            .await?
-            .upsert_companion_device(&mobile_device_id.to_string(), &display_name, &public_key)
-            .await
-            .map_err(AppError::from)
+    let repos = repositories(&app).await?;
+    let mobile_id = mobile_device_id.to_string();
+    let existing = repos.companion_device(&mobile_id).await?;
+    if existing.as_ref().is_some_and(|device| {
+        device.revoked_at.is_some() || device.public_key.as_slice() != public_key.as_slice()
+    }) {
+        return Err(AppError::new(
+            "companion_pairing_invalid",
+            "The phone identity does not match this device.",
+        ));
     }
-    .await;
-    if let Err(error) = local_result {
-        if let Err(cleanup_error) = revoke_device_remote(mobile_device_id).await {
-            tracing::error!(
-                code = %cleanup_error.code,
-                "failed to compensate companion approval after local persistence failure"
-            );
+    let inserted_locally = existing.is_none();
+    mark_pairing_mobile(&runtime, pairing_id, mobile_device_id)?;
+    if inserted_locally {
+        if let Err(error) = repos
+            .upsert_companion_device(&mobile_id, &display_name, &public_key)
+            .await
+        {
+            clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
+            return Err(error.into());
+        }
+    }
+    transport::start(&app);
+
+    if let Err(error) = wait_for_relay_connection(&runtime).await {
+        clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
+        if inserted_locally {
+            repos.delete_companion_device(&mobile_id).await?;
         }
         return Err(error);
     }
-    if let Some(pairing) = runtime
+    let approval: Result<PairingStatus, AppError> = if already_approved {
+        Ok(proposed)
+    } else {
+        companion_post(
+            &format!("/v1/companion/pairings/{pairing_id}/approve"),
+            &ApprovePairingRequest { mobile_device_id },
+        )
+        .await
+    };
+    let status = match approval {
+        Ok(status) if status.state == PairingState::Approved => status,
+        Ok(_) => {
+            clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
+            if inserted_locally {
+                repos.delete_companion_device(&mobile_id).await?;
+            }
+            return Err(AppError::new(
+                "companion_pairing_expired",
+                "Start pairing again on this Mac.",
+            ));
+        }
+        Err(error) => {
+            match companion_get::<PairingStatus>(&format!("/v1/companion/pairings/{pairing_id}"))
+                .await
+            {
+                Ok(status) if status.state == PairingState::Approved => status,
+                Ok(_) => {
+                    clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
+                    if inserted_locally {
+                        repos.delete_companion_device(&mobile_id).await?;
+                    }
+                    return Err(error);
+                }
+                Err(reconcile_error) => {
+                    tracing::warn!(
+                        code = %reconcile_error.code,
+                        "companion approval outcome is unknown; preserving local readiness"
+                    );
+                    return Err(error);
+                }
+            }
+        }
+    };
+    if !inserted_locally {
+        if let Err(error) = repos
+            .upsert_companion_device(&mobile_id, &display_name, &public_key)
+            .await
+        {
+            tracing::warn!(%error, "failed to refresh linked companion display metadata");
+        }
+    }
+    Ok(status)
+}
+
+fn mark_pairing_mobile(
+    runtime: &CompanionRuntime,
+    pairing_id: Uuid,
+    mobile_device_id: Uuid,
+) -> Result<(), AppError> {
+    let mut pairings = runtime
         .pairings
         .lock()
-        .map_err(|_| AppError::new("companion_pairing_unavailable", "Pairing lock failed."))?
-        .get_mut(&pairing_id)
-    {
-        pairing.approved_mobile = Some(mobile_device_id);
+        .map_err(|_| AppError::new("companion_pairing_unavailable", "Pairing lock failed."))?;
+    let pairing = pairings.get_mut(&pairing_id).ok_or_else(|| {
+        AppError::new(
+            "companion_pairing_expired",
+            "Start pairing again on this Mac.",
+        )
+    })?;
+    if pairing.expires_at_ms < current_time_ms() {
+        return Err(AppError::new(
+            "companion_pairing_expired",
+            "Start pairing again on this Mac.",
+        ));
     }
-    transport::start(&app);
-    Ok(status)
+    if pairing
+        .approved_mobile
+        .is_some_and(|approved| approved != mobile_device_id)
+    {
+        return Err(AppError::new(
+            "companion_pairing_invalid",
+            "A different phone is already waiting for approval.",
+        ));
+    }
+    pairing.approved_mobile = Some(mobile_device_id);
+    Ok(())
+}
+
+fn clear_pairing_mobile(runtime: &CompanionRuntime, pairing_id: Uuid, mobile_device_id: Uuid) {
+    if let Ok(mut pairings) = runtime.pairings.lock() {
+        if let Some(pairing) = pairings.get_mut(&pairing_id) {
+            if pairing.approved_mobile == Some(mobile_device_id) {
+                pairing.approved_mobile = None;
+            }
+        }
+    }
+}
+
+async fn wait_for_relay_connection(runtime: &CompanionRuntime) -> Result<(), AppError> {
+    let deadline = tokio::time::Instant::now() + PAIRING_RELAY_READY_TIMEOUT;
+    loop {
+        let connected = runtime.relay_connection_changed.notified();
+        if runtime.relay_connected.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if tokio::time::timeout_at(deadline, connected).await.is_err() {
+            return Err(AppError::new(
+                "companion_transport_unavailable",
+                "June could not prepare the secure companion connection.",
+            ));
+        }
+    }
+}
+
+fn has_pending_pairing(runtime: &CompanionRuntime) -> bool {
+    runtime
+        .pairings
+        .lock()
+        .map(|pairings| {
+            pairings
+                .values()
+                .any(|pairing| pairing.expires_at_ms >= current_time_ms())
+        })
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -688,5 +835,30 @@ mod tests {
         let normalized = normalized_device_name(&unicode).unwrap();
         assert!(normalized.len() <= MAX_DEVICE_NAME_BYTES);
         assert!(normalized.is_char_boundary(normalized.len()));
+    }
+
+    #[test]
+    fn local_pairing_readiness_is_visible_before_remote_approval() {
+        let runtime = CompanionRuntime::default();
+        let pairing_id = Uuid::new_v4();
+        let mobile_id = Uuid::new_v4();
+        let secret = [7; KEY_BYTES];
+        runtime.pairings.lock().unwrap().insert(
+            pairing_id,
+            PendingPairing {
+                secret,
+                expires_at_ms: current_time_ms().saturating_add(60_000),
+                approved_mobile: None,
+            },
+        );
+
+        mark_pairing_mobile(&runtime, pairing_id, mobile_id).unwrap();
+        assert_eq!(
+            pairing_for_mobile(&runtime, mobile_id).unwrap(),
+            Some((pairing_id, secret))
+        );
+
+        clear_pairing_mobile(&runtime, pairing_id, mobile_id);
+        assert_eq!(pairing_for_mobile(&runtime, mobile_id).unwrap(), None);
     }
 }

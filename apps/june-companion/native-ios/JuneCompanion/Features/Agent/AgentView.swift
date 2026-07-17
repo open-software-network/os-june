@@ -5,6 +5,7 @@ struct AgentView: View {
     let openNavigation: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visibleMessageID: String?
 
     var body: some View {
         NavigationStack {
@@ -48,7 +49,9 @@ struct AgentView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 24)
                 .juneReadableColumn()
+                .scrollTargetLayout()
             }
+            .scrollPosition(id: $visibleMessageID)
             .onChange(of: model.messages.last?.id) {
                 guard let last = model.messages.last else { return }
                 withAnimation(JuneMotion.animation(.response, reduceMotion: reduceMotion)) {

@@ -1,6 +1,7 @@
 use super::{
-    current_time_ms, finish_pairing, frontend_response, load_or_create_identity,
-    pairing_for_mobile, relay_websocket_url, CompanionRuntime, FrontendIntent, StoredIdentity,
+    current_time_ms, finish_pairing, frontend_response, has_pending_pairing,
+    load_or_create_identity, pairing_for_mobile, relay_websocket_url, CompanionRuntime,
+    FrontendIntent, StoredIdentity,
 };
 use crate::{commands::repositories, db::repositories::Repositories, domain::types::AppError};
 use futures_util::{SinkExt, StreamExt};
@@ -35,6 +36,20 @@ struct PeerSession {
     crypto: Session,
     expected_public_key: [u8; 32],
     pairing_id: Option<Uuid>,
+}
+
+struct RelayConnectionGuard<'a> {
+    runtime: &'a CompanionRuntime,
+}
+
+impl Drop for RelayConnectionGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.relay_connected.store(false, Ordering::Release);
+        if let Ok(mut sender) = self.runtime.event_sender.lock() {
+            *sender = None;
+        }
+        self.runtime.relay_connection_changed.notify_waiters();
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -74,7 +89,7 @@ async fn reconnect_loop(app: AppHandle) {
                 .unwrap_or(false),
             Err(_) => false,
         };
-        if !has_active_device {
+        if !has_active_device && !has_pending_pairing(&app.state::<CompanionRuntime>()) {
             tokio::time::sleep(Duration::from_secs(2)).await;
             continue;
         }
@@ -119,11 +134,15 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
     let repos = repositories(app).await?;
     let mut peers = HashMap::new();
     let mut outbound_sequence = 0_u64;
+    let runtime = app.state::<CompanionRuntime>();
     let (event_sender, mut event_receiver) = tokio::sync::mpsc::channel(128);
-    *app.state::<CompanionRuntime>()
+    *runtime
         .event_sender
         .lock()
         .map_err(|_| transport_error("Companion event lock failed."))? = Some(event_sender);
+    runtime.relay_connected.store(true, Ordering::Release);
+    runtime.relay_connection_changed.notify_waiters();
+    let _connection_guard = RelayConnectionGuard { runtime: &runtime };
     let mut delta_tick = tokio::time::interval(Duration::from_millis(750));
     let mut pending_deltas: HashMap<String, String> = HashMap::new();
 

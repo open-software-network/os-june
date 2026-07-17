@@ -209,6 +209,14 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn delete_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM companion_devices WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn touch_companion_device(&self, id: &str) -> Result<(), sqlx::error::Error> {
         query("UPDATE companion_devices SET last_seen_at = ? WHERE id = ? AND revoked_at IS NULL")
             .bind(timestamp())

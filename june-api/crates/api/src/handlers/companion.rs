@@ -44,7 +44,10 @@ const MIN_APNS_TOKEN_BYTES: usize = 16;
 const MAX_APNS_TOKEN_BYTES: usize = 256;
 const APNS_WAKE_COOLDOWN: Duration = Duration::from_secs(30);
 const APNS_PROVIDER_TOKEN_MAX_AGE_SECS: u64 = 55 * 60;
-const PAIRING_APPROVAL_PERSIST_TIMEOUT: Duration = Duration::from_secs(15);
+const PAIRING_APPROVAL_PERSIST_TIMEOUT_MS: u64 = 15_000;
+const PAIRING_APPROVAL_PERSIST_TIMEOUT: Duration =
+    Duration::from_millis(PAIRING_APPROVAL_PERSIST_TIMEOUT_MS);
+const PAIRING_APPROVAL_EXPIRY_MARGIN_MS: u64 = 1_000;
 const DEVICE_AUTH_SCHEME: &str = "Device ";
 const SECRET_BYTES: usize = 32;
 const MAX_PENDING_PAIRINGS_PER_USER: usize = 8;
@@ -763,6 +766,11 @@ impl CompanionRelay {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         prune_pairings(&mut state, now_ms());
         let pairing = valid_pairing_mut(&mut state, user_id, pairing_id)?;
+        if pairing.expires_at_ms.saturating_sub(now_ms())
+            <= PAIRING_APPROVAL_PERSIST_TIMEOUT_MS.saturating_add(PAIRING_APPROVAL_EXPIRY_MARGIN_MS)
+        {
+            return Err(ApiError::not_found("pairing_not_found"));
+        }
         if pairing.mobile_device_id != Some(mobile_device_id) {
             return Err(ApiError::bad_request("pairing_device_mismatch"));
         }
@@ -866,6 +874,10 @@ impl CompanionRelay {
             .get_mut(&pairing_id)
             .filter(|pairing| &pairing.user_id == user_id)
             .ok_or_else(|| ApiError::not_found("pairing_not_found"))?;
+        if pairing.expires_at_ms < now_ms() {
+            pairing.approving = false;
+            return Err(ApiError::not_found("pairing_not_found"));
+        }
         pairing.approving = false;
         pairing.approved = true;
         for device_id in [approval.desktop_device_id, approval.mobile_device_id] {
@@ -916,10 +928,15 @@ impl CompanionRelay {
             .devices
             .get(&device_id)
             .ok_or_else(|| ApiError::not_found("device_not_found"))?;
-        if &device.user_id != user_id
-            || device.revoked
-            || !state.links.iter().any(|link| link.contains(device_id))
-        {
+        let linked = state.links.iter().any(|link| link.contains(device_id));
+        let pending_desktop = device.credential_hash.is_none()
+            && state.pairings.values().any(|pairing| {
+                &pairing.user_id == user_id
+                    && pairing.desktop_device_id == device_id
+                    && !pairing.approved
+                    && pairing.expires_at_ms >= now_ms()
+            });
+        if &device.user_id != user_id || device.revoked || (!linked && !pending_desktop) {
             return Err(ApiError::not_found("device_not_found"));
         }
         Ok(())
@@ -1426,6 +1443,27 @@ mod tests {
         (relay, desktop, mobile)
     }
 
+    #[test]
+    fn pending_pairing_accepts_only_the_authenticated_desktop_connection() {
+        let relay = CompanionRelay::default();
+        let desktop = Uuid::new_v4();
+        let mobile = Uuid::new_v4();
+        let proof = [9; SECRET_BYTES];
+        let pairing = relay
+            .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
+            .unwrap();
+        relay
+            .propose_pairing(
+                pairing.pairing_id,
+                mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
+                &proof,
+            )
+            .unwrap();
+
+        assert!(relay.connect(&user(), desktop).is_ok());
+        assert!(relay.connect(&user(), mobile).is_err());
+    }
+
     #[tokio::test]
     async fn pairing_proof_and_desktop_approval_accept_a_phone_scoped_credential_hash() {
         let relay = CompanionRelay::default();
@@ -1649,6 +1687,89 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert!(state.pairings[&pairing.pairing_id].approving);
         }
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state.pairings[&pairing.pairing_id].approving);
+    }
+
+    #[test]
+    fn pairing_that_expires_during_approval_is_not_finalized() {
+        let relay = CompanionRelay::default();
+        let desktop = Uuid::new_v4();
+        let mobile = Uuid::new_v4();
+        let proof = [7; SECRET_BYTES];
+        let pairing = relay
+            .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
+            .unwrap();
+        relay
+            .propose_pairing(
+                pairing.pairing_id,
+                mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
+                &proof,
+            )
+            .unwrap();
+        let PairingApprovalPreparation::Pending(approval) = relay
+            .prepare_pairing_approval(&user(), pairing.pairing_id, mobile)
+            .unwrap()
+        else {
+            panic!("pairing should be pending approval")
+        };
+        relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pairings
+            .get_mut(&pairing.pairing_id)
+            .unwrap()
+            .expires_at_ms = 0;
+
+        assert!(
+            relay
+                .finish_pairing_approval(&user(), pairing.pairing_id, &approval)
+                .is_err()
+        );
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state.pairings[&pairing.pairing_id].approved);
+        assert!(!state.links.contains(&approval.link));
+    }
+
+    #[test]
+    fn pairing_too_close_to_expiry_never_starts_persistence() {
+        let relay = CompanionRelay::default();
+        let desktop = Uuid::new_v4();
+        let mobile = Uuid::new_v4();
+        let proof = [7; SECRET_BYTES];
+        let pairing = relay
+            .create_pairing(user(), device(desktop, [1; 32], "Mac"), proof)
+            .unwrap();
+        relay
+            .propose_pairing(
+                pairing.pairing_id,
+                mobile_device(mobile, [2; 32], "iPhone", "mobile-secret"),
+                &proof,
+            )
+            .unwrap();
+        relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pairings
+            .get_mut(&pairing.pairing_id)
+            .unwrap()
+            .expires_at_ms = now_ms().saturating_add(
+            PAIRING_APPROVAL_PERSIST_TIMEOUT_MS + PAIRING_APPROVAL_EXPIRY_MARGIN_MS,
+        );
+
+        assert!(
+            relay
+                .prepare_pairing_approval(&user(), pairing.pairing_id, mobile)
+                .is_err()
+        );
         let state = relay
             .inner
             .lock()
