@@ -41,8 +41,8 @@ note (copy `docs/hermes-upstream-template.md` to
 ## June compatibility patch set
 
 The current pin also carries the checksum-gated `june-approval-memory-v3` patch set
-documented in `docs/hermes-upstream-v2026.6.19.md` and ADR 0025. On every pin
-bump:
+documented in `docs/hermes-upstream-v2026.6.19.md`. Its targeted-approval portion
+follows ADR 0025. On every pin bump:
 
 1. Check whether upstream now preserves MCP request identity, deduplicates one
    still-pending logical elicitation across transport reconnects without
