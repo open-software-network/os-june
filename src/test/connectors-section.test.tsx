@@ -198,6 +198,28 @@ describe("ConnectorsSection", () => {
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
   });
 
+  it("disables Notion disconnect while reconnect waits for the browser", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      {
+        accountId: "notion-hosted-mcp",
+        provider: "notion",
+        email: "Notion",
+        scopes: [],
+        status: "reconnect_required",
+        workspaceName: null,
+        workspaceUrlKey: null,
+        selectedTeams: [],
+      },
+    ]);
+    mocks.notionConnectorConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reconnect Notion" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reconnect Notion" })).toBeDisabled());
+    expect(screen.getByRole("button", { name: "Disconnect Notion" })).toBeDisabled();
+  });
+
   it("lists connected accounts with feature labels and status", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);

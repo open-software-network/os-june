@@ -1070,8 +1070,17 @@ pub async fn disconnect(
         Some(record) => match ConnectorProvider::from_db(&record.provider) {
             ConnectorProvider::Google => &[ConnectorProvider::Google],
             ConnectorProvider::Linear => &[ConnectorProvider::Linear],
-            ConnectorProvider::Notion => &[],
+            ConnectorProvider::Notion => {
+                notion::disconnect(app).await?;
+                emit_connectors_changed(app);
+                return Ok(());
+            }
         },
+        None if account_id == notion::notion_account_id() => {
+            notion::disconnect(app).await?;
+            emit_connectors_changed(app);
+            return Ok(());
+        }
         None => &[ConnectorProvider::Google, ConnectorProvider::Linear],
     };
     for &provider in providers {

@@ -103,7 +103,7 @@ function NotionConnectorActions({
       type="button"
       className="btn btn-ghost"
       aria-label="Disconnect Notion"
-      disabled={disconnecting}
+      disabled={connecting || disconnecting}
       aria-busy={disconnecting || undefined}
       onClick={onDisconnect}
     >
