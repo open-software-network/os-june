@@ -27,6 +27,12 @@ pub(crate) struct NoteAudioExportSource {
     pub source: String,
 }
 
+struct ValidatedSource {
+    file: File,
+    recording_session_id: String,
+    source: String,
+}
+
 pub(crate) fn unavailable_error() -> AppError {
     AppError::new(
         "note_audio_unavailable",
@@ -52,7 +58,7 @@ pub(crate) fn export_note_audio(
     // Validate the entire selection before creating an output file. Export is
     // all-or-nothing: a partial archive could look complete while silently
     // omitting one of a note's original Sources.
-    let sources = sources
+    let mut sources = sources
         .into_iter()
         .map(|source| validate_source(app_paths, &note_id, source))
         .collect::<Result<Vec<_>, _>>()?;
@@ -64,10 +70,9 @@ pub(crate) fn export_note_audio(
     let mut temporary = NamedTempFile::new_in(downloads_dir).map_err(export_io_error)?;
 
     if sources.len() == 1 {
-        let mut input = File::open(&sources[0].path).map_err(export_io_error)?;
-        io::copy(&mut input, temporary.as_file_mut()).map_err(export_io_error)?;
+        io::copy(&mut sources[0].file, temporary.as_file_mut()).map_err(export_io_error)?;
     } else {
-        write_archive(temporary.as_file_mut(), &sources)?;
+        write_archive(temporary.as_file_mut(), &mut sources)?;
     }
     temporary.as_file_mut().flush().map_err(export_io_error)?;
 
@@ -93,7 +98,7 @@ fn validate_source(
     app_paths: &AppPaths,
     note_id: &str,
     source: NoteAudioExportSource,
-) -> Result<NoteAudioExportSource, AppError> {
+) -> Result<ValidatedSource, AppError> {
     let link_metadata = fs::symlink_metadata(&source.path).map_err(export_io_error)?;
     if link_metadata.file_type().is_symlink() {
         return Err(AppError::new(
@@ -113,9 +118,11 @@ fn validate_source(
         .map_err(export_io_error)?;
     let expected_note_dir = canonical_recordings_dir.join(note_id);
     let expected_legacy_path =
-        expected_note_dir.join(format!("{}.wav", &source.recording_session_id));
+        expected_note_dir.join(format!("{}.wav", source.recording_session_id));
     if path == expected_legacy_path {
-        return validate_wav_file(source, path);
+        let file = open_anchored_source(app_paths, note_id, &source, &path, true)
+            .map_err(export_io_error)?;
+        return validate_wav_file(source, path, file);
     }
 
     let expected_canonical_dir = expected_note_dir.join(&source.recording_session_id);
@@ -134,14 +141,17 @@ fn validate_source(
             "A selected audio file is outside its Recording session directory.",
         ));
     }
-    validate_wav_file(source, path)
+    let file =
+        open_anchored_source(app_paths, note_id, &source, &path, false).map_err(export_io_error)?;
+    validate_wav_file(source, path, file)
 }
 
 fn validate_wav_file(
     source: NoteAudioExportSource,
     path: PathBuf,
-) -> Result<NoteAudioExportSource, AppError> {
-    let metadata = fs::metadata(&path).map_err(export_io_error)?;
+    file: File,
+) -> Result<ValidatedSource, AppError> {
+    let metadata = file.metadata().map_err(export_io_error)?;
     if !metadata.is_file()
         || metadata.len() == 0
         || path
@@ -154,20 +164,97 @@ fn validate_wav_file(
             "A selected audio file is not a non-empty WAV file.",
         ));
     }
-    Ok(NoteAudioExportSource { path, ..source })
+    Ok(ValidatedSource {
+        file,
+        recording_session_id: source.recording_session_id,
+        source: source.source,
+    })
 }
 
-fn write_archive(output: &mut File, sources: &[NoteAudioExportSource]) -> Result<(), AppError> {
+#[cfg(unix)]
+fn open_anchored_source(
+    app_paths: &AppPaths,
+    note_id: &str,
+    source: &NoteAudioExportSource,
+    path: &Path,
+    legacy: bool,
+) -> io::Result<File> {
+    use std::{
+        ffi::{CString, OsStr},
+        os::unix::{
+            ffi::OsStrExt,
+            fs::OpenOptionsExt,
+            io::{AsRawFd, FromRawFd, RawFd},
+        },
+    };
+
+    fn open_at(parent: RawFd, name: &OsStr, directory: bool) -> io::Result<File> {
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | if directory { libc::O_DIRECTORY } else { 0 };
+        // SAFETY: `parent` is a live directory descriptor, `name` is a
+        // NUL-terminated relative component, and the returned descriptor is
+        // immediately owned by `File` on success.
+        let descriptor = unsafe { libc::openat(parent, name.as_ptr(), flags) };
+        if descriptor < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            // SAFETY: `openat` returned a new owned descriptor.
+            Ok(unsafe { File::from_raw_fd(descriptor) })
+        }
+    }
+
+    let recordings = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(&app_paths.recordings_dir)?;
+    let note_directory = open_at(recordings.as_raw_fd(), OsStr::new(note_id), true)?;
+    if legacy {
+        return open_at(
+            note_directory.as_raw_fd(),
+            path.file_name()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing filename"))?,
+            false,
+        );
+    }
+    let recording_session_directory = open_at(
+        note_directory.as_raw_fd(),
+        OsStr::new(&source.recording_session_id),
+        true,
+    )?;
+    open_at(
+        recording_session_directory.as_raw_fd(),
+        path.file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing filename"))?,
+        false,
+    )
+}
+
+#[cfg(not(unix))]
+fn open_anchored_source(
+    _app_paths: &AppPaths,
+    _note_id: &str,
+    _source: &NoteAudioExportSource,
+    path: &Path,
+    _legacy: bool,
+) -> io::Result<File> {
+    File::open(path)
+}
+
+fn write_archive(output: &mut File, sources: &mut [ValidatedSource]) -> Result<(), AppError> {
     let mut archive = ZipWriter::new(output);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
     let mut recording_session_number = 0usize;
-    let mut previous_recording_session: Option<&str> = None;
+    let mut previous_recording_session: Option<String> = None;
     let mut names_per_recording_session = HashMap::<(usize, String), usize>::new();
 
     for source in sources {
-        if previous_recording_session != Some(source.recording_session_id.as_str()) {
+        if previous_recording_session.as_deref() != Some(source.recording_session_id.as_str()) {
             recording_session_number += 1;
-            previous_recording_session = Some(&source.recording_session_id);
+            previous_recording_session = Some(source.recording_session_id.clone());
         }
         let stem = match source.source.as_str() {
             "microphone" => "microphone",
@@ -187,8 +274,7 @@ fn write_archive(output: &mut File, sources: &[NoteAudioExportSource]) -> Result
         archive
             .start_file(entry_name, options)
             .map_err(export_zip_error)?;
-        let mut input = File::open(&source.path).map_err(export_io_error)?;
-        io::copy(&mut input, &mut archive).map_err(export_io_error)?;
+        io::copy(&mut source.file, &mut archive).map_err(export_io_error)?;
     }
     archive.finish().map_err(export_zip_error)?;
     Ok(())
@@ -522,6 +608,38 @@ mod tests {
         .expect_err("cross-Recording-session Source must fail");
         assert_eq!(error.code, "note_audio_export_denied");
         assert_eq!(fs::read_dir(&downloads).expect("downloads").count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validated_source_keeps_the_opened_file_when_the_path_is_replaced() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, paths, _downloads) = fixture();
+        let wav = recording_file(
+            &paths,
+            NOTE_ID,
+            "session-a",
+            "microphone.wav",
+            b"original bytes",
+        );
+        let mut validated = validate_source(
+            &paths,
+            NOTE_ID,
+            source(wav.clone(), "session-a", "microphone"),
+        )
+        .expect("validated Source");
+        let outside = temp.path().join("outside.wav");
+        fs::write(&outside, b"replacement bytes").expect("outside Source");
+        fs::remove_file(&wav).expect("replace Source path");
+        symlink(&outside, &wav).expect("replacement symlink");
+
+        let mut bytes = Vec::new();
+        validated
+            .file
+            .read_to_end(&mut bytes)
+            .expect("read retained Source");
+        assert_eq!(bytes, b"original bytes");
     }
 
     #[cfg(unix)]
