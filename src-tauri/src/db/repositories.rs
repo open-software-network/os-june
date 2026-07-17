@@ -6482,6 +6482,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn companion_legacy_mutation_reservations_migrate_to_outcome_unknown() {
+        use june_companion_protocol::{
+            Capability, FailureCode, ProtocolFailure, Response, ResultPayload,
+        };
+
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+        let legacy = Response {
+            capability: Capability::AgentChat,
+            result: ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::Busy,
+                message: "This request may already have reached June. Check your Mac before trying a different request."
+                    .to_string(),
+                retryable: true,
+            }),
+        };
+        query(
+            "INSERT INTO companion_operations (device_id, operation_id, response, created_at)
+             VALUES (?, 'legacy-reservation', ?, '2026-07-17T00:00:00.000Z')",
+        )
+        .bind(&device_id)
+        .bind(serde_json::to_vec(&legacy).expect("encode legacy reservation"))
+        .execute(&repos.pool)
+        .await
+        .expect("insert legacy reservation");
+
+        crate::db::migrations::run_migrations(&repos.pool)
+            .await
+            .expect("rerun migrations");
+
+        let row = query(
+            "SELECT operation_state, response FROM companion_operations
+             WHERE device_id = ? AND operation_id = 'legacy-reservation'",
+        )
+        .bind(&device_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("read migrated reservation");
+        assert_eq!(row.get::<String, _>("operation_state"), "pending");
+        let encoded: Vec<u8> = row.get("response");
+        let migrated: Response =
+            serde_json::from_slice(&encoded).expect("decode migrated response");
+        assert!(matches!(
+            migrated.result,
+            ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::OutcomeUnknown,
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
     async fn companion_pending_mutation_limit_refuses_new_work_without_evicting_reservations() {
         let repos = test_repositories().await;
         let device_id = Uuid::new_v4().to_string();

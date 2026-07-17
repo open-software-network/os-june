@@ -103,5 +103,10 @@ a healthy transport, retires stale Noise keys when a fresh authenticated
 handshake arrives, and refreshes cursor-based lists after foreground/reconnect.
 No offline control request is replayed.
 
+Desktop upgrades rewrite the earlier retryable-busy reservation payload to the
+pending, non-retryable outcome-unknown form before normal pruning runs. Existing
+ambiguity guards therefore keep their at-most-once meaning across the schema
+upgrade.
+
 Note edits carry `expectedRevision`; SQLite updates atomically only at that
 revision. A mismatch returns a typed conflict with the current note.

@@ -38,8 +38,10 @@ Keychain identity without requiring a token refresh or network access. It then
 best-effort revokes every locally known companion plus the account-scoped
 desktop identity before clearing account tokens. Another user on the same Mac
 receives a different desktop device id and cannot see the prior user's local
-companion rows. Relay I/O and shutdown are bounded; a transport or pairing task
-that cannot stop makes sign-out fail safely without clearing the account tokens.
+companion rows. Relay I/O and reconnect backoff are cancellation-aware; the
+transport is force-joined within a bounded shutdown window. Pairing or other
+account work that cannot stop makes sign-out fail safely without clearing the
+account tokens.
 
 If the relay database is unavailable, production companion endpoints fail
 closed. The desktop must not report successful revocation until the relay

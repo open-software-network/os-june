@@ -34,11 +34,17 @@ interrupted cross-boundary mutation completed.
   Up to 128 unresolved reservations are retained separately; reaching that
   limit refuses new mutation dispatch rather than evicting an ambiguity guard.
   Revocation deletes both.
+- The schema upgrade recognizes the prior retryable busy reservation payload,
+  relabels it as pending, and rewrites it to the non-retryable outcome-unknown
+  result. Upgrading cannot turn an existing ambiguity guard into evictable
+  completed history.
 - OS Accounts sign-out stops new companion work and waits for the active
   account-operation barrier, including relay dispatch and pairing approval,
   before it revokes account-scoped local authorization. Relay connection and
   send operations are time-bounded; if the joined transport or account work
-  cannot stop within the shutdown bound, logout fails without clearing tokens.
+  is cancellation-aware and force-joined within the shutdown bound. If pairing
+  or other account work cannot stop within its bound, logout fails without
+  clearing tokens.
 
 ## Consequences
 

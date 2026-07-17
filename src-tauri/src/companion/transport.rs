@@ -136,11 +136,20 @@ pub(super) async fn stop(app: &AppHandle) -> Result<(), AppError> {
     {
         task.abort();
         let _ = task.await;
-        return Err(transport_error(
-            "The companion connection did not stop in time. Try signing out again.",
-        ));
     }
     Ok(())
+}
+
+async fn wait_for_account_retry(app: &AppHandle, delay: Duration) -> bool {
+    let runtime = app.state::<CompanionRuntime>();
+    let account_changed = runtime.account_session_changed.notified();
+    if !runtime.account_transport_enabled.load(Ordering::Acquire) {
+        return false;
+    }
+    tokio::select! {
+        _ = tokio::time::sleep(delay) => true,
+        _ = account_changed => runtime.account_transport_enabled.load(Ordering::Acquire),
+    }
 }
 
 async fn reconnect_loop(app: AppHandle) {
@@ -172,7 +181,9 @@ async fn reconnect_loop(app: AppHandle) {
         };
         if !has_active_device && !has_pending_pairing(&app.state::<CompanionRuntime>()) {
             drop(activity);
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            if !wait_for_account_retry(&app, Duration::from_secs(2)).await {
+                return;
+            }
             continue;
         }
 
@@ -195,7 +206,9 @@ async fn reconnect_loop(app: AppHandle) {
             .saturating_pow(attempt)
             .clamp(1, MAX_RECONNECT_DELAY_SECS);
         let delay = rand::thread_rng().gen_range(0..=cap);
-        tokio::time::sleep(Duration::from_secs(delay)).await;
+        if !wait_for_account_retry(&app, Duration::from_secs(delay)).await {
+            return;
+        }
     }
 }
 
