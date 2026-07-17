@@ -803,10 +803,18 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
 function visibleHudBounds(): { width?: number; height?: number } {
   if (!surface) return {};
   if (state.menuOpen && (!menu || menu.offsetWidth <= 0 || menu.offsetHeight <= 0)) return {};
-  const interactiveElements = state.menuOpen && menu ? [surface, menu] : [surface];
-  const width = Math.max(...interactiveElements.map((element) => element.offsetWidth));
+  const expandedSurfaceHeight =
+    hud?.dataset.expanded === "true" && pill && stack
+      ? pill.offsetHeight + stack.scrollHeight
+      : surface.offsetHeight;
+  // grid-template-rows animates the reveal from 0fr to 1fr. scrollHeight
+  // exposes the final row height even while offsetHeight is still mid-
+  // transition, so the native window grows before the reveal can be clipped.
+  const surfaceHeight = Math.max(surface.offsetHeight, expandedSurfaceHeight);
+  const width = Math.max(surface.offsetWidth, state.menuOpen && menu ? menu.offsetWidth : 0);
   const height = Math.max(
-    ...interactiveElements.map((element) => element.offsetTop + element.offsetHeight),
+    surface.offsetTop + surfaceHeight,
+    state.menuOpen && menu ? menu.offsetTop + menu.offsetHeight : 0,
   );
   if (width <= 0 || height <= 0) return {};
   return { width: Math.ceil(width), height: Math.ceil(height) };

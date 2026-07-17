@@ -113,6 +113,26 @@ describe("agent HUD", () => {
     });
   });
 
+  it("sizes the native window to the final expanded height during the reveal", async () => {
+    const surface = surfaceElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(248);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(36);
+    vi.spyOn(pillElement(), "offsetHeight", "get").mockReturnValue(36);
+    vi.spyOn(stackElement(), "scrollHeight", "get").mockReturnValue(50);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "waitingForUser",
+      title: "Review the branch.",
+      summary: "Needs input.",
+    });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: true, cardCount: 1, width: 248, height: 86 },
+    });
+  });
+
   it("uses the context-menu fallback until the menu has measurable bounds", async () => {
     const surface = surfaceElement();
     vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
