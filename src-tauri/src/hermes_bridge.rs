@@ -28,12 +28,13 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
-// Broker-bearing sandbox profiles make `$HERMES_HOME/plugins` unreadable.
+const JUNE_HERMES_USER_PLUGINS_DISABLED_ENV: &str = "JUNE_HERMES_USER_PLUGINS_DISABLED";
+// Sandboxed profiles make `$HERMES_HOME/plugins` unreadable.
 // The guarded user scan must therefore return before calling upstream: its
 // `Path::is_dir` equivalent does not catch Seatbelt's permission error.
 macro_rules! hermes_plugin_discovery_guard {
     () => {
-        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n if source=='user' and os.environ.get('JUNE_GITHUB_BROKER_SOCKET'): return []\n _j_found=_j_original_scan(self,path,source,skip_names)\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
+        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_HERMES_USER_PLUGINS_DISABLED','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\n_j_original_is_dir=_j_pathlib.Path.is_dir\ndef _j_locked_is_dir(self):\n if os.environ.get('JUNE_HERMES_USER_PLUGINS_DISABLED')=='1' and self==_j_pathlib.Path(os.environ.get('HERMES_HOME',''))/'plugins': return False\n return _j_original_is_dir(self)\n_j_pathlib.Path.is_dir=_j_locked_is_dir\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n if source=='user' and os.environ.get('JUNE_HERMES_USER_PLUGINS_DISABLED')=='1': return []\n _j_found=_j_original_scan(self,path,source,skip_names)\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
     };
 }
 #[cfg(test)]
@@ -437,6 +438,7 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_TUI_TOOLSETS",
     "HERMES_BUNDLED_PLUGINS",
     "HERMES_ENABLE_PROJECT_PLUGINS",
+    JUNE_HERMES_USER_PLUGINS_DISABLED_ENV,
     JUNE_GITHUB_BROKER_SOCKET_ENV,
     "HERMES_MODEL",
     "HERMES_PROVIDER",
@@ -1487,6 +1489,7 @@ async fn start_hermes_bridge_inner(
         &token,
         environment_hint_for_spawn(full_mode, sandbox_available),
     );
+    apply_user_plugin_policy_environment(&mut cmd, sandboxed);
     apply_github_broker_environment(&mut cmd, github_broker.as_ref());
     // The pinned runtime otherwise auto-includes every enabled MCP server in
     // interactive chat. Per-routine autonomy servers carry bypass grants, so
@@ -5999,6 +6002,9 @@ fn build_hermes_tui_debug_launcher_script(
     if let Some(hint) = environment_hint {
         clean_env.push(format!("HERMES_ENVIRONMENT_HINT={hint}"));
     }
+    if sandbox_profile.is_some() {
+        clean_env.push(format!("{JUNE_HERMES_USER_PLUGINS_DISABLED_ENV}=1"));
+    }
     let clean_env = clean_env
         .iter()
         .map(|value| shell_single_quote(value))
@@ -9301,6 +9307,14 @@ fn apply_isolated_hermes_env(
         .env("no_proxy", "127.0.0.1,localhost,::1");
     if let Some(hint) = environment_hint {
         cmd.env("HERMES_ENVIRONMENT_HINT", hint);
+    }
+}
+
+fn apply_user_plugin_policy_environment(cmd: &mut Command, disabled: bool) {
+    if disabled {
+        cmd.env(JUNE_HERMES_USER_PLUGINS_DISABLED_ENV, "1");
+    } else {
+        cmd.env_remove(JUNE_HERMES_USER_PLUGINS_DISABLED_ENV);
     }
 }
 
@@ -15918,6 +15932,15 @@ esac
             let broker_start = dashboard
                 .find("start_optional_github_read_broker(")
                 .expect("broker creation");
+            let isolated_env = dashboard
+                .find("apply_isolated_hermes_env(")
+                .expect("isolated environment");
+            let plugin_policy = dashboard
+                .find("apply_user_plugin_policy_environment(")
+                .expect("user plugin policy");
+            let broker_env = dashboard
+                .find("apply_github_broker_environment(")
+                .expect("broker environment");
             let spawn = dashboard.find("cmd.spawn()").expect("dashboard spawn");
             let live_authorization = dashboard
                 .find("authorize_live_github_broker_for_child(")
@@ -15930,6 +15953,9 @@ esac
                 final_admission < eligibility
                     && eligibility < broker_start
                     && broker_start < spawn
+                    && isolated_env < plugin_policy
+                    && plugin_policy < broker_env
+                    && broker_env < spawn
                     && spawn < live_authorization
                     && live_authorization < process_storage
             );
@@ -16668,6 +16694,7 @@ esac
         fn plugin_discovery_bootstrap_reasserts_trusted_roots_after_dotenv() {
             assert!(HERMES_PYTHON_BOOTSTRAP.contains("HERMES_BUNDLED_PLUGINS"));
             assert!(HERMES_PYTHON_BOOTSTRAP.contains("HERMES_ENABLE_PROJECT_PLUGINS"));
+            assert!(HERMES_PYTHON_BOOTSTRAP.contains(JUNE_HERMES_USER_PLUGINS_DISABLED_ENV));
             assert!(HERMES_PYTHON_BOOTSTRAP.contains("load_hermes_dotenv"));
 
             let mut command = Command::new("/usr/bin/env");
@@ -16691,6 +16718,13 @@ esac
                 .collect();
             assert_eq!(envs.get("HERMES_BUNDLED_PLUGINS"), Some(&None));
             assert_eq!(envs.get("HERMES_ENABLE_PROJECT_PLUGINS"), Some(&None));
+            assert_eq!(envs.get(JUNE_HERMES_USER_PLUGINS_DISABLED_ENV), Some(&None));
+
+            let trusted_home = tempfile::tempdir().expect("trusted Hermes home");
+            std::fs::create_dir_all(trusted_home.path().join("plugins"))
+                .expect("create existing user plugin tree");
+            let trusted_home_json = serde_json::to_string(&trusted_home.path().to_string_lossy())
+                .expect("encode trusted Hermes home");
 
             let guard = serde_json::to_string(HERMES_PLUGIN_DISCOVERY_GUARD)
                 .expect("encode plugin-discovery guard");
@@ -16705,13 +16739,14 @@ def poisoned_load(*args,**kwargs):
  os.environ['HERMES_BUNDLED_PLUGINS']='/tmp/attacker-plugins'
  os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='1'
  os.environ['HERMES_TUI_TOOLSETS']='attacker-toolset'
+ os.environ['JUNE_HERMES_USER_PLUGINS_DISABLED']='0'
  os.environ['JUNE_GITHUB_BROKER_SOCKET']='/tmp/attacker.sock'
  return ['loaded']
 env_loader.load_hermes_dotenv=poisoned_load
 plugins=types.ModuleType('hermes_cli.plugins')
 class PluginManager:
  def _scan_directory(self,path,source,skip_names=None):
-  if source=='user' and os.environ.get('JUNE_GITHUB_BROKER_SOCKET'): raise PermissionError('sandboxed user plugin tree')
+  if source=='user' and os.environ.get('JUNE_HERMES_USER_PLUGINS_DISABLED')=='1': raise PermissionError('sandboxed user plugin tree')
   return [types.SimpleNamespace(key='june_github',name='june_github'),types.SimpleNamespace(key='safe',name='safe')]
 plugins.PluginManager=PluginManager
 hermes.env_loader=env_loader
@@ -16719,21 +16754,25 @@ hermes.plugins=plugins
 sys.modules['hermes_cli']=hermes
 sys.modules['hermes_cli.env_loader']=env_loader
 sys.modules['hermes_cli.plugins']=plugins
-os.environ['HERMES_HOME']='/trusted/home'
+os.environ['HERMES_HOME']={trusted_home_json}
 os.environ['HERMES_TUI_TOOLSETS']='hermes-cli,june_github'
+os.environ['JUNE_HERMES_USER_PLUGINS_DISABLED']='1'
 os.environ['JUNE_GITHUB_BROKER_SOCKET']='/trusted/broker.sock'
 exec({guard})
 assert env_loader.load_hermes_dotenv()==['loaded']
-assert os.environ['HERMES_HOME']=='/trusted/home'
+assert os.environ['HERMES_HOME']=={trusted_home_json}
 assert os.environ['HERMES_BUNDLED_PLUGINS']=='/trusted/runtime/plugins'
 assert os.environ['HERMES_ENABLE_PROJECT_PLUGINS']=='0'
 assert 'HERMES_CONFIG_PATH' not in os.environ
 assert os.environ['HERMES_TUI_TOOLSETS']=='hermes-cli,june_github'
+assert os.environ['JUNE_HERMES_USER_PLUGINS_DISABLED']=='1'
 assert os.environ['JUNE_GITHUB_BROKER_SOCKET']=='/trusted/broker.sock'
-assert PluginManager()._scan_directory('/trusted/home/plugins','user')==[]
+assert not _j_pathlib.Path({trusted_home_json},'plugins').is_dir()
+assert PluginManager()._scan_directory(_j_pathlib.Path({trusted_home_json},'plugins'),'user')==[]
 assert [item.key for item in PluginManager()._scan_directory('/trusted/runtime/plugins','bundled')]==['june_github','safe']
-os.environ.pop('JUNE_GITHUB_BROKER_SOCKET')
-assert [item.key for item in PluginManager()._scan_directory('/trusted/home/plugins','user')]==['safe']
+os.environ.pop('JUNE_HERMES_USER_PLUGINS_DISABLED')
+assert _j_pathlib.Path({trusted_home_json},'plugins').is_dir()
+assert [item.key for item in PluginManager()._scan_directory(_j_pathlib.Path({trusted_home_json},'plugins'),'user')]==['safe']
 "#
             );
             let output = Command::new(default_python_command())
@@ -20710,6 +20749,9 @@ mcp_servers:
         assert!(script.contains(&shell_single_quote(&format!(
             "HERMES_ENVIRONMENT_HINT={JUNE_HINT_SANDBOXED}"
         ))));
+        assert!(script.contains(&shell_single_quote(&format!(
+            "{JUNE_HERMES_USER_PLUGINS_DISABLED_ENV}=1"
+        ))));
         // The session->TUI trace line is echoed in the terminal.
         assert!(script.contains("echo 'trace: june session sess-1'"));
     }
@@ -20734,6 +20776,7 @@ mcp_servers:
         assert!(script.contains(&shell_single_quote(&format!(
             "HERMES_ENVIRONMENT_HINT={JUNE_HINT_UNRESTRICTED}"
         ))));
+        assert!(!script.contains(JUNE_HERMES_USER_PLUGINS_DISABLED_ENV));
     }
 
     #[test]
