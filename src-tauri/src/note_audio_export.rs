@@ -347,7 +347,7 @@ fn open_anchored_source(
         GetFileInformationByHandleEx(
             handle,
             FileAttributeTagInfo,
-            (&raw mut attributes).cast(),
+            std::ptr::addr_of_mut!(attributes).cast(),
             size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
         )
     }
