@@ -17428,6 +17428,23 @@ mcp_servers:
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn hermes_python_command_uses_the_bundled_architecture_selector() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let bin = root.path().join("native").join("hermes").join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let hermes = bin.join("hermes");
+        let python = bin.join("python3");
+        std::fs::write(&hermes, "").expect("hermes");
+        std::fs::write(&python, "").expect("python selector");
+
+        assert_eq!(
+            hermes_python_command(&hermes.to_string_lossy()),
+            python.to_string_lossy()
+        );
+    }
+
+    #[test]
     fn bundled_command_candidates_include_target_specific_launchers() {
         let candidates = bundled_hermes_command_candidates(Path::new("resources"));
 

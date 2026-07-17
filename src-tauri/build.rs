@@ -1,5 +1,6 @@
 const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
+const EXPECTED_MACOS_ARCHITECTURES: &str = "arm64 x86_64";
 
 fn main() {
     println!("cargo:rerun-if-changed=tauri.conf.json");
@@ -236,13 +237,14 @@ fn computer_use_signature_matches(app_dir: &std::path::Path, identity: &str) -> 
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
 ///
 /// A populated bundle carries PIN and PATCHSET stamps (the hermes-agent commit
-/// and June compatibility patch it was built from). When either stamp no
-/// longer matches src/hermes_bridge.rs, the stale bundle is evicted and
-/// replaced with the placeholder rather than silently shipping outdated
-/// runtime code.
+/// and June compatibility patch it was built from). The macOS bundle also
+/// carries an ARCHITECTURES stamp. When a required stamp no longer matches,
+/// the stale bundle is evicted and replaced with the placeholder rather than
+/// silently shipping outdated or host-only runtime code.
 fn ensure_bundled_hermes_dir() {
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PATCHSET");
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/ARCHITECTURES");
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
@@ -253,9 +255,9 @@ fn ensure_bundled_hermes_dir() {
         return;
     };
     if hermes_dir.exists() {
-        if !hermes_dir.join("bin").join("hermes").exists()
-            && !hermes_dir.join("bin").join("hermes.exe").exists()
-        {
+        let mac_launcher = hermes_dir.join("bin").join("hermes");
+        let windows_launcher = hermes_dir.join("bin").join("hermes.exe");
+        if !mac_launcher.exists() && !windows_launcher.exists() {
             // Placeholder (or partial) dir: nothing to validate.
             return;
         }
@@ -267,16 +269,28 @@ fn ensure_bundled_hermes_dir() {
             .map(|raw| raw.trim().to_string())
             .unwrap_or_default();
         let pinned_patch_set = hermes_runtime_patch_set(&manifest_dir);
+        let stamped_architectures = std::fs::read_to_string(hermes_dir.join("ARCHITECTURES"))
+            .map(|raw| raw.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        // Windows keeps its existing single-platform bundle. A populated
+        // macOS bundle is reusable only when the architecture stamp proves it
+        // uses the universal dual-runtime layout; this evicts old host-only
+        // bundles even when their source and patch pins still match.
+        let architecture_layout_current =
+            !mac_launcher.exists() || stamped_architectures == EXPECTED_MACOS_ARCHITECTURES;
         if !stamped.is_empty()
             && stamped == pinned
             && !stamped_patch_set.is_empty()
             && stamped_patch_set == pinned_patch_set
+            && architecture_layout_current
         {
             return;
         }
         println!(
             "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?} with patch \
-             {stamped_patch_set:?}, expected {pinned:?} with patch {pinned_patch_set:?}); evicting \
+             {stamped_patch_set:?} for architectures {stamped_architectures:?}, expected \
+             {pinned:?} with patch {pinned_patch_set:?} and macOS architectures \
+             \"arm64 x86_64\"); evicting \
              it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
         );
         if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {
