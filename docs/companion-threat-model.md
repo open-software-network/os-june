@@ -2,8 +2,8 @@
 
 ## Assets
 
-Desktop OS Accounts tokens, mobile device credentials, device private keys, QR
-provisioning secrets, session keys, note/chat/settings plaintext, recording
+Desktop OS Accounts tokens, mobile device credentials, device private keys,
+pairing secrets, session keys, note/chat/settings plaintext, recording
 control authority, linked-device grants, and APNs signing material.
 
 ## Trust boundaries and mitigations

@@ -2,7 +2,7 @@ import {
   readText as readClipboardText,
   writeText as writeClipboardText,
 } from "@tauri-apps/plugin-clipboard-manager";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   companionApprovePairing,
   companionBeginPairing,
@@ -40,6 +40,9 @@ export function LinkedDevicesSection() {
   const [busy, setBusy] = useState(false);
   const [pairingCodeCopied, setPairingCodeCopied] = useState(false);
   const [error, setError] = useState<string>();
+  const activePairingIdRef = useRef<string>();
+  const copiedPairingCodeRef = useRef<string>();
+  const mountedRef = useRef(true);
 
   const clearCopiedPairingCode = useCallback(async (pairingCode: string) => {
     try {
@@ -50,6 +53,35 @@ export function LinkedDevicesSection() {
       // Clipboard cleanup is best-effort and must not replace a pairing result.
     }
   }, []);
+
+  const endPairing = useCallback(
+    (nextError?: string) => {
+      activePairingIdRef.current = undefined;
+      const copiedPairingCode = copiedPairingCodeRef.current;
+      copiedPairingCodeRef.current = undefined;
+      if (copiedPairingCode) {
+        void clearCopiedPairingCode(copiedPairingCode);
+      }
+      setPairing(undefined);
+      setStatus(undefined);
+      setPairingCodeCopied(false);
+      if (nextError) setError(nextError);
+    },
+    [clearCopiedPairingCode],
+  );
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      activePairingIdRef.current = undefined;
+      const copiedPairingCode = copiedPairingCodeRef.current;
+      copiedPairingCodeRef.current = undefined;
+      if (copiedPairingCode) {
+        void clearCopiedPairingCode(copiedPairingCode);
+      }
+    };
+  }, [clearCopiedPairingCode]);
 
   const refreshDevices = useCallback(async () => {
     setDevices(await companionListDevices());
@@ -82,24 +114,12 @@ export function LinkedDevicesSection() {
     if (!pairing) return;
     const timeout = window.setTimeout(
       () => {
-        setPairing(undefined);
-        setStatus(undefined);
-        setPairingCodeCopied(false);
-        setError("The pairing code expired. Show a new code to try again.");
+        endPairing("The pairing code expired. Show a new code to try again.");
       },
       Math.max(0, pairing.expiresAtMs - Date.now()),
     );
     return () => window.clearTimeout(timeout);
-  }, [pairing]);
-
-  useEffect(
-    () => () => {
-      if (pairing && pairingCodeCopied) {
-        void clearCopiedPairingCode(pairing.pairingCode);
-      }
-    },
-    [clearCopiedPairingCode, pairing, pairingCodeCopied],
-  );
+  }, [endPairing, pairing]);
 
   const qrSource = useMemo(
     () =>
@@ -112,6 +132,7 @@ export function LinkedDevicesSection() {
     setError(undefined);
     try {
       const next = await companionBeginPairing();
+      activePairingIdRef.current = next.pairingId;
       setPairing(next);
       setStatus(undefined);
       setPairingCodeCopied(false);
@@ -130,7 +151,18 @@ export function LinkedDevicesSection() {
     }
     setError(undefined);
     try {
-      await writeClipboardText(pairing.pairingCode);
+      const pairingId = pairing.pairingId;
+      const pairingCode = pairing.pairingCode;
+      await writeClipboardText(pairingCode);
+      if (
+        !mountedRef.current ||
+        activePairingIdRef.current !== pairingId ||
+        pairing.expiresAtMs <= Date.now()
+      ) {
+        await clearCopiedPairingCode(pairingCode);
+        return;
+      }
+      copiedPairingCodeRef.current = pairingCode;
       setPairingCodeCopied(true);
     } catch {
       setError("Couldn't copy the pairing code. Try again.");
@@ -144,9 +176,7 @@ export function LinkedDevicesSection() {
     try {
       await companionApprovePairing(pairing.pairingId, status.mobileDeviceId);
       await refreshDevices();
-      setPairing(undefined);
-      setStatus(undefined);
-      setPairingCodeCopied(false);
+      endPairing();
     } catch (next) {
       setError(errorMessage(next));
     } finally {
@@ -266,9 +296,7 @@ export function LinkedDevicesSection() {
                 type="button"
                 className="primary-action"
                 onClick={() => {
-                  setPairing(undefined);
-                  setStatus(undefined);
-                  setPairingCodeCopied(false);
+                  endPairing();
                 }}
               >
                 Cancel

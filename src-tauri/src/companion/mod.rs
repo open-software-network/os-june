@@ -1127,6 +1127,20 @@ mod tests {
     }
 
     #[test]
+    fn main_window_can_compare_and_clear_copied_pairing_codes() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../../capabilities/main.json")).unwrap();
+        let permissions = capability["permissions"].as_array().unwrap();
+
+        for permission in [
+            "clipboard-manager:allow-read-text",
+            "clipboard-manager:allow-write-text",
+        ] {
+            assert!(permissions.iter().any(|value| value == permission));
+        }
+    }
+
+    #[test]
     fn device_names_are_trimmed_and_bounded_by_encoded_size() {
         assert_eq!(
             normalized_device_name("  Studio Mac  ").as_deref(),

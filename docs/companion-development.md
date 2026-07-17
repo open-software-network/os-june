@@ -30,7 +30,9 @@ still requires explicit Desktop approval. Treat it like the QR: do not log it,
 store it, or include it in screenshots. Copying is explicit; Desktop clears the
 clipboard on expiry, cancellation, approval, or leaving the settings surface
 when the clipboard still contains that code. Clipboard cleanup is best-effort,
-so the five-minute expiry remains the security backstop.
+so the five-minute expiry remains the security backstop. The main-window
+clipboard read permission exists only for this equality check; do not use it to
+inspect or retain unrelated clipboard contents.
 
 ## Verify
 

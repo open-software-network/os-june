@@ -82,4 +82,44 @@ describe("LinkedDevicesSection", () => {
     await waitFor(() => expect(mocks.readClipboardText).toHaveBeenCalled());
     expect(mocks.writeClipboardText).not.toHaveBeenCalledWith("");
   });
+
+  it("clears a clipboard write that finishes after pairing is cancelled", async () => {
+    const user = userEvent.setup();
+    let finishWrite: (() => void) | undefined;
+    mocks.writeClipboardText.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    render(<LinkedDevicesSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
+    await user.click(screen.getByText("Enter a code instead"));
+    await user.click(screen.getByRole("button", { name: "Copy pairing code" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    finishWrite?.();
+
+    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
+  });
+
+  it("clears a clipboard write that finishes after leaving settings", async () => {
+    const user = userEvent.setup();
+    let finishWrite: (() => void) | undefined;
+    mocks.writeClipboardText.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const { unmount } = render(<LinkedDevicesSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
+    await user.click(screen.getByText("Enter a code instead"));
+    await user.click(screen.getByRole("button", { name: "Copy pairing code" }));
+    unmount();
+    finishWrite?.();
+
+    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
+  });
 });
