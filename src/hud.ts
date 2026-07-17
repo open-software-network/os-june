@@ -909,8 +909,12 @@ async function handleDictationEventPayload(payload: unknown) {
     // Stop with nothing running (a stop racing a session that already
     // ended, or the demo pill's stop button hitting the real helper): the
     // desired end state — not listening — is already true, so there is
-    // nothing to tell the user. Take the quiet exit.
+    // nothing to tell the user. If key-down already produced a useful error
+    // (for example, missing microphone permission), preserve that error until
+    // its normal timeout instead of letting the secondary key-up failure hide
+    // it immediately.
     if (dictationEvent.payload?.code === "not_listening") {
+      if (hud?.dataset.state === "error") return;
       void hideHud();
       return;
     }

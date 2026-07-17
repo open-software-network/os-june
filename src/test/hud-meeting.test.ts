@@ -420,6 +420,43 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
+  it("preserves the actionable start error when key-up finds nothing listening", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "microphone_permission_missing",
+        message: "Microphone permission is required.",
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("error");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Microphone permission is required.",
+    );
+    mocks.hide.mockClear();
+
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "not_listening",
+        message: "Dictation is not listening.",
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("error");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Microphone permission is required.",
+    );
+    expect(mocks.hide).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_800);
+    await vi.advanceTimersByTimeAsync(320);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
   it("uses agent-style frostless chrome for the compact listening pill", async () => {
     await loadHud();
 
