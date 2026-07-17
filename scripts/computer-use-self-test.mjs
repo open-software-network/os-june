@@ -1,0 +1,906 @@
+#!/usr/bin/env node
+
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { computerUseBundleIdentifier } from "./computer-use-dev.mjs";
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const pin = readJson(path.join(rootDir, "src-tauri", "cua-driver-pin.json"));
+const contract = readJson(path.join(rootDir, "src-tauri", "cua-driver-contract.json"));
+const options = parseArguments(process.argv.slice(2));
+const bundleDir = path.resolve(
+  options.bundle || path.join(rootDir, ".tauri-helper", pin.bundleName),
+);
+const executable = path.join(bundleDir, "Contents", "MacOS", pin.executable);
+const stampPath = path.join(bundleDir, "Contents", "Resources", "june-cua-driver-pin.json");
+
+async function main() {
+  if (process.platform !== "darwin") {
+    console.error("Skipping Computer use self-test: Computer use is macOS-only.");
+    return;
+  }
+
+  if (options.promptPermissions && !options.live && !options.permissionsOnly) {
+    throw new Error("--prompt-permissions requires --live or --permissions-only");
+  }
+
+  let driver;
+  try {
+    validateBundle();
+    validateDirectLaunchRefusal();
+    const host = resolveSelfTestHost();
+    const startHost = (permissionPrompt) =>
+      startMcp(host, [
+        "--computer-use-release-self-test-host",
+        executable,
+        ...(permissionPrompt ? [`--permission-prompt=${permissionPrompt}`] : []),
+      ]);
+    driver = await startHost();
+    if (options.promptPermissions) {
+      const current = structured(
+        await callTool(driver, "check_permissions", { prompt: false }, 45_000),
+      );
+      const permissionPrompt =
+        current.accessibility !== true
+          ? "accessibility"
+          : current.screen_recording !== true
+            ? "screen-recording"
+            : undefined;
+      if (permissionPrompt) {
+        await driver.close();
+        driver = await startHost(permissionPrompt);
+        console.error(`Requested ${permissionPrompt} for June Computer Use Driver.`);
+      }
+    }
+    const toolsResult = await driver.request("tools/list", {});
+    validateDriverContract(toolsResult.tools);
+    await validateJuneMcpContract();
+    if (options.permissionsOnly) {
+      const result = await callTool(
+        driver,
+        "check_permissions",
+        { prompt: options.promptPermissions },
+        options.promptPermissions ? 60_000 : 45_000,
+      );
+      console.log(JSON.stringify(structured(result), null, 2));
+    } else if (options.live) {
+      await runLiveSelfTest(driver, false);
+    }
+    console.error(
+      `Computer use ${options.live ? "live " : ""}self-test passed for June's helper built from cua-driver ${pin.version} (${pin.sourceCommit}).`,
+    );
+  } finally {
+    await driver?.close();
+  }
+}
+
+function parseArguments(args) {
+  const parsed = {
+    bundle: undefined,
+    host: undefined,
+    live: false,
+    permissionsOnly: false,
+    promptPermissions: false,
+    requireDeveloperId: false,
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    switch (args[index]) {
+      case "--bundle":
+        parsed.bundle = args[index + 1];
+        if (!parsed.bundle) throw new Error("--bundle requires a path");
+        index += 1;
+        break;
+      case "--host":
+        parsed.host = args[index + 1];
+        if (!parsed.host) throw new Error("--host requires a path");
+        index += 1;
+        break;
+      case "--live":
+        parsed.live = true;
+        break;
+      case "--permissions-only":
+        parsed.permissionsOnly = true;
+        break;
+      case "--prompt-permissions":
+        parsed.promptPermissions = true;
+        break;
+      case "--require-developer-id":
+        parsed.requireDeveloperId = true;
+        break;
+      default:
+        throw new Error(`Unknown Computer use self-test argument: ${args[index]}`);
+    }
+  }
+  return parsed;
+}
+
+function validateBundle() {
+  if (!existsSync(executable)) {
+    throw new Error(`Pinned Computer use driver is missing: ${executable}`);
+  }
+  if (contract.version !== pin.version) {
+    throw new Error(
+      `Driver contract targets ${contract.version}, but the bundle pin is ${pin.version}.`,
+    );
+  }
+  const version = run(executable, ["--version"]).combined.match(
+    /june-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
+  );
+  if (version?.[1] !== pin.version || version?.[2] !== pin.sourceCommit) {
+    throw new Error(
+      `Bundled helper reports ${version?.[1] || "no version"} ${version?.[2] || "no commit"}; expected ${pin.version} ${pin.sourceCommit}.`,
+    );
+  }
+
+  const stamp = readJson(stampPath);
+  const profile = stamp.juneBuild?.profile;
+  const expectedBundleIdentifier = computerUseBundleIdentifier({
+    baseIdentifier: pin.bundleIdentifier,
+    profile,
+    worktreeRoot: rootDir,
+  });
+  if (stamp.bundleIdentifier !== expectedBundleIdentifier) {
+    throw new Error(
+      `Computer use helper stamp identifies ${stamp.bundleIdentifier || "nothing"}; expected ${expectedBundleIdentifier}.`,
+    );
+  }
+
+  const plist = path.join(bundleDir, "Contents", "Info.plist");
+  for (const [key, expected] of [
+    ["CFBundleIdentifier", expectedBundleIdentifier],
+    ["CFBundleDisplayName", "June Computer Use Driver"],
+    ["CFBundleName", "June Computer Use Driver"],
+    ["LSMinimumSystemVersion", pin.minimumMacOSVersion],
+  ]) {
+    const actual = run("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", plist]).stdout.trim();
+    if (actual !== expected) {
+      throw new Error(`Computer use helper ${key} is ${actual}; expected ${expected}.`);
+    }
+  }
+  const screenReason = run("/usr/bin/plutil", [
+    "-extract",
+    "NSScreenCaptureUsageDescription",
+    "raw",
+    "-o",
+    "-",
+    plist,
+  ]).stdout.trim();
+  if (!screenReason.startsWith("June captures only the app windows")) {
+    throw new Error("Computer use helper is missing June's Screen Recording usage description.");
+  }
+
+  if (
+    stamp.version !== pin.version ||
+    stamp.sourceCommit !== pin.sourceCommit ||
+    stamp.juneBuild?.sourceSha256 !== helperSourceSha256()
+  ) {
+    throw new Error("Computer use helper stamp does not match June's pinned source build.");
+  }
+  if (options.requireDeveloperId && stamp.juneBuild?.profile !== "release") {
+    throw new Error("A signed Computer use release must contain a release-profile helper.");
+  }
+  const sbom = readJson(path.join(bundleDir, "Contents", "Resources", "june-cua-driver.spdx.json"));
+  const sbomPackage = sbom.packages?.find((entry) => entry.name === "cua-driver-rs");
+  const sbomSource = sbomPackage?.externalRefs?.find(
+    (reference) => reference.referenceType === "purl",
+  )?.referenceLocator;
+  if (
+    sbomPackage?.versionInfo !== pin.version ||
+    sbomPackage?.licenseDeclared !== "MIT" ||
+    !sbomSource?.endsWith(`@${pin.sourceCommit}`)
+  ) {
+    throw new Error("Bundled Computer use SBOM does not match the pinned source commit.");
+  }
+  const bundledLicense = path.join(bundleDir, "Contents", "Resources", "cua-driver-LICENSE.md");
+  if (
+    readFileSync(bundledLicense, "utf8") !==
+    readFileSync(path.join(rootDir, "src-tauri", "cua-driver-LICENSE.md"), "utf8")
+  ) {
+    throw new Error("Bundled Computer use helper is missing its pinned MIT license notice.");
+  }
+
+  const architectures = new Set(
+    run("/usr/bin/lipo", ["-archs", executable]).stdout.trim().split(/\s+/),
+  );
+  const declaredArchitectures = stamp.juneBuild?.architectures || [];
+  if (declaredArchitectures.length === 0 || architectures.size !== declaredArchitectures.length) {
+    throw new Error("Computer use helper architecture declarations do not match its binary.");
+  }
+  for (const architecture of declaredArchitectures) {
+    if (!architectures.has(architecture)) {
+      throw new Error(`Computer use helper is missing its ${architecture} slice.`);
+    }
+  }
+
+  run("/usr/bin/codesign", ["--verify", "--deep", "--strict", bundleDir]);
+  const signature = run("/usr/bin/codesign", ["-dv", "--verbose=4", bundleDir]).combined;
+  if (!signature.includes(`Identifier=${expectedBundleIdentifier}`)) {
+    throw new Error("Computer use helper signature has the wrong bundle identifier.");
+  }
+  if (
+    options.requireDeveloperId &&
+    (signature.includes("Signature=adhoc") || signature.includes("TeamIdentifier=not set"))
+  ) {
+    throw new Error("Computer use helper must carry a Developer ID signature in this build.");
+  }
+}
+
+function validateDirectLaunchRefusal() {
+  const direct = spawnSync(executable, ["mcp"], {
+    encoding: "utf8",
+    timeout: 10_000,
+    env: {
+      ...driverEnvironment(),
+      JUNE_COMPUTER_USE_HELPER_CAPABILITY: "a".repeat(64),
+    },
+  });
+  const output = `${direct.stdout || ""}\n${direct.stderr || ""}`;
+  if (direct.status === 0 || !output.includes("must be launched directly by June")) {
+    throw new Error("Bundled Computer use helper accepted a direct MCP launch.");
+  }
+}
+
+function resolveSelfTestHost() {
+  if (options.host) {
+    const host = path.resolve(options.host);
+    if (!existsSync(host)) throw new Error(`Computer use self-test host is missing: ${host}`);
+    return host;
+  }
+  const stamp = readJson(stampPath);
+  const profile = stamp.juneBuild?.profile === "release" ? "release" : "debug";
+  const host = path.join(rootDir, "src-tauri", "target", profile, "os-june");
+  if (!existsSync(host)) {
+    throw new Error(
+      `Computer use self-test host is missing: ${host}. Build June first or pass --host.`,
+    );
+  }
+  return host;
+}
+
+async function startMcp(command, args = [], env = driverEnvironment()) {
+  const client = new JsonRpcClient(command, args, env);
+  const initialized = await client.request("initialize", {
+    protocolVersion: contract.protocolVersion,
+    capabilities: {},
+    clientInfo: { name: "June Computer use self-test", version: "1" },
+  });
+  if (!initialized?.serverInfo?.name) {
+    await client.close();
+    throw new Error("Computer use driver did not complete the MCP handshake.");
+  }
+  client.notify("notifications/initialized", {});
+  return client;
+}
+
+function validateDriverContract(tools) {
+  if (!Array.isArray(tools)) throw new Error("Driver tools/list did not return a tool list.");
+  const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  for (const [name, expected] of Object.entries(contract.driverTools)) {
+    const tool = byName.get(name);
+    if (!tool) throw new Error(`Pinned driver no longer exposes required tool ${name}.`);
+    const schema = tool.inputSchema || tool.input_schema;
+    if (schema?.additionalProperties !== false) {
+      throw new Error(`${name} must keep a closed input schema.`);
+    }
+    const required = new Set(schema.required || []);
+    for (const property of expected.required) {
+      if (!required.has(property)) {
+        throw new Error(`${name} no longer requires ${property}.`);
+      }
+    }
+    for (const [property, type] of Object.entries(expected.properties)) {
+      const actual = schema.properties?.[property]?.type;
+      if (actual !== type) {
+        throw new Error(`${name}.${property} changed type from ${type} to ${actual || "missing"}.`);
+      }
+    }
+  }
+  const captureModes = byName.get("get_window_state")?.inputSchema?.properties?.capture_mode?.enum;
+  if (!sameMembers(captureModes, ["som", "vision", "ax"])) {
+    throw new Error(
+      "Pinned driver capture modes changed; review the Computer use broker contract.",
+    );
+  }
+}
+
+async function validateJuneMcpContract() {
+  const script = path.join(
+    rootDir,
+    "src-tauri",
+    "resources",
+    "hermes-mcp",
+    "june_computer_use_mcp.py",
+  );
+  const python = process.env.PYTHON || "python3";
+  const client = new JsonRpcClient(python, [script], {
+    ...process.env,
+    JUNE_COMPUTER_USE_PROXY_URL: "",
+    JUNE_COMPUTER_USE_PROXY_TOKEN: "",
+    PYTHONDONTWRITEBYTECODE: "1",
+  });
+  try {
+    await client.request("initialize", {
+      protocolVersion: contract.protocolVersion,
+      capabilities: {},
+      clientInfo: { name: "June contract self-test", version: "1" },
+    });
+    client.notify("notifications/initialized", {});
+    const result = await client.request("tools/list", {});
+    const tool = result.tools?.find((candidate) => candidate.name === "computer_use");
+    const actions = tool?.inputSchema?.properties?.action?.enum;
+    if (!sameMembers(actions, contract.juneActions)) {
+      throw new Error("June's Computer use MCP actions drifted from the pinned broker contract.");
+    }
+    if (tool?.inputSchema?.additionalProperties !== false) {
+      throw new Error("June's Computer use MCP input schema must remain closed.");
+    }
+    const description = tool?.description?.toLowerCase() || "";
+    for (const instruction of [
+      "refer to this capability as computer use",
+      "never ask for approval in chat",
+      "call the requested action immediately",
+      "allow for this task",
+      "open_app",
+      "raise_window",
+      "stage manager",
+      "do not retry",
+    ]) {
+      if (!description.includes(instruction)) {
+        throw new Error(`June's Computer use instructions must include: ${instruction}.`);
+      }
+    }
+    if (description.includes("mcp")) {
+      throw new Error("June's Computer use instructions must hide the transport implementation.");
+    }
+  } finally {
+    await client.close();
+  }
+}
+
+async function runLiveSelfTest(client, promptPermissions) {
+  const permissionResult = await callTool(
+    client,
+    "check_permissions",
+    { prompt: promptPermissions },
+    promptPermissions ? 300_000 : 45_000,
+  );
+  const permissions = structured(permissionResult);
+  if (
+    permissions.accessibility !== true ||
+    permissions.screen_recording !== true ||
+    permissions.screen_recording_capturable !== true
+  ) {
+    throw new Error(
+      "Live Computer use self-test needs Accessibility and a live Screen Recording grant for the signed June Computer Use Driver helper.",
+    );
+  }
+
+  const tempDir = mkdtempSync(path.join(tmpdir(), "june-computer-use-self-test-"));
+  let targetPid = 0;
+  let observerPid = 0;
+  let targetChild;
+  let observerChild;
+  try {
+    const fixtureExecutable = buildFixture(tempDir);
+    const statePath = path.join(tempDir, "target-state.txt");
+    const targetPidPath = path.join(tempDir, "target.pid");
+    const observerPidPath = path.join(tempDir, "observer.pid");
+    writeFileSync(statePath, "waiting\n");
+    const targetApp = makeFixtureApp(tempDir, fixtureExecutable, "target");
+    const observerApp = makeFixtureApp(tempDir, fixtureExecutable, "observer");
+    targetChild = spawn(
+      fixtureAppExecutable(targetApp),
+      ["--role", "target", "--state", statePath, "--pid-file", targetPidPath],
+      { stdio: "ignore" },
+    );
+    targetPid = targetChild.pid;
+    if (Number(await waitForFile(targetPidPath)) !== targetPid) {
+      throw new Error("Computer use target fixture reported an unexpected pid.");
+    }
+    observerChild = spawn(
+      fixtureAppExecutable(observerApp),
+      ["--role", "observer", "--pid-file", observerPidPath],
+      { stdio: "ignore" },
+    );
+    observerPid = observerChild.pid;
+    if (Number(await waitForFile(observerPidPath)) !== observerPid) {
+      throw new Error("Computer use observer fixture reported an unexpected pid.");
+    }
+    run(fixtureExecutable, ["--activate-pid", String(observerPid)]);
+
+    let before;
+    try {
+      before = await waitForProbe(
+        fixtureExecutable,
+        (probe) => probe.frontmostPid === observerPid,
+        3_000,
+      );
+    } catch (error) {
+      // A macOS privacy notification can remain frontmost after the permission
+      // prompt even when both grants are active. That is still a valid focus
+      // sentinel: prove it remains unchanged rather than dismissing a system UI.
+      before = probeFixture(fixtureExecutable);
+      await delay(500);
+      const confirmation = probeFixture(fixtureExecutable);
+      if (
+        before.frontmostPid <= 0 ||
+        before.frontmostPid === targetPid ||
+        confirmation.frontmostPid !== before.frontmostPid
+      ) {
+        throw error;
+      }
+      before = confirmation;
+      console.error(
+        `Observer could not become frontmost; using stable ${before.frontmostName || "foreground app"} (${before.frontmostPid}) as the focus sentinel.`,
+      );
+    }
+    const windowsBefore = await waitForWindows(client, [targetPid, observerPid]);
+    const target = findFixtureWindow(windowsBefore, targetPid, "June Computer Use Target");
+    if (!target) {
+      throw new Error(
+        `Computer use fixture target window did not appear. Process windows: ${windowDiagnostic(windowsBefore, targetPid)}`,
+      );
+    }
+
+    const capture = await callTool(client, "get_window_state", {
+      pid: targetPid,
+      window_id: target.window_id,
+      capture_mode: "som",
+    });
+    const tree = captureTree(capture);
+    const actionLine = tree.split("\n").find((line) => line.includes("Apply fixture action"));
+    const element = actionLine?.match(/\[(?:element_index\s+)?(\d+)\]/)?.[1];
+    if (!element) {
+      throw new Error(
+        `Live capture did not expose the fixture button as a numbered element. ${captureTreeDiagnostic(capture)}`,
+      );
+    }
+    const inputLine = tree.split("\n").find((line) => line.includes("Fixture text input"));
+    const inputElement = inputLine?.match(/\[(?:element_index\s+)?(\d+)\]/)?.[1];
+    if (!inputElement) {
+      throw new Error(
+        `Live capture did not expose the fixture text field as a numbered element. ${captureTreeDiagnostic(capture)}`,
+      );
+    }
+    const image = capture.content?.find((part) => part.type === "image")?.data;
+    if (typeof image !== "string" || !image.startsWith("iVBOR")) {
+      const payload = (capture.content || []).map((part) => ({
+        type: part.type,
+        keys: Object.keys(part).sort(),
+        mimeType: part.mimeType || part.mime_type,
+        dataLength: typeof part.data === "string" ? part.data.length : undefined,
+        dataPrefix: typeof part.data === "string" ? part.data.slice(0, 16) : undefined,
+      }));
+      const captureMetadata = { ...structured(capture) };
+      delete captureMetadata.tree_markdown;
+      throw new Error(
+        `Live Computer use capture did not return a PNG screenshot. Target: ${JSON.stringify(target)}. Process windows: ${windowDiagnostic(windowsBefore, targetPid)}. Content: ${JSON.stringify(payload)}. Structured: ${JSON.stringify(captureMetadata)}. Driver stderr: ${client.stderr.slice(-2_000)}`,
+      );
+    }
+
+    await callTool(client, "click", {
+      pid: targetPid,
+      window_id: target.window_id,
+      element_index: Number(element),
+    });
+    await waitFor(
+      () => readFileSync(statePath, "utf8").trim() === "clicked",
+      "background fixture action",
+    );
+    await callTool(client, "type_text", {
+      pid: targetPid,
+      window_id: target.window_id,
+      element_index: Number(inputElement),
+      text: "background input",
+    });
+    await waitFor(
+      () => readFileSync(statePath, "utf8").trim() === "typed:background input",
+      "background fixture text input",
+    );
+
+    const after = probeFixture(fixtureExecutable);
+    if (after.frontmostPid !== before.frontmostPid) {
+      throw new Error("Computer use background action stole application focus.");
+    }
+    if (
+      Math.abs(after.cursorX - before.cursorX) > 0.5 ||
+      Math.abs(after.cursorY - before.cursorY) > 0.5
+    ) {
+      throw new Error("Computer use background action moved the user's pointer.");
+    }
+    if (after.spaceKeyDown !== before.spaceKeyDown) {
+      throw new Error("Computer use background action changed the real Space key state.");
+    }
+    if (after.modifierFlags !== before.modifierFlags) {
+      throw new Error("Computer use background action changed the real modifier-key state.");
+    }
+    const windowsAfter = await waitForWindows(client, [targetPid, observerPid]);
+    for (const [pid, title] of [
+      [targetPid, "June Computer Use Target"],
+      [observerPid, "June Computer Use Observer"],
+    ]) {
+      const prior = findFixtureWindow(windowsBefore, pid, title);
+      const current = findFixtureWindow(windowsAfter, pid, title);
+      if (
+        prior &&
+        current &&
+        prior.is_on_current_space !== undefined &&
+        prior.is_on_current_space !== current.is_on_current_space
+      ) {
+        throw new Error("Computer use background action changed the active Space.");
+      }
+    }
+  } finally {
+    terminate(targetPid);
+    terminate(observerPid);
+    targetChild?.unref();
+    observerChild?.unref();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function buildFixture(tempDir) {
+  const output = path.join(tempDir, "computer-use-fixture");
+  const source = path.join(rootDir, "src-tauri", "native", "computer-use-fixture", "main.swift");
+  const developerDir = existsSync("/Applications/Xcode.app/Contents/Developer")
+    ? "/Applications/Xcode.app/Contents/Developer"
+    : process.env.DEVELOPER_DIR;
+  const swiftArchitecture = process.arch === "x64" ? "x86_64" : "arm64";
+  run(
+    "/usr/bin/xcrun",
+    [
+      "swiftc",
+      "-target",
+      `${swiftArchitecture}-apple-macosx${pin.minimumMacOSVersion}`,
+      "-module-cache-path",
+      path.join(tempDir, "swift-module-cache"),
+      source,
+      "-framework",
+      "AppKit",
+      "-framework",
+      "CoreGraphics",
+      "-o",
+      output,
+    ],
+    {
+      env: {
+        ...process.env,
+        ...(developerDir ? { DEVELOPER_DIR: developerDir } : {}),
+        CLANG_MODULE_CACHE_PATH: path.join(tempDir, "clang-module-cache"),
+      },
+    },
+  );
+  return output;
+}
+
+function makeFixtureApp(tempDir, fixtureExecutable, role) {
+  const displayName = role === "observer" ? "June CU Observer" : "June CU Target";
+  const app = path.join(tempDir, `${displayName}.app`);
+  const macos = path.join(app, "Contents", "MacOS");
+  mkdirSync(macos, { recursive: true });
+  const executableName = "computer-use-fixture";
+  copyFileSync(fixtureExecutable, path.join(macos, executableName));
+  chmodSync(path.join(macos, executableName), 0o755);
+  writeFileSync(
+    path.join(app, "Contents", "Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleDisplayName</key><string>${displayName}</string>
+<key>CFBundleExecutable</key><string>${executableName}</string>
+<key>CFBundleIdentifier</key><string>co.opensoftware.june.computer-use-self-test.${role}</string>
+<key>CFBundleName</key><string>${displayName}</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>13.0</string>
+</dict></plist>
+`,
+  );
+  run("/usr/bin/codesign", ["--force", "--deep", "--sign", "-", app]);
+  return app;
+}
+
+function fixtureAppExecutable(app) {
+  return path.join(app, "Contents", "MacOS", "computer-use-fixture");
+}
+
+async function waitForWindows(client, pids) {
+  let found;
+  await waitFor(async () => {
+    const windows = [];
+    for (const pid of pids) {
+      const result = await callTool(client, "list_windows", { pid, on_screen_only: false });
+      windows.push(...(structured(result).windows || []));
+    }
+    if (pids.every((pid) => windows.some((window) => Number(window.pid) === pid))) {
+      found = windows;
+      return true;
+    }
+    return false;
+  }, "fixture windows");
+  return found;
+}
+
+function findFixtureWindow(windows, pid, title) {
+  return windows.find((window) => Number(window.pid) === pid && window.title === title);
+}
+
+function windowDiagnostic(windows, pid) {
+  const owned = windows
+    .filter((window) => Number(window.pid) === pid)
+    .map((window) => ({ title: window.title, window_id: window.window_id }));
+  return JSON.stringify(owned);
+}
+
+async function waitForProbe(executablePath, predicate, timeoutMs = 15_000) {
+  let found;
+  let lastProbe;
+  try {
+    await waitFor(
+      () => {
+        const probe = probeFixture(executablePath);
+        lastProbe = probe;
+        if (predicate(probe)) {
+          found = probe;
+          return true;
+        }
+        return false;
+      },
+      "observer focus",
+      timeoutMs,
+    );
+  } catch (error) {
+    throw new Error(`${error.message} Last probe: ${JSON.stringify(lastProbe)}`);
+  }
+  return found;
+}
+
+function probeFixture(executablePath) {
+  return JSON.parse(run(executablePath, ["--probe"]).stdout);
+}
+
+async function waitForFile(file) {
+  await waitFor(() => existsSync(file) && readFileSync(file, "utf8").trim(), path.basename(file));
+  return readFileSync(file, "utf8").trim();
+}
+
+async function waitFor(predicate, description, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      if (await predicate()) return;
+    } catch (error) {
+      lastError = error;
+    }
+    await delay(150);
+  }
+  throw new Error(
+    `Timed out waiting for ${description}.${lastError ? ` ${lastError.message}` : ""}`,
+  );
+}
+
+async function callTool(client, name, arguments_, timeoutMs = 45_000) {
+  const result = await client.request("tools/call", { name, arguments: arguments_ }, timeoutMs);
+  if (result?.isError || result?.is_error) {
+    const message = result.content?.find((part) => part.type === "text")?.text;
+    throw new Error(`${name} failed: ${message || "unknown driver error"}`);
+  }
+  return result;
+}
+
+function structured(result) {
+  return result?.structuredContent || result?.structured_content || {};
+}
+
+function captureTree(result) {
+  const structuredTree = structured(result).tree_markdown;
+  if (typeof structuredTree === "string" && structuredTree.length > 0) return structuredTree;
+  return (
+    result?.content?.find((part) => part?.type === "text" && typeof part.text === "string")?.text ||
+    ""
+  );
+}
+
+function captureTreeDiagnostic(result) {
+  const rawTree = captureTree(result);
+  const interesting = rawTree
+    .split("\n")
+    .filter((line) => /AXWindow|AXButton|AXTextField|fixture|Background/i.test(line))
+    .slice(-40)
+    .join(" ")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+  const tree = rawTree.replaceAll(/\s+/g, " ").trim();
+  const structuredKeys = Object.keys(structured(result)).sort().join(", ") || "none";
+  return `Structured keys: ${structuredKeys}. Tree length: ${rawTree.length}. Relevant tree: ${interesting || "<none>"}. Tree tail: ${tree.slice(-1_000) || "<empty>"}`;
+}
+
+function driverEnvironment() {
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) {
+    if (
+      name.startsWith("CUA_DRIVER_RS_") ||
+      name.startsWith("HERMES_CUA_DRIVER") ||
+      name === "HERMES_COMPUTER_USE_BACKEND" ||
+      ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].includes(
+        name,
+      )
+    ) {
+      delete env[name];
+    }
+  }
+  return {
+    ...env,
+    CUA_DRIVER_RS_TELEMETRY_ENABLED: "0",
+    CUA_DRIVER_RS_UPDATE_CHECK: "0",
+    CUA_DRIVER_RS_PERMISSIONS_GATE: "0",
+    CUA_DRIVER_RS_MCP_NO_RELAUNCH: "1",
+  };
+}
+
+class JsonRpcClient {
+  constructor(command, args, env = process.env) {
+    this.child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    this.nextId = 1;
+    this.pending = new Map();
+    this.buffer = "";
+    this.stderr = "";
+    this.closed = false;
+    this.child.stdout.setEncoding("utf8");
+    this.child.stderr.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk) => this.onData(chunk));
+    this.child.stderr.on("data", (chunk) => {
+      this.stderr = `${this.stderr}${chunk}`.slice(-8_000);
+    });
+    this.child.on("error", (error) => this.rejectAll(error));
+    this.child.on("exit", (code, signal) => {
+      if (!this.closed) {
+        this.rejectAll(
+          new Error(
+            `MCP process exited (${code ?? signal ?? "unknown"}). ${this.stderr.trim()}`.trim(),
+          ),
+        );
+      }
+    });
+  }
+
+  request(method, params, timeoutMs = 30_000) {
+    const id = this.nextId;
+    this.nextId += 1;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`${method} timed out. ${this.stderr.trim()}`.trim()));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      this.write({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+
+  notify(method, params) {
+    this.write({ jsonrpc: "2.0", method, params });
+  }
+
+  write(message) {
+    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  onData(chunk) {
+    this.buffer += chunk;
+    for (;;) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) return;
+      const line = this.buffer.slice(0, newline).trim();
+      this.buffer = this.buffer.slice(newline + 1);
+      if (!line) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const entry = this.pending.get(message.id);
+      if (!entry) continue;
+      clearTimeout(entry.timer);
+      this.pending.delete(message.id);
+      if (message.error)
+        entry.reject(new Error(message.error.message || JSON.stringify(message.error)));
+      else entry.resolve(message.result);
+    }
+  }
+
+  rejectAll(error) {
+    for (const entry of this.pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.child.stdin.end();
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    this.child.kill("SIGTERM");
+    await Promise.race([new Promise((resolve) => this.child.once("exit", resolve)), delay(2_000)]);
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      this.child.kill("SIGKILL");
+    }
+  }
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: 120_000,
+    maxBuffer: 24 * 1024 * 1024,
+    ...options,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} ${args.join(" ")} exited with ${result.status ?? result.signal}.\n${result.stderr}`,
+    );
+  }
+  return {
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    combined: `${result.stdout || ""}\n${result.stderr || ""}`,
+  };
+}
+
+function readJson(file) {
+  return JSON.parse(readFileSync(file, "utf8"));
+}
+
+function helperSourceSha256() {
+  const hash = createHash("sha256");
+  for (const relative of [
+    "src-tauri/src/computer_use_driver.rs",
+    "src-tauri/Cargo.toml",
+    "src-tauri/Cargo.lock",
+  ]) {
+    hash.update(relative);
+    hash.update("\0");
+    hash.update(readFileSync(path.join(rootDir, relative)));
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function sameMembers(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((value) => actual.includes(value))
+  );
+}
+
+function terminate(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {}
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+await main();
