@@ -40,7 +40,7 @@ note (copy `docs/hermes-upstream-template.md` to
 
 ## June compatibility patch set
 
-The current pin also carries the checksum-gated `june-approval-memory-v5` patch set
+The current pin also carries the checksum-gated `june-approval-memory-v6` patch set
 documented in `docs/hermes-upstream-v2026.6.19.md`. Its targeted-approval portion
 follows ADR 0025. On every pin bump:
 
@@ -70,9 +70,10 @@ follows ADR 0025. On every pin bump:
 6. Confirm `image.attach_bytes` persists and queues image bytes against the
    lightweight runtime session returned by `session.create` without waiting
    for full Hermes initialization. Confirm `prompt.submit` atomically detaches
-   its image batch, failed Hermes initialization discards only that batch, and a
-   successful prompt consumes it exactly once. Exercise these invariants against
-   a new runtime session in the compatibility smoke.
+   its image batch, failed Hermes initialization restores that batch ahead of
+   later image attachments for retry, and a successful prompt consumes it exactly
+   once. Exercise these invariants against a new runtime session in the
+   compatibility smoke.
 7. Build both macOS and Windows bundles. Confirm both packaging paths apply the
    same patch, stamp the patch set, verify it after relocation, and run
    `scripts/hermes-approval-patch-smoke.py`.

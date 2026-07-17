@@ -370,7 +370,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,
     # then hand only that batch to the asynchronous success path. Initialization
-    # failure discards the local batch without touching later attachments.
+    # failure restores the local batch ahead of later attachments for retry.
     prompt_submit = _rpc_method(tree, "prompt.submit")
     history_lock_blocks = [
         node
@@ -420,19 +420,51 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     assert len(prompt_run_calls[0].args) == 5, ast.dump(prompt_run_calls[0])
     assert isinstance(prompt_run_calls[0].args[4], ast.Name)
     assert prompt_run_calls[0].args[4].id == "submitted_images"
-    failure_queue_mutations = [
+    failure_queue_assignments = [
         node
         for node in ast.walk(run_after_ready)
-        if isinstance(node, (ast.Assign, ast.AugAssign))
+        if isinstance(node, ast.Assign)
         and any(
             _session_subscript(target, "attached_images")
-            for target in getattr(node, "targets", [getattr(node, "target", None)])
+            for target in node.targets
         )
     ]
-    assert failure_queue_mutations == [], (
-        "initialization failure must discard only the detached local batch",
-        failure_queue_mutations,
+    assert len(failure_queue_assignments) == 1, (
+        "initialization failure must restore exactly one detached batch",
+        failure_queue_assignments,
     )
+    failure_session = {
+        "attached_images": ["later-attachment.png"],
+        "history_lock": threading.Lock(),
+        "running": True,
+    }
+    failure_namespace = {
+        "rid": "failed-prompt",
+        "sid": "failed-session",
+        "session": failure_session,
+        "text": "retry me",
+        "submitted_images": ["submitted-attachment.png"],
+        "_wait_agent": lambda _session, _rid: {
+            "error": {"message": "synthetic Hermes initialization failure"}
+        },
+        "_emit": lambda *_args: None,
+        "_clear_inflight_turn": lambda _session: None,
+        "_run_prompt_submit": lambda *_args: None,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(run_after_ready),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        failure_namespace,
+    )
+    failure_namespace["run_after_agent_ready"]()
+    assert failure_session["attached_images"] == [
+        "submitted-attachment.png",
+        "later-attachment.png",
+    ], failure_session
+    assert failure_session["running"] is False
     run_prompt_submit = _function(tree, "_run_prompt_submit")
     assert any(argument.arg == "images" for argument in run_prompt_submit.args.args)
     all_prompt_run_calls = [
