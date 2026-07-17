@@ -6,9 +6,15 @@ Use Rust with `aarch64-apple-ios-sim`, Xcode 26, and XcodeGen 2.45.4 or newer.
 The native app has no Node, Metro, React Native, or CocoaPods dependency.
 Local June API permits the in-memory relay; restart loses links.
 
-The companion has no account login or OAuth configuration. Sign in to OS
-Accounts in June Desktop. Pairing authorizes the phone with a separate,
-revocable device credential and never copies the desktop token.
+Register a separate public OS Accounts OAuth client for June Companion with the
+exact callback `junecompanion://auth/callback`. Set
+`JUNE_COMPANION_ACCOUNTS_CLIENT_ID` as an Xcode build setting or in a local
+uncommitted xcconfig. Do not reuse the June Desktop client registration.
+The committed build setting is intentionally blank.
+
+Mobile login proves account identity. Pairing separately authorizes the phone
+with a revocable device credential and explicit approval from a June Desktop
+signed in to the same account. The desktop token is never copied.
 
 ## Run
 
@@ -18,9 +24,10 @@ xcodegen generate
 open JuneCompanion.xcodeproj
 ```
 
-Run June API and a signed-in June Desktop with the relay URL.
-Open Desktop Settings > Linked devices, scan the native QR, review the device
-name/capabilities, and approve.
+Run June API and a signed-in June Desktop with the relay URL. Sign in from the
+companion; the hosted OS Accounts login opens in the system browser. Then open
+Desktop Settings > Linked devices, scan the native QR, review the device name
+and capabilities, and approve.
 
 ## Verify
 

@@ -122,30 +122,6 @@ struct PageModel<Item: Codable & Sendable>: Codable, Sendable {
     let nextCursor: String?
 }
 
-enum AppSection: String, CaseIterable, Identifiable {
-    case agent
-    case notes
-    case settings
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .agent: "Chats"
-        case .notes: "Notes"
-        case .settings: "Settings"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .agent: "bubble.left.and.bubble.right"
-        case .notes: "note.text"
-        case .settings: "gearshape"
-        }
-    }
-}
-
 @MainActor
 final class AppModel: ObservableObject {
     private static let maximumBufferedAgentSessions = 8
@@ -153,7 +129,8 @@ final class AppModel: ObservableObject {
     private static let truncatedAgentMessageSuffix = "\n\n[Response truncated on companion]"
 
     @Published private(set) var snapshot = CompanionSnapshotModel.unpaired
-    @Published var selection: AppSection = .agent
+    @Published private(set) var accountProfile: AccountProfile?
+    @Published private(set) var isStarting = true
     @Published var selectedNote: NoteRecordModel?
     @Published var noteConflict: NoteConflictModel?
     @Published var selectedSessionID: String?
@@ -164,27 +141,80 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
 
     private let service: CompanionService
+    private let accountService: AccountAuthenticationService
     private let decoder = JSONDecoder()
     private var bufferedAgentStreams: [String: BufferedAgentStream] = [:]
     private var bufferedAgentStreamOrder: [String] = []
     private var nextMessageCursor: String?
     private var refreshRequested = false
 
-    init(service: CompanionService = .shared) {
+    init(
+        service: CompanionService = .shared,
+        accountService: AccountAuthenticationService = .shared
+    ) {
         self.service = service
+        self.accountService = accountService
         service.eventSink = { [weak self] type, payload in
             Task { @MainActor in self?.receive(type: type, payload: payload) }
         }
     }
 
     func bootstrap() async {
+        defer { isStarting = false }
+        accountProfile = accountService.restoredProfile()
+        guard let accountProfile else {
+            snapshot = CompanionSnapshotModel(connection: .signedOut, notes: [], agentSessions: [])
+            return
+        }
+        snapshot = .unpaired
         do {
-            snapshot = try decode(CompanionSnapshotModel.self, from: service.snapshotJSON())
+            snapshot = try decode(
+                CompanionSnapshotModel.self,
+                from: try await service.prepare(accountUserID: accountProfile.id)
+            )
             if snapshot.connection == .ready {
                 await refresh()
             }
         } catch {
             present(error)
+        }
+    }
+
+    var isAccountSignInConfigured: Bool { accountService.isConfigured }
+
+    func signIn() {
+        perform {
+            let profile = try await self.accountService.signIn()
+            self.accountProfile = profile
+            self.snapshot = .unpaired
+            self.snapshot = try self.decode(
+                CompanionSnapshotModel.self,
+                from: try await self.service.prepare(accountUserID: profile.id)
+            )
+        }
+    }
+
+    func signOutAndUnlink() {
+        perform {
+            var revocationError: Error?
+            if ![.signedOut, .unpaired, .revoked].contains(self.snapshot.connection) {
+                do {
+                    try await self.service.revokeThisDevice()
+                } catch {
+                    // Revocation is already recorded for retry by the native
+                    // service. Account logout must still clear mobile tokens.
+                    revocationError = error
+                }
+            }
+            await self.accountService.signOut()
+            self.accountProfile = nil
+            self.snapshot = CompanionSnapshotModel(
+                connection: .signedOut,
+                notes: [],
+                agentSessions: []
+            )
+            self.resetConversationState()
+            if let revocationError { throw revocationError }
         }
     }
 
@@ -280,7 +310,6 @@ final class AppModel: ObservableObject {
             self.nextMessageCursor = page.nextCursor
             self.hasEarlierMessages = page.nextCursor != nil
             self.applyBufferedAgentStream(for: session.id)
-            self.selection = .agent
         }
     }
 
@@ -308,6 +337,10 @@ final class AppModel: ObservableObject {
 
     func startNewChat() {
         guard !isWorking else { return }
+        resetConversationState()
+    }
+
+    private func resetConversationState() {
         selectedSessionID = nil
         messages = []
         nextMessageCursor = nil

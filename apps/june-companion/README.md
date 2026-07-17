@@ -10,7 +10,8 @@ library. The SwiftUI application model receives typed decrypted DTOs for
 presentation, never tokens, private/session keys, APNs tokens, QR secrets, or
 raw protocol frames.
 
-June Desktop owns OS Accounts authentication. The companion scans a pairing
+June Companion signs in through the OS Accounts hosted login in the system
+browser using its own public OAuth client and PKCE. It then scans a pairing
 code, generates its own revocable device credential, and can use it only after
-the signed-in desktop approves its hash and device identity. No desktop token,
-mobile OAuth client, or debug bearer fallback is used.
+a Mac signed in to the same account approves its hash and device identity. The
+desktop token is never copied, and no debug bearer fallback is used.

@@ -62,6 +62,7 @@ struct LinkedConfiguration: Codable {
   let desktopDeviceID: UUID
   let desktopPublicKey: [UInt8]
   let linkedAt: Date
+  let accountUserID: String?
 }
 
 private struct RelayEnvelope: Codable {
@@ -164,13 +165,14 @@ final class PairingAPI {
     payload: PairingPayload,
     identity: DeviceIdentity,
     pairingProof: [UInt8],
-    deviceCredentialHash: [UInt8]
+    deviceCredentialHash: [UInt8],
+    accountAccessToken: String
   ) async throws -> PairingStatusWire {
     try await request(
       relayURL: payload.relayUrl,
-      path: "/v1/companion/pairings/\(payload.pairingId.uuidString)/propose",
+      path: "/v1/companion/pairings/\(payload.pairingId.uuidString)/propose-authenticated",
       method: "POST",
-      deviceCredential: nil,
+      authorization: .bearer(accountAccessToken),
       body: [
         "mobileDeviceId": identity.deviceID.uuidString,
         "mobilePublicKey": identity.publicKey,
@@ -190,7 +192,7 @@ final class PairingAPI {
         relayURL: payload.relayUrl,
         path: "/v1/companion/pairings/\(payload.pairingId.uuidString)/mobile-status",
         method: "POST",
-        deviceCredential: nil,
+        authorization: nil,
         body: ["pairingProof": pairingProof]
       )
       if status.state == "approved" { return status }
@@ -206,7 +208,7 @@ final class PairingAPI {
         relayURL: relayURL,
         path: "/v1/companion/devices/\(deviceID.uuidString)/revoke",
         method: "POST",
-        deviceCredential: deviceCredential,
+        authorization: .device(deviceCredential),
         body: [:]
       )
     } catch let error as CompanionAPIRequestError where [401, 404].contains(error.statusCode) {
@@ -226,7 +228,7 @@ final class PairingAPI {
       relayURL: relayURL,
       path: "/v1/companion/devices/\(deviceID.uuidString)/push",
       method: "POST",
-      deviceCredential: deviceCredential,
+      authorization: .device(deviceCredential),
       body: ["token": Array(deviceToken)]
     )
   }
@@ -235,7 +237,7 @@ final class PairingAPI {
     relayURL: URL,
     path: String,
     method: String,
-    deviceCredential: String?,
+    authorization: CompanionHTTPAuthorization?,
     body: [String: Any]?
   ) async throws -> T {
     let base = try apiBase(relayURL)
@@ -244,8 +246,8 @@ final class PairingAPI {
     }
     var request = URLRequest(url: url)
     request.httpMethod = method
-    if let deviceCredential {
-      request.setValue("Device \(deviceCredential)", forHTTPHeaderField: "Authorization")
+    if let authorization {
+      request.setValue(authorization.headerValue, forHTTPHeaderField: "Authorization")
     }
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
@@ -273,6 +275,18 @@ final class PairingAPI {
       throw CompanionNativeError.invalidData("Pairing requires a secure relay URL.")
     }
     return url
+  }
+}
+
+private enum CompanionHTTPAuthorization {
+  case bearer(String)
+  case device(String)
+
+  var headerValue: String {
+    switch self {
+    case .bearer(let token): "Bearer \(token)"
+    case .device(let credential): "Device \(credential)"
+    }
   }
 }
 

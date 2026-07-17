@@ -16,7 +16,7 @@
 - Confirm the SwiftUI-to-service API is high-level and typed; tokens, private
   keys, APNs tokens, raw frames, paths, commands, and credentials never cross
   into the application model.
-- Confirm relay device/link persistence, strict desktop OS Accounts verification,
+- Confirm relay device/link persistence, strict desktop and companion OS Accounts verification,
   cross-user/non-linked/revoked rejection, frame/rate/queue/connection bounds,
   bounded pairing attempts, zero offline retention, and redacted logs/metrics.
 - Confirm desktop capability equality, no generic executor, note CAS,

@@ -93,6 +93,17 @@ final class CompanionService {
 
   func snapshotJSON() throws -> String { try jsonString(snapshot) }
 
+  func prepare(accountUserID: String) async throws -> String {
+    if let linked, linked.accountUserID != accountUserID {
+      // Pre-account builds and links created for another account must be
+      // revoked before this signed-in user can pair a replacement device.
+      try await revokeThisDevice()
+      snapshot = Snapshot(connection: "unpaired", notes: [], agentSessions: [])
+      emitSnapshot()
+    }
+    return try snapshotJSON()
+  }
+
   func pair(payloadJSON: String) async throws -> String {
     _ = try await reconcilePendingRevocation()
     guard let data = payloadJSON.data(using: .utf8) else { throw CompanionNativeError.invalidData("The pairing code is invalid.") }
@@ -123,7 +134,7 @@ final class CompanionService {
         deviceID: identity.deviceID
       )
       cleanupRecorded = true
-      _ = try await pairingAPI.propose(
+      let accountUserID = try await proposeAuthenticatedPairing(
         payload: payload,
         identity: identity,
         pairingProof: pairingProof,
@@ -147,7 +158,13 @@ final class CompanionService {
         expectedDesktopPublicKey: approved.desktopPublicKey,
         eventHandler: handleTransportEvent
       )
-      let configuration = LinkedConfiguration(relayURL: payload.relayUrl, desktopDeviceID: approved.desktopDeviceId, desktopPublicKey: approved.desktopPublicKey, linkedAt: Date())
+      let configuration = LinkedConfiguration(
+        relayURL: payload.relayUrl,
+        desktopDeviceID: approved.desktopDeviceId,
+        desktopPublicKey: approved.desktopPublicKey,
+        linkedAt: Date(),
+        accountUserID: accountUserID
+      )
       try SecureStore.shared.save(
         JSONEncoder().encode(configuration),
         account: "linked.configuration",
@@ -179,6 +196,25 @@ final class CompanionService {
       throw error
     }
     return try await refresh()
+  }
+
+  private func proposeAuthenticatedPairing(
+    payload: PairingPayload,
+    identity: DeviceIdentity,
+    pairingProof: [UInt8],
+    deviceCredentialHash: [UInt8]
+  ) async throws -> String {
+    // Keep the account bearer scoped to this authenticated proposal. The
+    // long-lived relay connection uses the separately approved device grant.
+    let authorization = try await AccountAuthenticationService.shared.authorization()
+    _ = try await pairingAPI.propose(
+      payload: payload,
+      identity: identity,
+      pairingProof: pairingProof,
+      deviceCredentialHash: deviceCredentialHash,
+      accountAccessToken: authorization.accessToken
+    )
+    return authorization.profile.id
   }
 
   func unlock() async throws -> Bool {

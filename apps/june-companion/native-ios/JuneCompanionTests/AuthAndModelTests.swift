@@ -5,6 +5,76 @@ import XCTest
 
 @MainActor
 final class AuthAndModelTests: XCTestCase {
+    func testOSAccountsAuthorizationUsesPKCES256AndExactMobileRedirect() throws {
+        let configuration = AppConfiguration(
+            accountsOrigin: try XCTUnwrap(URL(string: "https://accounts.opensoftware.co")),
+            accountsAPIOrigin: try XCTUnwrap(URL(string: "https://accounts-api.opensoftware.co")),
+            accountsClientID: "ocl_companion_test",
+            accountsRedirectURI: try XCTUnwrap(URL(string: "junecompanion://auth/callback"))
+        )
+        var call = 0
+        let request = try AccountOAuth.makeAuthorizationRequest(configuration: configuration) { count in
+            defer { call += 1 }
+            return [UInt8](repeating: call == 0 ? 7 : 9, count: count)
+        }
+        let query = try XCTUnwrap(URLComponents(url: request.url, resolvingAgainstBaseURL: false))
+        let values = Dictionary(uniqueKeysWithValues: (query.queryItems ?? []).compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+
+        XCTAssertEqual(request.url.scheme, "https")
+        XCTAssertEqual(request.url.host, "accounts.opensoftware.co")
+        XCTAssertEqual(request.url.path, "/login")
+        XCTAssertEqual(values["client_id"], "ocl_companion_test")
+        XCTAssertEqual(values["redirect_uri"], "junecompanion://auth/callback")
+        XCTAssertEqual(values["scope"], "profile:read")
+        XCTAssertEqual(values["state"], request.state)
+        XCTAssertEqual(values["code_challenge_method"], "S256")
+        XCTAssertFalse(request.verifier.contains("="))
+        XCTAssertFalse(try XCTUnwrap(values["code_challenge"]).contains("="))
+    }
+
+    func testOSAccountsCallbackRequiresExactRouteAndSingleMatchingState() throws {
+        let redirect = try XCTUnwrap(URL(string: "junecompanion://auth/callback"))
+        let valid = try XCTUnwrap(URL(string: "junecompanion://auth/callback?code=one&state=expected"))
+        XCTAssertEqual(
+            try AccountOAuth.authorizationCode(
+                from: valid,
+                expectedState: "expected",
+                redirectURI: redirect
+            ),
+            "one"
+        )
+
+        for invalid in [
+            "junecompanion://auth/other?code=one&state=expected",
+            "junecompanion://auth/callback?code=one&state=wrong",
+            "junecompanion://auth/callback?code=one&state=expected&state=expected",
+            "junecompanion://auth/callback?code=one&code=two&state=expected",
+        ] {
+            XCTAssertThrowsError(
+                try AccountOAuth.authorizationCode(
+                    from: XCTUnwrap(URL(string: invalid)),
+                    expectedState: "expected",
+                    redirectURI: redirect
+                )
+            )
+        }
+    }
+
+    func testOSAccountsProductionTokenEnvelopeDecodesSnakeCase() throws {
+        let data = Data(
+            #"{"success":true,"data":{"access_token":"access","refresh_token":"refresh"},"error_code":null,"message":null}"#.utf8
+        )
+        let envelope = try JSONDecoder().decode(
+            AccountEnvelope<AccountTokenPair>.self,
+            from: data
+        )
+
+        XCTAssertEqual(envelope.data?.accessToken, "access")
+        XCTAssertEqual(envelope.data?.refreshToken, "refresh")
+    }
+
     func testPairingProofIsDeterministicAndDoesNotExposeSecret() {
         let secret = Data((0..<32).map(UInt8.init))
         let proof = PairingProof.make(secret: secret)

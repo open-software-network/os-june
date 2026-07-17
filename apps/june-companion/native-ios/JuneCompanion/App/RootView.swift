@@ -1,13 +1,20 @@
 import SwiftUI
 
+private enum CompanionSheet: String, Identifiable {
+  case notes
+  case settings
+
+  var id: String { rawValue }
+}
+
 struct RootView: View {
   @ObservedObject var model: AppModel
 
   @AppStorage("companion.appearance") private var storedAppearance = JuneAppearance.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-  @State private var isNavigationOpen = false
-  @State private var navigationDrag: CGFloat = 0
+  @State private var presentedSheet: CompanionSheet?
+  @State private var isHistoryOpen = false
+  @State private var historyDrag: CGFloat = 0
   @State private var edgeDrag: CGFloat = 0
 
   var body: some View {
@@ -15,6 +22,14 @@ struct RootView: View {
       .font(JuneFont.body)
       .tint(.primary)
       .preferredColorScheme(selectedAppearance.colorScheme)
+      .sheet(item: $presentedSheet) { sheet in
+        switch sheet {
+        case .notes:
+          NotesView(model: model, openNavigation: nil)
+        case .settings:
+          SettingsView(model: model, openNavigation: nil)
+        }
+      }
       .overlay(alignment: .top) {
         if let error = model.errorMessage {
           ErrorBanner(message: error, dismiss: model.clearError)
@@ -35,91 +50,58 @@ struct RootView: View {
 
   @ViewBuilder
   private var content: some View {
-    switch model.snapshot.connection {
-    case .signedOut, .unpaired:
+    if model.isStarting {
+      ProgressStateView(title: "Opening June", detail: "Restoring this device securely.")
+    } else if model.accountProfile == nil {
       OnboardingView(model: model)
-    case .revoked:
-      PairingView(model: model)
-    case .locked:
-      LockView(model: model)
-    case .connecting:
-      ProgressStateView(title: "Connecting securely", detail: "Verifying your Mac and this device.")
-    case .error:
-      FailureStateView(model: model)
-    case .ready, .offline:
-      companionExperience
-    }
-  }
-
-  @ViewBuilder
-  private var companionExperience: some View {
-    if horizontalSizeClass == .regular {
-      NavigationSplitView {
-        CompanionNavigationSidebar(
-          model: model,
-          close: nil,
-          select: select
-        )
-        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
-      } detail: {
-        destination(for: model.selection, openNavigation: nil)
-      }
     } else {
-      compactExperience
+      switch model.snapshot.connection {
+      case .signedOut:
+        OnboardingView(model: model)
+      case .unpaired, .revoked:
+        PairingView(model: model)
+      case .locked:
+        LockView(model: model)
+      case .connecting:
+        ProgressStateView(title: "Connecting securely", detail: "Verifying your Mac and this device.")
+      case .error:
+        FailureStateView(model: model)
+      case .ready, .offline:
+        companionExperience
+      }
     }
   }
 
-  private var compactExperience: some View {
+  private var companionExperience: some View {
     GeometryReader { geometry in
       let width = min(380, geometry.size.width - 44)
-      let visible = isNavigationOpen || edgeDrag > 0
-      let progress = navigationVisibility(width: width)
+      let visible = isHistoryOpen || edgeDrag > 0
+      let progress = historyVisibility(width: width)
 
       ZStack(alignment: .leading) {
-        destination(for: model.selection) {
-          withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
-            isNavigationOpen = true
-          }
-        }
+        AgentView(model: model, openNavigation: openHistory)
+          .allowsHitTesting(!visible)
+          .accessibilityHidden(visible)
 
-        if visible {
-          Color.black.opacity(0.2 * progress)
-            .ignoresSafeArea()
-            .contentShape(Rectangle())
-            .onTapGesture { closeNavigation() }
-            .accessibilityLabel("Close navigation")
-            .accessibilityAddTraits(.isButton)
-        }
+        Color.black.opacity(0.14 * progress)
+          .ignoresSafeArea()
+          .contentShape(Rectangle())
+          .onTapGesture(perform: closeHistory)
+          .allowsHitTesting(visible)
+          .accessibilityHidden(true)
 
-        CompanionNavigationSidebar(
+        HistorySidebar(
           model: model,
-          close: closeNavigation,
-          select: select
+          close: closeHistory,
+          openNotes: { openSheet(.notes) },
+          openSettings: { openSheet(.settings) }
         )
         .frame(width: width)
         .frame(maxHeight: .infinity)
         .background(Color(.systemBackground))
-        .shadow(color: .black.opacity(0.16 * progress), radius: 24, x: 8)
-        .offset(x: navigationOffset(width: width))
-        .gesture(
-          DragGesture(minimumDistance: 8)
-            .onChanged { value in
-              guard isNavigationOpen else { return }
-              navigationDrag = min(0, value.translation.width)
-            }
-            .onEnded { value in
-              guard isNavigationOpen else { return }
-              if value.translation.width < -(width * 0.24)
-                || value.predictedEndTranslation.width < -(width * 0.32)
-              {
-                closeNavigation()
-              } else {
-                withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
-                  navigationDrag = 0
-                }
-              }
-            }
-        )
+        .shadow(color: .black.opacity(0.12 * progress), radius: 24, x: 8)
+        .offset(x: historyOffset(width: width))
+        .gesture(historyDragGesture(width: width))
         .accessibilityHidden(!visible)
       }
       .clipped()
@@ -127,172 +109,151 @@ struct RootView: View {
     }
   }
 
+  private func openHistory() {
+    withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
+      isHistoryOpen = true
+    }
+  }
+
+  private func closeHistory() {
+    withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
+      isHistoryOpen = false
+      historyDrag = 0
+      edgeDrag = 0
+    }
+  }
+
+  private func openSheet(_ sheet: CompanionSheet) {
+    closeHistory()
+    presentedSheet = sheet
+  }
+
+  private func historyVisibility(width: CGFloat) -> Double {
+    guard width > 0 else { return 0 }
+    if isHistoryOpen { return Double(max(0, 1 + historyDrag / width)) }
+    return Double(min(1, edgeDrag / width))
+  }
+
+  private func historyOffset(width: CGFloat) -> CGFloat {
+    if isHistoryOpen { return historyDrag }
+    return -width + min(width, edgeDrag)
+  }
+
+  private func historyDragGesture(width: CGFloat) -> some Gesture {
+    DragGesture(minimumDistance: 8)
+      .onChanged { value in
+        guard isHistoryOpen else { return }
+        historyDrag = min(0, value.translation.width)
+      }
+      .onEnded { value in
+        guard isHistoryOpen else { return }
+        if value.translation.width < -(width * 0.24)
+          || value.predictedEndTranslation.width < -(width * 0.32)
+        {
+          closeHistory()
+        } else {
+          withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
+            historyDrag = 0
+          }
+        }
+      }
+  }
+
   private func edgeSwipe(width: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 16)
       .onChanged { value in
-        guard !isNavigationOpen, value.startLocation.x <= 24, value.translation.width > 0 else {
+        guard !isHistoryOpen, value.startLocation.x <= 24, value.translation.width > 0 else {
           return
         }
         edgeDrag = min(width, value.translation.width)
       }
       .onEnded { value in
-        guard !isNavigationOpen, edgeDrag > 0 else { return }
+        guard !isHistoryOpen, edgeDrag > 0 else { return }
         let shouldOpen = value.translation.width >= width * 0.24
           || value.predictedEndTranslation.width >= width * 0.32
         withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
-          isNavigationOpen = shouldOpen
+          isHistoryOpen = shouldOpen
           edgeDrag = 0
         }
       }
   }
-
-  private func navigationVisibility(width: CGFloat) -> Double {
-    guard width > 0 else { return 0 }
-    if isNavigationOpen { return Double(max(0, 1 + navigationDrag / width)) }
-    return Double(min(1, edgeDrag / width))
-  }
-
-  private func navigationOffset(width: CGFloat) -> CGFloat {
-    if isNavigationOpen { return navigationDrag }
-    return -width + min(width, edgeDrag)
-  }
-
-  private func closeNavigation() {
-    withAnimation(JuneMotion.animation(.presentation, reduceMotion: reduceMotion)) {
-      isNavigationOpen = false
-      navigationDrag = 0
-      edgeDrag = 0
-    }
-  }
-
-  private func select(_ section: AppSection) {
-    model.selection = section
-    closeNavigation()
-  }
-
-  @ViewBuilder
-  private func destination(for section: AppSection, openNavigation: (() -> Void)?) -> some View {
-    switch section {
-    case .agent:
-      AgentView(model: model, openNavigation: openNavigation)
-    case .notes:
-      NotesView(model: model, openNavigation: openNavigation)
-    case .settings:
-      SettingsView(model: model, openNavigation: openNavigation)
-    }
-  }
 }
 
-private struct CompanionNavigationSidebar: View {
+private struct HistorySidebar: View {
   @ObservedObject var model: AppModel
-  let close: (() -> Void)?
-  let select: (AppSection) -> Void
+  let close: () -> Void
+  let openNotes: () -> Void
+  let openSettings: () -> Void
 
   var body: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 12) {
-        JuneBrandLockup(compact: true)
-        Spacer()
-        if let close {
-          Button(action: close) {
-            Image(systemName: "xmark")
-              .font(.system(size: 15, weight: .medium))
-              .frame(width: JuneMetrics.minimumTapTarget, height: JuneMetrics.minimumTapTarget)
-          }
-          .buttonStyle(JunePressButtonStyle())
-          .accessibilityLabel("Close navigation")
-        }
-      }
-      .padding(.horizontal, 18)
-      .padding(.top, 12)
-
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 18) {
+    NavigationStack {
+      List {
+        Section {
           Button {
             model.startNewChat()
-            select(.agent)
+            close()
           } label: {
             Label("New chat", systemImage: "square.and.pencil")
-              .font(JuneFont.subheadline.weight(.medium))
-              .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
-              .padding(.horizontal, 14)
-              .background(
-                Color(.secondarySystemFill),
-                in: RoundedRectangle(cornerRadius: 15, style: .continuous)
-              )
           }
-          .foregroundStyle(.primary)
-          .buttonStyle(JunePressButtonStyle())
           .disabled(model.isWorking)
+        }
 
-          VStack(spacing: 4) {
-            ForEach(AppSection.allCases) { section in
-              Button { select(section) } label: {
-                HStack(spacing: 12) {
-                  Image(systemName: section.systemImage)
-                    .frame(width: 22)
-                  Text(section.title)
-                  Spacer()
+        if !model.snapshot.agentSessions.isEmpty {
+          Section("Recent chats") {
+            ForEach(model.snapshot.agentSessions.prefix(30)) { session in
+              Button {
+                model.openAgentSession(session)
+                close()
+              } label: {
+                HStack(spacing: 10) {
+                  Image(systemName: session.status.systemImage)
+                    .foregroundStyle(.secondary)
+                  Text(session.title)
+                    .lineLimit(1)
+                  Spacer(minLength: 0)
                 }
-                .font(JuneFont.subheadline)
-                .padding(.horizontal, 14)
-                .frame(minHeight: 48)
-                .background(
-                  model.selection == section ? Color(.secondarySystemFill) : Color.clear,
-                  in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-                )
               }
               .foregroundStyle(.primary)
-              .buttonStyle(.plain)
-              .accessibilityAddTraits(model.selection == section ? .isSelected : [])
-            }
-          }
-
-          if !model.snapshot.agentSessions.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-              Text("Recent chats")
-                .font(JuneFont.caption)
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 12)
-
-              ForEach(model.snapshot.agentSessions.prefix(12)) { session in
-                Button {
-                  model.openAgentSession(session)
-                  select(.agent)
-                } label: {
-                  HStack(spacing: 10) {
-                    Image(systemName: session.status.systemImage)
-                      .foregroundStyle(.secondary)
-                    Text(session.title)
-                      .lineLimit(1)
-                    Spacer(minLength: 0)
-                  }
-                  .font(JuneFont.subheadline)
-                  .padding(.horizontal, 12)
-                  .frame(minHeight: 46)
-                  .contentShape(Rectangle())
-                }
-                .foregroundStyle(.primary)
-                .buttonStyle(.plain)
-                .disabled(model.isWorking)
-              }
+              .disabled(model.isWorking)
             }
           }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 16)
-      }
 
-      VStack(alignment: .leading, spacing: 7) {
-        Divider()
-        ConnectionLabel(state: model.snapshot.connection)
+        Section {
+          Button(action: openNotes) {
+            Label("Notes", systemImage: "note.text")
+          }
+          Button(action: openSettings) {
+            Label("Settings", systemImage: "gearshape")
+          }
+        }
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 18)
-      .padding(.bottom, 14)
-      .background(.bar)
+      .listStyle(.sidebar)
+      .navigationTitle("June")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button(action: close) {
+            Image(systemName: "xmark")
+          }
+          .accessibilityLabel("Close history")
+        }
+      }
+      .safeAreaInset(edge: .bottom) {
+        HStack(spacing: 10) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(model.accountProfile?.handle ?? "OS Accounts")
+              .font(JuneFont.subheadline)
+              .lineLimit(1)
+            ConnectionLabel(state: model.snapshot.connection)
+          }
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(.bar)
+      }
     }
-    .accessibilityIdentifier("companion-navigation")
+    .accessibilityIdentifier("history-sidebar")
   }
 }
 

@@ -13,7 +13,7 @@ struct PairingView: View {
                         Text(model.snapshot.connection == .revoked ? "Link June again" : "Link June on your Mac")
                             .font(JuneFont.hero)
                             .accessibilityAddTraits(.isHeader)
-                        Text("Create a new pairing code in June on your Mac. The signed-in desktop app will authorize this device.")
+                        Text("You are signed in as @\(model.accountProfile?.handle ?? "unknown"). Link a Mac signed in to the same OS Accounts user.")
                             .font(JuneFont.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -43,7 +43,7 @@ struct PairingView: View {
                     Button("Enter code for simulator") { showsManualPairing = true }
                         .buttonStyle(JuneSecondaryButtonStyle())
 #endif
-                    Text("No OS Accounts sign-in is needed on this device.")
+                    Text("Your Mac must still approve this device. Account sign-in alone never grants desktop control.")
                         .font(JuneFont.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

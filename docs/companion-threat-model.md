@@ -2,7 +2,7 @@
 
 ## Assets
 
-Desktop OS Accounts tokens, mobile device credentials, device private keys, QR
+Desktop and companion OS Accounts tokens, mobile device credentials, device private keys, QR
 provisioning secrets, session keys, note/chat/settings plaintext, recording
 control authority, linked-device grants, and APNs signing material.
 
@@ -18,13 +18,16 @@ control authority, linked-device grants, and APNs signing material.
   linked device id and cannot complete a Noise handshake without the device
   private key.
 - A copied QR expires after five minutes and cannot complete without desktop
-  approval. Noise XXpsk3 authenticates possession of the QR secret and both
-  device identities.
+  approval. A new proposal must also authenticate the same OS Accounts user as
+  the desktop that created it. Noise XXpsk3 authenticates possession of the QR
+  secret and both device identities.
 - Replay, tampering, oversized payloads, stale controls, cross-user routes,
   duplicate connections, unbounded queues, and excessive frame rates fail
   closed.
-- The mobile bundle has no OS Accounts token, OAuth client, OS Accounts App API
-  key, provider key, APNs signing key, or relay secret.
+- The mobile OAuth client is public and has no shared secret. Account tokens
+  are created at runtime, stored only in device-only Keychain, and never enter
+  SwiftUI. The bundle has no OS Accounts App API key, provider key, APNs
+  signing key, relay secret, or prebuilt bearer token.
 - The desktop controller has no generic executor. The Hermes Gateway remains
   behind the existing control plane.
 

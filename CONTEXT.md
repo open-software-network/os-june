@@ -526,8 +526,8 @@ _Avoid_: mobile June, Tauri mobile, WebView companion.
 **Linked device**:
 One phone, tablet, or desktop installation with its own stable device id and
 Curve25519 identity, explicitly approved by the user for a fixed capability
-set. OS Accounts authenticates the desktop that grants access; the companion
-does not repeat account login or receive the desktop session.
+set. The companion and desktop authenticate the same OS Accounts user
+independently; the companion never receives or copies the desktop session.
 _Avoid_: session, login, trusted account.
 
 **Companion pairing**:
@@ -535,6 +535,12 @@ The five-minute, desktop-approved QR flow that authenticates the two device
 identities and establishes a **linked device** relationship. The QR provisioning
 secret is single-use state for pairing, not a reusable device credential.
 _Avoid_: login, sync, invite.
+
+**Companion account session**:
+The public-client OS Accounts grant created by system-browser login on one
+companion device. It proves user identity and relay eligibility but cannot
+control a Mac without separate **companion pairing** and desktop approval.
+_Avoid_: desktop session, device credential, pairing.
 
 **Device credential**:
 The random opaque credential a companion generates locally during pairing. It

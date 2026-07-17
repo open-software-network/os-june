@@ -18,12 +18,14 @@
 		683C624C91198F3255772353 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1190803EB8E4810D56139E6 /* AppModel.swift */; };
 		6EE6F54F54F4D2199021E874 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B44D94930EF6ABF462FA8B92 /* SettingsView.swift */; };
 		715829209255AAEBAF04AE34 /* AuthAndModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6770133DC7E8234DD3CFC9E /* AuthAndModelTests.swift */; };
+		7CAA93DF52A69B26AF550089 /* AccountAuthentication.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DAF5FA44015CEFEF3C91030 /* AccountAuthentication.swift */; };
 		7D36E6CE5D30C2E94B755381 /* Security.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8070051D3F195DA03E20F2D /* Security.swift */; };
 		823401ECCDE7729FE667FFCB /* CompanionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 435266A4B094C0084647046F /* CompanionService.swift */; };
 		998C7101E8F9575CAA6AEAFA /* JuneCompanionApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6CF14B05E3DB79E36144A2 /* JuneCompanionApp.swift */; };
 		A72CB6474701DCFADF6D89A7 /* NotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D384E197A35ADE2FBE2616B4 /* NotesView.swift */; };
 		B75207572A6D605D8F894E27 /* ABCDiatype-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 4BADED2B19C1224BABE91854 /* ABCDiatype-Regular.ttf */; };
 		BDA01F59E45B1343C42F67AA /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 503EAF40DABC508A3129E5AE /* PairingView.swift */; };
+		C74980ED1CBB1DD97118BD25 /* AppConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96D8F1A7005CACCC526657E4 /* AppConfiguration.swift */; };
 		CD2306F28841CB49A40D6D83 /* ABCDiatype-Medium.ttf in Resources */ = {isa = PBXBuildFile; fileRef = B3514CB1BF4A9784765E15E4 /* ABCDiatype-Medium.ttf */; };
 		DE1D99CF455102626AFD8F90 /* CompanionAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8D2433A920C1EBDA94DA806 /* CompanionAppDelegate.swift */; };
 		E940B56584CF47FA9F9B2F71 /* AgentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75159D76F7DBDFD02911FF6D /* AgentView.swift */; };
@@ -50,7 +52,9 @@
 		71BC1D38D31FA0740C454070 /* JuneCompanion.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = JuneCompanion.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		75159D76F7DBDFD02911FF6D /* AgentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentView.swift; sourceTree = "<group>"; };
 		771FAFC2B95D9AD9FB3808FF /* BerkeleyMono-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "BerkeleyMono-Regular.ttf"; sourceTree = "<group>"; };
+		7DAF5FA44015CEFEF3C91030 /* AccountAuthentication.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountAuthentication.swift; sourceTree = "<group>"; };
 		94842F54CD6BFDEE7BE04DF3 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		96D8F1A7005CACCC526657E4 /* AppConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfiguration.swift; sourceTree = "<group>"; };
 		B3514CB1BF4A9784765E15E4 /* ABCDiatype-Medium.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "ABCDiatype-Medium.ttf"; sourceTree = "<group>"; };
 		B44D94930EF6ABF462FA8B92 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		BA095B14BC0B14E207D9E397 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -78,6 +82,7 @@
 		0FA00EAE4452455375E6C42D /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				7DAF5FA44015CEFEF3C91030 /* AccountAuthentication.swift */,
 				435266A4B094C0084647046F /* CompanionService.swift */,
 				BE6482D8F54592FE6CF8D687 /* JuneCompanion-Bridging-Header.h */,
 				E8070051D3F195DA03E20F2D /* Security.swift */,
@@ -97,6 +102,7 @@
 		1BFE78E7E5484C93D68B4326 /* App */ = {
 			isa = PBXGroup;
 			children = (
+				96D8F1A7005CACCC526657E4 /* AppConfiguration.swift */,
 				E1190803EB8E4810D56139E6 /* AppModel.swift */,
 				E8D2433A920C1EBDA94DA806 /* CompanionAppDelegate.swift */,
 				EC6CF14B05E3DB79E36144A2 /* JuneCompanionApp.swift */,
@@ -331,7 +337,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7CAA93DF52A69B26AF550089 /* AccountAuthentication.swift in Sources */,
 				E940B56584CF47FA9F9B2F71 /* AgentView.swift in Sources */,
+				C74980ED1CBB1DD97118BD25 /* AppConfiguration.swift in Sources */,
 				683C624C91198F3255772353 /* AppModel.swift in Sources */,
 				DE1D99CF455102626AFD8F90 /* CompanionAppDelegate.swift in Sources */,
 				823401ECCDE7729FE667FFCB /* CompanionService.swift in Sources */,
@@ -415,6 +423,10 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				JUNE_COMPANION_ACCOUNTS_API_ORIGIN = "https://accounts-api.opensoftware.co";
+				JUNE_COMPANION_ACCOUNTS_CLIENT_ID = "";
+				JUNE_COMPANION_ACCOUNTS_ORIGIN = "https://accounts.opensoftware.co";
+				JUNE_COMPANION_ACCOUNTS_REDIRECT_URI = "junecompanion://auth/callback";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
@@ -525,6 +537,10 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				JUNE_COMPANION_ACCOUNTS_API_ORIGIN = "https://accounts-api.opensoftware.co";
+				JUNE_COMPANION_ACCOUNTS_CLIENT_ID = "";
+				JUNE_COMPANION_ACCOUNTS_ORIGIN = "https://accounts.opensoftware.co";
+				JUNE_COMPANION_ACCOUNTS_REDIRECT_URI = "junecompanion://auth/callback";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;

@@ -49,6 +49,30 @@ async fn integration_missing_auth_returns_unauthorized_envelope() -> Result<(), 
 }
 
 #[tokio::test]
+async fn integration_authenticated_companion_proposal_requires_user_auth()
+-> Result<(), Box<dyn Error>> {
+    let pairing_id = uuid::Uuid::new_v4();
+    let response = send(json_request(
+        &format!("/v1/companion/pairings/{pairing_id}/propose-authenticated"),
+        &serde_json::json!({
+            "mobileDeviceId": uuid::Uuid::new_v4(),
+            "mobilePublicKey": vec![1_u8; 32],
+            "displayName": "iPhone",
+            "pairingProof": vec![2_u8; 32],
+            "deviceCredentialHash": vec![3_u8; 32]
+        }),
+        None,
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], false);
+    assert_eq!(body["message"], "missing_bearer_token");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_returns_enveloped_response() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/notes/generate",

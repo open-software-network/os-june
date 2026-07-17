@@ -1,7 +1,8 @@
 # Companion TestFlight and App Store readiness
 
-- Register the unique bundle id. The companion has no mobile OAuth client or
-  callback because the signed-in desktop authorizes it during pairing.
+- Register the unique bundle id and a separate public OS Accounts OAuth client.
+  Allowlist the exact callback `junecompanion://auth/callback`; do not reuse the
+  June Desktop client registration.
 - Add development and distribution signing teams/profiles and verify the APNs
   entitlement in the archived app.
 - Supply complete AppIcon assets, screenshots for supported iPhone/iPad sizes,

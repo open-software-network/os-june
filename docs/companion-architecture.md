@@ -22,17 +22,18 @@ timestamp, and bounded ciphertext.
 
 ## Responsibility split
 
-SwiftUI owns screens, iPhone tabs, iPad sidebar/detail layout, Dynamic Type,
-VoiceOver labels, Reduce Motion presentation, light/dark appearance,
+SwiftUI owns the composer-first chat, leading history drawer, native Notes and
+Settings sheets, Dynamic Type, VoiceOver labels, Reduce Motion, light/dark appearance,
 loading/error/conflict state, and typed decrypted DTOs. The application model
 never receives tokens, private keys, session keys, APNs tokens, or raw
 encrypted frames.
 
-The Swift service layer owns the proof-gated pairing exchange, Keychain device
+The Swift service layer owns system-browser OS Accounts login, PKCE, token
+exchange and refresh, Keychain token storage, the proof-gated pairing exchange, Keychain device
 credential and identity, biometric/passcode gating, QR scanning, reachability,
 WebSocket reconnect, encryption calls, APNs registration, lifecycle locking,
-encrypted cache IO, and redacted errors. It never receives the desktop's OS
-Accounts session.
+encrypted cache IO, and redacted errors. It receives only the companion's
+account grant and never receives the desktop's OS Accounts session.
 
 Rust owns the shared Noise state machine, the versioned protocol, the closed
 desktop allowlist, note compare-and-swap, durable linked-device metadata, and
@@ -40,6 +41,8 @@ the blind relay. The companion generates its device credential and sends only
 the hash of its encoded authorization value during pairing. June API stores
 that hash; it hashes the same UTF-8 value when verifying a `Device`
 authorization header and never stores the credential or QR secret.
+The relay also requires a mobile OS Accounts bearer on new pairing proposals
+and verifies that it names the same user who created the desktop pairing.
 
 The always-mounted desktop app shell handles sanitized agent session and
 message reads without changing the visible Mac view. Agent send and cancel
@@ -79,3 +82,9 @@ Repository web CSS token and central-icon rules cannot apply literally to
 SwiftUI. Mobile follows the same sentence case, two-weight, semantic-color,
 and accessibility intent using the Open Software native design system. It uses
 SF Symbols and platform controls rather than importing web icon packages.
+The June shell and token implementation follow the native patterns in
+`open-software-network/os-chat` at commit
+`0f1cb72ac74030080cdfb426a953626e0f0a247b`: a composer-first canvas, leading
+history drawer, quiet semantic surfaces, native sheets, and system light/dark
+behavior. June adapts those patterns to its linked-desktop trust boundary and
+does not copy Chat product features or account SDK dependencies.

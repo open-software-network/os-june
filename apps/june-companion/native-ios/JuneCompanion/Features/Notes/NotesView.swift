@@ -3,6 +3,7 @@ import SwiftUI
 struct NotesView: View {
     @ObservedObject var model: AppModel
     let openNavigation: (() -> Void)?
+    @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
     var body: some View {
@@ -37,6 +38,10 @@ struct NotesView: View {
                         }
                         .buttonStyle(JunePressButtonStyle())
                         .accessibilityLabel("Open navigation")
+                    }
+                } else {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") { dismiss() }
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {

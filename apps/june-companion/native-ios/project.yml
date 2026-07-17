@@ -15,6 +15,10 @@ settings:
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    JUNE_COMPANION_ACCOUNTS_ORIGIN: "https://accounts.opensoftware.co"
+    JUNE_COMPANION_ACCOUNTS_API_ORIGIN: "https://accounts-api.opensoftware.co"
+    JUNE_COMPANION_ACCOUNTS_CLIENT_ID: ""
+    JUNE_COMPANION_ACCOUNTS_REDIRECT_URI: "junecompanion://auth/callback"
 
 targets:
   JuneCompanion:
