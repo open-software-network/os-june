@@ -58,6 +58,15 @@ enum FrameDisposition {
     Close,
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+struct ConnectionSelectGate {
+    reached: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    target_iteration: usize,
+    force_buffered_frame_branch: bool,
+}
+
 #[derive(Debug)]
 struct Admission {
     pid: Option<u32>,
@@ -531,24 +540,85 @@ pub(super) fn public_error(error: AppError, connector_state_changed: bool) -> Pu
 
 #[cfg(unix)]
 async fn serve_admitted_connection(
+    stream: UnixStream,
+    executor: RequestExecutor,
+    state: watch::Receiver<AdmissionState>,
+    request_deadline: Duration,
+) -> Result<(), FrameError> {
+    serve_admitted_connection_inner(stream, executor, state, request_deadline, None).await
+}
+
+#[cfg(test)]
+async fn serve_admitted_connection_with_gate(
+    stream: UnixStream,
+    executor: RequestExecutor,
+    state: watch::Receiver<AdmissionState>,
+    request_deadline: Duration,
+    gate: ConnectionSelectGate,
+) -> Result<(), FrameError> {
+    serve_admitted_connection_inner(stream, executor, state, request_deadline, Some(gate)).await
+}
+
+#[cfg(unix)]
+async fn serve_admitted_connection_inner(
     mut stream: UnixStream,
     executor: RequestExecutor,
     mut state: watch::Receiver<AdmissionState>,
     request_deadline: Duration,
+    #[cfg(test)] gate: Option<ConnectionSelectGate>,
+    #[cfg(not(test))] _gate: Option<()>,
 ) -> Result<(), FrameError> {
     let admitted_state = *state.borrow();
     if admitted_state == AdmissionState::Revoked {
         return Ok(());
     }
-    let mut state_channel_closed = false;
 
+    #[cfg(test)]
+    let mut select_iteration = 0_usize;
     loop {
+        #[cfg(test)]
+        {
+            select_iteration += 1;
+        }
+        #[cfg(test)]
+        if let Some(gate) = gate
+            .as_ref()
+            .filter(|gate| gate.target_iteration == select_iteration)
+        {
+            gate.reached.notify_one();
+            gate.release.notified().await;
+        }
+        if admission_revoked_or_watch_closed(&mut state, admitted_state) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if let Some(gate) = gate
+            .as_ref()
+            .filter(|gate| gate.target_iteration == select_iteration)
+        {
+            // Model the frame-first schedule that the former unbiased select
+            // was allowed to choose when both branches were ready.
+            if gate.force_buffered_frame_branch && state.has_changed().unwrap_or(true) {
+                match tokio::time::timeout(
+                    request_deadline,
+                    serve_bounded_frame(&mut stream, executor.clone()),
+                )
+                .await
+                {
+                    Err(_) | Ok(Err(FrameError::Closed)) => return Ok(()),
+                    Ok(Err(error)) => return Err(error),
+                    Ok(Ok(FrameDisposition::Close)) => return Ok(()),
+                    Ok(Ok(FrameDisposition::Continue)) => continue,
+                }
+            }
+        }
         tokio::select! {
-            changed = state.changed(), if !state_channel_closed => {
+            biased;
+            changed = state.changed() => {
                 match changed {
                     Ok(()) if *state.borrow() != admitted_state => return Ok(()),
                     Ok(()) => {}
-                    Err(_) => state_channel_closed = true,
+                    Err(_) => return Ok(()),
                 }
             }
             frame = tokio::time::timeout(
@@ -563,6 +633,18 @@ async fn serve_admitted_connection(
                 }
             }
         }
+    }
+}
+
+#[cfg(unix)]
+fn admission_revoked_or_watch_closed(
+    state: &mut watch::Receiver<AdmissionState>,
+    admitted_state: AdmissionState,
+) -> bool {
+    match state.has_changed() {
+        Err(_) => true,
+        Ok(true) => *state.borrow_and_update() != admitted_state,
+        Ok(false) => *state.borrow() != admitted_state,
     }
 }
 
@@ -957,10 +1039,11 @@ raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
                 "connectorStateChanged": false
             }),
         );
+        let (_state_tx, state_rx) = watch::channel(active_state());
         let task = tokio::spawn(serve_admitted_connection(
             server,
             executor,
-            watch::channel(active_state()).1,
+            state_rx,
             REQUEST_DEADLINE,
         ));
 
@@ -988,10 +1071,11 @@ raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
     async fn github_read_broker_rejects_request_larger_than_64_kib_before_json() {
         let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let (_state_tx, state_rx) = watch::channel(active_state());
         let task = tokio::spawn(serve_admitted_connection(
             server,
             recording_executor(seen.clone(), serde_json::json!({"success": true})),
-            watch::channel(active_state()).1,
+            state_rx,
             REQUEST_DEADLINE,
         ));
 
@@ -1032,10 +1116,11 @@ raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
         let server = tokio::net::UnixStream::from_std(server).expect("async server stream");
         let mut client = tokio::net::UnixStream::from_std(client).expect("async client stream");
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let (_state_tx, state_rx) = watch::channel(active_state());
         let mut task = tokio::spawn(serve_admitted_connection(
             server,
             recording_executor(seen.clone(), serde_json::json!({"success": true})),
-            watch::channel(active_state()).1,
+            state_rx,
             Duration::from_millis(25),
         ));
 
@@ -1093,10 +1178,11 @@ raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
     async fn github_read_broker_maps_unknown_operations_to_input_invalid() {
         let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let (_state_tx, state_rx) = watch::channel(active_state());
         let task = tokio::spawn(serve_admitted_connection(
             server,
             recording_executor(seen.clone(), serde_json::json!({"success": true})),
-            watch::channel(active_state()).1,
+            state_rx,
             REQUEST_DEADLINE,
         ));
 
@@ -1123,10 +1209,11 @@ raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
     async fn github_read_broker_maps_incomplete_frames_to_input_invalid() {
         let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
         let seen = Arc::new(Mutex::new(Vec::new()));
+        let (_state_tx, state_rx) = watch::channel(active_state());
         let task = tokio::spawn(serve_admitted_connection(
             server,
             recording_executor(seen.clone(), serde_json::json!({"success": true})),
-            watch::channel(active_state()).1,
+            state_rx,
             REQUEST_DEADLINE,
         ));
 
@@ -1142,6 +1229,120 @@ raise SystemExit(0 if s.recv(1) == b"" else 2)"#,
 
         assert_eq!(response, input_invalid_response());
         assert!(seen.lock().expect("seen").is_empty());
+        task.await.expect("serve task").expect("serve result");
+    }
+
+    #[tokio::test]
+    async fn queued_complete_frame_is_discarded_when_admission_is_revoked() {
+        let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (state_tx, state_rx) = watch::channel(active_state());
+        let gate = ConnectionSelectGate {
+            reached: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            target_iteration: 2,
+            force_buffered_frame_branch: true,
+        };
+        let task = tokio::spawn(serve_admitted_connection_with_gate(
+            server,
+            recording_executor(seen.clone(), serde_json::json!({"success": true})),
+            state_rx,
+            REQUEST_DEADLINE,
+            gate.clone(),
+        ));
+        write_request_frame(
+            &mut client,
+            &serde_json::json!({"operation": "list_repositories", "arguments": {}}),
+        )
+        .await
+        .expect("write initial request");
+        assert_eq!(
+            read_response_frame(&mut client)
+                .await
+                .expect("read initial response")["success"],
+            true
+        );
+        tokio::time::timeout(Duration::from_millis(250), gate.reached.notified())
+            .await
+            .expect("connection should reach the deterministic select gate");
+        write_request_frame(
+            &mut client,
+            &serde_json::json!({"operation": "list_repositories", "arguments": {}}),
+        )
+        .await
+        .expect("queue complete request before revocation");
+        state_tx
+            .send(AdmissionState::Revoked)
+            .expect("revoke admitted connection");
+        gate.release.notify_one();
+
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_millis(250), client.read(&mut byte))
+            .await
+            .expect("revocation should close the connection")
+            .expect("read EOF after revocation");
+        assert_eq!(read, 0, "revoked connection must not return a response");
+        assert_eq!(
+            seen.lock().expect("seen").len(),
+            1,
+            "revoked connection must not invoke the executor again"
+        );
+        task.await.expect("serve task").expect("serve result");
+    }
+
+    #[tokio::test]
+    async fn closed_admission_watch_fails_closed_before_buffered_frame() {
+        let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let (state_tx, state_rx) = watch::channel(active_state());
+        let gate = ConnectionSelectGate {
+            reached: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            target_iteration: 2,
+            force_buffered_frame_branch: true,
+        };
+        let task = tokio::spawn(serve_admitted_connection_with_gate(
+            server,
+            recording_executor(seen.clone(), serde_json::json!({"success": true})),
+            state_rx,
+            REQUEST_DEADLINE,
+            gate.clone(),
+        ));
+        write_request_frame(
+            &mut client,
+            &serde_json::json!({"operation": "list_repositories", "arguments": {}}),
+        )
+        .await
+        .expect("write initial request");
+        assert_eq!(
+            read_response_frame(&mut client)
+                .await
+                .expect("read initial response")["success"],
+            true
+        );
+        tokio::time::timeout(Duration::from_millis(250), gate.reached.notified())
+            .await
+            .expect("connection should reach the deterministic select gate");
+        write_request_frame(
+            &mut client,
+            &serde_json::json!({"operation": "list_repositories", "arguments": {}}),
+        )
+        .await
+        .expect("queue complete request before watch closure");
+        drop(state_tx);
+        gate.release.notify_one();
+
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_millis(250), client.read(&mut byte))
+            .await
+            .expect("watch closure should close the connection")
+            .expect("read EOF after watch closure");
+        assert_eq!(read, 0, "closed watch must not return a response");
+        assert_eq!(
+            seen.lock().expect("seen").len(),
+            1,
+            "closed watch must not invoke the executor again"
+        );
         task.await.expect("serve task").expect("serve result");
     }
 
