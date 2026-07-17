@@ -3090,9 +3090,6 @@ export function AgentWorkspace({
   ]);
 
   useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    let unregisterConsumer: (() => void) | undefined;
     async function handleCompanionRequest(payload: CompanionFrontendRequest) {
       try {
         switch (payload.intent.type) {
@@ -3140,27 +3137,11 @@ export function AgentWorkspace({
       }
     }
 
+    const unregisterConsumer = registerCompanionFrontendConsumer();
     window.addEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
     consumeQueuedRequests();
-    void (async () => {
-      const remove = await listen<CompanionFrontendRequest>(
-        "june://companion-request",
-        ({ payload }) => {
-          void handleCompanionRequest(payload);
-        },
-      );
-      if (disposed) {
-        remove();
-        return;
-      }
-      unlisten = remove;
-      unregisterConsumer = registerCompanionFrontendConsumer();
-      consumeQueuedRequests();
-    })();
     return () => {
-      disposed = true;
-      unlisten?.();
-      unregisterConsumer?.();
+      unregisterConsumer();
       window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
     };
   }, []);

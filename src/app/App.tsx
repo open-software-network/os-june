@@ -1828,8 +1828,9 @@ export function App() {
           }
           case "agentSend":
           case "agentCancel": {
-            if (companionFrontendConsumerAvailable()) return;
+            const consumerAvailable = companionFrontendConsumerAvailable();
             queueCompanionFrontendRequest(payload);
+            if (consumerAvailable) return;
             const sessionId = payload.intent.data.storedSessionId;
             setAgentOrigin(undefined);
             setActiveAgentSession(sessionId ? { id: sessionId } : undefined);

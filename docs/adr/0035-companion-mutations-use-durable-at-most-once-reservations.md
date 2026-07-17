@@ -44,10 +44,13 @@ interrupted cross-boundary mutation completed.
   tracked independently of the relay waiter, so aborting transport cannot hide
   an emitted or queued React operation from that barrier. A frontend queue item
   releases the barrier on expiry only when the queue atomically proves no
-  consumer took it. Relay connection and send operations are time-bounded; the
-  transport is cancellation-aware and force-joined within the shutdown bound.
-  If claimed frontend, pairing, or other account work cannot stop within its
-  bound, logout fails without clearing tokens.
+  consumer took it. The app shell owns the only native companion listener;
+  AgentWorkspace consumes only that operation-id-keyed internal queue, avoiding
+  a dual-listener handoff that could run one reserved request twice. Relay
+  connection and send operations are time-bounded; the transport is
+  cancellation-aware and force-joined within the shutdown bound. If claimed
+  frontend, pairing, or other account work cannot stop within its bound, logout
+  fails without clearing tokens.
 
 ## Consequences
 
