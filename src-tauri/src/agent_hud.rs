@@ -110,7 +110,7 @@ pub fn agent_hud_set_layout(app: AppHandle, request: AgentHudLayoutRequest) -> R
     // Width now follows the rendered surface so the transparent part of the
     // native panel cannot cover nearby controls. Re-anchor from the requested
     // size instead of outer_size(), which can lag behind set_size() on macOS.
-    position_agent_hud_window_with_size(&window, physical_size)
+    position_agent_hud_window_with_size(&window, physical_size, scale)
 }
 
 #[tauri::command]
@@ -190,19 +190,20 @@ fn configure_agent_hud_window(app: &AppHandle) -> Result<(), String> {
 
 fn position_agent_hud_window(window: &WebviewWindow) -> Result<(), String> {
     let size = window.outer_size().map_err(|error| error.to_string())?;
-    position_agent_hud_window_with_size(window, size)
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    position_agent_hud_window_with_size(window, size, scale)
 }
 
 fn position_agent_hud_window_with_size(
     window: &WebviewWindow,
     size: PhysicalSize<u32>,
+    scale: f64,
 ) -> Result<(), String> {
     // Keep the visible surface at its previous screen position. The old
     // oversized webview placed it 10px from the right and 8px from the top.
     const MARGIN_X: f64 = 26.0;
     const MARGIN_Y: f64 = 20.0;
 
-    let scale = window.scale_factor().map_err(|error| error.to_string())?;
     // Pin the HUD to the primary monitor; picking the monitor from the
     // cursor made it hop between displays whenever a layout change fired
     // while the mouse was on another screen.

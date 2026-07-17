@@ -136,6 +136,39 @@ describe("agent HUD", () => {
     });
   });
 
+  it("fits the native window to a measurable context menu", async () => {
+    const surface = surfaceElement();
+    const menu = menuElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    vi.spyOn(menu, "offsetWidth", "get").mockReturnValue(148);
+    vi.spyOn(menu, "offsetHeight", "get").mockReturnValue(36);
+    vi.spyOn(menu, "offsetTop", "get").mockReturnValue(44);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+    mocks.invoke.mockClear();
+
+    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: {
+        expanded: false,
+        cardCount: 0,
+        contextMenuOpen: true,
+        width: 148,
+        height: 80,
+      },
+    });
+  });
+
   it("shortens the collapsed label when multiple agents are running", async () => {
     await loadAgentHud();
 
