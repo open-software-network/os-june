@@ -194,7 +194,19 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         }
     }
     ensure_column(_pool, "notes", "revision", "INTEGER NOT NULL DEFAULT 1").await?;
-    for statement in include_str!("../../migrations/016_companion.sql").split(';') {
+    for statement in include_str!("../../migrations/016_linear_connector.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/017_connector_actions.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/018_companion.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
@@ -207,7 +219,7 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         "TEXT NOT NULL DEFAULT ''",
     )
     .await?;
-    for statement in include_str!("../../migrations/017_companion_account_scope.sql").split(';') {
+    for statement in include_str!("../../migrations/019_companion_account_scope.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
@@ -221,7 +233,7 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     )
     .await?;
     migrate_legacy_companion_reservations(_pool).await?;
-    for statement in include_str!("../../migrations/018_companion_operation_state.sql").split(';') {
+    for statement in include_str!("../../migrations/020_companion_operation_state.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
@@ -232,18 +244,6 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     // earlier read-only runs never retroactively unlock autonomy.
     ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
     for statement in include_str!("../../migrations/014_share_keys.sql").split(';') {
-        let statement = statement.trim();
-        if !statement.is_empty() {
-            query(statement).execute(_pool).await?;
-        }
-    }
-    for statement in include_str!("../../migrations/016_linear_connector.sql").split(';') {
-        let statement = statement.trim();
-        if !statement.is_empty() {
-            query(statement).execute(_pool).await?;
-        }
-    }
-    for statement in include_str!("../../migrations/017_connector_actions.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
