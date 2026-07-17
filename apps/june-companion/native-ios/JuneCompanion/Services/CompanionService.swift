@@ -50,6 +50,7 @@ final class CompanionService {
   private var linked: LinkedConfiguration?
   private var unlocked = false
   private var reconnectAttempt = 0
+  private var reconnectTask: Task<Void, Never>?
 
   private init() {
     linked = try? SecureStore.shared.read(account: "linked.configuration")
@@ -117,7 +118,7 @@ final class CompanionService {
       linked = configuration
       unlocked = true
       snapshot.connection = "ready"
-      reconnectAttempt = 0
+      cancelReconnect()
       await registerStoredPushToken()
     } catch {
       transport.disconnect()
@@ -173,10 +174,10 @@ final class CompanionService {
     return try jsonString(resultData(response) ?? [:])
   }
 
-  func saveNote(id: String, revision: Double, title: String, content: String) async throws -> String {
+  func saveNote(id: String, revision: UInt64, title: String, content: String) async throws -> String {
     let response = try await request(capability: "notesEdit", body: [
       "type": "noteEdit",
-      "data": ["noteId": id, "expectedRevision": UInt64(revision), "title": title, "editedContent": content],
+      "data": ["noteId": id, "expectedRevision": revision, "title": title, "editedContent": content],
     ])
     if resultType(response) == "conflict", let conflict = resultData(response) {
       return try jsonString(["conflict": conflict])
@@ -241,6 +242,7 @@ final class CompanionService {
       deviceID: identity.deviceID,
       deviceCredential: credential
     )
+    cancelReconnect()
     transport.disconnect()
     SecureStore.shared.delete(account: "linked.configuration")
     SecureStore.shared.delete(account: "device.credential")
@@ -318,21 +320,32 @@ final class CompanionService {
 
   private func reconnectIfPossible() async {
     guard linked != nil, (try? deviceCredential()) != nil, unlocked else { return }
-    do { _ = try await refresh(); reconnectAttempt = 0 }
+    do { _ = try await refresh(); cancelReconnect() }
     catch { scheduleReconnect() }
   }
 
   private func scheduleReconnect() {
+    reconnectTask?.cancel()
     reconnectAttempt = min(reconnectAttempt + 1, 8)
     let cap = min(pow(2, Double(reconnectAttempt)), 60)
     let delay = Double.random(in: 0...cap)
-    Task {
-      try? await Task.sleep(for: .seconds(delay))
+    reconnectTask = Task { [weak self] in
+      do { try await Task.sleep(for: .seconds(delay)) }
+      catch { return }
+      guard !Task.isCancelled, let self else { return }
+      self.reconnectTask = nil
       await self.reconnectIfPossible()
     }
   }
 
+  private func cancelReconnect() {
+    reconnectTask?.cancel()
+    reconnectTask = nil
+    reconnectAttempt = 0
+  }
+
   private func lock() {
+    cancelReconnect()
     unlocked = false
     if linked != nil { snapshot.connection = "locked" }
     transport.disconnect()

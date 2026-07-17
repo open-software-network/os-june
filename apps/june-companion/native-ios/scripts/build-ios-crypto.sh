@@ -9,15 +9,25 @@ mkdir -p "$OUT/include"
 cp "$ROOT/crates/june-companion-crypto/include/june_companion_crypto.h" "$OUT/include/"
 
 case "${PLATFORM_NAME:-}" in
-  iphoneos) TARGET="aarch64-apple-ios" ;;
-  iphonesimulator)
-    if [ "${CURRENT_ARCH:-arm64}" = "x86_64" ]; then TARGET="x86_64-apple-ios"; else TARGET="aarch64-apple-ios-sim"; fi
-    ;;
-  *) TARGET="aarch64-apple-ios" ;;
+  iphoneos) TARGETS="aarch64-apple-ios" ;;
+  iphonesimulator) TARGETS="aarch64-apple-ios-sim x86_64-apple-ios" ;;
+  *) TARGETS="aarch64-apple-ios" ;;
 esac
 
 LIB_DIR="$OUT/lib/${PLATFORM_NAME:-iphoneos}"
 mkdir -p "$LIB_DIR"
-rustup target add "$TARGET"
-cargo build --release --manifest-path "$CRATE" --target "$TARGET"
-cp "$ROOT/crates/june-companion-crypto/target/$TARGET/release/libjune_companion_crypto.a" "$LIB_DIR/libjune_companion_crypto.a"
+
+for TARGET in $TARGETS; do
+  rustup target add "$TARGET"
+  cargo build --release --manifest-path "$CRATE" --target "$TARGET"
+done
+
+set -- $TARGETS
+if [ "$#" -eq 1 ]; then
+  cp "$ROOT/crates/june-companion-crypto/target/$1/release/libjune_companion_crypto.a" "$LIB_DIR/libjune_companion_crypto.a"
+else
+  xcrun lipo -create \
+    "$ROOT/crates/june-companion-crypto/target/aarch64-apple-ios-sim/release/libjune_companion_crypto.a" \
+    "$ROOT/crates/june-companion-crypto/target/x86_64-apple-ios/release/libjune_companion_crypto.a" \
+    -output "$LIB_DIR/libjune_companion_crypto.a"
+fi

@@ -488,12 +488,15 @@ final class CompanionTransport {
 
 @available(iOS 16.0, *)
 @MainActor
-final class QRCodeScanner: NSObject, DataScannerViewControllerDelegate {
+final class QRCodeScanner: NSObject, DataScannerViewControllerDelegate, UIAdaptivePresentationControllerDelegate {
   static let shared = QRCodeScanner()
   private var continuation: CheckedContinuation<String, Error>?
   private var scanner: DataScannerViewController?
 
   func scan() async throws -> String {
+    guard continuation == nil else {
+      throw CompanionNativeError.unavailable("The QR scanner is already open.")
+    }
     guard DataScannerViewController.isSupported, DataScannerViewController.isAvailable else {
       throw CompanionNativeError.unavailable("QR scanning is unavailable on this device.")
     }
@@ -503,18 +506,37 @@ final class QRCodeScanner: NSObject, DataScannerViewControllerDelegate {
     guard let presenter = UIApplication.shared.connectedScenes.compactMap({$0 as? UIWindowScene}).flatMap(\.windows).first(where: {$0.isKeyWindow})?.rootViewController else {
       throw CompanionNativeError.unavailable("The QR scanner could not open.")
     }
-    presenter.present(scanner, animated: true)
-    try scanner.startScanning()
-    return try await withCheckedThrowingContinuation { continuation = $0 }
+    return try await withTaskCancellationHandler {
+      try Task.checkCancellation()
+      return try await withCheckedThrowingContinuation { continuation in
+        self.continuation = continuation
+        presenter.present(scanner, animated: true) {
+          scanner.presentationController?.delegate = self
+          do { try scanner.startScanning() }
+          catch { self.finish(.failure(error)) }
+        }
+      }
+    } onCancel: {
+      Task { @MainActor in self.finish(.failure(CompanionNativeError.cancelled)) }
+    }
   }
 
   func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem], allItems: [RecognizedItem]) {
     guard case .barcode(let barcode) = addedItems.first, let payload = barcode.payloadStringValue else { return }
+    finish(.success(payload))
+  }
+
+  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+    finish(.failure(CompanionNativeError.cancelled), dismiss: false)
+  }
+
+  private func finish(_ result: Result<String, Error>, dismiss: Bool = true) {
+    guard let continuation else { return }
+    self.continuation = nil
     scanner?.stopScanning()
-    scanner?.dismiss(animated: true)
+    if dismiss { scanner?.dismiss(animated: true) }
     scanner = nil
-    continuation?.resume(returning: payload)
-    continuation = nil
+    continuation.resume(with: result)
   }
 }
 

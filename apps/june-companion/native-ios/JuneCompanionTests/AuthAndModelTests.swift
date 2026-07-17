@@ -94,10 +94,72 @@ final class AuthAndModelTests: XCTestCase {
         XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "JUNE_ACCOUNTS_CLIENT_ID"))
     }
 
+    func testAgentEventsAreBufferedUntilANewSessionIsAccepted() throws {
+        let model = AppModel()
+        model.receive(
+            type: "protocolEvent",
+            payload: try agentEvent(type: "agentDelta", sessionID: "session-new", text: "Hello")
+        )
+        model.receive(
+            type: "protocolEvent",
+            payload: try agentEvent(type: "agentStatus", sessionID: "session-new", status: "completed")
+        )
+
+        model.acceptAgentSession("session-new", fallbackTitle: "Plan the week")
+
+        XCTAssertEqual(model.selectedSessionID, "session-new")
+        XCTAssertEqual(model.snapshot.agentSessions.first?.status, .completed)
+        XCTAssertEqual(model.messages.last?.text, "Hello")
+        XCTAssertEqual(model.messages.last?.streaming, false)
+    }
+
+    func testAgentStreamTextIsUtf8Bounded() {
+        let bounded = AppModel.boundedAgentText(String(repeating: "é", count: 20_000))
+
+        XCTAssertLessThanOrEqual(bounded.utf8.count, 30 * 1024)
+        XCTAssertTrue(bounded.hasSuffix("[Response truncated on companion]"))
+    }
+
+    func testAgentAcknowledgementDoesNotReopenACompletedSession() throws {
+        let model = AppModel()
+        model.acceptAgentSession("session-existing", fallbackTitle: "Existing chat")
+        model.receive(
+            type: "protocolEvent",
+            payload: try agentEvent(
+                type: "agentStatus",
+                sessionID: "session-existing",
+                status: "completed"
+            )
+        )
+
+        model.acceptAgentSession("session-existing", fallbackTitle: "Existing chat")
+
+        XCTAssertEqual(model.snapshot.agentSessions.first?.status, .completed)
+    }
+
     func testDeviceOwnerAuthenticationSeamCanDenyUnlock() async throws {
         let unlocked = try await DeviceIdentityService.shared.unlock(authenticator: DenyingAuthenticator())
         XCTAssertFalse(unlocked)
     }
+}
+
+private func agentEvent(
+    type: String,
+    sessionID: String,
+    text: String? = nil,
+    status: String? = nil
+) throws -> String {
+    var data: [String: Any] = ["sessionId": sessionID]
+    if let text { data["text"] = text }
+    if let status { data["status"] = status }
+    let payload: [String: Any] = [
+        "body": [
+            "type": "event",
+            "data": ["type": type, "data": data],
+        ],
+    ]
+    let encoded = try JSONSerialization.data(withJSONObject: payload)
+    return try XCTUnwrap(String(data: encoded, encoding: .utf8))
 }
 
 private func inboundFrame(

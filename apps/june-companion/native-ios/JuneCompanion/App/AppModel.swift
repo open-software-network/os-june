@@ -148,6 +148,10 @@ enum AppSection: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    private static let maximumBufferedAgentSessions = 8
+    private static let maximumAgentMessageBytes = 30 * 1024
+    private static let truncatedAgentMessageSuffix = "\n\n[Response truncated on companion]"
+
     @Published private(set) var snapshot = CompanionSnapshotModel.unpaired
     @Published var selection: AppSection = .agent
     @Published var selectedNote: NoteRecordModel?
@@ -160,6 +164,8 @@ final class AppModel: ObservableObject {
 
     private let service: CompanionService
     private let decoder = JSONDecoder()
+    private var bufferedAgentStreams: [String: BufferedAgentStream] = [:]
+    private var bufferedAgentStreamOrder: [String] = []
 
     init(service: CompanionService = .shared) {
         self.service = service
@@ -239,7 +245,7 @@ final class AppModel: ObservableObject {
         perform {
             let json = try await self.service.saveNote(
                 id: note.id,
-                revision: Double(note.revision),
+                revision: note.revision,
                 title: title,
                 content: content
             )
@@ -266,6 +272,7 @@ final class AppModel: ObservableObject {
             )
             self.selectedSessionID = session.id
             self.messages = page.items
+            self.applyBufferedAgentStream(for: session.id)
             self.selection = .agent
         }
     }
@@ -289,14 +296,53 @@ final class AppModel: ObservableObject {
         )
         messages.append(optimistic)
         perform {
-            let result = try self.decode(
-                AgentAccepted.self,
-                from: try await self.service.sendAgentMessage(
-                    sessionID: self.selectedSessionID,
-                    message: message
+            do {
+                let result = try self.decode(
+                    AgentAccepted.self,
+                    from: try await self.service.sendAgentMessage(
+                        sessionID: self.selectedSessionID,
+                        message: message
+                    )
                 )
+                self.acceptAgentSession(result.sessionId, fallbackTitle: message)
+            } catch {
+                self.messages.removeAll { $0.id == optimistic.id }
+                if self.draft.isEmpty {
+                    self.draft = message
+                }
+                throw error
+            }
+        }
+    }
+
+    func acceptAgentSession(_ sessionID: String, fallbackTitle: String) {
+        selectedSessionID = sessionID
+        let buffered = bufferedAgentStreams.removeValue(forKey: sessionID)
+        bufferedAgentStreamOrder.removeAll { $0 == sessionID }
+        let bufferedStatus = buffered?.status
+        let now = ISO8601DateFormatter().string(from: Date())
+        if let index = snapshot.agentSessions.firstIndex(where: { $0.id == sessionID }) {
+            if let bufferedStatus {
+                snapshot.agentSessions[index].status = bufferedStatus
+            }
+        } else {
+            let title = fallbackTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            snapshot.agentSessions.insert(
+                AgentSessionModel(
+                    id: sessionID,
+                    title: title.isEmpty ? "New chat" : String(title.prefix(80)),
+                    status: bufferedStatus ?? .running,
+                    updatedAt: now
+                ),
+                at: 0
             )
-            self.selectedSessionID = result.sessionId
+        }
+        if let text = buffered?.text, !text.isEmpty {
+            appendAgentDelta(text, sessionID: sessionID)
+        }
+        if let status = bufferedStatus
+            ?? snapshot.agentSessions.first(where: { $0.id == sessionID })?.status {
+            finishAgentStreamIfNeeded(sessionID: sessionID, status: status)
         }
     }
 
@@ -380,7 +426,7 @@ final class AppModel: ObservableObject {
             : error.localizedDescription
     }
 
-    private func receive(type: String, payload: String) {
+    func receive(type: String, payload: String) {
         switch type {
         case "snapshot":
             if let value = try? decode(CompanionSnapshotModel.self, from: payload) {
@@ -399,21 +445,13 @@ final class AppModel: ObservableObject {
     private func apply(_ event: CompanionEvent) {
         switch event.type {
         case "agentDelta":
-            guard selectedSessionID == event.data?.sessionId,
-                  let sessionID = event.data?.sessionId,
+            guard let sessionID = event.data?.sessionId,
                   let text = event.data?.text
             else { return }
-            let streamID = "stream:\(sessionID)"
-            if let index = messages.firstIndex(where: { $0.id == streamID }) {
-                messages[index].text += text
+            if selectedSessionID == sessionID {
+                appendAgentDelta(text, sessionID: sessionID)
             } else {
-                messages.append(AgentMessageModel(
-                    id: streamID,
-                    role: "assistant",
-                    text: text,
-                    createdAt: ISO8601DateFormatter().string(from: Date()),
-                    streaming: true
-                ))
+                bufferAgentDelta(text, sessionID: sessionID)
             }
         case "agentStatus":
             guard let sessionID = event.data?.sessionId,
@@ -422,11 +460,21 @@ final class AppModel: ObservableObject {
             else { return }
             if let index = snapshot.agentSessions.firstIndex(where: { $0.id == sessionID }) {
                 snapshot.agentSessions[index].status = status
+            } else if selectedSessionID == sessionID {
+                snapshot.agentSessions.insert(
+                    AgentSessionModel(
+                        id: sessionID,
+                        title: "New chat",
+                        status: status,
+                        updatedAt: ISO8601DateFormatter().string(from: Date())
+                    ),
+                    at: 0
+                )
             }
-            if [.completed, .failed, .cancelled].contains(status),
-               let index = messages.firstIndex(where: { $0.id == "stream:\(sessionID)" }) {
-                messages[index].streaming = false
+            if selectedSessionID != sessionID {
+                bufferAgentStatus(status, sessionID: sessionID)
             }
+            finishAgentStreamIfNeeded(sessionID: sessionID, status: status)
         case "notesChanged", "resyncRequired":
             Task { await refresh() }
         case "deviceRevoked":
@@ -436,12 +484,92 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func appendAgentDelta(_ delta: String, sessionID: String) {
+        let streamID = "stream:\(sessionID)"
+        if let index = messages.firstIndex(where: { $0.id == streamID }) {
+            messages[index].text = Self.boundedAgentText(messages[index].text + delta)
+        } else {
+            messages.append(AgentMessageModel(
+                id: streamID,
+                role: "assistant",
+                text: Self.boundedAgentText(delta),
+                createdAt: ISO8601DateFormatter().string(from: Date()),
+                streaming: true
+            ))
+        }
+    }
+
+    private func finishAgentStreamIfNeeded(sessionID: String, status: AgentStatusModel) {
+        guard [.completed, .failed, .cancelled].contains(status),
+              let index = messages.firstIndex(where: { $0.id == "stream:\(sessionID)" })
+        else { return }
+        messages[index].streaming = false
+    }
+
+    private func bufferAgentDelta(_ delta: String, sessionID: String) {
+        prepareAgentBuffer(for: sessionID)
+        let existing = bufferedAgentStreams[sessionID]?.text ?? ""
+        bufferedAgentStreams[sessionID]?.text = Self.boundedAgentText(existing + delta)
+    }
+
+    private func bufferAgentStatus(_ status: AgentStatusModel, sessionID: String) {
+        prepareAgentBuffer(for: sessionID)
+        bufferedAgentStreams[sessionID]?.status = status
+    }
+
+    private func prepareAgentBuffer(for sessionID: String) {
+        guard bufferedAgentStreams[sessionID] == nil else { return }
+        if bufferedAgentStreamOrder.count >= Self.maximumBufferedAgentSessions,
+           let evicted = bufferedAgentStreamOrder.first {
+            bufferedAgentStreamOrder.removeFirst()
+            bufferedAgentStreams.removeValue(forKey: evicted)
+        }
+        bufferedAgentStreamOrder.append(sessionID)
+        bufferedAgentStreams[sessionID] = BufferedAgentStream()
+    }
+
+    private func applyBufferedAgentStream(for sessionID: String) {
+        guard let buffered = bufferedAgentStreams.removeValue(forKey: sessionID) else { return }
+        bufferedAgentStreamOrder.removeAll { $0 == sessionID }
+        if !buffered.text.isEmpty {
+            appendAgentDelta(buffered.text, sessionID: sessionID)
+        }
+        if let status = buffered.status {
+            if let index = snapshot.agentSessions.firstIndex(where: { $0.id == sessionID }) {
+                snapshot.agentSessions[index].status = status
+            }
+            finishAgentStreamIfNeeded(sessionID: sessionID, status: status)
+        }
+    }
+
+    static func boundedAgentText(_ text: String) -> String {
+        guard text.utf8.count > maximumAgentMessageBytes else { return text }
+        let contentLimit = maximumAgentMessageBytes - truncatedAgentMessageSuffix.utf8.count
+        return utf8Prefix(text, maximumBytes: contentLimit) + truncatedAgentMessageSuffix
+    }
+
+    private static func utf8Prefix(_ text: String, maximumBytes: Int) -> String {
+        guard text.utf8.count > maximumBytes else { return text }
+        let utf8 = text.utf8
+        var end = utf8.index(utf8.startIndex, offsetBy: maximumBytes)
+        while String.Index(end, within: text) == nil {
+            end = utf8.index(before: end)
+        }
+        guard let stringEnd = String.Index(end, within: text) else { return "" }
+        return String(text[..<stringEnd])
+    }
+
     private func decode<Value: Decodable>(_ type: Value.Type, from json: String) throws -> Value {
         guard let data = json.data(using: .utf8) else {
             throw CompanionNativeError.invalidData("June returned an invalid response.")
         }
         return try decoder.decode(type, from: data)
     }
+}
+
+private struct BufferedAgentStream {
+    var text = ""
+    var status: AgentStatusModel?
 }
 
 private struct ConflictEnvelope: Codable {
