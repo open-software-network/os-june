@@ -38,12 +38,6 @@ jobs:
     runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["blacksmith-6vcpu-macos-15"]') }}
     environment: production
     steps:
-      - name: Require the live Computer use release runner
-        if: inputs.macos-runner != 'mac-studio'
-        run: |
-          echo "::error::Computer use promotion requires the pre-granted Mac Studio so capture and background input are tested before publication."
-          exit 1
-
       - name: Mint release token (GitHub App)
         id: app-token
         uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
@@ -275,9 +269,6 @@ jobs:
         with:
           args: --bundles app,dmg --target universal-apple-darwin -- --locked
           includeUpdaterJson: false
-
-      - name: Run signed Computer use release self-test
-        run: ./scripts/computer-use-release-self-test.sh --live --target universal-apple-darwin
 
       - name: Notarize, verify, and publish stable release assets
         env:

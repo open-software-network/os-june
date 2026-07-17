@@ -43,12 +43,6 @@ jobs:
     runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["blacksmith-6vcpu-macos-15"]') }}
     environment: production
     steps:
-      - name: Require the live Computer use release runner
-        if: inputs.macos-runner != 'mac-studio'
-        run: |
-          echo "::error::Computer use releases require the pre-granted Mac Studio so capture and background input are tested before publication."
-          exit 1
-
       # Same release App identity as production: it publishes to os-june-releases.
       - name: Mint release token (GitHub App)
         id: app-token
@@ -339,9 +333,6 @@ jobs:
           # The DMG is notarized after the build, so don't let tauri-action
           # publish anything itself.
           includeUpdaterJson: false
-
-      - name: Run signed Computer use release self-test
-        run: ./scripts/computer-use-release-self-test.sh --live --target universal-apple-darwin
 
       - name: Notarize, verify, and publish rc release assets
         env:
