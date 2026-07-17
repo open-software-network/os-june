@@ -14116,6 +14116,102 @@ describe("AgentWorkspace", () => {
       },
     ];
 
+    it("uses an explicit Venice model for a new chat while June-funded controls stay blocked", async () => {
+      const reason = "Add credits to send messages or generate images and videos.";
+      let generationModel = "open-software/auto";
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.providerModelSettings.mockImplementation(async () => ({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel,
+          remoteGenerationModel: generationModel,
+          costQuality: 100,
+          veniceApiKeyConfigured: true,
+        },
+      }));
+      mocks.setVeniceModel.mockImplementation(async (_mode: string, modelId: string) => {
+        generationModel = modelId;
+      });
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "open-software/auto",
+        models: [
+          {
+            provider: "open-software",
+            id: "open-software/auto",
+            name: "Auto",
+            modelType: "text",
+            privacy: "private",
+            traits: [],
+            capabilities: ["functionCalling"],
+          },
+          ...toolCapableCatalog,
+        ],
+      });
+      const slashCommandEntriesRef: {
+        current: {
+          runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+          runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+        } | null;
+      } = { current: null };
+      const user = userEvent.setup();
+
+      render(
+        <AgentWorkspace
+          creditActionsDisabledReason={reason}
+          renderFundingNotice={(context) => (
+            <button type="button" onClick={context.onSelectVeniceModel}>
+              Select a Venice model
+            </button>
+          )}
+          testOnlySlashCommandEntriesRef={slashCommandEntriesRef}
+        />,
+      );
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await screen.findByRole("button", { name: "Model: Auto (Higher)" });
+      await user.type(composer, "Use my Venice key");
+      expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "Select a Venice model" }));
+      const picker = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(picker).getByRole("button", { name: "All models" }));
+      await user.click(
+        within(screen.getByRole("group", { name: "All text models" })).getByRole("option", {
+          name: /GLM 5\.2/,
+        }),
+      );
+
+      expect(await screen.findByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Start session" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute("title", reason);
+
+      const slashEntries = slashCommandEntriesRef.current;
+      if (!slashEntries) throw new Error("Agent workspace did not expose slash commands.");
+      await act(async () => {
+        await slashEntries.runImageSlashCommand("a red bicycle", "/image a red bicycle");
+      });
+      expect(mocks.generateImage).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "session.create",
+          expect.objectContaining({ model: "__june_remote_generation__:zai-org-glm-5-2" }),
+        ),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "Use my Venice key" }),
+      );
+    });
+
     it("keeps the open session model picker interactive", async () => {
       mocks.listVeniceModels.mockResolvedValue({
         mode: "generation",

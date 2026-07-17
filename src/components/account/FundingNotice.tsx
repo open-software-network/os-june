@@ -1,7 +1,9 @@
 import { IconChevronTopSmall } from "central-icons/IconChevronTopSmall";
 import { useEffect, useRef, useState } from "react";
 import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
+import type { TextFundingModelContext } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
+import { AUTO_MODEL_ID } from "../../lib/hermes-session-model-selection";
 import {
   MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
   MAX_UPGRADE_BROWSER_STATUS,
@@ -37,10 +39,17 @@ import { Spinner } from "../ui/Spinner";
 type Props = {
   account: AccountStatus;
   onRefresh: () => Promise<AccountStatus | undefined>;
+  /** Active composer context. Only chat placements supply it; other funding
+   * surfaces keep the general account copy and action. */
+  textFundingContext?: TextFundingNoticeContext;
   /** False parks the notice's account poll (the chip keeps its collapsed
    * notice mounted for the height animation; only the expanded one should
    * poll). Defaults to true. */
   active?: boolean;
+};
+
+export type TextFundingNoticeContext = TextFundingModelContext & {
+  onSelectVeniceModel: () => void;
 };
 
 const POLL_INTERVAL_MS = 10_000;
@@ -111,10 +120,10 @@ export function TierMiniCard({ tier }: { tier: FundingTier }) {
 /** The persistent out-of-credits surface: a compact, non-dismissible notice
  * docked where credit-consuming actions live (above the chat composers, in
  * the sidebar chip's popover). Enforcement happens at the action layer in
- * App; this row only explains the state and offers the one way out of it.
+ * App; this row only explains the state and offers the applicable recovery.
  * Owns the checkout / billing / in-place-upgrade logic that FundingGate used
  * to hold so every placement stays behaviorally identical. */
-export function FundingNotice({ account, onRefresh, active = true }: Props) {
+export function FundingNotice({ account, onRefresh, textFundingContext, active = true }: Props) {
   const [openedPortal, setOpenedPortal] = useState(false);
   const [checking, setChecking] = useState(false);
   // The Max upgrade can end in a saved-card charge, so it only fires from an
@@ -355,6 +364,20 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
 
   const upgradePending = awaitingBrowser || awaitingGrant;
   const waiting = upgradePending || openedPortal;
+  const autoVeniceRecovery = Boolean(
+    textFundingContext?.veniceApiKeyConfigured &&
+      textFundingContext.activeModelId === AUTO_MODEL_ID,
+  );
+
+  function handlePrimaryFundingAction() {
+    if (proUpgradeRequired) {
+      setConfirmError(undefined);
+      setChargeNowUpgrade(false);
+      setConfirmingUpgrade(true);
+      return;
+    }
+    void handleOpenPortal(offerMaxPlan ? "pro" : chosenPlan);
+  }
 
   return (
     <section className="funding-notice" role="status" aria-live="polite">
@@ -370,7 +393,9 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
               ? maxUpgradeSlowStatus(maxGrantWait)
               : openedPortal
                 ? copy.waiting
-                : copy.body}
+                : autoVeniceRecovery
+                  ? "Auto can route beyond Venice, so it uses June credits. Your Venice API key applies only when you select a Venice model."
+                  : copy.body}
       </p>
       <div className="funding-notice-actions">
         {upgradePending ? (
@@ -428,6 +453,23 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
               {checking ? "Checking..." : "Check again"}
             </button>
           </>
+        ) : autoVeniceRecovery ? (
+          <>
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={textFundingContext?.onSelectVeniceModel}
+            >
+              Select a Venice model
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary funding-notice-cta"
+              onClick={handlePrimaryFundingAction}
+            >
+              {copy.cta}
+            </button>
+          </>
         ) : (
           <>
             {offerMaxPlan ? (
@@ -442,15 +484,7 @@ export function FundingNotice({ account, onRefresh, active = true }: Props) {
             <button
               type="button"
               className="btn btn-secondary funding-notice-cta"
-              onClick={() => {
-                if (proUpgradeRequired) {
-                  setConfirmError(undefined);
-                  setChargeNowUpgrade(false);
-                  setConfirmingUpgrade(true);
-                  return;
-                }
-                void handleOpenPortal(offerMaxPlan ? "pro" : chosenPlan);
-              }}
+              onClick={handlePrimaryFundingAction}
             >
               {copy.cta}
             </button>

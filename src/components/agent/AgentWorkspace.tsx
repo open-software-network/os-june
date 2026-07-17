@@ -75,7 +75,7 @@ import {
 } from "react";
 import { BackButton } from "../ui/BackButton";
 import { TierMiniCard } from "../account/FundingNotice";
-import type { FundingTier } from "../account/FundingNotice";
+import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { Dialog } from "../ui/Dialog";
@@ -219,6 +219,7 @@ import { ShareLinkCopyAction } from "../share/ShareLinkCopyAction";
 import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
+import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
 import {
@@ -1794,10 +1795,10 @@ type AgentWorkspaceProps = {
    * stored session id. */
   onMoveSessionToProject?: (sessionId: string) => void;
   creditActionsDisabledReason?: string;
-  /** The persistent out-of-credits notice, pre-wired by App. When present it
-   * replaces the plain composer-notice paragraph; the disabled reason keeps
-   * gating actions and tooltips. */
-  fundingNotice?: ReactNode;
+  /** App owns the account and billing action; the composer owns the active
+   * session model and picker. This typed boundary joins them without guessing
+   * from the app-wide setting. */
+  renderFundingNotice?: (context: TextFundingNoticeContext) => ReactNode;
   /** The user's current plan; the in-transcript stopped-turn credits card
    * leads with its tier card. */
   fundingTier?: FundingTier;
@@ -2354,7 +2355,7 @@ export function AgentWorkspace({
   resolveSessionProjectContext,
   onMoveSessionToProject,
   creditActionsDisabledReason,
-  fundingNotice,
+  renderFundingNotice,
   fundingTier,
   testOnlySlashCommandEntriesRef,
 }: AgentWorkspaceProps = {}) {
@@ -2686,6 +2687,7 @@ export function AgentWorkspace({
   // section can show its billing note (Auto meters June credits, never the
   // key). Refreshed with every provider-settings read.
   const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
+  const veniceApiKeyConfiguredRef = useRef(false);
   // Preference saves from the picker's drill-in: writes are chained so they
   // persist in click order, and versioned so only the newest call's outcome
   // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
@@ -3252,6 +3254,17 @@ export function AgentWorkspace({
   // treated as non-vision.
   const resolvedGenerationModel = activeGenerationModelId
     ? generationModels.find((model) => model.id === activeGenerationModelId)
+    : undefined;
+  const textFundingContext: TextFundingModelContext = {
+    activeModelId: activeGenerationModelId || undefined,
+    activeModel: resolvedGenerationModel,
+    veniceApiKeyConfigured,
+  };
+  const textActionsDisabledReason = shouldBlockTextOnFunding(
+    Boolean(creditActionsDisabledReason),
+    textFundingContext,
+  )
+    ? creditActionsDisabledReason
     : undefined;
   const composerHasPendingImage =
     pendingImageAttachments(attachments.map((attachment) => attachment.attach)).length > 0;
@@ -3848,6 +3861,7 @@ export function AgentWorkspace({
       confirmedCostQualityRef.current = settings.costQuality;
       generationCostQualityRef.current = settings.costQuality;
       setGenerationCostQuality(settings.costQuality);
+      veniceApiKeyConfiguredRef.current = settings.veniceApiKeyConfigured;
       setVeniceApiKeyConfigured(settings.veniceApiKeyConfigured);
       return selectedModelId;
     },
@@ -3868,6 +3882,7 @@ export function AgentWorkspace({
       modelsPromise.catch(() => {});
       const settingsResponse = await settingsPromise;
       if (requestId === generationModelRequestSequence.current) {
+        veniceApiKeyConfiguredRef.current = settingsResponse.settings.veniceApiKeyConfigured;
         setVeniceApiKeyConfigured(settingsResponse.settings.veniceApiKeyConfigured);
       }
       const modelsResponse = await modelsPromise;
@@ -5725,7 +5740,7 @@ export function AgentWorkspace({
       (!message && !attachments.length) ||
       submitting ||
       importingFiles ||
-      creditActionsDisabledReason ||
+      textActionsDisabledReason ||
       selectedHermesSessionIsProvisional ||
       imageSlashBlockedByModel
     )
@@ -6937,7 +6952,20 @@ export function AgentWorkspace({
       skipPrompt?: boolean;
     },
   ): Promise<string | undefined> {
-    if (creditActionsDisabledReason && !options?.skipPrompt) {
+    const modelTarget = options?.modelTarget ?? captureSessionModelTarget(explicitSession);
+    const targetCatalogModel = generationModelsRef.current.find(
+      (model) => model.id === modelTarget.selection.modelId,
+    );
+    const targetTextFundingContext: TextFundingModelContext = {
+      activeModelId: modelTarget.selection.modelId || undefined,
+      activeModel: targetCatalogModel,
+      veniceApiKeyConfigured: veniceApiKeyConfiguredRef.current,
+    };
+    if (
+      creditActionsDisabledReason &&
+      !options?.skipPrompt &&
+      shouldBlockTextOnFunding(true, targetTextFundingContext)
+    ) {
       throw new Error(creditActionsDisabledReason);
     }
     const displayContent = options?.displayContent ?? content;
@@ -6967,7 +6995,6 @@ export function AgentWorkspace({
         .replace(/[–—]/g, "-")
         .replace(/^([a-z])/, (match) => match.toUpperCase());
     }
-    const modelTarget = options?.modelTarget ?? captureSessionModelTarget(explicitSession);
     const targetStoredSessionId = modelTarget.targetStoredSessionId ?? undefined;
     let dispatchReservation =
       options?.dispatchReservation ??
@@ -10410,12 +10437,16 @@ export function AgentWorkspace({
         {heroMode ? null : (
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
-        {fundingNotice ??
-          (creditActionsDisabledReason ? (
-            <p className="agent-composer-notice" role="status">
-              {creditActionsDisabledReason}
-            </p>
-          ) : null)}
+        {textActionsDisabledReason
+          ? (renderFundingNotice?.({
+              ...textFundingContext,
+              onSelectVeniceModel: openComposerModelPicker,
+            }) ?? (
+              <p className="agent-composer-notice" role="status">
+                {textActionsDisabledReason}
+              </p>
+            ))
+          : null}
         <AnimatePresence>
           {galleryErrors ? (
             // Dev gallery only: the busy nudge is a toast in real use (see
@@ -10786,7 +10817,7 @@ export function AgentWorkspace({
                   disabled={
                     submitting ||
                     importingFiles ||
-                    Boolean(creditActionsDisabledReason) ||
+                    Boolean(textActionsDisabledReason) ||
                     selectedHermesSessionIsProvisional ||
                     imageSlashBlockedByModel ||
                     (!draft.trim() && !attachments.length)
