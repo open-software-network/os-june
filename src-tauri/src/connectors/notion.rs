@@ -661,13 +661,19 @@ async fn refresh_token_request(
     let error_code = serde_json::from_str::<TokenErrorBody>(&body)
         .ok()
         .and_then(|body| body.error);
-    let kind = match error_code.as_deref() {
-        Some("invalid_grant") => RefreshFailureKind::ReconnectRequired,
-        _ if status >= 500 => RefreshFailureKind::Retryable,
-        _ => RefreshFailureKind::Retryable,
-    };
+    let kind = classify_refresh_failure(status, error_code.as_deref());
     tracing::warn!(status, error_code = ?error_code, "notion token refresh failed");
     Err(refresh_failed(kind, error_code))
+}
+
+fn classify_refresh_failure(status: u16, error_code: Option<&str>) -> RefreshFailureKind {
+    match error_code {
+        Some("invalid_grant" | "invalid_client" | "unauthorized_client") => {
+            RefreshFailureKind::ReconnectRequired
+        }
+        _ if status >= 500 => RefreshFailureKind::Retryable,
+        _ => RefreshFailureKind::Retryable,
+    }
 }
 
 fn merge_refreshed_tokens(
@@ -1952,6 +1958,32 @@ mod tests {
 
         stored.expires_at_unix = Some(999);
         assert!(notion_token_expired_at(&stored, 1_000));
+    }
+
+    #[test]
+    fn classify_refresh_failure_reconnects_for_definitive_oauth_auth_errors() {
+        for code in ["invalid_grant", "invalid_client", "unauthorized_client"] {
+            assert_eq!(
+                classify_refresh_failure(400, Some(code)),
+                RefreshFailureKind::ReconnectRequired
+            );
+        }
+    }
+
+    #[test]
+    fn classify_refresh_failure_keeps_unknown_and_server_errors_retryable() {
+        assert_eq!(
+            classify_refresh_failure(400, Some("invalid_request")),
+            RefreshFailureKind::Retryable
+        );
+        assert_eq!(
+            classify_refresh_failure(502, Some("temporarily_unavailable")),
+            RefreshFailureKind::Retryable
+        );
+        assert_eq!(
+            classify_refresh_failure(400, None),
+            RefreshFailureKind::Retryable
+        );
     }
 
     #[test]
