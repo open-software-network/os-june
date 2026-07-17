@@ -111,9 +111,14 @@ fn validate_source(
         .recordings_dir
         .canonicalize()
         .map_err(export_io_error)?;
-    let expected_canonical_dir = canonical_recordings_dir
-        .join(note_id)
-        .join(&source.recording_session_id);
+    let expected_note_dir = canonical_recordings_dir.join(note_id);
+    let expected_legacy_path =
+        expected_note_dir.join(format!("{}.wav", &source.recording_session_id));
+    if path == expected_legacy_path {
+        return validate_wav_file(source, path);
+    }
+
+    let expected_canonical_dir = expected_note_dir.join(&source.recording_session_id);
     if !path.starts_with(&expected_canonical_dir) {
         return Err(AppError::new(
             "note_audio_export_denied",
@@ -129,6 +134,13 @@ fn validate_source(
             "A selected audio file is outside its Recording session directory.",
         ));
     }
+    validate_wav_file(source, path)
+}
+
+fn validate_wav_file(
+    source: NoteAudioExportSource,
+    path: PathBuf,
+) -> Result<NoteAudioExportSource, AppError> {
     let metadata = fs::metadata(&path).map_err(export_io_error)?;
     if !metadata.is_file()
         || metadata.len() == 0
@@ -533,5 +545,30 @@ mod tests {
         .expect_err("symlink must fail");
         assert_eq!(error.code, "note_audio_export_denied");
         assert_eq!(fs::read_dir(&downloads).expect("downloads").count(), 0);
+    }
+
+    #[test]
+    fn exact_legacy_note_recording_path_is_exported() {
+        let (_temp, paths, downloads) = fixture();
+        let note_directory = paths.recordings_dir.join(NOTE_ID);
+        fs::create_dir_all(&note_directory).expect("legacy Note directory");
+        let legacy_path = note_directory.join("session-a.wav");
+        fs::write(&legacy_path, b"legacy exact bytes").expect("legacy Source");
+
+        let result = export_note_audio(
+            &paths,
+            &downloads,
+            selection(
+                "Legacy",
+                vec![source(legacy_path, "session-a", "microphone")],
+            ),
+        )
+        .expect("legacy export");
+
+        assert_eq!(result.file_name, "Legacy audio.wav");
+        assert_eq!(
+            fs::read(result.path).expect("legacy export bytes"),
+            b"legacy exact bytes"
+        );
     }
 }
