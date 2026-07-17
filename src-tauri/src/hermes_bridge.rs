@@ -58,6 +58,7 @@ const MANAGED_HERMES_INTEGRITY_SCHEMA: u32 = 2;
 const BUNDLED_HERMES_SKILLS_RESOURCE_DIR: &str = "native/hermes-skills";
 const BUNDLED_HERMES_PLUGINS_RESOURCE_DIR: &str = "native/hermes-plugins";
 const JUNE_GITHUB_PLUGIN_DIR_NAME: &str = "june_github";
+const JUNE_GITHUB_TOOLSET_NAME: &str = "june_github";
 const JUNE_GITHUB_PLUGIN_MANIFEST: &[u8] =
     include_bytes!("../resources/hermes-plugins/june_github/plugin.yaml");
 const JUNE_GITHUB_PLUGIN_SOURCE: &[u8] =
@@ -165,15 +166,9 @@ const JUNE_GCAL_MCP_SCRIPT: &str = include_str!("hermes/june_gcal_mcp.py");
 const JUNE_GCAL_ACTIONS_MCP_SERVER_NAME: &str = "june_gcal_actions";
 const JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME: &str = "june_gcal_actions_mcp.py";
 const JUNE_GCAL_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_gcal_actions_mcp.py");
-const JUNE_GITHUB_MCP_SERVER_NAME: &str = "june_github";
-#[allow(dead_code)] // Retained through Task 5 for Task 6's explicit cleanup.
-const JUNE_GITHUB_MCP_SCRIPT_NAME: &str = "june_github_mcp.py";
-#[allow(dead_code)] // Retained through Task 5 for Task 6's explicit cleanup.
-const JUNE_GITHUB_MCP_SCRIPT: &str = include_str!("hermes/june_github_mcp.py");
+/// Retained for one release so config reconciliation can prune stale homes.
+const JUNE_GITHUB_LEGACY_MCP_SERVER_NAME: &str = "june_github";
 const JUNE_GITHUB_BROKER_SOCKET_ENV: &str = "JUNE_GITHUB_BROKER_SOCKET";
-/// Dedicated loopback capability for the fixed GitHub read route. This is not
-/// a GitHub credential and is visible only to the `june_github` subprocess.
-const JUNE_GITHUB_PROXY_TOKEN_ENV: &str = "JUNE_GITHUB_PROXY_TOKEN";
 /// Loopback proxy token env var shared by all four connector MCP servers; the
 /// connector routes each require this dedicated secret (never the general
 /// provider token). Kept out of argv so it does not appear in process listings.
@@ -427,7 +422,6 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_ENVIRONMENT_HINT",
     "HERMES_TUI_TOOLSETS",
     JUNE_GITHUB_BROKER_SOCKET_ENV,
-    JUNE_GITHUB_PROXY_TOKEN_ENV,
     "HERMES_MODEL",
     "HERMES_PROVIDER",
     "PYTHONDONTWRITEBYTECODE",
@@ -513,7 +507,6 @@ struct SharedProviderProxy {
     token: String,
     recorder_token: String,
     connector_token: String,
-    github_token: String,
     shutdown: Option<oneshot::Sender<()>>,
 }
 
@@ -528,13 +521,6 @@ struct ProviderProxyState {
     /// secret, handed only to the four connector MCP servers: a user's mail and
     /// calendar must not be reachable with the general provider token.
     connector_token: String,
-    /// GitHub repository reads require this exact-route secret, handed only to
-    /// the `june_github` MCP. It cannot authorize models, recording, or other
-    /// private connectors and is never a GitHub provider credential.
-    github_token: String,
-    /// One service per proxy lifetime so pagination and file-reference
-    /// capabilities remain valid across calls without recreating the registry.
-    github_read_service: Option<Arc<crate::connectors::github_read::GitHubReadService>>,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -1408,7 +1394,7 @@ async fn start_hermes_bridge_inner(
     let interactive_toolsets = hermes_interactive_toolsets(&config_path, github_broker.is_some());
     let github_available = interactive_toolsets
         .iter()
-        .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+        .any(|toolset| toolset == JUNE_GITHUB_TOOLSET_NAME);
 
     // SOUL.md is shared by both processes (single home), so its sandbox
     // section describes the per-session mode split rather than this spawn.
@@ -1540,14 +1526,12 @@ async fn ensure_provider_proxy(
                 token: proxy.token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
                 connector_token: proxy.connector_token.clone(),
-                github_token: proxy.github_token.clone(),
             });
         }
     }
     let token = random_token();
     let recorder_token = random_token();
     let connector_token = random_token();
-    let github_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     let image_sources = ImageSourceCapabilities {
@@ -1559,7 +1543,6 @@ async fn ensure_provider_proxy(
         token.clone(),
         recorder_token.clone(),
         connector_token.clone(),
-        github_token.clone(),
         image_sources,
         videos_dir,
         crate::feature_flags::VIDEO_GENERATION_ENABLED,
@@ -1578,7 +1561,6 @@ async fn ensure_provider_proxy(
         token: token.clone(),
         recorder_token: recorder_token.clone(),
         connector_token: connector_token.clone(),
-        github_token: github_token.clone(),
         shutdown: Some(started.shutdown),
     });
     Ok(SharedProviderProxyInfo {
@@ -1586,7 +1568,6 @@ async fn ensure_provider_proxy(
         token,
         recorder_token,
         connector_token,
-        github_token,
     })
 }
 
@@ -1595,8 +1576,6 @@ struct SharedProviderProxyInfo {
     token: String,
     recorder_token: String,
     connector_token: String,
-    #[allow(dead_code)] // Task 11 threads this scoped token into `june_github`.
-    github_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -10549,16 +10528,17 @@ fn merge_hermes_config(existing_path: &std::path::Path, rendered: &str) -> Strin
     // Drop June-owned eligibility-gated MCP entries from the existing config
     // before merging. The overlay re-adds them only while the connector is
     // active, so a disconnect (or a removed auto grant) cannot preserve stale
-    // GitHub, Gmail, Calendar, or per-job tools. User-added servers and June's
-    // always-rendered entries (june_context, june_web, ...) are untouched.
+    // Gmail, Calendar, per-job tools, or the legacy GitHub MCP entry. User-added
+    // servers and June's always-rendered entries (june_context, june_web, ...)
+    // are untouched.
     prune_connector_mcp_servers(&mut existing);
     let merged = deep_merge_yaml(existing, overlay);
     serde_yaml::to_string(&merged).unwrap_or_else(|_| rendered.to_string())
 }
 
-/// Removes June's eligibility-gated connector MCP entries (`june_github`,
-/// `june_gmail`, `june_gcal`, their `_actions` servers, and per-job auto
-/// servers) from a parsed config so a fresh render alone decides which remain.
+/// Removes June's eligibility-gated Google connector entries and the one-release
+/// legacy GitHub MCP name from a parsed config. A fresh render alone decides
+/// which active Google connector entries remain; GitHub is never re-added.
 fn prune_connector_mcp_servers(config: &mut serde_yaml::Value) {
     let Some(mcp_servers) = config
         .get_mut("mcp_servers")
@@ -10568,17 +10548,18 @@ fn prune_connector_mcp_servers(config: &mut serde_yaml::Value) {
     };
     mcp_servers.retain(|key, _| {
         key.as_str()
-            .map(|name| !is_june_connector_server_name(name))
+            .map(|name| !is_stale_june_mcp_server_name(name))
             .unwrap_or(true)
     });
 }
 
-/// True for every eligibility-gated MCP server name June owns. The Google `_`
-/// prefixes cover both action servers and per-job `_auto_<jobid>` servers.
-fn is_june_connector_server_name(name: &str) -> bool {
+/// True for every MCP name config reconciliation must remove before rendering.
+/// The Google prefixes cover action and per-job `_auto_<jobid>` servers; the
+/// legacy GitHub name is retained only for one release of stale-home pruning.
+fn is_stale_june_mcp_server_name(name: &str) -> bool {
     name == JUNE_GMAIL_MCP_SERVER_NAME
         || name == JUNE_GCAL_MCP_SERVER_NAME
-        || name == JUNE_GITHUB_MCP_SERVER_NAME
+        || name == JUNE_GITHUB_LEGACY_MCP_SERVER_NAME
         || name.starts_with("june_gmail_")
         || name.starts_with("june_gcal_")
 }
@@ -10634,7 +10615,7 @@ fn hermes_interactive_toolsets(config_path: &Path, github_available: bool) -> Ve
         // The broker is not an MCP server and therefore never appears in the
         // config. Its toolset is admitted only for this interactive child.
         if github_available {
-            selected.push(JUNE_GITHUB_MCP_SERVER_NAME.to_string());
+            selected.push(JUNE_GITHUB_TOOLSET_NAME.to_string());
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -11622,38 +11603,6 @@ async fn start_june_provider_proxy(
     token: String,
     recorder_token: String,
     connector_token: String,
-    github_token: String,
-    image_sources: ImageSourceCapabilities,
-    videos_dir: PathBuf,
-    video_generation_enabled: bool,
-    app: Option<AppHandle>,
-    recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
-) -> Result<RunningJuneProviderProxy, AppError> {
-    let github_read_service = crate::connectors::github_read::GitHubReadService::production()
-        .ok()
-        .map(Arc::new);
-    start_june_provider_proxy_with_github_service(
-        token,
-        recorder_token,
-        connector_token,
-        github_token,
-        github_read_service,
-        image_sources,
-        videos_dir,
-        video_generation_enabled,
-        app,
-        recorder_requests,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn start_june_provider_proxy_with_github_service(
-    token: String,
-    recorder_token: String,
-    connector_token: String,
-    github_token: String,
-    github_read_service: Option<Arc<crate::connectors::github_read::GitHubReadService>>,
     image_sources: ImageSourceCapabilities,
     videos_dir: PathBuf,
     video_generation_enabled: bool,
@@ -11678,8 +11627,6 @@ async fn start_june_provider_proxy_with_github_service(
             token,
             recorder_token,
             connector_token,
-            github_token,
-            github_read_service,
             image_sources,
             videos_dir,
             video_generation_enabled,
@@ -11734,25 +11681,6 @@ async fn handle_june_provider_connection(
 ) -> io::Result<()> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
-        Err(HttpRequestReadError::BodyTooLarge(request)) if request.path == "/v1/github/read" => {
-            if !provider_proxy_authorized(&request, &state.github_token) {
-                write_json_response(
-                    &mut stream,
-                    401,
-                    serde_json::json!({ "error": { "message": "Unauthorized" } }),
-                )
-                .await?;
-            } else if request.method == "POST" {
-                let (status, body) = github_read_error_response(
-                    AppError::new("github_input_invalid", "GitHub input is invalid."),
-                    false,
-                );
-                write_json_response(&mut stream, status, body).await?;
-            } else {
-                write_not_found_response(&mut stream).await?;
-            }
-            return Ok(());
-        }
         Err(error) => {
             let _ = write_json_response(
                 &mut stream,
@@ -11768,7 +11696,6 @@ async fn handle_june_provider_connection(
         &state.token,
         &state.recorder_token,
         &state.connector_token,
-        &state.github_token,
     );
     if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
@@ -11959,9 +11886,6 @@ async fn handle_june_provider_connection(
         ("GET", "/v1/recorder/status") => {
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
         }
-        ("POST", "/v1/github/read") => {
-            handle_github_read(&mut stream, &state, &request.body).await?;
-        }
         ("POST", path)
             if path.starts_with("/v1/gmail/")
                 || path.starts_with("/v1/gmail-actions/")
@@ -11975,95 +11899,6 @@ async fn handle_june_provider_connection(
         }
     }
     Ok(())
-}
-
-/// Executes one typed GitHub read through the Rust-owned credential and
-/// repository boundary. Request bodies and returned repository content are
-/// deliberately never logged here.
-async fn handle_github_read(
-    stream: &mut tokio::net::TcpStream,
-    state: &Arc<ProviderProxyState>,
-    request_body: &[u8],
-) -> io::Result<()> {
-    let request = match serde_json::from_slice::<crate::connectors::github_read::GitHubReadRequest>(
-        request_body,
-    ) {
-        Ok(request) => request,
-        Err(_) => {
-            let (status, body) = github_read_error_response(
-                AppError::new("github_input_invalid", "GitHub input is invalid."),
-                false,
-            );
-            return write_json_response(stream, status, body).await;
-        }
-    };
-
-    let Some(github_read_service) = state.github_read_service.as_ref() else {
-        let (status, body) = github_read_error_response(
-            AppError::new(
-                "github_setup_required",
-                "GitHub setup is incomplete. Refresh it in settings.",
-            ),
-            false,
-        );
-        return write_json_response(stream, status, body).await;
-    };
-    let Some(app) = state.app.as_ref() else {
-        let (status, body) = github_read_error_response(
-            AppError::new(
-                "github_read_unavailable",
-                "GitHub could not be read right now.",
-            ),
-            false,
-        );
-        return write_json_response(stream, status, body).await;
-    };
-    let repositories = match crate::commands::repositories(app).await {
-        Ok(repositories) => repositories,
-        Err(_) => {
-            let (status, body) = github_read_error_response(
-                AppError::new(
-                    "github_read_unavailable",
-                    "GitHub could not be read right now.",
-                ),
-                false,
-            );
-            return write_json_response(stream, status, body).await;
-        }
-    };
-
-    let outcome = github_read_service
-        .execute(
-            request,
-            &crate::connectors::github::PlatformGitHubTokenVault,
-            &repositories,
-        )
-        .await;
-    match outcome.result {
-        Ok(result) => {
-            let body = github_read_success_body(result, outcome.connector_state_changed);
-            write_json_response(stream, 200, body).await
-        }
-        Err(error) => {
-            let (status, body) = github_read_error_response(error, outcome.connector_state_changed);
-            write_json_response(stream, status, body).await
-        }
-    }
-}
-
-fn github_read_success_body(
-    result: crate::connectors::github_read::GitHubReadEnvelope,
-    connector_state_changed: bool,
-) -> serde_json::Value {
-    github_read_broker::public_success(result, connector_state_changed)
-}
-
-fn github_read_error_response(
-    error: AppError,
-    connector_state_changed: bool,
-) -> (u16, serde_json::Value) {
-    let response = github_read_broker::public_error(error, connector_state_changed);
-    (response.status, response.body)
 }
 
 async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Result<()> {
@@ -13037,7 +12872,6 @@ async fn read_http_request(
 
 fn provider_proxy_max_body_bytes(path: &str) -> usize {
     match path {
-        "/v1/github/read" => 64 * 1024,
         "/v1/image/generate" | "/v1/image/edit" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
         "/v1/video/animate" => JUNE_PROVIDER_PROXY_MAX_IMAGE_BODY_BYTES,
         "/v1/video/generate" => JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES,
@@ -13047,7 +12881,6 @@ fn provider_proxy_max_body_bytes(path: &str) -> usize {
 
 fn provider_proxy_body_too_large_message(path: &str) -> &'static str {
     match path {
-        "/v1/github/read" => "github_input_invalid: the GitHub read request body is too large.",
         "/v1/image/generate" | "/v1/image/edit" | "/v1/video/animate" => {
             "image_request_too_large: the image request body is too large for June. \
              Use a smaller image and retry."
@@ -13232,20 +13065,16 @@ fn model_catalog_with_fallback(
 }
 
 /// Recorder mutations require the recorder-scoped secret; connector routes
-/// (mail/calendar) require the connector-scoped secret; the one fixed GitHub
-/// read route requires the GitHub-scoped secret; every other route keeps the
-/// general provider token. Distinct secrets, so none authorizes another's
+/// (mail/calendar) require the connector-scoped secret; every other route keeps
+/// the general provider token. Distinct secrets, so none authorizes another's
 /// surface.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
     recorder_token: &'a str,
     connector_token: &'a str,
-    github_token: &'a str,
 ) -> &'a str {
-    if path == "/v1/github/read" {
-        github_token
-    } else if path.starts_with("/v1/recorder/") {
+    if path.starts_with("/v1/recorder/") {
         recorder_token
     } else if path.starts_with("/v1/gmail/")
         || path.starts_with("/v1/gmail-actions/")
@@ -16800,7 +16629,6 @@ esac
                 (JUNE_IMAGE_MCP_SCRIPT_NAME, JUNE_IMAGE_MCP_SCRIPT),
                 (JUNE_VIDEO_MCP_SCRIPT_NAME, JUNE_VIDEO_MCP_SCRIPT),
                 (JUNE_RECORDER_MCP_SCRIPT_NAME, JUNE_RECORDER_MCP_SCRIPT),
-                (JUNE_GITHUB_MCP_SCRIPT_NAME, JUNE_GITHUB_MCP_SCRIPT),
                 (JUNE_GMAIL_MCP_SCRIPT_NAME, JUNE_GMAIL_MCP_SCRIPT),
                 (
                     JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME,
@@ -16925,12 +16753,13 @@ esac
         assert!(body.get("aspect_ratio").is_none());
     }
 
-    async fn provider_proxy_response_with_token(
+    async fn provider_proxy_response_with_provider_and_request_tokens(
         path: &str,
         method: &str,
         body: &str,
         video_generation_enabled: bool,
-        token: &str,
+        provider_token: &str,
+        request_token: &str,
     ) -> String {
         let home = tempfile::tempdir().expect("tempdir");
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -16938,27 +16767,9 @@ esac
             .expect("bind proxy listener");
         let addr = listener.local_addr().expect("listener addr");
         let state = Arc::new(ProviderProxyState {
-            token: "proxy-token".to_string(),
+            token: provider_token.to_string(),
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
-            github_token: "github-token".to_string(),
-            github_read_service: Some(Arc::new(
-                crate::connectors::github_read::GitHubReadService::for_test(
-                    crate::connectors::github_api::GitHubReadClient::for_test(
-                        "http://127.0.0.1:9/",
-                    )
-                    .expect("GitHub read client"),
-                    crate::connectors::github_auth::GitHubAuthClient::for_test(
-                        "http://127.0.0.1:9/",
-                    )
-                    .expect("GitHub auth client"),
-                    crate::connectors::github::GitHubAppConfig {
-                        client_id: "Iv12345678".to_string(),
-                        slug: "june-test".to_string(),
-                    },
-                    Arc::new(crate::connectors::github_capabilities::CapabilityRegistry::new()),
-                ),
-            )),
             image_sources: ImageSourceCapabilities {
                 images_dir: home.path().join("images"),
                 secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
@@ -16981,7 +16792,7 @@ esac
             .await
             .expect("connect proxy");
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {request_token}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         );
         stream
@@ -16995,6 +16806,24 @@ esac
             .expect("read response");
         server.await.expect("server task");
         response
+    }
+
+    async fn provider_proxy_response_with_token(
+        path: &str,
+        method: &str,
+        body: &str,
+        video_generation_enabled: bool,
+        token: &str,
+    ) -> String {
+        provider_proxy_response_with_provider_and_request_tokens(
+            path,
+            method,
+            body,
+            video_generation_enabled,
+            "proxy-token",
+            token,
+        )
+        .await
     }
 
     async fn provider_proxy_response(
@@ -17011,6 +16840,64 @@ esac
             "proxy-token",
         )
         .await
+    }
+
+    #[test]
+    fn provider_proxy_github_cleanup_leaves_only_current_scoped_tokens() {
+        fn struct_body<'a>(source: &'a str, name: &str) -> &'a str {
+            source
+                .split(&format!("struct {name} {{"))
+                .nth(1)
+                .and_then(|tail| tail.split("\n}").next())
+                .unwrap_or_else(|| panic!("missing {name}"))
+        }
+
+        fn token_fields(body: &str) -> Vec<&str> {
+            body.lines()
+                .filter_map(|line| line.trim().split_once(':').map(|(name, _)| name))
+                .filter(|name| {
+                    !name.is_empty()
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                        && (*name == "token" || name.ends_with("_token"))
+                })
+                .collect()
+        }
+
+        let source = include_str!("hermes_bridge.rs");
+        let expected = vec!["token", "recorder_token", "connector_token"];
+        for name in [
+            "SharedProviderProxyInfo",
+            "SharedProviderProxy",
+            "ProviderProxyState",
+        ] {
+            let body = struct_body(source, name);
+            assert_eq!(token_fields(body), expected, "unexpected scope on {name}");
+            let retired_service = ["github", "read", "service"].join("_");
+            assert!(
+                !body.contains(&retired_service),
+                "retired GitHub service survived on {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn obsolete_github_bearer_route_is_ordinary_not_found() {
+        let path = ["/v1/", "github", "/read"].concat();
+        let former_bearer_fixture = ["legacy", "github", "bearer", "fixture"].join("-");
+        let response = provider_proxy_response_with_provider_and_request_tokens(
+            &path,
+            "POST",
+            r#"{"operation":"list_repositories","arguments":{}}"#,
+            false,
+            &former_bearer_fixture,
+            &former_bearer_fixture,
+        )
+        .await;
+
+        assert!(response.starts_with("HTTP/1.1 404 Not Found"), "{response}");
+        assert!(response.contains(r#"{"error":{"message":"Not found"}}"#));
     }
 
     fn oauth_test_connection() -> HermesBridgeConnection {
@@ -17488,7 +17375,6 @@ esac
                     "provider-tok",
                     "recorder-tok",
                     "connector-tok",
-                    "github-tok",
                 ),
                 "recorder-tok"
             );
@@ -17505,7 +17391,6 @@ esac
                     "provider-tok",
                     "recorder-tok",
                     "connector-tok",
-                    "github-tok",
                 ),
                 "provider-tok"
             );
@@ -17524,7 +17409,6 @@ esac
                     "provider-tok",
                     "recorder-tok",
                     "connector-tok",
-                    "github-tok",
                 ),
                 "connector-tok"
             );
@@ -17537,14 +17421,12 @@ esac
             "provider-tok",
             "recorder-tok",
             "connector-tok",
-            "github-tok",
         );
         let provider_required = provider_proxy_required_token(
             "/v1/models",
             "provider-tok",
             "recorder-tok",
             "connector-tok",
-            "github-tok",
         );
         assert!(!provider_proxy_authorized(
             &provider_bearer,
@@ -17562,401 +17444,6 @@ esac
             &provider_bearer,
             provider_required
         ));
-    }
-
-    #[tokio::test]
-    async fn provider_proxy_token_isolation_enforces_the_exact_github_route() {
-        for token in ["proxy-token", "recorder-token", "connector-token"] {
-            let response = provider_proxy_response_with_token(
-                "/v1/github/read",
-                "POST",
-                r#"{"operation":"list_repositories","arguments":{}}"#,
-                false,
-                token,
-            )
-            .await;
-            assert!(response.starts_with("HTTP/1.1 401"), "{token}: {response}");
-        }
-
-        for (method, path) in [
-            ("GET", "/v1/models"),
-            ("POST", "/v1/chat/completions"),
-            ("POST", "/v1/recorder/start"),
-            ("POST", "/v1/gmail/search_threads"),
-            ("POST", "/v1/gcal/list_events"),
-        ] {
-            let response =
-                provider_proxy_response_with_token(path, method, "{}", false, "github-token").await;
-            assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
-        }
-
-        assert_eq!(
-            provider_proxy_required_token(
-                "/v1/github/read",
-                "provider-token",
-                "recorder-token",
-                "connector-token",
-                "github-token",
-            ),
-            "github-token"
-        );
-        assert_eq!(
-            provider_proxy_required_token(
-                "/v1/github/other",
-                "provider-token",
-                "recorder-token",
-                "connector-token",
-                "github-token",
-            ),
-            "provider-token"
-        );
-    }
-
-    #[tokio::test]
-    async fn provider_proxy_token_isolation_starts_without_github_configuration() {
-        async fn request(port: u16, token: &str, method: &str, path: &str, body: &str) -> String {
-            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
-                .await
-                .expect("connect provider proxy");
-            let request = format!(
-                "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            );
-            stream
-                .write_all(request.as_bytes())
-                .await
-                .expect("write provider proxy request");
-            let mut response = String::new();
-            stream
-                .read_to_string(&mut response)
-                .await
-                .expect("read provider proxy response");
-            response
-        }
-
-        let home = tempfile::tempdir().expect("proxy tempdir");
-        let running = start_june_provider_proxy_with_github_service(
-            "proxy-token".to_string(),
-            "recorder-token".to_string(),
-            "connector-token".to_string(),
-            "github-token".to_string(),
-            None,
-            ImageSourceCapabilities {
-                images_dir: home.path().join("images"),
-                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
-            },
-            home.path().join("videos"),
-            false,
-            None,
-            Arc::new(Mutex::new(HashMap::new())),
-        )
-        .await
-        .expect("provider proxy starts without GitHub configuration");
-
-        let recorder = request(
-            running.port,
-            "recorder-token",
-            "GET",
-            "/v1/recorder/status",
-            "",
-        )
-        .await;
-        assert!(recorder.starts_with("HTTP/1.1 200"), "{recorder}");
-
-        let github = request(
-            running.port,
-            "github-token",
-            "POST",
-            "/v1/github/read",
-            r#"{"operation":"list_repositories","arguments":{}}"#,
-        )
-        .await;
-        assert!(github.starts_with("HTTP/1.1 409"), "{github}");
-        assert!(github.contains(r#""code":"github_setup_required""#));
-        assert!(!github.contains("github_not_configured"));
-
-        let _ = running.shutdown.send(());
-    }
-
-    #[tokio::test]
-    async fn github_read_proxy_route_requires_exact_post_and_exact_path() {
-        for method in ["GET", "PUT", "PATCH", "DELETE"] {
-            let response = provider_proxy_response_with_token(
-                "/v1/github/read",
-                method,
-                "{}",
-                false,
-                "github-token",
-            )
-            .await;
-            assert!(response.starts_with("HTTP/1.1 404"), "{method}: {response}");
-        }
-
-        let provider_response = provider_proxy_response_with_token(
-            "/v1/github/other",
-            "POST",
-            "{}",
-            false,
-            "proxy-token",
-        )
-        .await;
-        assert!(provider_response.starts_with("HTTP/1.1 404"));
-
-        let github_response = provider_proxy_response_with_token(
-            "/v1/github/other",
-            "POST",
-            "{}",
-            false,
-            "github-token",
-        )
-        .await;
-        assert!(github_response.starts_with("HTTP/1.1 401"));
-    }
-
-    #[tokio::test]
-    async fn github_read_proxy_route_rejects_unknown_operations_and_extra_arguments() {
-        for body in [
-            r#"{"operation":"delete_repository","arguments":{"repository_id":"789"}}"#,
-            r#"{"operation":"get_repository","arguments":{"repository_id":"789","owner":"attacker"}}"#,
-        ] {
-            let response = provider_proxy_response_with_token(
-                "/v1/github/read",
-                "POST",
-                body,
-                false,
-                "github-token",
-            )
-            .await;
-            assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-            assert!(response.contains(r#""code":"github_input_invalid""#));
-            assert!(!response.contains("delete_repository"));
-            assert!(!response.contains("attacker"));
-        }
-    }
-
-    #[test]
-    fn github_read_proxy_route_serializes_success_envelopes_without_extra_fields() {
-        let envelope = crate::connectors::github_read::GitHubReadEnvelope {
-            trust: "untrusted_repository_content",
-            data: serde_json::json!({"name": "test-repo"}),
-            truncated: false,
-            continuation_cursor: None,
-            redactions_applied: false,
-            sources: Vec::new(),
-        };
-
-        assert_eq!(
-            github_read_success_body(envelope, true),
-            serde_json::json!({
-                "success": true,
-                "result": {
-                    "trust": "untrusted_repository_content",
-                    "data": {"name": "test-repo"},
-                    "truncated": false,
-                    "continuationCursor": null,
-                    "redactionsApplied": false,
-                    "sources": [],
-                },
-                "connectorStateChanged": true,
-            })
-        );
-    }
-
-    #[test]
-    fn github_read_proxy_route_serializes_only_sanitized_error_fields() {
-        let mut rate_limit = AppError::new(
-            "github_rate_limited",
-            "attacker-controlled provider body token=secret",
-        );
-        rate_limit.details = Some(serde_json::json!({
-            "retryAfterSeconds": 999_999,
-            "providerBody": "secret",
-        }));
-        let (status, body) = github_read_error_response(rate_limit, true);
-        assert_eq!(status, 429);
-        assert_eq!(
-            body,
-            serde_json::json!({
-                "success": false,
-                "error": {
-                    "code": "github_rate_limited",
-                    "message": "GitHub rate limited the request. Try again later.",
-                    "details": {"retryAfterSeconds": 86_400},
-                },
-                "connectorStateChanged": true,
-            })
-        );
-        assert!(!body.to_string().contains("providerBody"));
-        assert!(!body.to_string().contains("token=secret"));
-
-        let (status, body) = github_read_error_response(
-            AppError::new("storage_unavailable", "sqlite path and secret"),
-            false,
-        );
-        assert_eq!(status, 502);
-        assert_eq!(body["error"]["code"], "github_read_unavailable");
-        assert_eq!(
-            body["error"]["message"],
-            "GitHub could not be read right now."
-        );
-        assert!(body["error"].get("details").is_none());
-        assert!(!body.to_string().contains("sqlite"));
-        assert!(!body.to_string().contains("secret"));
-    }
-
-    #[test]
-    fn github_read_proxy_route_maps_each_public_error_class_to_a_fixed_status() {
-        for (code, expected_status) in [
-            ("github_input_invalid", 400),
-            ("github_cursor_invalid", 400),
-            ("github_file_ref_invalid", 400),
-            ("github_repository_not_selected", 400),
-            ("github_access_removed_or_not_found", 400),
-            ("github_reconnect_required", 409),
-            ("github_setup_required", 409),
-            ("github_rate_limited", 429),
-            ("github_read_unavailable", 502),
-            ("storage_unavailable", 502),
-        ] {
-            let (status, body) = github_read_error_response(
-                AppError::new(code, "must never cross the proxy"),
-                false,
-            );
-            assert_eq!(status, expected_status, "{code}");
-            assert!(!body.to_string().contains("must never cross the proxy"));
-        }
-    }
-
-    #[tokio::test]
-    async fn provider_proxy_body_limits_accept_exact_github_cap_and_reject_one_more_byte() {
-        assert_eq!(provider_proxy_max_body_bytes("/v1/github/read"), 64 * 1024);
-
-        async fn read_body(body_len: usize) -> Result<HttpRequest, HttpRequestReadError> {
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                .await
-                .expect("bind request listener");
-            let address = listener.local_addr().expect("request listener address");
-            let sender = tokio::spawn(async move {
-                let mut stream = tokio::net::TcpStream::connect(address)
-                    .await
-                    .expect("connect request sender");
-                let head = format!(
-                    "POST /v1/github/read HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {body_len}\r\n\r\n"
-                );
-                stream.write_all(head.as_bytes()).await.expect("write head");
-                stream
-                    .write_all(&vec![b'x'; body_len])
-                    .await
-                    .expect("write body");
-            });
-            let (mut stream, _) = listener.accept().await.expect("accept request");
-            let result = read_http_request(&mut stream).await;
-            sender.await.expect("request sender");
-            result
-        }
-
-        let accepted = match read_body(64 * 1024).await {
-            Ok(request) => request,
-            Err(_) => panic!("exact cap must be accepted"),
-        };
-        assert_eq!(accepted.body.len(), 64 * 1024);
-        assert!(read_body(64 * 1024 + 1).await.is_err());
-
-        let exact_body = "x".repeat(64 * 1024);
-        let response = provider_proxy_response_with_token(
-            "/v1/github/read",
-            "POST",
-            &exact_body,
-            false,
-            "github-token",
-        )
-        .await;
-        assert!(response.starts_with("HTTP/1.1 400"));
-        assert!(response.contains(r#""code":"github_input_invalid""#));
-    }
-
-    #[tokio::test]
-    async fn provider_proxy_body_limits_return_the_fixed_github_envelope_for_one_byte_over() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind proxy listener");
-        let addr = listener.local_addr().expect("listener addr");
-        let state = Arc::new(ProviderProxyState {
-            token: "proxy-token".to_string(),
-            recorder_token: "recorder-token".to_string(),
-            connector_token: "connector-token".to_string(),
-            github_token: "github-token".to_string(),
-            github_read_service: Some(Arc::new(
-                crate::connectors::github_read::GitHubReadService::for_test(
-                    crate::connectors::github_api::GitHubReadClient::for_test(
-                        "http://127.0.0.1:9/",
-                    )
-                    .expect("GitHub read client"),
-                    crate::connectors::github_auth::GitHubAuthClient::for_test(
-                        "http://127.0.0.1:9/",
-                    )
-                    .expect("GitHub auth client"),
-                    crate::connectors::github::GitHubAppConfig {
-                        client_id: "Iv12345678".to_string(),
-                        slug: "june-test".to_string(),
-                    },
-                    Arc::new(crate::connectors::github_capabilities::CapabilityRegistry::new()),
-                ),
-            )),
-            image_sources: ImageSourceCapabilities {
-                images_dir: home.path().join("images"),
-                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
-            },
-            videos_dir: home.path().join("videos"),
-            video_generation_enabled: false,
-            app: None,
-            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
-            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
-            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
-        });
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept connection");
-            handle_june_provider_connection(stream, state)
-                .await
-                .expect("handle connection");
-        });
-
-        let mut stream = tokio::net::TcpStream::connect(addr)
-            .await
-            .expect("connect proxy");
-        let request = format!(
-            "POST /v1/github/read HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer github-token\r\nContent-Length: {}\r\n\r\n",
-            64 * 1024 + 1
-        );
-        stream
-            .write_all(request.as_bytes())
-            .await
-            .expect("write oversized request headers");
-        stream.shutdown().await.expect("finish request write side");
-        let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .await
-            .expect("read oversized response");
-        server.await.expect("server task");
-
-        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-        let body = response
-            .split_once("\r\n\r\n")
-            .and_then(|(_, body)| serde_json::from_str::<serde_json::Value>(body).ok())
-            .expect("parse fixed GitHub error envelope");
-        assert_eq!(
-            body,
-            serde_json::json!({
-                "success": false,
-                "error": {
-                    "code": "github_input_invalid",
-                    "message": "GitHub input is invalid.",
-                },
-                "connectorStateChanged": false,
-            })
-        );
     }
 
     #[test]
@@ -18827,7 +18314,7 @@ mcp_servers:
     }
 
     #[test]
-    fn merge_hermes_config_prunes_stale_connector_servers() {
+    fn merge_hermes_config_prunes_stale_connectors_and_legacy_github_server() {
         let home = tempfile::tempdir().expect("tempdir");
         let config_path = home.path().join("config.yaml");
         // A prior spawn had a connected Google account and an autonomous
@@ -18845,6 +18332,8 @@ mcp_servers:
   june_gcal:
     command: "/old/python"
   june_gcal_auto_ab12cd34:
+    command: "/old/python"
+  june_github:
     command: "/old/python"
   todoist:
     url: "https://ai.todoist.net/mcp"
@@ -18883,6 +18372,7 @@ mcp_servers:
         assert!(value["mcp_servers"]["june_gmail_actions"].is_null());
         assert!(value["mcp_servers"]["june_gcal"].is_null());
         assert!(value["mcp_servers"]["june_gcal_auto_ab12cd34"].is_null());
+        assert!(value["mcp_servers"]["june_github"].is_null());
         // The user server and June's always-rendered context server survive.
         assert_eq!(
             value["mcp_servers"]["todoist"]["url"],
@@ -19474,8 +18964,11 @@ mcp_servers:
     fn assert_no_github_bearer_material(rendered: &str) {
         const ACCESS_TOKEN_FIXTURE: &str = "github-access-token";
         const REFRESH_TOKEN_FIXTURE: &str = "github-refresh-token";
+        let retired_bearer_env = ["JUNE", "GITHUB", "PROXY", "TOKEN"].join("_");
+        let retired_script = format!("{}.py", ["june", "github", "mcp"].join("_"));
 
-        assert!(!rendered.contains(JUNE_GITHUB_PROXY_TOKEN_ENV));
+        assert!(!rendered.contains(&retired_bearer_env));
+        assert!(!rendered.contains(&retired_script));
         assert!(!rendered.contains(ACCESS_TOKEN_FIXTURE));
         assert!(!rendered.contains(REFRESH_TOKEN_FIXTURE));
         let value: serde_yaml::Value = serde_yaml::from_str(rendered).expect("rendered YAML");
@@ -19484,7 +18977,7 @@ mcp_servers:
             assert!(
                 env.is_none_or(|env| {
                     !env.keys().any(|key| {
-                        key.as_str() == Some(JUNE_GITHUB_PROXY_TOKEN_ENV)
+                        key.as_str() == Some(retired_bearer_env.as_str())
                             || key
                                 .as_str()
                                 .is_some_and(|key| key.contains("GITHUB") && key.contains("TOKEN"))
@@ -19656,7 +19149,7 @@ mcp_servers:
 
         assert_eq!(
             toolsets,
-            vec!["hermes-cli", "user_server", JUNE_GITHUB_MCP_SERVER_NAME]
+            vec!["hermes-cli", "user_server", JUNE_GITHUB_TOOLSET_NAME]
         );
         let envs: Vec<_> = command
             .get_envs()
@@ -19681,7 +19174,7 @@ mcp_servers:
 
         let github_available = toolsets
             .iter()
-            .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+            .any(|toolset| toolset == JUNE_GITHUB_TOOLSET_NAME);
         sync_june_soul(home.path(), false, false, false, false, github_available)
             .expect("sync eligible soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
@@ -19776,7 +19269,7 @@ mcp_servers:
             apply_isolated_hermes_env(&mut command, home.path(), "dashboard-session", None);
             apply_github_broker_environment(&mut command, None);
             assert!(
-                !toolsets.contains(&JUNE_GITHUB_MCP_SERVER_NAME.to_string()),
+                !toolsets.contains(&JUNE_GITHUB_TOOLSET_NAME.to_string()),
                 "{name}"
             );
             assert!(
@@ -19805,7 +19298,7 @@ mcp_servers:
         assert!(!github_read_enabled_for_interactive_config(&config_path));
         let github_available = toolsets
             .iter()
-            .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+            .any(|toolset| toolset == JUNE_GITHUB_TOOLSET_NAME);
         sync_june_soul(home.path(), false, false, false, false, github_available)
             .expect("render no_mcp soul");
 
@@ -19871,7 +19364,7 @@ mcp_servers:
                 "computer_use",
             ]
         );
-        assert!(!actual.contains(&JUNE_GITHUB_MCP_SERVER_NAME));
+        assert!(!actual.contains(&JUNE_GITHUB_TOOLSET_NAME));
     }
 
     #[cfg(target_os = "macos")]
@@ -19895,7 +19388,7 @@ mcp_servers:
             let toolsets = hermes_interactive_toolsets(&config_path, broker.is_some());
             let github_available = toolsets
                 .iter()
-                .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME);
+                .any(|toolset| toolset == JUNE_GITHUB_TOOLSET_NAME);
             sync_june_soul(home.path(), false, false, false, false, github_available)
                 .expect("write soul");
             let mut command = Command::new("/bin/true");
@@ -19903,7 +19396,7 @@ mcp_servers:
             apply_github_broker_environment(&mut command, broker.as_ref());
 
             assert_no_github_bearer_material(&config);
-            assert!(!toolsets.contains(&JUNE_GITHUB_MCP_SERVER_NAME.to_string()));
+            assert!(!toolsets.contains(&JUNE_GITHUB_TOOLSET_NAME.to_string()));
             assert!(!command
                 .get_envs()
                 .any(|(key, value)| key == JUNE_GITHUB_BROKER_SOCKET_ENV && value.is_some()));
@@ -20323,20 +19816,26 @@ mcp_servers:
     }
 
     #[test]
-    fn bundled_github_mcp_contract_passes() {
-        let contract = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    fn bundled_github_extension_is_the_only_python_tool_contract() {
+        let hermes_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src")
-            .join("hermes")
-            .join("test_june_github_mcp.py");
+            .join("hermes");
+        let retired_contract = format!("test_{}.py", ["june", "github", "mcp"].join("_"));
+        assert!(
+            !hermes_dir.join(retired_contract).exists(),
+            "the obsolete MCP contract must be removed"
+        );
+
+        let contract = hermes_dir.join("test_june_github_plugin.py");
         let output = Command::new(default_python_command())
             .args(["-m", "unittest"])
             .arg(&contract)
             .output()
-            .expect("run bundled GitHub MCP contract");
+            .expect("run bundled GitHub extension contract");
 
         assert!(
             output.status.success(),
-            "bundled GitHub MCP contract failed\nstdout:\n{}\nstderr:\n{}",
+            "bundled GitHub extension contract failed\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );

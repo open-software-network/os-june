@@ -17,7 +17,9 @@ import {
   emptyDraft,
   filterServers,
   hasAvailableTools,
+  isInternalMcpServerName,
   isLocalSubprocess,
+  isUserManagedMcpServer,
   isValidHttpUrl,
   parseMcpServer,
   planServerEdit,
@@ -164,13 +166,15 @@ describe("mcp servers — view logic", () => {
     expect(userManagedMcpServers(servers).map((server) => server.name)).toEqual(["linear"]);
   });
 
-  it("does not expose the built-in GitHub server as user-managed", () => {
+  it("hides and prevents editing a stale legacy GitHub MCP fixture", () => {
+    // Existing Hermes homes can retain this entry until June's next config
+    // reconciliation. It is legacy migration input, not an active server.
     const servers = [
       serverFromWire({
         name: "june_github",
         enabled: true,
         transport: "stdio",
-        command: "june_github_mcp.py",
+        command: "/legacy/june-github-server",
       }),
       serverFromWire({
         name: "user_server",
@@ -180,6 +184,8 @@ describe("mcp servers — view logic", () => {
       }),
     ];
 
+    expect(isInternalMcpServerName("june_github")).toBe(true);
+    expect(isUserManagedMcpServer(servers[0])).toBe(false);
     expect(userManagedMcpServers(servers).map((server) => server.name)).toEqual(["user_server"]);
   });
 

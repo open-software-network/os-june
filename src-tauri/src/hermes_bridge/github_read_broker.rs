@@ -281,14 +281,14 @@ fn production_executor(app: AppHandle, service: Arc<GitHubReadService>) -> Reque
         Box::pin(async move {
             let repositories = match commands::repositories(&app).await {
                 Ok(repositories) => repositories,
-                Err(error) => return public_error(error, false).body,
+                Err(error) => return public_error(error, false).into_body(),
             };
             let outcome = service
                 .execute(request, &PlatformGitHubTokenVault, &repositories)
                 .await;
             match outcome.result {
                 Ok(result) => public_success(result, outcome.connector_state_changed),
-                Err(error) => public_error(error, outcome.connector_state_changed).body,
+                Err(error) => public_error(error, outcome.connector_state_changed).into_body(),
             }
         })
     })
@@ -401,6 +401,14 @@ pub(super) struct PublicErrorResponse {
     pub(super) body: serde_json::Value,
 }
 
+impl PublicErrorResponse {
+    fn into_body(self) -> serde_json::Value {
+        let Self { status, body } = self;
+        let _ = status;
+        body
+    }
+}
+
 async fn read_frame<R>(reader: &mut R) -> Result<Vec<u8>, FrameError>
 where
     R: AsyncRead + Unpin,
@@ -447,26 +455,22 @@ where
 fn bounded_response(response: serde_json::Value) -> serde_json::Value {
     match serde_json::to_vec(&response) {
         Ok(bytes) if bytes.len() <= MAX_RESPONSE_BYTES => response,
-        Ok(_) => {
-            public_error(
-                AppError::new(
-                    "github_response_too_large",
-                    "GitHub content exceeds the response limit.",
-                ),
-                false,
-            )
-            .body
-        }
-        Err(_) => {
-            public_error(
-                AppError::new(
-                    "github_read_unavailable",
-                    "GitHub could not be read right now.",
-                ),
-                false,
-            )
-            .body
-        }
+        Ok(_) => public_error(
+            AppError::new(
+                "github_response_too_large",
+                "GitHub content exceeds the response limit.",
+            ),
+            false,
+        )
+        .into_body(),
+        Err(_) => public_error(
+            AppError::new(
+                "github_read_unavailable",
+                "GitHub could not be read right now.",
+            ),
+            false,
+        )
+        .into_body(),
     }
 }
 

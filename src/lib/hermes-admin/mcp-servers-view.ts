@@ -22,8 +22,13 @@
 import type { HermesAddMcpServerPayload } from "./client";
 import type { HermesMcpAuthStatus, HermesMcpServerInfo, HermesMcpTransport } from "./schemas";
 
+/** Retained for one release so a stale pre-broker config entry stays hidden
+ * and non-editable until config reconciliation prunes it. */
+const JUNE_GITHUB_LEGACY_MCP_SERVER_NAME = "june_github";
+
 /** June-owned MCP servers are implementation details. They are configured by
- * the app at runtime and should not appear in user-managed MCP surfaces. */
+ * the app at runtime (or retained briefly for migration) and should not appear
+ * in user-managed MCP surfaces. */
 export const INTERNAL_MCP_SERVER_NAMES = [
   "june_context",
   "june_web",
@@ -34,7 +39,7 @@ export const INTERNAL_MCP_SERVER_NAMES = [
   "june_gmail_actions",
   "june_gcal",
   "june_gcal_actions",
-  "june_github",
+  JUNE_GITHUB_LEGACY_MCP_SERVER_NAME,
 ] as const;
 
 const INTERNAL_MCP_SERVER_NAME_SET = new Set<string>(INTERNAL_MCP_SERVER_NAMES);
