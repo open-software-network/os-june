@@ -212,18 +212,15 @@ pub async fn companion_begin_pairing(
         },
     )
     .await?;
-    runtime
-        .pairings
-        .lock()
-        .map_err(|_| AppError::new("companion_pairing_unavailable", "Pairing lock failed."))?
-        .insert(
-            status.pairing_id,
-            PendingPairing {
-                secret,
-                expires_at_ms: status.expires_at_ms,
-                approved_mobile: None,
-            },
-        );
+    remember_pending_pairing(
+        &runtime,
+        status.pairing_id,
+        PendingPairing {
+            secret,
+            expires_at_ms: status.expires_at_ms,
+            approved_mobile: None,
+        },
+    )?;
     let wire = PairingQrWirePayload {
         version: june_companion_protocol::PROTOCOL_VERSION,
         pairing_id: status.pairing_id,
@@ -254,6 +251,25 @@ pub async fn companion_begin_pairing(
         expires_at_ms: status.expires_at_ms,
         qr_svg,
     })
+}
+
+fn remember_pending_pairing(
+    runtime: &CompanionRuntime,
+    pairing_id: Uuid,
+    pairing: PendingPairing,
+) -> Result<(), AppError> {
+    let mut pairings = runtime
+        .pairings
+        .lock()
+        .map_err(|_| AppError::new("companion_pairing_unavailable", "Pairing lock failed."))?;
+    if !runtime.account_transport_enabled.load(Ordering::Acquire) {
+        return Err(AppError::new(
+            "unauthorized",
+            "Sign in to manage companion devices.",
+        ));
+    }
+    pairings.insert(pairing_id, pairing);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1073,5 +1089,25 @@ mod tests {
             .store(false, Ordering::Release);
         assert!(CompanionAccountActivityGuard::begin(&runtime).is_err());
         assert_eq!(runtime.account_activity.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn pending_pairing_cannot_reappear_after_logout_closes_the_account() {
+        let runtime = CompanionRuntime::default();
+        runtime
+            .account_transport_enabled
+            .store(false, Ordering::Release);
+        let pairing_id = Uuid::new_v4();
+        let result = remember_pending_pairing(
+            &runtime,
+            pairing_id,
+            PendingPairing {
+                secret: [7; KEY_BYTES],
+                expires_at_ms: current_time_ms() + 60_000,
+                approved_mobile: None,
+            },
+        );
+        assert!(result.is_err());
+        assert!(!runtime.pairings.lock().unwrap().contains_key(&pairing_id));
     }
 }
