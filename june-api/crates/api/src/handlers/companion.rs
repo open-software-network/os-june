@@ -14,7 +14,7 @@ use axum::{
     Json,
     extract::{
         Path, Query, State, WebSocketUpgrade,
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket, close_code},
     },
     http::{HeaderMap, header::AUTHORIZATION},
     response::Response,
@@ -162,6 +162,16 @@ struct Connection {
 enum Outbound {
     Ciphertext(Vec<u8>),
     Revoked,
+}
+
+fn outbound_websocket_message(outbound: Outbound) -> Message {
+    match outbound {
+        Outbound::Ciphertext(bytes) => Message::Binary(bytes.into()),
+        Outbound::Revoked => Message::Close(Some(CloseFrame {
+            code: close_code::POLICY,
+            reason: "revoked".into(),
+        })),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,11 +462,8 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
     loop {
         tokio::select! {
             outbound_message = outbound.recv() => {
-                let message = match outbound_message {
-                    Some(Outbound::Ciphertext(bytes)) => Message::Binary(bytes.into()),
-                    Some(Outbound::Revoked) => Message::Close(None),
-                    None => break,
-                };
+                let Some(outbound_message) = outbound_message else { break };
+                let message = outbound_websocket_message(outbound_message);
                 if sender.send(message).await.is_err() { break; }
             }
             inbound = receiver.next() => {
@@ -1582,7 +1589,12 @@ mod tests {
         let (relay, desktop, _) = linked_relay().await;
         let (mut receiver, _) = relay.connect(&user(), desktop).unwrap();
         relay.revoke(&user(), desktop).await.unwrap();
-        assert!(matches!(receiver.recv().await, Some(Outbound::Revoked)));
+        let message = outbound_websocket_message(receiver.recv().await.unwrap());
+        let Message::Close(Some(frame)) = message else {
+            panic!("revocation close frame")
+        };
+        assert_eq!(frame.code, close_code::POLICY);
+        assert_eq!(frame.reason, "revoked");
         assert!(relay.connect(&user(), desktop).is_err());
     }
 

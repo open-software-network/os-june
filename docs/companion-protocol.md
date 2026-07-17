@@ -44,8 +44,11 @@ reasoning, tool calls/results, approvals, secrets, and media internals stay on
 the Mac. The always-mounted app shell serves reads even when the Agent screen
 is closed. Send and cancel intents wake the existing Agent workspace.
 
-Agent transcript pages keep encoded results below the frame budget. An
-individual oversized display message is clearly marked as truncated. Notes
+Agent transcript pagination starts with the newest page and walks backward;
+items within each page remain chronological so the mobile client can prepend
+older pages without reordering a conversation. Pages keep encoded results
+below the frame budget. An individual oversized display message is clearly
+marked as truncated. Notes
 whose editable title or content cannot fit safely in one frame are rejected
 with an instruction to open them on the Mac; the companion never loads a
 truncated note into its editor, which prevents an edit from overwriting unseen

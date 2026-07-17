@@ -20,6 +20,12 @@ APNs receives only a content-available background payload. It contains no
 visible body, title, note id, prompt, response, operation id, or account data.
 Push hints are correctness-independent and rate-limited per offline device.
 
+The iOS privacy manifest declares the generated device identifier, linked user
+identifier, connection/route usage metadata, and device trust metadata used for
+app functionality. It also declares the system/light/dark preference stored in
+UserDefaults under required-reason category CA92.1. The companion does not use
+those values for tracking and declares no tracking domains.
+
 The phone's recent snapshot cache is AES-GCM encrypted with a random Keychain
 key and complete file protection. It supports rendering only and is not
 offline synchronization.

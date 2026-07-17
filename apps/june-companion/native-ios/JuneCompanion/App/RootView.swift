@@ -223,6 +223,7 @@ private struct CompanionNavigationSidebar: View {
           }
           .foregroundStyle(.primary)
           .buttonStyle(JunePressButtonStyle())
+          .disabled(model.isWorking)
 
           VStack(spacing: 4) {
             ForEach(AppSection.allCases) { section in
@@ -273,6 +274,7 @@ private struct CompanionNavigationSidebar: View {
                 }
                 .foregroundStyle(.primary)
                 .buttonStyle(.plain)
+                .disabled(model.isWorking)
               }
             }
           }

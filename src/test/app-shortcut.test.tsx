@@ -496,6 +496,82 @@ describe("App shortcuts", () => {
     expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
   });
 
+  it("pages companion agent messages backward from the newest turns", async () => {
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        last_active: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "user",
+        content: "Oldest question",
+        timestamp: "2026-07-16T10:01:00.000Z",
+      },
+      {
+        id: "message-2",
+        role: "assistant",
+        content: "Recent answer",
+        timestamp: "2026-07-16T10:02:00.000Z",
+      },
+      {
+        id: "message-3",
+        role: "user",
+        content: "Newest question",
+        timestamp: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const dispatch = (cursor?: string) => {
+      const payload = {
+        operationId: cursor ? "operation-older" : "operation-latest",
+        intent: {
+          type: "agentMessagesList",
+          data: { sessionId: "session-companion", limit: 2, ...(cursor ? { cursor } : {}) },
+        },
+      };
+      act(() => {
+        for (const [event, handler] of mocks.listen.mock.calls) {
+          if (event === "june://companion-request") handler({ payload });
+        }
+      });
+    };
+
+    dispatch();
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-latest", {
+        type: "agentMessages",
+        data: {
+          items: [
+            expect.objectContaining({ id: "message-2", text: "Recent answer" }),
+            expect.objectContaining({ id: "message-3", text: "Newest question" }),
+          ],
+          nextCursor: "2",
+        },
+      }),
+    );
+
+    dispatch("2");
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-older", {
+        type: "agentMessages",
+        data: {
+          items: [expect.objectContaining({ id: "message-1", text: "Oldest question" })],
+        },
+      }),
+    );
+  });
+
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {
     const user = userEvent.setup();
 

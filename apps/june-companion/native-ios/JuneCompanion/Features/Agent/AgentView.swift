@@ -34,6 +34,12 @@ struct AgentView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 22) {
+                    if model.hasEarlierMessages {
+                        Button("Load earlier messages", action: model.loadEarlierMessages)
+                            .font(JuneFont.subheadline)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .disabled(model.isWorking)
+                    }
                     ForEach(model.messages) { message in
                         MessageRow(message: message)
                             .id(message.id)
@@ -43,7 +49,7 @@ struct AgentView: View {
                 .padding(.vertical, 24)
                 .juneReadableColumn()
             }
-            .onChange(of: model.messages.count) {
+            .onChange(of: model.messages.last?.id) {
                 guard let last = model.messages.last else { return }
                 withAnimation(JuneMotion.animation(.response, reduceMotion: reduceMotion)) {
                     proxy.scrollTo(last.id, anchor: .bottom)
@@ -131,6 +137,7 @@ struct AgentView: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(JunePressButtonStyle())
+            .disabled(model.isWorking)
             .accessibilityLabel("New chat")
             Button(action: model.focusMac) {
                 Image(systemName: "arrow.up.forward.app")

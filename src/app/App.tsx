@@ -1813,11 +1813,11 @@ export function App() {
               });
               return;
             }
-            const page = companionByteBoundedPage(
-              companionAgentMessagesFromHermes(await listHermesSessionMessages(sessionId)),
-              cursor,
-              limit,
+            const messages = companionAgentMessagesFromHermes(
+              await listHermesSessionMessages(sessionId),
             );
+            const page = companionByteBoundedPage([...messages].reverse(), cursor, limit);
+            page?.items.reverse();
             await companionCompleteFrontendRequest(
               payload.operationId,
               page ? { type: "agentMessages", data: page } : companionCursorError("agent message"),

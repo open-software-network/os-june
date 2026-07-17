@@ -1,7 +1,6 @@
 import CryptoKit
 import Foundation
 import UIKit
-import UserNotifications
 
 struct Snapshot: Codable {
   var connection: String
@@ -147,7 +146,12 @@ final class CompanionService {
   }
 
   func refresh() async throws -> String {
-    try await ensureConnected()
+    try await refreshSnapshot(allowLocked: false, connection: "ready")
+    return try snapshotJSON()
+  }
+
+  private func refreshSnapshot(allowLocked: Bool, connection: String) async throws {
+    try await ensureConnected(allowLocked: allowLocked)
     let notes = try await collectPages(capability: "notesRead", type: "notesList")
     let sessions = try await collectPages(capability: "agentRead", type: "agentSessionsList")
     let settings = try await request(capability: "settingsRead", body: ["type": "settingsGet"])
@@ -158,10 +162,9 @@ final class CompanionService {
     snapshot.safeSettings = objectResult(settings)
     snapshot.activeRecording = activeRecordingResult(recording)
     snapshot.device = objectResult(device)
-    snapshot.connection = "ready"
+    snapshot.connection = connection
     try persistSnapshot()
     emitSnapshot()
-    return try snapshotJSON()
   }
 
   func listNotes(cursor: String?) async throws -> String {
@@ -242,16 +245,7 @@ final class CompanionService {
       deviceID: identity.deviceID,
       deviceCredential: credential
     )
-    cancelReconnect()
-    transport.disconnect()
-    SecureStore.shared.delete(account: "linked.configuration")
-    SecureStore.shared.delete(account: "device.credential")
-    DeviceIdentityService.shared.delete()
-    self.linked = nil
-    unlocked = false
-    snapshot = Snapshot(connection: "revoked", notes: [], agentSessions: [])
-    try? persistSnapshot()
-    emitSnapshot()
+    clearLocalAuthorization(connection: "revoked")
   }
 
   func registerPushToken(_ token: Data) {
@@ -261,13 +255,47 @@ final class CompanionService {
     Task { await registerStoredPushToken() }
   }
 
-  func handleRemoteNotification() async {
-    guard unlocked else { return }
-    await reconnectIfPossible()
+  func handleRemoteNotification() async -> Bool {
+    guard linked != nil, (try? deviceCredential()) != nil else { return false }
+    let refreshTask = Task { try await refreshForRemoteNotification() }
+    let timeoutTask = Task {
+      do { try await Task.sleep(for: .seconds(20)) }
+      catch { return }
+      refreshTask.cancel()
+    }
+    return await withTaskCancellationHandler {
+      defer {
+        timeoutTask.cancel()
+        refreshTask.cancel()
+      }
+      do {
+        try await refreshTask.value
+        return true
+      } catch {
+        if !unlocked {
+          transport.disconnect()
+          snapshot.connection = "locked"
+          emitSnapshot()
+        }
+        return false
+      }
+    } onCancel: {
+      refreshTask.cancel()
+      timeoutTask.cancel()
+    }
   }
 
-  private func ensureConnected() async throws {
-    guard unlocked else { snapshot.connection = linked == nil ? "unpaired" : "locked"; throw CompanionNativeError.unavailable("Unlock June Companion first.") }
+  private func refreshForRemoteNotification() async throws {
+    if unlocked {
+      _ = try await refresh()
+    } else {
+      try await refreshSnapshot(allowLocked: true, connection: "locked")
+      transport.disconnect()
+    }
+  }
+
+  private func ensureConnected(allowLocked: Bool = false) async throws {
+    guard unlocked || allowLocked else { snapshot.connection = linked == nil ? "unpaired" : "locked"; throw CompanionNativeError.unavailable("Unlock June Companion first.") }
     guard let linked else { snapshot.connection = "unpaired"; throw CompanionNativeError.unavailable("Link this device from June on your Mac.") }
     let credential = try deviceCredential()
     let identity = try DeviceIdentityService.shared.identity()
@@ -309,13 +337,38 @@ final class CompanionService {
   }
 
   private func handleTransportEvent(_ event: [String: Any]) {
-    if event["type"] as? String == "transportError" {
+    if event["type"] as? String == "deviceRevoked" {
+      clearLocalAuthorization(connection: "revoked")
+    } else if event["type"] as? String == "transportError" {
       snapshot.connection = "offline"
       emitSnapshot()
       scheduleReconnect()
     } else if let data = try? JSONSerialization.data(withJSONObject: event), let json = String(data: data, encoding: .utf8) {
+      if companionEventType(event) == "deviceRevoked" {
+        clearLocalAuthorization(connection: "revoked")
+      }
       eventSink?("protocolEvent", json)
     }
+  }
+
+  private func companionEventType(_ event: [String: Any]) -> String? {
+    (((event["body"] as? [String: Any])?["data"] as? [String: Any])?["type"] as? String)
+  }
+
+  private func clearLocalAuthorization(connection: String) {
+    cancelReconnect()
+    transport.disconnect()
+    SecureStore.shared.delete(account: "linked.configuration")
+    SecureStore.shared.delete(account: "device.credential")
+    SecureStore.shared.delete(account: "cache.key")
+    DeviceIdentityService.shared.delete()
+    if let url = try? cacheURL() {
+      try? FileManager.default.removeItem(at: url)
+    }
+    linked = nil
+    unlocked = false
+    snapshot = Snapshot(connection: connection, notes: [], agentSessions: [])
+    emitSnapshot()
   }
 
   private func reconnectIfPossible() async {

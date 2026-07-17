@@ -364,19 +364,24 @@ final class CompanionTransport {
     ]
     let plaintext = try JSONSerialization.data(withJSONObject: object)
     let encrypted = try crypto.write([UInt8](plaintext))
-    return try await withCheckedThrowingContinuation { continuation in
-      pending[operationID] = PendingRequest(
-        capability: capability,
-        continuation: continuation
-      )
-      Task {
-        do { try await self.sendEnvelope(encrypted) }
-        catch { self.failPending(operationID, error: error) }
+    return try await withTaskCancellationHandler {
+      try Task.checkCancellation()
+      return try await withCheckedThrowingContinuation { continuation in
+        pending[operationID] = PendingRequest(
+          capability: capability,
+          continuation: continuation
+        )
+        Task {
+          do { try await self.sendEnvelope(encrypted) }
+          catch { self.failPending(operationID, error: error) }
+        }
+        Task {
+          try? await Task.sleep(for: .seconds(30))
+          self.failPending(operationID, error: CompanionNativeError.unavailable("Your Mac did not respond in time."))
+        }
       }
-      Task {
-        try? await Task.sleep(for: .seconds(30))
-        self.failPending(operationID, error: CompanionNativeError.unavailable("Your Mac did not respond in time."))
-      }
+    } onCancel: {
+      Task { @MainActor in self.failPending(operationID, error: CancellationError()) }
     }
   }
 
@@ -475,8 +480,13 @@ final class CompanionTransport {
       }
     } catch {
       if self.connectionID == connectionID {
+        let revoked = socket.closeCode == .policyViolation
+          && socket.closeReason.flatMap { String(data: $0, encoding: .utf8) } == "revoked"
         disconnect()
-        eventHandler?(["type": "transportError", "message": "Your Mac disconnected."])
+        eventHandler?([
+          "type": revoked ? "deviceRevoked" : "transportError",
+          "message": revoked ? "This device was revoked." : "Your Mac disconnected.",
+        ])
       }
     }
   }

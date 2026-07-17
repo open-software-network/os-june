@@ -158,6 +158,7 @@ final class AppModel: ObservableObject {
     @Published var noteConflict: NoteConflictModel?
     @Published var selectedSessionID: String?
     @Published private(set) var messages: [AgentMessageModel] = []
+    @Published private(set) var hasEarlierMessages = false
     @Published var draft = ""
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
@@ -166,6 +167,8 @@ final class AppModel: ObservableObject {
     private let decoder = JSONDecoder()
     private var bufferedAgentStreams: [String: BufferedAgentStream] = [:]
     private var bufferedAgentStreamOrder: [String] = []
+    private var nextMessageCursor: String?
+    private var refreshRequested = false
 
     init(service: CompanionService = .shared) {
         self.service = service
@@ -195,7 +198,6 @@ final class AppModel: ObservableObject {
                 CompanionSnapshotModel.self,
                 from: try await self.service.pair(payloadJSON: payload)
             )
-            await PushAuthorization.requestIfNeeded()
         }
     }
 
@@ -205,7 +207,6 @@ final class AppModel: ObservableObject {
                 CompanionSnapshotModel.self,
                 from: try await self.service.pair(payloadJSON: pastedPayload)
             )
-            await PushAuthorization.requestIfNeeded()
         }
     }
 
@@ -220,9 +221,12 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() async {
-        guard !isWorking else { return }
+        guard !isWorking else {
+            refreshRequested = true
+            return
+        }
         isWorking = true
-        defer { isWorking = false }
+        defer { finishWorking() }
         do {
             snapshot = try decode(CompanionSnapshotModel.self, from: try await service.refresh())
         } catch {
@@ -265,6 +269,7 @@ final class AppModel: ObservableObject {
     }
 
     func openAgentSession(_ session: AgentSessionModel) {
+        guard !isWorking else { return }
         perform {
             let page = try self.decode(
                 PageModel<AgentMessageModel>.self,
@@ -272,14 +277,41 @@ final class AppModel: ObservableObject {
             )
             self.selectedSessionID = session.id
             self.messages = page.items
+            self.nextMessageCursor = page.nextCursor
+            self.hasEarlierMessages = page.nextCursor != nil
             self.applyBufferedAgentStream(for: session.id)
             self.selection = .agent
         }
     }
 
+    func loadEarlierMessages() {
+        guard let sessionID = selectedSessionID,
+              let cursor = nextMessageCursor else { return }
+        perform {
+            let page = try self.decode(
+                PageModel<AgentMessageModel>.self,
+                from: try await self.service.listAgentMessages(
+                    sessionID: sessionID,
+                    cursor: cursor
+                )
+            )
+            guard self.selectedSessionID == sessionID else { return }
+            let existingIDs = Set(self.messages.map(\.id))
+            self.messages.insert(
+                contentsOf: page.items.filter { !existingIDs.contains($0.id) },
+                at: 0
+            )
+            self.nextMessageCursor = page.nextCursor
+            self.hasEarlierMessages = page.nextCursor != nil
+        }
+    }
+
     func startNewChat() {
+        guard !isWorking else { return }
         selectedSessionID = nil
         messages = []
+        nextMessageCursor = nil
+        hasEarlierMessages = false
         draft = ""
     }
 
@@ -407,10 +439,17 @@ final class AppModel: ObservableObject {
         isWorking = true
         errorMessage = nil
         Task { @MainActor in
-            defer { isWorking = false }
+            defer { finishWorking() }
             do { try await operation() }
             catch { present(error) }
         }
+    }
+
+    private func finishWorking() {
+        isWorking = false
+        guard refreshRequested else { return }
+        refreshRequested = false
+        Task { @MainActor in await refresh() }
     }
 
     private func refreshSnapshot() async throws {
