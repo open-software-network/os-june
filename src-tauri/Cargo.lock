@@ -3352,6 +3352,7 @@ dependencies = [
  "window-vibrancy",
  "windows 0.61.3",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

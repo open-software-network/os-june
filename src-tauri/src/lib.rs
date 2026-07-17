@@ -16,6 +16,7 @@ pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
+mod note_audio_export;
 pub mod notifications;
 pub mod os_accounts;
 pub mod p3a;
@@ -148,6 +149,7 @@ pub fn run() {
             commands::create_note,
             commands::list_notes,
             commands::get_note,
+            commands::download_note_audio,
             commands::update_note,
             commands::delete_note,
             commands::delete_notes,

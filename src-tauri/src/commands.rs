@@ -28,13 +28,14 @@ use crate::{
             CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
             CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
-            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MemoryDto, MemorySettingsDto,
-            MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest, ProcessingStatus,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
+            DownloadNoteAudioResponse, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
+            FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
+            ListNotesResponse, MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
+            OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto, RecordingSource,
+            RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
+            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
+            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
             SessionRequest, ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto,
             ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
@@ -139,6 +140,29 @@ pub async fn get_note(app: AppHandle, request: GetNoteRequest) -> Result<NoteDto
     let mut note = repositories(&app).await?.get_note(&request.note_id).await?;
     note.queued_recordings = processing_queue::queued_behind(&request.note_id);
     Ok(note)
+}
+
+#[tauri::command]
+pub async fn download_note_audio(
+    app: AppHandle,
+    request: DownloadNoteAudioRequest,
+) -> Result<DownloadNoteAudioResponse, AppError> {
+    let selection = repositories(&app)
+        .await?
+        .note_audio_export_selection(&request.note_id)
+        .await?
+        .ok_or_else(crate::note_audio_export::unavailable_error)?;
+    let paths = app_paths(&app)?;
+    let downloads_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| AppError::new("note_audio_export_failed", error.to_string()))?;
+
+    tokio::task::spawn_blocking(move || {
+        crate::note_audio_export::export_note_audio(&paths, &downloads_dir, selection)
+    })
+    .await
+    .map_err(|error| AppError::new("note_audio_export_failed", error.to_string()))?
 }
 
 #[tauri::command]

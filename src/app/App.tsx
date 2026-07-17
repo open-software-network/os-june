@@ -30,6 +30,7 @@ import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDi
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
+import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
@@ -75,6 +76,7 @@ import {
   deleteNote,
   deleteNotes,
   dictationHelperCommand,
+  downloadNoteAudio,
   ensureHermesBridgeSession,
   finishRecording,
   getRecordingStatus,
@@ -89,6 +91,7 @@ import {
   removeNoteFromFolder,
   removeSessionFromFolder,
   recoverRecording,
+  revealPath,
   renameFolder,
   resolveAgentRecorderRequest,
   resumeRecording,
@@ -1068,6 +1071,24 @@ export function App() {
           : undefined,
     });
   }
+  async function handleDownloadNoteAudio() {
+    if (!selectedNote) return;
+    try {
+      const result = await downloadNoteAudio(selectedNote.id);
+      toast.success("Audio downloaded", {
+        action: {
+          label: "Show file",
+          onClick: () => {
+            void revealPath(result.path).catch((err: unknown) => {
+              toast.error(messageFromError(err));
+            });
+          },
+        },
+      });
+    } catch (err) {
+      toast.error(messageFromError(err));
+    }
+  }
   const noteToolbarActions = selectedNote ? (
     <NoteHeaderActions
       noteId={selectedNote.id}
@@ -1079,6 +1100,11 @@ export function App() {
         noteReadyToShare(selectedNote.processingStatus) ? () => setShareNoteOpen(true) : undefined
       }
       onExportPdf={() => void handleExportNotePdf()}
+      onDownloadAudio={
+        Boolean(selectedNote.audio || selectedNote.audioSources?.length)
+          ? () => void handleDownloadNoteAudio()
+          : undefined
+      }
       onDelete={() => setConfirmDeleteNote(true)}
     />
   ) : null;

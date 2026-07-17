@@ -14,6 +14,8 @@ use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
 use uuid::Uuid;
 
+use crate::note_audio_export::{NoteAudioExportSelection, NoteAudioExportSource};
+
 const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
 
 #[derive(Clone)]
@@ -2050,6 +2052,44 @@ impl Repositories {
             .fetch_all(&self.pool)
             .await?;
         Ok(rows.into_iter().map(|row| row.get("path")).collect())
+    }
+
+    pub(crate) async fn note_audio_export_selection(
+        &self,
+        note_id: &str,
+    ) -> Result<Option<NoteAudioExportSelection>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT n.title, aa.path, aa.recording_session_id, aa.source
+             FROM notes n
+             INNER JOIN audio_artifacts aa ON aa.note_id = n.id
+             INNER JOIN recording_sessions rs
+               ON rs.id = aa.recording_session_id
+              AND rs.note_id = aa.note_id
+             WHERE n.id = ?
+               AND aa.status = 'valid'
+               AND aa.format = 'wav'
+               AND aa.size_bytes > 0
+             ORDER BY rs.started_at ASC,
+                      rs.id ASC,
+                      CASE aa.source WHEN 'microphone' THEN 0 WHEN 'system' THEN 1 ELSE 2 END,
+                      aa.id ASC",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let Some(first) = rows.first() else {
+            return Ok(None);
+        };
+        let title = first.get("title");
+        let sources = rows
+            .into_iter()
+            .map(|row| NoteAudioExportSource {
+                path: row.get::<String, _>("path").into(),
+                recording_session_id: row.get("recording_session_id"),
+                source: row.get("source"),
+            })
+            .collect();
+        Ok(Some(NoteAudioExportSelection { title, sources }))
     }
 
     pub async fn audio_artifact_paths_for_notes(
@@ -5134,6 +5174,188 @@ mod tests {
             .await
             .expect("count transcripts")
             .get("count")
+    }
+
+    async fn export_artifact(
+        repos: &Repositories,
+        note_id: &str,
+        session_id: &str,
+        source: &str,
+        path: &str,
+    ) -> String {
+        let artifact = repos
+            .create_pending_source_artifact(note_id, session_id, source, path, path)
+            .await
+            .expect("create export artifact");
+        repos
+            .finalize_source_artifact(
+                &artifact.id,
+                path,
+                "valid",
+                1_000,
+                10,
+                "checksum",
+                1_000,
+                None,
+                None,
+            )
+            .await
+            .expect("finalize export artifact");
+        artifact.id
+    }
+
+    #[tokio::test]
+    async fn note_audio_export_selection_enforces_eligibility_ownership_and_order() {
+        let repos = test_repositories().await;
+        let note = repos.create_note(None).await.expect("note");
+        let other_note = repos.create_note(None).await.expect("other note");
+        query("UPDATE notes SET title = 'Product review' WHERE id = ?")
+            .bind(&note.id)
+            .execute(&repos.pool)
+            .await
+            .expect("set title");
+
+        for (note_id, session_id) in [
+            (&note.id, "session-b"),
+            (&note.id, "session-a"),
+            (&other_note.id, "session-other"),
+        ] {
+            repos
+                .create_recording_session(
+                    note_id,
+                    session_id,
+                    RecordingSourceMode::MicrophonePlusSystem,
+                    "/tmp/source.partial.wav",
+                    "/tmp/source.wav",
+                    None,
+                )
+                .await
+                .expect("session");
+        }
+        query("UPDATE recording_sessions SET started_at = '2026-07-01T10:00:00.000Z' WHERE id IN ('session-a', 'session-b')")
+            .execute(&repos.pool)
+            .await
+            .expect("same start time");
+
+        export_artifact(
+            &repos,
+            &note.id,
+            "session-a",
+            "system",
+            "/recordings/a-system.wav",
+        )
+        .await;
+        export_artifact(
+            &repos,
+            &note.id,
+            "session-a",
+            "microphone",
+            "/recordings/a-microphone.wav",
+        )
+        .await;
+        export_artifact(
+            &repos,
+            &note.id,
+            "session-b",
+            "microphone",
+            "/recordings/b-microphone.wav",
+        )
+        .await;
+
+        let invalid_status = export_artifact(
+            &repos,
+            &note.id,
+            "session-a",
+            "system",
+            "/recordings/invalid-status.wav",
+        )
+        .await;
+        query("UPDATE audio_artifacts SET status = 'invalid' WHERE id = ?")
+            .bind(invalid_status)
+            .execute(&repos.pool)
+            .await
+            .expect("invalidate status");
+        let invalid_format = export_artifact(
+            &repos,
+            &note.id,
+            "session-a",
+            "system",
+            "/recordings/invalid-format.wav",
+        )
+        .await;
+        query("UPDATE audio_artifacts SET format = 'mp3' WHERE id = ?")
+            .bind(invalid_format)
+            .execute(&repos.pool)
+            .await
+            .expect("invalidate format");
+        let empty = export_artifact(
+            &repos,
+            &note.id,
+            "session-a",
+            "system",
+            "/recordings/empty.wav",
+        )
+        .await;
+        query("UPDATE audio_artifacts SET size_bytes = 0 WHERE id = ?")
+            .bind(empty)
+            .execute(&repos.pool)
+            .await
+            .expect("empty artifact");
+
+        let mismatched = export_artifact(
+            &repos,
+            &other_note.id,
+            "session-other",
+            "microphone",
+            "/recordings/cross-note.wav",
+        )
+        .await;
+        query("UPDATE audio_artifacts SET note_id = ? WHERE id = ?")
+            .bind(&note.id)
+            .bind(mismatched)
+            .execute(&repos.pool)
+            .await
+            .expect("make mismatched ownership row");
+
+        let selection = repos
+            .note_audio_export_selection(&note.id)
+            .await
+            .expect("selection query")
+            .expect("eligible sources");
+        assert_eq!(selection.title, "Product review");
+        assert_eq!(
+            selection
+                .sources
+                .iter()
+                .map(|source| (
+                    source.recording_session_id.as_str(),
+                    source.source.as_str(),
+                    source.path.to_string_lossy().into_owned(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "session-a",
+                    "microphone",
+                    "/recordings/a-microphone.wav".to_string()
+                ),
+                (
+                    "session-a",
+                    "system",
+                    "/recordings/a-system.wav".to_string()
+                ),
+                (
+                    "session-b",
+                    "microphone",
+                    "/recordings/b-microphone.wav".to_string()
+                ),
+            ]
+        );
+        assert!(repos
+            .note_audio_export_selection(&other_note.id)
+            .await
+            .expect("other selection")
+            .is_none());
     }
 
     #[tokio::test]

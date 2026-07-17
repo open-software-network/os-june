@@ -185,6 +185,33 @@ describe("note header actions", () => {
 
     expect(onExportPdf).toHaveBeenCalledTimes(1);
   });
+
+  it("downloads audio once and closes the actions menu", async () => {
+    const user = userEvent.setup();
+    const onDownloadAudio = vi.fn();
+    render(
+      createElement(NoteHeaderActions, {
+        noteId: "note-1",
+        noteTitle: "Launch plan",
+        onDownloadAudio,
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Note actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Download audio" }));
+
+    expect(onDownloadAudio).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("omits audio download when no handler is provided", async () => {
+    const user = userEvent.setup();
+    render(createElement(NoteHeaderActions, { noteId: "note-1", noteTitle: "Launch plan" }));
+
+    await user.click(screen.getByRole("button", { name: "Note actions" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Download audio" })).not.toBeInTheDocument();
+  });
 });
 
 describe("composer note reference trigger", () => {

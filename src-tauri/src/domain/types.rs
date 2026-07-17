@@ -163,6 +163,20 @@ pub struct GetNoteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DownloadNoteAudioRequest {
+    pub note_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadNoteAudioResponse {
+    pub path: String,
+    pub file_name: String,
+    pub source_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteNoteRequest {
     pub note_id: String,
 }
