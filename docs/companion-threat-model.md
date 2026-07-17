@@ -17,11 +17,12 @@ control authority, linked-device grants, and APNs signing material.
   activated by desktop approval. It is accepted only for that non-revoked
   linked device id and cannot complete a Noise handshake without the device
   private key.
-- A copied QR expires after five minutes, can claim only one candidate phone,
-  and cannot complete without explicit approval on the signed-in Desktop. The
+- A copied QR or manually entered pairing code expires after five minutes, can
+  claim only one candidate phone, and cannot complete without explicit approval
+  on the signed-in Desktop. Both carry the same bootstrap capability. The
   Desktop-created pairing fixes the OS Accounts user; the phone cannot supply
-  or change it. Noise XXpsk3 authenticates possession of the QR secret and both
-  device identities.
+  or change it. Noise XXpsk3 authenticates possession of the pairing secret and
+  both device identities.
 - Replay, tampering, oversized payloads, stale controls, cross-user routes,
   duplicate connections, unbounded queues, and excessive frame rates fail
   closed.

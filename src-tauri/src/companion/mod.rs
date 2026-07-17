@@ -121,6 +121,7 @@ pub struct PairingQrPayload {
     pairing_id: Uuid,
     expires_at_ms: u64,
     qr_svg: String,
+    pairing_code: String,
 }
 
 #[derive(Serialize)]
@@ -236,7 +237,8 @@ pub async fn companion_begin_pairing(
             "The pairing code could not be encoded.",
         )
     })?;
-    let code = qrcode::QrCode::new(encoded).map_err(|_| {
+    let pairing_code = URL_SAFE_NO_PAD.encode(&encoded);
+    let code = qrcode::QrCode::new(&encoded).map_err(|_| {
         AppError::new(
             "companion_pairing_invalid",
             "The pairing code could not be generated.",
@@ -252,6 +254,7 @@ pub async fn companion_begin_pairing(
         pairing_id: status.pairing_id,
         expires_at_ms: status.expires_at_ms,
         qr_svg,
+        pairing_code,
     })
 }
 
@@ -1096,6 +1099,32 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_pairing_code_contains_the_same_bootstrap_payload_as_the_qr() {
+        let pairing_id = Uuid::new_v4();
+        let wire = PairingQrWirePayload {
+            version: june_companion_protocol::PROTOCOL_VERSION,
+            pairing_id,
+            pairing_secret: URL_SAFE_NO_PAD.encode([7_u8; KEY_BYTES]),
+            relay_url: "wss://api.example.test/v1/companion/relay".to_string(),
+            expires_at_ms: 2_000,
+        };
+        let encoded = serde_json::to_vec(&wire).unwrap();
+        let pairing_code = URL_SAFE_NO_PAD.encode(&encoded);
+
+        assert_eq!(URL_SAFE_NO_PAD.decode(&pairing_code).unwrap(), encoded);
+
+        let response = PairingQrPayload {
+            pairing_id,
+            expires_at_ms: 2_000,
+            qr_svg: "<svg />".to_string(),
+            pairing_code: pairing_code.clone(),
+        };
+        let serialized = serde_json::to_value(response).unwrap();
+        assert_eq!(serialized["pairingCode"], pairing_code);
+        assert!(serialized.get("pairingSecret").is_none());
+    }
 
     #[test]
     fn device_names_are_trimmed_and_bounded_by_encoded_size() {

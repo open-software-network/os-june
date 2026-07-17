@@ -20,8 +20,14 @@ open JuneCompanion.xcodeproj
 ```
 
 Run June API and a signed-in June Desktop with the relay URL. Open Desktop
-Settings > Linked devices, show a pairing code, scan it from the companion,
-review the device name and capabilities on Desktop, and approve.
+Settings > Linked devices and show a pairing code. Scan it from the companion,
+or expand Enter a code instead on Desktop and choose Enter pairing code on the
+phone. Review the device name and capabilities on Desktop, then approve.
+
+The manual code is a URL-safe encoding of the exact short-lived QR bootstrap
+payload. It contains the same pairing secret, expires after five minutes, and
+still requires explicit Desktop approval. Treat it like the QR: do not log it,
+store it, or include it in screenshots.
 
 ## Verify
 

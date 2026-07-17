@@ -29,10 +29,11 @@ never receives tokens, private keys, session keys, APNs tokens, or raw
 encrypted frames.
 
 The Swift service layer owns the proof-gated pairing exchange, Keychain device
-credential and identity, biometric/passcode gating, QR scanning, reachability,
-WebSocket reconnect, encryption calls, APNs registration, lifecycle locking,
-encrypted cache IO, and redacted errors. It has no OS Accounts client, callback,
-or token and never receives the desktop's account session.
+credential and identity, biometric/passcode gating, QR scanning, manual pairing
+code validation, reachability, WebSocket reconnect, encryption calls, APNs
+registration, lifecycle locking, encrypted cache IO, and redacted errors. It
+has no OS Accounts client, callback, or token and never receives the desktop's
+account session.
 
 Rust owns the shared Noise state machine, the versioned protocol, the closed
 desktop allowlist, note compare-and-swap, durable linked-device metadata, and

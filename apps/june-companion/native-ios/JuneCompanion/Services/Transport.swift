@@ -21,10 +21,24 @@ struct ValidatedPairingPayload {
 
 enum PairingPayloadValidation {
   static func decode(
-    _ payloadJSON: String,
+    _ pairingCode: String,
     now: UInt64 = currentMilliseconds()
   ) throws -> ValidatedPairingPayload {
-    guard let data = payloadJSON.data(using: .utf8) else {
+    let trimmed = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    let data: Data
+    if trimmed.first == "{" {
+      guard let encoded = trimmed.data(using: .utf8) else {
+        throw CompanionNativeError.invalidData("The pairing code is invalid.")
+      }
+      data = encoded
+    } else {
+      let encoded = trimmed.filter { !$0.isWhitespace }
+      guard !encoded.isEmpty, let decoded = Data(base64URL: encoded) else {
+        throw CompanionNativeError.invalidData("The pairing code is invalid.")
+      }
+      data = decoded
+    }
+    guard !data.isEmpty else {
       throw CompanionNativeError.invalidData("The pairing code is invalid.")
     }
     let decoder = JSONDecoder()

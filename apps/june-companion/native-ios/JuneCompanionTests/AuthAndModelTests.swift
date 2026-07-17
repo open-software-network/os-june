@@ -49,6 +49,27 @@ final class AuthAndModelTests: XCTestCase {
         }
     }
 
+    func testManualPairingCodeDecodesTheSameBootstrapPayloadAsTheQRCode() throws {
+        let secret = Data(repeating: 9, count: 32).base64EncodedString()
+          .replacingOccurrences(of: "+", with: "-")
+          .replacingOccurrences(of: "/", with: "_")
+          .replacingOccurrences(of: "=", with: "")
+        let payloadJSON = #"{"version":1,"pairingId":"00000000-0000-0000-0000-000000000002","pairingSecret":"\#(secret)","relayUrl":"wss://api.example.test/v1/companion/relay","expiresAtMs":2000}"#
+        let pairingCode = Data(payloadJSON.utf8).base64EncodedString()
+          .replacingOccurrences(of: "+", with: "-")
+          .replacingOccurrences(of: "/", with: "_")
+          .replacingOccurrences(of: "=", with: "")
+
+        let scanned = try PairingPayloadValidation.decode(payloadJSON, now: 1_000)
+        let entered = try PairingPayloadValidation.decode("  \n\(pairingCode)\n  ", now: 1_000)
+
+        XCTAssertEqual(entered.payload.version, scanned.payload.version)
+        XCTAssertEqual(entered.payload.pairingId, scanned.payload.pairingId)
+        XCTAssertEqual(entered.payload.relayUrl, scanned.payload.relayUrl)
+        XCTAssertEqual(entered.payload.expiresAtMs, scanned.payload.expiresAtMs)
+        XCTAssertEqual(entered.secret, scanned.secret)
+    }
+
     func testSecureStoreRoundTripAndDeletionUseAnIsolatedAccount() throws {
         let account = "test.\(UUID().uuidString)"
         let value = Data("secret".utf8)

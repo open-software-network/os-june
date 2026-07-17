@@ -2,9 +2,11 @@
 
 End-to-end encrypted content includes note titles/bodies, prompts, agent
 messages/deltas/status payloads, safe settings, recording controls, focus
-targets, operation results, and protocol errors. Device private/session keys,
-device credentials, and QR secrets never enter the SwiftUI application model.
-The relay receives a device credential only for verification and persists only
+targets, operation results, and protocol errors. Device private/session keys
+and device credentials never enter the SwiftUI application model. Pairing
+secrets are held only as transient QR or manual-code input during bootstrap and
+are never published in a snapshot or persisted by the application model. The
+relay receives a device credential only for verification and persists only
 the SHA-256 hash of its encoded authorization value; it never receives the
 Noise pairing secret.
 

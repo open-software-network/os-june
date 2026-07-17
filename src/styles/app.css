@@ -26812,6 +26812,38 @@ button.connector-approvals-info {
   font-weight: var(--fw-medium);
 }
 
+.companion-manual-pairing {
+  width: 100%;
+  padding-top: var(--sp-1);
+}
+
+.companion-manual-pairing summary {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.companion-manual-pairing p {
+  margin: var(--sp-2) 0;
+}
+
+.companion-manual-pairing code {
+  display: block;
+  padding: var(--sp-3);
+  border: var(--line-width) solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.companion-manual-pairing .primary-action {
+  margin-top: var(--sp-2);
+}
+
 .companion-pairing-qr {
   display: block;
   width: min(var(--companion-pairing-qr-size), 100%);

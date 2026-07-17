@@ -178,11 +178,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func pair(pastedPayload: String) {
+    func pair(pairingCode: String) {
         perform {
             self.snapshot = try self.decode(
                 CompanionSnapshotModel.self,
-                from: try await self.service.pair(payloadJSON: pastedPayload)
+                from: try await self.service.pair(payloadJSON: pairingCode)
             )
         }
     }

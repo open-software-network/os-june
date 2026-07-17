@@ -13,7 +13,7 @@ struct PairingView: View {
                         Text(model.snapshot.connection == .revoked ? "Connect June again" : "Connect to June on your Mac")
                             .font(JuneFont.hero)
                             .accessibilityAddTraits(.isHeader)
-                        Text("Scan a code from a signed-in June Desktop. Your Mac will approve this device and grant only companion access.")
+                        Text("Scan or enter a code from a signed-in June Desktop. Your Mac will approve this device and grant only companion access.")
                             .font(JuneFont.body)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -21,7 +21,7 @@ struct PairingView: View {
 
                     VStack(alignment: .leading, spacing: 18) {
                         PairingStep(number: "1", text: "Open Settings, then Linked devices on your Mac")
-                        PairingStep(number: "2", text: "Show a new pairing code and scan it here")
+                        PairingStep(number: "2", text: "Show a new pairing code, then scan or enter it here")
                         PairingStep(number: "3", text: "Approve this device on your Mac")
                     }
                 }
@@ -39,10 +39,10 @@ struct PairingView: View {
                     .disabled(model.isWorking)
                     .accessibilityIdentifier("scan-pairing-code")
 
-#if targetEnvironment(simulator)
-                    Button("Enter code for simulator") { showsManualPairing = true }
+                    Button("Enter pairing code") { showsManualPairing = true }
                         .buttonStyle(JuneSecondaryButtonStyle())
-#endif
+                        .disabled(model.isWorking)
+                        .accessibilityIdentifier("enter-pairing-code")
                     Text("The code expires after five minutes. Your Mac must approve this device before it can connect.")
                         .font(JuneFont.footnote)
                         .foregroundStyle(.secondary)
@@ -56,8 +56,8 @@ struct PairingView: View {
                 .background(.bar)
             }
             .sheet(isPresented: $showsManualPairing) {
-                ManualPairingSheet { payload in
-                    model.pair(pastedPayload: payload)
+                ManualPairingSheet { pairingCode in
+                    model.pair(pairingCode: pairingCode)
                     showsManualPairing = false
                 }
                 .presentationDetents([.medium])
@@ -88,24 +88,29 @@ private struct PairingStep: View {
 
 struct ManualPairingSheet: View {
     let submit: (String) -> Void
-    @State private var payload = ""
+    @State private var pairingCode = ""
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Paste the pairing payload shown by your local test Mac.")
+                Text("Enter or paste the pairing code shown by June Desktop.")
                     .foregroundStyle(.secondary)
-                TextEditor(text: $payload)
+                TextEditor(text: $pairingCode)
                     .font(JuneFont.mono)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.asciiCapable)
                     .padding(12)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                Button("Pair this simulator") { submit(payload) }
-                    .buttonStyle(JuneSecondaryButtonStyle())
-                    .disabled(payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Pairing code")
+                    .accessibilityIdentifier("manual-pairing-code")
+                Button("Pair this device") { submit(pairingCode) }
+                    .buttonStyle(JuneSolidButtonStyle())
+                    .disabled(pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(24)
-            .navigationTitle("Simulator pairing")
+            .navigationTitle("Enter pairing code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

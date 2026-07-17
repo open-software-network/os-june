@@ -1,3 +1,4 @@
+import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   companionApprovePairing,
@@ -34,6 +35,7 @@ export function LinkedDevicesSection() {
   const [editingId, setEditingId] = useState<string>();
   const [draftName, setDraftName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pairingCodeCopied, setPairingCodeCopied] = useState(false);
   const [error, setError] = useState<string>();
 
   const refreshDevices = useCallback(async () => {
@@ -76,10 +78,22 @@ export function LinkedDevicesSection() {
       const next = await companionBeginPairing();
       setPairing(next);
       setStatus(undefined);
+      setPairingCodeCopied(false);
     } catch (next) {
       setError(errorMessage(next));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const copyPairingCode = async () => {
+    if (!pairing) return;
+    setError(undefined);
+    try {
+      await writeClipboardText(pairing.pairingCode);
+      setPairingCodeCopied(true);
+    } catch {
+      setError("Couldn't copy the pairing code. Try again.");
     }
   };
 
@@ -174,6 +188,18 @@ export function LinkedDevicesSection() {
             <div className="companion-pairing-copy" aria-live="polite">
               <strong>{pairingLabel(status?.state)}</strong>
               <span>Expires {new Date(pairing.expiresAtMs).toLocaleTimeString()}</span>
+              <details className="companion-manual-pairing">
+                <summary>Enter a code instead</summary>
+                <p>In June Companion, choose Enter pairing code, then type or paste this code.</p>
+                <code>{pairing.pairingCode}</code>
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => void copyPairingCode()}
+                >
+                  {pairingCodeCopied ? "Pairing code copied" : "Copy pairing code"}
+                </button>
+              </details>
               {status?.state === "waitingForApproval" ? (
                 <>
                   <span>{status.mobileDisplayName ?? "A companion"} is asking to link.</span>
@@ -201,6 +227,7 @@ export function LinkedDevicesSection() {
                 onClick={() => {
                   setPairing(undefined);
                   setStatus(undefined);
+                  setPairingCodeCopied(false);
                 }}
               >
                 Cancel

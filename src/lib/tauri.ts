@@ -2448,6 +2448,7 @@ export type CompanionPairingQr = {
   pairingId: string;
   expiresAtMs: number;
   qrSvg: string;
+  pairingCode: string;
 };
 
 export type CompanionPairingStatus = {
