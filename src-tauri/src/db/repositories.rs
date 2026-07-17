@@ -17,6 +17,7 @@ use uuid::Uuid;
 const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
 const COMPANION_OPERATION_RETENTION_DAYS: i64 = 7;
 const MAX_COMPANION_OPERATIONS_PER_DEVICE: i64 = 1_024;
+const MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE: i64 = 128;
 
 #[derive(Clone)]
 pub struct Repositories {
@@ -155,9 +156,35 @@ impl Repositories {
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        self.companion_device(account_user_id, id)
+        let device = self
+            .companion_device(account_user_id, id)
             .await?
-            .ok_or(sqlx::Error::RowNotFound)
+            .ok_or(sqlx::Error::RowNotFound)?;
+        self.remember_companion_account(account_user_id).await?;
+        Ok(device)
+    }
+
+    pub async fn remember_companion_account(
+        &self,
+        account_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "INSERT INTO companion_account_state (singleton, account_user_id)
+             VALUES (1, ?)
+             ON CONFLICT(singleton) DO UPDATE SET account_user_id = excluded.account_user_id",
+        )
+        .bind(account_user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn companion_account_user_id(&self) -> Result<Option<String>, sqlx::error::Error> {
+        query("SELECT account_user_id FROM companion_account_state WHERE singleton = 1")
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.try_get("account_user_id"))
+            .transpose()
     }
 
     pub async fn companion_device(
@@ -329,8 +356,8 @@ impl Repositories {
         let mut transaction = self.pool.begin().await?;
         query(
             "INSERT OR IGNORE INTO companion_operations
-             (device_id, operation_id, response, created_at)
-             SELECT ?, ?, ?, ?
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'completed', ?
              WHERE EXISTS (
                SELECT 1 FROM companion_devices
                WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
@@ -344,25 +371,7 @@ impl Repositories {
         .bind(device_id)
         .execute(&mut *transaction)
         .await?;
-        query("DELETE FROM companion_operations WHERE created_at < ?")
-            .bind(companion_operation_cutoff_timestamp())
-            .execute(&mut *transaction)
-            .await?;
-        query(
-            "DELETE FROM companion_operations
-             WHERE device_id = ?
-               AND operation_id NOT IN (
-                 SELECT operation_id FROM companion_operations
-                 WHERE device_id = ?
-                 ORDER BY created_at DESC, rowid DESC
-                 LIMIT ?
-               )",
-        )
-        .bind(device_id)
-        .bind(device_id)
-        .bind(MAX_COMPANION_OPERATIONS_PER_DEVICE)
-        .execute(&mut *transaction)
-        .await?;
+        prune_companion_operations(&mut transaction, device_id).await?;
         transaction.commit().await?;
         Ok(())
     }
@@ -377,12 +386,16 @@ impl Repositories {
         let mut transaction = self.pool.begin().await?;
         let inserted = query(
             "INSERT OR IGNORE INTO companion_operations
-             (device_id, operation_id, response, created_at)
-             SELECT ?, ?, ?, ?
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'pending', ?
              WHERE EXISTS (
                SELECT 1 FROM companion_devices
                WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
-             )",
+             )
+               AND (
+                 SELECT COUNT(*) FROM companion_operations
+                 WHERE device_id = ? AND operation_state = 'pending'
+               ) < ?",
         )
         .bind(device_id)
         .bind(operation_id)
@@ -390,6 +403,8 @@ impl Repositories {
         .bind(timestamp())
         .bind(account_user_id)
         .bind(device_id)
+        .bind(device_id)
+        .bind(MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE)
         .execute(&mut *transaction)
         .await?
         .rows_affected()
@@ -409,14 +424,15 @@ impl Repositories {
         let mut transaction = self.pool.begin().await?;
         query(
             "INSERT INTO companion_operations
-             (device_id, operation_id, response, created_at)
-             SELECT ?, ?, ?, ?
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'completed', ?
              WHERE EXISTS (
                SELECT 1 FROM companion_devices
                WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
              )
              ON CONFLICT(device_id, operation_id) DO UPDATE SET
-               response = excluded.response",
+               response = excluded.response,
+               operation_state = 'completed'",
         )
         .bind(device_id)
         .bind(operation_id)
@@ -5208,10 +5224,10 @@ async fn prune_companion_operations(
         .await?;
     query(
         "DELETE FROM companion_operations
-         WHERE device_id = ?
+         WHERE device_id = ? AND operation_state = 'completed'
            AND operation_id NOT IN (
              SELECT operation_id FROM companion_operations
-             WHERE device_id = ?
+             WHERE device_id = ? AND operation_state = 'completed'
              ORDER BY created_at DESC, rowid DESC
              LIMIT ?
            )",
@@ -5263,7 +5279,10 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Repositories, MAX_COMPANION_OPERATIONS_PER_DEVICE};
+    use super::{
+        Repositories, MAX_COMPANION_OPERATIONS_PER_DEVICE,
+        MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE,
+    };
     use crate::domain::types::{
         NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobStatus,
         ProcessingStatus, RecordingSourceMode,
@@ -6351,6 +6370,15 @@ mod tests {
             .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
             .await
             .expect("create companion device");
+        repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "pending-mutation",
+                b"outcome-unknown",
+            )
+            .await
+            .expect("reserve pending mutation");
 
         for index in 0..=MAX_COMPANION_OPERATIONS_PER_DEVICE {
             repos
@@ -6381,6 +6409,14 @@ mod tests {
                 .expect("read retained operation")
                 .as_deref(),
             Some(b"accepted".as_slice())
+        );
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "pending-mutation")
+                .await
+                .expect("read retained pending mutation")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
         );
 
         repos
@@ -6446,6 +6482,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn companion_pending_mutation_limit_refuses_new_work_without_evicting_reservations() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        for index in 0..MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE {
+            assert!(repos
+                .reserve_companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("pending-{index:03}"),
+                    b"outcome-unknown",
+                )
+                .await
+                .expect("reserve pending operation"));
+        }
+        assert!(!repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "pending-over-limit",
+                b"outcome-unknown",
+            )
+            .await
+            .expect("refuse excess pending operation"));
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "pending-000")
+                .await
+                .expect("oldest pending operation remains")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+    }
+
+    #[tokio::test]
     async fn companion_device_mutations_are_account_scoped() {
         let repos = test_repositories().await;
         let device_id = Uuid::new_v4().to_string();
@@ -6457,6 +6532,14 @@ mod tests {
             .remember_companion_operation("usr_owner", &device_id, "operation-1", b"accepted")
             .await
             .expect("remember owner operation");
+        assert_eq!(
+            repos
+                .companion_account_user_id()
+                .await
+                .expect("read persisted companion account")
+                .as_deref(),
+            Some("usr_owner")
+        );
 
         assert!(repos
             .companion_device("usr_other", &device_id)
@@ -6467,6 +6550,14 @@ mod tests {
             .upsert_companion_device("usr_other", &device_id, "Other phone", &[4; 32])
             .await
             .is_err());
+        assert_eq!(
+            repos
+                .companion_account_user_id()
+                .await
+                .expect("retain owner companion account")
+                .as_deref(),
+            Some("usr_owner")
+        );
         repos
             .rename_companion_device("usr_other", &device_id, "Renamed")
             .await

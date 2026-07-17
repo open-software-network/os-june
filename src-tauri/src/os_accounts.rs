@@ -724,7 +724,10 @@ pub async fn os_accounts_logout(
         set_cached_signed_in(true);
         return Ok(());
     }
-    crate::companion::prepare_account_logout(&app).await;
+    if let Err(error) = crate::companion::prepare_account_logout(&app).await {
+        crate::companion::resume_account_transport(&app);
+        return Err(error);
+    }
     let cfg = Config::load();
     if let Some(pair) = load_tokens().await {
         let _ = http_client()
@@ -1528,11 +1531,14 @@ pub(crate) async fn current_user_id() -> Result<String, AppError> {
 /// Read the locally stored account subject without refreshing or contacting OS
 /// Accounts. Logout uses this path so an expired token plus an offline network
 /// cannot skip local, account-scoped companion cleanup.
-pub(crate) async fn stored_user_id() -> Option<String> {
+pub(crate) async fn stored_user_id() -> Result<Option<String>, AppError> {
     if local_dev_enabled() {
-        return Some(local_dev_user_id());
+        return Ok(Some(local_dev_user_id()));
     }
-    stored_account_user_id(&load_account().await?)
+    Ok(load_account_for_logout()
+        .await?
+        .as_ref()
+        .and_then(stored_account_user_id))
 }
 
 fn stored_account_user_id(stored: &StoredAccount) -> Option<String> {
@@ -1911,6 +1917,14 @@ async fn load_account() -> Option<StoredAccount> {
     load_platform_tokens().await
 }
 
+async fn load_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    #[cfg(debug_assertions)]
+    if use_dev_plaintext_token_store() {
+        return load_dev_plaintext_account_for_logout().await;
+    }
+    load_platform_account_for_logout().await
+}
+
 /// Token-only convenience for callers that don't need the cached snapshot.
 async fn load_tokens() -> Option<TokenPair> {
     load_account().await.map(|account| account.pair)
@@ -1929,9 +1943,35 @@ async fn load_platform_tokens() -> Option<StoredAccount> {
     serde_json::from_str(&raw).ok()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    let service = keychain_service().to_string();
+    let raw = tokio::task::spawn_blocking(move || {
+        let entry = keyring::Entry::new(&service, KEYCHAIN_USER)?;
+        match entry.get_password() {
+            Ok(raw) => Ok(Some(raw)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?
+    .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?;
+    raw.map(|raw| {
+        serde_json::from_str(&raw)
+            .map_err(|error| AppError::new("token_deserialize_failed", error.to_string()))
+    })
+    .transpose()
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn load_platform_tokens() -> Option<StoredAccount> {
     None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    Ok(None)
 }
 
 async fn clear_tokens() {
@@ -2037,6 +2077,27 @@ async fn load_dev_plaintext_tokens() -> Option<StoredAccount> {
         .ok()?
         .ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+#[cfg(debug_assertions)]
+async fn load_dev_plaintext_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    let result =
+        tokio::task::spawn_blocking(|| std::fs::read_to_string(dev_plaintext_token_path()))
+            .await
+            .map_err(|error| AppError::new("dev_token_store_read_failed", error.to_string()))?;
+    let raw = match result {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::new(
+                "dev_token_store_read_failed",
+                error.to_string(),
+            ));
+        }
+    };
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|error| AppError::new("token_deserialize_failed", error.to_string()))
 }
 
 fn pkce() -> (String, String) {

@@ -29,6 +29,8 @@ use uuid::Uuid;
 const FRONTEND_TIMEOUT: Duration = Duration::from_secs(25);
 const ENVELOPE_TTL_MS: u64 = 30_000;
 const MAX_RECONNECT_DELAY_SECS: u64 = 60;
+const RELAY_IO_TIMEOUT: Duration = Duration::from_secs(15);
+const TRANSPORT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 
 type RelaySocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -54,7 +56,7 @@ struct TransportActivityGuard {
 impl TransportActivityGuard {
     fn new(app: &AppHandle) -> Self {
         app.state::<CompanionRuntime>()
-            .transport_activity
+            .account_activity
             .fetch_add(1, Ordering::AcqRel);
         Self { app: app.clone() }
     }
@@ -63,8 +65,8 @@ impl TransportActivityGuard {
 impl Drop for TransportActivityGuard {
     fn drop(&mut self) {
         let runtime = self.app.state::<CompanionRuntime>();
-        runtime.transport_activity.fetch_sub(1, Ordering::AcqRel);
-        runtime.transport_activity_changed.notify_one();
+        runtime.account_activity.fetch_sub(1, Ordering::AcqRel);
+        runtime.account_activity_changed.notify_one();
     }
 }
 
@@ -103,17 +105,42 @@ struct FrontendRequest {
 
 pub(super) fn start(app: &AppHandle) {
     let runtime = app.state::<CompanionRuntime>();
-    if runtime
-        .transport_started
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
+    let Ok(mut task) = runtime.transport_task.lock() else {
+        return;
+    };
+    if task
+        .as_ref()
+        .is_some_and(|handle| !handle.inner().is_finished())
     {
         return;
     }
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
+    *task = Some(tauri::async_runtime::spawn(async move {
         reconnect_loop(app).await;
-    });
+    }));
+}
+
+pub(super) async fn stop(app: &AppHandle) -> Result<(), AppError> {
+    let task = app
+        .state::<CompanionRuntime>()
+        .transport_task
+        .lock()
+        .ok()
+        .and_then(|mut task| task.take());
+    let Some(mut task) = task else {
+        return Ok(());
+    };
+    if tokio::time::timeout(TRANSPORT_SHUTDOWN_TIMEOUT, &mut task)
+        .await
+        .is_err()
+    {
+        task.abort();
+        let _ = task.await;
+        return Err(transport_error(
+            "The companion connection did not stop in time. Try signing out again.",
+        ));
+    }
+    Ok(())
 }
 
 async fn reconnect_loop(app: AppHandle) {
@@ -126,8 +153,7 @@ async fn reconnect_loop(app: AppHandle) {
             .load(Ordering::Acquire)
         {
             drop(activity);
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            continue;
+            return;
         }
         let has_active_device = match (
             repositories(&app).await,
@@ -158,6 +184,13 @@ async fn reconnect_loop(app: AppHandle) {
             }
         }
         drop(activity);
+        if !app
+            .state::<CompanionRuntime>()
+            .account_transport_enabled
+            .load(Ordering::Acquire)
+        {
+            return;
+        }
         let cap = 2_u64
             .saturating_pow(attempt)
             .clamp(1, MAX_RECONNECT_DELAY_SECS);
@@ -186,10 +219,15 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
     let authorization = HeaderValue::from_str(&format!("Bearer {token}"))
         .map_err(|_| transport_error("The OS Accounts session is invalid."))?;
     request.headers_mut().insert(AUTHORIZATION, authorization);
-    let (mut socket, _) = connect_async(request)
+    let (mut socket, _) = tokio::time::timeout(RELAY_IO_TIMEOUT, connect_async(request))
         .await
+        .map_err(|_| transport_error("The companion relay connection timed out."))?
         .map_err(|_| transport_error("The companion relay is unavailable."))?;
     let repos = repositories(app).await?;
+    repos
+        .remember_companion_account(&account_user_id)
+        .await
+        .map_err(|_| transport_error("The companion account state could not be saved."))?;
     let mut peers = HashMap::new();
     let mut outbound_sequence = 0_u64;
     let runtime = app.state::<CompanionRuntime>();
@@ -213,7 +251,11 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                     Message::Binary(bytes) => bytes.to_vec(),
                     Message::Text(text) => text.as_str().as_bytes().to_vec(),
                     Message::Ping(payload) => {
-                        socket.send(Message::Pong(payload)).await
+                        tokio::time::timeout(
+                            RELAY_IO_TIMEOUT,
+                            socket.send(Message::Pong(payload)),
+                        ).await
+                            .map_err(|_| transport_error("The companion relay send timed out."))?
                             .map_err(|_| transport_error("The companion relay disconnected."))?;
                         continue;
                     }
@@ -667,10 +709,13 @@ async fn send_envelope(
             "The companion relay frame exceeded its size limit.",
         ));
     }
-    socket
-        .send(Message::Binary(encoded.into()))
-        .await
-        .map_err(|_| transport_error("The companion relay disconnected."))
+    tokio::time::timeout(
+        RELAY_IO_TIMEOUT,
+        socket.send(Message::Binary(encoded.into())),
+    )
+    .await
+    .map_err(|_| transport_error("The companion relay send timed out."))?
+    .map_err(|_| transport_error("The companion relay disconnected."))
 }
 
 fn protocol_failure(error: &AppError) -> ProtocolFailure {

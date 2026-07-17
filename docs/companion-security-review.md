@@ -19,9 +19,9 @@
 - Confirm relay device/link persistence, strict Desktop OS Accounts verification,
   cross-user/non-linked/revoked rejection, frame/rate/queue/connection bounds,
   bounded pairing attempts, zero offline retention, and redacted logs/metrics.
-- Confirm desktop capability equality, no generic executor, note CAS,
-  idempotent mutation results, sequence reset only after handshake, and immediate
-  online revocation.
+- Confirm desktop capability equality, no generic executor, note CAS, durable
+  pre-dispatch mutation reservations, separate completed/pending retention
+  bounds, sequence reset only after handshake, and immediate online revocation.
 - Confirm APNs payload is content-free and correctness does not depend on wake.
 - Confirm production runs one companion relay replica until shared pairing,
   routing, and revocation propagation have an independent review.

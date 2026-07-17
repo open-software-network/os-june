@@ -12,7 +12,7 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
@@ -28,6 +28,7 @@ pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendI
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
 const MAX_DEVICE_NAME_BYTES: usize = 128;
 const PAIRING_RELAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 
 pub struct CompanionRuntime {
     pub controller: Controller,
@@ -35,13 +36,13 @@ pub struct CompanionRuntime {
     pending_frontend: Mutex<HashMap<Uuid, oneshot::Sender<ResultPayload>>>,
     inflight_operations: Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>,
     event_sender: Mutex<Option<mpsc::Sender<Event>>>,
-    transport_started: AtomicBool,
+    transport_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     relay_connected: AtomicBool,
     relay_connection_changed: Notify,
     account_transport_enabled: AtomicBool,
     account_session_changed: Notify,
-    transport_activity: AtomicUsize,
-    transport_activity_changed: Notify,
+    account_activity: AtomicUsize,
+    account_activity_changed: Notify,
 }
 
 impl Default for CompanionRuntime {
@@ -52,13 +53,13 @@ impl Default for CompanionRuntime {
             pending_frontend: Mutex::default(),
             inflight_operations: Mutex::default(),
             event_sender: Mutex::default(),
-            transport_started: AtomicBool::new(false),
+            transport_task: Mutex::default(),
             relay_connected: AtomicBool::new(false),
             relay_connection_changed: Notify::new(),
             account_transport_enabled: AtomicBool::new(true),
             account_session_changed: Notify::new(),
-            transport_activity: AtomicUsize::new(0),
-            transport_activity_changed: Notify::new(),
+            account_activity: AtomicUsize::new(0),
+            account_activity_changed: Notify::new(),
         }
     }
 }
@@ -67,6 +68,31 @@ struct PendingPairing {
     secret: [u8; KEY_BYTES],
     expires_at_ms: u64,
     approved_mobile: Option<Uuid>,
+}
+
+struct CompanionAccountActivityGuard<'a> {
+    runtime: &'a CompanionRuntime,
+}
+
+impl<'a> CompanionAccountActivityGuard<'a> {
+    fn begin(runtime: &'a CompanionRuntime) -> Result<Self, AppError> {
+        runtime.account_activity.fetch_add(1, Ordering::AcqRel);
+        let guard = Self { runtime };
+        if !runtime.account_transport_enabled.load(Ordering::Acquire) {
+            return Err(AppError::new(
+                "unauthorized",
+                "Sign in to manage companion devices.",
+            ));
+        }
+        Ok(guard)
+    }
+}
+
+impl Drop for CompanionAccountActivityGuard<'_> {
+    fn drop(&mut self) {
+        self.runtime.account_activity.fetch_sub(1, Ordering::AcqRel);
+        self.runtime.account_activity_changed.notify_one();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +197,7 @@ pub struct RenameDeviceRequest {
 pub async fn companion_begin_pairing(
     runtime: State<'_, CompanionRuntime>,
 ) -> Result<PairingQrPayload, AppError> {
+    let _account_activity = CompanionAccountActivityGuard::begin(&runtime)?;
     let account_user_id = crate::os_accounts::current_user_id().await?;
     let identity = load_or_create_identity(&account_user_id)?;
     let mut secret = [0_u8; KEY_BYTES];
@@ -241,6 +268,7 @@ pub async fn companion_approve_pairing(
     pairing_id: Uuid,
     mobile_device_id: Uuid,
 ) -> Result<PairingStatus, AppError> {
+    let _account_activity = CompanionAccountActivityGuard::begin(&runtime)?;
     {
         let pending = runtime
             .pairings
@@ -639,7 +667,7 @@ pub fn start(app: &AppHandle) {
     transport::start(app);
 }
 
-pub async fn prepare_account_logout(app: &AppHandle) {
+pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     let runtime = app.state::<CompanionRuntime>();
     runtime
         .account_transport_enabled
@@ -648,23 +676,47 @@ pub async fn prepare_account_logout(app: &AppHandle) {
     if let Ok(mut pairings) = runtime.pairings.lock() {
         pairings.clear();
     }
+    transport::stop(app).await?;
 
-    // An established relay task may currently be awaiting a frontend-backed
-    // operation. Wait until that authorized work finishes and the socket has
-    // observed the account-session notification before revoking local state.
-    loop {
-        let stopped = runtime.transport_activity_changed.notified();
-        if runtime.transport_activity.load(Ordering::Acquire) == 0 {
-            break;
+    // A relay task may be awaiting a frontend-backed operation, or pairing may
+    // be committing an authorization grant. Wait until all authorized account
+    // work observes the sign-out boundary before revoking local state.
+    tokio::time::timeout(ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT, async {
+        loop {
+            let stopped = runtime.account_activity_changed.notified();
+            if runtime.account_activity.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            stopped.await;
         }
-        stopped.await;
-    }
+    })
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "companion_logout_busy",
+            "Companion activity did not stop in time. Try signing out again.",
+        )
+    })?;
 
-    let Some(account_user_id) = crate::os_accounts::stored_user_id().await else {
-        return;
+    let repos = repositories(app).await?;
+    let persisted_account_user_id = repos.companion_account_user_id().await?;
+    let stored_account_user_id = match crate::os_accounts::stored_user_id().await {
+        Ok(account_user_id) => account_user_id,
+        Err(error) if persisted_account_user_id.is_none() => return Err(error),
+        Err(error) => {
+            tracing::warn!(code = %error.code, "OS Accounts storage was unreadable during companion logout");
+            None
+        }
     };
-    let mut remote_device_ids = Vec::new();
-    if let Ok(repos) = repositories(app).await {
+    let account_user_ids = [stored_account_user_id, persisted_account_user_id]
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+    if account_user_ids.is_empty() {
+        return Ok(());
+    }
+    let mut remote_device_ids = HashSet::new();
+    for account_user_id in account_user_ids {
         if let Ok(devices) = repos.list_companion_devices(&account_user_id).await {
             remote_device_ids.extend(
                 devices
@@ -673,24 +725,19 @@ pub async fn prepare_account_logout(app: &AppHandle) {
                     .filter_map(|device| Uuid::parse_str(&device.id).ok()),
             );
         }
-        let _ = repos
+        repos
             .revoke_companion_devices_for_account(&account_user_id)
-            .await;
+            .await?;
+        if let Ok(Some(identity)) = load_identity(&account_user_id) {
+            remote_device_ids.insert(identity.device_id);
+        }
+        remove_identity(&account_user_id);
     }
-    let desktop_device_id = load_identity(&account_user_id)
-        .ok()
-        .flatten()
-        .map(|identity| identity.device_id);
-    remove_identity(&account_user_id);
 
     // Local authorization is already gone. Remote cleanup is best effort and
     // may fail offline without allowing a later sign-in to revive old links.
-    for device_id in remote_device_ids {
-        let _ = revoke_device_remote(device_id).await;
-    }
-    if let Some(device_id) = desktop_device_id {
-        let _ = revoke_device_remote(device_id).await;
-    }
+    futures_util::future::join_all(remote_device_ids.into_iter().map(revoke_device_remote)).await;
+    Ok(())
 }
 
 pub fn resume_account_transport(app: &AppHandle) {
@@ -699,6 +746,7 @@ pub fn resume_account_transport(app: &AppHandle) {
         .account_transport_enabled
         .store(true, Ordering::Release);
     runtime.account_session_changed.notify_waiters();
+    transport::start(app);
 }
 
 pub fn pairing_secret(
@@ -814,7 +862,15 @@ where
     F: Fn(&reqwest::Client, String, String) -> reqwest::RequestBuilder,
 {
     let url = format!("{}{}", crate::june_api::june_api_url(), path);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|_| {
+            AppError::new(
+                "companion_relay_unavailable",
+                "The companion relay client could not start.",
+            )
+        })?;
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
         let response = build(&client, url.clone(), token.clone())
@@ -1001,5 +1057,21 @@ mod tests {
 
         clear_pairing_mobile(&runtime, pairing_id, mobile_id);
         assert_eq!(pairing_for_mobile(&runtime, mobile_id).unwrap(), None);
+    }
+
+    #[test]
+    fn account_activity_guard_closes_pairing_commands_at_logout() {
+        let runtime = CompanionRuntime::default();
+        {
+            let _guard = CompanionAccountActivityGuard::begin(&runtime).unwrap();
+            assert_eq!(runtime.account_activity.load(Ordering::Acquire), 1);
+        }
+        assert_eq!(runtime.account_activity.load(Ordering::Acquire), 0);
+
+        runtime
+            .account_transport_enabled
+            .store(false, Ordering::Release);
+        assert!(CompanionAccountActivityGuard::begin(&runtime).is_err());
+        assert_eq!(runtime.account_activity.load(Ordering::Acquire), 0);
     }
 }

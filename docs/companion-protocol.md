@@ -92,10 +92,13 @@ disconnect or relaunch, and it does not dispatch until that id is durably
 stored. The desktop writes an outcome-unknown reservation before every mutation
 crosses a side-effect boundary. A final response replaces the reservation and
 is returned on retry. If Desktop crashes in between, the reservation is
-returned instead of dispatching the mutation again; the user checks June on the
-Mac before submitting a changed request. Results and reservations expire after
-seven days and are capped at 1,024 per device; revocation removes both. Sequence
-state resets only after a fresh authenticated Noise session. The client reuses
+returned as a distinct outcome-unknown error instead of dispatching the
+mutation again; the user checks June on the Mac before explicitly choosing the
+action again. Results and reservations expire after seven days. Completed
+responses are capped at 1,024 per device; up to 128 unresolved reservations are
+retained separately, and reaching that bound refuses new mutations instead of
+evicting a reservation. Revocation removes both. Sequence state resets only
+after a fresh authenticated Noise session. The client reuses
 a healthy transport, retires stale Noise keys when a fresh authenticated
 handshake arrives, and refreshes cursor-based lists after foreground/reconnect.
 No offline control request is replayed.

@@ -26,13 +26,19 @@ interrupted cross-boundary mutation completed.
 - A completed response atomically replaces the reservation. Ordinary retries
   return that saved response.
 - If Desktop crashes after reservation but before completion, the reservation
-  remains as a retryable outcome-unknown response. The same operation id is not
-  dispatched again. The user must inspect June on the Mac before changing and
-  submitting a new request.
-- Reservations and completed responses share the existing seven-day and
-  1,024-entry-per-device retention bounds. Revocation deletes both.
-- OS Accounts sign-out stops new companion work and waits for the active relay
-  operation barrier before it revokes account-scoped local authorization.
+  remains as a distinct outcome-unknown response. The same operation id is not
+  dispatched again. The companion tells the user to inspect June on the Mac;
+  only a later, explicit repeat of the action creates a new operation id.
+- Reservations and completed responses share the seven-day retention bound,
+  but not an eviction pool. Completed responses are capped at 1,024 per device.
+  Up to 128 unresolved reservations are retained separately; reaching that
+  limit refuses new mutation dispatch rather than evicting an ambiguity guard.
+  Revocation deletes both.
+- OS Accounts sign-out stops new companion work and waits for the active
+  account-operation barrier, including relay dispatch and pairing approval,
+  before it revokes account-scoped local authorization. Relay connection and
+  send operations are time-bounded; if the joined transport or account work
+  cannot stop within the shutdown bound, logout fails without clearing tokens.
 
 ## Consequences
 
@@ -43,7 +49,8 @@ reconnect cannot silently duplicate an agent run or another side effect.
 
 Read-only requests may still be repeated. Retryable failures that are known not
 to be final are not saved as completed results; a mutation reservation remains
-until a definitive result replaces it or retention expires.
+until a definitive result replaces it, the user explicitly repeats the action
+after an outcome-unknown response, or retention expires.
 
 Persisting only final responses, relying on an in-memory lock, and replaying
 all ambiguous failures were rejected because each leaves a crash window for a

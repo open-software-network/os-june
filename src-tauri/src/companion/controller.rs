@@ -112,15 +112,14 @@ impl Controller {
                 .reserve_companion_operation(account_user_id, device_id, &operation_id, &encoded)
                 .await?
             {
-                let encoded = repositories
+                let Some(encoded) = repositories
                     .companion_operation(account_user_id, device_id, &operation_id)
                     .await?
-                    .ok_or_else(|| {
-                        AppError::new(
-                            "companion_operation_invalid",
-                            "A reserved companion operation could not be loaded.",
-                        )
-                    })?;
+                else {
+                    return Ok(ControllerOutcome::Immediate(reservation_capacity_response(
+                        capability,
+                    )));
+                };
                 let response = serde_json::from_slice(&encoded).map_err(|_| {
                     AppError::new(
                         "companion_operation_invalid",
@@ -383,9 +382,22 @@ fn pending_operation_response(capability: Capability) -> Response {
     response(
         capability,
         ResultPayload::Error(ProtocolFailure {
-            code: FailureCode::Busy,
-            message: "This request may already have reached June. Check your Mac before trying a different request."
+            code: FailureCode::OutcomeUnknown,
+            message: "This request may already have reached June. Check your Mac, then choose the action again only if it is still needed."
                 .to_string(),
+            retryable: false,
+        }),
+    )
+}
+
+fn reservation_capacity_response(capability: Capability) -> Response {
+    response(
+        capability,
+        ResultPayload::Error(ProtocolFailure {
+            code: FailureCode::Busy,
+            message:
+                "June is still resolving earlier companion actions. Check your Mac, then try again."
+                    .to_string(),
             retryable: true,
         }),
     )
@@ -531,6 +543,32 @@ mod tests {
         assert!(controller.accept_sequence("phone", 0).is_err());
         controller.accept_sequence("phone", 2).unwrap();
         controller.accept_sequence("tablet", 1).unwrap();
+    }
+
+    #[test]
+    fn outcome_unknown_requires_an_explicit_new_user_action() {
+        let response = pending_operation_response(Capability::AgentChat);
+        assert!(matches!(
+            response.result,
+            ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::OutcomeUnknown,
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reservation_capacity_is_retryable_without_dispatching() {
+        let response = reservation_capacity_response(Capability::AgentChat);
+        assert!(matches!(
+            response.result,
+            ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::Busy,
+                retryable: true,
+                ..
+            })
+        ));
     }
 
     #[test]

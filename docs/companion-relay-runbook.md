@@ -25,9 +25,11 @@ has one 64-frame outbound queue, and one connection per device. Backpressure
 disconnects rather than growing memory. Offline ciphertext retention is zero.
 Controls expire after 30 seconds. Opaque APNs wakes have a 30-second per-device
 cooldown. Pairings expire after five minutes and are capped at eight pending
-attempts per account and 4,096 pending attempts per relay process. Desktop
+attempts per account and 4,096 pending attempts per relay process. Completed
 idempotency responses expire after seven days and are capped at 1,024 per
-device. Each account is capped at 32 active companion device records.
+device. Unresolved mutation reservations use a separate 128-entry cap and are
+never evicted to admit completed reads. Each account is capped at 32 active
+companion device records.
 
 ## Health and canary
 

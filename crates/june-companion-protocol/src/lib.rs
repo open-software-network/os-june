@@ -446,6 +446,7 @@ pub enum FailureCode {
     Conflict,
     MacOffline,
     Busy,
+    OutcomeUnknown,
     Internal,
 }
 

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS companion_operations (
   device_id TEXT NOT NULL REFERENCES companion_devices(id) ON DELETE CASCADE,
   operation_id TEXT NOT NULL,
   response BLOB NOT NULL,
+  operation_state TEXT NOT NULL DEFAULT 'completed',
   created_at TEXT NOT NULL,
   PRIMARY KEY (device_id, operation_id)
 );
