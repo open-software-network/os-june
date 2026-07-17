@@ -343,6 +343,110 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert stale_build_session["agent"] is reset_owned_agent
         assert stale_build_session["agent_error"] is None
 
+        # Publication releases history_lock before any setup that can acquire
+        # _sessions_lock, while the independent publication lock keeps reset
+        # from interleaving between the agent and worker swaps.
+        publication_attach_started = threading.Event()
+        publication_attach_release = threading.Event()
+        publication_reset_started = threading.Event()
+        published_agent = types.SimpleNamespace(model="published-model")
+        reset_agent = types.SimpleNamespace(model="reset-model")
+
+        class SyntheticSlashWorker:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        def attach_published_worker(_sid, session, worker) -> None:
+            assert session["history_lock"].acquire(blocking=False), (
+                "lazy-build worker setup must not hold history_lock while "
+                "acquiring session-map state"
+            )
+            session["history_lock"].release()
+            assert session["agent_publication_lock"].locked(), (
+                "reset must stay fenced through lazy-build worker publication"
+            )
+            publication_attach_started.set()
+            assert publication_attach_release.wait(2), (
+                "lazy-build publication was not released"
+            )
+            session["slash_worker"] = worker
+
+        namespace.update(
+            {
+                "_make_agent": lambda *_args, **_kwargs: published_agent,
+                "_config_model_target": lambda: "published-model",
+                "_SlashWorker": SyntheticSlashWorker,
+                "_resolve_model": lambda: "fallback-model",
+                "_attach_worker": attach_published_worker,
+                "_wire_callbacks": lambda *_args: None,
+                "_start_notification_poller": lambda *_args: object(),
+                "_notify_session_boundary": lambda *_args: None,
+                "_session_info": lambda agent, _session: {"model": agent.model},
+                "_probe_config_health": lambda _cfg: None,
+                "_load_cfg": lambda: {},
+                "_emit": lambda *_args: None,
+                "_schedule_mcp_late_refresh": lambda *_args: None,
+                "_restart_slash_worker": lambda *_args: None,
+                "_load_show_reasoning": lambda: False,
+                "_load_tool_progress_mode": lambda: "compact",
+                "logger": types.SimpleNamespace(warning=lambda *_args: None),
+            }
+        )
+        publication_session = {
+            "agent": None,
+            "agent_build_lock": threading.Lock(),
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "attached_images": [],
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 0,
+            "prompt_generation": 0,
+            "reset_generation": 0,
+            "running": False,
+            "session_key": "publication-key",
+        }
+        namespace["_sessions"]["publication"] = publication_session
+        namespace["_start_agent_build"]("publication", publication_session)
+        assert publication_attach_started.wait(1), (
+            "lazy-build worker publication did not start"
+        )
+
+        def make_publication_reset_agent(*_args, **_kwargs):
+            publication_reset_started.set()
+            return reset_agent
+
+        namespace["_make_agent"] = make_publication_reset_agent
+        publication_reset_result = {}
+        publication_reset_thread = threading.Thread(
+            target=lambda: publication_reset_result.setdefault(
+                "info",
+                namespace["_reset_session_agent"](
+                    "publication", publication_session
+                ),
+            )
+        )
+        publication_reset_thread.start()
+        publication_reset_thread.join(0.1)
+        assert publication_reset_thread.is_alive(), (
+            "reset must wait for lazy-build worker publication"
+        )
+        assert not publication_reset_started.is_set(), (
+            "reset construction interleaved with lazy-build publication"
+        )
+        publication_attach_release.set()
+        assert publication_session["agent_ready"].wait(1), (
+            "lazy-build publication did not finish"
+        )
+        publication_reset_thread.join(2)
+        assert not publication_reset_thread.is_alive(), (
+            "reset did not resume after lazy-build publication"
+        )
+        assert publication_reset_started.is_set()
+        assert publication_session["agent"] is reset_agent
+        assert publication_reset_result["info"] == {"model": "reset-model"}
+
         # Reset must own the same lock before Hermes construction starts. An
         # attachment arriving during a slow rebuild waits, then queues after
         # reset instead of being acknowledged and silently cleared.

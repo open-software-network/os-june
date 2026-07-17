@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v9"
+PATCH_SET = "june-approval-memory-v10"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "ca0029cec1d9d2c6801c45098e7911873a3ed128fc83b827c25442cc1f68bf31",
+    "tui_gateway/server.py": "287bfe989f7ad4cc7ec3bd94eac79502d9e8eee622e42c1cd82ef9595023fde4",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -607,6 +607,7 @@ def patch_server(source: str) -> str:
             return
 
         worker = None
+        publication_lock = None
         state_lock = None
 ''',
         "Hermes build publication lock state",
@@ -626,9 +627,14 @@ def patch_server(source: str) -> str:
         '''            finally:
                 _clear_session_context(tokens)
 
-            # The slow Hermes construction stays outside history_lock so image
-            # bytes remain attachable immediately. Claim only the publication
-            # phase, then reject this instance if reset advanced its own epoch.
+            # The slow Hermes construction stays outside both locks so image
+            # bytes remain attachable immediately. A dedicated publication lock
+            # serializes this completion phase with reset without participating
+            # in the _sessions_lock -> history_lock teardown order.
+            publication_lock = current.setdefault(
+                "agent_publication_lock", threading.Lock()
+            )
+            publication_lock.acquire()
             state_lock = current["history_lock"]
             state_lock.acquire()
             if int(current.get("reset_generation", 0)) != build_epoch:
@@ -647,6 +653,12 @@ def patch_server(source: str) -> str:
             # Baseline for the per-turn config sync; the profile home
             # override is still active here.
             current["config_model_seen"] = _config_model_target()
+            # The remaining setup can acquire _sessions_lock. Release the state
+            # lock first so concurrent close/eviction cannot deadlock by holding
+            # _sessions_lock while waiting for history_lock. publication_lock
+            # continues to fence reset until the worker and callbacks are ready.
+            state_lock.release()
+            state_lock = None
 ''',
         "Hermes build reset epoch publication",
     )
@@ -679,6 +691,8 @@ def patch_server(source: str) -> str:
 ''',
         '''            if state_lock is not None:
                 state_lock.release()
+            if publication_lock is not None:
+                publication_lock.release()
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
@@ -1040,55 +1054,60 @@ def patch_server(source: str) -> str:
         "def _reset_session_agent(sid: str, session: dict) -> dict:\n",
         "\n\ndef _schedule_mcp_late_refresh(sid: str, agent) -> None:\n",
         '''def _reset_session_agent(sid: str, session: dict) -> dict:
-    # Own the session state before rebuilding Hermes. An attachment that
-    # arrives during the rebuild must wait and queue after reset, never receive
-    # an acknowledgement and then get erased by reset's queue clear.
-    with session["history_lock"]:
-        # Invalidate callbacks waiting on an earlier lazy Hermes build before
-        # constructing the replacement Hermes instance. They may finish only
-        # after this lock is released and must not mutate the reset session.
-        previous_prompt_generation = int(session.get("prompt_generation", 0))
-        previous_reset_generation = int(session.get("reset_generation", 0))
-        session["prompt_generation"] = previous_prompt_generation + 1
-        session["reset_generation"] = previous_reset_generation + 1
-        tokens = _set_session_context(session["session_key"])
-        try:
-            new_agent = _make_agent(
-                sid,
-                session["session_key"],
-                session_id=session["session_key"],
-                # Preserve this session's chosen model across /new so a reset
-                # doesn't silently revert to global config (or to a model another
-                # session set). See the cross-session-contamination note in
-                # _apply_model_switch.
-                model_override=session.get("model_override"),
-            )
-        except Exception:
-            # The original lazy build and prompt still own the session when a
-            # requested reset cannot construct its replacement Hermes instance.
-            session["prompt_generation"] = previous_prompt_generation
-            session["reset_generation"] = previous_reset_generation
-            raise
-        finally:
-            _clear_session_context(tokens)
-        session["agent"] = new_agent
-        # A successful replacement supersedes any failure published by the
-        # prior lazy Hermes build. Attachment and readiness checks must observe
-        # the recovered session, not reject it with the obsolete error.
-        session["agent_error"] = None
-        session["config_model_seen"] = _config_model_target()
-        session["attached_images"] = []
-        session["edit_snapshots"] = {}
-        session["image_counter"] = 0
-        session["running"] = False
-        session["show_reasoning"] = _load_show_reasoning()
-        session["tool_progress_mode"] = _load_tool_progress_mode()
-        session["tool_started_at"] = {}
-        session["history"] = []
-        session["history_version"] = int(session.get("history_version", 0)) + 1
-        info = _session_info(new_agent, session)
-    _emit("session.info", sid, info)
-    _restart_slash_worker(sid, session)
+    # Serialize reset with lazy-build publication using a lock independent of
+    # both session-map and history ownership. This keeps the agent and worker
+    # swap atomic without introducing a _sessions_lock/history_lock cycle.
+    publication_lock = session.setdefault("agent_publication_lock", threading.Lock())
+    with publication_lock:
+        # Own the session state before rebuilding Hermes. An attachment that
+        # arrives during the rebuild must wait and queue after reset, never receive
+        # an acknowledgement and then get erased by reset's queue clear.
+        with session["history_lock"]:
+            # Invalidate callbacks waiting on an earlier lazy Hermes build before
+            # constructing the replacement Hermes instance. They may finish only
+            # after this lock is released and must not mutate the reset session.
+            previous_prompt_generation = int(session.get("prompt_generation", 0))
+            previous_reset_generation = int(session.get("reset_generation", 0))
+            session["prompt_generation"] = previous_prompt_generation + 1
+            session["reset_generation"] = previous_reset_generation + 1
+            tokens = _set_session_context(session["session_key"])
+            try:
+                new_agent = _make_agent(
+                    sid,
+                    session["session_key"],
+                    session_id=session["session_key"],
+                    # Preserve this session's chosen model across /new so a reset
+                    # doesn't silently revert to global config (or to a model another
+                    # session set). See the cross-session-contamination note in
+                    # _apply_model_switch.
+                    model_override=session.get("model_override"),
+                )
+            except Exception:
+                # The original lazy build and prompt still own the session when a
+                # requested reset cannot construct its replacement Hermes instance.
+                session["prompt_generation"] = previous_prompt_generation
+                session["reset_generation"] = previous_reset_generation
+                raise
+            finally:
+                _clear_session_context(tokens)
+            session["agent"] = new_agent
+            # A successful replacement supersedes any failure published by the
+            # prior lazy Hermes build. Attachment and readiness checks must observe
+            # the recovered session, not reject it with the obsolete error.
+            session["agent_error"] = None
+            session["config_model_seen"] = _config_model_target()
+            session["attached_images"] = []
+            session["edit_snapshots"] = {}
+            session["image_counter"] = 0
+            session["running"] = False
+            session["show_reasoning"] = _load_show_reasoning()
+            session["tool_progress_mode"] = _load_tool_progress_mode()
+            session["tool_started_at"] = {}
+            session["history"] = []
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+            info = _session_info(new_agent, session)
+        _emit("session.info", sid, info)
+        _restart_slash_worker(sid, session)
     return info
 ''',
         "session reset ownership",

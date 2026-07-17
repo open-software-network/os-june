@@ -41,7 +41,7 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v9";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v10";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "agent/agent_init.py",
@@ -57,7 +57,7 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "ca0029cec1d9d2c6801c45098e7911873a3ed128fc83b827c25442cc1f68bf31",
+        "287bfe989f7ad4cc7ec3bd94eac79502d9e8eee622e42c1cd82ef9595023fde4",
     ),
     (
         "cron/scheduler.py",
