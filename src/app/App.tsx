@@ -441,6 +441,10 @@ export function App() {
   // session persist in the order the user made them (see
   // handleToggleSessionCompleted).
   const sessionCompletionWritesRef = useRef(new Map<string, Promise<unknown>>());
+  // Set once the user has toggled completion locally. The initial load is a
+  // snapshot of the pre-toggle database, so it must not clobber a toggle that
+  // landed while it was still in flight (see the boot effect).
+  const sessionCompletionTouchedRef = useRef(false);
   const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
@@ -1954,6 +1958,11 @@ export function App() {
       });
     void listCompletedSessions()
       .then((rows) => {
+        // The session list can be interactive before this settles on a cold
+        // launch. If the user already toggled completion, this snapshot predates
+        // that write — applying it would show the session active again while the
+        // database has it completed, until the next restart (JUN-203 review).
+        if (cancelled || sessionCompletionTouchedRef.current) return;
         const next: Record<string, string> = {};
         for (const row of rows) next[row.sessionId] = row.completedAt;
         setCompletedSessions(next);
@@ -2783,6 +2792,8 @@ export function App() {
   }
 
   async function handleToggleSessionCompleted(sessionId: string, completed: boolean) {
+    // A local toggle always outranks the initial load's pre-toggle snapshot.
+    sessionCompletionTouchedRef.current = true;
     setCompletedSessions((prev) => {
       const next = { ...prev };
       if (completed) next[sessionId] = new Date().toISOString();
