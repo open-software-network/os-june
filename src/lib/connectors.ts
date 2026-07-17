@@ -1,8 +1,8 @@
 /**
- * Pure, render-free view logic for the private Google connectors (local
- * mode): scope-bundle metadata, account status labels, trust-mode metadata
- * and earned-autonomy gating, the trust-mode to Hermes toolset composition,
- * and event-trigger metadata.
+ * Pure, render-free view logic for the private connectors (Google, Linear)
+ * in local mode: scope-bundle metadata, account status labels, trust-mode
+ * metadata and earned-autonomy gating, the trust-mode to Hermes toolset
+ * composition, and event-trigger metadata.
  *
  * Kept separate from the React components and the Tauri bindings (mirroring
  * the hermes-admin/*-view.ts split) so all of it is unit-testable without a
@@ -16,6 +16,7 @@ import { errorCode } from "./errors";
 import { UNRESTRICTED_ROUTINE_TOOLSETS } from "./hermes-routines";
 import type {
   ConnectorAccountStatus,
+  ConnectorProvider,
   ConnectorScopeBundle,
   ConnectorTriggerKind,
   RoutineTrustMode,
@@ -30,8 +31,9 @@ export type ConnectorBundleMeta = {
   label: string;
   /** One-line supporting copy under the label. */
   description: string;
-  /** The Google scope URLs the bundle grants. Mirrors ScopeBundle::scopes()
-   * in src-tauri/src/connectors/scopes.rs; keep in sync. */
+  /** The provider scope identifiers the bundle grants: Google's full auth
+   * URLs, Linear's short scope names. Mirrors ScopeBundle::scopes() in
+   * src-tauri/src/connectors/scopes.rs; keep in sync. */
   scopeUrls: string[];
   /** Short feature phrase for "This routine can: ..." summaries. */
   feature: string;
@@ -75,9 +77,24 @@ export const BUNDLE_META: Readonly<Record<ConnectorScopeBundle, ConnectorBundleM
       scopeUrls: ["https://www.googleapis.com/auth/calendar.events"],
       feature: "manage your calendar",
     },
+    linear_read: {
+      label: "Read workspace",
+      description: "Read teams, projects, cycles, and issues for planning and status briefs.",
+      scopeUrls: ["read"],
+      feature: "read your Linear workspace",
+    },
+    linear_write: {
+      label: "Create and update issues",
+      description:
+        "Draft issues, comments, and project updates. Nothing is written without your approval.",
+      scopeUrls: ["write"],
+      feature: "create and update issues",
+    },
   });
 
-export const ALL_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+/** The six Google feature bundles, in the order the connect dialog lists
+ * them. */
+export const GOOGLE_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
   "gmail_read",
   "gmail_draft",
   "gmail_modify",
@@ -85,6 +102,19 @@ export const ALL_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze(
   "calendar_read",
   "calendar_events",
 ]);
+
+/** The two Linear feature bundles, in the order the connect dialog lists
+ * them. */
+export const LINEAR_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+  "linear_read",
+  "linear_write",
+]);
+
+/** The feature bundles a provider's connect dialog offers, in display
+ * order. */
+export function bundlesForProvider(provider: ConnectorProvider): readonly ConnectorScopeBundle[] {
+  return provider === "linear" ? LINEAR_SCOPE_BUNDLES : GOOGLE_SCOPE_BUNDLES;
+}
 
 /** A granted Google scope implies these narrower scope needs: a write scope
  * already grants the matching read, so an account with `calendar.events` need
@@ -110,22 +140,27 @@ function grantsScope(granted: Set<string>, needed: string): boolean {
   return false;
 }
 
-/** Maps an account's granted Google scope URLs back to the feature bundles it
- * explicitly holds, in registry order. Exact match (not superset): this drives
- * display and reconnect, which should reflect what was actually granted, not
- * what a broader scope could stand in for. Unknown URLs (identity scopes,
- * future grants) are ignored: the UI shows features, not raw scopes. */
-export function bundlesFromScopes(scopeUrls: string[]): ConnectorScopeBundle[] {
+/** Maps an account's granted scope identifiers back to the feature bundles it
+ * explicitly holds, in registry order, scoped to that account's provider so a
+ * hypothetical scope-string collision across providers can never cross-match.
+ * Exact match (not superset): this drives display and reconnect, which should
+ * reflect what was actually granted, not what a broader scope could stand in
+ * for. Unknown identifiers (identity scopes, future grants) are ignored: the
+ * UI shows features, not raw scopes. */
+export function bundlesFromScopes(
+  scopeUrls: string[],
+  provider: ConnectorProvider,
+): ConnectorScopeBundle[] {
   const granted = new Set(scopeUrls);
-  return ALL_SCOPE_BUNDLES.filter((bundle) =>
+  return bundlesForProvider(provider).filter((bundle) =>
     BUNDLE_META[bundle].scopeUrls.every((url) => granted.has(url)),
   );
 }
 
 /** "Read mail, draft replies and calendar" — the human feature list an
  * account's grants render as. */
-export function grantedFeatureLabels(scopeUrls: string[]): string[] {
-  return bundlesFromScopes(scopeUrls).map((bundle) => BUNDLE_META[bundle].label);
+export function grantedFeatureLabels(scopeUrls: string[], provider: ConnectorProvider): string[] {
+  return bundlesFromScopes(scopeUrls, provider).map((bundle) => BUNDLE_META[bundle].label);
 }
 
 /** True when the account's granted scopes already cover every bundle a routine
@@ -151,21 +186,30 @@ export type ConnectorStatusMeta = {
   blurb: string;
 };
 
-const STATUS_META: Readonly<Record<ConnectorAccountStatus, ConnectorStatusMeta>> = Object.freeze({
-  connected: {
-    label: "Connected",
-    tone: "ok",
-    blurb: "This account is ready. Tokens stay in your Mac's Keychain.",
-  },
-  reconnect_required: {
-    label: "Reconnect needed",
-    tone: "attention",
-    blurb: "Google needs you to sign in again before June can use this account.",
-  },
+const STATUS_LABELS: Readonly<
+  Record<ConnectorAccountStatus, { label: string; tone: "ok" | "attention" }>
+> = Object.freeze({
+  connected: { label: "Connected", tone: "ok" },
+  reconnect_required: { label: "Reconnect needed", tone: "attention" },
 });
 
-export function accountStatusMeta(status: ConnectorAccountStatus): ConnectorStatusMeta {
-  return STATUS_META[status];
+/** Connected blurb is shared across providers; reconnect names the provider
+ * and what it gates ("this account" for Google, "this workspace" for
+ * Linear) so the prompt reads correctly for either. */
+const CONNECTED_BLURB = "This account is ready. Tokens stay in your Mac's Keychain.";
+
+const RECONNECT_BLURB: Readonly<Record<ConnectorProvider, string>> = Object.freeze({
+  google: "Google needs you to sign in again before June can use this account.",
+  linear: "Linear needs you to sign in again before June can use this workspace.",
+});
+
+export function accountStatusMeta(
+  status: ConnectorAccountStatus,
+  provider: ConnectorProvider,
+): ConnectorStatusMeta {
+  const { label, tone } = STATUS_LABELS[status];
+  const blurb = status === "reconnect_required" ? RECONNECT_BLURB[provider] : CONNECTED_BLURB;
+  return { label, tone, blurb };
 }
 
 /** True for the Rust "connector_not_configured" error: this build ships no
@@ -272,29 +316,81 @@ export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
   "context_engine",
 ];
 
-/** Read-only connector MCP servers: ambient for every routine. */
-export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal"];
+/** Read-only connector MCP servers: ambient for every routine. Linear reads
+ * are team-enforced in Rust (the proxy checks the caller's selected-team
+ * grant on every team-scoped route), so `june_linear` is safe to grant
+ * ambiently just like the Google read servers rather than gating it behind
+ * trust mode. */
+export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear"];
 
 /** Action connector MCP servers: every mutating call parks for approval in
- * the Rust proxy. */
-export const CONNECTOR_ACTION_TOOLSETS = ["june_gmail_actions", "june_gcal_actions"];
+ * the Rust proxy. Linear has no autonomous mode in v1 (see `grantable` on
+ * `ConnectorActionTool`), but its actions server still parks for approval
+ * like the Google ones, so it belongs in this list too. */
+export const CONNECTOR_ACTION_TOOLSETS = [
+  "june_gmail_actions",
+  "june_gcal_actions",
+  "june_linear_actions",
+];
 
-/** One grantable connector action tool, for the autonomous grant checklist.
- * `id` is the raw tool name the Rust proxy consults grants by. */
+/** One connector action tool, for the approvals-surface label lookup
+ * (`actionToolLabel`) and the autonomous grant checklist. `id` is the raw
+ * tool name the Rust proxy consults grants by. `grantable` is false for
+ * every Linear tool: Linear has no autonomous mode in v1, so its tools get
+ * approvals-surface labels but must never appear in the earned-autonomy
+ * grant checklist (only the checklist consumer filters on this field). */
 export type ConnectorActionTool = {
   id: string;
   server: string;
   label: string;
+  grantable: boolean;
 };
 
 export const CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.freeze([
-  { id: "create_draft", server: "june_gmail_actions", label: "Create drafts" },
-  { id: "send_email", server: "june_gmail_actions", label: "Send email" },
-  { id: "modify_labels", server: "june_gmail_actions", label: "Change labels" },
-  { id: "archive", server: "june_gmail_actions", label: "Archive mail" },
-  { id: "create_event", server: "june_gcal_actions", label: "Create events" },
-  { id: "respond_to_invite", server: "june_gcal_actions", label: "Respond to invites" },
+  { id: "create_draft", server: "june_gmail_actions", label: "Create drafts", grantable: true },
+  { id: "send_email", server: "june_gmail_actions", label: "Send email", grantable: true },
+  { id: "modify_labels", server: "june_gmail_actions", label: "Change labels", grantable: true },
+  { id: "archive", server: "june_gmail_actions", label: "Archive mail", grantable: true },
+  { id: "create_event", server: "june_gcal_actions", label: "Create events", grantable: true },
+  {
+    id: "respond_to_invite",
+    server: "june_gcal_actions",
+    label: "Respond to invites",
+    grantable: true,
+  },
+  {
+    id: "create_issue",
+    server: "june_linear_actions",
+    label: "Create issues",
+    grantable: false,
+  },
+  {
+    id: "update_issue",
+    server: "june_linear_actions",
+    label: "Update issues",
+    grantable: false,
+  },
+  {
+    id: "add_comment",
+    server: "june_linear_actions",
+    label: "Comment on issues",
+    grantable: false,
+  },
+  {
+    id: "create_project_update",
+    server: "june_linear_actions",
+    label: "Post project updates",
+    grantable: false,
+  },
 ]);
+
+/** The connector action tools eligible for the earned-autonomy grant
+ * checklist. Linear tools are excluded: Linear has no autonomous mode in
+ * v1, so they must never be offered as grantable even though they have
+ * approvals-surface labels above. */
+export const GRANTABLE_CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.freeze(
+  CONNECTOR_ACTION_TOOLS.filter((tool) => tool.grantable),
+);
 
 const ACTION_TOOL_LABELS: Readonly<Record<string, string>> = Object.freeze(
   Object.fromEntries(CONNECTOR_ACTION_TOOLS.map((tool) => [tool.id, tool.label])),
@@ -324,10 +420,11 @@ export function actionToolLabel(tool: string): string {
   return ACTION_TOOL_LABELS[tool] ?? tool.replace(/_/g, " ");
 }
 
-/** The provider behind a Google connector MCP server name, for provider marks
- * on the approvals surface. Null for non-connector servers. */
-export function providerFromServer(server: string): "google" | null {
+/** The provider behind a connector MCP server name, for provider marks on the
+ * approvals surface. Null for non-connector servers. */
+export function providerFromServer(server: string): "google" | "linear" | null {
   if (server.startsWith("june_gmail") || server.startsWith("june_gcal")) return "google";
+  if (server.startsWith("june_linear")) return "linear";
   return null;
 }
 

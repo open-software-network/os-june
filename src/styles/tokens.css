@@ -138,6 +138,9 @@
   --sp-10: 32px;
   --sp-12: 40px;
 
+  /* Borders --------------------------------------------------------- */
+  --border-width: 1px;
+
   /* Radii ------------------------------------------------------------ */
   --r-xs: 4px;
   --r-sm: 6px;
@@ -280,6 +283,11 @@
   --border-subtle: color-mix(in oklch, var(--border) 55%, transparent);
   --detail-bar-border: color-mix(in oklch, var(--border-subtle) 58%, transparent);
   --body-copy: color-mix(in oklch, var(--foreground) 86%, var(--muted-foreground));
+  /* Loading dots need more presence than muted supporting copy. Light mode
+   * leans well past muted toward the foreground because the dots render at low
+   * opacity on bright surfaces; the dark theme re-mixes a gentler value below.
+   * Individual contexts can override --spinner-color. */
+  --spinner-neutral: color-mix(in oklch, var(--muted-foreground) 45%, var(--foreground));
   --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
   /* Default accent — the clay terracotta, the base every derived token mixes
@@ -345,9 +353,14 @@
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-pop: cubic-bezier(0.34, 1.45, 0.64, 1);
   --t-fast: 100ms;
   --t-med: 160ms;
   --t-slow: 240ms;
+  --icon-swap-dur: 250ms;
+  --icon-swap-blur: 2px;
+  --icon-swap-start-scale: 0.25;
+  --icon-swap-ease: ease-in-out;
   transition: --brand 220ms var(--ease-out);
 
   /* Shadows ---------------------------------------------------------- */
@@ -467,6 +480,9 @@
   --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
   --detail-bar-border: color-mix(in oklch, var(--border-subtle) 66%, transparent);
   --body-copy: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground));
+  /* Dark surfaces don't wash the low-opacity dots out the way light ones do,
+   * so the spinner keeps the softer muted-leaning mix here. */
+  --spinner-neutral: color-mix(in oklch, var(--muted-foreground) 72%, var(--foreground));
   --popover-border: color-mix(in oklch, white 12%, transparent);
   /* Dark inverts the roles: a deep brand-tinted surface + a lifted brand
    * foreground. Both still derive from --brand so theming cascades. */

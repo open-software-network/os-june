@@ -161,6 +161,28 @@ describe("createPendingActionStore", () => {
     expect(store.openRecords()).toHaveLength(0);
   });
 
+  it("retires an expired approval without letting a replay reopen it", () => {
+    const store = createPendingActionStore();
+    const request = pendingClassified("approval.request", "s1", { request_id: "r-expired" });
+    store.record(request, "sandboxed");
+
+    store.expireRequest("s1", "r-expired", "timeout");
+    expect(store.openCount()).toBe(0);
+    expect(store.getRecords()[0]).toMatchObject({
+      requestId: "r-expired",
+      status: "expired",
+      retiredReason: "timeout",
+    });
+
+    store.record(request, "sandboxed");
+    expect(store.openCount()).toBe(0);
+    expect(store.getRecords()[0]?.status).toBe("expired");
+
+    store.resolveRequest("s1", "r-expired");
+    store.resolveSession("s1");
+    expect(store.getRecords()[0]?.status).toBe("expired");
+  });
+
   it("secret actions never carry a value, only the request", () => {
     const store = createPendingActionStore();
     store.record(
@@ -236,5 +258,32 @@ describe("createPendingActionStore", () => {
     );
     expect(store.getRecords().length).toBeLessThanOrEqual(PENDING_ACTIONS_CAP);
     expect(store.openRecords().map((r) => r.sessionId)).toContain("live");
+  });
+
+  it("evicts expired history before an older unanswered action", () => {
+    const store = createPendingActionStore();
+    store.record(
+      pendingClassified("approval.request", "old-live", { request_id: "old-live" }),
+      "unrestricted",
+    );
+    for (let i = 0; i < PENDING_ACTIONS_CAP - 1; i += 1) {
+      const sessionId = `expired-${i}`;
+      const requestId = `expired-request-${i}`;
+      store.record(
+        pendingClassified("approval.request", sessionId, { request_id: requestId }),
+        "unrestricted",
+      );
+      store.expireRequest(sessionId, requestId, "timeout");
+    }
+
+    store.record(
+      pendingClassified("approval.request", "new-live", { request_id: "new-live" }),
+      "unrestricted",
+    );
+
+    expect(store.getRecords()).toHaveLength(PENDING_ACTIONS_CAP);
+    expect(store.openRecords().map((record) => record.sessionId)).toEqual(
+      expect.arrayContaining(["old-live", "new-live"]),
+    );
   });
 });

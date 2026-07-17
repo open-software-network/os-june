@@ -58,20 +58,15 @@ raw Tauri app config directory are unaffected.
 
 Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 `JUNE__OS_ACCOUNTS__API_URL`, `JUNE__LOCAL_DEV__ENABLED` / `BEARER_TOKEN` /
-`USER_ID`, `JUNE__UPSTREAMS__*__BASE_URL`, and the
-`JUNE__GATEWAY_ATTESTATION__*` policy fields.
+`USER_ID`, `JUNE__UPSTREAMS__*__BASE_URL`.
 
 ## Backend knobs (`june-api/config.toml`)
 
-- **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB, `max_issue_report_bytes` 301 MiB total (one 300 MiB os-platform attachment plus multipart overhead), `max_image_edit_bytes` sized for a 50 MiB source image after base64 expansion.
+- **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB, `max_agent_chat_bytes` 12 MiB (dedicated `/v1/chat/completions` cap, aligned with the desktop proxy and sized for a 1M-token context window; must be ≥ the 12 MiB proxy cap), `max_issue_report_bytes` 301 MiB total (one 300 MiB os-platform attachment plus multipart overhead), `max_image_edit_bytes` sized for a 50 MiB source image after base64 expansion.
 - **Metering estimate:** `flat_estimate_credits` 250 — the flat credit Hold per metered action; skips per-request estimation.
 - **Hold TTLs (secs):** `note_transcribe` 60, `note_generate` 300, `dictate_transcribe` 30, `dictate_cleanup` 30, `web` 30, `image` defaults to `request_timeout_secs` + 30 (630) — validation rejects an image TTL that cannot outlive the request timeout, so a slow generation can still settle its charge.
 - **Web tools:** `web_search_credits` 20, `web_fetch_credits` 20 (flat).
 - **Preview cap:** `note_transcribe_preview_max_audio_secs` 30.
 - **OS Accounts token contract:** `iss` `https://accounts.opensoftware.co`, `aud` `open-software-apps`, `jwks_refresh_secs` 300, `jwks_miss_min_backoff_secs` 5.
 - **Pricing:** one `[pricing."<model_id>"]` table per priced model (unit, credits, provider, model_type, capabilities, ...). A model with no pricing entry is rejected at the boundary; the live Venice catalog extends this at boot (see [ADR-0007](adr/0007-model-capability-source-of-truth.md)).
-- **Attestation / issue reports:** the June TEE trust-center URL, the os-api
-  Confidential Space proof URL/audience/exact image digest/cache policy, and
-  the fixed os-platform destination (`open-software` / `june`). Production sets
-  `gateway_attestation.required = true`; invalid or unavailable proof stops
-  startup and service-managed text inference.
+- **Attestation / issue reports:** the TEE trust-center URL + the fixed os-platform destination (`open-software` / `june`).

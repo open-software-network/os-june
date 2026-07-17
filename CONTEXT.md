@@ -68,6 +68,33 @@ filled by **note generation**, and owns any manual notes the user types. A
 the reverse, and a note need not have a recording at all.
 _Avoid_: meeting (June has no meeting entity), document, summary.
 
+**Project (folder)**:
+The user-facing organizational unit — "Projects" in the UI, the `folders`
+entity in code — that groups notes and agent sessions and, since JUN-256,
+carries **project instructions** and scopes **memory entries**. One entity,
+two names: say "project" in UI copy, keep `folder` in code and schema.
+_Avoid_: workspace (overloaded), profile (a different, reverted concept).
+
+**Project instructions**:
+The user-written, per-project text (max 4000 chars, on the folder row) that
+June follows in sessions filed in that project. Delivered by injecting a
+delimited project-context block into the session's prompt text at run
+boundaries — never via the global SOUL.md (see
+[ADR-0027](docs/adr/0027-june-owned-project-memory-store.md)).
+_Avoid_: system prompt (that is SOUL territory), folder description (a
+separate, filing-help field).
+
+**Memory entry**:
+One durable fact June remembers, stored in June's own SQLite `memories`
+table — global or scoped to one project — written by the agent through
+`june_context` memory tools (or by the user in Settings), inspectable and
+editable in the "Memory" settings tab and the project detail view. Deletion
+is a hard DELETE plus a tombstone row (future-proofing for any later
+multi-device sync; nothing reads tombstones today).
+_Avoid_: the Hermes memory toolset's `memories/` files (the upstream
+mechanism June does not use for this), Biography (the connector-built user
+profile).
+
 ### Audio & recording
 
 **Recording session**:
@@ -127,6 +154,16 @@ silence is not lost audio. Persisted per processing pass as a
 `transcript_coverage` checkpoint; surfaced on the note (non-blocking) when
 materially incomplete.
 _Avoid_: transcript completeness, duration coverage (wall-clock framing).
+
+**Note transcription job**:
+A durable unit of saved-audio processing for one Source and exact time range.
+Its stable Source-span identity is separate from `turn_index`, which is only
+presentation order; its versioned input fingerprint decides whether succeeded
+text may be reused. Jobs are workflow state, while transcript rows are the
+current user-visible output projection.
+_Avoid_: preview segment (ephemeral live-preview input), provider request (one
+job may make transient retries or bounded chunk requests), transcript row (the
+committed result, not the work).
 
 **System audio helper**:
 The out-of-process macOS `.app` (`june-system-audio-recorder`) that captures
@@ -213,7 +250,7 @@ An agent session the user has marked done. Completion is **June-owned local
 state** (a `completed_sessions` row keyed by the stored session id), set only by
 June and independent of Hermes' own archive flag; completed sessions move out of
 the active sidebar list into a distinct Completed section. See
-[ADR-0024](docs/adr/0024-session-completion-june-owned-local-state.md).
+[ADR-0028](docs/adr/0028-session-completion-june-owned-local-state.md).
 _Avoid_: conflating "completed" with Hermes "archived" (orthogonal — archive is
 Hermes-side and read-only to June; completion is June-side).
 
@@ -303,13 +340,24 @@ integration (too broad), plugin for a Tauri framework package.
 
 **Connector**:
 A private-by-architecture integration between June and a third-party account
-(launch: Google Gmail + Calendar). The user authorizes the provider on their
-Mac; the grant lives in the Keychain and every provider API call originates
-on-device. June ships each connector as a read MCP server (`june_gmail`,
-`june_gcal`) plus a mutating actions server (`june_gmail_actions`,
-`june_gcal_actions`); neither holds the token, which stays in Rust behind the
-on-device provider proxy (see [ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
+(shipped: Google Gmail + Calendar; in progress: Linear). The user authorizes
+the provider on their Mac; the grant lives in the Keychain and every provider
+API call originates on-device. June ships each connector as a read MCP server
+(`june_gmail`, `june_gcal`) plus a mutating actions server
+(`june_gmail_actions`, `june_gcal_actions`); neither holds the token, which
+stays in Rust behind the on-device provider proxy (see
+[ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
 _Avoid_: integration (unqualified), plugin, the Google API.
+
+**Selected teams** (Linear):
+The June-side authorization grant limiting every Linear read and write to the
+teams the user checked at connect time (stored in SQLite, editable in
+settings, enforced in Rust). Not a provider OAuth scope: Linear's `read` and
+`write` scopes are workspace-wide, so team boundaries exist only because
+June's own proxy refuses anything outside the grant. An account with no
+selected teams is connected but inert.
+_Avoid_: team scopes (they are not OAuth scopes), team filter (it is an
+enforcement boundary, not a view preference), workspace access.
 
 **Local mode**:
 The default (and, in v1, only) connector trust model: the OAuth grant is
@@ -352,7 +400,8 @@ transcripts plus the user's mail and calendar ("here's what I already know, and
 it never left your Mac"). Stored locally, feeds the soul's context, fully
 deletable and regenerable.
 _Avoid_: profile (overloaded with **provider settings** and the account
-snapshot), persona, memory (that is the agent memory toolset).
+snapshot), persona, memory (that is the June **memory entry** store; the
+upstream agent memory toolset is a third thing again — qualify which).
 
 **Admin surface**:
 A June-native management view for the embedded Hermes runtime — skills hub,
@@ -512,6 +561,16 @@ _Avoid_: model config (unqualified).
 The user + credit balance + subscription state fetched from OS Accounts and
 surfaced to the UI.
 _Avoid_: profile, balance (unqualified).
+
+**Avatar** (`avatar_seed`):
+The network-wide generated account presentation owned by OS Accounts. A saved
+selection is a renderer-versioned `v1:<payload>` seed; without a supported
+selection, June derives `v1:default:<User.id>` without writing it. The seed
+fixes cloud geometry across conforming Apps, while June supplies colors from
+the active theme. An explicit refresh may remain local while its profile write
+cannot sync.
+_Avoid_: App avatar, unversioned avatar seed, silently replacing an unsupported
+future version.
 
 **AccountGate** / **FundingGate**:
 The sign-in wall (`AccountGate`) versus the credits-exhausted / upgrade wall

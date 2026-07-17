@@ -1,7 +1,8 @@
 use crate::envelope::{
     ERR_AUTHORIZATION_DENIED, ERR_BAD_REQUEST, ERR_INSUFFICIENT_CREDITS, ERR_INTERNAL,
-    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE,
-    ERR_UPSTREAM, TRANSIENT_RETRY_AFTER_SECS,
+    ERR_METERING, ERR_NOT_FOUND, ERR_PAYLOAD_TOO_LARGE, ERR_SERVICE_OVERLOADED,
+    ERR_SHARING_UNAVAILABLE, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
+    TRANSIENT_RETRY_AFTER_SECS,
 };
 use axum::{
     Json,
@@ -33,8 +34,13 @@ pub enum ApiError {
     Upstream,
     #[error("metering_provider_failed")]
     Metering,
+    #[error("server_busy")]
+    ServiceOverloaded,
     #[error("internal_error")]
     Internal,
+    /// Sharing is not configured on this deployment (no share database).
+    #[error("sharing_unavailable")]
+    SharingUnavailable,
 }
 
 impl ApiError {
@@ -64,6 +70,10 @@ impl ApiError {
             code: ERR_NOT_FOUND,
             message: message.into(),
         }
+    }
+
+    pub fn service_overloaded() -> Self {
+        Self::ServiceOverloaded
     }
 
     pub(crate) fn response_parts(&self) -> (StatusCode, serde_json::Value) {
@@ -111,10 +121,20 @@ impl ApiError {
                 ERR_METERING,
                 "metering_provider_failed",
             ),
+            Self::ServiceOverloaded => error_parts(
+                StatusCode::SERVICE_UNAVAILABLE,
+                ERR_SERVICE_OVERLOADED,
+                "server_busy",
+            ),
             Self::Internal => error_parts(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ERR_INTERNAL,
                 "internal_error",
+            ),
+            Self::SharingUnavailable => error_parts(
+                StatusCode::NOT_IMPLEMENTED,
+                ERR_SHARING_UNAVAILABLE,
+                "sharing_unavailable",
             ),
         }
     }
@@ -126,7 +146,9 @@ impl ApiError {
     /// (an SSE body cannot set response headers).
     pub(crate) fn retry_after_secs(&self) -> Option<u64> {
         match self {
-            Self::AuthorizationDenied => Some(TRANSIENT_RETRY_AFTER_SECS),
+            // Load-shedding (503) is transient by definition: tell clients when to
+            // come back so admission overload degrades gracefully (JUN-336).
+            Self::AuthorizationDenied | Self::ServiceOverloaded => Some(TRANSIENT_RETRY_AFTER_SECS),
             _ => None,
         }
     }
@@ -166,6 +188,10 @@ impl From<ServiceError> for ApiError {
             ServiceError::InvalidInput { reason } => Self::bad_request(reason),
             ServiceError::JobNotFound => Self::not_found("job_not_found"),
             ServiceError::ContentRejected { reason } => Self::unprocessable(reason),
+            // Non-enumeration (JUN-308): unknown, revoked, not-owned, and
+            // uninvited all collapse into one indistinguishable 404.
+            ServiceError::ShareNotFound => Self::not_found("share_not_found"),
+            ServiceError::ShareUnavailable => Self::SharingUnavailable,
         }
     }
 }
@@ -242,6 +268,19 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["error_code"], 5031);
         assert_eq!(body["message"], "metering_provider_failed");
+        assert_eq!(body["success"], false);
+    }
+
+    #[tokio::test]
+    async fn service_overloaded_maps_to_503_with_structured_code() {
+        let response = ApiError::ServiceOverloaded.into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // Load-shedding is transient — clients get a Retry-After to back off.
+        assert!(response.headers().get(header::RETRY_AFTER).is_some());
+        let body = body_json(response).await;
+        assert_eq!(body["error_code"], 5032);
+        assert_eq!(body["message"], "server_busy");
         assert_eq!(body["success"], false);
     }
 }

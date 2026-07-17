@@ -8,6 +8,12 @@ import type { AccountStatus, FolderDto, NoteListItemDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   osAccountsReferralSummary: vi.fn(),
+  listMemories: vi.fn(),
+  memorySettings: vi.fn(),
+  setFolderInstructions: vi.fn(),
+  setFolderMemoryDisabled: vi.fn(),
+  updateMemory: vi.fn(),
+  deleteMemory: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => {
@@ -16,17 +22,24 @@ vi.mock("../lib/tauri", async (importOriginal) => {
   return {
     ...actual,
     osAccountsReferralSummary: mocks.osAccountsReferralSummary,
+    listMemories: mocks.listMemories,
+    memorySettings: mocks.memorySettings,
+    setFolderInstructions: mocks.setFolderInstructions,
+    setFolderMemoryDisabled: mocks.setFolderMemoryDisabled,
+    updateMemory: mocks.updateMemory,
+    deleteMemory: mocks.deleteMemory,
   };
 });
 
 const now = "2026-05-19T10:00:00Z";
 
 const folders: FolderDto[] = [
-  { id: "folder-1", name: "Ideas", createdAt: now, updatedAt: now },
+  { id: "folder-1", name: "Ideas", memoryDisabled: false, createdAt: now, updatedAt: now },
   {
     id: "folder-2",
     name: "Work",
     description: "Client projects in flight",
+    memoryDisabled: false,
     createdAt: now,
     updatedAt: now,
   },
@@ -88,6 +101,7 @@ function baseProps() {
     onSelectFolder: vi.fn(),
     onCreateFolder: vi.fn(),
     onRenameFolder: vi.fn(),
+    onFolderUpdated: vi.fn(),
     onDeleteFolder: vi.fn(),
     onCreateNote: vi.fn(),
     onCreateSession: vi.fn(),
@@ -100,11 +114,21 @@ function baseProps() {
     onAssignSessionToFolder: vi.fn(async () => undefined),
     onRemoveSessionFromFolder: vi.fn(),
     onOpenSessionMoveDialog: vi.fn(),
+    onManageProjectMemory: vi.fn(),
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index);
+    if (
+      key?.startsWith("june:account-avatar-variant:") ||
+      key?.startsWith("june:account-avatar-pending:")
+    ) {
+      localStorage.removeItem(key);
+    }
+  }
   mocks.osAccountsReferralSummary.mockResolvedValue({
     code: "JUNE-ALEX",
     url: "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
@@ -115,6 +139,29 @@ beforeEach(() => {
     appliedMonths: 1,
     availableMonths: 1,
   });
+  mocks.listMemories.mockResolvedValue([]);
+  mocks.memorySettings.mockResolvedValue({ enabled: true });
+  mocks.setFolderInstructions.mockImplementation(
+    async (folderId: string, instructions?: string) => {
+      const folder = folders.find((candidate) => candidate.id === folderId);
+      if (!folder) throw new Error("Missing test folder");
+      return { ...folder, instructions };
+    },
+  );
+  mocks.setFolderMemoryDisabled.mockImplementation(async (folderId: string, disabled: boolean) => {
+    const folder = folders.find((candidate) => candidate.id === folderId);
+    if (!folder) throw new Error("Missing test folder");
+    return { ...folder, memoryDisabled: disabled };
+  });
+  mocks.updateMemory.mockImplementation(async (id: string, content: string) => ({
+    id,
+    content,
+    folderId: "folder-2",
+    source: "user",
+    createdAt: now,
+    updatedAt: now,
+  }));
+  mocks.deleteMemory.mockResolvedValue(undefined);
 });
 
 describe("Sidebar primary navigation", () => {
@@ -180,6 +227,37 @@ describe("Sidebar primary navigation", () => {
     fireEvent.keyDown(search, { key: "Escape" });
 
     expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
+  });
+
+  it("opens the command prompt with Command-K while the sidebar is collapsed", async () => {
+    const { container } = render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        collapsed
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    const prompt = screen.getByRole("dialog", { name: "Search" });
+    const search = within(prompt).getByRole("textbox", { name: "Search" });
+    await waitFor(() => expect(search).toHaveFocus());
+
+    // The collapsed sidebar is `display: none`, so the prompt must live outside
+    // the sidebar subtree (portaled to the body) to stay visible.
+    const sidebar = container.querySelector(".sidebar");
+    expect(sidebar).not.toBeNull();
+    expect(sidebar?.contains(prompt)).toBe(false);
+    expect(document.body.contains(prompt)).toBe(true);
   });
 
   it("closes the command prompt on Escape even when a result row is focused", async () => {
@@ -325,10 +403,13 @@ describe("Sidebar primary navigation", () => {
         id: "usr_123",
         handle: "alex",
         email: "alex@example.com",
-        displayName: "Alex",
+        displayName: "Alex Rivera",
       },
     });
-    expect(screen.getByRole("button", { name: "Alex, account menu" })).toBeInTheDocument();
+    const namedAccount = screen.getByRole("button", { name: "Alex Rivera, account menu" });
+    expect(namedAccount).toBeInTheDocument();
+    const namedAvatarStyle = namedAccount.querySelector(".account-avatar")?.getAttribute("style");
+    expect(namedAvatarStyle).toContain("--avatar-cloud-x");
     unmountNamed();
 
     const { unmount: unmountEmail } = renderSidebar({
@@ -337,25 +418,52 @@ describe("Sidebar primary navigation", () => {
       user: {
         id: "usr_123",
         handle: "alex",
-        email: "alex@example.com",
+        email: "alex.rivera@example.com",
         displayName: " ",
       },
     });
-    expect(
-      screen.getByRole("button", { name: "alex@example.com, account menu" }),
-    ).toBeInTheDocument();
+    const emailAccount = screen.getByRole("button", {
+      name: "alex.rivera@example.com, account menu",
+    });
+    expect(emailAccount).toBeInTheDocument();
+    expect(emailAccount.querySelector(".account-avatar")?.getAttribute("style")).toBe(
+      namedAvatarStyle,
+    );
     unmountEmail();
+
+    const { unmount: unmountHandle } = renderSidebar({
+      signedIn: true,
+      configured: true,
+      user: {
+        id: "usr_123",
+        handle: "alex-rivera",
+        email: " ",
+      },
+    });
+    const handleAccount = screen.getByRole("button", {
+      name: "alex-rivera, account menu",
+    });
+    expect(handleAccount).toBeInTheDocument();
+    expect(handleAccount.querySelector(".account-avatar")?.getAttribute("style")).toBe(
+      namedAvatarStyle,
+    );
+    unmountHandle();
 
     renderSidebar({
       signedIn: true,
       configured: true,
       user: {
-        id: "usr_123",
-        handle: "alex",
-        email: " ",
+        id: "usr_456",
+        handle: "alex-rivera-2",
+        displayName: "Alex Rivera",
       },
     });
-    expect(screen.getByRole("button", { name: "alex, account menu" })).toBeInTheDocument();
+    const differentAccount = screen.getByRole("button", {
+      name: "Alex Rivera, account menu",
+    });
+    expect(differentAccount.querySelector(".account-avatar")?.getAttribute("style")).not.toBe(
+      namedAvatarStyle,
+    );
   });
 
   it("opens dictation history from the primary nav", async () => {
@@ -540,16 +648,24 @@ describe("Sidebar primary navigation", () => {
     expect(screen.getByLabelText("Invite link")).toHaveValue(
       "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
     );
+    expect(screen.getByLabelText("Invite link").closest(".copy-link-field")).not.toBeNull();
     expect(screen.getByText("Friends referred")).toBeInTheDocument();
     expect(screen.getByText("1 invited friend is waiting to subscribe.")).toBeInTheDocument();
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
+    const copyButton = within(dialog).getByRole("button", { name: "Copy link" });
+    const iconSwap = copyButton.querySelector(".t-icon-swap");
+    expect(iconSwap).toHaveAttribute("data-state", "a");
+    expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+
+    await user.click(copyButton);
     await waitFor(() =>
       expect(clipboardWrite).toHaveBeenCalledWith(
         "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
       ),
     );
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Link copied" })).toBeEnabled();
+    expect(iconSwap).toHaveAttribute("data-state", "b");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
   });
 
   it("handles unavailable referral links without retry noise", async () => {
@@ -800,4 +916,113 @@ describe("FoldersWorkspace — detail view", () => {
     await user.click(screen.getByRole("menuitem", { name: /Remove from project/ }));
     expect(props.onRemoveNoteFromFolder).toHaveBeenCalledWith("note-1", "folder-2");
   });
+
+  it("prefills the instructions field in Project settings from the folder", async () => {
+    const user = userEvent.setup();
+    render(
+      <FoldersWorkspace
+        {...baseProps()}
+        folders={[{ ...folders[1], instructions: "Answer in French" }]}
+        selectedFolderId="folder-2"
+      />,
+    );
+
+    // Instructions live in Project settings, not on the surface.
+    expect(screen.queryByRole("button", { name: /^Instructions/ })).toBeNull();
+
+    await openProjectSettings(user, "Work");
+    const dialog = screen.getByRole("dialog", { name: "Project settings" });
+    expect(within(dialog).getByRole("textbox", { name: "Project instructions" })).toHaveValue(
+      "Answer in French",
+    );
+  });
+
+  it("saves project instructions from Project settings", async () => {
+    const user = userEvent.setup();
+    const props = baseProps();
+    render(<FoldersWorkspace {...props} selectedFolderId="folder-2" />);
+
+    await openProjectSettings(user, "Work");
+    const dialog = screen.getByRole("dialog", { name: "Project settings" });
+    await user.type(
+      within(dialog).getByRole("textbox", { name: "Project instructions" }),
+      "Keep answers concise",
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mocks.setFolderInstructions).toHaveBeenCalledWith("folder-2", "Keep answers concise"),
+    );
+    expect(props.onFolderUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: "Keep answers concise" }),
+    );
+  });
+
+  it("disables Save when instructions exceed the 4000 character limit", async () => {
+    const user = userEvent.setup();
+    render(<FoldersWorkspace {...baseProps()} selectedFolderId="folder-2" />);
+
+    await openProjectSettings(user, "Work");
+    const dialog = screen.getByRole("dialog", { name: "Project settings" });
+    const textarea = within(dialog).getByRole("textbox", { name: "Project instructions" });
+    fireEvent.change(textarea, { target: { value: "x".repeat(4_001) } });
+
+    expect(within(dialog).getByText("4001 / 4000 characters")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("shows a memory count + toggle and deep-links to the manager from Project settings", async () => {
+    mocks.listMemories.mockResolvedValueOnce([
+      {
+        id: "memory-1",
+        folderId: "folder-2",
+        content: "The launch is Friday",
+        source: "agent",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    const user = userEvent.setup();
+    const props = baseProps();
+    render(<FoldersWorkspace {...props} selectedFolderId="folder-2" />);
+
+    await openProjectSettings(user, "Work");
+    const dialog = screen.getByRole("dialog", { name: "Project settings" });
+
+    // Memory is a count + link here, not an inline list.
+    expect(await within(dialog).findByText("1 memory saved")).toBeInTheDocument();
+    expect(within(dialog).queryByText("The launch is Friday")).toBeNull();
+
+    await user.click(
+      within(dialog).getByRole("switch", { name: "Remember things in this project" }),
+    );
+    expect(mocks.setFolderMemoryDisabled).toHaveBeenCalledWith("folder-2", true);
+    expect(props.onFolderUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({ memoryDisabled: true }),
+    );
+
+    // "Manage memories" hands off to the full manager, scoped to this project.
+    await user.click(within(dialog).getByRole("button", { name: "Manage memories" }));
+    expect(props.onManageProjectMemory).toHaveBeenCalledWith("folder-2");
+  });
+
+  it("shows global memory off and disables the project toggle in Project settings", async () => {
+    mocks.memorySettings.mockResolvedValueOnce({ enabled: false });
+    const user = userEvent.setup();
+    render(<FoldersWorkspace {...baseProps()} selectedFolderId="folder-2" />);
+
+    await openProjectSettings(user, "Work");
+    const dialog = screen.getByRole("dialog", { name: "Project settings" });
+    expect(
+      await within(dialog).findByText("Memory is turned off in Settings > Memory."),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("switch", { name: "Remember things in this project" }),
+    ).toBeDisabled();
+  });
 });
+
+async function openProjectSettings(user: ReturnType<typeof userEvent.setup>, folderName: string) {
+  await user.click(screen.getByRole("button", { name: `Actions for ${folderName}` }));
+  await user.click(screen.getByRole("menuitem", { name: "Project settings" }));
+}

@@ -1,5 +1,5 @@
 use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
-use june_domain::{Credits, ModelKind, TokenUsage};
+use june_domain::{Credits, InferencePrivacy, ModelKind, TokenUsage};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -59,6 +59,14 @@ impl PricingTable {
         self.models
             .get(model_id)
             .is_some_and(|model| model.provider == ModelProvider::Venice)
+    }
+
+    pub fn inference_privacy(&self, model_id: &str) -> InferencePrivacy {
+        self.models
+            .get(model_id)
+            .and_then(|model| model.privacy.as_deref())
+            .filter(|privacy| privacy.eq_ignore_ascii_case("anonymized"))
+            .map_or(InferencePrivacy::Private, |_| InferencePrivacy::Anonymized)
     }
 
     pub fn ensure_model_kind(&self, model_id: &str, kind: ModelKind) -> Result<(), PricingError> {
@@ -145,7 +153,7 @@ pub enum PricingError {
 mod tests {
     use super::{PricingError, PricingTable};
     use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
-    use june_domain::{ModelKind, TokenUsage};
+    use june_domain::{InferencePrivacy, ModelKind, TokenUsage};
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
 
@@ -204,6 +212,31 @@ mod tests {
                 )
                 .map(|credits| credits.0),
             Ok(1)
+        );
+    }
+
+    #[test]
+    fn derives_inference_privacy_and_fails_closed() {
+        let mut configured = models([(
+            "anonymized-text",
+            PriceUnit::Tokens,
+            70,
+            300,
+            ModelType::Text,
+        )]);
+        configured
+            .get_mut("anonymized-text")
+            .expect("model exists")
+            .privacy = Some("Anonymized".to_string());
+        let table = PricingTable::new(configured);
+
+        assert_eq!(
+            table.inference_privacy("anonymized-text"),
+            InferencePrivacy::Anonymized
+        );
+        assert_eq!(
+            table.inference_privacy("missing-model"),
+            InferencePrivacy::Private
         );
     }
 

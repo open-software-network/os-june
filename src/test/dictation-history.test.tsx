@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
@@ -118,7 +118,6 @@ describe("DictationHistoryView", () => {
   });
 
   it("renders recent dictations and copies with trailing space", async () => {
-    const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: mocks.writeText },
@@ -130,8 +129,89 @@ describe("DictationHistoryView", () => {
     expect(screen.getByText("Hands-free")).toBeInTheDocument();
     expect(screen.getByLabelText("Shortcut Ctrl+Opt+T")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Copy" }));
-    await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
+    const copyButton = screen.getByRole("button", { name: "Copy" });
+    const iconSwap = copyButton.querySelector(".t-icon-swap");
+    expect(iconSwap).toHaveAttribute("data-state", "a");
+    expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+    expect(iconSwap?.querySelector('[data-icon="a"]')).not.toBeNull();
+    expect(iconSwap?.querySelector('[data-icon="b"]')).not.toBeNull();
+
+    copyButton.focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Copy");
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. ");
+      expect(copyButton).toHaveAccessibleName("Copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+
+      act(() => vi.advanceTimersByTime(1200));
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      expect(mocks.writeText).toHaveBeenCalledTimes(2);
+
+      act(() => vi.advanceTimersByTime(401));
+      expect(copyButton).toHaveAccessibleName("Copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+
+      act(() => vi.advanceTimersByTime(1199));
+      expect(copyButton).toHaveAccessibleName("Copy");
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps dialog copy feedback inside a fixed button footprint", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: mocks.writeText },
+    });
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(48);
+    const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(24);
+
+    try {
+      render(<DictationHistoryView />);
+
+      const transcript = await screen.findByRole("button", { name: "Show full transcript" });
+      const row = transcript.closest("li");
+      expect(row).not.toBeNull();
+      const rowCopyButton = within(row as HTMLElement).getByRole("button", { name: "Copy" });
+      const rowIconSwap = rowCopyButton.querySelector(".t-icon-swap");
+
+      await user.click(transcript);
+      const dialog = screen.getByRole("dialog");
+      const dialogCopyButton = within(dialog).getByRole("button", { name: "Copy" });
+      const dialogIconSwap = dialogCopyButton.querySelector(".t-icon-swap");
+
+      expect(dialogCopyButton).toHaveTextContent(/^Copy$/);
+      expect(dialogIconSwap).toHaveAttribute("data-state", "a");
+      expect(dialogIconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+      expect(dialogIconSwap?.querySelector('[data-icon="a"]')).not.toBeNull();
+      expect(dialogIconSwap?.querySelector('[data-icon="b"]')).not.toBeNull();
+
+      dialogCopyButton.focus();
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Copy");
+
+      await user.click(dialogCopyButton);
+      await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
+      expect(dialogCopyButton).toHaveAccessibleName("Copied");
+      expect(dialogCopyButton).toHaveTextContent(/^Copy$/);
+      expect(dialogIconSwap).toHaveAttribute("data-state", "b");
+      expect(rowIconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
   });
 
   it("advertises shortcut dictation on Windows", async () => {

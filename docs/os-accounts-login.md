@@ -22,7 +22,24 @@ see [june-api-prd.md](june-api-prd.md). Implementation lives in
    `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` to use a file instead and skip Keychain
    prompts.
 5. The app fetches an **account snapshot** — `/me` + `/billing/balance` +
-   `/billing/subscription` — surfaced to the UI as `AccountStatus`.
+   `/billing/subscription` — surfaced to the UI as `AccountStatus`. `/me`
+   includes the optional renderer-versioned `avatar_seed` used to keep the
+   User's Avatar geometry stable across Apps and devices.
+
+June requests `profile:write` in addition to `profile:read` so the User can
+explicitly choose a new Avatar from General settings. Avatar v1 seeds use
+`v1:<payload>` with 1 to 125 printable ASCII payload characters. June renders a
+supported saved seed; if the seed is absent or uses a future unsupported
+version, June derives `v1:default:<User.id>` without changing OS Accounts. The
+seed fixes geometry and June supplies the active theme's palette. Existing
+sessions minted without the write scope remain signed in but must sign out and
+sign in again before a new selection can sync.
+
+**Release prerequisite:** the target environment's June OAuth client must
+allow `profile:write` before a build requesting this scope is released. OS
+Accounts rejects an authorization request containing a scope outside the
+client allowlist, which would block a fresh sign-in rather than only disable
+Avatar sync.
 
 ## Gates
 

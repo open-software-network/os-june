@@ -1,24 +1,38 @@
-//! Google connector token custody.
+//! Connector token custody, shared by every provider (Google and Linear).
 //!
-//! Tokens live in the OS keychain, one entry per Google account (user =
-//! account email), and NEVER anywhere else: the SQLite index only carries
+//! Tokens live in the OS keychain, one entry per connected account (user =
+//! the caller-supplied account id: a Google account email, or a Linear
+//! workspace id), and NEVER anywhere else: the SQLite index only carries
 //! non-secret account metadata (emails, scopes, status) so accounts can be
-//! enumerated without touching the keychain. Debug builds use a separate
-//! keychain service, and can opt into a plaintext token file for local
-//! development via `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` (also what unit
-//! tests exercise, since the Keychain is unavailable in CI).
+//! enumerated without touching the keychain. Each provider gets its own
+//! keychain SERVICE (`co.opensoftware.june.<provider>`), so two providers'
+//! tokens never collide even if they ever shared an account id. Debug builds
+//! use a separate keychain service per provider, and can opt into a
+//! plaintext token file for local development via
+//! `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` (also what unit tests exercise,
+//! since the Keychain is unavailable in CI); that file is per provider too.
 
+use super::ConnectorProvider;
 use crate::domain::types::AppError;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.google";
-const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.google";
+const KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june";
+const DEV_KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june-dev";
 #[cfg(debug_assertions)]
 const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
-#[cfg(any(debug_assertions, test))]
-const DEV_PLAINTEXT_TOKEN_FILE: &str = "dev-google-connector-tokens.json";
 const USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_JUNE_USE_PROD_ACCOUNTS_TOKENS";
+
+/// The dev plaintext token file's basename for a provider (under
+/// `target/`). Kept separate per provider for the same reason the keychain
+/// service is: so a Google and a Linear dev-mode connect never share a file.
+#[cfg(any(debug_assertions, test))]
+fn dev_plaintext_token_file(provider: ConnectorProvider) -> &'static str {
+    match provider {
+        ConnectorProvider::Google => "dev-google-connector-tokens.json",
+        ConnectorProvider::Linear => "dev-linear-connector-tokens.json",
+    }
+}
 
 /// What lives in one keychain entry. Token fields zeroize on drop so rotated
 /// grants don't linger in memory (mirrors `os_accounts::TokenPair`).
@@ -34,40 +48,54 @@ pub struct StoredConnectorTokens {
     pub email: String,
 }
 
-pub async fn store_tokens(tokens: &StoredConnectorTokens) -> Result<(), AppError> {
+/// Write `tokens` to the keychain, keyed by `(provider, account_id)`.
+/// `account_id` is the caller-supplied keychain user: a Google account
+/// email, or a Linear workspace id.
+pub async fn store_tokens(
+    provider: ConnectorProvider,
+    account_id: &str,
+    tokens: &StoredConnectorTokens,
+) -> Result<(), AppError> {
     let json = serde_json::to_string(tokens)
         .map_err(|e| AppError::new("connector_token_serialize_failed", e.to_string()))?;
-    let email = tokens.email.clone();
+    let account_id = account_id.to_string();
     #[cfg(debug_assertions)]
     if use_dev_plaintext_token_store() {
-        return store_dev_plaintext_tokens(email, json).await;
+        return store_dev_plaintext_tokens(provider, account_id, json).await;
     }
-    store_platform_tokens(email, json).await
+    store_platform_tokens(provider, account_id, json).await
 }
 
 /// Load the stored tokens for one account. `Ok(None)` means "not connected"
 /// (no keychain entry); errors are real keychain failures.
-pub async fn load_tokens(account_id: &str) -> Result<Option<StoredConnectorTokens>, AppError> {
+pub async fn load_tokens(
+    provider: ConnectorProvider,
+    account_id: &str,
+) -> Result<Option<StoredConnectorTokens>, AppError> {
     #[cfg(debug_assertions)]
     if use_dev_plaintext_token_store() {
-        return load_dev_plaintext_tokens(account_id).await;
+        return load_dev_plaintext_tokens(provider, account_id).await;
     }
-    load_platform_tokens(account_id).await
+    load_platform_tokens(provider, account_id).await
 }
 
-pub async fn delete_tokens(account_id: &str) -> Result<(), AppError> {
+pub async fn delete_tokens(provider: ConnectorProvider, account_id: &str) -> Result<(), AppError> {
     #[cfg(debug_assertions)]
     if use_dev_plaintext_token_store() {
-        return delete_dev_plaintext_tokens(account_id).await;
+        return delete_dev_plaintext_tokens(provider, account_id).await;
     }
-    delete_platform_tokens(account_id).await
+    delete_platform_tokens(provider, account_id).await
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-async fn store_platform_tokens(email: String, json: String) -> Result<(), AppError> {
-    let service = keychain_service().to_string();
+async fn store_platform_tokens(
+    provider: ConnectorProvider,
+    account_id: String,
+    json: String,
+) -> Result<(), AppError> {
+    let service = keychain_service(provider);
     tokio::task::spawn_blocking(move || {
-        keyring::Entry::new(&service, &email).and_then(|entry| entry.set_password(&json))
+        keyring::Entry::new(&service, &account_id).and_then(|entry| entry.set_password(&json))
     })
     .await
     .map_err(|e| AppError::new("connector_keychain_write_failed", e.to_string()))?
@@ -75,13 +103,20 @@ async fn store_platform_tokens(email: String, json: String) -> Result<(), AppErr
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-async fn store_platform_tokens(_email: String, _json: String) -> Result<(), AppError> {
+async fn store_platform_tokens(
+    _provider: ConnectorProvider,
+    _account_id: String,
+    _json: String,
+) -> Result<(), AppError> {
     Err(secure_storage_unavailable())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-async fn load_platform_tokens(account_id: &str) -> Result<Option<StoredConnectorTokens>, AppError> {
-    let service = keychain_service().to_string();
+async fn load_platform_tokens(
+    provider: ConnectorProvider,
+    account_id: &str,
+) -> Result<Option<StoredConnectorTokens>, AppError> {
+    let service = keychain_service(provider);
     let user = account_id.to_string();
     let raw = tokio::task::spawn_blocking(move || {
         match keyring::Entry::new(&service, &user).and_then(|entry| entry.get_password()) {
@@ -113,14 +148,18 @@ async fn load_platform_tokens(account_id: &str) -> Result<Option<StoredConnector
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn load_platform_tokens(
+    _provider: ConnectorProvider,
     _account_id: &str,
 ) -> Result<Option<StoredConnectorTokens>, AppError> {
     Ok(None)
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-async fn delete_platform_tokens(account_id: &str) -> Result<(), AppError> {
-    let service = keychain_service().to_string();
+async fn delete_platform_tokens(
+    provider: ConnectorProvider,
+    account_id: &str,
+) -> Result<(), AppError> {
+    let service = keychain_service(provider);
     let user = account_id.to_string();
     tokio::task::spawn_blocking(move || {
         match keyring::Entry::new(&service, &user).and_then(|entry| entry.delete_credential()) {
@@ -136,7 +175,10 @@ async fn delete_platform_tokens(account_id: &str) -> Result<(), AppError> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-async fn delete_platform_tokens(_account_id: &str) -> Result<(), AppError> {
+async fn delete_platform_tokens(
+    _provider: ConnectorProvider,
+    _account_id: &str,
+) -> Result<(), AppError> {
     Ok(())
 }
 
@@ -149,17 +191,26 @@ fn secure_storage_unavailable() -> AppError {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn keychain_service() -> &'static str {
-    keychain_service_for_build(cfg!(debug_assertions), use_prod_connector_tokens())
+fn keychain_service(provider: ConnectorProvider) -> String {
+    keychain_service_for_build(
+        provider,
+        cfg!(debug_assertions),
+        use_prod_connector_tokens(),
+    )
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn keychain_service_for_build(debug_assertions: bool, use_prod: bool) -> &'static str {
-    if debug_assertions && !use_prod {
-        DEV_KEYCHAIN_SERVICE
+fn keychain_service_for_build(
+    provider: ConnectorProvider,
+    debug_assertions: bool,
+    use_prod: bool,
+) -> String {
+    let prefix = if debug_assertions && !use_prod {
+        DEV_KEYCHAIN_SERVICE_PREFIX
     } else {
-        KEYCHAIN_SERVICE
-    }
+        KEYCHAIN_SERVICE_PREFIX
+    };
+    format!("{prefix}.{}", provider.as_str())
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -175,41 +226,56 @@ fn use_dev_plaintext_token_store() -> bool {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn dev_plaintext_token_path() -> std::path::PathBuf {
+fn dev_plaintext_token_path(provider: ConnectorProvider) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
-        .join(DEV_PLAINTEXT_TOKEN_FILE)
+        .join(dev_plaintext_token_file(provider))
 }
 
 // --- Dev plaintext file store (debug builds only) ---------------------------
 //
-// One JSON object keyed by account email. The pure `dev_file_*` helpers take
-// an explicit path so unit tests can exercise them against a temp dir without
-// mutating process env or the shared target/ file.
+// One JSON object keyed by account id, in a file scoped to the provider. The
+// pure `dev_file_*` helpers take an explicit path so unit tests can exercise
+// them against a temp dir without mutating process env or the shared
+// target/ file.
 
 #[cfg(debug_assertions)]
-async fn store_dev_plaintext_tokens(email: String, json: String) -> Result<(), AppError> {
-    tokio::task::spawn_blocking(move || dev_file_store(&dev_plaintext_token_path(), &email, &json))
-        .await
-        .map_err(|e| AppError::new("connector_dev_token_store_write_failed", e.to_string()))?
+async fn store_dev_plaintext_tokens(
+    provider: ConnectorProvider,
+    account_id: String,
+    json: String,
+) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || {
+        dev_file_store(&dev_plaintext_token_path(provider), &account_id, &json)
+    })
+    .await
+    .map_err(|e| AppError::new("connector_dev_token_store_write_failed", e.to_string()))?
 }
 
 #[cfg(debug_assertions)]
 async fn load_dev_plaintext_tokens(
+    provider: ConnectorProvider,
     account_id: &str,
 ) -> Result<Option<StoredConnectorTokens>, AppError> {
     let account_id = account_id.to_string();
-    tokio::task::spawn_blocking(move || dev_file_load(&dev_plaintext_token_path(), &account_id))
-        .await
-        .map_err(|e| AppError::new("connector_dev_token_store_read_failed", e.to_string()))?
+    tokio::task::spawn_blocking(move || {
+        dev_file_load(&dev_plaintext_token_path(provider), &account_id)
+    })
+    .await
+    .map_err(|e| AppError::new("connector_dev_token_store_read_failed", e.to_string()))?
 }
 
 #[cfg(debug_assertions)]
-async fn delete_dev_plaintext_tokens(account_id: &str) -> Result<(), AppError> {
+async fn delete_dev_plaintext_tokens(
+    provider: ConnectorProvider,
+    account_id: &str,
+) -> Result<(), AppError> {
     let account_id = account_id.to_string();
-    tokio::task::spawn_blocking(move || dev_file_delete(&dev_plaintext_token_path(), &account_id))
-        .await
-        .map_err(|e| AppError::new("connector_dev_token_store_write_failed", e.to_string()))?
+    tokio::task::spawn_blocking(move || {
+        dev_file_delete(&dev_plaintext_token_path(provider), &account_id)
+    })
+    .await
+    .map_err(|e| AppError::new("connector_dev_token_store_write_failed", e.to_string()))?
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -411,16 +477,32 @@ mod tests {
     #[test]
     fn keychain_service_separates_dev_and_release() {
         assert_eq!(
-            keychain_service_for_build(true, false),
+            keychain_service_for_build(ConnectorProvider::Google, true, false),
             "co.opensoftware.june-dev.google"
         );
         assert_eq!(
-            keychain_service_for_build(true, true),
+            keychain_service_for_build(ConnectorProvider::Google, true, true),
             "co.opensoftware.june.google"
         );
         assert_eq!(
-            keychain_service_for_build(false, false),
+            keychain_service_for_build(ConnectorProvider::Google, false, false),
             "co.opensoftware.june.google"
+        );
+    }
+
+    #[test]
+    fn keychain_service_separates_providers() {
+        assert_eq!(
+            keychain_service_for_build(ConnectorProvider::Linear, true, false),
+            "co.opensoftware.june-dev.linear"
+        );
+        assert_eq!(
+            keychain_service_for_build(ConnectorProvider::Linear, true, true),
+            "co.opensoftware.june.linear"
+        );
+        assert_eq!(
+            keychain_service_for_build(ConnectorProvider::Linear, false, false),
+            "co.opensoftware.june.linear"
         );
     }
 }

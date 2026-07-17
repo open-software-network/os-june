@@ -1,7 +1,6 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used, clippy::panic))]
 
 pub mod audio_probe;
-pub mod gateway_attestation;
 pub mod http;
 pub mod issue_reports;
 pub mod jwks;
@@ -16,13 +15,13 @@ pub mod venice_augment;
 pub mod venice_image;
 pub mod venice_image_edit;
 pub mod venice_video;
+pub mod viewer_identity;
 pub mod wav_probe;
 
 mod retry;
 mod transcription;
 
 pub use audio_probe::MultiFormatDurationProbe;
-pub use gateway_attestation::GatewayAttestationVerifier;
 pub use http::{client_with_timeout, default_client, issue_report_client, jwks_client};
 pub use issue_reports::{LogIssueReportSink, OsPlatformIssueReportSink};
 pub use jwks::{JwksTokenVerifier, JwksTokenVerifierParams};

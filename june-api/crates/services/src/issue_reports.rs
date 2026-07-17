@@ -115,6 +115,7 @@ impl IssueReportService {
             body: issue_report_diagnosis_body(report),
             model: model.clone(),
             provider_credentials: ProviderCredentials::default(),
+            inference_privacy: june_domain::InferencePrivacy::Private,
             unmetered: false,
         };
         match timeout(

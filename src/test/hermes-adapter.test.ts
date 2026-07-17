@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  deleteHermesSession,
   isRunningScheduledRunSession,
   isReplaceableScheduledRunTitle,
   isScheduledRunPreamble,
@@ -107,6 +108,9 @@ describe("scheduled-run helpers", () => {
 
 const mocks = vi.hoisted(() => ({
   hermesBridgeSessions: vi.fn(),
+  deleteHermesBridgeSession: vi.fn(),
+  shareKeyGet: vi.fn(),
+  shareDelete: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -123,7 +127,9 @@ vi.mock("../lib/tauri", () => ({
   }),
   hermesBridgeSessions: mocks.hermesBridgeSessions,
   hermesBridgeSessionMessages: vi.fn(),
-  deleteHermesBridgeSession: vi.fn(),
+  deleteHermesBridgeSession: mocks.deleteHermesBridgeSession,
+  shareKeyGet: mocks.shareKeyGet,
+  shareDelete: mocks.shareDelete,
 }));
 
 beforeEach(() => {
@@ -132,6 +138,39 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("deleteHermesSession", () => {
+  it("revokes the session's share before deleting it", async () => {
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_s", contentKeyB64: "AAA" });
+    mocks.shareDelete.mockResolvedValue(undefined);
+    mocks.deleteHermesBridgeSession.mockResolvedValue(undefined);
+
+    await deleteHermesSession("session-1");
+
+    expect(mocks.shareKeyGet).toHaveBeenCalledWith("session", "session-1");
+    expect(mocks.shareDelete).toHaveBeenCalledWith("shr_s");
+    expect(mocks.deleteHermesBridgeSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("deletes an unshared session without revoking anything", async () => {
+    mocks.shareKeyGet.mockResolvedValue(null);
+    mocks.deleteHermesBridgeSession.mockResolvedValue(undefined);
+
+    await deleteHermesSession("session-2");
+
+    expect(mocks.shareDelete).not.toHaveBeenCalled();
+    expect(mocks.deleteHermesBridgeSession).toHaveBeenCalledWith("session-2");
+  });
+
+  it("keeps the session when the share revoke fails", async () => {
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_s", contentKeyB64: "AAA" });
+    mocks.shareDelete.mockRejectedValue(new Error("offline"));
+
+    await expect(deleteHermesSession("session-3")).rejects.toThrow("offline");
+    // Fail closed: the bridge session is not deleted if its share can't be revoked.
+    expect(mocks.deleteHermesBridgeSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("Hermes adapter", () => {

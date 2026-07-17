@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-07-14
+superseded_by: 0024
 ---
 
 # June verifies an attested Open Software API before service-managed inference
@@ -15,7 +16,7 @@ deployment from receiving provider keys.
 
 ## Decision
 
-The production inference chain is:
+The production inference chain was proposed as:
 
 ```text
 June -> attested June API -> attested Open Software API -> private or attested model
@@ -25,28 +26,18 @@ June -> attested June API -> attested Open Software API -> private or attested m
 - Google Cloud Attestation releases os-api's runtime identity and Secret Manager
   access only to a stable, non-debug workload running an exact approved image
   digest.
-- os-api publishes a public nonce-bound Google attestation token at
-  `POST /v1/gateway/attestation` and fails closed outside Confidential Space.
-- June API verifies Google's signature, issuer, audience, expiration, caller
-  nonce, software identity, debug state, hardware model, stable support status,
-  and exact os-api image digest.
-- Production June API refuses to start if the proof is invalid. Service-managed
-  text inference refreshes the proof on a bounded cache and fails closed when
-  it cannot be refreshed. User-provided Venice keys continue to route directly
-  to Venice and do not depend on os-api.
-- June's public `/verify` page shows both deployment policies and includes a
-  browser-side fresh proof verifier.
+- os-api publishes a public nonce-bound Google attestation token.
+- June API verifies the proof and exact os-api image digest.
+- Production June API refuses to start if the proof is invalid and refreshes
+  the proof before service-managed inference.
+- June's public `/verify` page shows both deployment policies.
 
 ## Consequences
 
-- A source commit or container tag is insufficient for promotion. The immutable
-  os-api digest must be stamped into both Google workload identity policy and
-  June configuration.
-- Digest rotation is a coordinated two-repository release. A mismatch causes
-  downtime for service-managed inference by design.
-- Google Cloud Attestation, Intel TDX, the June image, the os-api image, and the
-  selected model provider remain explicit trust dependencies.
-- This proves the model routing service workload identity and makes secret release
-  enforceable. It does not by itself prove every upstream model's implementation;
-  os-api inference receipts remain the source for model privacy and attestation
-  evidence.
+- Digest rotation requires a coordinated two-repository release.
+- A mismatch causes downtime for service-managed inference by design.
+- Google Cloud Attestation, Intel TDX, both service images, and the selected
+  model provider become explicit trust dependencies.
+
+This decision was superseded before production enforcement by ADR-0024. The
+cross-product startup proof and exact digest pin were removed.

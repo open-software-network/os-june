@@ -13,9 +13,14 @@ mod note_transcribe;
 mod p3a;
 mod pricing;
 mod prompts;
+mod share;
 mod util;
 mod video;
 mod web_augment;
+
+pub use share::{
+    CreateShareInput, CreatedInvite, CreatedShare, InviteInput, ShareService, ShareServiceDeps,
+};
 
 pub use agent_chat::{
     AgentChatOutput, AgentChatParams, AgentChatService, AgentChatServiceDeps, AgentChatStreamOutput,

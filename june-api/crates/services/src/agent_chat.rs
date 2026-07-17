@@ -45,6 +45,7 @@ impl AgentChatService {
     pub async fn complete(&self, params: AgentChatParams) -> Result<AgentChatOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let inference_privacy = self.pricing.inference_privacy(&params.model_id.0);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -56,6 +57,7 @@ impl AgentChatService {
                     body: params.body,
                     model: params.model_id.clone(),
                     provider_credentials: params.provider_credentials.clone(),
+                    inference_privacy,
                     unmetered: true,
                 })
                 .await?;
@@ -81,6 +83,7 @@ impl AgentChatService {
                 body: params.body,
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
+                inference_privacy,
                 unmetered: false,
             })
             .await
@@ -125,6 +128,7 @@ impl AgentChatService {
     ) -> Result<AgentChatStreamOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let inference_privacy = self.pricing.inference_privacy(&params.model_id.0);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -136,6 +140,7 @@ impl AgentChatService {
                     body: params.body,
                     model: params.model_id.clone(),
                     provider_credentials: params.provider_credentials.clone(),
+                    inference_privacy,
                     unmetered: true,
                 })
                 .await?;
@@ -167,6 +172,7 @@ impl AgentChatService {
                 body: params.body,
                 model: params.model_id.clone(),
                 provider_credentials: params.provider_credentials.clone(),
+                inference_privacy,
                 unmetered: false,
             })
             .await
