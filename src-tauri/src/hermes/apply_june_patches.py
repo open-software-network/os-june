@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "8d8fb371b9a70bb3fb947c9013d877a79c00f8ef3a9416d86e9202da7c0c2db3",
+    "tui_gateway/server.py": "f54df076324bec2aaf01bce906a785d048aaf0a444a9af70b0f4b9b9c1bf6d52",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -561,27 +561,38 @@ def patch_mcp_tool(source: str) -> str:
 def patch_server(source: str) -> str:
     source = replace_once(
         source,
-        '''def _start_agent_build(sid: str, session: dict) -> None:
-''',
-        '''def _start_agent_build(
-    sid: str, session: dict, build_generation=None
-) -> None:
-''',
-        "Hermes build generation parameter",
-    )
-    source = replace_once(
-        source,
-        '''    key = session["session_key"]
+        '''    lock = session.setdefault("agent_build_lock", threading.Lock())
+    with lock:
+        if ready.is_set() or session.get("agent_build_started"):
+            return
+        session["agent_build_started"] = True
+        # An upgrading lazy session is now genuinely mid-construction — restore
+        # its "still starting" eviction exemption.
+        session.pop("lazy", None)
+    key = session["session_key"]
 
     def _build() -> None:
 ''',
-        '''    key = session["session_key"]
-    if build_generation is None:
-        build_generation = session.get("prompt_generation")
+        '''    lock = session.setdefault("agent_build_lock", threading.Lock())
+    # Reset is the only event that invalidates a lazy Hermes build. Capture its
+    # epoch while also checking whether reset already installed a replacement.
+    with session["history_lock"]:
+        if session.get("agent") is not None:
+            ready.set()
+            return
+        build_epoch = int(session.get("reset_generation", 0))
+        with lock:
+            if ready.is_set() or session.get("agent_build_started"):
+                return
+            session["agent_build_started"] = True
+            # An upgrading lazy session is now genuinely mid-construction — restore
+            # its "still starting" eviction exemption.
+            session.pop("lazy", None)
+    key = session["session_key"]
 
     def _build() -> None:
 ''',
-        "Hermes build generation capture",
+        "Hermes build reset epoch capture",
     )
     source = replace_once(
         source,
@@ -595,19 +606,70 @@ def patch_server(source: str) -> str:
             ready.set()
             return
 
-        # Serialize the lazy Hermes build with reset. If reset claimed the
-        # session first, this worker is stale and must not publish its instance,
-        # worker, error, or session metadata into the replacement state.
-        state_lock = current["history_lock"]
-        state_lock.acquire()
-        if current.get("prompt_generation") != build_generation:
-            state_lock.release()
-            ready.set()
-            return
-
         worker = None
+        state_lock = None
 ''',
-        "Hermes build generation ownership",
+        "Hermes build publication lock state",
+    )
+    source = replace_once(
+        source,
+        '''            finally:
+                _clear_session_context(tokens)
+
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
+            current["agent"] = agent
+            # Baseline for the per-turn config sync; the profile home
+            # override is still active here.
+            current["config_model_seen"] = _config_model_target()
+''',
+        '''            finally:
+                _clear_session_context(tokens)
+
+            # The slow Hermes construction stays outside history_lock so image
+            # bytes remain attachable immediately. Claim only the publication
+            # phase, then reject this instance if reset advanced its own epoch.
+            state_lock = current["history_lock"]
+            state_lock.acquire()
+            if int(current.get("reset_generation", 0)) != build_epoch:
+                state_lock.release()
+                state_lock = None
+                try:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                except Exception:
+                    pass
+                return
+
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
+            current["agent"] = agent
+            # Baseline for the per-turn config sync; the profile home
+            # override is still active here.
+            current["config_model_seen"] = _config_model_target()
+''',
+        "Hermes build reset epoch publication",
+    )
+    source = replace_once(
+        source,
+        '''        except Exception as e:
+            current["agent_error"] = str(e)
+            _emit("error", sid, {"message": f"agent init failed: {e}"})
+        finally:
+''',
+        '''        except Exception as e:
+            if state_lock is not None:
+                if int(current.get("reset_generation", 0)) == build_epoch:
+                    current["agent_error"] = str(e)
+                    _emit("error", sid, {"message": f"June initialization failed: {e}"})
+            else:
+                with current["history_lock"]:
+                    if int(current.get("reset_generation", 0)) == build_epoch:
+                        current["agent_error"] = str(e)
+                        _emit("error", sid, {"message": f"June initialization failed: {e}"})
+        finally:
+''',
+        "Hermes build reset epoch error fence",
     )
     source = replace_once(
         source,
@@ -615,12 +677,13 @@ def patch_server(source: str) -> str:
 
     threading.Thread(target=_build, daemon=True).start()
 ''',
-        '''            state_lock.release()
+        '''            if state_lock is not None:
+                state_lock.release()
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
 ''',
-        "Hermes build generation release",
+        "Hermes build publication lock release",
     )
     source = replace_once(
         source,
@@ -850,18 +913,6 @@ def patch_server(source: str) -> str:
     )
     source = replace_once(
         source,
-        '''    _start_agent_build(sid, session)
-
-    def run_after_agent_ready() -> None:
-''',
-        '''    _start_agent_build(sid, session, prompt_generation)
-
-    def run_after_agent_ready() -> None:
-''',
-        "prompt Hermes build generation handoff",
-    )
-    source = replace_once(
-        source,
         '''            return
         _run_prompt_submit(rid, sid, session, text)
 
@@ -997,7 +1048,9 @@ def patch_server(source: str) -> str:
         # constructing the replacement Hermes instance. They may finish only
         # after this lock is released and must not mutate the reset session.
         previous_prompt_generation = int(session.get("prompt_generation", 0))
+        previous_reset_generation = int(session.get("reset_generation", 0))
         session["prompt_generation"] = previous_prompt_generation + 1
+        session["reset_generation"] = previous_reset_generation + 1
         tokens = _set_session_context(session["session_key"])
         try:
             new_agent = _make_agent(
@@ -1014,6 +1067,7 @@ def patch_server(source: str) -> str:
             # The original lazy build and prompt still own the session when a
             # requested reset cannot construct its replacement Hermes instance.
             session["prompt_generation"] = previous_prompt_generation
+            session["reset_generation"] = previous_reset_generation
             raise
         finally:
             _clear_session_context(tokens)

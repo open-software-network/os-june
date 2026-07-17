@@ -211,6 +211,8 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "_image_meta": lambda _path: {},
             "_sessions": {"fresh-session": fresh_session},
             "_sessions_lock": threading.Lock(),
+            "_set_session_context": lambda _key: None,
+            "_clear_session_context": lambda _tokens: None,
         }
         exec(compile(source, str(root / "tui_gateway" / "server.py"), "exec"), namespace)
         response = namespace["_image_attach_bytes"](
@@ -296,34 +298,49 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert attachment_result["response"].get("result", {}).get("attached") is True
         assert len(concurrent_session["attached_images"]) == 1, concurrent_session
 
-        # Execute the real lazy-build worker with reset already owning the state
-        # lock. Once reset advances the generation, the stale worker must exit
-        # without constructing or publishing an obsolete Hermes instance.
+        # Execute the real lazy-build worker while its slow Hermes construction
+        # is in progress. history_lock must remain immediately acquirable for
+        # attachment/reset state, and reset's separate epoch must prevent the
+        # finished stale worker from replacing the reset-owned instance.
         stale_build_calls = []
-        namespace["_make_agent"] = lambda *_args, **_kwargs: stale_build_calls.append(
-            True
-        )
-        stale_build_agent = object()
+        stale_build_started = threading.Event()
+        stale_build_release = threading.Event()
+        stale_built_agent = object()
+
+        def make_stale_hermes_agent(*_args, **_kwargs):
+            stale_build_calls.append(True)
+            stale_build_started.set()
+            assert stale_build_release.wait(2), "stale Hermes build was not released"
+            return stale_built_agent
+
+        namespace["_make_agent"] = make_stale_hermes_agent
+        reset_owned_agent = object()
         stale_build_session = {
-            "agent": stale_build_agent,
+            "agent": None,
             "agent_build_lock": threading.Lock(),
             "agent_error": None,
             "agent_ready": threading.Event(),
             "history_lock": threading.Lock(),
             "prompt_generation": 11,
+            "reset_generation": 3,
             "session_key": "stale-build-key",
         }
         namespace["_sessions"]["stale-build"] = stale_build_session
-        with stale_build_session["history_lock"]:
-            namespace["_start_agent_build"](
-                "stale-build", stale_build_session, stale_build_session["prompt_generation"]
-            )
-            stale_build_session["prompt_generation"] = 12
+        namespace["_start_agent_build"]("stale-build", stale_build_session)
+        assert stale_build_started.wait(1), "lazy Hermes build did not start"
+        assert stale_build_session["history_lock"].acquire(timeout=0.1), (
+            "slow Hermes construction must not block image attachment state"
+        )
+        stale_build_session["reset_generation"] = 4
+        stale_build_session["prompt_generation"] = 12
+        stale_build_session["agent"] = reset_owned_agent
+        stale_build_session["history_lock"].release()
+        stale_build_release.set()
         assert stale_build_session["agent_ready"].wait(1), (
             "stale Hermes build did not finish"
         )
-        assert stale_build_calls == [], stale_build_calls
-        assert stale_build_session["agent"] is stale_build_agent
+        assert stale_build_calls == [True], stale_build_calls
+        assert stale_build_session["agent"] is reset_owned_agent
         assert stale_build_session["agent_error"] is None
 
         # Reset must own the same lock before Hermes construction starts. An
@@ -356,6 +373,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "attached_images": ["still-owned.png"],
             "history_lock": threading.Lock(),
             "prompt_generation": 19,
+            "reset_generation": 5,
             "running": True,
         }
 
@@ -370,6 +388,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         else:
             raise AssertionError("failed reset unexpectedly succeeded")
         assert failed_reset_session["prompt_generation"] == 19, failed_reset_session
+        assert failed_reset_session["reset_generation"] == 5, failed_reset_session
         assert failed_reset_session["running"] is True, failed_reset_session
         assert failed_reset_session["attached_images"] == ["still-owned.png"]
         namespace["_make_agent"] = make_hermes_agent_for_reset
@@ -383,6 +402,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "image_counter": 1,
             "running": False,
             "prompt_generation": 7,
+            "reset_generation": 2,
         }
         namespace["_sessions"]["reset-session"] = reset_session
         reset_result = {}
@@ -425,6 +445,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert len(reset_session["attached_images"]) == 1, reset_session
         assert "stale-before-reset.png" not in reset_session["attached_images"]
         assert reset_session["prompt_generation"] == 8, reset_session
+        assert reset_session["reset_generation"] == 3, reset_session
 
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,
@@ -488,9 +509,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         and node.func.id == "_start_agent_build"
     ]
     assert len(prompt_build_calls) == 1, prompt_build_calls
-    assert len(prompt_build_calls[0].args) == 3, ast.dump(prompt_build_calls[0])
-    assert isinstance(prompt_build_calls[0].args[2], ast.Name)
-    assert prompt_build_calls[0].args[2].id == "prompt_generation"
+    assert len(prompt_build_calls[0].args) == 2, ast.dump(prompt_build_calls[0])
     run_after_ready = next(
         node
         for node in ast.walk(prompt_submit)
@@ -636,6 +655,13 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         and any(_session_subscript(target, "prompt_generation") for target in node.targets)
     ]
     assert len(reset_generation_assigns) == 2, reset_generation_assigns
+    reset_epoch_assigns = [
+        node
+        for node in ast.walk(reset_agent)
+        if isinstance(node, ast.Assign)
+        and any(_session_subscript(target, "reset_generation") for target in node.targets)
+    ]
+    assert len(reset_epoch_assigns) == 2, reset_epoch_assigns
     queue_helper = _function(tree, "_queue_attached_image")
     serialized_appends = [
         node

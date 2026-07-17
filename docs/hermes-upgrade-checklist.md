@@ -71,10 +71,11 @@ follows ADR 0025. On every pin bump:
    lightweight runtime session returned by `session.create` without waiting
    for full Hermes initialization. Confirm `prompt.submit` atomically detaches
    its image batch, failed Hermes initialization restores that batch ahead of
-   later image attachments for retry, reset or a newer prompt invalidates stale
-   initialization callbacks and stale lazy builds, a failed reset restores prompt
-   ownership, and a successful prompt consumes its batch exactly once. Exercise
-   these invariants against a new runtime session in the compatibility smoke.
+   later image attachments for retry, prompt generations invalidate stale callbacks,
+   a separate reset epoch invalidates only pre-reset lazy builds, and a failed reset
+   restores both ownership values. Confirm slow Hermes construction does not hold
+   the image queue lock and a successful prompt consumes its batch exactly once.
+   Exercise these invariants against a new runtime session in the compatibility smoke.
 7. Build both macOS and Windows bundles. Confirm both packaging paths apply the
    same patch, stamp the patch set, verify it after relocation, and run
    `scripts/hermes-approval-patch-smoke.py`.
