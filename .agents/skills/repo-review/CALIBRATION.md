@@ -145,3 +145,6 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #825 | Standards (publication convergence) | 1 | 1 | caught unqualified agent terminology in new lock-order prose and smoke identifiers; renamed it to Hermes instance and slash worker vocabulary before final provenance sealing |
 | #825 | Spec (reset readiness convergence) | 1 | 1 | reproduced successful reset publishing a replacement while obsolete lazy construction kept agent_ready unset; drove reset-owned readiness after slash worker publication plus a slow-build regression |
 | #825 | Codex (bot, reset attachment convergence) | 1 | 1 | found image byte attachment read stale agent_error before joining reset's history lock; drove an atomic error check inside queue ownership plus stale-error reset interleaving coverage |
+| #826 | Standards (codex, r1+final) | 0 | — | clean on the native cue sequencing, HUD state ownership, tests, and comments |
+| #826 | Spec (codex, r1+final) | 2 | 2 | found interrupted start cues losing normal stop feedback and the actionable HUD error being latched only after an await; final clean |
+| #826 | Adversarial (codex, iterative) | 3 | 3 | documented the deliberate 300 ms start-speaking boundary, then found the short-press discard bypass and a stale error continuation hiding a newer listening HUD; convergence approved |
