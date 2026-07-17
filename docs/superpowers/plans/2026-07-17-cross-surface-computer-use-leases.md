@@ -188,6 +188,6 @@ Expected: no unmerged paths, whitespace errors, or conflict markers.
 
 Ask the original frontend integration reviewer to verify that pre-submit revocation completes before Note Chat can enter Hermes and that own/stale generation handling remains intact.
 
-- [ ] **Step 4: Complete and push the merge**
+- [x] **Step 4: Complete and push the merge**
 
 Commit the active merge, fetch and verify current `origin/main`, push `codex/jun-335-stable-streaming`, and confirm PR #797 no longer conflicts.
