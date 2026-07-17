@@ -627,7 +627,7 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
         .await
         .expect("profile x session profile");
     repos
-        .assign_session_to_folder("session-x", &folder_x.id)
+        .assign_session_to_folder("x", "session-x", &folder_x.id)
         .await
         .expect("profile x session folder");
     let memory_x = repos

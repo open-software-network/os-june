@@ -179,12 +179,12 @@ async fn assigning_and_removing_session_folders_round_trips() {
         .expect("folder");
 
     repos
-        .assign_session_to_folder("hermes-session-1", &folder.id)
+        .assign_session_to_folder("default", "hermes-session-1", &folder.id)
         .await
         .expect("assign session");
     // Re-assigning is a no-op rather than an error.
     repos
-        .assign_session_to_folder("hermes-session-1", &folder.id)
+        .assign_session_to_folder("default", "hermes-session-1", &folder.id)
         .await
         .expect("assign session twice");
 
@@ -205,6 +205,49 @@ async fn assigning_and_removing_session_folders_round_trips() {
 }
 
 #[tokio::test]
+async fn assigning_session_to_folder_requires_both_to_match_the_active_profile() {
+    let repos = repos().await;
+    let folder_a = repos
+        .create_folder("profile-a", "Profile A project", None)
+        .await
+        .expect("profile A project");
+    let folder_b = repos
+        .create_folder("profile-b", "Profile B project", None)
+        .await
+        .expect("profile B project");
+    repos
+        .assign_session_to_profile("session-a", "profile-a")
+        .await
+        .expect("profile A session");
+
+    let session_mismatch = repos
+        .assign_session_to_folder("profile-b", "session-a", &folder_b.id)
+        .await
+        .expect_err("profile A session must not be filed while profile B is active");
+    assert_eq!(session_mismatch.code, "session_folder_profile_mismatch");
+
+    let folder_mismatch = repos
+        .assign_session_to_folder("profile-a", "session-a", &folder_b.id)
+        .await
+        .expect_err("profile B project must not accept a profile A session");
+    assert_eq!(folder_mismatch.code, "session_folder_profile_mismatch");
+    assert!(repos
+        .list_session_folders()
+        .await
+        .expect("unchanged assignments")
+        .is_empty());
+
+    repos
+        .assign_session_to_folder("profile-a", "session-a", &folder_a.id)
+        .await
+        .expect("matching profile assignment");
+    let assignments = repos.list_session_folders().await.expect("assignments");
+    assert_eq!(assignments.len(), 1);
+    assert_eq!(assignments[0].session_id, "session-a");
+    assert_eq!(assignments[0].folder_id, folder_a.id);
+}
+
+#[tokio::test]
 async fn deleting_folder_drops_its_session_assignments() {
     let repos = repos().await;
     let folder = repos
@@ -212,7 +255,7 @@ async fn deleting_folder_drops_its_session_assignments() {
         .await
         .expect("folder");
     repos
-        .assign_session_to_folder("hermes-session-1", &folder.id)
+        .assign_session_to_folder("default", "hermes-session-1", &folder.id)
         .await
         .expect("assign session");
 

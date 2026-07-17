@@ -369,10 +369,11 @@ pub async fn assign_session_to_folder(
     app: AppHandle,
     request: AssignSessionToFolderRequest,
 ) -> Result<(), AppError> {
-    Ok(repositories(&app)
+    let profile = active_profile(&app);
+    repositories(&app)
         .await?
-        .assign_session_to_folder(&request.session_id, &request.folder_id)
-        .await?)
+        .assign_session_to_folder(&profile, &request.session_id, &request.folder_id)
+        .await
 }
 
 #[tauri::command]

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { defaultNav, navEquals, reorderTabs, type Tab, type TabNav } from "../app/tabs/tabs";
+import {
+  defaultNav,
+  invalidateNoteTabs,
+  navEquals,
+  reorderTabs,
+  type Tab,
+  type TabNav,
+} from "../app/tabs/tabs";
 
 describe("tab navigation snapshots", () => {
   it("a fresh tab lands on the agent hero (a new chat)", () => {
@@ -90,6 +97,27 @@ describe("tab navigation snapshots", () => {
     expect(
       navEquals({ view: "folders", folderId: "f1" }, { view: "folders", folderId: "f1" }),
     ).toBe(true);
+  });
+});
+
+describe("invalidateNoteTabs", () => {
+  it("replaces only invalid note snapshots with the neutral notes list", () => {
+    const tabs: Tab[] = [
+      { id: "old", nav: { view: "meetings", noteId: "note-a", originFolderId: "folder-a" } },
+      { id: "current", nav: { view: "meetings", noteId: "note-b" } },
+      { id: "agent", nav: { view: "agent", agentSessionId: "session-a" } },
+    ];
+
+    expect(invalidateNoteTabs(tabs, new Set(["note-a"]))).toEqual([
+      { id: "old", nav: { view: "notes" } },
+      tabs[1],
+      tabs[2],
+    ]);
+  });
+
+  it("returns the original array when no note tab is invalid", () => {
+    const tabs: Tab[] = [{ id: "current", nav: { view: "meetings", noteId: "note-b" } }];
+    expect(invalidateNoteTabs(tabs, new Set(["note-a"]))).toBe(tabs);
   });
 });
 

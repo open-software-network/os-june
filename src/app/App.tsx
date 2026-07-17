@@ -45,7 +45,15 @@ import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings, SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { TabBar, type TabItem } from "../components/tabs/TabBar";
-import { defaultNav, makeTabId, navEquals, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
+import {
+  defaultNav,
+  invalidateNoteTabs,
+  makeTabId,
+  navEquals,
+  reorderTabs,
+  type Tab,
+  type TabNav,
+} from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -460,6 +468,7 @@ export function App() {
   const pendingSessionProjectRef = useRef<{
     folderId: string;
     knownSessionIds: Set<string>;
+    profile: string;
   } | null>(null);
   const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
@@ -564,6 +573,10 @@ export function App() {
   // currently selected note — wrong whenever the user browsed away while
   // recording.
   const recordingNoteIdRef = useRef<string | undefined>(undefined);
+  // A recording may deliberately keep its owning note visible after the user
+  // switches profiles. Remember that exception so stopping the take can remove
+  // the old-profile note and its tab snapshots immediately.
+  const crossProfileRecordingNoteIdRef = useRef<string | undefined>(undefined);
   // Reactive mirror of recordingNoteIdRef. The ref serves the async finish/HUD
   // paths that need the latest value synchronously; this state drives render
   // decisions — which note shows the in-note RecorderBar, and whether the
@@ -2019,7 +2032,9 @@ export function App() {
       if (pendingProject && detail.selectedSessionId) {
         pendingSessionProjectRef.current = null;
         const sessionId = detail.selectedSessionId;
-        if (!pendingProject.knownSessionIds.has(sessionId)) {
+        if (pendingProject.profile !== getActiveHermesProfileName()) {
+          setAgentOrigin(undefined);
+        } else if (!pendingProject.knownSessionIds.has(sessionId)) {
           void assignSessionToFolder(sessionId, pendingProject.folderId)
             .then(() =>
               setSessionFolders((prev) => ({
@@ -2352,6 +2367,7 @@ export function App() {
   useEffect(() => {
     if (appBlocked || !bootstrapped) return;
     const previous = lastDataProfileRef.current;
+    const profileChanged = previous !== undefined && previous !== activeHermesProfileName;
     const refreshRequested =
       lastProfileDataRefreshRevisionRef.current !== profileDataRefreshRevision;
     lastDataProfileRef.current = activeHermesProfileName;
@@ -2359,6 +2375,10 @@ export function App() {
     if (!refreshRequested && (previous === undefined || previous === activeHermesProfileName)) {
       return;
     }
+    // A project-scoped new-session request belongs to the profile that started
+    // it. Clear the handoff before any async reload can race a session-created
+    // event from the newly active profile.
+    if (profileChanged) pendingSessionProjectRef.current = null;
     let cancelled = false;
     void (async () => {
       try {
@@ -2370,6 +2390,22 @@ export function App() {
         ]);
         if (cancelled) return;
         commitAgentSessions(sessions, profiles);
+        const visibleNoteIds = new Set(notesResponse.items.map((note) => note.id));
+        const recordingNoteId = recordingNoteIdRef.current;
+        crossProfileRecordingNoteIdRef.current =
+          recordingNoteId && !visibleNoteIds.has(recordingNoteId) ? recordingNoteId : undefined;
+        const invalidNoteIds = new Set<string>();
+        for (const tab of tabsRef.current) {
+          const noteId = tab.nav.view === "meetings" ? tab.nav.noteId : undefined;
+          if (noteId && noteId !== recordingNoteId && !visibleNoteIds.has(noteId)) {
+            invalidNoteIds.add(noteId);
+          }
+        }
+        const nextTabs = invalidateNoteTabs(tabsRef.current, invalidNoteIds);
+        if (nextTabs !== tabsRef.current) {
+          tabsRef.current = nextTabs;
+          setTabs(nextTabs);
+        }
         // The old profile's folder selection and origins point at rows the
         // new profile can't see — clear them before the new lists land.
         dispatch({ type: "folderSelected", folderId: undefined });
@@ -2994,6 +3030,7 @@ export function App() {
     pendingSessionProjectRef.current = {
       folderId,
       knownSessionIds: new Set(agentSessions.map((session) => session.id)),
+      profile: getActiveHermesProfileName(),
     };
     setAgentOrigin({ kind: "project", folderId });
     markAgentNewSessionPending();
@@ -3524,8 +3561,29 @@ export function App() {
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
+    const wasCrossProfileRecording =
+      !!owningNoteId && crossProfileRecordingNoteIdRef.current === owningNoteId;
     dispatch({ type: "recordingStatusCleared" });
     setRecordingNote(undefined);
+    if (wasCrossProfileRecording && owningNoteId) {
+      crossProfileRecordingNoteIdRef.current = undefined;
+      const nextTabs = invalidateNoteTabs(tabsRef.current, new Set([owningNoteId]));
+      if (nextTabs !== tabsRef.current) {
+        tabsRef.current = nextTabs;
+        setTabs(nextTabs);
+      }
+      // The old-profile note was temporarily present only to control the
+      // recording. Once the take stops, remove it from the active profile's
+      // visible list before any tab or sidebar action can reopen it.
+      dispatch({
+        type: "notesLoaded",
+        notes: state.notes.filter((note) => note.id !== owningNoteId),
+      });
+      setOriginFolderId(undefined);
+      setOriginAllNotes(false);
+      setFolderReturnTarget(undefined);
+      if (activeViewRef.current === "meetings") setActiveView("notes");
+    }
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
     // The selected note isn't necessarily that note — the user may have
@@ -3539,13 +3597,35 @@ export function App() {
     }
     try {
       const result = await finishRecording(sessionId);
-      dispatch({ type: "noteProcessingUpdated", note: result.note });
+      // The result belongs to the profile where recording started. Once that
+      // profile's temporary recording view has been retired, do not let the
+      // finish response upsert the old note into the newly active profile.
+      if (!wasCrossProfileRecording) {
+        dispatch({ type: "noteProcessingUpdated", note: result.note });
+      }
     } catch (err) {
-      if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
+      if (
+        wasCrossProfileRecording ||
+        !owningNoteId ||
+        !(await applyNoteScopedProcessingFailure(owningNoteId, err))
+      ) {
         setError(messageFromError(err));
       }
       if (options.rethrow) throw err;
     } finally {
+      if (wasCrossProfileRecording) {
+        const finishingProfile = getActiveHermesProfileName();
+        try {
+          const response = await listNotes();
+          if (getActiveHermesProfileName() === finishingProfile) {
+            dispatch({ type: "notesLoaded", notes: response.items });
+          }
+        } catch (refreshErr) {
+          if (getActiveHermesProfileName() === finishingProfile) {
+            setError(messageFromError(refreshErr));
+          }
+        }
+      }
       finishingSessionsRef.current.delete(sessionId);
     }
   }

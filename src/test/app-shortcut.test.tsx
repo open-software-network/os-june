@@ -63,6 +63,7 @@ const mocks = vi.hoisted(() => ({
   deleteFolder: vi.fn(),
   renameFolder: vi.fn(),
   assignNoteToFolder: vi.fn(),
+  assignSessionToFolder: vi.fn(),
   removeNoteFromFolder: vi.fn(),
   listNotes: vi.fn(),
   listFolders: vi.fn(),
@@ -186,7 +187,7 @@ vi.mock("../lib/tauri", () => ({
   assignNoteToFolder: mocks.assignNoteToFolder,
   listSessionFolders: vi.fn(async () => []),
   listSessionProfiles: vi.fn(async () => []),
-  assignSessionToFolder: vi.fn(async () => undefined),
+  assignSessionToFolder: mocks.assignSessionToFolder,
   assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
   listMemories: vi.fn(async () => []),
@@ -351,6 +352,7 @@ describe("App shortcuts", () => {
     mocks.getNote.mockResolvedValue(first);
     mocks.listFolders.mockResolvedValue([]);
     mocks.createNote.mockResolvedValue(created);
+    mocks.assignSessionToFolder.mockResolvedValue(undefined);
     mocks.checkRecordingSourceReadiness.mockResolvedValue({
       sources: [
         { source: "microphone", ready: true },
@@ -1569,6 +1571,92 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch),
     );
+  });
+
+  it("invalidates note tabs from the previous profile", async () => {
+    const user = userEvent.setup();
+    const profileANote = note({ id: "note-a", title: "Profile A private note" });
+    const profileBNote = note({ id: "note-b", title: "Profile B note" });
+    mocks.createNote.mockResolvedValue(profileANote);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Profile A private note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "New tab" }));
+
+    mocks.listNotes.mockResolvedValue({ items: [profileBNote] });
+    mocks.listFolders.mockResolvedValue([]);
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === profileBNote.id ? profileBNote : profileANote,
+    );
+    act(() => setActiveHermesProfileName("profile-b"));
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(profileBNote.id));
+    mocks.getNote.mockClear();
+
+    fireEvent.keyDown(window, { key: "1", metaKey: true });
+
+    const invalidatedTab = await screen.findByRole("tab", { name: "Notes" });
+    await waitFor(() => expect(invalidatedTab).toHaveAttribute("data-active", "true"));
+    expect(mocks.getNote).not.toHaveBeenCalled();
+    expect(screen.queryByText("Profile A private note")).toBeNull();
+  });
+
+  it("abandons pending project intent when the active profile switches", async () => {
+    const user = userEvent.setup();
+    const folder = {
+      id: "folder-a",
+      name: "Profile A project",
+      memoryDisabled: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [folder],
+      notes: [note()],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await user.click(screen.getByRole("button", { name: "Projects" }));
+    const projectCard = (await screen.findByText(folder.name)).closest("article");
+    expect(projectCard).not.toBeNull();
+    await user.click(projectCard as HTMLElement);
+    const newSessionButtons = await screen.findAllByRole("button", { name: "New session" });
+    const projectNewSessionButton = newSessionButtons.at(-1);
+    expect(projectNewSessionButton).toBeDefined();
+    await user.click(projectNewSessionButton as HTMLElement);
+
+    mocks.listNotes.mockResolvedValue({ items: [] });
+    mocks.listFolders.mockResolvedValue([]);
+    act(() => setActiveHermesProfileName("profile-b"));
+    await waitFor(() => expect(mocks.listFolders).toHaveBeenCalled());
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [{ id: "profile-b-session", title: "Profile B session" }],
+            selectedSessionId: "profile-b-session",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.assignSessionToFolder).not.toHaveBeenCalled();
   });
 
   it("refreshes visible data when rows move into the already-active profile", async () => {

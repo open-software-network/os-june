@@ -1519,17 +1519,43 @@ impl Repositories {
 
     pub async fn assign_session_to_folder(
         &self,
+        profile: &str,
         session_id: &str,
         folder_id: &str,
-    ) -> Result<(), sqlx::error::Error> {
+    ) -> Result<(), AppError> {
+        let mut transaction = self.pool.begin().await?;
+        let matches_active_profile = query(
+            "SELECT 1
+             FROM folders f
+             LEFT JOIN session_profiles sp ON sp.session_id = ?
+             WHERE f.id = ?
+               AND f.profile = ?
+               AND f.deleted_at IS NULL
+               AND COALESCE(sp.profile, 'default') = ?",
+        )
+        .bind(session_id)
+        .bind(folder_id)
+        .bind(profile)
+        .bind(profile)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .is_some();
+        if !matches_active_profile {
+            return Err(AppError::new(
+                "session_folder_profile_mismatch",
+                "The session and project must belong to the active profile.",
+            ));
+        }
+
         query(
             "INSERT OR IGNORE INTO session_folders (session_id, folder_id, assigned_at) VALUES (?, ?, ?)",
         )
         .bind(session_id)
         .bind(folder_id)
         .bind(timestamp())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
+        transaction.commit().await?;
         Ok(())
     }
 

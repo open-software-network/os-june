@@ -392,6 +392,44 @@ describe("notes recording reliability", () => {
     expect(screen.queryByText("First note")).toBeNull();
   });
 
+  it("retires an old-profile recording note as soon as the recording stops", async () => {
+    const workNote = note({ id: "note-work", title: "Work profile note" });
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, processingStatus: "transcribing" },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+    });
+
+    await startRecordingOnFirstNote();
+
+    mocks.listNotes.mockResolvedValue({ items: [workNote] });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === workNote.id ? workNote : first,
+    );
+    const listCallsBeforeSwitch = mocks.listNotes.mock.calls.length;
+    await act(async () => {
+      setActiveHermesProfileName("work");
+    });
+
+    await waitFor(() =>
+      expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBeforeSwitch),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(first.id));
+    const listCallsBeforeFinish = mocks.listNotes.mock.calls.length;
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+    await waitFor(() =>
+      expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBeforeFinish),
+    );
+
+    const notesTab = await screen.findByRole("tab", { name: "Notes" });
+    expect(notesTab).toHaveAttribute("data-active", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes" }));
+    expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(screen.queryByText("First note")).toBeNull();
+  });
+
   it("stays on meeting notes after deleting the last note", async () => {
     mocks.bootstrapApp.mockResolvedValue({
       folders: [],
