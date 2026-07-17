@@ -1,0 +1,22 @@
+name: june_github
+version: 0.1.0
+description: "June's fixed read-only GitHub tools over the on-device broker."
+author: Open Software Network
+kind: backend
+provides_tools:
+  - list_repositories
+  - get_repository
+  - list_directory
+  - read_file
+  - search_code
+  - list_issues
+  - get_issue
+  - list_issue_comments
+  - list_pull_requests
+  - get_pull_request
+  - list_pull_request_files
+  - read_pull_request_file_diff
+  - list_pull_request_commits
+  - list_pull_request_reviews
+  - list_pull_request_review_comments
+  - list_pull_request_checks
