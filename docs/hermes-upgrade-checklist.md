@@ -69,10 +69,10 @@ follows ADR 0025. On every pin bump:
    advisory-lock APIs differ.
 6. Confirm `image.attach_bytes` persists and queues image bytes against the
    lightweight runtime session returned by `session.create` without waiting
-   for full Hermes initialization. Confirm a failed Hermes initialization
-   clears that turn's queue while a successful prompt consumes it exactly once.
-   Exercise these invariants against a new runtime session in the compatibility
-   smoke.
+   for full Hermes initialization. Confirm `prompt.submit` atomically detaches
+   its image batch, failed Hermes initialization discards only that batch, and a
+   successful prompt consumes it exactly once. Exercise these invariants against
+   a new runtime session in the compatibility smoke.
 7. Build both macOS and Windows bundles. Confirm both packaging paths apply the
    same patch, stamp the patch set, verify it after relocation, and run
    `scripts/hermes-approval-patch-smoke.py`.

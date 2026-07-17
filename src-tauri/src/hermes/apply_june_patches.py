@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "ff1f4e889920bb29d7c88e01077e7ca7f41ef22f6d62edf6233608c9f282b0f1",
+    "tui_gateway/server.py": "1dbf9c5153f3f9d799d8503445c4f2c0490deac9b768bf22ab4f3550d9a0b3b2",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -581,19 +581,197 @@ def patch_server(source: str) -> str:
     )
     source = replace_once(
         source,
-        '''        err = _wait_agent(session, rid)
-        if err:
-            _emit(
+        '''    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    try:
+        img_path.write_bytes(img_bytes)
+    except Exception:
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        raise
+    session.setdefault("attached_images", []).append(str(img_path))
+    return img_path
 ''',
-        '''        err = _wait_agent(session, rid)
-        if err:
-            # image.attach_bytes can queue images while Hermes initializes.
-            # This failed prompt owns that queue; do not let its images leak
-            # into a later, unrelated prompt in the same session.
-            session.setdefault("attached_images", []).clear()
-            _emit(
+        '''    # Queue writes share the prompt's history lock so prompt.submit can
+    # atomically detach exactly the images it owns. An upload that arrives after
+    # that boundary stays queued for the next prompt instead of being lost or
+    # consumed by the agent run already starting.
+    with session["history_lock"]:
+        session["image_counter"] = session.get("image_counter", 0) + 1
+        img_dir = _hermes_home / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+        try:
+            img_path.write_bytes(img_bytes)
+        except Exception:
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            raise
+        session.setdefault("attached_images", []).append(str(img_path))
+        return img_path
 ''',
-        "failed prompt initialization clears queued images",
+        "serialized image queue append",
+    )
+    source = replace_once(
+        source,
+        '''    session.setdefault("attached_images", []).append(str(img_path))
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": len(session["attached_images"]),
+''',
+        '''    with session["history_lock"]:
+        session.setdefault("attached_images", []).append(str(img_path))
+        attached_count = len(session["attached_images"])
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": attached_count,
+''',
+        "serialized clipboard image append",
+    )
+    source = replace_once(
+        source,
+        '''        if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return _err(rid, 4016, f"unsupported image: {image_path.name}")
+        session.setdefault("attached_images", []).append(str(image_path))
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "path": str(image_path),
+                "count": len(session["attached_images"]),
+''',
+        '''        if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return _err(rid, 4016, f"unsupported image: {image_path.name}")
+        with session["history_lock"]:
+            session.setdefault("attached_images", []).append(str(image_path))
+            attached_count = len(session["attached_images"])
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "path": str(image_path),
+                "count": attached_count,
+''',
+        "serialized local image append",
+    )
+    source = replace_once(
+        source,
+        '''    images = session.setdefault("attached_images", [])
+    before = len(images)
+    session["attached_images"] = [path for path in images if path != raw]
+    return _ok(
+        rid,
+        {
+            "detached": len(session["attached_images"]) != before,
+            "count": len(session["attached_images"]),
+        },
+    )
+''',
+        '''    with session["history_lock"]:
+        images = session.setdefault("attached_images", [])
+        before = len(images)
+        session["attached_images"] = [path for path in images if path != raw]
+        detached = len(session["attached_images"]) != before
+        attached_count = len(session["attached_images"])
+    return _ok(
+        rid,
+        {
+            "detached": detached,
+            "count": attached_count,
+        },
+    )
+''',
+        "serialized image detach",
+    )
+    source = replace_once(
+        source,
+        '''        if dropped["is_image"]:
+            session.setdefault("attached_images", []).append(str(drop_path))
+            text = remainder or f"[User attached image: {drop_path.name}]"
+            return _ok(
+                rid,
+                {
+                    "matched": True,
+                    "is_image": True,
+                    "path": str(drop_path),
+                    "count": len(session["attached_images"]),
+''',
+        '''        if dropped["is_image"]:
+            with session["history_lock"]:
+                session.setdefault("attached_images", []).append(str(drop_path))
+                attached_count = len(session["attached_images"])
+            text = remainder or f"[User attached image: {drop_path.name}]"
+            return _ok(
+                rid,
+                {
+                    "matched": True,
+                    "is_image": True,
+                    "path": str(drop_path),
+                    "count": attached_count,
+''',
+        "serialized detected image append",
+    )
+    source = replace_once(
+        source,
+        '''        _start_inflight_turn(session, text)
+
+    # Persist the DB row lazily, now that the user has actually sent a message.
+''',
+        '''        _start_inflight_turn(session, text)
+        # Detach this prompt's immutable image batch at the same boundary that
+        # marks the session running. Later uploads remain queued for the next
+        # prompt, regardless of whether Hermes initialization succeeds.
+        submitted_images = list(session.get("attached_images", []))
+        session["attached_images"] = []
+
+    # Persist the DB row lazily, now that the user has actually sent a message.
+''',
+        "prompt image batch ownership",
+    )
+    source = replace_once(
+        source,
+        '''            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+''',
+        '''            return
+        _run_prompt_submit(rid, sid, session, text, submitted_images)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+''',
+        "prompt image batch handoff",
+    )
+    source = replace_once(
+        source,
+        '''def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    with session["history_lock"]:
+        history = list(session["history"])
+        history_version = int(session.get("history_version", 0))
+        images = list(session.get("attached_images", []))
+        session["attached_images"] = []
+''',
+        '''def _run_prompt_submit(
+    rid, sid: str, session: dict, text: Any, images=None
+) -> None:
+    with session["history_lock"]:
+        history = list(session["history"])
+        history_version = int(session.get("history_version", 0))
+        if images is None:
+            images = list(session.get("attached_images", []))
+            session["attached_images"] = []
+        else:
+            images = list(images)
+''',
+        "prompt image batch consumption",
     )
     source = replace_once(
         source,
