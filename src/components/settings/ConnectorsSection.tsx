@@ -108,7 +108,7 @@ function featureSummary(account: ConnectorAccount): string {
 }
 
 function obsidianSubtitle(status: ObsidianStatus | null): string {
-  if (!status?.connected) return "Local vault read and update capability.";
+  if (!status?.connected) return "Local vault read capability. Note updates need an unrestricted session.";
   const vault = status.vaultName ?? "Vault";
   if (status.available === false) return `${vault} · Vault unavailable at ${status.vaultPath}`;
   return `${vault} · ${status.vaultPath}`;

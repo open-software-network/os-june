@@ -1237,12 +1237,7 @@ async fn start_hermes_bridge_inner(
     let sandbox_profile = if full_mode {
         None
     } else {
-        prepare_sandbox(
-            app,
-            &hermes_home,
-            agent_cli_access,
-            obsidian_vault_path.as_deref(),
-        )
+        prepare_sandbox(app, &hermes_home, agent_cli_access)
     };
     let sandboxed = sandbox_profile.is_some();
     // SOUL.md is shared by both processes (single home), so its sandbox
@@ -5883,12 +5878,7 @@ pub async fn open_hermes_tui_debug(
     let sandbox_profile = if full_mode {
         None
     } else {
-        prepare_sandbox(
-            &app,
-            &hermes_home,
-            agent_cli_access,
-            obsidian_vault_path.as_deref(),
-        )
+        prepare_sandbox(&app, &hermes_home, agent_cli_access)
     };
     let sandbox_available = if full_mode {
         sandbox_would_engage(&app, &hermes_home)
@@ -6817,12 +6807,7 @@ fn apply_isolated_hermes_env(
 /// jailed agent can't rewrite the policy that governs it or the one the next
 /// spawn will read.
 #[cfg(target_os = "macos")]
-fn prepare_sandbox(
-    app: &AppHandle,
-    hermes_home: &Path,
-    agent_cli_access: bool,
-    obsidian_vault_path: Option<&Path>,
-) -> Option<PathBuf> {
+fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) -> Option<PathBuf> {
     // The caller logs the sandboxed/unsandboxed outcome; this only short-circuits.
     if env_flag_enabled(JUNE_HERMES_DISABLE_SANDBOX_ENV) {
         return None;
@@ -6834,7 +6819,7 @@ fn prepare_sandbox(
     let runtime_dir = managed_hermes_runtime_dir(app).ok()?;
     let app_data_dir = crate::app_paths::app_data_dir(app).ok()?;
     let image_source_key_path = image_source_capability_secret_path(&app_data_dir);
-    let write_roots = sandbox_write_roots(hermes_home, &runtime_dir, obsidian_vault_path);
+    let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
     let config_write_path = sandbox_config_write_path(hermes_home);
     let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
     // Block the jailed agent from reading the connector token stores: the
@@ -6879,7 +6864,6 @@ fn prepare_sandbox(
     _app: &AppHandle,
     _hermes_home: &Path,
     _agent_cli_access: bool,
-    _obsidian_vault_path: Option<&Path>,
 ) -> Option<PathBuf> {
     None
 }
@@ -6939,11 +6923,7 @@ fn env_flag_enabled(name: &str) -> bool {
 /// arbitrary directory — a project-dir feature would need an explicit, validated
 /// grant instead.
 #[cfg(target_os = "macos")]
-fn sandbox_write_roots(
-    hermes_home: &Path,
-    runtime_dir: &Path,
-    obsidian_vault_path: Option<&Path>,
-) -> Vec<PathBuf> {
+fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
         hermes_home.to_path_buf(),
         runtime_dir.to_path_buf(),
@@ -6959,9 +6939,6 @@ fn sandbox_write_roots(
             roots.push(PathBuf::from(tmpdir));
         }
     }
-    if let Some(vault_path) = obsidian_vault_path.and_then(sandbox_obsidian_write_root) {
-        roots.push(vault_path);
-    }
     let mut canonical: Vec<PathBuf> = Vec::with_capacity(roots.len());
     for root in roots {
         let resolved = std::fs::canonicalize(&root).unwrap_or(root);
@@ -6970,28 +6947,6 @@ fn sandbox_write_roots(
         }
     }
     canonical
-}
-
-/// Defensive boundary for the optional connector path: the normal caller has
-/// already validated it through `configured_vault_path`, but sandbox policy must
-/// never widen if a future caller hands it arbitrary input. Only an existing,
-/// canonical Obsidian directory is eligible; raw/canonicalization-failed paths
-/// and filesystem roots are omitted rather than granted.
-#[cfg(target_os = "macos")]
-fn sandbox_obsidian_write_root(path: &Path) -> Option<PathBuf> {
-    if !path.is_absolute() {
-        return None;
-    }
-    let canonical = path.canonicalize().ok()?;
-    let marker = std::fs::symlink_metadata(canonical.join(".obsidian")).ok()?;
-    if canonical.parent().is_none()
-        || !canonical.is_dir()
-        || marker.file_type().is_symlink()
-        || !marker.is_dir()
-    {
-        return None;
-    }
-    Some(canonical)
 }
 
 /// The Hermes config file the jailed runtime persists through `save_config`,
@@ -16540,7 +16495,7 @@ mcp_servers:
     fn write_roots_are_scoped_and_exclude_the_var_folders_blanket() {
         let hermes_home = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let runtime_dir = PathBuf::from("/Users/test/Library/Application Support/june/runtime");
-        let roots = sandbox_write_roots(&hermes_home, &runtime_dir, None);
+        let roots = sandbox_write_roots(&hermes_home, &runtime_dir);
 
         assert!(roots.contains(&hermes_home), "workspace root missing");
         assert!(roots.contains(&runtime_dir), "runtime root missing");
@@ -16620,48 +16575,18 @@ mcp_servers:
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn sandbox_write_roots_include_exact_obsidian_vault_only() {
+    fn sandbox_write_roots_do_not_include_obsidian_vault() {
         let temp = tempfile::tempdir().expect("tempdir");
         let hermes_home = temp.path().join("hermes");
         let runtime_dir = temp.path().join("runtime");
         let vault = temp.path().join("Documents").join("My Vault");
         std::fs::create_dir_all(vault.join(".obsidian")).expect("vault");
         let canonical_vault = vault.canonicalize().expect("canonical vault");
-        let roots = sandbox_write_roots(&hermes_home, &runtime_dir, Some(&vault));
+        let roots = sandbox_write_roots(&hermes_home, &runtime_dir);
 
-        assert!(roots.contains(&canonical_vault));
+        assert!(!roots.contains(&canonical_vault));
         assert!(!roots.contains(&temp.path().join("Documents")));
         assert!(!roots.contains(&temp.path().join("Documents").join("Sibling Vault")));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn sandbox_rejects_unresolved_non_vault_and_filesystem_roots() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let missing = temp.path().join("missing-vault");
-        let hermes_home = temp.path().join("hermes");
-        let runtime_dir = temp.path().join("runtime");
-
-        assert!(sandbox_obsidian_write_root(Path::new("/")).is_none());
-        assert!(sandbox_obsidian_write_root(temp.path()).is_none());
-        assert!(sandbox_obsidian_write_root(Path::new("relative")).is_none());
-        assert!(sandbox_obsidian_write_root(&missing).is_none());
-        assert!(
-            !sandbox_write_roots(&hermes_home, &runtime_dir, Some(&missing)).contains(&missing)
-        );
-    }
-
-    #[cfg(all(target_os = "macos", unix))]
-    #[test]
-    fn sandbox_rejects_a_symlinked_obsidian_marker() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let vault = temp.path().join("Vault");
-        let external = temp.path().join("External Marker");
-        std::fs::create_dir_all(&vault).expect("vault");
-        std::fs::create_dir_all(&external).expect("external marker");
-        std::os::unix::fs::symlink(&external, vault.join(".obsidian")).expect("symlink");
-
-        assert!(sandbox_obsidian_write_root(&vault).is_none());
     }
 
     #[cfg(target_os = "macos")]
