@@ -42,24 +42,47 @@ if (!window.matchMedia) {
   }));
 }
 
+// Web Storage polyfill for Nodes where jsdom's localStorage never reaches the
+// test global. Node 24+ ships its own `localStorage` global that is present
+// but unavailable without `--localstorage-file` (the getter returns undefined
+// and emits an ExperimentalWarning). Vitest's populateGlobal skips window keys
+// that already exist on the Node global, so jsdom's real Storage is shadowed
+// and unrecoverable there; this shim is the only storage the suite gets. It
+// must therefore be spec-faithful: stored keys live as own enumerable
+// properties (so `Object.keys(localStorage)` returns stored keys, like a real
+// Storage) and methods live on a prototype (so enumeration never sees them).
+// Note it is still not `instanceof Storage`; tests that spy on storage keep
+// the `instanceof Storage ? Storage.prototype : window.localStorage` branch.
 if (
   !("localStorage" in globalThis) ||
   !globalThis.localStorage ||
   typeof globalThis.localStorage.clear !== "function"
 ) {
-  const values = new Map<string, string>();
+  const storageProto = {
+    clear(this: Record<string, string>) {
+      for (const key of Object.keys(this)) {
+        delete this[key];
+      }
+    },
+    getItem(this: Record<string, string>, key: string) {
+      return Object.hasOwn(this, key) ? String(this[key]) : null;
+    },
+    key(this: Record<string, string>, index: number) {
+      return Object.keys(this)[index] ?? null;
+    },
+    get length() {
+      return Object.keys(this).length;
+    },
+    removeItem(this: Record<string, string>, key: string) {
+      delete this[key];
+    },
+    setItem(this: Record<string, string>, key: string, value: string) {
+      this[key] = String(value);
+    },
+  };
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
-    value: {
-      clear: () => values.clear(),
-      getItem: (key: string) => values.get(key) ?? null,
-      key: (index: number) => Array.from(values.keys())[index] ?? null,
-      get length() {
-        return values.size;
-      },
-      removeItem: (key: string) => values.delete(key),
-      setItem: (key: string, value: string) => values.set(key, String(value)),
-    },
+    value: Object.create(storageProto),
   });
 }
 
