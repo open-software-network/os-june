@@ -2059,7 +2059,7 @@ impl Repositories {
         note_id: &str,
     ) -> Result<Option<NoteAudioExportSelection>, sqlx::error::Error> {
         let rows = query(
-            "SELECT n.title, aa.path, aa.recording_session_id, aa.source
+            "SELECT n.id AS note_id, n.title, aa.path, aa.recording_session_id, aa.source
              FROM notes n
              INNER JOIN audio_artifacts aa ON aa.note_id = n.id
              INNER JOIN recording_sessions rs
@@ -2080,6 +2080,7 @@ impl Repositories {
         let Some(first) = rows.first() else {
             return Ok(None);
         };
+        let note_id = first.get("note_id");
         let title = first.get("title");
         let sources = rows
             .into_iter()
@@ -2089,7 +2090,11 @@ impl Repositories {
                 source: row.get("source"),
             })
             .collect();
-        Ok(Some(NoteAudioExportSelection { title, sources }))
+        Ok(Some(NoteAudioExportSelection {
+            note_id,
+            title,
+            sources,
+        }))
     }
 
     pub async fn audio_artifact_paths_for_notes(
@@ -5179,12 +5184,12 @@ mod tests {
     async fn export_artifact(
         repos: &Repositories,
         note_id: &str,
-        session_id: &str,
+        recording_session_id: &str,
         source: &str,
         path: &str,
     ) -> String {
         let artifact = repos
-            .create_pending_source_artifact(note_id, session_id, source, path, path)
+            .create_pending_source_artifact(note_id, recording_session_id, source, path, path)
             .await
             .expect("create export artifact");
         repos
@@ -5215,7 +5220,7 @@ mod tests {
             .await
             .expect("set title");
 
-        for (note_id, session_id) in [
+        for (note_id, recording_session_id) in [
             (&note.id, "session-b"),
             (&note.id, "session-a"),
             (&other_note.id, "session-other"),
@@ -5223,7 +5228,7 @@ mod tests {
             repos
                 .create_recording_session(
                     note_id,
-                    session_id,
+                    recording_session_id,
                     RecordingSourceMode::MicrophonePlusSystem,
                     "/tmp/source.partial.wav",
                     "/tmp/source.wav",
@@ -5323,6 +5328,7 @@ mod tests {
             .expect("selection query")
             .expect("eligible sources");
         assert_eq!(selection.title, "Product review");
+        assert_eq!(selection.note_id, note.id);
         assert_eq!(
             selection
                 .sources

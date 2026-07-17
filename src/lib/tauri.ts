@@ -387,7 +387,7 @@ export type RecordingSessionDto = {
 export type AudioArtifactDto = {
   id: string;
   source?: RecordingSource;
-  format: "wav";
+  format: string;
   durationMs: number;
   sizeBytes: number;
   checksum: string;

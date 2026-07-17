@@ -272,6 +272,15 @@ const ROUTINE_FUNDING_DISABLED_REASON = "Add credits before running a routine.";
 // crush it into a sliver — it always keeps a usable width plus its gutters.
 const MAIN_PANEL_MIN_WIDTH = 420;
 
+function noteHasDownloadableAudio(note: NoteDto): boolean {
+  const audioSources = note.audioSources?.length
+    ? note.audioSources
+    : note.audio
+      ? [note.audio]
+      : [];
+  return audioSources.some((audio) => audio.format === "wav" && audio.sizeBytes > 0);
+}
+
 // Largest the sidebar may grow given the live window width: never past its own
 // cap, and never so far that the main panel drops below its floor. Falls back
 // to the sidebar min on very narrow windows where both can't be satisfied.
@@ -1101,9 +1110,7 @@ export function App() {
       }
       onExportPdf={() => void handleExportNotePdf()}
       onDownloadAudio={
-        Boolean(selectedNote.audio || selectedNote.audioSources?.length)
-          ? () => void handleDownloadNoteAudio()
-          : undefined
+        noteHasDownloadableAudio(selectedNote) ? () => void handleDownloadNoteAudio() : undefined
       }
       onDelete={() => setConfirmDeleteNote(true)}
     />

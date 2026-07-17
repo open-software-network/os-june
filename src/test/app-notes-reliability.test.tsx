@@ -391,6 +391,42 @@ describe("notes recording reliability", () => {
     expect(screen.queryByRole("menuitem", { name: "Download audio" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    { format: "wav", sizeBytes: 0, label: "an empty WAV" },
+    { format: "mp3", sizeBytes: 2048, label: "a non-WAV artifact" },
+  ])("hides audio download for $label", async ({ format, sizeBytes }) => {
+    const noteWithoutDownloadableAudio = note({
+      audioSources: [
+        {
+          id: "audio-1",
+          source: "microphone",
+          format,
+          durationMs: 1000,
+          sizeBytes,
+          checksum: "abc",
+          createdAt: now,
+        },
+      ],
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [noteWithoutDownloadableAudio, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : noteWithoutDownloadableAudio,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Note actions" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Download audio" })).not.toBeInTheDocument();
+  });
+
   it("downloads selected note audio and reveals the saved file from the success toast", async () => {
     const noteWithAudio = note({
       audioSources: [

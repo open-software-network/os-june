@@ -15,6 +15,7 @@ const TITLE_MAX_BYTES: usize = 80;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NoteAudioExportSelection {
+    pub note_id: String,
     pub title: String,
     pub sources: Vec<NoteAudioExportSource>,
 }
@@ -42,17 +43,22 @@ pub(crate) fn export_note_audio(
         return Err(unavailable_error());
     }
 
+    let NoteAudioExportSelection {
+        note_id,
+        title,
+        sources,
+    } = selection;
+
     // Validate the entire selection before creating an output file. Export is
     // all-or-nothing: a partial archive could look complete while silently
     // omitting one of a note's original Sources.
-    let sources = selection
-        .sources
+    let sources = sources
         .into_iter()
-        .map(|source| validate_source(app_paths, source))
+        .map(|source| validate_source(app_paths, &note_id, source))
         .collect::<Result<Vec<_>, _>>()?;
 
     fs::create_dir_all(downloads_dir).map_err(export_io_error)?;
-    let title = sanitized_title(&selection.title);
+    let title = sanitized_title(&title);
     let extension = if sources.len() == 1 { "wav" } else { "zip" };
     let base_name = format!("{title} audio");
     let mut temporary = NamedTempFile::new_in(downloads_dir).map_err(export_io_error)?;
@@ -85,6 +91,7 @@ pub(crate) fn export_note_audio(
 
 fn validate_source(
     app_paths: &AppPaths,
+    note_id: &str,
     source: NoteAudioExportSource,
 ) -> Result<NoteAudioExportSource, AppError> {
     let link_metadata = fs::symlink_metadata(&source.path).map_err(export_io_error)?;
@@ -97,6 +104,31 @@ fn validate_source(
     let path = app_paths
         .contained_recording_file(&source.path)
         .map_err(export_io_error)?;
+    let expected_recording_session_dir = app_paths
+        .recording_session_dir(note_id, &source.recording_session_id)
+        .map_err(export_io_error)?;
+    let canonical_recordings_dir = app_paths
+        .recordings_dir
+        .canonicalize()
+        .map_err(export_io_error)?;
+    let expected_canonical_dir = canonical_recordings_dir
+        .join(note_id)
+        .join(&source.recording_session_id);
+    if !path.starts_with(&expected_canonical_dir) {
+        return Err(AppError::new(
+            "note_audio_export_denied",
+            "A selected audio file is outside its Recording session directory.",
+        ));
+    }
+    let canonical_recording_session_dir = expected_recording_session_dir
+        .canonicalize()
+        .map_err(export_io_error)?;
+    if canonical_recording_session_dir != expected_canonical_dir {
+        return Err(AppError::new(
+            "note_audio_export_denied",
+            "A selected audio file is outside its Recording session directory.",
+        ));
+    }
     let metadata = fs::metadata(&path).map_err(export_io_error)?;
     if !metadata.is_file()
         || metadata.len() == 0
@@ -116,22 +148,22 @@ fn validate_source(
 fn write_archive(output: &mut File, sources: &[NoteAudioExportSource]) -> Result<(), AppError> {
     let mut archive = ZipWriter::new(output);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-    let mut session_number = 0usize;
-    let mut previous_session: Option<&str> = None;
-    let mut names_per_session = HashMap::<(usize, String), usize>::new();
+    let mut recording_session_number = 0usize;
+    let mut previous_recording_session: Option<&str> = None;
+    let mut names_per_recording_session = HashMap::<(usize, String), usize>::new();
 
     for source in sources {
-        if previous_session != Some(source.recording_session_id.as_str()) {
-            session_number += 1;
-            previous_session = Some(&source.recording_session_id);
+        if previous_recording_session != Some(source.recording_session_id.as_str()) {
+            recording_session_number += 1;
+            previous_recording_session = Some(&source.recording_session_id);
         }
         let stem = match source.source.as_str() {
             "microphone" => "microphone",
             "system" => "system",
             _ => "audio",
         };
-        let duplicate_number = names_per_session
-            .entry((session_number, stem.to_string()))
+        let duplicate_number = names_per_recording_session
+            .entry((recording_session_number, stem.to_string()))
             .and_modify(|count| *count += 1)
             .or_insert(1);
         let suffix = if *duplicate_number == 1 {
@@ -139,7 +171,7 @@ fn write_archive(output: &mut File, sources: &[NoteAudioExportSource]) -> Result
         } else {
             format!("-{}", duplicate_number)
         };
-        let entry_name = format!("recording-{session_number:03}/{stem}{suffix}.wav");
+        let entry_name = format!("recording-{recording_session_number:03}/{stem}{suffix}.wav");
         archive
             .start_file(entry_name, options)
             .map_err(export_zip_error)?;
@@ -241,10 +273,10 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Read};
 
-    fn source(path: PathBuf, session: &str, source: &str) -> NoteAudioExportSource {
+    fn source(path: PathBuf, recording_session_id: &str, source: &str) -> NoteAudioExportSource {
         NoteAudioExportSource {
             path,
-            recording_session_id: session.to_string(),
+            recording_session_id: recording_session_id.to_string(),
             source: source.to_string(),
         }
     }
@@ -257,14 +289,27 @@ mod tests {
         (temp, paths, downloads)
     }
 
-    fn recording_file(paths: &AppPaths, name: &str, bytes: &[u8]) -> PathBuf {
-        let path = paths.recordings_dir.join(name);
+    const NOTE_ID: &str = "note-a";
+
+    fn recording_file(
+        paths: &AppPaths,
+        note_id: &str,
+        recording_session_id: &str,
+        name: &str,
+        bytes: &[u8],
+    ) -> PathBuf {
+        let directory = paths
+            .recording_session_dir(note_id, recording_session_id)
+            .expect("Recording session directory");
+        fs::create_dir_all(&directory).expect("create Recording session directory");
+        let path = directory.join(name);
         fs::write(&path, bytes).expect("write source");
         path
     }
 
     fn selection(title: &str, sources: Vec<NoteAudioExportSource>) -> NoteAudioExportSelection {
         NoteAudioExportSelection {
+            note_id: NOTE_ID.to_string(),
             title: title.to_string(),
             sources,
         }
@@ -273,7 +318,13 @@ mod tests {
     #[test]
     fn single_source_is_copied_exactly_and_never_overwrites() {
         let (_temp, paths, downloads) = fixture();
-        let wav = recording_file(&paths, "microphone.wav", b"exact wav bytes");
+        let wav = recording_file(
+            &paths,
+            NOTE_ID,
+            "session-a",
+            "microphone.wav",
+            b"exact wav bytes",
+        );
         fs::write(downloads.join("Planning audio.wav"), b"keep me").expect("collision");
 
         let result = export_note_audio(
@@ -298,10 +349,16 @@ mod tests {
     #[test]
     fn multi_source_archive_has_deterministic_names_and_exact_bytes() {
         let (_temp, paths, downloads) = fixture();
-        let microphone_a = recording_file(&paths, "mic-a.wav", b"mic a");
-        let microphone_a_duplicate = recording_file(&paths, "mic-a-duplicate.wav", b"mic a 2");
-        let system_a = recording_file(&paths, "system-a.wav", b"system a");
-        let microphone_b = recording_file(&paths, "mic-b.wav", b"mic b");
+        let microphone_a = recording_file(&paths, NOTE_ID, "session-a", "mic-a.wav", b"mic a");
+        let microphone_a_duplicate = recording_file(
+            &paths,
+            NOTE_ID,
+            "session-a",
+            "mic-a-duplicate.wav",
+            b"mic a 2",
+        );
+        let system_a = recording_file(&paths, NOTE_ID, "session-a", "system-a.wav", b"system a");
+        let microphone_b = recording_file(&paths, NOTE_ID, "session-b", "mic-b.wav", b"mic b");
 
         let result = export_note_audio(
             &paths,
@@ -360,8 +417,11 @@ mod tests {
     #[test]
     fn invalid_source_aborts_without_leaving_output_or_temporary_file() {
         let (_temp, paths, downloads) = fixture();
-        let valid = recording_file(&paths, "valid.wav", b"valid");
-        let missing = paths.recordings_dir.join("missing.wav");
+        let valid = recording_file(&paths, NOTE_ID, "session-a", "valid.wav", b"valid");
+        let missing = paths
+            .recording_session_dir(NOTE_ID, "session-a")
+            .expect("Recording session directory")
+            .join("missing.wav");
 
         let error = export_note_audio(
             &paths,
@@ -393,7 +453,7 @@ mod tests {
         .expect_err("outside must fail");
         assert_eq!(error.code, "note_audio_export_denied");
 
-        let wrong_extension = recording_file(&paths, "audio.mp3", b"not wav");
+        let wrong_extension = recording_file(&paths, NOTE_ID, "session-a", "audio.mp3", b"not wav");
         let error = export_note_audio(
             &paths,
             &downloads,
@@ -407,14 +467,62 @@ mod tests {
         assert_eq!(fs::read_dir(&downloads).expect("downloads").count(), 0);
     }
 
+    #[test]
+    fn source_must_stay_inside_the_requested_note_and_recording_session() {
+        let (_temp, paths, downloads) = fixture();
+        let other_note_source = recording_file(
+            &paths,
+            "note-b",
+            "session-a",
+            "microphone.wav",
+            b"other note",
+        );
+        let error = export_note_audio(
+            &paths,
+            &downloads,
+            selection(
+                "Cross-note",
+                vec![source(other_note_source, "session-a", "microphone")],
+            ),
+        )
+        .expect_err("cross-note Source must fail");
+        assert_eq!(error.code, "note_audio_export_denied");
+
+        let other_recording_session_source = recording_file(
+            &paths,
+            NOTE_ID,
+            "session-b",
+            "microphone.wav",
+            b"other Recording session",
+        );
+        let error = export_note_audio(
+            &paths,
+            &downloads,
+            selection(
+                "Cross-session",
+                vec![source(
+                    other_recording_session_source,
+                    "session-a",
+                    "microphone",
+                )],
+            ),
+        )
+        .expect_err("cross-Recording-session Source must fail");
+        assert_eq!(error.code, "note_audio_export_denied");
+        assert_eq!(fs::read_dir(&downloads).expect("downloads").count(), 0);
+    }
+
     #[cfg(unix)]
     #[test]
     fn symbolic_link_source_is_rejected() {
         use std::os::unix::fs::symlink;
 
         let (_temp, paths, downloads) = fixture();
-        let target = recording_file(&paths, "target.wav", b"target");
-        let link = paths.recordings_dir.join("link.wav");
+        let target = recording_file(&paths, NOTE_ID, "session-a", "target.wav", b"target");
+        let link = paths
+            .recording_session_dir(NOTE_ID, "session-a")
+            .expect("Recording session directory")
+            .join("link.wav");
         symlink(target, &link).expect("symlink");
 
         let error = export_note_audio(
