@@ -28,7 +28,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0016](adr/0016-private-connectors-local-mode.md) — private connectors (local mode): Keychain-only token custody, app-proxied MCP calls straight to Google, trust modes enforced in the Rust proxy, earned autonomy, event-trigger daemon
 - [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset
 - [adr/0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md) — session model changes are staged at Send and applied only at the next idle agent-run boundary
-- [adr/0019](adr/0019-kernel-authenticated-github-read-broker.md) — interactive GitHub reads use a peer-pid-authenticated Unix-domain broker and a verified bundled tool extension, never a shared bearer
+- [adr/0019](adr/0019-kernel-authenticated-github-read-broker.md) — interactive GitHub reads use a peer-pid-authenticated Unix-domain broker, a verified bundled tool extension, and a sandbox-sealed user-plugin boundary, never a shared bearer
 
 ## Enforceable rules (spec/)
 

@@ -98,3 +98,30 @@ downgrade path after stronger trust has been established.
 
 The detailed contracts and verification evidence are indexed under the GitHub
 agent-read capability isolation documents in [docs/index.md](../index.md).
+
+## 2026-07-17 addendum: Agent-writable code exclusion and stop ordering
+
+Peer-pid admission cannot distinguish June's verified extension from other
+Python code imported into the admitted dashboard process. Review found that
+`$HERMES_HOME/plugins` is writable by the sandboxed agent and that Hermes has
+multiple user-plugin loaders, including lazy model and memory provider paths.
+Treating those files as "user-enabled" was therefore insufficient: the agent
+could persist and enable code itself, then have it execute inside a later
+broker-authorized pid.
+
+GitHub broker eligibility now requires an engaged macOS sandbox. The sandbox
+denies both reads and writes beneath `$HERMES_HOME/plugins`, while the verified
+`june_github` extension continues to load from the sealed runtime overlay.
+Unrestricted sessions, the sandbox escape hatch, sandbox startup failures, and
+unsupported platforms fail closed for GitHub agent reads. User plugins remain
+available to unrestricted Hermes sessions, but those sessions receive no
+GitHub broker authority. Any future host-approved in-process extension remains
+same-trust code and must be included in the authenticated runtime closure or
+isolated upstream before it can coexist with this capability.
+
+Review also found that a start already waiting for the start-sequence lock
+could capture stop epochs only after a successful stop and then create a new
+authorized runtime. A start now captures its lifecycle epoch before waiting for
+that lock, revalidates after acquiring it, and revalidates again under the
+process-map lock before registration. A stop therefore cancels every launch
+attempt already invoked when the stop linearizes.

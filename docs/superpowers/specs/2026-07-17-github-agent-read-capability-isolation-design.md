@@ -188,6 +188,25 @@ not claim protection from a hostile in-process Hermes extension. Absolute
 isolation from those extensions requires an upstream process-isolation feature
 or disabling them in June; that is outside this slice.
 
+### Review convergence amendment
+
+Final adversarial review showed that `$HERMES_HOME/plugins` could not be treated
+as an external user trust decision because it is agent-writable, and Hermes has
+multiple user-plugin import paths outside the main plugin manager. June therefore
+takes the disabling option above for every broker-bearing runtime: GitHub reads
+require the macOS sandbox, and that sandbox denies reads and writes beneath the
+user plugin tree. The verified extension still loads from the sealed runtime
+overlay. Unrestricted, sandbox-disabled, sandbox-failed, and unsupported
+runtimes receive no broker authority. Host-approved code deliberately added to
+the admitted process would still be same-trust and must not be described as
+isolated by peer pid.
+
+The final lifecycle contract also starts before the serialized preparation
+lock. Each start captures stop epochs before it can queue on that lock, checks
+them again after acquiring the lock, and checks them under the process-map lock
+at registration. A successful stop therefore invalidates every already-invoked
+start, including one waiting behind another start.
+
 Repository content remains untrusted input to the selected model. The selected
 online model may receive bounded tool results in its inference context, as the
 earlier design already states.
@@ -251,4 +270,3 @@ tool nor GitHub-specific instructions.
   the pinned runtime.
 - The extension and framing protocol become pinned-runtime compatibility gates.
 - No GitHub account, Keychain item, or database migration is required.
-

@@ -41,6 +41,15 @@ Dev-only toggles also read in code: `OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE`,
 `OS_JUNE_USE_PROD_ACCOUNTS_TOKENS`, `OS_JUNE_USE_PROD_DATA_DIR`,
 `JUNE_HERMES_DISABLE_SANDBOX`.
 
+GitHub agent reads have no public broker configuration. On eligible macOS
+starts, June creates an internal per-runtime Unix-domain socket and authorizes
+the exact sandboxed dashboard pid and generation through kernel peer
+credentials. The socket path is not a secret and is not an authority token; it
+is intentionally not exposed as a `JUNE_GITHUB_BROKER_SOCKET` setting. If the
+sandbox is disabled or unavailable, GitHub agent reads fail closed. Credentials
+remain in Keychain and all GitHub provider calls originate in the desktop Rust
+host, not June API.
+
 ## June API backend (`june-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**

@@ -88,12 +88,13 @@ Disconnecting an account deletes its tokens from the Keychain immediately.
 endpoint so the grant is dead server-side. Both paths are in Settings ->
 Connectors.
 
-## GitHub Phase 0
+## GitHub local mode and interactive reads
 
-GitHub Phase 0 adds App device authorization and selected-repository discovery
-beside the existing Google connector. It stays within the same local-mode
-boundary, while ending before MCP tools, repository reads, or GitHub writes.
-The Google analysis above remains unchanged.
+GitHub adds App device authorization, selected-repository discovery, and a
+fixed read-only repository, issue, pull-request, comment, commit, release, and
+workflow surface beside the existing Google connector. It stays within the
+same local-mode custody boundary. GitHub write actions are not part of this
+slice. The Google analysis above remains unchanged.
 
 ### Assets and metadata
 
@@ -131,6 +132,26 @@ The Google analysis above remains unchanged.
 - Device flow, token refresh, user lookup, installation discovery, and
   selected-repository discovery travel directly from the desktop app to GitHub.
   June API receives no GitHub credential or repository data.
+- Interactive GitHub tools connect to a Rust-owned Unix-domain broker. The
+  broker authorizes the exact dashboard pid and runtime generation using macOS
+  kernel peer credentials, admits one persistent connection, and accepts only
+  the fixed bounded read operations. The socket path is non-secret and carries
+  no bearer, credential, repository allowlist, or general provider route.
+- Terminal children, sibling MCP servers, the launchd gateway, scheduled jobs,
+  and sessions using `no_mcp` receive no GitHub read authority. Separate
+  processes cannot pass the peer-pid check merely by learning the socket path.
+- GitHub agent reads are macOS-first and require June's sandbox to be engaged.
+  The sandbox denies the agent-writable `$HERMES_HOME/plugins` tree so code the
+  agent persists cannot later run inside the broker-authorized dashboard pid.
+  Unrestricted sessions, sandbox-disabled or sandbox-failed starts, and other
+  platforms fail closed. A host-approved extension deliberately loaded in the
+  same process would still be same-trust code; peer-pid admission cannot isolate
+  two extensions inside one pid.
+- Repository content is untrusted model input. When an online model is
+  selected, bounded GitHub tool results can enter that provider's inference
+  context. On-device provider calls and Keychain custody do not imply that
+  inference remains on-device.
 
-No new ADR is needed for Phase 0 because the approved design keeps ADR-0016's
-existing local-mode boundary and adds no backend signer.
+The broker decision and its fail-closed runtime boundary are recorded in
+[ADR-0019](adr/0019-kernel-authenticated-github-read-broker.md). No June API
+change or deployment is required.

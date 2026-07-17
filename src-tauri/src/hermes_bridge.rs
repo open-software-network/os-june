@@ -30,7 +30,7 @@ const READY_POLL: Duration = Duration::from_millis(500);
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
 macro_rules! hermes_plugin_discovery_guard {
     () => {
-        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n _j_found=_j_original_scan(self,path,source,skip_names)\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
+        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n _j_found=_j_original_scan(self,path,source,skip_names)\n if source=='user' and os.environ.get('JUNE_GITHUB_BROKER_SOCKET'): return []\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
     };
 }
 #[cfg(test)]
@@ -1286,17 +1286,25 @@ async fn start_hermes_bridge_inner(
     bridge: &HermesBridge,
     request: StartHermesBridgeRequest,
 ) -> Result<HermesBridgeStatus, AppError> {
+    let full_mode = request.full_mode.unwrap_or(false);
+    // Capture before waiting for the start guard. A stop that succeeds while
+    // this start is queued must invalidate the attempt instead of letting it
+    // observe the post-stop epoch and create a new authorized runtime.
+    let lifecycle_snapshot = capture_start_lifecycle(bridge, full_mode)?;
     // Hold the start guard for the entire start sequence so concurrent
     // starts cannot interleave config writes, installs, or spawns. The
     // loser of the race blocks here and then short-circuits below once it
     // sees the winner's running process.
     let _start_guard = lock_hermes_preparation(bridge).await;
 
+    if !start_lifecycle_is_current(bridge, full_mode, lifecycle_snapshot) {
+        return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
+    }
+
     // Ensure the requested mode (None = the sandboxed default). The other
     // mode's process — if one is up — is deliberately untouched: the pair
     // runs side by side so a session in one mode never kills the other's
     // in-flight work.
-    let full_mode = request.full_mode.unwrap_or(false);
     let connections = live_connections(bridge)?;
     if connections
         .iter()
@@ -1304,8 +1312,6 @@ async fn start_hermes_bridge_inner(
     {
         return Ok(status_for(connections, Some(full_mode)));
     }
-    let lifecycle_snapshot = capture_start_lifecycle(bridge, full_mode)?;
-
     let port = pick_port()?;
     let token = random_token();
     let base_url = format!("http://127.0.0.1:{port}");
@@ -1402,6 +1408,7 @@ async fn start_hermes_bridge_inner(
     let command_source = command_resolution.source;
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     let github_eligible = github_runtime_admitted
+        && sandboxed
         && github_read_enabled_for_interactive_config(&config_path)
         && github_read_tool_eligible(app, command_source, &hermes_home).await;
     let github_broker = match crate::app_paths::app_data_dir(app) {
@@ -9568,6 +9575,7 @@ fn build_sandbox_profile(
     secret_read_paths: &[PathBuf],
     agent_cli_access: bool,
 ) -> String {
+    let user_plugins_path = config_write_path.with_file_name("plugins");
     let mut out = String::new();
     out.push_str("(version 1)\n");
     out.push_str(";; June desktop agent sandbox — generated by June, do not edit.\n");
@@ -9592,6 +9600,20 @@ fn build_sandbox_profile(
             sbpl_quote(&root.to_string_lossy())
         ));
     }
+    out.push_str(")\n\n");
+
+    // User plugin code is stored under the otherwise writable Hermes home and
+    // executes inside the dashboard process. Keep it outside the sandboxed
+    // runtime's read/write authority so an agent cannot persist in-process
+    // code that would share a future broker-authorized pid. Unrestricted mode
+    // can still load user plugins, but GitHub broker eligibility requires this
+    // sandbox to be engaged.
+    out.push_str(";; In-process code boundary: agent-writable user plugins stay unavailable.\n");
+    out.push_str("(deny file-write*\n");
+    out.push_str(&format!(
+        "  (subpath {})\n",
+        sbpl_quote(&user_plugins_path.to_string_lossy())
+    ));
     out.push_str(")\n\n");
 
     // June's own config sync (the Rust host, unsandboxed) rewrites config.yaml
@@ -9680,6 +9702,10 @@ fn build_sandbox_profile(
     out.push_str(";; Secret-read denylist: reads are otherwise open so June can work on\n");
     out.push_str(";; the user's files, but credential stores stay off-limits.\n");
     out.push_str("(deny file-read*\n");
+    out.push_str(&format!(
+        "  (subpath {})\n",
+        sbpl_quote(&user_plugins_path.to_string_lossy())
+    ));
     for relative in [
         ".ssh",
         ".aws",
@@ -16700,8 +16726,10 @@ assert os.environ['HERMES_ENABLE_PROJECT_PLUGINS']=='0'
 assert 'HERMES_CONFIG_PATH' not in os.environ
 assert os.environ['HERMES_TUI_TOOLSETS']=='hermes-cli,june_github'
 assert os.environ['JUNE_GITHUB_BROKER_SOCKET']=='/trusted/broker.sock'
-assert [item.key for item in PluginManager()._scan_directory('/trusted/home/plugins','user')]==['safe']
+assert PluginManager()._scan_directory('/trusted/home/plugins','user')==[]
 assert [item.key for item in PluginManager()._scan_directory('/trusted/runtime/plugins','bundled')]==['june_github','safe']
+os.environ.pop('JUNE_GITHUB_BROKER_SOCKET')
+assert [item.key for item in PluginManager()._scan_directory('/trusted/home/plugins','user')]==['safe']
 "#
             );
             let output = Command::new(default_python_command())
@@ -19525,6 +19553,42 @@ mcp_servers:
         assert_task_five_socket_rejects(&socket_path).await;
     }
 
+    #[test]
+    fn start_captures_stop_epoch_before_waiting_for_the_start_lock() {
+        let source = include_str!("hermes_bridge.rs");
+        let start = source
+            .split("async fn start_hermes_bridge_inner(")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn lock_hermes_preparation(").next())
+            .expect("start bridge body");
+        let capture = start
+            .find("capture_start_lifecycle(bridge, full_mode)")
+            .expect("start lifecycle capture");
+        let wait = start
+            .find("lock_hermes_preparation(bridge).await")
+            .expect("start-lock wait");
+
+        assert!(
+            capture < wait,
+            "a start already queued when stop succeeds must retain its pre-stop epoch"
+        );
+    }
+
+    #[test]
+    fn github_broker_eligibility_requires_an_engaged_sandbox() {
+        let source = include_str!("hermes_bridge.rs");
+        let eligibility = source
+            .split("let github_eligible =")
+            .nth(1)
+            .and_then(|tail| tail.split("let github_broker =").next())
+            .expect("GitHub broker eligibility expression");
+
+        assert!(
+            eligibility.contains("&& sandboxed"),
+            "an unsandboxed runtime can load agent-writable in-process code"
+        );
+    }
+
     #[tokio::test]
     async fn invalid_app_config_snapshot_permission_or_custody_starts_without_github() {
         let mut cases = Vec::new();
@@ -21506,6 +21570,29 @@ mcp_servers:
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn sandbox_profile_blocks_agent_writable_user_plugin_code() {
+        let home = PathBuf::from("/Users/test");
+        let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &sandbox_config_write_path(&workspace),
+            &sandbox_config_temp_prefix(&workspace),
+            &[],
+            false,
+        );
+        let plugin_rule =
+            "(subpath \"/Users/test/Library/Application Support/june/hermes/plugins\")";
+
+        assert_eq!(
+            profile.matches(plugin_rule).count(),
+            2,
+            "agent-writable plugin code must be both unreadable and unwritable"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn release_sandbox_profile_denies_connector_token_fixtures() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
@@ -21621,6 +21708,11 @@ mcp_servers:
         let home = std::fs::canonicalize(dir.path()).expect("canonicalize home");
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace).expect("create workspace");
+        let user_plugin = workspace.join("plugins").join("agent-persisted");
+        std::fs::create_dir_all(&user_plugin).expect("create user plugin fixture");
+        let user_plugin_source = user_plugin.join("__init__.py");
+        std::fs::write(&user_plugin_source, "AGENT_PLUGIN_MARKER\n")
+            .expect("seed user plugin fixture");
         let managed_runtime = home.join("hermes-runtime").join("hermes-agent");
         let plugin_source = managed_runtime
             .join("plugins")
@@ -21676,6 +21768,34 @@ mcp_servers:
             String::from_utf8_lossy(&out.stderr)
         );
         std::fs::remove_file(&config).expect("reset config");
+
+        // Denied: code under the agent-writable user plugin tree cannot be
+        // read, changed, or added inside a sandboxed dashboard process.
+        let out = run(&format!("cat {}", sbpl_shell_quote(&user_plugin_source)));
+        assert!(
+            !out.status.success()
+                && !String::from_utf8_lossy(&out.stdout).contains("AGENT_PLUGIN_MARKER"),
+            "user plugin source must be unreadable: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let out = run(&format!(
+            "echo TAMPERED > {}",
+            sbpl_shell_quote(&user_plugin_source)
+        ));
+        assert!(
+            !out.status.success()
+                && std::fs::read_to_string(&user_plugin_source).expect("read user plugin")
+                    == "AGENT_PLUGIN_MARKER\n",
+            "user plugin source must be unwritable: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let injected_plugin = workspace.join("plugins").join("injected");
+        let out = run(&format!("mkdir -p {}", sbpl_shell_quote(&injected_plugin)));
+        assert!(
+            !out.status.success() && !injected_plugin.exists(),
+            "new user plugin directories must be denied: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         // Allowed: the real save_config path — stream a random-suffixed
         // `.config_<random>.tmp` then os.replace (mv) it onto config.yaml. This
