@@ -181,6 +181,14 @@ vi.mock("../lib/tauri", () => ({
   listSessionFolders: vi.fn(async () => []),
   assignSessionToFolder: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
+  listMemories: vi.fn(async () => []),
+  memorySettings: vi.fn(async () => ({ enabled: true })),
+  createMemory: vi.fn(),
+  updateMemory: vi.fn(),
+  deleteMemory: vi.fn(),
+  setMemoryEnabled: vi.fn(),
+  setFolderInstructions: vi.fn(),
+  setFolderMemoryDisabled: vi.fn(),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
   getNote: mocks.getNote,
@@ -1070,6 +1078,35 @@ describe("App shortcuts", () => {
       }),
     );
     expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
+  });
+
+  it("opens Accessibility settings when the dictation helper is unavailable", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.dictationHelperCommand.mockImplementation(async (command: { type: string }) => {
+      if (command.type === "request_accessibility_permission") {
+        throw new Error("helper unavailable");
+      }
+      return undefined;
+    });
+    mocks.openPrivacySettings.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Grant access" }));
+
+    await waitFor(() => expect(mocks.openPrivacySettings).toHaveBeenCalledWith("accessibility"));
   });
 
   it("keeps refreshing Accessibility while access is missing", async () => {

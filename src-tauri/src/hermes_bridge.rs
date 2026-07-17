@@ -1,4 +1,4 @@
-use crate::domain::types::AppError;
+use crate::domain::types::{AppError, MemorySettingsDto};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -34,6 +34,21 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1";
+const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
+    (
+        "tools/approval.py",
+        "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
+    ),
+    (
+        "tools/mcp_tool.py",
+        "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
+    ),
+    (
+        "tui_gateway/server.py",
+        "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+    ),
+];
 const HERMES_SOURCE_TARBALL_URL: &str =
     "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
@@ -55,15 +70,26 @@ const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 // Must sit ABOVE june-api's aggregate request-string cap
-// (`MAX_AGENT_TOTAL_STRING_CHARS`, 1.5M chars) counted in BYTES, or this proxy
+// (`MAX_AGENT_TOTAL_STRING_CHARS`, 6M chars) counted in BYTES, or this proxy
 // rejects an in-window upload before june-api's larger cap can allow it (JUN-169
-// review). Chars vs bytes: 1.5M chars is up to ~3M bytes for 2-byte UTF-8, so
-// 3 MiB keeps the proxy from becoming the stricter gate. This is a 127.0.0.1
-// loopback proxy for a single-user desktop, so the memory/DoS surface of the
-// larger buffer is minimal. A body over this cap is genuinely beyond any model
-// window and degrades to the context-overflow notice (recognizable wording in
-// `read_http_request`).
-const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 3 * 1024 * 1024;
+// review). Chars vs bytes: 6M chars is up to ~12M bytes for 2-byte UTF-8, so
+// 12 MiB keeps the proxy from becoming the stricter gate. The cap is sized for a
+// 1M-token context window. This is a 127.0.0.1 loopback proxy for a single-user
+// desktop, so the memory/DoS surface of the larger buffer is minimal. A body
+// over this cap is genuinely beyond any model window and degrades to the
+// context-overflow notice (recognizable wording in
+// `provider_proxy_body_too_large_message`, enforced after auth in
+// `handle_june_provider_connection`).
+// Cross-workspace invariant (JUN-336): this MUST equal june-api's dedicated
+// `/v1/chat/completions` extractor cap (`DEFAULT_MAX_AGENT_CHAT_BYTES` in
+// june-api/crates/config/src/lib.rs). june-api is a separate cargo workspace
+// and cannot be imported here, so the two 12 MiB values are kept in sync by a
+// pinned-value assert on each side; change BOTH or an in-window agent chat
+// request is rejected by the stricter gate again.
+const JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES: usize = 12 * 1024 * 1024;
+// Compile-time half of that cross-workspace invariant: the june-api side mirrors
+// it against `DEFAULT_MAX_AGENT_CHAT_BYTES`.
+const _: () = assert!(JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES == 12 * 1024 * 1024);
 // Image edit forwarding expands a source ref into base64 JSON before June API
 // sees it. Keep the loopback image cap derived from the same 50 MiB source
 // maximum enforced by imports and the proxy validator.
@@ -83,6 +109,9 @@ const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
 const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
+/// Environment variable the `june_context` MCP reads its memory-write proxy
+/// token from. Kept out of argv so it does not appear in process listings.
+const JUNE_MEMORY_MCP_TOKEN_ENV: &str = "JUNE_MEMORY_PROXY_TOKEN";
 const JUNE_WEB_MCP_SERVER_NAME: &str = "june_web";
 const JUNE_WEB_MCP_SCRIPT_NAME: &str = "june_web_mcp.py";
 const JUNE_WEB_MCP_SCRIPT: &str = include_str!("hermes/june_web_mcp.py");
@@ -226,6 +255,12 @@ const JUNE_CHARACTER_MAX_CHARS: usize = 4000;
 const JUNE_SOUL_CONTEXT_MD: &str = r#"
 June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
 Messages may reference a specific note as `@note:<id>`, usually followed by the note title in quotes. When you see such a reference, call the `june_context` tool `get_meeting_note` with that id to load the note before answering, and rely on what it returns. Ask for the transcript with `include_transcript` only when the note content is not enough. If the tool reports the note was not found, say so instead of guessing.
+"#;
+
+/// Appended only while the June memory store is globally enabled. Scope is
+/// supplied by the project context injected into the first relevant prompt.
+const JUNE_SOUL_MEMORY_MD: &str = r#"
+June memory tools: proactively save durable user facts, preferences, and decisions with the `june_context` tool `save_memory`. When a `[June project context]` block is present, pass its `project_id` so the memory stays with that project; otherwise save it globally. Before relying on remembered information, call `list_memories` with the current project id when present instead of assuming. When the user asks you to forget something, call `forget_memory`. Never save secrets, credentials, access tokens, or other authentication material.
 "#;
 
 /// Appended to `SOUL.md` for every runtime. This calibrates June's first-turn
@@ -452,6 +487,34 @@ pub struct HermesBridge {
     /// Recently delivered recorder request ids (see
     /// `recorder_request_recently_completed`).
     recorder_completed: Mutex<std::collections::VecDeque<String>>,
+    /// Latched once at app teardown (`shutdown`). A start that observes it set
+    /// must not leave a registered runtime behind, so the teardown that is about
+    /// to reap the process tree does not race an in-flight start that re-orphans
+    /// it (JUN-338). Set *before* the drain; checked under the `processes` lock
+    /// at registration, so the flag and the drain observe a single ordering.
+    shutting_down: AtomicBool,
+    /// Number of starts currently between spawning a runtime child and either
+    /// registering it into `processes` or reaping it. `shutdown` waits for this
+    /// to reach zero before draining, so a child spawned but not-yet-registered
+    /// can never be orphaned by the drain-then-restart (JUN-338).
+    starts_in_progress: AtomicUsize,
+}
+
+/// RAII counter for [`HermesBridge::starts_in_progress`], so every exit path of
+/// a start (including `?` early returns) decrements exactly once.
+struct StartInProgressGuard<'a>(&'a AtomicUsize);
+
+impl<'a> StartInProgressGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for StartInProgressGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct HermesProcess {
@@ -463,6 +526,7 @@ struct HermesProcess {
 struct SharedProviderProxy {
     port: u16,
     token: String,
+    memory_token: String,
     recorder_token: String,
     connector_token: String,
     shutdown: Option<oneshot::Sender<()>>,
@@ -471,6 +535,9 @@ struct SharedProviderProxy {
 #[derive(Clone)]
 struct ProviderProxyState {
     token: String,
+    /// Memory-write routes require this dedicated secret, handed only to the
+    /// `june_context` MCP. Its read tools do not need proxy access.
+    memory_token: String,
     /// Recorder routes require this dedicated secret, handed only to the
     /// `june_recorder` MCP: microphone control must not be reachable with the
     /// general provider token every model call carries.
@@ -493,6 +560,13 @@ struct ProviderProxyState {
     /// disappear until the app restarts.
     model_catalog_cache: Arc<Mutex<Vec<crate::june_api::ModelDto>>>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
+    memory: Option<MemoryProxyContext>,
+}
+
+#[derive(Clone)]
+struct MemoryProxyContext {
+    repositories: crate::db::repositories::Repositories,
+    settings_path: PathBuf,
 }
 
 #[derive(Clone, Serialize)]
@@ -525,8 +599,6 @@ enum HermesCommandSource {
     EnvOverride,
     BundledRuntime,
     ManagedRuntime,
-    UserLocalFallback,
-    PathFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1056,6 +1128,24 @@ async fn start_hermes_bridge_inner(
     // sees the winner's running process.
     let _start_guard = bridge.start_lock.lock().await;
 
+    // Count this start as in-progress for the whole spawn->register window so a
+    // concurrent `shutdown` waits for it (below) before draining, and a child we
+    // spawn can never be orphaned by a drain-then-restart (JUN-338). Dropped
+    // explicitly once the child is registered or reaped, before the readiness
+    // wait, so teardown never blocks on the (up to 45s) readiness timeout.
+    let start_progress = StartInProgressGuard::new(&bridge.starts_in_progress);
+
+    // Bail fast if the app is tearing down: no point building a runtime the
+    // teardown is about to reap, and a late spawn could re-orphan the tree. The
+    // authoritative, race-free check is the one at registration below; this is
+    // only an early out.
+    if bridge.shutting_down.load(Ordering::SeqCst) {
+        return Err(AppError::new(
+            "hermes_bridge_shutting_down",
+            "June is shutting down; Hermes runtime start skipped.",
+        ));
+    }
+
     // Ensure the requested mode (None = the sandboxed default). The other
     // mode's process — if one is up — is deliberately untouched: the pair
     // runs side by side so a session in one mode never kills the other's
@@ -1122,6 +1212,7 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         provider_proxy.port,
         &provider_proxy.token,
+        &provider_proxy.memory_token,
         &provider_proxy.recorder_token,
         &provider_proxy.connector_token,
         supports_vision,
@@ -1157,6 +1248,7 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         sandbox_available,
         agent_cli_access,
+        june_memory_enabled(&june_context_mcp.memory_settings_path),
         video_generation_enabled,
         connectors_registered,
     )?;
@@ -1217,6 +1309,17 @@ async fn start_hermes_bridge_inner(
     );
     cmd.current_dir(&cwd);
 
+    // Put the runtime in its own process group so teardown can reap the whole
+    // tree, not just the tracked child. The dashboard (and, unsandboxed, the
+    // Python runtime it becomes) can fork worker subprocesses; a bare
+    // `child.kill()` would leave those orphaned when the app quits or relaunches
+    // for an update (JUN-338). See `shutdown_hermes_process`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.process_group(0);
+    }
+
     let mut child = cmd.spawn().map_err(|error| {
         AppError::new(
             "hermes_bridge_start_failed",
@@ -1240,9 +1343,18 @@ async fn start_hermes_bridge_inner(
 
     let generation = bridge.next_generation.fetch_add(1, Ordering::Relaxed) + 1;
     {
-        let mut guard = bridge.processes.lock().map_err(|_| {
-            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
-        })?;
+        // A poisoned lock must not drop `child` and detach it: reap the process
+        // group first (JUN-338).
+        let mut guard = match bridge.processes.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                reap_unregistered_child(&mut child);
+                return Err(AppError::new(
+                    "hermes_bridge_unavailable",
+                    "Hermes bridge lock failed.",
+                ));
+            }
+        };
         // The start guard serializes starts, so no concurrent start can have
         // populated this mode's slot since the live-connections check above.
         // Keep a defensive check anyway: if a live process is somehow present
@@ -1250,11 +1362,23 @@ async fn start_hermes_bridge_inner(
         // of leaking it.
         if let Some(existing) = guard.get_mut(&full_mode) {
             if matches!(existing.child.try_wait(), Ok(None)) {
-                let _ = child.kill();
-                let _ = child.wait();
+                reap_unregistered_child(&mut child);
                 drop(guard);
                 return Ok(status_for(live_connections(bridge)?, Some(full_mode)));
             }
+        }
+        // Race-free teardown handshake (JUN-338): `shutdown` latches the flag
+        // *before* it drains under this same lock. If it is set here, the drain
+        // has already run (or is about to) and would miss a process we register
+        // now, re-orphaning the tree the teardown is reaping. Reap what we
+        // spawned instead of registering it.
+        if bridge.shutting_down.load(Ordering::SeqCst) {
+            drop(guard);
+            reap_unregistered_child(&mut child);
+            return Err(AppError::new(
+                "hermes_bridge_shutting_down",
+                "June is shutting down; Hermes runtime start skipped.",
+            ));
         }
         guard.insert(
             full_mode,
@@ -1265,6 +1389,11 @@ async fn start_hermes_bridge_inner(
             },
         );
     }
+
+    // Registered: the drain can now see and reap this process, so teardown no
+    // longer needs to wait on this start. Release before the readiness wait so
+    // shutdown is not blocked for the readiness timeout.
+    drop(start_progress);
 
     if let Err(error) = wait_for_hermes(&base_url, &token).await {
         // Only tear down the exact process this start spawned. If a stop (or
@@ -1292,12 +1421,14 @@ async fn ensure_provider_proxy(
             return Ok(SharedProviderProxyInfo {
                 port: proxy.port,
                 token: proxy.token.clone(),
+                memory_token: proxy.memory_token.clone(),
                 recorder_token: proxy.recorder_token.clone(),
                 connector_token: proxy.connector_token.clone(),
             });
         }
     }
     let token = random_token();
+    let memory_token = random_token();
     let recorder_token = random_token();
     let connector_token = random_token();
     let app_data_dir = crate::app_paths::app_data_dir(app)
@@ -1309,6 +1440,7 @@ async fn ensure_provider_proxy(
     let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
     let started = start_june_provider_proxy(
         token.clone(),
+        memory_token.clone(),
         recorder_token.clone(),
         connector_token.clone(),
         image_sources,
@@ -1327,6 +1459,7 @@ async fn ensure_provider_proxy(
     *guard = Some(SharedProviderProxy {
         port: started.port,
         token: token.clone(),
+        memory_token: memory_token.clone(),
         recorder_token: recorder_token.clone(),
         connector_token: connector_token.clone(),
         shutdown: Some(started.shutdown),
@@ -1334,6 +1467,7 @@ async fn ensure_provider_proxy(
     Ok(SharedProviderProxyInfo {
         port: started.port,
         token,
+        memory_token,
         recorder_token,
         connector_token,
     })
@@ -1342,6 +1476,7 @@ async fn ensure_provider_proxy(
 struct SharedProviderProxyInfo {
     port: u16,
     token: String,
+    memory_token: String,
     recorder_token: String,
     connector_token: String,
 }
@@ -1351,6 +1486,7 @@ struct JuneContextMcpConfig {
     command: String,
     script_path: PathBuf,
     database_path: PathBuf,
+    memory_settings_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -1508,31 +1644,85 @@ pub async fn connectors_apply_runtime(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
+    reapply_hermes_runtime(&app, &bridge).await
+}
+
+/// Serializes `reapply_hermes_runtime` so two rapid settings toggles cannot
+/// interleave their stop/restart cycles. Reapply stops live runtimes before
+/// restarting them; without this lock a later toggle could observe that
+/// transient "no live connections" window, no-op, and let the earlier restart
+/// finish with the now-stale setting. Because each reapply re-renders
+/// `config.yaml` from the persisted settings file, serializing also guarantees
+/// the last reapply to run reads the last-persisted value.
+static REAPPLY_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Re-render `config.yaml` for every live runtime and restart the routine
+/// gateway so a settings change that feeds the rendered config (connector MCP
+/// servers, the `platform_toolsets.cron` allowlist, SOUL.md) takes effect
+/// without waiting for the next natural spawn. A bare stop is not enough: the
+/// cron allowlist is recomputed only when `sync_hermes_config` runs on start,
+/// and the launchd routine gateway keeps serving the old `config.yaml` until
+/// it is restarted.
+pub(crate) async fn reapply_hermes_runtime(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+) -> Result<(), AppError> {
+    // Serialize the whole stop/restart cycle: a concurrent reapply must wait
+    // rather than race through the window where this one has stopped runtimes
+    // but not yet restarted them. Each reapply re-reads the persisted settings
+    // when it re-renders config, so the last one to acquire the lock lands the
+    // last-persisted choice.
+    let _reapply_guard = REAPPLY_RUNTIME_LOCK.lock().await;
     // Capture each live runtime's working directory alongside its mode so the
     // restart lands in the same project the user was in. Restarting with
     // cwd: None would drop a custom cwd back to the default workspace, so a
-    // connector settings change would silently relocate the agent's files.
-    let connections: Vec<(bool, Option<String>)> = live_connections(&bridge)?
+    // settings change would silently relocate the agent's files.
+    let connections: Vec<(bool, Option<String>)> = live_connections(bridge)?
         .iter()
         .map(|connection| (connection.full_mode, connection.cwd.clone()))
         .collect();
+    // Reapply to EVERY captured mode even if one fails. A bare `?` here would
+    // abandon the remaining modes on the first error: with both sandboxed and
+    // unrestricted runtimes live, a failure restarting the first mode would
+    // leave the second running with its old SOUL and cron toolset — so after a
+    // memory-off toggle that mode keeps the native memory tool while the file
+    // and UI show memory disabled. Restart each mode best-effort, remember the
+    // first failure, and still fall through to the gateway restart; surface the
+    // first error only after every mode has been attempted.
+    let mut first_error: Option<AppError> = None;
     for (full_mode, cwd) in connections {
         // Mode-scoped restart (same path the MCP admin uses): stop that one
-        // runtime, then re-start it so `sync_hermes_config` re-renders the
-        // connector MCP servers into config.yaml.
-        stop_hermes_mode(&bridge, full_mode)?;
-        start_hermes_bridge_inner(
-            &app,
-            &bridge,
+        // runtime, then re-start it so `sync_hermes_config` re-renders
+        // config.yaml.
+        if let Err(error) = stop_hermes_mode(bridge, full_mode) {
+            tracing::warn!(
+                ?error,
+                full_mode,
+                "reapply: stopping a runtime mode failed; continuing with the other modes",
+            );
+            first_error.get_or_insert(error);
+            continue;
+        }
+        if let Err(error) = start_hermes_bridge_inner(
+            app,
+            bridge,
             StartHermesBridgeRequest {
                 cwd,
                 full_mode: Some(full_mode),
             },
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                ?error,
+                full_mode,
+                "reapply: restarting a runtime mode failed; continuing with the other modes",
+            );
+            first_error.get_or_insert(error);
+        }
     }
     // Best-effort gateway restart so scheduled routines pick up the new config.
-    if let Some(connection) = live_connections(&bridge)?.into_iter().next() {
+    if let Some(connection) = live_connections(bridge)?.into_iter().next() {
         let _ = hermes_connection_json(
             &connection,
             reqwest::Method::POST,
@@ -1541,7 +1731,10 @@ pub async fn connectors_apply_runtime(
         )
         .await;
     }
-    Ok(())
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -2326,7 +2519,7 @@ fn write_managed_skill_file(
 }
 
 #[cfg(windows)]
-fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
     match fs::rename(temp_path, path) {
         Ok(()) => Ok(()),
         Err(error)
@@ -2343,7 +2536,7 @@ fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
     fs::rename(temp_path, path)
 }
 
@@ -3398,6 +3591,16 @@ fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
 
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
+    // Latch teardown *before* draining so an in-flight `start_hermes_bridge_inner`
+    // cannot register a runtime after the drain and re-orphan the tree we are
+    // about to reap (JUN-338). The flag is permanent: nothing restarts the
+    // bridge after shutdown. See the registration handshake in that function.
+    bridge.shutting_down.store(true, Ordering::SeqCst);
+    // Then wait for any start that already spawned a child to finish registering
+    // it (so the drain reaps it) or reaping it itself. Without this, a child
+    // spawned but not-yet-registered would be missed by the drain and orphaned
+    // when `relaunch_for_update` restarts the app moments later.
+    await_starts_quiesced(&bridge, SHUTDOWN_START_QUIESCE_TIMEOUT);
     let _ = stop_hermes_bridge_inner(&bridge);
     let proxy = bridge
         .provider_proxy
@@ -3408,6 +3611,25 @@ pub fn shutdown(app: &tauri::AppHandle) {
         if let Some(shutdown) = proxy.shutdown.take() {
             let _ = shutdown.send(());
         }
+    }
+}
+
+/// How long `shutdown` waits for in-flight starts to register/reap their spawned
+/// child before draining. The window it guards (spawn -> register) is short, so
+/// this is only a safety bound; teardown proceeds regardless once it elapses.
+const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Blocks until no start is between spawning a child and registering/reaping it,
+/// or the timeout elapses. Sync (called from the sync teardown path) and cheap:
+/// the guarded window is milliseconds and at most one start runs at a time (the
+/// `start_lock` serializes them).
+fn await_starts_quiesced(bridge: &HermesBridge, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while bridge.starts_in_progress.load(Ordering::SeqCst) > 0 {
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -5818,9 +6040,43 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
 
 fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
     if let Some(process) = process.as_mut() {
+        // Sweep the runtime's process group first so any worker subprocess it
+        // forked dies with it rather than detaching and outliving the app (the
+        // child spawns into its own group; see the spawn site). Then kill and
+        // reap the tracked child itself.
+        #[cfg(unix)]
+        kill_process_group(process.child.id());
         let _ = process.child.kill();
         let _ = process.child.wait();
     }
+}
+
+/// Reaps a runtime child that was spawned but never registered into
+/// `processes`, so no post-spawn error path (poisoned lock, a redundant-launch
+/// short-circuit, a teardown handshake) can drop the `Child` and detach it. The
+/// child spawns into its own process group, so this also reaps any worker it
+/// forked (JUN-338).
+fn reap_unregistered_child(child: &mut Child) {
+    #[cfg(unix)]
+    kill_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Best-effort SIGKILL to a whole process group, addressed by the leader's pid
+/// (a negative target is a process group). Shells out to `/bin/kill` to stay
+/// dependency-free, matching the module's other system-utility spawns. Only
+/// meaningful for a child spawned with `process_group(0)`, whose pid is its
+/// group id.
+#[cfg(unix)]
+fn kill_process_group(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .arg("-KILL")
+        .arg(format!("-{pid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 async fn resolve_hermes_command(
@@ -5847,6 +6103,7 @@ async fn resolve_hermes_command(
     let managed_install_dir = managed_hermes_runtime_dir(app)?.join("hermes-agent");
     let managed_command = hermes_venv_command(&managed_install_dir.join("venv"));
     if managed_command.exists() && managed_hermes_runtime_current(app)? {
+        verify_managed_hermes_runtime_patch(&managed_install_dir)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -5854,21 +6111,10 @@ async fn resolve_hermes_command(
         });
     }
 
-    if let Err(error) = install_managed_hermes_runtime(app, hermes_home).await {
-        if let Some(command) = user_local_hermes_command() {
-            eprintln!(
-                "failed to install June-managed Hermes runtime; using existing user-local Hermes fallback: {}",
-                error.message
-            );
-            return Ok(HermesCommandResolution {
-                command: command.to_string_lossy().into_owned(),
-                source: HermesCommandSource::UserLocalFallback,
-            });
-        }
-        return Err(error);
-    }
+    install_managed_hermes_runtime(app, hermes_home).await?;
 
     if managed_command.exists() {
+        verify_managed_hermes_runtime_patch(&managed_install_dir)?;
         ensure_managed_hermes_sitecustomize(&managed_install_dir)?;
         return Ok(HermesCommandResolution {
             command: managed_command.to_string_lossy().into_owned(),
@@ -5876,17 +6122,10 @@ async fn resolve_hermes_command(
         });
     }
 
-    if let Some(command) = user_local_hermes_command() {
-        return Ok(HermesCommandResolution {
-            command: command.to_string_lossy().into_owned(),
-            source: HermesCommandSource::UserLocalFallback,
-        });
-    }
-
-    Ok(HermesCommandResolution {
-        command: "hermes".to_string(),
-        source: HermesCommandSource::PathFallback,
-    })
+    Err(AppError::new(
+        "hermes_runtime_install_failed",
+        "June-managed Hermes install completed without a Hermes executable",
+    ))
 }
 
 fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
@@ -5930,22 +6169,10 @@ fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
     let Ok(metadata) = fs::read_to_string(metadata_path) else {
         return Ok(false);
     };
-    Ok(metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#)))
-}
-
-fn user_local_hermes_command() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    for home in home_dir_candidates() {
-        candidates.push(hermes_venv_command(
-            &home.join(".hermes").join("hermes-agent").join("venv"),
-        ));
-        candidates.push(if cfg!(target_os = "windows") {
-            home.join(".local").join("bin").join("hermes.exe")
-        } else {
-            home.join(".local").join("bin").join("hermes")
-        });
-    }
-    candidates.into_iter().find(|path| path.exists())
+    Ok(
+        metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#))
+            && metadata.contains(&format!(r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#)),
+    )
 }
 
 fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
@@ -5957,6 +6184,49 @@ fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
 }
 
 const HERMES_SITE_CUSTOMIZE: &str = include_str!("hermes/sitecustomize.py");
+const HERMES_RUNTIME_PATCH_SCRIPT: &str = include_str!("hermes/apply_june_patches.py");
+
+fn write_managed_hermes_patch_script(runtime_dir: &Path) -> Result<PathBuf, AppError> {
+    let path = runtime_dir.join("apply-june-hermes-patches.py");
+    if fs::read_to_string(&path).ok().as_deref() != Some(HERMES_RUNTIME_PATCH_SCRIPT) {
+        fs::write(&path, HERMES_RUNTIME_PATCH_SCRIPT)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+    Ok(path)
+}
+
+fn verify_managed_hermes_runtime_patch(install_dir: &Path) -> Result<(), AppError> {
+    verify_hermes_runtime_source_hashes(install_dir, HERMES_RUNTIME_PATCHED_SOURCE_HASHES)
+}
+
+fn verify_hermes_runtime_source_hashes(
+    install_dir: &Path,
+    expected_sources: &[(&str, &str)],
+) -> Result<(), AppError> {
+    for (relative_path, expected_hash) in expected_sources {
+        let path = install_dir.join(relative_path);
+        let bytes = fs::read(&path).map_err(|error| {
+            AppError::new(
+                "hermes_runtime_patch_failed",
+                format!(
+                    "Could not verify managed Hermes source {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let actual_hash = hex_encode(&sha256_bytes(&bytes));
+        if actual_hash != *expected_hash {
+            return Err(AppError::new(
+                "hermes_runtime_patch_failed",
+                format!(
+                    "Managed Hermes source {} failed checksum verification: expected {expected_hash}, got {actual_hash}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn ensure_managed_hermes_sitecustomize(install_dir: &Path) -> Result<(), AppError> {
     for site_packages in managed_hermes_site_packages_dirs(install_dir)? {
@@ -6074,6 +6344,7 @@ async fn install_managed_hermes_runtime_unix(
     let install_dir = runtime_dir.join("hermes-agent");
     fs::create_dir_all(&runtime_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let patch_script = write_managed_hermes_patch_script(&runtime_dir)?;
     if install_dir.exists() && !managed_hermes_runtime_current(app)? {
         fs::remove_dir_all(&install_dir)
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
@@ -6105,6 +6376,8 @@ async fn install_managed_hermes_runtime_unix(
                 .env("JUNE_HERMES_INSTALL_DIR", &install_dir)
                 .env("JUNE_HERMES_HOME", &hermes_home)
                 .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env("JUNE_HERMES_PATCH_SET", HERMES_RUNTIME_PATCH_SET)
+                .env("JUNE_HERMES_PATCH_SCRIPT", &patch_script)
                 .env("JUNE_HERMES_SOURCE_TARBALL_URL", HERMES_SOURCE_TARBALL_URL)
                 .env(
                     "JUNE_HERMES_SOURCE_TARBALL_SHA256",
@@ -6163,6 +6436,7 @@ async fn install_managed_hermes_runtime_windows(
     let install_dir = runtime_dir.join("hermes-agent");
     fs::create_dir_all(&runtime_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let patch_script = write_managed_hermes_patch_script(&runtime_dir)?;
     if install_dir.exists() && !managed_hermes_runtime_current(app)? {
         fs::remove_dir_all(&install_dir)
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
@@ -6198,6 +6472,8 @@ async fn install_managed_hermes_runtime_windows(
                 .env("JUNE_HERMES_INSTALL_DIR", &install_dir)
                 .env("JUNE_HERMES_HOME", &hermes_home)
                 .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+                .env("JUNE_HERMES_PATCH_SET", HERMES_RUNTIME_PATCH_SET)
+                .env("JUNE_HERMES_PATCH_SCRIPT", &patch_script)
                 .env("JUNE_HERMES_SOURCE_TARBALL_URL", HERMES_SOURCE_TARBALL_URL)
                 .env(
                     "JUNE_HERMES_SOURCE_TARBALL_SHA256",
@@ -6252,6 +6528,8 @@ runtime_dir="${JUNE_HERMES_RUNTIME_DIR:?}"
 install_dir="${JUNE_HERMES_INSTALL_DIR:?}"
 hermes_home="${JUNE_HERMES_HOME:?}"
 install_commit="${JUNE_HERMES_INSTALL_COMMIT:?}"
+patch_set="${JUNE_HERMES_PATCH_SET:?}"
+patch_script="${JUNE_HERMES_PATCH_SCRIPT:?}"
 source_tarball_url="${JUNE_HERMES_SOURCE_TARBALL_URL:?}"
 source_tarball_sha256="${JUNE_HERMES_SOURCE_TARBALL_SHA256:?}"
 
@@ -6293,6 +6571,8 @@ sed -e 's/^\$UV_CMD/"$UV_CMD"/g' \
   > "$install_dir/scripts/install.sh.quoted"
 mv "$install_dir/scripts/install.sh.quoted" "$install_dir/scripts/install.sh"
 
+/usr/bin/python3 "$patch_script" "$install_dir"
+
 run_stage() {
   local stage="$1"
   HERMES_HOME="$hermes_home" HERMES_INSTALL_DIR="$install_dir" \
@@ -6311,7 +6591,7 @@ run_stage config
 run_stage complete
 
 cat > "$runtime_dir/runtime.json" <<EOF
-{"source":"NousResearch/hermes-agent","commit":"$install_commit","installDir":"$install_dir"}
+{"source":"NousResearch/hermes-agent","commit":"$install_commit","patchSet":"$patch_set","installDir":"$install_dir"}
 EOF
 "#;
 
@@ -6324,6 +6604,8 @@ $runtimeDir = $env:JUNE_HERMES_RUNTIME_DIR
 $installDir = $env:JUNE_HERMES_INSTALL_DIR
 $hermesHome = $env:JUNE_HERMES_HOME
 $installCommit = $env:JUNE_HERMES_INSTALL_COMMIT
+$patchSet = $env:JUNE_HERMES_PATCH_SET
+$patchScript = $env:JUNE_HERMES_PATCH_SCRIPT
 $sourceTarballUrl = $env:JUNE_HERMES_SOURCE_TARBALL_URL
 $sourceTarballSha256 = ($env:JUNE_HERMES_SOURCE_TARBALL_SHA256).ToLowerInvariant()
 
@@ -6406,6 +6688,8 @@ if (!(Test-Path (Join-Path $installDir "pyproject.toml"))) {
 }
 
 $python = Resolve-Python
+$patchArgs = @($python.Args + @($patchScript, $installDir))
+Invoke-Native $python.Exe $patchArgs
 $venvDir = Join-Path $installDir "venv"
 if (Test-Path $venvDir) {
   Remove-Item -Recurse -Force -Path $venvDir
@@ -6469,6 +6753,7 @@ if (!(Test-Path $hermesExe)) {
 $metadata = [ordered]@{
   source = "NousResearch/hermes-agent"
   commit = $installCommit
+  patchSet = $patchSet
   installDir = $installDir
 } | ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $runtimeDir "runtime.json"), $metadata, (New-Object System.Text.UTF8Encoding $false))
@@ -6899,12 +7184,32 @@ fn sync_june_context_mcp(
 
     let paths = crate::app_paths::AppPaths::from_data_dir(data_dir)
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
+    let memory_settings_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?
+        .join("memory-settings.json");
 
     Ok(JuneContextMcpConfig {
         command: hermes_python_command(hermes_command),
         script_path,
         database_path: paths.database_path,
+        memory_settings_path,
     })
+}
+
+fn june_memory_enabled(path: &Path) -> bool {
+    match fs::read_to_string(path) {
+        Ok(settings) => {
+            serde_json::from_str::<MemorySettingsDto>(&settings)
+                .unwrap_or(MemorySettingsDto { enabled: false })
+                .enabled
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            MemorySettingsDto::default().enabled
+        }
+        Err(_) => false,
+    }
 }
 
 fn sync_june_web_mcp(app: &AppHandle, hermes_command: &str) -> Result<JuneWebMcpConfig, AppError> {
@@ -7227,6 +7532,7 @@ fn sync_hermes_config(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
     supports_vision: bool,
@@ -7241,6 +7547,7 @@ fn sync_hermes_config(
         hermes_home,
         provider_proxy_port,
         provider_proxy_token,
+        memory_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
         supports_vision,
@@ -7259,6 +7566,7 @@ fn sync_hermes_config_with_external_dirs(
     hermes_home: &std::path::Path,
     provider_proxy_port: u16,
     provider_proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
     supports_vision: bool,
@@ -7298,6 +7606,7 @@ fn sync_hermes_config_with_external_dirs(
         supports_vision,
         &base_url,
         provider_proxy_token,
+        memory_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
         &cron_toolsets,
@@ -7475,8 +7784,16 @@ struct BuiltinMcpConfigs<'a> {
 /// ACTION servers are deliberately excluded: they are added per job only when
 /// the user picks approval or autonomous trust for that routine.
 fn cron_platform_toolsets(configs: &BuiltinMcpConfigs<'_>) -> String {
+    // When the user turns Memory off, the native Hermes `memory` toolset must
+    // go too — not just June's SOUL guidance and the june_context memory
+    // tools. Otherwise a routine could still read/write Hermes' unscoped,
+    // uninspectable memory store, contradicting the global off switch.
+    let memory_enabled = configs.context.map_or(true, |context| {
+        june_memory_enabled(&context.memory_settings_path)
+    });
     let mut items: Vec<String> = CRON_SANDBOXED_TOOLSETS
         .iter()
+        .filter(|toolset| memory_enabled || **toolset != "memory")
         .map(|toolset| toolset.to_string())
         .collect();
     if configs.context.is_some() {
@@ -7627,6 +7944,7 @@ fn render_hermes_config(
     supports_vision: bool,
     base_url: &str,
     provider_proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
     cron_toolsets: &str,
@@ -7646,6 +7964,7 @@ fn render_hermes_config(
         mcp_configs,
         base_url,
         provider_proxy_token,
+        memory_proxy_token,
         recorder_proxy_token,
         connector_proxy_token,
     );
@@ -7677,12 +7996,17 @@ fn render_mcp_servers_config(
     configs: BuiltinMcpConfigs<'_>,
     base_url: &str,
     proxy_token: &str,
+    memory_proxy_token: &str,
     recorder_proxy_token: &str,
     connector_proxy_token: &str,
 ) -> String {
     let mut entries = String::new();
     if let Some(config) = configs.context {
-        entries.push_str(&render_context_mcp_entry(config));
+        entries.push_str(&render_context_mcp_entry(
+            config,
+            base_url,
+            memory_proxy_token,
+        ));
     }
     if let Some(config) = configs.web {
         entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
@@ -7772,7 +8096,11 @@ fn render_mcp_servers_config(
     format!("mcp_servers:\n{entries}")
 }
 
-fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
+fn render_context_mcp_entry(
+    config: &JuneContextMcpConfig,
+    base_url: &str,
+    memory_proxy_token: &str,
+) -> String {
     format!(
         r#"  {server_name}:
     enabled: true
@@ -7780,8 +8108,11 @@ fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
     args:
       - {script_path}
       - {database_path}
+      - {memory_settings_path}
+      - {base_url}
     env:
       PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
     timeout: 30
     connect_timeout: 10
 "#,
@@ -7789,6 +8120,10 @@ fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
         command = yaml_string(&config.command),
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         database_path = yaml_string(&config.database_path.to_string_lossy()),
+        memory_settings_path = yaml_string(&config.memory_settings_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_MEMORY_MCP_TOKEN_ENV,
+        token = yaml_string(memory_proxy_token),
     )
 }
 
@@ -8163,6 +8498,7 @@ fn sync_june_soul(
     hermes_home: &std::path::Path,
     sandbox_available: bool,
     agent_cli_access: bool,
+    memory_enabled: bool,
     video_generation_enabled: bool,
     connectors_registered: bool,
 ) -> Result<(), AppError> {
@@ -8172,6 +8508,11 @@ fn sync_june_soul(
     let base = format!("{JUNE_SOUL_IDENTITY_MD}\n{character}\n");
     let video_section = if video_generation_enabled {
         JUNE_SOUL_VIDEO_MD
+    } else {
+        ""
+    };
+    let memory_section = if memory_enabled {
+        JUNE_SOUL_MEMORY_MD
     } else {
         ""
     };
@@ -8187,10 +8528,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
+        format!("{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -8373,6 +8714,7 @@ fn yaml_string(value: &str) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn start_june_provider_proxy(
     token: String,
+    memory_token: String,
     recorder_token: String,
     connector_token: String,
     image_sources: ImageSourceCapabilities,
@@ -8381,6 +8723,13 @@ async fn start_june_provider_proxy(
     app: Option<AppHandle>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
 ) -> Result<RunningJuneProviderProxy, AppError> {
+    let memory = match app.as_ref() {
+        Some(app) => Some(MemoryProxyContext {
+            repositories: crate::commands::repositories(app).await?,
+            settings_path: crate::commands::memory_settings_path(app)?,
+        }),
+        None => None,
+    };
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| AppError::new("june_provider_proxy_failed", error.to_string()))?;
     listener
@@ -8397,6 +8746,7 @@ async fn start_june_provider_proxy(
         listener,
         Arc::new(ProviderProxyState {
             token,
+            memory_token,
             recorder_token,
             connector_token,
             image_sources,
@@ -8406,6 +8756,7 @@ async fn start_june_provider_proxy(
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
             model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests,
+            memory,
         }),
         shutdown_rx,
     ));
@@ -8451,8 +8802,8 @@ async fn handle_june_provider_connection(
     mut stream: tokio::net::TcpStream,
     state: Arc<ProviderProxyState>,
 ) -> io::Result<()> {
-    let request = match read_http_request(&mut stream).await {
-        Ok(request) => request,
+    let (mut request, content_length, leftover) = match read_http_head(&mut stream).await {
+        Ok(head) => head,
         Err(error) => {
             let _ = write_json_response(
                 &mut stream,
@@ -8466,9 +8817,13 @@ async fn handle_june_provider_connection(
     let required_token = provider_proxy_required_token(
         &request.path,
         &state.token,
+        &state.memory_token,
         &state.recorder_token,
         &state.connector_token,
     );
+    // Authenticate on the parsed headers BEFORE reading the body, so an
+    // unauthenticated local process cannot force the loopback proxy to buffer a
+    // declared (up to 12 MiB) body before the 401 (JUN-336 review).
     if !provider_proxy_authorized(&request, required_token) {
         write_json_response(
             &mut stream,
@@ -8478,6 +8833,24 @@ async fn handle_june_provider_connection(
         .await?;
         return Ok(());
     }
+    if content_length > provider_proxy_max_body_bytes(&request.path) {
+        // Enforced here (was inside the old read_http_request) so it runs after
+        // auth. Chat bodies keep the context-overflow wording the frontend
+        // classifier keys on ("maximum context length" / `prompt_too_long`), so
+        // an over-cap chat body degrades into the recoverable overflow notice;
+        // image bodies use an image-specific message. Only authenticated callers
+        // reach this — an unauthenticated over-cap request is already a 401.
+        write_json_response(
+            &mut stream,
+            400,
+            serde_json::json!({
+                "error": { "message": provider_proxy_body_too_large_message(&request.path) }
+            }),
+        )
+        .await?;
+        return Ok(());
+    }
+    request.body = read_http_body(&mut stream, leftover, content_length).await?;
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
             let selected_model = crate::providers::generation_model();
@@ -8658,6 +9031,9 @@ async fn handle_june_provider_connection(
         ("GET", "/v1/recorder/status") => {
             write_json_response(&mut stream, 200, recorder_status_body()).await?;
         }
+        ("POST", path) if matches!(path, "/v1/memory/save" | "/v1/memory/forget") => {
+            handle_memory_route(&mut stream, &state, path, &request.body).await?;
+        }
         ("POST", path)
             if path.starts_with("/v1/gmail/")
                 || path.starts_with("/v1/gmail-actions/")
@@ -8682,6 +9058,107 @@ async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Res
         serde_json::json!({ "error": { "message": "Not found" } }),
     )
     .await
+}
+
+async fn handle_memory_route(
+    stream: &mut tokio::net::TcpStream,
+    state: &ProviderProxyState,
+    path: &str,
+    request_body: &[u8],
+) -> io::Result<()> {
+    let (status, body) = dispatch_memory_route(state.memory.as_ref(), path, request_body).await;
+    write_json_response(stream, status, body).await
+}
+
+async fn dispatch_memory_route(
+    memory: Option<&MemoryProxyContext>,
+    path: &str,
+    request_body: &[u8],
+) -> (u16, serde_json::Value) {
+    let Some(memory) = memory else {
+        return (
+            503,
+            memory_error_body(&AppError::new(
+                "memory_store_unavailable",
+                "June's memory store is unavailable.",
+            )),
+        );
+    };
+    let body = serde_json::from_slice::<serde_json::Value>(request_body)
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let result = match path {
+        "/v1/memory/save" => {
+            let content = body
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let project_id = match body.get("project_id") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(value)) => Some(value.as_str()),
+                Some(_) => {
+                    return (
+                        400,
+                        memory_error_body(&AppError::new(
+                            "folder_not_found",
+                            "Project was not found or has already been deleted.",
+                        )),
+                    );
+                }
+            };
+            crate::commands::create_memory_with_settings(
+                &memory.repositories,
+                &memory.settings_path,
+                project_id,
+                content,
+                "agent",
+            )
+            .await
+            .map(Some)
+        }
+        "/v1/memory/forget" => {
+            let id = body
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .trim();
+            if id.is_empty() {
+                Err(AppError::new(
+                    "memory_id_required",
+                    "Memory id is required.",
+                ))
+            } else {
+                memory.repositories.delete_memory(id).await.map(|()| None)
+            }
+        }
+        _ => unreachable!("memory route guard only passes known routes"),
+    };
+
+    match result {
+        Ok(Some(memory)) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "message": "Memory saved.",
+                "memory": memory,
+            }),
+        ),
+        Ok(None) => (
+            200,
+            serde_json::json!({
+                "ok": true,
+                "message": "Memory forgotten.",
+            }),
+        ),
+        Err(error) => (400, memory_error_body(&error)),
+    }
+}
+
+fn memory_error_body(error: &AppError) -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "error_code": error.code,
+        "message": error.message,
+    })
 }
 
 /// Dispatches a private-connector proxy route (`/v1/gmail*`, `/v1/gcal*`,
@@ -10331,7 +10808,16 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<HttpRequest> {
+/// Read and parse the request line + headers only, WITHOUT consuming the body.
+/// Returns the request (with an empty `body`), its declared `Content-Length`,
+/// and any bytes already read past the header terminator. The caller must
+/// authorize on the returned headers before calling `read_http_body`, so an
+/// unauthenticated caller never makes the loopback proxy buffer a large body
+/// (JUN-336 review). The body-size cap is likewise enforced by the caller,
+/// after authentication.
+async fn read_http_head(
+    stream: &mut tokio::net::TcpStream,
+) -> io::Result<(HttpRequest, usize, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -10383,21 +10869,28 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
             }
         })
         .unwrap_or(0);
-    if content_length > provider_proxy_max_body_bytes(&path) {
-        // The handler turns this into a 400 for the client. Chat bodies are
-        // phrased as a context overflow (JUN-169): the wording carries the
-        // tokens Hermes' overflow patterns match ("maximum context length") and
-        // the frontend classifier keys on (`prompt_too_long`), so an over-cap
-        // chat body degrades into the recoverable context-overflow notice
-        // instead of a raw transport error that re-wedges or dead-ends the
-        // session. Image bodies use an image-specific message because they are
-        // bounded by upload size, not model context.
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            provider_proxy_body_too_large_message(&path),
-        ));
-    }
-    let mut body = buffer[header_end..].to_vec();
+    let leftover = buffer[header_end..].to_vec();
+    Ok((
+        HttpRequest {
+            method,
+            path,
+            headers,
+            body: Vec::new(),
+        },
+        content_length,
+        leftover,
+    ))
+}
+
+/// Read the request body. Call ONLY after `read_http_head` and a successful
+/// authorization + body-size check on the head — never for an unauthenticated
+/// or over-cap request (JUN-336).
+async fn read_http_body(
+    stream: &mut tokio::net::TcpStream,
+    mut body: Vec<u8>,
+    content_length: usize,
+) -> io::Result<Vec<u8>> {
+    let mut chunk = [0u8; 4096];
     while body.len() < content_length {
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
@@ -10406,12 +10899,7 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> io::Result<Htt
         body.extend_from_slice(&chunk[..read]);
     }
     body.truncate(content_length);
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-    })
+    Ok(body)
 }
 
 fn provider_proxy_max_body_bytes(path: &str) -> usize {
@@ -10608,17 +11096,19 @@ fn model_catalog_with_fallback(
     }
 }
 
-/// Recorder mutations require the recorder-scoped secret; connector routes
-/// (mail/calendar) require the connector-scoped secret; every other route keeps
-/// the general provider token. Distinct secrets, so none authorizes another's
-/// surface.
+/// Memory writes, recorder mutations, and connector routes each require their
+/// own scoped secret; every other route keeps the general provider token.
+/// Distinct secrets, so none authorizes another's surface.
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
+    memory_token: &'a str,
     recorder_token: &'a str,
     connector_token: &'a str,
 ) -> &'a str {
-    if path.starts_with("/v1/recorder/") {
+    if path.starts_with("/v1/memory/") {
+        memory_token
+    } else if path.starts_with("/v1/recorder/") {
         recorder_token
     } else if path.starts_with("/v1/gmail/")
         || path.starts_with("/v1/gmail-actions/")
@@ -11838,6 +12328,232 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    // The bundled MCP scripts are written verbatim into the Hermes home and
+    // evaluated at import time by the runtime venv. A NameError in module
+    // scope (e.g. a tool schema referencing an undefined constant) silently
+    // kills the whole server for every session, and no other gate executes
+    // the scripts — so import each one here. Regression guard: PR #746's
+    // june_context memory tool schema referenced a constant the write-path
+    // rework had removed.
+    #[test]
+    fn bundled_mcp_scripts_import_cleanly() {
+        for (name, script) in [
+            ("june_context_mcp.py", JUNE_CONTEXT_MCP_SCRIPT),
+            ("june_web_mcp.py", JUNE_WEB_MCP_SCRIPT),
+            ("june_image_mcp.py", JUNE_IMAGE_MCP_SCRIPT),
+            ("june_video_mcp.py", JUNE_VIDEO_MCP_SCRIPT),
+            ("june_recorder_mcp.py", JUNE_RECORDER_MCP_SCRIPT),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join(name);
+            std::fs::write(&path, script).expect("write script");
+            // Import the module without running main(): runpy would execute
+            // argv handling; importlib exercises exactly the module scope.
+            let output = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(format!(
+                    "import importlib.util; spec = importlib.util.spec_from_file_location('m', r'{}'); importlib.util.module_from_spec(spec); spec.loader.exec_module(importlib.util.module_from_spec(spec))",
+                    path.display()
+                ))
+                .output()
+                .expect("run python3");
+            assert!(
+                output.status.success(),
+                "{name} failed to import:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn june_context_memory_recall_is_paginated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("june_context_mcp.py");
+        std::fs::write(&script_path, JUNE_CONTEXT_MCP_SCRIPT).expect("write script");
+        let db_path = dir.path().join("notes.sqlite3");
+        let settings_path = dir.path().join("memory-settings.json");
+
+        let test = r#"
+import importlib.util
+import json
+import sqlite3
+import sys
+
+script_path, db_path, settings_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("june_context_mcp", script_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with sqlite3.connect(db_path) as conn:
+    conn.execute("""CREATE TABLE memories (
+        id TEXT PRIMARY KEY,
+        folder_id TEXT,
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    conn.executemany(
+        "INSERT INTO memories (id, folder_id, content, created_at) VALUES (?, NULL, ?, ?)",
+        [(f"memory-{index}", "x" * 4000, "2026-07-16T00:00:00Z") for index in range(25)],
+    )
+
+first = module.list_memories(module.Path(db_path), module.Path(settings_path), {})
+assert first["count"] == 8, first
+assert len(first["items"]) == 8, first
+assert first["items"][0]["id"] == "memory-24", first
+assert first["has_more"] is True, first
+assert first["next_offset"] == 8, first
+
+second = module.list_memories(
+    module.Path(db_path),
+    module.Path(settings_path),
+    {"limit": 20, "offset": first["next_offset"]},
+)
+assert second["count"] == 17, second
+assert second["items"][0]["id"] == "memory-16", second
+assert second["items"][-1]["id"] == "memory-0", second
+assert second["has_more"] is False, second
+assert second["next_offset"] is None, second
+
+capped = module.list_memories(
+    module.Path(db_path), module.Path(settings_path), {"limit": 100}
+)
+assert capped["count"] == 20, capped
+assert capped["has_more"] is True, capped
+"#;
+
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(test)
+            .arg(&script_path)
+            .arg(&db_path)
+            .arg(&settings_path)
+            .output()
+            .expect("run python3");
+        assert!(
+            output.status.success(),
+            "pagination regression test failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn shutdown_waits_for_in_flight_start_to_register() {
+        // Simulate a start that has spawned a child but not yet registered it:
+        // the in-progress counter is held, then released 100ms later (as the
+        // real start would after inserting into `processes`). `shutdown`'s
+        // quiesce wait must not return before that release, or the drain would
+        // run while a child is unregistered and orphan it (JUN-338).
+        let bridge = Arc::new(HermesBridge::default());
+        bridge.starts_in_progress.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 1);
+
+        let released = Arc::new(AtomicBool::new(false));
+        let releaser = {
+            let bridge = bridge.clone();
+            let released = released.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                released.store(true, Ordering::SeqCst);
+                bridge.starts_in_progress.fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+
+        let start = Instant::now();
+        await_starts_quiesced(&bridge, Duration::from_secs(2));
+
+        // Returned only after the in-flight start released — proving teardown
+        // blocked on it rather than racing ahead to the drain.
+        assert!(released.load(Ordering::SeqCst));
+        assert!(start.elapsed() >= Duration::from_millis(90));
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 0);
+        releaser.join().unwrap();
+    }
+
+    #[test]
+    fn start_in_progress_guard_counts_up_then_down_on_drop() {
+        let bridge = HermesBridge::default();
+        {
+            let _guard = StartInProgressGuard::new(&bridge.starts_in_progress);
+            assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 1);
+        }
+        assert_eq!(bridge.starts_in_progress.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn await_starts_quiesced_bounds_the_wait_when_a_start_never_finishes() {
+        // A start that never completes must not hang teardown forever: the wait
+        // returns at the timeout even with the counter still held.
+        let bridge = HermesBridge::default();
+        let _guard = StartInProgressGuard::new(&bridge.starts_in_progress);
+        let start = Instant::now();
+        await_starts_quiesced(&bridge, Duration::from_millis(50));
+        assert!(start.elapsed() >= Duration::from_millis(45));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_group_reaps_a_forked_child() {
+        use std::os::unix::process::CommandExt as _;
+
+        // A parent in its own process group that forks a long-lived grandchild.
+        // A bare kill of the parent would leave the `sleep` orphaned; the
+        // group-addressed kill must take both down.
+        let mut parent = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 300 & sleep 300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test process group");
+        let pid = parent.id();
+
+        kill_process_group(pid);
+
+        // The parent must be gone promptly; if the group kill missed it, this
+        // wait would hang for the full 300s sleep.
+        let start = Instant::now();
+        loop {
+            match parent.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = parent.kill();
+                    panic!("process group was not killed");
+                }
+                Err(error) => panic!("wait failed: {error}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_unregistered_child_group_kills_on_post_spawn_error() {
+        use std::os::unix::process::CommandExt as _;
+
+        // Mirrors a runtime spawned but not yet registered when an error path
+        // (poisoned lock, teardown handshake) fires: the child and any worker it
+        // forked must both die rather than orphan.
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("/bin/sleep 300 & sleep 300")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn unregistered child");
+
+        reap_unregistered_child(&mut child);
+
+        // Already reaped by the helper; a second wait resolves immediately.
+        assert!(matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
+    }
+
     #[test]
     fn ensure_video_defaults_injects_missing_knobs_under_the_keys_june_api_reads() {
         let mut body = serde_json::json!({ "prompt": "a calm lake" });
@@ -11902,6 +12618,7 @@ mod tests {
         let addr = listener.local_addr().expect("listener addr");
         let state = Arc::new(ProviderProxyState {
             token: "proxy-token".to_string(),
+            memory_token: "memory-token".to_string(),
             recorder_token: "recorder-token".to_string(),
             connector_token: "connector-token".to_string(),
             image_sources: ImageSourceCapabilities {
@@ -11914,6 +12631,7 @@ mod tests {
             image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
             model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
             recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+            memory: None,
         });
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("accept connection");
@@ -11940,6 +12658,103 @@ mod tests {
             .expect("read response");
         server.await.expect("server task");
         response
+    }
+
+    async fn test_memory_proxy_context(
+        enabled: bool,
+    ) -> (
+        MemoryProxyContext,
+        sqlx_sqlite::SqlitePool,
+        tempfile::TempDir,
+    ) {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let settings_dir = tempfile::tempdir().expect("settings tempdir");
+        let settings_path = settings_dir.path().join("memory-settings.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::json!({ "enabled": enabled }).to_string(),
+        )
+        .expect("write memory settings");
+        (
+            MemoryProxyContext {
+                repositories: crate::db::repositories::Repositories::new(pool.clone()),
+                settings_path,
+            },
+            pool,
+            settings_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_rejects_unauthenticated_request_before_reading_body() {
+        // The proxy authenticates on the parsed headers BEFORE reading the body,
+        // so an unauthenticated local process cannot make it buffer a declared
+        // (up to 12 MiB) body (JUN-336 review). We declare a large Content-Length
+        // but send NO body: with auth-before-read the proxy answers 401 at once;
+        // a regression that read the body first would block waiting for bytes
+        // that never arrive, tripping the timeout below.
+        let home = tempfile::tempdir().expect("tempdir");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind proxy listener");
+        let addr = listener.local_addr().expect("listener addr");
+        let state = Arc::new(ProviderProxyState {
+            token: "proxy-token".to_string(),
+            recorder_token: "recorder-token".to_string(),
+            connector_token: "connector-token".to_string(),
+            memory_token: "memory-token".to_string(),
+            image_sources: ImageSourceCapabilities {
+                images_dir: home.path().join("images"),
+                secret: [7; IMAGE_SOURCE_CAPABILITY_SECRET_BYTES],
+            },
+            videos_dir: home.path().join("videos"),
+            video_generation_enabled: false,
+            app: None,
+            image_safe_mode_pins: Arc::new(Mutex::new(VecDeque::new())),
+            model_catalog_cache: Arc::new(Mutex::new(Vec::new())),
+            recorder_requests: Arc::new(Mutex::new(HashMap::new())),
+            memory: None,
+        });
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept connection");
+            handle_june_provider_connection(stream, state)
+                .await
+                .expect("handle connection");
+        });
+
+        let exchange = async {
+            let mut stream = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("connect proxy");
+            // Wrong bearer + a large declared body we never send.
+            let request = "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer wrong-token\r\nContent-Length: 5000000\r\n\r\n";
+            stream
+                .write_all(request.as_bytes())
+                .await
+                .expect("write request");
+            let mut response = String::new();
+            stream
+                .read_to_string(&mut response)
+                .await
+                .expect("read response");
+            response
+        };
+
+        let response = tokio::time::timeout(Duration::from_secs(5), exchange)
+            .await
+            .expect("proxy must answer 401 without waiting for the declared body");
+        assert!(
+            response.starts_with("HTTP/1.1 401"),
+            "expected 401 Unauthorized, got: {response}"
+        );
+        server.await.expect("server task");
     }
 
     fn oauth_test_connection() -> HermesBridgeConnection {
@@ -12347,6 +13162,7 @@ mod tests {
             command: "/tmp/hermes/venv/bin/python".to_string(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_context_mcp.py"),
             database_path: PathBuf::from("/tmp/june/notes.sqlite3"),
+            memory_settings_path: PathBuf::from("/tmp/june/config/memory-settings.json"),
         }
     }
 
@@ -12398,10 +13214,22 @@ mod tests {
     }
 
     #[test]
-    fn recorder_routes_require_the_recorder_scoped_token_and_vice_versa() {
+    fn sensitive_routes_require_their_scoped_token_and_vice_versa() {
         // The general provider token every model call carries must never
         // authorize microphone control, and the recorder secret must not
         // open the provider surface.
+        for path in ["/v1/memory/save", "/v1/memory/forget"] {
+            assert_eq!(
+                provider_proxy_required_token(
+                    path,
+                    "provider-tok",
+                    "memory-tok",
+                    "recorder-tok",
+                    "connector-tok"
+                ),
+                "memory-tok"
+            );
+        }
         for path in [
             "/v1/recorder/start",
             "/v1/recorder/stop",
@@ -12411,6 +13239,7 @@ mod tests {
                 provider_proxy_required_token(
                     path,
                     "provider-tok",
+                    "memory-tok",
                     "recorder-tok",
                     "connector-tok"
                 ),
@@ -12427,6 +13256,7 @@ mod tests {
                 provider_proxy_required_token(
                     path,
                     "provider-tok",
+                    "memory-tok",
                     "recorder-tok",
                     "connector-tok"
                 ),
@@ -12450,6 +13280,7 @@ mod tests {
                 provider_proxy_required_token(
                     path,
                     "provider-tok",
+                    "memory-tok",
                     "recorder-tok",
                     "connector-tok"
                 ),
@@ -12462,12 +13293,14 @@ mod tests {
         let recorder_required = provider_proxy_required_token(
             "/v1/recorder/start",
             "provider-tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
         );
         let provider_required = provider_proxy_required_token(
             "/v1/models",
             "provider-tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
         );
@@ -12503,6 +13336,132 @@ mod tests {
         assert!(!provider_proxy_authorized(&missing, "proxy-secret"));
         assert!(!provider_proxy_authorized(&basic, "proxy-secret"));
         assert!(!provider_proxy_authorized(&extra, "proxy-secret"));
+    }
+
+    #[test]
+    fn memory_proxy_routes_require_the_memory_scoped_token() {
+        let required = provider_proxy_required_token(
+            "/v1/memory/save",
+            "proxy-token",
+            "memory-token",
+            "recorder-token",
+            "connector-token",
+        );
+        assert!(!provider_proxy_authorized(
+            &request_with_authorization("Bearer proxy-token"),
+            required
+        ));
+        assert!(provider_proxy_authorized(
+            &request_with_authorization("Bearer memory-token"),
+            required
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_proxy_save_enforces_global_and_project_disable_rules() {
+        let (disabled_memory, _pool, _settings_dir) = test_memory_proxy_context(false).await;
+        let (_, global_response) = dispatch_memory_route(
+            Some(&disabled_memory),
+            "/v1/memory/save",
+            br#"{"content":"Remember this"}"#,
+        )
+        .await;
+        assert_eq!(global_response["error_code"], "memory_disabled");
+        std::fs::write(&disabled_memory.settings_path, "not json")
+            .expect("corrupt memory settings");
+        let (_, corrupt_response) = dispatch_memory_route(
+            Some(&disabled_memory),
+            "/v1/memory/save",
+            br#"{"content":"Remember this"}"#,
+        )
+        .await;
+        assert_eq!(corrupt_response["error_code"], "memory_disabled");
+
+        let (project_memory, _pool, _settings_dir) = test_memory_proxy_context(true).await;
+        let folder = project_memory
+            .repositories
+            .create_folder("Project", None)
+            .await
+            .expect("create folder");
+        project_memory
+            .repositories
+            .set_folder_memory_disabled(&folder.id, true)
+            .await
+            .expect("disable project memory");
+        let project_body = serde_json::json!({
+            "content": "Remember this",
+            "project_id": folder.id,
+        })
+        .to_string();
+        let (_, project_response) = dispatch_memory_route(
+            Some(&project_memory),
+            "/v1/memory/save",
+            project_body.as_bytes(),
+        )
+        .await;
+        assert_eq!(project_response["error_code"], "memory_disabled");
+    }
+
+    #[tokio::test]
+    async fn memory_proxy_save_validates_content_and_project_scope() {
+        let (memory, _pool, _settings_dir) = test_memory_proxy_context(true).await;
+        let too_long_body = serde_json::json!({ "content": "x".repeat(4_001) }).to_string();
+        let (_, too_long) =
+            dispatch_memory_route(Some(&memory), "/v1/memory/save", too_long_body.as_bytes()).await;
+        assert_eq!(too_long["error_code"], "memory_content_too_long");
+
+        let (_, missing_project) = dispatch_memory_route(
+            Some(&memory),
+            "/v1/memory/save",
+            br#"{"content":"Remember this","project_id":"missing"}"#,
+        )
+        .await;
+        assert_eq!(missing_project["error_code"], "folder_not_found");
+    }
+
+    #[tokio::test]
+    async fn memory_proxy_save_and_forget_use_agent_source_and_write_tombstone() {
+        let (memory, pool, _settings_dir) = test_memory_proxy_context(true).await;
+        let folder = memory
+            .repositories
+            .create_folder("Project", None)
+            .await
+            .expect("create folder");
+        let saved_body = serde_json::json!({
+            "content": "  Remember this  ",
+            "project_id": folder.id,
+        })
+        .to_string();
+        let (_, saved) =
+            dispatch_memory_route(Some(&memory), "/v1/memory/save", saved_body.as_bytes()).await;
+        assert_eq!(saved["ok"], true);
+        assert_eq!(saved["memory"]["content"], "Remember this");
+        assert_eq!(saved["memory"]["source"], "agent");
+        assert_eq!(saved["memory"]["folderId"], folder.id);
+        let memory_id = saved["memory"]["id"]
+            .as_str()
+            .expect("saved memory id")
+            .to_string();
+
+        let forget_body = serde_json::json!({ "id": memory_id }).to_string();
+        let (_, forgotten) =
+            dispatch_memory_route(Some(&memory), "/v1/memory/forget", forget_body.as_bytes()).await;
+        assert_eq!(forgotten["ok"], true);
+        use sqlx::row::Row;
+        let memories = sqlx::query::query("SELECT COUNT(*) AS count FROM memories")
+            .fetch_one(&pool)
+            .await
+            .expect("count memories")
+            .get::<i64, _>("count");
+        let tombstones =
+            sqlx::query::query("SELECT COUNT(*) AS count FROM memory_tombstones WHERE id = ?")
+                .bind(memory_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count tombstones")
+                .get::<i64, _>("count");
+        assert_eq!(memories, 0);
+        assert_eq!(tombstones, 1);
     }
 
     #[test]
@@ -13278,6 +14237,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "new-token",
+            "memory-token",
             "recorder-token",
             "connector-token",
             "web",
@@ -13373,6 +14333,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "t",
+            "memory",
             "recorder",
             "connector",
             "web",
@@ -13595,6 +14556,7 @@ mcp_servers:
             home.path(),
             4242,
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             false,
@@ -13646,6 +14608,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
             "web, memory",
@@ -13690,6 +14653,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
             "web",
@@ -13793,6 +14757,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "memory-proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
             "web",
@@ -13820,6 +14785,26 @@ mcp_servers:
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
+        assert!(config.contains("      - \"/tmp/june/config/memory-settings.json\"\n"));
+        // Context keeps its read-side database/settings argv and gains only
+        // the loopback URL plus the dedicated memory-write token.
+        assert!(config.contains("      JUNE_MEMORY_PROXY_TOKEN: \"memory-proxy-tok\"\n"));
+        assert!(!config.contains("      JUNE_MEMORY_PROXY_TOKEN: \"proxy-tok\"\n"));
+        let value: serde_yaml::Value = serde_yaml::from_str(&config).expect("config parses");
+        assert_eq!(
+            value["mcp_servers"]["june_context"]["args"],
+            serde_yaml::from_str::<serde_yaml::Value>(
+                r#"[
+  "/tmp/june/hermes-mcp/june_context_mcp.py",
+  "/tmp/june/notes.sqlite3",
+  "/tmp/june/config/memory-settings.json",
+  "http://127.0.0.1:9/v1"
+]"#,
+            )
+            .expect("expected args parse")
+        );
+        assert!(!JUNE_CONTEXT_MCP_SCRIPT.contains("INSERT INTO memories"));
+        assert!(!JUNE_CONTEXT_MCP_SCRIPT.contains("DELETE FROM memories"));
         // The web server gets the loopback proxy URL as an arg and the proxy
         // token via env, never as a direct credential the MCP must hold.
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_web_mcp.py\"\n"));
@@ -13917,6 +14902,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "memory-proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
             "web",
@@ -13955,6 +14941,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-tok",
+            "memory-proxy-tok",
             "recorder-proxy-tok",
             "connector-proxy-tok",
             "web",
@@ -13990,6 +14977,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "tok",
+            "memory-tok",
             "recorder-tok",
             "connector-tok",
             "web",
@@ -14025,6 +15013,7 @@ mcp_servers:
             true,
             "http://127.0.0.1:9/v1",
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             "web, memory",
@@ -14051,6 +15040,7 @@ mcp_servers:
             false,
             "http://127.0.0.1:9/v1",
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             "web, memory",
@@ -14125,6 +15115,32 @@ mcp_servers:
                     .join("hermes")
             ));
         }
+    }
+
+    #[test]
+    fn managed_runtime_source_verification_is_native_and_fail_closed() {
+        let install_dir = tempfile::tempdir().expect("tempdir");
+        let source_path = install_dir.path().join("tools").join("approval.py");
+        std::fs::create_dir_all(source_path.parent().expect("parent")).expect("source dir");
+        std::fs::write(&source_path, b"patched source").expect("source");
+        let expected_hash = hex_encode(&sha256_bytes(b"patched source"));
+
+        verify_hermes_runtime_source_hashes(
+            install_dir.path(),
+            &[("tools/approval.py", expected_hash.as_str())],
+        )
+        .expect("matching source hash");
+
+        std::fs::write(&source_path, b"tampered source").expect("tampered source");
+        let error = verify_hermes_runtime_source_hashes(
+            install_dir.path(),
+            &[("tools/approval.py", expected_hash.as_str())],
+        )
+        .expect_err("tampered source must fail closed");
+        assert_eq!(error.code, "hermes_runtime_patch_failed");
+        assert!(error.message.contains("tools/approval.py"));
+        assert!(error.message.contains("expected"));
+        assert!(error.message.contains("got"));
     }
 
     #[test]
@@ -14459,6 +15475,7 @@ mcp_servers:
             home.path(),
             4242,
             "proxy-token",
+            "memory-proxy-token",
             "recorder-proxy-token",
             "connector-proxy-token",
             false,
@@ -14519,6 +15536,81 @@ mcp_servers:
     }
 
     #[test]
+    fn cron_toolsets_drop_native_memory_when_memory_is_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = dir.path().join("memory-settings.json");
+        let mut context = test_june_context_mcp_config();
+        context.memory_settings_path = settings.clone();
+        let configs = BuiltinMcpConfigs {
+            context: Some(&context),
+            web: None,
+            image: None,
+            video: None,
+            recorder: None,
+            gmail: None,
+            gmail_actions: None,
+            gcal: None,
+            gcal_actions: None,
+            linear: None,
+            linear_actions: None,
+            connector_autos: &[],
+        };
+
+        // Missing settings file = enabled by default: native memory stays.
+        assert!(cron_platform_toolsets(&configs)
+            .split(", ")
+            .any(|toolset| toolset == "memory"));
+
+        // Memory turned off: the native memory toolset must be gone so a
+        // routine can't write Hermes' unscoped store behind the off switch.
+        std::fs::write(&settings, r#"{"enabled":false}"#).expect("disable memory");
+        assert!(!cron_platform_toolsets(&configs)
+            .split(", ")
+            .any(|toolset| toolset == "memory"));
+
+        // Re-enabled: native memory returns.
+        std::fs::write(&settings, r#"{"enabled":true}"#).expect("enable memory");
+        assert!(cron_platform_toolsets(&configs)
+            .split(", ")
+            .any(|toolset| toolset == "memory"));
+    }
+
+    #[tokio::test]
+    async fn reapply_runtime_lock_serializes_concurrent_reapplies() {
+        // Regression for the rapid-toggle race: reapply stops live runtimes
+        // before restarting them, so two overlapping reapplies could let the
+        // later one observe the earlier one's "no live connections" window and
+        // no-op while the earlier restart finished with a stale setting.
+        // `REAPPLY_RUNTIME_LOCK` (held across the whole cycle) must make the
+        // critical sections mutually exclusive so the last-persisted setting is
+        // the one that lands.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let active = active.clone();
+            let max_seen = max_seen.clone();
+            handles.push(tokio::spawn(async move {
+                let _guard = REAPPLY_RUNTIME_LOCK.lock().await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                // Yield across an await so a missing lock would interleave here.
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("reapply task");
+        }
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "reapply critical sections overlapped: lock is not serializing",
+        );
+    }
+
+    #[test]
     fn sync_june_soul_replaces_default_hermes_identity() {
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -14527,7 +15619,7 @@ mcp_servers:
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -14547,10 +15639,40 @@ mcp_servers:
     }
 
     #[test]
+    fn june_soul_includes_memory_guidance_only_while_globally_enabled() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, true, false, false).expect("enabled soul");
+        let enabled = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(enabled.contains("June memory tools"));
+        assert!(enabled.contains("save_memory"));
+        assert!(enabled.contains("list_memories"));
+        assert!(enabled.contains("forget_memory"));
+        assert!(enabled.contains("Never save secrets, credentials"));
+
+        sync_june_soul(home.path(), false, false, false, false, false).expect("disabled soul");
+        let disabled = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(!disabled.contains("June memory tools"));
+        assert!(!disabled.contains("save_memory"));
+    }
+
+    #[test]
+    fn june_memory_settings_match_the_command_loader_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("memory-settings.json");
+
+        assert!(june_memory_enabled(&path));
+        std::fs::write(&path, r#"{"enabled":false}"#).expect("disable memory");
+        assert!(!june_memory_enabled(&path));
+        std::fs::write(&path, "not json").expect("corrupt settings");
+        assert!(!june_memory_enabled(&path));
+    }
+
+    #[test]
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
@@ -14575,7 +15697,7 @@ mcp_servers:
     fn june_soul_describes_local_context_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_context"));
@@ -14591,7 +15713,7 @@ mcp_servers:
     fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Clarifying questions"));
@@ -14605,7 +15727,7 @@ mcp_servers:
     fn june_soul_describes_web_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_web"));
@@ -14618,7 +15740,7 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
 
         // Not registered: no connector stanza.
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!soul.contains("june_gmail"));
         assert!(!soul.contains("june_gcal"));
@@ -14626,7 +15748,7 @@ mcp_servers:
 
         // Registered: gmail/gcal/linear toolsets, the untrusted-input warning,
         // and the approval note appear.
-        sync_june_soul(home.path(), false, false, true, true).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, true).expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_gmail"));
         assert!(soul.contains("june_gcal"));
@@ -14941,7 +16063,7 @@ mcp_servers:
     fn june_soul_uses_image_settings_instead_of_pre_refusing() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_image"));
@@ -14967,7 +16089,7 @@ mcp_servers:
     fn june_soul_describes_recorder_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_recorder"));
@@ -14981,7 +16103,7 @@ mcp_servers:
     fn sandboxed_soul_with_cli_access_describes_the_grant() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, true, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("the user enabled Agent CLI access"));
@@ -14997,7 +16119,7 @@ mcp_servers:
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -15009,7 +16131,7 @@ mcp_servers:
     fn june_soul_omits_video_tools_when_disabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -15023,7 +16145,7 @@ mcp_servers:
     fn sync_june_soul_seeds_character_file_and_uses_default() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are helpful, knowledgeable, and direct"));
@@ -15042,7 +16164,7 @@ mcp_servers:
         )
         .expect("seed character");
 
-        sync_june_soul(home.path(), true, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("cheerful pirate"));
@@ -15064,7 +16186,7 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(home.path().join("CHARACTER.md"), "   \n\n").expect("seed blank");
 
-        sync_june_soul(home.path(), false, false, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, false, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are helpful, knowledgeable, and direct"));
@@ -15103,7 +16225,7 @@ mcp_servers:
     fn june_soul_includes_video_tools_when_enabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_video"));

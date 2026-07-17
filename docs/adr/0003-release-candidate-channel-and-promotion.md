@@ -155,3 +155,20 @@ version-bump PR being merged first.
 - **The escape rule must stay a tested pure function.** Its correctness is not
   observable from the updater builder, so `should_update` is unit-tested for the
   stable-escape, rc-forward-only, and clean-stable-forward-only cases.
+
+## 2026-07-16 addendum: RC Slack announcements
+
+Stable announcements remain delegated to the GitHub Slack app because every
+stable version is a newly published `vX.Y.Z` release. RC iterations still edit
+the fixed `rc` prerelease in place, so `rc-desktop-dmg.yml` now posts a
+best-effort incoming-webhook message after the candidate assets are published.
+The separate path is intentional: it announces every RC iteration without
+changing the fixed-tag RC release channel contract. A missing or failing webhook
+warns but does not fail the release after signed artifacts have published. The
+fixed DMG asset continues to follow the RC release channel, while Slack links an
+additional versioned DMG that remains immutable for the candidate named in the
+announcement. The versioned asset is uploaded without replacement, and the RC
+version guard fails closed unless GitHub explicitly reports that the fixed
+release does not exist. Webhook delivery gets one bounded attempt because the
+incoming webhook is not idempotent; on an unconfirmed result, the operator checks
+Slack before manually posting a recovery announcement.

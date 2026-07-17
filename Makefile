@@ -84,6 +84,10 @@ tauri-lint:  ## clippy (warnings = errors)
 tauri-test:  ## cargo test
 	cargo test --manifest-path src-tauri/Cargo.toml --locked
 
+.PHONY: benchmark-note-transcription-latency
+benchmark-note-transcription-latency:
+	cargo test --manifest-path src-tauri/Cargo.toml --locked --release commands::note_transcription_benchmark::benchmark_post_finalization_note_transcription_latency -- --ignored --exact --nocapture --test-threads=1
+
 # --- June API backend (june-api/) ---
 june-api-fmt:  ## rustfmt (write)
 	cd june-api && cargo fmt --all

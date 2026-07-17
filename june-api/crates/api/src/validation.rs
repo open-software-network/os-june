@@ -20,19 +20,36 @@ pub(crate) const MAX_ISSUE_ATTACHMENT_BYTES: usize = june_config::ISSUE_REPORT_A
 // request from reaching it. They must sit with real HEADROOM above the largest
 // advertised model window so a legitimate in-window input is never rejected here
 // before the model sees it, and stay CONSISTENT with the Tauri provider proxy's
-// body cap (`JUNE_PROVIDER_PROXY_MAX_BODY_BYTES`) — otherwise the stricter gate
-// wins and an in-window upload fails anyway (JUN-169 review). The largest text
-// model is 256k tokens (Kimi K2.6, config.toml) ≈ 1.15M chars at a conservative
-// ~4.5 chars/token, so the cap is 1.5M — ~30% headroom above it, leaving room
-// for the system prompt and tool schemas on top of a near-window user input.
-// Per-string equals the aggregate because a single pasted document or file-read
-// may legitimately fill the whole allowance. JUN-169: the old 240k aggregate
-// (~60-68k tokens) rejected a single ~67k-token upload that GLM 5.2's 200k
-// window holds easily, and the proxy rebranded that rejection as a "maximum
-// context length" overflow, dead-ending the session on turn one.
+// body cap (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES`) — otherwise the stricter
+// gate wins and an in-window upload fails anyway (JUN-169 review). Sized to a
+// 1M-token context window (bullet-proof headroom for the biggest windows the
+// app is built to serve — today's largest is Kimi K2.6 at 256k, but the picker
+// already renders ≥1M-token models): 1M tokens ≈ 4.5M chars at a conservative
+// ~4.5 chars/token, so the cap is 6M — ~33% headroom above it, leaving room for
+// the system prompt and tool schemas on top of a near-window user input. Below
+// the current 256k-token ceiling the model rejects an over-window request
+// itself; this cap only guards the byte/abuse envelope. Per-string equals the
+// aggregate because a single pasted document or file-read may legitimately fill
+// the whole allowance. JUN-169: the old 240k aggregate (~60-68k tokens)
+// rejected a single ~67k-token upload that GLM 5.2's 200k window holds easily,
+// and the proxy rebranded that rejection as a "maximum context length"
+// overflow, dead-ending the session on turn one.
 // Tune with cost/abuse in mind — a larger cap allows larger (costlier) requests.
-pub(crate) const MAX_AGENT_STRING_CHARS: usize = 1_500_000;
-pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 1_500_000;
+pub(crate) const MAX_AGENT_STRING_CHARS: usize = 6_000_000;
+pub(crate) const MAX_AGENT_TOTAL_STRING_CHARS: usize = 6_000_000;
+// Compile-time drift guard (JUN-336): the dedicated `/v1/chat/completions`
+// extractor cap must be pinned to the desktop proxy's 12 MiB chat cap
+// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES` in src-tauri) and sit at/above the
+// semantic aggregate string allowance treated as a BYTE floor. If it drops
+// below, the outer Axum extractor rejects an in-window agent chat request with a
+// raw 413 before `validate_agent_chat_body` runs — the exact regression this
+// fixes. The char cap is a byte floor only for ≤2-byte UTF-8: a semantically
+// valid 6M-char body of 3–4-byte code points can exceed 12 MiB and is rejected
+// by the extractor first — but that is by design and consistent, because the
+// desktop proxy already caps the same request at the same 12 MiB before it ever
+// reaches june-api, degrading it to the context-overflow notice.
+const _: () = assert!(june_config::DEFAULT_MAX_AGENT_CHAT_BYTES == 12 * 1024 * 1024);
+const _: () = assert!(june_config::DEFAULT_MAX_AGENT_CHAT_BYTES >= MAX_AGENT_TOTAL_STRING_CHARS);
 pub(crate) const MAX_AGENT_JSON_DEPTH: usize = 16;
 pub(crate) const MAX_AGENT_OUTPUT_TOKENS: u64 = 32_768;
 pub(crate) const MAX_PROVIDER_API_KEY_CHARS: usize = 4_096;

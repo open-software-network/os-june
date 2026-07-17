@@ -49,8 +49,41 @@ pub struct FolderDto {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub memory_disabled: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryDto {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
+    pub content: String,
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySettingsDto {
+    #[serde(default = "memory_enabled_by_default")]
+    pub enabled: bool,
+}
+
+impl Default for MemorySettingsDto {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+fn memory_enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +128,9 @@ pub struct NoteDto {
     /// processing queue at the command layer, not persisted.
     #[serde(default)]
     pub queued_recordings: i64,
+    /// Exact recording session selected by the durable retry policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -284,6 +320,8 @@ pub struct FinishRecordingResponse {
 pub struct RetryProcessingRequest {
     pub note_id: String,
     pub step: Option<String>,
+    #[serde(default)]
+    pub recording_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,6 +376,10 @@ pub struct OpenPrivacySettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptDto {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
     pub text: String,
     pub source_mode: Option<RecordingSourceMode>,
     pub source: Option<String>,
@@ -400,6 +442,112 @@ pub struct AudioArtifactDto {
     pub size_bytes: i64,
     pub checksum: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteTranscriptionJobKind {
+    Turn,
+    SourceFallback,
+}
+
+impl NoteTranscriptionJobKind {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::SourceFallback => "source_fallback",
+        }
+    }
+}
+
+impl From<&str> for NoteTranscriptionJobKind {
+    fn from(value: &str) -> Self {
+        match value {
+            "source_fallback" | "sourceFallback" => Self::SourceFallback,
+            _ => Self::Turn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteTranscriptionJobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Superseded,
+}
+
+impl NoteTranscriptionJobStatus {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Superseded => "superseded",
+        }
+    }
+}
+
+impl From<&str> for NoteTranscriptionJobStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "superseded" => Self::Superseded,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// Complete, output-affecting plan for one durable saved-audio Source span.
+/// `configuration_fingerprint` is supplied by processing and covers language,
+/// dictionary, and other context revisions that repositories cannot derive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionJobPlan {
+    pub span_id: String,
+    pub audio_artifact_id: String,
+    pub source: String,
+    pub job_kind: NoteTranscriptionJobKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub turn_index: i64,
+    pub provider: String,
+    pub max_chunk_ms: Option<i64>,
+    pub pipeline_version: String,
+    pub configuration_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionJobRecord {
+    pub id: String,
+    pub note_id: String,
+    pub recording_session_id: String,
+    pub audio_artifact_id: String,
+    pub source: String,
+    pub source_mode: RecordingSourceMode,
+    pub job_kind: NoteTranscriptionJobKind,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub turn_index: i64,
+    pub input_fingerprint: String,
+    pub configuration_fingerprint: String,
+    pub operation_id: String,
+    pub provider: String,
+    pub max_chunk_ms: Option<i64>,
+    pub pipeline_version: String,
+    pub status: NoteTranscriptionJobStatus,
+    pub attempt_count: i64,
+    pub transcript_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -943,4 +1091,183 @@ pub enum SourceState {
     Invalid,
     Recoverable,
     Failed,
+}
+
+// ---- Private sharing (JUN-308) -------------------------------------------
+// Wire DTOs for the june-api /v1/shares endpoints plus the local key-store
+// commands. Ciphertext, IVs, envelopes, and keys cross the IPC boundary as
+// base64url strings; the Tauri layer only moves ciphertext and metadata,
+// never plaintext or unwrapped keys (crypto happens in the webview).
+
+/// One invite as submitted by the owner: the recipient email plus the content
+/// key wrapped under that recipient's invite key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInvitePayload {
+    pub email: String,
+    pub envelope_b64: String,
+    pub envelope_iv_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCreateRequest {
+    /// "note" | "session".
+    pub kind: String,
+    pub ciphertext_b64: String,
+    pub iv_b64: String,
+    pub invites: Vec<ShareInvitePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCreatedInviteDto {
+    pub invite_id: String,
+    pub email: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareCreatedDto {
+    pub share_id: String,
+    pub invites: Vec<ShareCreatedInviteDto>,
+}
+
+/// `POST /v1/shares/{id}/invites` returns only the new invites, without a
+/// `shareId` (the caller already knows it). Distinct from `ShareCreatedDto`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInvitesAddedDto {
+    pub invites: Vec<ShareCreatedInviteDto>,
+}
+
+/// `GET /v1/shares` returns share summaries (no invite list); the detail
+/// endpoint carries invites. Keeping them separate stops list parsing from
+/// depending on a field the summary response never sends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareSummaryDto {
+    pub share_id: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteDto {
+    pub invite_id: String,
+    pub email: String,
+    /// "pending" | "accepted" | "revoked".
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_access_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareDto {
+    pub share_id: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub invites: Vec<ShareInviteDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareAddInvitesRequest {
+    pub share_id: String,
+    pub invites: Vec<ShareInvitePayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareGetRequest {
+    pub share_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareDeleteRequest {
+    pub share_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareRevokeInviteRequest {
+    pub share_id: String,
+    pub invite_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareKeySaveRequest {
+    pub share_id: String,
+    /// "note" | "session".
+    pub item_kind: String,
+    pub item_id: String,
+    pub content_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareKeyGetRequest {
+    pub item_kind: String,
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareKeyDto {
+    pub share_id: String,
+    pub content_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteKeySaveRequest {
+    pub invite_id: String,
+    pub share_id: String,
+    pub invite_key_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteKeysGetRequest {
+    pub share_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInviteKeyDto {
+    pub invite_id: String,
+    pub invite_key_b64: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryDto;
+
+    fn memory(folder_id: Option<&str>) -> MemoryDto {
+        MemoryDto {
+            id: "memory-1".to_string(),
+            folder_id: folder_id.map(str::to_string),
+            content: "Remember this".to_string(),
+            source: "user".to_string(),
+            created_at: "2026-07-14T00:00:00Z".to_string(),
+            updated_at: "2026-07-14T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn memory_folder_id_is_omitted_for_global_memory_and_present_for_scoped_memory() {
+        let global = serde_json::to_value(memory(None)).expect("serialize global memory");
+        assert!(global.get("folderId").is_none());
+
+        let scoped =
+            serde_json::to_value(memory(Some("folder-1"))).expect("serialize folder-scoped memory");
+        assert_eq!(scoped["folderId"], "folder-1");
+    }
 }

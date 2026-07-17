@@ -6,6 +6,8 @@ type BreadcrumbItem = {
   /** Optional leading glyph (e.g. the project icon) for recognition. */
   icon?: ReactNode;
   onClick?: () => void;
+  /** Optional action revealed beside the current crumb on hover or focus. */
+  action?: ReactNode;
 };
 
 type Props = {
@@ -41,6 +43,18 @@ export function BreadcrumbBar({ backLabel, onBack, items, actions }: Props) {
                     ) : null}
                     {item.label}
                   </button>
+                ) : current && item.action ? (
+                  <span className="detail-breadcrumb-current-group">
+                    <span className="detail-breadcrumb-current">
+                      {item.icon ? (
+                        <span className="detail-breadcrumb-icon" aria-hidden>
+                          {item.icon}
+                        </span>
+                      ) : null}
+                      {item.label}
+                    </span>
+                    {item.action}
+                  </span>
                 ) : (
                   <span
                     className={current ? "detail-breadcrumb-current" : "detail-breadcrumb-label"}

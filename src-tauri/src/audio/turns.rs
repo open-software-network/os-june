@@ -15,10 +15,16 @@ pub const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 30 * 1000;
 /// so the first phonemes that fall below the VAD activity threshold (or before
 /// the sustained-activity run) are still transcribed. See JUN-110.
 const TURN_PRE_ROLL_MS: i64 = 150;
-/// Loudest-window RMS below which normalized audio carries no transcribable
-/// speech. Applied to already-gained audio (chunk-skip before API calls), so a
-/// track this quiet after up to 32x normalization is genuinely silent.
+/// RMS below which a normalized audio window carries no transcribable speech.
+/// Applied to already-gained audio (chunk-skip before API calls), so a track
+/// this quiet after up to 32x normalization is genuinely silent.
 const SILENCE_RMS_FLOOR: f32 = 0.012;
+/// A single loud callback, click, or device-start transient is not speech. A
+/// source must sustain signal across this many consecutive RMS windows before
+/// June sends it to a transcription provider. This remains short enough for a
+/// brief reply such as "yes" while rejecting the startup spike seen in broken
+/// CoreAudio tap captures.
+const MIN_TRANSCRIBABLE_ACTIVITY_MS: i64 = 180;
 /// Activity `min_rms` for the system lane's turn detection. The pre-transcription
 /// silence pre-filter must not drop below what detection can still find, so both
 /// derive from this one constant.
@@ -79,6 +85,14 @@ pub struct AudioTurn {
     pub start_ms: i64,
     pub end_ms: i64,
     pub turn_index: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceActivityEvidence {
+    pub max_rms: f32,
+    pub active_ms: i64,
+    pub longest_active_ms: i64,
+    pub has_transcribable_activity: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -195,10 +209,11 @@ pub fn detect_turns_with_report(
     Ok((turns, report))
 }
 
-/// Whether a WAV's loudest RMS window never crosses the silence floor — i.e.
-/// the track is effectively silent and not worth transcribing. If the file
-/// can't be read we return `false` so the audio is still attempted rather than
-/// silently dropped.
+/// Whether a WAV never sustains signal above the silence floor long enough to
+/// be speech. A one-window maximum is deliberately insufficient: device-start
+/// transients otherwise turn minutes of zeroes into provider hallucinations.
+/// If the file can't be read we return `false` so the audio is still attempted
+/// rather than silently dropped.
 pub fn source_is_effectively_silent(path: &Path) -> bool {
     source_is_effectively_silent_with_floor(path, SILENCE_RMS_FLOOR)
 }
@@ -207,10 +222,36 @@ pub fn source_is_effectively_silent(path: &Path) -> bool {
 /// the pre-transcription drop can use the detector's floor while the normalized
 /// chunk-skip keeps the higher default.
 pub fn source_is_effectively_silent_with_floor(path: &Path, floor: f32) -> bool {
-    match read_rms_windows(path) {
-        Ok(windows) => windows.iter().copied().fold(0.0_f32, f32::max) < floor,
-        Err(_) => false,
+    source_activity_evidence_with_floor(path, floor)
+        .is_some_and(|evidence| !evidence.has_transcribable_activity)
+}
+
+pub fn source_activity_evidence_with_floor(
+    path: &Path,
+    floor: f32,
+) -> Option<SourceActivityEvidence> {
+    let windows = read_rms_windows(path).ok()?;
+    let required_windows = windows_for_ms(MIN_TRANSCRIBABLE_ACTIVITY_MS);
+    let mut active_run = 0_i64;
+    let mut longest_active_run = 0_i64;
+    let mut active_windows = 0_i64;
+    let mut max_rms = 0.0_f32;
+    for rms in &windows {
+        max_rms = max_rms.max(*rms);
+        if *rms >= floor {
+            active_run += 1;
+            active_windows += 1;
+            longest_active_run = longest_active_run.max(active_run);
+        } else {
+            active_run = 0;
+        }
     }
+    Some(SourceActivityEvidence {
+        max_rms,
+        active_ms: active_windows.saturating_mul(WINDOW_MS),
+        longest_active_ms: longest_active_run.saturating_mul(WINDOW_MS),
+        has_transcribable_activity: longest_active_run >= required_windows,
+    })
 }
 
 /// The loudest 30ms RMS window of a source, or `None` if it can't be read.
@@ -372,6 +413,20 @@ pub fn split_wav_for_transcription(
     output_dir: &Path,
     stem: &str,
 ) -> Result<Vec<PathBuf>, AppError> {
+    split_wav_for_transcription_with_max_duration(
+        input_path,
+        output_dir,
+        stem,
+        MAX_TRANSCRIPTION_CHUNK_MS,
+    )
+}
+
+pub fn split_wav_for_transcription_with_max_duration(
+    input_path: &Path,
+    output_dir: &Path,
+    stem: &str,
+    max_chunk_ms: i64,
+) -> Result<Vec<PathBuf>, AppError> {
     let mut reader = WavReader::open(input_path)
         .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
     let spec = reader.spec();
@@ -380,13 +435,14 @@ pub fn split_wav_for_transcription(
     let sample_rate = spec.sample_rate.max(1) as i64;
     let total_frames = reader.duration() as i64;
     let duration_ms = (total_frames * 1000) / sample_rate;
-    if duration_ms <= MAX_TRANSCRIPTION_CHUNK_MS {
+    let max_chunk_ms = max_chunk_ms.max(1);
+    if duration_ms <= max_chunk_ms {
         return Ok(vec![input_path.to_path_buf()]);
     }
 
     std::fs::create_dir_all(output_dir)
         .map_err(|error| AppError::new("audio_chunk_failed", error.to_string()))?;
-    let frames_per_chunk = ((sample_rate * MAX_TRANSCRIPTION_CHUNK_MS) / 1000).max(1) as usize;
+    let frames_per_chunk = ((sample_rate * max_chunk_ms) / 1000).max(1) as usize;
     let mut chunks = Vec::new();
     let mut writer: Option<WavWriter<std::io::BufWriter<std::fs::File>>> = None;
     let mut chunk_index = 0_usize;
@@ -430,7 +486,7 @@ pub fn split_wav_for_transcription(
 
     debug_assert!(
         !chunks.is_empty(),
-        "split_wav_for_transcription: no chunks produced for audio longer than MAX_TRANSCRIPTION_CHUNK_MS"
+        "split_wav_for_transcription: no chunks produced for audio longer than max_chunk_ms"
     );
     Ok(chunks)
 }
@@ -1330,10 +1386,51 @@ mod tests {
         let silent = dir.join("silent.wav");
         let audible = dir.join("audible.wav");
         write_samples(&silent, &[0, 0, 0, 0, 1, -1]);
-        write_samples(&audible, &[20_000, -18_000, 19_000, -20_000]);
+        let audible_samples = [20_000, -18_000, 19_000, -20_000]
+            .into_iter()
+            .cycle()
+            .take(16_000)
+            .collect::<Vec<_>>();
+        write_samples(&audible, &audible_samples);
 
         assert!(source_is_effectively_silent(&silent));
         assert!(!source_is_effectively_silent(&audible));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn silence_gate_rejects_an_isolated_device_start_transient() {
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-transient-silence-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let transient = dir.join("transient.wav");
+        let mut samples = vec![0_i16; 16_000 * 10];
+        // Five 30 ms windows cross the floor, but the six-window speech
+        // requirement rejects this short startup transient.
+        samples[..2_400].fill(10_000);
+        write_samples(&transient, &samples);
+
+        assert!(source_is_effectively_silent(&transient));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn silence_gate_keeps_a_short_sustained_reply() {
+        let dir =
+            std::env::temp_dir().join(format!("os-june-short-reply-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let short_reply = dir.join("short-reply.wav");
+        let mut samples = vec![0_i16; 16_000];
+        // Six 30 ms windows is the minimum sustained activity accepted by the
+        // gate, preserving short real replies.
+        samples[..2_880].fill(10_000);
+        write_samples(&short_reply, &samples);
+
+        assert!(!source_is_effectively_silent(&short_reply));
 
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -7,6 +7,10 @@ import {
   installFontScaleShortcuts,
 } from "../lib/font-scale";
 
+function storageSpyTarget(): Storage {
+  return window.localStorage instanceof Storage ? Storage.prototype : window.localStorage;
+}
+
 describe("font scale shortcuts", () => {
   let uninstall: (() => void) | undefined;
 
@@ -107,7 +111,7 @@ describe("font scale shortcuts", () => {
   });
 
   it("keeps stepping and reset working when persistence fails", () => {
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    const setItem = vi.spyOn(storageSpyTarget(), "setItem").mockImplementation(() => {
       throw new DOMException("Storage quota exceeded", "QuotaExceededError");
     });
 
@@ -130,7 +134,7 @@ describe("font scale shortcuts", () => {
 
   it("retries snapshots after a transient storage read failure", () => {
     const getItem = vi
-      .spyOn(Storage.prototype, "getItem")
+      .spyOn(storageSpyTarget(), "getItem")
       .mockImplementationOnce(() => {
         throw new DOMException("Storage temporarily unavailable", "SecurityError");
       })

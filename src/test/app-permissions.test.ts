@@ -42,11 +42,9 @@ describe("accessibility banner across proactive status changes", () => {
   });
 });
 
-// JUN-319: TCC grants are bundle-scoped, so the dictation helper can hold a
-// mic grant while the main app (the bundle that records) is denied. The
-// record button must block on either signal; before this, a denial only the
-// readiness probe could see left Record clickable and the take failed with a
-// bare error string.
+// TCC grants are bundle-scoped, so the dictation helper and main app can report
+// different microphone states. Note recording follows the main app readiness
+// probe once it is available; the helper is only a launch-time fallback.
 function readinessWithMicPermission(
   permissionState: SourceReadinessDto["permissionState"],
 ): RecordingSourceReadinessDto {
@@ -71,10 +69,13 @@ describe("isMicrophoneRecordingBlocked", () => {
     );
   });
 
-  it("blocks when the dictation helper reports a denial", () => {
+  it("uses the dictation helper before the main app readiness probe returns", () => {
     expect(isMicrophoneRecordingBlocked("denied", undefined)).toBe(true);
+  });
+
+  it("does not let a dictation-helper denial override a granted recorder", () => {
     expect(isMicrophoneRecordingBlocked("restricted", readinessWithMicPermission("granted"))).toBe(
-      true,
+      false,
     );
   });
 

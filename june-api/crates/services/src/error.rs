@@ -26,6 +26,13 @@ pub enum ServiceError {
     /// region-blocked (`model_region_blocked`, from a 403). No charge is taken.
     #[error("content_rejected: {reason}")]
     ContentRejected { reason: String },
+    /// Share does not exist, is not the caller's, is revoked, or the caller
+    /// is uninvited. One variant on purpose: non-enumeration (JUN-308).
+    #[error("share_not_found")]
+    ShareNotFound,
+    /// The share store is not configured or unreachable.
+    #[error("sharing_unavailable")]
+    ShareUnavailable,
 }
 
 impl From<PricingError> for ServiceError {

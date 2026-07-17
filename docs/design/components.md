@@ -96,6 +96,19 @@ warnings use `InlineNotice` (`src/components/ui/InlineNotice.tsx`) with
 `data-tone="warning"` or `"destructive"`; full-width banners are a separate
 treatment.
 
+The spinner defaults to the theme-aware `--spinner-neutral`, which is darker in
+the light theme and lighter in the dark theme. In-flow spinners (chat tool rows,
+inline loading) stay on that monotone neutral rather than a brand or semantic
+accent. A context that needs a solid-control foreground (a brand-filled button)
+or a status color (the Agent HUD) sets `--spinner-color` on the spinner or an
+ancestor; do not add another React tone variant for a one-off color.
+
+In a development build, run `__spinnerDemo()` in the main-window console to
+show representative production contexts together: the sidebar working row,
+Agent response gallery, expanded Agent HUD, and a loading toast. Run
+`__spinnerDemo(false)` to clear them. The demo never starts a real request or
+changes the saved Agent HUD preference.
+
 First-load skeleton bars are quiet and static: flat `var(--surface-subtle)`
 blocks with `var(--r-sm)` radius, sized to the line they stand in for, on an
 `aria-hidden` (or `aria-busy`) container — no sweep, no pulse (the settings
