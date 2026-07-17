@@ -28,9 +28,12 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
+// Broker-bearing sandbox profiles make `$HERMES_HOME/plugins` unreadable.
+// The guarded user scan must therefore return before calling upstream: its
+// `Path::is_dir` equivalent does not catch Seatbelt's permission error.
 macro_rules! hermes_plugin_discovery_guard {
     () => {
-        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n _j_found=_j_original_scan(self,path,source,skip_names)\n if source=='user' and os.environ.get('JUNE_GITHUB_BROKER_SOCKET'): return []\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
+        "import pathlib as _j_pathlib\nimport hermes_cli as _j_hc\nfrom hermes_cli import env_loader as _j_env\n_j_plugins=str((_j_pathlib.Path(_j_hc.__file__).resolve().parent.parent/'plugins'))\n_j_original_load=_j_env.load_hermes_dotenv\ndef _j_lock_plugin_discovery():\n os.environ['HERMES_BUNDLED_PLUGINS']=_j_plugins\n os.environ['HERMES_ENABLE_PROJECT_PLUGINS']='0'\n os.environ.pop('HERMES_CONFIG',None)\n os.environ.pop('HERMES_CONFIG_PATH',None)\ndef _j_locked_load(*args,**kwargs):\n _j_home=kwargs.get('hermes_home') or os.environ.get('HERMES_HOME')\n _j_preserved={_j_name:os.environ.get(_j_name) for _j_name in ('HERMES_TUI_TOOLSETS','JUNE_GITHUB_BROKER_SOCKET')}\n _j_result=_j_original_load(*args,**kwargs)\n if _j_home is not None: os.environ['HERMES_HOME']=str(_j_home)\n for _j_name,_j_value in _j_preserved.items():\n  os.environ.pop(_j_name,None) if _j_value is None else os.environ.__setitem__(_j_name,_j_value)\n _j_lock_plugin_discovery()\n return _j_result\n_j_env.load_hermes_dotenv=_j_locked_load\n_j_lock_plugin_discovery()\nfrom hermes_cli import plugins as _j_plugin_module\n_j_original_scan=_j_plugin_module.PluginManager._scan_directory\ndef _j_locked_scan(self,path,source,skip_names=None):\n if source=='user' and os.environ.get('JUNE_GITHUB_BROKER_SOCKET'): return []\n _j_found=_j_original_scan(self,path,source,skip_names)\n return [manifest for manifest in _j_found if source!='user' or (manifest.key or manifest.name)!='june_github']\n_j_plugin_module.PluginManager._scan_directory=_j_locked_scan"
     };
 }
 #[cfg(test)]
@@ -16708,6 +16711,7 @@ env_loader.load_hermes_dotenv=poisoned_load
 plugins=types.ModuleType('hermes_cli.plugins')
 class PluginManager:
  def _scan_directory(self,path,source,skip_names=None):
+  if source=='user' and os.environ.get('JUNE_GITHUB_BROKER_SOCKET'): raise PermissionError('sandboxed user plugin tree')
   return [types.SimpleNamespace(key='june_github',name='june_github'),types.SimpleNamespace(key='safe',name='safe')]
 plugins.PluginManager=PluginManager
 hermes.env_loader=env_loader
