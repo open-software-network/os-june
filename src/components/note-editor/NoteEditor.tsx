@@ -91,6 +91,7 @@ const TABS = [
   { value: "notes", label: "Notes" },
   { value: "transcription", label: "Transcription" },
 ] as const;
+const NOTE_TITLE_PLACEHOLDER = "New note";
 
 function sourceLabel(source?: string) {
   return source === "system" ? "System" : "Microphone";
@@ -348,12 +349,12 @@ export function NoteEditor({
         <input
           className="note-title"
           aria-label="Note title"
-          placeholder="New note"
+          placeholder={NOTE_TITLE_PLACEHOLDER}
           value={note.title}
           onChange={(event) => onTitleChange(event.currentTarget.value)}
         />
         <div className="note-title-print" aria-hidden="true">
-          {note.title.trim() || "New note"}
+          {note.title.trim() || NOTE_TITLE_PLACEHOLDER}
         </div>
         {/* Metadata reads as the title's caption: sits below it, above the
             Notes/Transcription toggle. Navigation lives in the toolbar above. */}
