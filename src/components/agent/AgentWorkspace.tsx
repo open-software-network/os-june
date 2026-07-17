@@ -361,6 +361,7 @@ import {
   stripAgentCliAccessRequest,
 } from "../../lib/agent-cli-access";
 import {
+  appendHermesLiveEvent,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
@@ -6852,10 +6853,10 @@ export function AgentWorkspace({
       // unconditional call is safe for every kind. Mode rides along so each
       // artifact can show its blast radius (sandboxed copy vs unrestricted path).
       hermesArtifactStore.record(storedClassified, hermesModeFor(storedSessionId));
-      const nextSessionEvents = [
-        ...(liveEventsRef.current[storedSessionId] ?? []),
+      const nextSessionEvents = appendHermesLiveEvent(
+        liveEventsRef.current[storedSessionId] ?? [],
         classified,
-      ].slice(-200);
+      );
       liveEventsRef.current = {
         ...liveEventsRef.current,
         [storedSessionId]: nextSessionEvents,
@@ -8510,7 +8511,7 @@ export function AgentWorkspace({
   }
 
   function pushLiveEvent(key: string, event: JuneHermesEvent) {
-    const nextEvents = [...(liveEventsRef.current[key] ?? []), event].slice(-200);
+    const nextEvents = appendHermesLiveEvent(liveEventsRef.current[key] ?? [], event);
     liveEventsRef.current = {
       ...liveEventsRef.current,
       [key]: nextEvents,

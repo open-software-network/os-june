@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../lib/hermes-control-plane";
 import {
   type AgentChatToolPart,
+  appendHermesLiveEvent,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
@@ -38,6 +39,43 @@ function transcriptEvent(event: Partial<TranscriptEvent> = {}): TranscriptEvent 
     ...event,
   };
 }
+
+describe("appendHermesLiveEvent", () => {
+  it("preserves an in-progress response beyond the live event limit", () => {
+    const chunks = Array.from({ length: 250 }, (_, index) => `chunk-${index} `);
+    let events: JuneHermesEvent[] = [
+      transcriptEvent({ messageId: "long-response", delta: undefined }),
+    ];
+
+    for (const delta of chunks) {
+      events = appendHermesLiveEvent(
+        events,
+        transcriptEvent({ messageId: "long-response", delta }),
+      );
+    }
+
+    const turns = buildHermesSessionChatTurns([], events);
+    expect(events).toHaveLength(2);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: chunks.join(""),
+        status: "running",
+      },
+    ]);
+  });
+
+  it("keeps separate messages and tool boundaries in event order", () => {
+    const first = transcriptEvent({ messageId: "first", delta: "Before tool." });
+    const tool = toolEvent({ key: "lookup", phase: "start" });
+    const second = transcriptEvent({ messageId: "first", delta: "After tool." });
+    const nextMessage = transcriptEvent({ messageId: "second", delta: "Next message." });
+
+    const events = [first, tool, second, nextMessage].reduce(appendHermesLiveEvent, []);
+
+    expect(events).toEqual([first, tool, second, nextMessage]);
+  });
+});
 
 function reasoningEvent(
   event: Pick<ReasoningEvent, "delta"> & Partial<ReasoningEvent>,
