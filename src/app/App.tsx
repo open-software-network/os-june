@@ -436,6 +436,10 @@ export function App() {
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
   // stored Hermes session id -> completed_at ISO. June-owned; see JUN-203.
   const [completedSessions, setCompletedSessions] = useState<Record<string, string>>({});
+  // In-flight completion writes per stored session id, so rapid toggles for one
+  // session persist in the order the user made them (see
+  // handleToggleSessionCompleted).
+  const sessionCompletionWritesRef = useRef(new Map<string, Promise<unknown>>());
   const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
@@ -2784,8 +2788,19 @@ export function App() {
       else delete next[sessionId];
       return next;
     });
+    // Serialize writes per session. Toggling complete -> active faster than the
+    // first write resolves would otherwise let two commands reach the SQLite
+    // pool concurrently and land out of order (the DELETE before the INSERT),
+    // leaving the row completed while the UI shows active. Chaining keeps the
+    // persisted state matching the last user action (JUN-203 review).
+    const pending = sessionCompletionWritesRef.current;
+    const write = (pending.get(sessionId) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => setSessionCompleted(sessionId, completed));
+    const chained = write.catch(() => {});
+    pending.set(sessionId, chained);
     try {
-      await setSessionCompleted(sessionId, completed);
+      await write;
     } catch {
       // reload truth on failure
       void listCompletedSessions()
@@ -2795,6 +2810,9 @@ export function App() {
           setCompletedSessions(fresh);
         })
         .catch(() => {});
+    } finally {
+      // Drop the chain only when no newer toggle queued behind this one.
+      if (pending.get(sessionId) === chained) pending.delete(sessionId);
     }
   }
 
