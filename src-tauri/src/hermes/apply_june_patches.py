@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "3b9d2c7012da31212f93e76bf76665e1f9aeea425acef78ee60ac6cde2b21673",
+    "tui_gateway/server.py": "e96df077c7f7bae4c477f94ae8231ee508d648c7fb54b939a57a3115d3f5d7e1",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -553,16 +553,22 @@ def patch_server(source: str) -> str:
         '''        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
     """
     session, err = _sess(params, rid)
+    if err:
+        return err
 ''',
         '''        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
     """
-    # Persisting attachment bytes only needs the lightweight session created by
-    # session.create. Waiting for the full agent here makes the first image in a
-    # new session hit the agent initialization timeout before prompt.submit can
-    # start the turn.
+    # Persisting attachment bytes only needs the lightweight runtime session
+    # created by session.create. Waiting for full Hermes initialization here
+    # makes the first image in a new session time out before prompt.submit can
+    # start the agent run.
     session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    if initialization_error := session.get("agent_error"):
+        return _err(rid, 5032, str(initialization_error))
 ''',
-        "image byte attach without agent initialization",
+        "image byte attach without Hermes initialization",
     )
     source = replace_once(
         source,

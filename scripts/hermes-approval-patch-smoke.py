@@ -3,6 +3,8 @@
 
 import argparse
 import ast
+import copy
+from datetime import datetime
 import hashlib
 import importlib.util
 import json
@@ -145,7 +147,7 @@ def _rpc_method(tree: ast.AST, method_name: str) -> ast.FunctionDef:
     raise AssertionError("missing Hermes RPC method: %s" % method_name)
 
 
-def verify_image_attach_does_not_wait_for_agent(root: Path) -> None:
+def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     tree = ast.parse(
         (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
     )
@@ -158,8 +160,77 @@ def verify_image_attach_does_not_wait_for_agent(root: Path) -> None:
     }
     assert session_calls == {"_sess_nowait"}, (
         "image.attach_bytes must persist to a newly created session without "
-        "waiting for agent initialization: %s" % sorted(session_calls)
+        "waiting for Hermes initialization: %s" % sorted(session_calls)
     )
+
+    # Execute the pinned handler and its real byte-decoding/write helpers in
+    # isolation. Importing all of server.py would require the complete Hermes
+    # runtime even though this smoke also runs with stock host Python.
+    helper_names = (
+        "_err",
+        "_ok",
+        "_sess_nowait",
+        "_decode_attach_base64",
+        "_sniff_image_ext",
+        "_queue_attached_image",
+    )
+    functions = [copy.deepcopy(_function(tree, name)) for name in helper_names]
+    executable_handler = copy.deepcopy(handler)
+    executable_handler.name = "_image_attach_bytes"
+    executable_handler.decorator_list = []
+    source = "from __future__ import annotations\n" + "\n\n".join(
+        ast.unparse(node) for node in (*functions, executable_handler)
+    )
+
+    fresh_session = {"attached_images": [], "image_counter": 0}
+    with tempfile.TemporaryDirectory(prefix="june-image-attach-smoke-") as temp:
+        namespace = {
+            "Path": Path,
+            "datetime": datetime,
+            "_ATTACH_BYTES_MAX_BYTES": 25 * 1024 * 1024,
+            "_allowed_image_extensions": lambda: frozenset({".png"}),
+            "_hermes_home": Path(temp),
+            "_image_meta": lambda _path: {},
+            "_sessions": {"fresh-session": fresh_session},
+        }
+        exec(compile(source, str(root / "tui_gateway" / "server.py"), "exec"), namespace)
+        response = namespace["_image_attach_bytes"](
+            "attach",
+            {
+                "session_id": "fresh-session",
+                "filename": "jun-362-smoke.png",
+                "content_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+            },
+        )
+        assert response.get("result", {}).get("attached") is True, response
+        assert response.get("result", {}).get("bytes") == 68, response
+        assert len(fresh_session["attached_images"]) == 1, fresh_session
+        saved_path = Path(fresh_session["attached_images"][0])
+        assert saved_path.is_file(), saved_path
+        assert len(saved_path.read_bytes()) == 68, saved_path
+
+        failed_session = {
+            "agent_error": "synthetic Hermes initialization failure",
+            "attached_images": [],
+            "image_counter": 0,
+        }
+        namespace["_sessions"]["failed-session"] = failed_session
+        failed_response = namespace["_image_attach_bytes"](
+            "failed-attach",
+            {
+                "session_id": "failed-session",
+                "filename": "jun-362-smoke.png",
+                "content_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+            },
+        )
+        assert failed_response.get("error", {}).get("code") == 5032, failed_response
+        assert failed_session["attached_images"] == [], failed_session
 
 
 def verify_tui_memory_deny_propagation(root: Path) -> None:
@@ -933,7 +1004,7 @@ def main() -> int:
         root = args.root.resolve()
         upstream_root = args.upstream_root.resolve() if args.upstream_root else None
         verify_patch_state_machine(root, upstream_root)
-        verify_image_attach_does_not_wait_for_agent(root)
+        verify_new_session_image_attach_is_immediate(root)
         verify_tui_memory_deny_propagation(root)
         verify_memory_lifecycle_deny(root)
         verify_cross_process_config_writer(root)
