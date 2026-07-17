@@ -209,6 +209,10 @@ final class CompanionService {
       unlocked = true
       snapshot.connection = "ready"
       cancelReconnect()
+      // Publish the committed link before any best-effort post-link work can
+      // suspend. A cancellation after this point must not strand the UI in the
+      // pre-commit connecting state.
+      emitSnapshot()
       await registerStoredPushToken()
     } catch {
       transport.disconnect()
