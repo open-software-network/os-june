@@ -1,6 +1,3 @@
-// Task 5 wires this broker into the interactive bridge runtime.
-#![allow(dead_code)]
-
 #[cfg(target_os = "macos")]
 use crate::{commands, connectors::github::PlatformGitHubTokenVault};
 use crate::{

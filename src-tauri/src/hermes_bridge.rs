@@ -1440,7 +1440,7 @@ async fn start_hermes_bridge_inner(
             format!("Could not start the June-managed Hermes runtime. {error}"),
         )
     })?;
-    authorize_github_broker_for_child(github_broker.as_ref(), &mut child, generation)?;
+    authorize_live_github_broker_for_child(github_broker.as_ref(), &mut child, generation)?;
     let pid = child.id();
     let connection = HermesBridgeConnection {
         base_url: base_url.clone(),
@@ -9868,21 +9868,53 @@ fn apply_github_broker_environment(cmd: &mut Command, broker: Option<&GitHubRead
     }
 }
 
-fn authorize_github_broker_for_child(
+fn authorize_live_github_broker_for_child(
     broker: Option<&GitHubReadBroker>,
     child: &mut Child,
     generation: u64,
 ) -> Result<(), AppError> {
+    authorize_github_broker_for_child_with(broker, child, generation, Child::try_wait)
+}
+
+fn authorize_github_broker_for_child_with<F>(
+    broker: Option<&GitHubReadBroker>,
+    child: &mut Child,
+    generation: u64,
+    mut child_status: F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&mut Child) -> io::Result<Option<std::process::ExitStatus>>,
+{
     let Some(broker) = broker else {
         return Ok(());
     };
+    if !matches!(child_status(child), Ok(None)) {
+        return Err(fail_github_child_start(broker, child, generation));
+    }
     if let Err(error) = broker.authorize_interactive(child.id(), generation) {
         broker.revoke_interactive(child.id(), generation);
         let _ = child.kill();
         let _ = child.wait();
         return Err(AppError::new("hermes_bridge_start_failed", error.code));
     }
+    if !matches!(child_status(child), Ok(None)) {
+        return Err(fail_github_child_start(broker, child, generation));
+    }
     Ok(())
+}
+
+fn fail_github_child_start(
+    broker: &GitHubReadBroker,
+    child: &mut Child,
+    generation: u64,
+) -> AppError {
+    broker.revoke_interactive(child.id(), generation);
+    let _ = child.kill();
+    let _ = child.wait();
+    AppError::new(
+        "hermes_bridge_start_failed",
+        "The June-managed Hermes runtime exited during startup.",
+    )
 }
 
 /// Writes the four connector MCP scripts and returns their configs, but ONLY
@@ -15747,6 +15779,46 @@ esac
             assert!(tui_sandbox < tui_final && tui_final < tui_launch);
         }
 
+        #[test]
+        fn production_dashboard_github_broker_order_is_guarded() {
+            // This is deliberately a lexical guard over the actual production
+            // function. Constructing a full AppHandle plus authenticated
+            // managed runtime would turn this focused order contract into app
+            // integration. The injected Child-status tests separately prove
+            // the live-before/live-after semantics of the named authorization
+            // step guarded here.
+            let source = include_str!("hermes_bridge.rs");
+            let dashboard = source
+                .split("async fn start_hermes_bridge_inner")
+                .nth(1)
+                .and_then(|tail| tail.split("fn status_for").next())
+                .expect("production dashboard start body");
+            let final_admission = dashboard
+                .find("finalize_hermes_command_for_spawn(")
+                .expect("final admission");
+            let eligibility = dashboard
+                .find("github_read_tool_eligible(app, command_source)")
+                .expect("GitHub eligibility");
+            let broker_start = dashboard
+                .find("start_optional_github_read_broker(")
+                .expect("broker creation");
+            let spawn = dashboard.find("cmd.spawn()").expect("dashboard spawn");
+            let live_authorization = dashboard
+                .find("authorize_live_github_broker_for_child(")
+                .expect("live child authorization");
+            let process_storage = dashboard
+                .find("store_hermes_process_or_return_duplicate(")
+                .expect("process storage");
+
+            assert!(
+                final_admission < eligibility
+                    && eligibility < broker_start
+                    && broker_start < spawn
+                    && spawn < live_authorization
+                    && live_authorization < process_storage
+            );
+        }
+
         #[tokio::test]
         async fn managed_admission_stays_sticky_after_every_process_stops() {
             let bridge = HermesBridge::default();
@@ -19334,7 +19406,7 @@ mcp_servers:
         let toolsets = hermes_interactive_toolsets(&config_path, true);
         command.env("HERMES_TUI_TOOLSETS", toolsets.join(","));
         let mut child = command.spawn().expect("spawn fake dashboard");
-        authorize_github_broker_for_child(Some(&broker), &mut child, generation)
+        authorize_live_github_broker_for_child(Some(&broker), &mut child, generation)
             .expect("authorize spawned dashboard");
 
         assert_eq!(
@@ -19615,7 +19687,7 @@ mcp_servers:
         let readiness_broker = task_five_test_broker(readiness_dir.path(), 52).await;
         let readiness_path = readiness_broker.socket_path().to_path_buf();
         let mut readiness_child = spawn_task_five_child();
-        authorize_github_broker_for_child(Some(&readiness_broker), &mut readiness_child, 52)
+        authorize_live_github_broker_for_child(Some(&readiness_broker), &mut readiness_child, 52)
             .expect("authorize readiness child");
         bridge.processes.lock().expect("processes").insert(
             false,
@@ -19633,7 +19705,7 @@ mcp_servers:
         let stop_broker = task_five_test_broker(stop_dir.path(), 53).await;
         let stop_path = stop_broker.socket_path().to_path_buf();
         let mut stop_child = spawn_task_five_child();
-        authorize_github_broker_for_child(Some(&stop_broker), &mut stop_child, 53)
+        authorize_live_github_broker_for_child(Some(&stop_broker), &mut stop_child, 53)
             .expect("authorize stop child");
         bridge.processes.lock().expect("processes").insert(
             false,
@@ -19651,7 +19723,7 @@ mcp_servers:
         let newer_broker = task_five_test_broker(newer_dir.path(), 54).await;
         let newer_path = newer_broker.socket_path().to_path_buf();
         let mut newer_child = spawn_task_five_child();
-        authorize_github_broker_for_child(Some(&newer_broker), &mut newer_child, 54)
+        authorize_live_github_broker_for_child(Some(&newer_broker), &mut newer_child, 54)
             .expect("authorize newer child");
         bridge.processes.lock().expect("processes").insert(
             false,
@@ -19683,7 +19755,7 @@ mcp_servers:
         let duplicate_broker = task_five_test_broker(duplicate_dir.path(), 55).await;
         let duplicate_path = duplicate_broker.socket_path().to_path_buf();
         let mut duplicate_child = spawn_task_five_child();
-        authorize_github_broker_for_child(Some(&duplicate_broker), &mut duplicate_child, 55)
+        authorize_live_github_broker_for_child(Some(&duplicate_broker), &mut duplicate_child, 55)
             .expect("authorize duplicate child");
         let duplicate = HermesProcess {
             generation: 55,
@@ -19713,10 +19785,82 @@ mcp_servers:
         broker.poison_admission_for_bridge_test();
         let mut child = spawn_task_five_child();
 
-        let error = authorize_github_broker_for_child(Some(&broker), &mut child, 61)
+        let error = authorize_live_github_broker_for_child(Some(&broker), &mut child, 61)
             .expect_err("poisoned admission fails the bridge");
 
         assert_eq!(error.code, "hermes_bridge_start_failed");
+        assert!(matches!(child.try_wait(), Ok(Some(_))), "child was waited");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn exited_child_is_rejected_before_github_broker_authorization() {
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let broker = task_five_test_broker(socket_dir.path(), 62).await;
+        let mut child = Command::new("/usr/bin/true")
+            .spawn()
+            .expect("spawn immediately exiting child");
+        child.wait().expect("reap immediately exiting child");
+
+        let error = authorize_live_github_broker_for_child(Some(&broker), &mut child, 62)
+            .expect_err("a dead dashboard must never receive broker admission");
+
+        assert_eq!(error.code, "hermes_bridge_start_failed");
+        assert_eq!(broker.admission_for_bridge_test(), (None, 62, false));
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "child stays reaped"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn child_exit_immediately_after_github_authorization_is_revoked() {
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let broker = task_five_test_broker(socket_dir.path(), 63).await;
+        let socket_path = broker.socket_path().to_path_buf();
+        let mut child = spawn_task_five_child();
+        let child_pid = child.id();
+        let mut checks = 0;
+
+        let error =
+            authorize_github_broker_for_child_with(Some(&broker), &mut child, 63, |child| {
+                checks += 1;
+                if checks == 1 {
+                    Ok(None)
+                } else {
+                    child.kill().expect("kill between authorization checks");
+                    child.wait().map(Some)
+                }
+            })
+            .expect_err("post-authorization child exit must revoke admission");
+
+        assert_eq!(checks, 2);
+        assert_eq!(error.code, "hermes_bridge_start_failed");
+        assert_eq!(
+            broker.admission_for_bridge_test(),
+            (Some(child_pid), 63, false)
+        );
+        assert!(matches!(child.try_wait(), Ok(Some(_))), "child was waited");
+        assert_task_five_socket_rejects(&socket_path).await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn github_child_liveness_error_fails_sanitized_before_authorization() {
+        let socket_dir = tempfile::tempdir().expect("socket dir");
+        let broker = task_five_test_broker(socket_dir.path(), 64).await;
+        let mut child = spawn_task_five_child();
+
+        let error =
+            authorize_github_broker_for_child_with(Some(&broker), &mut child, 64, |_child| {
+                Err(io::Error::other("private liveness fixture"))
+            })
+            .expect_err("liveness error must fail before authorization");
+
+        assert_eq!(error.code, "hermes_bridge_start_failed");
+        assert!(!error.message.contains("private liveness fixture"));
+        assert_eq!(broker.admission_for_bridge_test(), (None, 64, false));
         assert!(matches!(child.try_wait(), Ok(Some(_))), "child was waited");
     }
 
