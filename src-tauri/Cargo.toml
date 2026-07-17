@@ -24,6 +24,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 dotenvy = "0.15"
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 hound = "3.5"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
@@ -49,6 +50,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2.10.1"
+tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0"
 tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"

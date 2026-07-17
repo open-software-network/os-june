@@ -159,3 +159,51 @@ Every other OS/architecture tuple fails closed instead of selecting an unverifie
 - This host has no newly installed in-tree managed runtime; only the prior pinned v2026.6.19 venv runtime is present, and the volume had about 1.4 GiB free during verification. The live smoke therefore qualifies the unchanged pinned Hermes/plugin contract, while schema-1 clean migration, in-tree path selection, locked bootstrap source, closure tamper, and digest behavior are covered by deterministic Rust regressions. No user app-data runtime was destructively replaced for this repository test.
 - This macOS host cannot execute `ReplaceFileW`, and `pwsh` remains unavailable. Platform-neutral failure-state tests cover errors 1175, 1176, 1177, and restoration failure; native Windows execution remains a CI qualification item. Windows GitHub exposure is fail-closed regardless.
 - A hostile same-user process can still race mutation into the narrow interval between final userspace verification and `exec`. Closing that residual requires an OS primitive binding measurement to execution. The ordinary sandboxed agent cannot create the hard-link alias or write the protected runtime/seal paths.
+
+## Third security review remediation
+
+Follow-up commit base: `2405ef5a`
+
+### Third review RED evidence
+
+- `python_isolation_scrubs_import_controls_and_sets_safe_defaults` failed because attacker-controlled `PYTHONPATH` survived the process environment.
+- The first `python_isolation_prefixes_hermes_and_mcp_entrypoints_exactly` compile failed because there was no authenticated Python invocation abstraction; Hermes still executed a console launcher and MCP YAML started at the script path.
+- The target-environment check exposed that Linux uv selection did not distinguish glibc from musl.
+- The managed installer source still contained PATH-resolved `curl`, checksum utilities, `tar`, and optional `npm`, so a poisoned bootstrap PATH could influence the sealed runtime.
+- User-local and PATH fallback variants existed in the source enum but no longer participated in general start resolution.
+
+### Third review fixes
+
+- Added one `PythonInvocation` for dashboard, developer TUI, and every first-party MCP. Hermes now executes `<resolved-python> -I -S -B -c <fixed-bootstrap> ...`; the bootstrap removes the dashboard bearer before authenticated site initialization, restores it afterward, and runs `hermes_cli.main` through `runpy`. All 11 rendered registrations covering the ten distinct standard-library-only June MCP scripts execute `<resolved-python> -I -S -B <script> ...` without site initialization.
+- Scrubbed `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`, startup/inspection/warning/breakpoint/platform/executable controls, `__PYVENV_LAUNCHER__`, and inherited safe-mode variables. Process and TUI launchers re-establish `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, and `PYTHONSAFEPATH=1`.
+- Added a real disposable-venv poison test. External `sitecustomize.py`, a shadow `hermes_cli`, a version-correct user-site `.pth`, invalid `PYTHONHOME`, and attacker `PYTHONUSERBASE` never influence startup; fake Hermes and all ten embedded MCP modules still import successfully. An authenticated in-venv `.pth` startup hook does run for Hermes but proves the dashboard bearer is absent until site initialization completes.
+- Moved Unix archive trust into Rust. Both pinned HTTPS downloads disable redirects, use connect/overall timeouts, enforce declared and streamed caps, hash while streaming, remove partial/mismatched files, and create archives mode 0600. Direct minimal `flate2`/`tar` declarations reuse already-locked versions.
+- Validation completes before extraction and rejects absolute, parent/dot/ambiguous/backslash/non-UTF-8 paths; duplicate and case-colliding normalized names; file-ancestor collisions; every symlink, hardlink, device, FIFO, and unsupported header; unexpected top-level roots; excessive entry counts; and excessive expanded size. Extraction is private, followed by a no-link/type/canonical-containment walk.
+- The shell receives only the private staged source and verified absolute uv executable. It starts with `env_clear`, `PATH=/usr/bin:/bin`, performs only `uv sync --extra all --locked`, contains no downloader, checksum utility, archive tool, npm/npx, or unlocked dependency fallback, and fails if the pinned source lacks dashboard assets. The old runtime remains until the staged runtime is complete.
+- uv selection now includes target environment: macOS requires an empty env, Linux requires GNU, and musl/unknown tuples fail closed.
+- Restored user-local and concrete PATH fallback for fresh/legacy managed-install unavailability. Fallback uses isolated Python and is always GitHub-ineligible. Any schema-2 seal, unreadable integrity state, or previously admitted managed process prohibits downgrade. Resolution happens before MCP/config/SOUL generation, so a fallback render uses its interpreter and omits GitHub from config, toolsets, and identity text.
+- Schema-2 integrity records are written through 0600 temporary/final files under a 0700 parent.
+
+The ten distinct MCP scripts exercised are `june_context_mcp.py`, `june_web_mcp.py`, `june_image_mcp.py`, `june_video_mcp.py`, `june_recorder_mcp.py`, `june_github_mcp.py`, `june_gmail_mcp.py`, `june_gmail_actions_mcp.py`, `june_gcal_mcp.py`, and `june_gcal_actions_mcp.py`. Per-routine connector-auto servers reuse one of the authenticated action-script invocations.
+
+The pinned console entry point is `hermes_cli.main:main`. Against the existing pinned v2026.6.19 runtime, the console script and `python -m hermes_cli.main` produced identical version output, exit status, stdout, and stderr for the checked success and argparse-error cases.
+
+### Third review GREEN evidence
+
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --manifest-path src-tauri/Cargo.toml hermes_bridge::tests::github_plugin_tests -- --nocapture`
+  - 30 passed, 0 failed.
+- Real Python startup poison harness: 1 passed, 0 failed; all ten MCP imports plus Hermes succeeded and no poison/bearer sentinel was created.
+- Unsafe archive matrix and valid extraction/postvalidation: 1 passed, 0 failed. Stream cap/hash/cleanup/0600 matrix: 1 passed, 0 failed.
+- Fallback policy, fallback config regeneration, and all-rendered-MCP isolation regressions passed.
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --manifest-path src-tauri/Cargo.toml sandbox_ -- --nocapture` with host permission: 9 passed, 0 failed, 1 ignored.
+- Standalone Rust manifest: 3 passed, 0 failed. Python plugin contract with host socket permission: 11 passed, 0 failed.
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo check --manifest-path src-tauri/Cargo.toml`: passed.
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`: passed.
+- Cargo release-age policy: passed with 0 new crate versions versus HEAD. Rust formatting, Unix bundler shell syntax, scoped Biome, and `git diff --check` passed.
+- The pinned Hermes smoke passed the exact 16-tool loader gate and every selected dashboard/session phase twice. Both runs then encountered the same post-pass `ENOTEMPTY` temporary-home cleanup race; no functional phase failed.
+
+### Qualification and residual notes
+
+- A fresh full schema-2 managed install was not attempted on this host: the data volume had about 1.0 GiB free and reported 100% capacity, with no cached pinned source/uv archives. Downloading CPython and all locked Hermes extras risked exhausting disk. Deterministic local tests cover streaming, archive trust, staged command construction, isolation, sealing, steady-state preparation, and no-reinstall schema-2 behavior; live artifact installation/restart qualification remains Task 8.
+- Windows GitHub exposure remains compile-time fail-closed. The Unix Rust-owned bootstrap is target-gated; native Windows bootstrap equivalence remains a later qualification item.
+- The existing narrow same-user verify-to-exec race remains. The final full-tree check is immediately before spawn, and ordinary sandboxed Hermes cannot write or link the protected runtime/seal, but only an OS primitive binding measurement to execution could eliminate that interval completely.

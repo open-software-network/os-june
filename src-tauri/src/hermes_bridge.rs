@@ -27,6 +27,7 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const JUNE_HERMES_COMMAND_ENV: &str = "JUNE_HERMES_COMMAND";
+const HERMES_PYTHON_BOOTSTRAP: &str = "import os,runpy,site\n_token=os.environ.pop('HERMES_DASHBOARD_SESSION_TOKEN',None)\nsite.main()\nif _token is not None: os.environ['HERMES_DASHBOARD_SESSION_TOKEN']=_token\nrunpy.run_module('hermes_cli.main',run_name='__main__',alter_sys=True)";
 // Set to 1/true/yes to spawn Hermes without the macOS Seatbelt jail. An escape
 // hatch for debugging a runtime that won't boot under the profile — leaving the
 // agent able to write anywhere the user can, so only flip it knowingly.
@@ -43,6 +44,10 @@ const HERMES_SOURCE_TARBALL_SHA256: &str =
 const MANAGED_UV_VERSION: &str = "0.11.15";
 const MANAGED_UV_RELEASE_BASE_URL: &str =
     "https://github.com/astral-sh/uv/releases/download/0.11.15";
+const MANAGED_UV_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const HERMES_SOURCE_ARCHIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const MANAGED_ARCHIVE_MAX_ENTRIES: usize = 100_000;
+const MANAGED_ARCHIVE_MAX_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MANAGED_HERMES_INTEGRITY_FILE: &str = "hermes-runtime-integrity-v1.json";
 const MANAGED_HERMES_INTEGRITY_SCHEMA: u32 = 2;
 const BUNDLED_HERMES_SKILLS_RESOURCE_DIR: &str = "native/hermes-skills";
@@ -416,6 +421,18 @@ const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_MODEL",
     "HERMES_PROVIDER",
     "PYTHONDONTWRITEBYTECODE",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PYTHONUSERBASE",
+    "PYTHONSTARTUP",
+    "PYTHONINSPECT",
+    "PYTHONWARNINGS",
+    "PYTHONBREAKPOINT",
+    "PYTHONPLATLIBDIR",
+    "PYTHONEXECUTABLE",
+    "__PYVENV_LAUNCHER__",
+    "PYTHONNOUSERSITE",
+    "PYTHONSAFEPATH",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "VENICE_API_KEY",
@@ -468,6 +485,7 @@ pub struct HermesBridge {
 
 struct HermesProcess {
     generation: u64,
+    source: HermesCommandSource,
     child: Child,
     connection: HermesBridgeConnection,
 }
@@ -536,9 +554,45 @@ struct ValidatedImageSource {
 
 #[derive(Debug, Clone)]
 struct HermesCommandResolution {
-    command: String,
-    python_command: String,
+    python: PythonInvocation,
     source: HermesCommandSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PythonInvocation {
+    program: String,
+    prefix_args: Vec<String>,
+}
+
+impl PythonInvocation {
+    fn isolated(program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+            prefix_args: vec!["-I".to_string(), "-S".to_string(), "-B".to_string()],
+        }
+    }
+
+    fn hermes_args<I, S>(&self, args: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut resolved = self.prefix_args.clone();
+        resolved.extend(["-c".to_string(), HERMES_PYTHON_BOOTSTRAP.to_string()]);
+        resolved.extend(args.into_iter().map(|arg| arg.as_ref().to_string()));
+        resolved
+    }
+
+    fn script_args<I, S>(&self, script: &Path, args: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut resolved = self.prefix_args.clone();
+        resolved.push(script.to_string_lossy().into_owned());
+        resolved.extend(args.into_iter().map(|arg| arg.as_ref().to_string()));
+        resolved
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -579,7 +633,7 @@ fn github_toolset_supported_for_runtime(source: HermesCommandSource) -> bool {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagedHermesRuntimeMetadata {
     source: String,
@@ -1180,9 +1234,8 @@ async fn start_hermes_bridge_inner(
         urlencoding::encode(&token)
     );
     let hermes_home = resolve_june_hermes_home(app)?;
-    let command_resolution = resolve_hermes_command(app, &hermes_home).await?;
-    let command = command_resolution.command;
-    let python_command = command_resolution.python_command;
+    let command_resolution = resolve_hermes_command(app, bridge, &hermes_home).await?;
+    let python = command_resolution.python;
     let command_source = command_resolution.source;
     let default_cwd = hermes_home.join("workspace");
     std::fs::create_dir_all(&default_cwd)
@@ -1196,25 +1249,25 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(app, bridge, &hermes_home).await?;
-    let june_context_mcp = sync_june_context_mcp(app, &python_command)?;
-    let june_web_mcp = sync_june_web_mcp(app, &python_command)?;
-    let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &python_command)?;
+    let june_context_mcp = sync_june_context_mcp(app, &python)?;
+    let june_web_mcp = sync_june_web_mcp(app, &python)?;
+    let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &python)?;
     let video_generation_enabled = crate::feature_flags::VIDEO_GENERATION_ENABLED;
     let june_video_mcp = if video_generation_enabled {
-        Some(sync_june_video_mcp(app, &hermes_home, &python_command)?)
+        Some(sync_june_video_mcp(app, &hermes_home, &python)?)
     } else {
         None
     };
-    let june_recorder_mcp = sync_june_recorder_mcp(app, &python_command)?;
+    let june_recorder_mcp = sync_june_recorder_mcp(app, &python)?;
     let june_github_mcp_registration = sync_june_github_mcp(
         app,
-        &python_command,
+        &python,
         github_toolset_supported_for_runtime(command_source),
     )
     .await;
     // The four private-connector MCP servers are registered only when at least
     // one Google account is connected (v1: the first connected account).
-    let june_connector_mcp = sync_june_connector_mcps(app, &python_command).await?;
+    let june_connector_mcp = sync_june_connector_mcps(app, &python).await?;
     // The soul describes the connector toolsets only when the base (interactive)
     // servers are registered, i.e. an account is connected.
     let connectors_registered = june_connector_mcp
@@ -1299,6 +1352,7 @@ async fn start_hermes_bridge_inner(
         "--port",
         port_string.as_str(),
     ];
+    let hermes_python_args = python.hermes_args(hermes_args);
 
     // This is the last userspace integrity check before exec. A hostile
     // same-user process can still race a filesystem mutation into the narrow
@@ -1313,13 +1367,13 @@ async fn start_hermes_bridge_inner(
             let mut cmd = Command::new(SANDBOX_EXEC_PATH);
             cmd.arg("-f")
                 .arg(profile_path)
-                .arg(&command)
-                .args(hermes_args);
+                .arg(&python.program)
+                .args(&hermes_python_args);
             cmd
         }
         None => {
-            let mut cmd = Command::new(&command);
-            cmd.args(hermes_args);
+            let mut cmd = Command::new(&python.program);
+            cmd.args(&hermes_python_args);
             cmd
         }
     };
@@ -1355,7 +1409,7 @@ async fn start_hermes_bridge_inner(
         ws_url,
         token: token.clone(),
         port,
-        command,
+        command: python.program.clone(),
         hermes_home: hermes_home.to_string_lossy().into_owned(),
         cwd: cwd_display,
         provider_proxy_port: provider_proxy.port,
@@ -1386,6 +1440,7 @@ async fn start_hermes_bridge_inner(
             full_mode,
             HermesProcess {
                 generation,
+                source: command_source,
                 child,
                 connection: connection.clone(),
             },
@@ -1485,40 +1540,40 @@ struct SharedProviderProxyInfo {
 
 #[derive(Debug, Clone)]
 struct JuneContextMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
     database_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 struct JuneWebMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 struct JuneImageMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
     images_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 struct JuneVideoMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
     videos_dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 struct JuneRecorderMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
 struct JuneGitHubMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
 }
 
@@ -1527,7 +1582,7 @@ struct JuneGitHubMcpConfig {
 /// call is scoped to that account.
 #[derive(Debug, Clone)]
 struct JuneConnectorMcpConfig {
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
     account_email: String,
 }
@@ -1549,7 +1604,7 @@ struct ConnectorBaseMcpConfigs {
 #[derive(Debug, Clone)]
 struct ConnectorAutoMcpConfig {
     server_name: String,
-    command: String,
+    python: PythonInvocation,
     script_path: PathBuf,
     account_email: String,
     grant_token: String,
@@ -5839,6 +5894,8 @@ fn build_hermes_tui_debug_launcher_script(
     script.push_str("export NO_PROXY='127.0.0.1,localhost,::1'\n");
     script.push_str("export no_proxy='127.0.0.1,localhost,::1'\n");
     script.push_str("export PYTHONDONTWRITEBYTECODE='1'\n");
+    script.push_str("export PYTHONNOUSERSITE='1'\n");
+    script.push_str("export PYTHONSAFEPATH='1'\n");
     if let Some(hint) = environment_hint {
         script.push_str(&format!(
             "export HERMES_ENVIRONMENT_HINT={}\n",
@@ -5894,8 +5951,8 @@ pub async fn open_hermes_tui_debug(
     let _start_guard = lock_hermes_preparation(&bridge).await;
 
     let hermes_home = resolve_june_hermes_home(&app)?;
-    let command_resolution = resolve_hermes_command(&app, &hermes_home).await?;
-    let command = command_resolution.command;
+    let command_resolution = resolve_hermes_command(&app, &bridge, &hermes_home).await?;
+    let python = command_resolution.python;
     let command_source = command_resolution.source;
 
     // Mirror the dashboard spawn's mode resolution: unrestricted => no jail;
@@ -5928,11 +5985,11 @@ pub async fn open_hermes_tui_debug(
     eprintln!("{trace_line}");
 
     let token = random_token();
-    let args = hermes_tui_resume_args(&session_id);
+    let args = python.hermes_args(hermes_tui_resume_args(&session_id));
     let _github_plugin_verified =
         verify_runtime_immediately_before_spawn(&app, command_source).await?;
     let script = build_hermes_tui_debug_launcher_script(
-        &command,
+        &python.program,
         &args,
         &hermes_home,
         &token,
@@ -6091,39 +6148,102 @@ fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
 
 async fn resolve_hermes_command(
     app: &AppHandle,
+    bridge: &HermesBridge,
     hermes_home: &Path,
 ) -> Result<HermesCommandResolution, AppError> {
     if let Ok(command) = std::env::var(JUNE_HERMES_COMMAND_ENV) {
         let command = command.trim();
         if !command.is_empty() {
             return Ok(HermesCommandResolution {
-                command: command.to_string(),
-                python_command: hermes_python_command(command),
+                python: PythonInvocation::isolated(hermes_python_command(command)),
                 source: HermesCommandSource::EnvOverride,
             });
         }
     }
 
-    if let (Some(command), Some(python_command)) = (
+    if let (Some(_command), Some(python_command)) = (
         bundled_hermes_command(app),
         bundled_hermes_python_command(app),
     ) {
         let _ = github_plugin_verified_for_source(app, HermesCommandSource::BundledRuntime)?;
         return Ok(HermesCommandResolution {
-            command: command.to_string_lossy().into_owned(),
-            python_command: python_command.to_string_lossy().into_owned(),
+            python: PythonInvocation::isolated(python_command.to_string_lossy()),
             source: HermesCommandSource::BundledRuntime,
         });
     }
 
-    let _ = hermes_home;
     let managed_runtime_dir = managed_hermes_runtime_dir(app)?;
-    let commands = managed_runtime_commands(&managed_runtime_dir);
-    Ok(HermesCommandResolution {
-        command: commands.hermes.to_string_lossy().into_owned(),
-        python_command: commands.python.to_string_lossy().into_owned(),
-        source: HermesCommandSource::ManagedRuntime,
+    let integrity_path = managed_hermes_integrity_path(app)?;
+    let fallback_permitted = managed_fallback_allowed_by_policy(
+        managed_fallback_permitted(&integrity_path),
+        managed_process_has_been_admitted(bridge)?,
+    );
+    match resolve_managed_hermes_command_with(&managed_runtime_dir, &integrity_path, || {
+        install_managed_hermes_runtime(app, hermes_home)
     })
+    .await
+    {
+        Ok(_) => {
+            let commands = managed_runtime_commands(&managed_runtime_dir);
+            Ok(HermesCommandResolution {
+                python: PythonInvocation::isolated(commands.python.to_string_lossy()),
+                source: HermesCommandSource::ManagedRuntime,
+            })
+        }
+        Err(error) if fallback_permitted => {
+            if let Some(command) = user_local_hermes_command() {
+                tracing::warn!(
+                    error_code = %error.code,
+                    "managed Hermes unavailable; using user-local fallback"
+                );
+                return Ok(HermesCommandResolution {
+                    python: PythonInvocation::isolated(hermes_python_command(
+                        &command.to_string_lossy(),
+                    )),
+                    source: HermesCommandSource::UserLocalFallback,
+                });
+            }
+            if let Some(command) = path_hermes_command() {
+                tracing::warn!(
+                    error_code = %error.code,
+                    "managed Hermes unavailable; using PATH fallback"
+                );
+                return Ok(HermesCommandResolution {
+                    python: PythonInvocation::isolated(hermes_python_command(
+                        &command.to_string_lossy(),
+                    )),
+                    source: HermesCommandSource::PathFallback,
+                });
+            }
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn managed_fallback_permitted(integrity_path: &Path) -> bool {
+    match read_managed_hermes_integrity_record(integrity_path) {
+        Ok(None) => true,
+        Ok(Some(_)) => false,
+        Err(_) => false,
+    }
+}
+
+fn managed_fallback_allowed_by_policy(
+    integrity_state_permits_fallback: bool,
+    managed_process_admitted: bool,
+) -> bool {
+    integrity_state_permits_fallback && !managed_process_admitted
+}
+
+fn managed_process_has_been_admitted(bridge: &HermesBridge) -> Result<bool, AppError> {
+    let guard = bridge
+        .processes
+        .lock()
+        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
+    Ok(guard
+        .values()
+        .any(|process| process.source == HermesCommandSource::ManagedRuntime))
 }
 
 fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
@@ -6196,21 +6316,25 @@ fn managed_runtime_commands(runtime_dir: &Path) -> ManagedRuntimeCommands {
     }
 }
 
-fn managed_uv_artifact_for(target_os: &str, target_arch: &str) -> Option<ManagedUvArtifact> {
-    let (archive_name, sha256) = match (target_os, target_arch) {
-        ("macos", "aarch64") => (
+fn managed_uv_artifact_for(
+    target_os: &str,
+    target_arch: &str,
+    target_env: &str,
+) -> Option<ManagedUvArtifact> {
+    let (archive_name, sha256) = match (target_os, target_arch, target_env) {
+        ("macos", "aarch64", "") => (
             "uv-aarch64-apple-darwin.tar.gz",
             "7e5b336108f8576eda1939920ca0a805b4a9a3c3d3eb2f6140e38b7092fbe4f3",
         ),
-        ("macos", "x86_64") => (
+        ("macos", "x86_64", "") => (
             "uv-x86_64-apple-darwin.tar.gz",
             "42bca7cc879d117ed7139a0e26de8cab0b6f033ad439a32144f324d1f8580d8c",
         ),
-        ("linux", "aarch64") => (
+        ("linux", "aarch64", "gnu") => (
             "uv-aarch64-unknown-linux-gnu.tar.gz",
             "21a7dd1a03ea17ac0366887455dab15d215b31dba0870dcd65d3714e22f46c81",
         ),
-        ("linux", "x86_64") => (
+        ("linux", "x86_64", "gnu") => (
             "uv-x86_64-unknown-linux-gnu.tar.gz",
             "b03e572f010bea94a4a52d42671ba72981e12894f71576181a1d26ff68546da7",
         ),
@@ -6222,6 +6346,13 @@ fn managed_uv_artifact_for(target_os: &str, target_arch: &str) -> Option<Managed
         sha256,
     })
 }
+
+#[cfg(target_env = "gnu")]
+const CURRENT_TARGET_ENV: &str = "gnu";
+#[cfg(target_env = "musl")]
+const CURRENT_TARGET_ENV: &str = "musl";
+#[cfg(not(any(target_env = "gnu", target_env = "musl")))]
+const CURRENT_TARGET_ENV: &str = "";
 
 fn managed_hermes_runtime_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     Ok(crate::app_paths::app_data_dir(app)
@@ -6369,11 +6500,23 @@ fn read_managed_hermes_integrity_record(
         }
     };
     if !integrity_metadata.is_file() || metadata_is_symlink_or_reparse(&integrity_metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            "Managed Hermes integrity record is not a trusted regular file.",
+        ));
+    }
+    let bytes = fs::read(integrity_path)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    if value.get("schema").and_then(serde_json::Value::as_u64)
+        != Some(MANAGED_HERMES_INTEGRITY_SCHEMA as u64)
+    {
         return Ok(None);
     }
-    Ok(fs::read(integrity_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok()))
+    let record = serde_json::from_value(value)
+        .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    Ok(Some(record))
 }
 
 fn managed_integrity_record_has_current_base_identity(
@@ -6491,20 +6634,35 @@ fn seal_managed_hermes_runtime_with_overlay_and_digest(
     })?;
     fs::create_dir_all(parent)
         .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
+    }
     let temp_path = parent.join(format!(
         ".{}.{}.tmp",
         MANAGED_HERMES_INTEGRITY_FILE,
         uuid::Uuid::new_v4()
     ));
     let write_result = (|| -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp_path)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
         drop(file);
         replace_file(&temp_path, integrity_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(integrity_path, fs::Permissions::from_mode(0o600))?;
+        }
         #[cfg(unix)]
         fs::File::open(parent)?.sync_all()?;
         Ok(())
@@ -6748,13 +6906,45 @@ fn hex_lower(bytes: &[u8]) -> String {
     )
 }
 
-#[cfg(any(windows, test))]
 fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
     if cfg!(target_os = "windows") {
         venv_dir.join("Scripts").join("hermes.exe")
     } else {
         venv_dir.join("bin").join("hermes")
     }
+}
+
+fn user_local_hermes_command() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for home in home_dir_candidates() {
+        candidates.push(hermes_venv_command(
+            &home.join(".hermes").join("hermes-agent").join("venv"),
+        ));
+        candidates.push(if cfg!(target_os = "windows") {
+            home.join(".local").join("bin").join("hermes.exe")
+        } else {
+            home.join(".local").join("bin").join("hermes")
+        });
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn path_hermes_command() -> Option<PathBuf> {
+    let executable = if cfg!(target_os = "windows") {
+        "hermes.exe"
+    } else {
+        "hermes"
+    };
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(if cfg!(target_os = "windows") {
+            ';'
+        } else {
+            ':'
+        })
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| Path::new(entry).join(executable))
+        .find(|path| path.is_file())
 }
 
 #[cfg(test)]
@@ -7158,6 +7348,408 @@ fn managed_runtime_cheaply_available_at(runtime_dir: &Path, integrity_path: &Pat
     })
 }
 
+#[cfg(not(target_os = "windows"))]
+async fn download_verified_managed_archive(
+    url: &str,
+    expected_sha256: &str,
+    max_bytes: u64,
+    destination: &Path,
+) -> Result<(), AppError> {
+    if !url.starts_with("https://") {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed runtime archives must use a fixed HTTPS URL.",
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes)
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed runtime archive exceeded its download size limit.",
+        ));
+    }
+    let mut sink = VerifiedArchiveSink::new(destination, max_bytes)?;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
+    {
+        sink.write_chunk(&chunk)?;
+    }
+    sink.finish(expected_sha256)
+}
+
+#[cfg(not(target_os = "windows"))]
+struct VerifiedArchiveSink {
+    path: PathBuf,
+    file: fs::File,
+    digest: Sha256,
+    total: u64,
+    max_bytes: u64,
+    committed: bool,
+}
+
+#[cfg(not(target_os = "windows"))]
+impl VerifiedArchiveSink {
+    fn new(path: &Path, max_bytes: u64) -> Result<Self, AppError> {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        set_private_file_permissions(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            digest: Sha256::new(),
+            total: 0,
+            max_bytes,
+            committed: false,
+        })
+    }
+
+    fn write_chunk(&mut self, chunk: &[u8]) -> Result<(), AppError> {
+        self.total = self.total.checked_add(chunk.len() as u64).ok_or_else(|| {
+            AppError::new("hermes_runtime_install_failed", "Archive size overflow.")
+        })?;
+        if self.total > self.max_bytes {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed runtime archive exceeded its download size limit.",
+            ));
+        }
+        self.digest.update(chunk);
+        self.file
+            .write_all(chunk)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
+    }
+
+    fn finish(mut self, expected_sha256: &str) -> Result<(), AppError> {
+        self.file
+            .sync_all()
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        if hex_lower(&self.digest.clone().finalize()) != expected_sha256 {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed runtime archive checksum mismatch.",
+            ));
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl Drop for VerifiedArchiveSink {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_private_file_permissions(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn create_private_managed_dir(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(path)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn validated_archive_relative_path(path: &Path, expected_top_level: &str) -> io::Result<PathBuf> {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsafe archive path",
+        ));
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => {
+                let value = value.to_str().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 archive path")
+                })?;
+                if value.is_empty() || value.contains('\\') {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "ambiguous archive path",
+                    ));
+                }
+                normalized.push(value);
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "archive path traversal",
+                ));
+            }
+        }
+    }
+    if normalized
+        .components()
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        != Some(expected_top_level)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unexpected archive top-level directory",
+        ));
+    }
+    Ok(normalized)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn validate_managed_tar_gz(archive_path: &Path, expected_top_level: &str) -> Result<(), AppError> {
+    let file = fs::File::open(archive_path)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let mut paths: HashMap<String, bool> = HashMap::new();
+    let mut count = 0_usize;
+    let mut expanded = 0_u64;
+    for entry in archive
+        .entries()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
+    {
+        let entry = entry
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        count += 1;
+        if count > MANAGED_ARCHIVE_MAX_ENTRIES {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed archive contains too many entries.",
+            ));
+        }
+        let entry_type = entry.header().entry_type();
+        let is_dir = entry_type.is_dir();
+        if !is_dir && !entry_type.is_file() {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed archive contains a link, device, FIFO, or unsupported entry.",
+            ));
+        }
+        expanded = expanded.checked_add(entry.size()).ok_or_else(|| {
+            AppError::new("hermes_runtime_install_failed", "Archive size overflow.")
+        })?;
+        if expanded > MANAGED_ARCHIVE_MAX_EXPANDED_BYTES {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed archive exceeds its expanded size limit.",
+            ));
+        }
+        let path = entry
+            .path()
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        let normalized = validated_archive_relative_path(&path, expected_top_level)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        let identity = normalized.to_string_lossy().to_lowercase();
+        if paths.contains_key(&identity) {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed archive contains duplicate or colliding paths.",
+            ));
+        }
+        let mut ancestor = normalized.parent();
+        while let Some(path) = ancestor {
+            if paths
+                .get(&path.to_string_lossy().to_lowercase())
+                .is_some_and(|ancestor_is_dir| !ancestor_is_dir)
+            {
+                return Err(AppError::new(
+                    "hermes_runtime_install_failed",
+                    "Managed archive path collides with a file ancestor.",
+                ));
+            }
+            ancestor = path.parent();
+        }
+        if !is_dir {
+            let descendant_prefix = format!("{identity}/");
+            if paths
+                .keys()
+                .any(|path| path.starts_with(&descendant_prefix))
+            {
+                return Err(AppError::new(
+                    "hermes_runtime_install_failed",
+                    "Managed archive file collides with an existing directory.",
+                ));
+            }
+        }
+        paths.insert(identity, is_dir);
+    }
+    if count == 0 {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive is empty.",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn extract_validated_managed_tar_gz(
+    archive_path: &Path,
+    destination: &Path,
+    expected_top_level: &str,
+) -> Result<PathBuf, AppError> {
+    validate_managed_tar_gz(archive_path, expected_top_level)?;
+    create_private_managed_dir(destination)?;
+    let file = fs::File::open(archive_path)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive
+        .entries()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
+    {
+        let mut entry = entry
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        let relative = validated_archive_relative_path(
+            &entry.path().map_err(|error| {
+                AppError::new("hermes_runtime_install_failed", error.to_string())
+            })?,
+            expected_top_level,
+        )
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        let target = destination.join(relative);
+        if entry.header().entry_type().is_dir() {
+            create_private_managed_dir(&target)?;
+        } else {
+            let parent = target.parent().ok_or_else(|| {
+                AppError::new(
+                    "hermes_runtime_install_failed",
+                    "Archive entry has no parent.",
+                )
+            })?;
+            create_private_managed_dir(parent)?;
+            entry.unpack(&target).map_err(|error| {
+                AppError::new("hermes_runtime_install_failed", error.to_string())
+            })?;
+        }
+    }
+    let top_level = destination.join(expected_top_level);
+    postvalidate_extracted_managed_tree(destination, &top_level)?;
+    Ok(top_level)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn postvalidate_extracted_managed_tree(
+    root: &Path,
+    expected_top_level: &Path,
+) -> Result<(), AppError> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let metadata = fs::symlink_metadata(expected_top_level)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive has an invalid top-level directory.",
+        ));
+    }
+    let mut pending = vec![expected_top_level.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        if metadata.file_type().is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed extraction produced an unsupported filesystem entry.",
+            ));
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed extraction escaped its private staging directory.",
+            ));
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&path).map_err(|error| {
+                AppError::new("hermes_runtime_install_failed", error.to_string())
+            })? {
+                pending.push(
+                    entry
+                        .map_err(|error| {
+                            AppError::new("hermes_runtime_install_failed", error.to_string())
+                        })?
+                        .path(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+struct ManagedRuntimeStaging {
+    path: PathBuf,
+    committed: bool,
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_installer_command(
+    runtime_dir: &Path,
+    install_dir: &Path,
+    hermes_home: &Path,
+    uv_command: &Path,
+) -> Command {
+    let mut command = Command::new("/bin/bash");
+    command
+        .arg("-c")
+        .arg(MANAGED_HERMES_INSTALL_SCRIPT)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("JUNE_HERMES_RUNTIME_DIR", runtime_dir)
+        .env("JUNE_HERMES_INSTALL_DIR", install_dir)
+        .env("JUNE_HERMES_HOME", hermes_home)
+        .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
+        .env("JUNE_VERIFIED_UV_COMMAND", uv_command)
+        .env("HERMES_HOME", hermes_home)
+        .env("HERMES_INSTALL_DIR", install_dir)
+        .env("UV_NO_CONFIG", "1");
+    command
+}
+
+#[cfg(not(target_os = "windows"))]
+impl Drop for ManagedRuntimeStaging {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = remove_managed_install_path(&self.path);
+        }
+    }
+}
+
 async fn install_managed_hermes_runtime(
     app: &AppHandle,
     hermes_home: &Path,
@@ -7178,29 +7770,85 @@ async fn install_managed_hermes_runtime_unix(
     app: &AppHandle,
     hermes_home: &Path,
 ) -> Result<(), AppError> {
-    let uv_artifact = managed_uv_artifact_for(std::env::consts::OS, std::env::consts::ARCH)
+    let uv_artifact = managed_uv_artifact_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        CURRENT_TARGET_ENV,
+    )
+    .ok_or_else(|| {
+        AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "No checksum-verified managed uv artifact is available for {}-{}-{}.",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                CURRENT_TARGET_ENV,
+            ),
+        )
+    })?;
+    let uv_url = format!("{MANAGED_UV_RELEASE_BASE_URL}/{}", uv_artifact.archive_name);
+    let runtime_dir = managed_hermes_runtime_dir(app)?;
+    let runtime_parent = runtime_dir.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed runtime path has no private parent directory.",
+        )
+    })?;
+    create_private_managed_dir(runtime_parent)?;
+    let mut staging = ManagedRuntimeStaging {
+        path: runtime_parent.join(format!(".hermes-runtime-staging-{}", uuid::Uuid::new_v4())),
+        committed: false,
+    };
+    create_private_managed_dir(&staging.path)?;
+    let bootstrap_dir = staging.path.join(".bootstrap");
+    create_private_managed_dir(&bootstrap_dir)?;
+    let source_archive = bootstrap_dir.join("hermes-source.tar.gz");
+    let uv_archive = bootstrap_dir.join("uv.tar.gz");
+    download_verified_managed_archive(
+        HERMES_SOURCE_TARBALL_URL,
+        HERMES_SOURCE_TARBALL_SHA256,
+        HERMES_SOURCE_ARCHIVE_MAX_BYTES,
+        &source_archive,
+    )
+    .await?;
+    download_verified_managed_archive(
+        &uv_url,
+        uv_artifact.sha256,
+        MANAGED_UV_ARCHIVE_MAX_BYTES,
+        &uv_archive,
+    )
+    .await?;
+
+    let source_top_level = format!("hermes-agent-{HERMES_AGENT_INSTALL_COMMIT}");
+    let extracted_source = extract_validated_managed_tar_gz(
+        &source_archive,
+        &bootstrap_dir.join("source"),
+        &source_top_level,
+    )?;
+    let uv_top_level = uv_artifact
+        .archive_name
+        .strip_suffix(".tar.gz")
         .ok_or_else(|| {
             AppError::new(
                 "hermes_runtime_install_failed",
-                format!(
-                    "No checksum-verified managed uv artifact is available for {}-{}.",
-                    std::env::consts::OS,
-                    std::env::consts::ARCH
-                ),
+                "Managed uv archive has an unexpected pinned name.",
             )
         })?;
-    let uv_url = format!("{MANAGED_UV_RELEASE_BASE_URL}/{}", uv_artifact.archive_name);
-    let runtime_dir = managed_hermes_runtime_dir(app)?;
-    let install_dir = runtime_dir.join("hermes-agent");
-    // This path is reached only when the external full-tree integrity record
-    // is absent or mismatched. Remove the entire old writable-era runtime
-    // without following a symlink/reparse point, then rebuild from the
-    // checksum-pinned source archive. Partial repair would preserve untrusted
-    // launchers, loaders, bytecode, or dependencies.
-    remove_managed_install_path(&runtime_dir)?;
-    fs::create_dir_all(&runtime_dir)
+    let extracted_uv =
+        extract_validated_managed_tar_gz(&uv_archive, &bootstrap_dir.join("uv"), uv_top_level)?;
+    let uv_command = extracted_uv.join("uv");
+    let uv_metadata = fs::symlink_metadata(&uv_command)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    let install_log = runtime_dir.join("install.log");
+    if !uv_metadata.is_file() || metadata_is_symlink_or_reparse(&uv_metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Verified uv archive does not contain the expected regular executable.",
+        ));
+    }
+    let install_dir = staging.path.join("hermes-agent");
+    fs::rename(&extracted_source, &install_dir)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let install_log = staging.path.join("install.log");
 
     let log_file = fs::OpenOptions::new()
         .create(true)
@@ -7216,27 +7864,12 @@ async fn install_managed_hermes_runtime_unix(
     // for minutes. Run it on a blocking thread so it doesn't pin an async
     // runtime worker for the whole install.
     let status = {
-        let runtime_dir = runtime_dir.clone();
+        let runtime_dir = staging.path.clone();
         let install_dir = install_dir.clone();
         let hermes_home = hermes_home.to_path_buf();
+        let uv_command = uv_command.clone();
         tokio::task::spawn_blocking(move || {
-            Command::new("/bin/bash")
-                .arg("-c")
-                .arg(MANAGED_HERMES_INSTALL_SCRIPT)
-                .env("JUNE_HERMES_RUNTIME_DIR", &runtime_dir)
-                .env("JUNE_HERMES_INSTALL_DIR", &install_dir)
-                .env("JUNE_HERMES_HOME", &hermes_home)
-                .env("JUNE_HERMES_INSTALL_COMMIT", HERMES_AGENT_INSTALL_COMMIT)
-                .env("JUNE_HERMES_SOURCE_TARBALL_URL", HERMES_SOURCE_TARBALL_URL)
-                .env(
-                    "JUNE_HERMES_SOURCE_TARBALL_SHA256",
-                    HERMES_SOURCE_TARBALL_SHA256,
-                )
-                .env("JUNE_MANAGED_UV_URL", &uv_url)
-                .env("JUNE_MANAGED_UV_SHA256", uv_artifact.sha256)
-                .env("HERMES_HOME", &hermes_home)
-                .env("HERMES_INSTALL_DIR", &install_dir)
-                .env("UV_NO_CONFIG", "1")
+            managed_installer_command(&runtime_dir, &install_dir, &hermes_home, &uv_command)
                 .stdin(Stdio::null())
                 .stdout(Stdio::from(log_file))
                 .stderr(Stdio::from(log_file_for_stderr))
@@ -7265,7 +7898,8 @@ async fn install_managed_hermes_runtime_unix(
         ));
     }
 
-    let commands = managed_runtime_commands(&runtime_dir);
+    remove_managed_install_path(&bootstrap_dir)?;
+    let commands = managed_runtime_commands(&staging.path);
     if !commands.hermes.exists() || !commands.python.exists() {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
@@ -7275,6 +7909,29 @@ async fn install_managed_hermes_runtime_unix(
             ),
         ));
     }
+
+    // Only now retire the previous runtime. Downloads, archive validation,
+    // extraction, Python installation, and locked dependency sync all finish
+    // in the private sibling first, so an unavailable bootstrap cannot destroy
+    // the last usable managed runtime.
+    remove_managed_install_path(&runtime_dir)?;
+    fs::rename(&staging.path, &runtime_dir)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    staging.committed = true;
+    let metadata = ManagedHermesRuntimeMetadata {
+        source: "NousResearch/hermes-agent".to_string(),
+        commit: HERMES_AGENT_INSTALL_COMMIT.to_string(),
+        install_dir: runtime_dir
+            .join("hermes-agent")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    fs::write(
+        runtime_dir.join("runtime.json"),
+        serde_json::to_vec(&metadata)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?,
+    )
+    .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
 
     Ok(())
 }
@@ -7374,69 +8031,23 @@ runtime_dir="${JUNE_HERMES_RUNTIME_DIR:?}"
 install_dir="${JUNE_HERMES_INSTALL_DIR:?}"
 hermes_home="${JUNE_HERMES_HOME:?}"
 install_commit="${JUNE_HERMES_INSTALL_COMMIT:?}"
-source_tarball_url="${JUNE_HERMES_SOURCE_TARBALL_URL:?}"
-source_tarball_sha256="${JUNE_HERMES_SOURCE_TARBALL_SHA256:?}"
-uv_url="${JUNE_MANAGED_UV_URL:?}"
-uv_sha256="${JUNE_MANAGED_UV_SHA256:?}"
+uv_cmd="${JUNE_VERIFIED_UV_COMMAND:?}"
 
-mkdir -p "$runtime_dir" "$hermes_home"
-
-tmp_dir="$(mktemp -d "$runtime_dir/download.XXXXXX")"
-cleanup() { rm -rf "$tmp_dir"; }
-trap cleanup EXIT
-
-sha256_file() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
-  else
-    sha256sum "$1" | awk '{print $1}'
-  fi
-}
-
-verify_sha256() {
-  local path="$1"
-  local expected="$2"
-  local label="$3"
-  local actual
-  actual="$(sha256_file "$path")"
-  if [ "$actual" != "$expected" ]; then
-    echo "$label checksum mismatch." >&2
-    echo "expected: $expected" >&2
-    echo "actual:   $actual" >&2
-    exit 1
-  fi
-}
-
-curl -LsSf "$source_tarball_url" -o "$tmp_dir/hermes-agent.tar.gz"
-verify_sha256 "$tmp_dir/hermes-agent.tar.gz" "$source_tarball_sha256" "Hermes source archive"
-tar -xzf "$tmp_dir/hermes-agent.tar.gz" -C "$tmp_dir"
-unpacked_dir="$(find "$tmp_dir" -maxdepth 1 -type d -name 'hermes-agent-*' | head -n 1)"
-if [ -z "$unpacked_dir" ]; then
-  echo "Hermes source archive did not contain a hermes-agent directory." >&2
-  exit 1
-fi
-mv "$unpacked_dir" "$install_dir"
-
-curl -LsSf "$uv_url" -o "$tmp_dir/uv.tar.gz"
-verify_sha256 "$tmp_dir/uv.tar.gz" "$uv_sha256" "uv bootstrap archive"
-mkdir -p "$tmp_dir/uv"
-tar -xzf "$tmp_dir/uv.tar.gz" -C "$tmp_dir/uv"
-uv_cmd="$(find "$tmp_dir/uv" -type f -name uv -perm -111 | head -n 1)"
-if [ -z "$uv_cmd" ]; then
+if [ ! -x "$uv_cmd" ] || [ ! -d "$install_dir" ]; then
   echo "Verified uv archive did not contain an executable uv binary." >&2
   exit 1
 fi
 
-mkdir -p "$runtime_dir/python"
+/bin/mkdir -p "$runtime_dir/python" "$hermes_home"
 UV_PYTHON_INSTALL_DIR="$runtime_dir/python" UV_PYTHON_INSTALL_BIN=0 \
   UV_NO_CONFIG=1 UV_NO_SYSTEM_CONFIG=1 \
   "$uv_cmd" python install 3.11
-python_install="$(find "$runtime_dir/python" -maxdepth 1 -type d -name 'cpython-3.11*' | head -n 1)"
+python_install="$(/usr/bin/find "$runtime_dir/python" -maxdepth 1 -type d -name 'cpython-3.11*' | /usr/bin/head -n 1)"
 if [ -z "$python_install" ]; then
   echo "uv did not create the managed CPython 3.11 installation." >&2
   exit 1
 fi
-mv "$python_install" "$runtime_dir/python/current"
+/bin/mv "$python_install" "$runtime_dir/python/current"
 python="$runtime_dir/python/current/bin/python3.11"
 if [ ! -x "$python" ]; then
   echo "Managed Python is unavailable at $python." >&2
@@ -7451,43 +8062,35 @@ fi
     "$uv_cmd" sync --extra all --locked --python "$python"
 )
 
-venv_site_packages="$(find "$install_dir/venv/lib" -maxdepth 1 -type d -name 'python3.*' | head -n 1)/site-packages"
-base_site_packages="$(find "$runtime_dir/python/current/lib" -maxdepth 1 -type d -name 'python3.*' | head -n 1)/site-packages"
+venv_site_packages="$(/usr/bin/find "$install_dir/venv/lib" -maxdepth 1 -type d -name 'python3.*' | /usr/bin/head -n 1)/site-packages"
+base_site_packages="$(/usr/bin/find "$runtime_dir/python/current/lib" -maxdepth 1 -type d -name 'python3.*' | /usr/bin/head -n 1)/site-packages"
 if [ ! -d "$venv_site_packages" ] || [ ! -d "$base_site_packages" ]; then
   echo "Managed Python site-packages directories are incomplete." >&2
   exit 1
 fi
-python_version_dir="$(basename "$(dirname "$venv_site_packages")")"
-find "$venv_site_packages" -maxdepth 1 \( -name '*editable*' -o -name '_hermes*' \) -exec rm -rf {} +
-rm -rf "$install_dir/venv/bin"
+python_version_dir="$(/usr/bin/basename "$(/usr/bin/dirname "$venv_site_packages")")"
+/usr/bin/find "$venv_site_packages" -maxdepth 1 \( -name '*editable*' -o -name '_hermes*' \) -exec /bin/rm -rf {} +
+/bin/rm -rf "$install_dir/venv/bin"
 cat > "$base_site_packages/hermes-managed.pth" <<EOF
 ../../../../../hermes-agent
 ../../../../../hermes-agent/venv/lib/$python_version_dir/site-packages
 EOF
 
-if command -v npm >/dev/null 2>&1; then
-  (
-    cd "$install_dir/web"
-    npm ci --no-audit --no-fund
-    npm run build
-  )
-  rm -rf "$install_dir/node_modules" "$install_dir/web/node_modules" "$install_dir/ui-tui/node_modules"
-fi
 if [ ! -f "$install_dir/hermes_cli/web_dist/index.html" ]; then
-  echo "Managed Hermes dashboard assets are unavailable after locked install." >&2
+  echo "Pinned Hermes source archive does not contain dashboard assets." >&2
   exit 1
 fi
 
-mkdir -p "$runtime_dir/bin"
+/bin/mkdir -p "$runtime_dir/bin"
 cat > "$runtime_dir/bin/hermes" <<'EOF'
 #!/bin/sh
 here="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 exec "$here/python/current/bin/python3.11" -m hermes_cli.main "$@"
 EOF
-chmod 755 "$runtime_dir/bin/hermes"
+/bin/chmod 755 "$runtime_dir/bin/hermes"
 
 for dir in cron sessions logs pairing hooks image_cache audio_cache memories skills workspace; do
-  mkdir -p "$hermes_home/$dir"
+  /bin/mkdir -p "$hermes_home/$dir"
 done
 
 cat > "$runtime_dir/runtime.json" <<EOF
@@ -7666,6 +8269,8 @@ fn apply_isolated_hermes_env(
     cmd.env("HERMES_HOME", hermes_home)
         .env("HERMES_DASHBOARD_SESSION_TOKEN", token)
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONSAFEPATH", "1")
         .env("NO_PROXY", "127.0.0.1,localhost,::1")
         .env("no_proxy", "127.0.0.1,localhost,::1");
     if let Some(hint) = environment_hint {
@@ -8140,7 +8745,7 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
 
 fn sync_june_context_mcp(
     app: &AppHandle,
-    python_command: &str,
+    python: &PythonInvocation,
 ) -> Result<JuneContextMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
@@ -8155,13 +8760,16 @@ fn sync_june_context_mcp(
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
 
     Ok(JuneContextMcpConfig {
-        command: python_command.to_string(),
+        python: python.clone(),
         script_path,
         database_path: paths.database_path,
     })
 }
 
-fn sync_june_web_mcp(app: &AppHandle, python_command: &str) -> Result<JuneWebMcpConfig, AppError> {
+fn sync_june_web_mcp(
+    app: &AppHandle,
+    python: &PythonInvocation,
+) -> Result<JuneWebMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
     let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
@@ -8172,7 +8780,7 @@ fn sync_june_web_mcp(app: &AppHandle, python_command: &str) -> Result<JuneWebMcp
         .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
 
     Ok(JuneWebMcpConfig {
-        command: python_command.to_string(),
+        python: python.clone(),
         script_path,
     })
 }
@@ -8180,7 +8788,7 @@ fn sync_june_web_mcp(app: &AppHandle, python_command: &str) -> Result<JuneWebMcp
 fn sync_june_image_mcp(
     app: &AppHandle,
     hermes_home: &std::path::Path,
-    python_command: &str,
+    python: &PythonInvocation,
 ) -> Result<JuneImageMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
@@ -8203,7 +8811,7 @@ fn sync_june_image_mcp(
         .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
 
     Ok(JuneImageMcpConfig {
-        command: python_command.to_string(),
+        python: python.clone(),
         script_path,
         images_dir,
     })
@@ -8212,7 +8820,7 @@ fn sync_june_image_mcp(
 fn sync_june_video_mcp(
     app: &AppHandle,
     hermes_home: &std::path::Path,
-    python_command: &str,
+    python: &PythonInvocation,
 ) -> Result<JuneVideoMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
@@ -8227,7 +8835,7 @@ fn sync_june_video_mcp(
         .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
 
     Ok(JuneVideoMcpConfig {
-        command: python_command.to_string(),
+        python: python.clone(),
         script_path,
         videos_dir,
     })
@@ -8235,7 +8843,7 @@ fn sync_june_video_mcp(
 
 fn sync_june_recorder_mcp(
     app: &AppHandle,
-    python_command: &str,
+    python: &PythonInvocation,
 ) -> Result<JuneRecorderMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
@@ -8247,7 +8855,7 @@ fn sync_june_recorder_mcp(
         .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
 
     Ok(JuneRecorderMcpConfig {
-        command: python_command.to_string(),
+        python: python.clone(),
         script_path,
     })
 }
@@ -8258,7 +8866,7 @@ fn sync_june_recorder_mcp(
 /// this config identifies only the bundled MCP subprocess.
 async fn sync_june_github_mcp(
     app: &AppHandle,
-    python_command: &str,
+    python: &PythonInvocation,
     runtime_eligible: bool,
 ) -> Result<Option<JuneGitHubMcpConfig>, AppError> {
     if !runtime_eligible {
@@ -8268,7 +8876,7 @@ async fn sync_june_github_mcp(
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
     sync_june_github_mcp_with_dependencies(
-        python_command,
+        python,
         crate::connectors::github::github_app_config(),
         &crate::connectors::github::PlatformGitHubTokenVault,
         &repositories,
@@ -8282,7 +8890,7 @@ async fn sync_june_github_mcp(
 /// snapshot and credential vault are checked by the connector's authoritative
 /// eligibility function before any MCP script is written.
 async fn sync_june_github_mcp_with_dependencies(
-    python_command: &str,
+    python: &PythonInvocation,
     app_config: Result<crate::connectors::github::GitHubAppConfig, AppError>,
     vault: &dyn crate::connectors::github::GitHubTokenVault,
     repositories: &crate::db::repositories::Repositories,
@@ -8298,7 +8906,7 @@ async fn sync_june_github_mcp_with_dependencies(
         .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
 
     Ok(Some(JuneGitHubMcpConfig {
-        command: python_command.to_string(),
+        python: python.clone(),
         script_path,
     }))
 }
@@ -8347,7 +8955,7 @@ where
 /// is connected, in which case the connector servers are not registered at all.
 async fn sync_june_connector_mcps(
     app: &AppHandle,
-    python_command: &str,
+    python: &PythonInvocation,
 ) -> Result<Option<ConnectorMcpConfigs>, AppError> {
     // Listing reads the non-secret DB index only (no keychain prompt). v1 uses
     // the first CONNECTED account for the base servers; multi-account is a
@@ -8392,7 +9000,7 @@ async fn sync_june_connector_mcps(
     let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_connector_mcp_failed", error.to_string()))?;
-    let command = python_command.to_string();
+    let python = python.clone();
 
     // Write all four scripts up front: the base servers and every auto server
     // (which reuses the provider action script) point at these paths.
@@ -8415,7 +9023,7 @@ async fn sync_june_connector_mcps(
 
     let base = account_email.map(|email| {
         let base_config = |script_path: &PathBuf| JuneConnectorMcpConfig {
-            command: command.clone(),
+            python: python.clone(),
             script_path: script_path.clone(),
             account_email: email.clone(),
         };
@@ -8439,7 +9047,7 @@ async fn sync_june_connector_mcps(
             };
             Some(ConnectorAutoMcpConfig {
                 server_name: grant.server_name,
-                command: command.clone(),
+                python: python.clone(),
                 script_path,
                 account_email: grant.account_id,
                 grant_token: grant.token,
@@ -9041,12 +9649,24 @@ fn render_mcp_servers_config(
     format!("mcp_servers:\n{entries}")
 }
 
+fn rendered_mcp_script_arg(python: &PythonInvocation, script_path: &Path) -> String {
+    let invocation = python.script_args(script_path, std::iter::empty::<&str>());
+    debug_assert_eq!(
+        &invocation[..python.prefix_args.len()],
+        python.prefix_args.as_slice()
+    );
+    yaml_string(&invocation[python.prefix_args.len()])
+}
+
 fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
     format!(
         r#"  {server_name}:
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {database_path}
     env:
@@ -9055,8 +9675,8 @@ fn render_context_mcp_entry(config: &JuneContextMcpConfig) -> String {
     connect_timeout: 10
 "#,
         server_name = JUNE_CONTEXT_MCP_SERVER_NAME,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         database_path = yaml_string(&config.database_path.to_string_lossy()),
     )
 }
@@ -9071,6 +9691,9 @@ fn render_web_mcp_entry(config: &JuneWebMcpConfig, base_url: &str, proxy_token: 
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
     env:
@@ -9080,8 +9703,8 @@ fn render_web_mcp_entry(config: &JuneWebMcpConfig, base_url: &str, proxy_token: 
     connect_timeout: 10
 "#,
         server_name = JUNE_WEB_MCP_SERVER_NAME,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         token_env = JUNE_WEB_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
@@ -9102,6 +9725,9 @@ fn render_image_mcp_entry(
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
       - {images_dir}
@@ -9112,8 +9738,8 @@ fn render_image_mcp_entry(
     connect_timeout: 10
 "#,
         server_name = JUNE_IMAGE_MCP_SERVER_NAME,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         images_dir = yaml_string(&config.images_dir.to_string_lossy()),
         token_env = JUNE_IMAGE_MCP_TOKEN_ENV,
@@ -9134,6 +9760,9 @@ fn render_video_mcp_entry(
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
       - {videos_dir}
@@ -9144,8 +9773,8 @@ fn render_video_mcp_entry(
     connect_timeout: 10
 "#,
         server_name = JUNE_VIDEO_MCP_SERVER_NAME,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         videos_dir = yaml_string(&config.videos_dir.to_string_lossy()),
         token_env = JUNE_VIDEO_MCP_TOKEN_ENV,
@@ -9163,6 +9792,9 @@ fn render_recorder_mcp_entry(
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
     env:
@@ -9173,8 +9805,8 @@ fn render_recorder_mcp_entry(
 "#,
         server_name = JUNE_RECORDER_MCP_SERVER_NAME,
         tool_timeout = JUNE_RECORDER_MCP_TOOL_TIMEOUT_SECS,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         token_env = JUNE_RECORDER_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
@@ -9194,6 +9826,9 @@ fn render_github_mcp_entry(
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
     env:
@@ -9203,8 +9838,8 @@ fn render_github_mcp_entry(
     connect_timeout: 10
 "#,
         server_name = JUNE_GITHUB_MCP_SERVER_NAME,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         token_env = JUNE_GITHUB_PROXY_TOKEN_ENV,
         token = yaml_string(github_proxy_token),
@@ -9228,6 +9863,9 @@ fn render_connector_mcp_entry(
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
     env:
@@ -9238,8 +9876,8 @@ fn render_connector_mcp_entry(
     connect_timeout: 10
 "#,
         server_name = server_name,
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         token_env = JUNE_CONNECTOR_MCP_TOKEN_ENV,
         token = yaml_string(connector_token),
@@ -9268,6 +9906,9 @@ fn render_connector_auto_mcp_entry(
     enabled: true
     command: {command}
     args:
+      - "-I"
+      - "-S"
+      - "-B"
       - {script_path}
       - {base_url}
     env:
@@ -9279,8 +9920,8 @@ fn render_connector_auto_mcp_entry(
     connect_timeout: 10
 "#,
         server_name = yaml_map_key(&config.server_name),
-        command = yaml_string(&config.command),
-        script_path = yaml_string(&config.script_path.to_string_lossy()),
+        command = yaml_string(&config.python.program),
+        script_path = rendered_mcp_script_arg(&config.python, &config.script_path),
         base_url = yaml_string(base_url),
         token_env = JUNE_CONNECTOR_MCP_TOKEN_ENV,
         token = yaml_string(connector_token),
@@ -12692,6 +13333,26 @@ mod tests {
             seed_fake_managed_runtime(&runtime_dir);
             let integrity_path = app_data.path().join(MANAGED_HERMES_INTEGRITY_FILE);
             seal_managed_hermes_runtime(&runtime_dir, &integrity_path).expect("seal runtime");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&integrity_path)
+                        .expect("integrity metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+                assert_eq!(
+                    fs::metadata(app_data.path())
+                        .expect("integrity parent metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o700
+                );
+            }
             assert!(
                 managed_hermes_runtime_current_at(&runtime_dir, &integrity_path)
                     .expect("verify runtime")
@@ -12811,21 +13472,209 @@ mod tests {
 
         #[test]
         fn managed_uv_bootstrap_is_pinned_only_for_verified_platform_artifacts() {
-            let mac_arm = managed_uv_artifact_for("macos", "aarch64")
+            let mac_arm = managed_uv_artifact_for("macos", "aarch64", "")
                 .expect("verified Apple Silicon artifact");
             assert_eq!(mac_arm.version, "0.11.15");
             assert_eq!(
                 mac_arm.sha256,
                 "7e5b336108f8576eda1939920ca0a805b4a9a3c3d3eb2f6140e38b7092fbe4f3"
             );
-            let mac_intel =
-                managed_uv_artifact_for("macos", "x86_64").expect("verified Intel macOS artifact");
+            let mac_intel = managed_uv_artifact_for("macos", "x86_64", "")
+                .expect("verified Intel macOS artifact");
             assert_eq!(
                 mac_intel.sha256,
                 "42bca7cc879d117ed7139a0e26de8cab0b6f033ad439a32144f324d1f8580d8c"
             );
-            assert!(managed_uv_artifact_for("macos", "powerpc").is_none());
-            assert!(managed_uv_artifact_for("freebsd", "x86_64").is_none());
+            assert!(managed_uv_artifact_for("macos", "powerpc", "").is_none());
+            assert!(managed_uv_artifact_for("freebsd", "x86_64", "").is_none());
+            assert!(managed_uv_artifact_for("linux", "x86_64", "gnu").is_some());
+            assert!(managed_uv_artifact_for("linux", "x86_64", "musl").is_none());
+        }
+
+        #[test]
+        fn fallback_policy_allows_unavailable_install_but_never_integrity_downgrade() {
+            let temp = tempfile::tempdir().expect("fallback policy tempdir");
+            let integrity_path = temp.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            assert!(managed_fallback_permitted(&integrity_path));
+            assert!(managed_fallback_allowed_by_policy(true, false));
+            assert!(
+                !managed_fallback_allowed_by_policy(true, true),
+                "an admitted managed process makes downgrade fail closed"
+            );
+
+            fs::write(&integrity_path, b"not valid integrity JSON")
+                .expect("corrupt integrity fixture");
+            assert!(
+                !managed_fallback_permitted(&integrity_path),
+                "unreadable integrity state must fail closed"
+            );
+
+            let current = ManagedHermesIntegrityRecord {
+                schema: MANAGED_HERMES_INTEGRITY_SCHEMA,
+                commit: HERMES_AGENT_INSTALL_COMMIT.to_string(),
+                source_tarball_sha256: HERMES_SOURCE_TARBALL_SHA256.to_string(),
+                base_tree_sha256: "base".to_string(),
+                github_manifest_sha256: "manifest".to_string(),
+                github_source_sha256: "source".to_string(),
+                sitecustomize_sha256: "site".to_string(),
+            };
+            fs::write(
+                &integrity_path,
+                serde_json::to_vec(&current).expect("current integrity JSON"),
+            )
+            .expect("current integrity fixture");
+            assert!(
+                !managed_fallback_permitted(&integrity_path),
+                "a current schema-2 seal must never downgrade to untrusted Hermes"
+            );
+            assert!(!github_toolset_supported_for_runtime(
+                HermesCommandSource::UserLocalFallback
+            ));
+            assert!(!github_toolset_supported_for_runtime(
+                HermesCommandSource::PathFallback
+            ));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_archive_validation_rejects_every_unsafe_entry_class() {
+            fn write_archive(path: &Path, entries: &[(&str, u8)]) {
+                let file = fs::File::create(path).expect("archive file");
+                let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+                let mut builder = tar::Builder::new(encoder);
+                for (name, kind) in entries {
+                    let payload: &[u8] = if *kind == b'f' { b"payload" } else { b"" };
+                    let mut header = tar::Header::new_gnu();
+                    header.set_mode(if *kind == b'd' { 0o755 } else { 0o644 });
+                    header.set_size(payload.len() as u64);
+                    header.set_entry_type(match *kind {
+                        b'd' => tar::EntryType::Directory,
+                        b'l' => tar::EntryType::Symlink,
+                        b'p' => tar::EntryType::Fifo,
+                        _ => tar::EntryType::Regular,
+                    });
+                    let name_bytes = name.as_bytes();
+                    assert!(name_bytes.len() < 100);
+                    header.as_mut_bytes()[..100].fill(0);
+                    header.as_mut_bytes()[..name_bytes.len()].copy_from_slice(name_bytes);
+                    if *kind == b'l' {
+                        header.set_link_name("../../escape").expect("link target");
+                    }
+                    header.set_cksum();
+                    builder
+                        .append(&header, payload)
+                        .expect("append raw archive entry");
+                }
+                builder
+                    .into_inner()
+                    .expect("finish tar")
+                    .finish()
+                    .expect("finish gzip");
+            }
+
+            let cases: &[(&str, &[(&str, u8)])] = &[
+                ("absolute", &[("/root/escape", b'f')]),
+                ("parent", &[("root/../escape", b'f')]),
+                ("symlink", &[("root/link", b'l')]),
+                ("fifo", &[("root/pipe", b'p')]),
+                ("unexpected-root", &[("other/file", b'f')]),
+                ("duplicate", &[("root/file", b'f'), ("root/file", b'f')]),
+                (
+                    "case-collision",
+                    &[("root/File", b'f'), ("root/file", b'f')],
+                ),
+                (
+                    "file-ancestor",
+                    &[("root/node", b'f'), ("root/node/child", b'f')],
+                ),
+            ];
+            for (name, entries) in cases {
+                let temp = tempfile::tempdir().expect("archive tempdir");
+                let archive = temp.path().join(format!("{name}.tar.gz"));
+                write_archive(&archive, entries);
+                assert!(
+                    validate_managed_tar_gz(&archive, "root").is_err(),
+                    "{name} archive must be rejected before extraction"
+                );
+                assert!(
+                    !temp.path().join("out").exists(),
+                    "validation must not extract {name}"
+                );
+            }
+
+            let temp = tempfile::tempdir().expect("valid archive tempdir");
+            let archive = temp.path().join("valid.tar.gz");
+            write_archive(&archive, &[("root", b'd'), ("root/uv", b'f')]);
+            let extracted =
+                extract_validated_managed_tar_gz(&archive, &temp.path().join("out"), "root")
+                    .expect("safe archive extracts");
+            assert_eq!(fs::read(extracted.join("uv")).expect("uv file"), b"payload");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_archive_stream_sink_enforces_cap_hash_cleanup_and_private_mode() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = tempfile::tempdir().expect("archive stream tempdir");
+            let oversized = temp.path().join("oversized.tar.gz");
+            {
+                let mut sink = VerifiedArchiveSink::new(&oversized, 4).expect("oversized sink");
+                sink.write_chunk(b"abc").expect("first chunk");
+                assert!(sink.write_chunk(b"de").is_err());
+            }
+            assert!(!oversized.exists(), "failed downloads must be removed");
+
+            let mismatch = temp.path().join("mismatch.tar.gz");
+            let mut sink = VerifiedArchiveSink::new(&mismatch, 5).expect("mismatch sink");
+            sink.write_chunk(b"abcde").expect("mismatch bytes");
+            assert!(sink.finish(&"00".repeat(32)).is_err());
+            assert!(!mismatch.exists(), "checksum mismatches must be removed");
+
+            let verified = temp.path().join("verified.tar.gz");
+            let mut sink = VerifiedArchiveSink::new(&verified, 5).expect("verified sink");
+            sink.write_chunk(b"ab").expect("verified chunk 1");
+            sink.write_chunk(b"cde").expect("verified chunk 2");
+            let expected = hex_lower(&Sha256::digest(b"abcde"));
+            sink.finish(&expected).expect("verified download");
+            assert_eq!(fs::read(&verified).expect("verified bytes"), b"abcde");
+            assert_eq!(
+                fs::metadata(&verified)
+                    .expect("verified metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_installer_ignores_poisoned_path_tools_and_never_calls_npm() {
+            for forbidden in ["curl", "shasum", "sha256sum", "tar -", "npm"] {
+                assert!(
+                    !MANAGED_HERMES_INSTALL_SCRIPT.contains(forbidden),
+                    "installer shell must not contain {forbidden}"
+                );
+            }
+            assert!(MANAGED_HERMES_INSTALL_SCRIPT.contains("uv_cmd\" sync --extra all --locked"));
+            let command = managed_installer_command(
+                Path::new("/private/runtime"),
+                Path::new("/private/runtime/hermes-agent"),
+                Path::new("/private/home"),
+                Path::new("/private/bootstrap/uv"),
+            );
+            let envs: HashMap<String, Option<String>> = command
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.map(|value| value.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+            assert_eq!(envs.get("PATH"), Some(&Some("/usr/bin:/bin".to_string())));
+            assert_eq!(command.get_program(), "/bin/bash");
         }
 
         #[test]
@@ -13318,6 +14167,270 @@ mod tests {
             assert_eq!(
                 envs.get("PYTHONDONTWRITEBYTECODE").map(String::as_str),
                 Some("1")
+            );
+        }
+
+        #[test]
+        fn python_isolation_scrubs_import_controls_and_sets_safe_defaults() {
+            let mut command = Command::new("python3");
+            for name in [
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "PYTHONSTARTUP",
+                "PYTHONINSPECT",
+                "PYTHONWARNINGS",
+                "PYTHONBREAKPOINT",
+                "PYTHONPLATLIBDIR",
+                "PYTHONEXECUTABLE",
+                "__PYVENV_LAUNCHER__",
+            ] {
+                command.env(name, "attacker-controlled");
+            }
+
+            apply_isolated_hermes_env(
+                &mut command,
+                Path::new("/tmp/hermes-home"),
+                "bearer-secret",
+                None,
+            );
+            let envs: HashMap<String, Option<String>> = command
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.map(|value| value.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+
+            for name in [
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "PYTHONUSERBASE",
+                "PYTHONSTARTUP",
+                "PYTHONINSPECT",
+                "PYTHONWARNINGS",
+                "PYTHONBREAKPOINT",
+                "PYTHONPLATLIBDIR",
+                "PYTHONEXECUTABLE",
+                "__PYVENV_LAUNCHER__",
+            ] {
+                assert_eq!(envs.get(name), Some(&None), "{name} must be removed");
+            }
+            assert_eq!(envs.get("PYTHONNOUSERSITE"), Some(&Some("1".to_string())));
+            assert_eq!(envs.get("PYTHONSAFEPATH"), Some(&Some("1".to_string())));
+        }
+
+        #[test]
+        fn python_isolation_prefixes_hermes_and_mcp_entrypoints_exactly() {
+            let python = PythonInvocation::isolated("/trusted/python3.11");
+            assert_eq!(python.program, "/trusted/python3.11");
+            assert_eq!(python.prefix_args, ["-I", "-S", "-B"]);
+            let hermes = python.hermes_args(["dashboard", "--no-open"]);
+            assert_eq!(&hermes[..4], ["-I", "-S", "-B", "-c"]);
+            assert_eq!(hermes[4], HERMES_PYTHON_BOOTSTRAP);
+            assert_eq!(&hermes[5..], ["dashboard", "--no-open"]);
+            assert_eq!(
+                python.script_args(Path::new("/trusted/june_web_mcp.py"), ["http://127.0.0.1"]),
+                [
+                    "-I",
+                    "-S",
+                    "-B",
+                    "/trusted/june_web_mcp.py",
+                    "http://127.0.0.1"
+                ]
+            );
+        }
+
+        #[test]
+        fn isolated_python_blocks_poisoned_startup_for_hermes_and_every_first_party_mcp() {
+            let temp = tempfile::tempdir().expect("python isolation tempdir");
+            let venv = temp.path().join("venv");
+            let venv_result = std::process::Command::new(default_python_command())
+                .args(["-m", "venv", "--copies"])
+                .arg(&venv)
+                .output()
+                .expect("create disposable venv");
+            assert!(
+                venv_result.status.success(),
+                "create disposable venv: {}",
+                String::from_utf8_lossy(&venv_result.stderr)
+            );
+            let venv_python = if cfg!(target_os = "windows") {
+                venv.join("Scripts").join("python.exe")
+            } else {
+                venv.join("bin").join("python")
+            };
+            let site_output = std::process::Command::new(&venv_python)
+                .args([
+                    "-I",
+                    "-c",
+                    "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+                ])
+                .output()
+                .expect("resolve disposable site-packages");
+            assert!(site_output.status.success());
+            let site_packages = PathBuf::from(
+                String::from_utf8(site_output.stdout)
+                    .expect("UTF-8 site-packages")
+                    .trim(),
+            );
+            let hermes_package = site_packages.join("hermes_cli");
+            fs::create_dir_all(&hermes_package).expect("fake Hermes package");
+            fs::write(hermes_package.join("__init__.py"), "").expect("fake Hermes init");
+            fs::write(
+                hermes_package.join("main.py"),
+                "import json, os, pathlib\npathlib.Path(os.environ['JUNE_ISOLATION_SUCCESS']).write_text(json.dumps({'ok': True}))\n",
+            )
+            .expect("fake Hermes module");
+            let runtime_hook_bearer = temp.path().join("runtime-hook-bearer");
+            fs::write(
+                site_packages.join("june_runtime_hook.pth"),
+                "import os,pathlib; _target=os.environ.get('JUNE_RUNTIME_HOOK_BEARER'); pathlib.Path(_target).write_text(os.environ.get('HERMES_DASHBOARD_SESSION_TOKEN','missing')) if _target else None\n",
+            )
+            .expect("authenticated runtime site hook");
+
+            let poison_dir = temp.path().join("pythonpath-poison");
+            fs::create_dir_all(poison_dir.join("hermes_cli")).expect("poison package");
+            let poison_sentinel = temp.path().join("startup-hook-ran");
+            let bearer_sentinel = temp.path().join("startup-hook-bearer");
+            let poison_hook = format!(
+                "import os, pathlib\npathlib.Path({sentinel:?}).write_text('ran')\npathlib.Path({bearer:?}).write_text(os.environ.get('HERMES_DASHBOARD_SESSION_TOKEN', 'missing'))\n",
+                sentinel = poison_sentinel.to_string_lossy(),
+                bearer = bearer_sentinel.to_string_lossy(),
+            );
+            fs::write(poison_dir.join("sitecustomize.py"), &poison_hook)
+                .expect("poison sitecustomize");
+            fs::write(
+                poison_dir.join("hermes_cli").join("__init__.py"),
+                &poison_hook,
+            )
+            .expect("poison shadow module");
+
+            let user_base = temp.path().join("user-base");
+            let user_site_output = std::process::Command::new(&venv_python)
+                .env("PYTHONUSERBASE", &user_base)
+                .args(["-c", "import site; print(site.getusersitepackages())"])
+                .output()
+                .expect("resolve poisoned user site");
+            assert!(user_site_output.status.success());
+            let user_site = PathBuf::from(
+                String::from_utf8(user_site_output.stdout)
+                    .expect("UTF-8 user site")
+                    .trim(),
+            );
+            fs::create_dir_all(&user_site).expect("poisoned user site");
+            fs::write(
+                user_site.join("june_poison.pth"),
+                format!(
+                    "import pathlib; pathlib.Path({:?}).write_text('pth-ran')\n",
+                    poison_sentinel.to_string_lossy()
+                ),
+            )
+            .expect("poisoned user-site pth");
+
+            let hermes_success = temp.path().join("hermes-success");
+            let python = PythonInvocation::isolated(venv_python.to_string_lossy());
+            let mut hermes = std::process::Command::new(&python.program);
+            hermes.args(python.hermes_args(std::iter::empty::<&str>()));
+            hermes.env("JUNE_RUNTIME_HOOK_BEARER", &runtime_hook_bearer);
+            poison_python_environment(
+                &mut hermes,
+                &poison_dir,
+                &user_base,
+                temp.path(),
+                &hermes_success,
+            );
+            let hermes_output = hermes.output().expect("run isolated fake Hermes");
+            assert!(
+                hermes_output.status.success(),
+                "isolated Hermes failed: {}",
+                String::from_utf8_lossy(&hermes_output.stderr)
+            );
+            assert!(hermes_success.is_file(), "required Hermes import must work");
+            assert_eq!(
+                fs::read_to_string(&runtime_hook_bearer).expect("runtime hook result"),
+                "missing",
+                "authenticated startup hooks must run before the bearer is restored"
+            );
+
+            let scripts = [
+                (JUNE_CONTEXT_MCP_SCRIPT_NAME, JUNE_CONTEXT_MCP_SCRIPT),
+                (JUNE_WEB_MCP_SCRIPT_NAME, JUNE_WEB_MCP_SCRIPT),
+                (JUNE_IMAGE_MCP_SCRIPT_NAME, JUNE_IMAGE_MCP_SCRIPT),
+                (JUNE_VIDEO_MCP_SCRIPT_NAME, JUNE_VIDEO_MCP_SCRIPT),
+                (JUNE_RECORDER_MCP_SCRIPT_NAME, JUNE_RECORDER_MCP_SCRIPT),
+                (JUNE_GITHUB_MCP_SCRIPT_NAME, JUNE_GITHUB_MCP_SCRIPT),
+                (JUNE_GMAIL_MCP_SCRIPT_NAME, JUNE_GMAIL_MCP_SCRIPT),
+                (
+                    JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME,
+                    JUNE_GMAIL_ACTIONS_MCP_SCRIPT,
+                ),
+                (JUNE_GCAL_MCP_SCRIPT_NAME, JUNE_GCAL_MCP_SCRIPT),
+                (
+                    JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME,
+                    JUNE_GCAL_ACTIONS_MCP_SCRIPT,
+                ),
+            ];
+            for (name, source) in scripts {
+                let script_path = temp.path().join(name);
+                fs::write(&script_path, source).expect("write first-party MCP script");
+                let success = temp.path().join(format!("{name}.success"));
+                let mut command = std::process::Command::new(&python.program);
+                command
+                    .args(&python.prefix_args)
+                    .args([
+                        "-c",
+                        "import pathlib, runpy, sys; runpy.run_path(sys.argv[1], run_name='june_import_test'); pathlib.Path(sys.argv[2]).write_text('ok')",
+                    ])
+                    .arg(&script_path)
+                    .arg(&success);
+                poison_python_environment(
+                    &mut command,
+                    &poison_dir,
+                    &user_base,
+                    temp.path(),
+                    &success,
+                );
+                let output = command.output().expect("import first-party MCP script");
+                assert!(
+                    output.status.success(),
+                    "isolated import failed for {name}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(success.is_file(), "required imports failed for {name}");
+                assert_eq!(
+                    &python.script_args(&script_path, std::iter::empty::<&str>())[..4],
+                    &["-I", "-S", "-B", script_path.to_string_lossy().as_ref()],
+                    "{name} must use the isolated script invocation"
+                );
+            }
+            assert!(!poison_sentinel.exists(), "startup poison executed");
+            assert!(
+                !bearer_sentinel.exists(),
+                "startup hook observed bearer token"
+            );
+        }
+
+        fn poison_python_environment(
+            command: &mut std::process::Command,
+            poison_dir: &Path,
+            user_base: &Path,
+            home: &Path,
+            success: &Path,
+        ) {
+            command
+                .env("PYTHONPATH", poison_dir)
+                .env("PYTHONHOME", home.join("invalid-python-home"))
+                .env("PYTHONUSERBASE", user_base)
+                .env("HOME", home)
+                .env("JUNE_ISOLATION_SUCCESS", success);
+            apply_isolated_hermes_env(
+                command,
+                &home.join("hermes-home"),
+                "bearer-secret-must-not-leak",
+                None,
             );
         }
     }
@@ -13863,10 +14976,14 @@ mod tests {
 
     fn test_june_context_mcp_config() -> JuneContextMcpConfig {
         JuneContextMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_context_mcp.py"),
             database_path: PathBuf::from("/tmp/june/notes.sqlite3"),
         }
+    }
+
+    fn test_python_invocation() -> PythonInvocation {
+        PythonInvocation::isolated("/tmp/hermes/venv/bin/python")
     }
 
     #[test]
@@ -15646,14 +16763,14 @@ mcp_servers:
 
     fn test_june_web_mcp_config() -> JuneWebMcpConfig {
         JuneWebMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_web_mcp.py"),
         }
     }
 
     fn test_june_image_mcp_config() -> JuneImageMcpConfig {
         JuneImageMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_image_mcp.py"),
             images_dir: PathBuf::from("/tmp/hermes-home/images"),
         }
@@ -15661,7 +16778,7 @@ mcp_servers:
 
     fn test_june_video_mcp_config() -> JuneVideoMcpConfig {
         JuneVideoMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_video_mcp.py"),
             videos_dir: PathBuf::from("/tmp/hermes-home/videos"),
         }
@@ -15669,14 +16786,14 @@ mcp_servers:
 
     fn test_june_recorder_mcp_config() -> JuneRecorderMcpConfig {
         JuneRecorderMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_recorder_mcp.py"),
         }
     }
 
     fn test_june_connector_mcp_config(script: &str) -> JuneConnectorMcpConfig {
         JuneConnectorMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from(format!("/tmp/june/hermes-mcp/{script}")),
             account_email: "user@example.com".to_string(),
         }
@@ -15684,9 +16801,97 @@ mcp_servers:
 
     fn test_june_github_mcp_config() -> JuneGitHubMcpConfig {
         JuneGitHubMcpConfig {
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_github_mcp.py"),
         }
+    }
+
+    #[test]
+    fn every_rendered_first_party_mcp_uses_the_isolated_interpreter_prefix() {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let video = test_june_video_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
+        let gmail = test_june_connector_mcp_config(JUNE_GMAIL_MCP_SCRIPT_NAME);
+        let gmail_actions = test_june_connector_mcp_config(JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME);
+        let gcal = test_june_connector_mcp_config(JUNE_GCAL_MCP_SCRIPT_NAME);
+        let gcal_actions = test_june_connector_mcp_config(JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME);
+        let github = test_june_github_mcp_config();
+        let auto = ConnectorAutoMcpConfig {
+            server_name: "june_gmail_auto_test".to_string(),
+            python: test_python_invocation(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_gmail_actions_mcp.py"),
+            account_email: "user@example.com".to_string(),
+            grant_token: "grant".to_string(),
+            tools: vec!["send_email".to_string()],
+        };
+        let yaml = render_mcp_servers_config(
+            BuiltinMcpConfigs {
+                context: Some(&context),
+                web: Some(&web),
+                image: Some(&image),
+                video: Some(&video),
+                recorder: Some(&recorder),
+                gmail: Some(&gmail),
+                gmail_actions: Some(&gmail_actions),
+                gcal: Some(&gcal),
+                gcal_actions: Some(&gcal_actions),
+                github: Some(&github),
+                connector_autos: &[auto],
+            },
+            "http://127.0.0.1:4242/v1",
+            "provider",
+            "recorder",
+            "connector",
+            "github",
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("MCP YAML");
+        let servers = parsed["mcp_servers"].as_mapping().expect("MCP server map");
+        assert_eq!(servers.len(), 11);
+        for (name, config) in servers {
+            let args = config["args"].as_sequence().expect("MCP args");
+            assert_eq!(args[0].as_str(), Some("-I"), "{name:?}");
+            assert_eq!(args[1].as_str(), Some("-S"), "{name:?}");
+            assert_eq!(args[2].as_str(), Some("-B"), "{name:?}");
+            assert_eq!(
+                config["command"].as_str(),
+                Some("/tmp/hermes/venv/bin/python"),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_config_is_rerendered_without_github() {
+        let mut context = test_june_context_mcp_config();
+        context.python = PythonInvocation::isolated("/home/user/.hermes/venv/bin/python");
+        let yaml = render_mcp_servers_config(
+            BuiltinMcpConfigs {
+                context: Some(&context),
+                web: None,
+                image: None,
+                video: None,
+                recorder: None,
+                gmail: None,
+                gmail_actions: None,
+                gcal: None,
+                gcal_actions: None,
+                github: None,
+                connector_autos: &[],
+            },
+            "http://127.0.0.1:4242/v1",
+            "provider",
+            "recorder",
+            "connector",
+            "github",
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("fallback MCP YAML");
+        assert_eq!(
+            parsed["mcp_servers"][JUNE_CONTEXT_MCP_SERVER_NAME]["command"].as_str(),
+            Some("/home/user/.hermes/venv/bin/python")
+        );
+        assert!(!yaml.contains("june_github:"));
     }
 
     #[derive(Clone)]
@@ -15894,7 +17099,7 @@ mcp_servers:
             github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
         let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
         let eligible = sync_june_github_mcp_with_dependencies(
-            "/tmp/hermes/bin/hermes",
+            &test_python_invocation(),
             Ok(valid_github_app_config()),
             &TestGitHubTokenVault::present(),
             &repositories,
@@ -15910,7 +17115,7 @@ mcp_servers:
 
         let invalid_config_dir = tempfile::tempdir().expect("invalid config tempdir");
         let error = sync_june_github_mcp_with_dependencies(
-            "/tmp/hermes/bin/hermes",
+            &test_python_invocation(),
             Err(AppError::new(
                 "github_not_configured",
                 "GitHub is not configured for this build.",
@@ -15955,7 +17160,7 @@ mcp_servers:
                 github_registration_repositories(status, permissions, selected_repository).await;
             let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
             let error = sync_june_github_mcp_with_dependencies(
-                "/tmp/hermes/bin/hermes",
+                &test_python_invocation(),
                 Ok(valid_github_app_config()),
                 &TestGitHubTokenVault::present(),
                 &repositories,
@@ -15981,7 +17186,7 @@ mcp_servers:
         ] {
             let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
             let error = sync_june_github_mcp_with_dependencies(
-                "/tmp/hermes/bin/hermes",
+                &test_python_invocation(),
                 Ok(valid_github_app_config()),
                 &vault,
                 &repositories,
@@ -16004,6 +17209,9 @@ mcp_servers:
         assert_eq!(
             github["args"],
             serde_yaml::to_value([
+                "-I",
+                "-S",
+                "-B",
                 "/tmp/june/hermes-mcp/june_github_mcp.py",
                 "http://127.0.0.1:4242/v1",
             ])
@@ -16085,7 +17293,7 @@ mcp_servers:
             github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
         let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
         let registration = sync_june_github_mcp_with_dependencies(
-            "/tmp/hermes/bin/hermes",
+            &test_python_invocation(),
             Ok(valid_github_app_config()),
             &TestGitHubTokenVault::present(),
             &repositories,
@@ -16210,7 +17418,7 @@ mcp_servers:
             github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
         let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
         let failed_registration = sync_june_github_mcp_with_dependencies(
-            "/tmp/hermes/bin/hermes",
+            &test_python_invocation(),
             Ok(valid_github_app_config()),
             &TestGitHubTokenVault::storage_error(),
             &repositories,
@@ -16269,7 +17477,7 @@ mcp_servers:
         let gcal_actions = test_june_connector_mcp_config("june_gcal_actions_mcp.py");
         let autos = vec![ConnectorAutoMcpConfig {
             server_name: "june_gmail_auto_ab12cd34".to_string(),
-            command: "/tmp/hermes/venv/bin/python".to_string(),
+            python: test_python_invocation(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_gmail_actions_mcp.py"),
             account_email: "user@example.com".to_string(),
             grant_token: "grant-secret-tok".to_string(),
@@ -16908,7 +18116,7 @@ mcp_servers:
             // allowlist: routines reach it only via explicit enabled_toolsets.
             autos: vec![ConnectorAutoMcpConfig {
                 server_name: "june_gmail_auto_ab12cd34".to_string(),
-                command: "/tmp/hermes/venv/bin/python".to_string(),
+                python: test_python_invocation(),
                 script_path: PathBuf::from("/tmp/june/hermes-mcp/june_gmail_actions_mcp.py"),
                 account_email: "user@example.com".to_string(),
                 grant_token: "grant-secret-tok".to_string(),
