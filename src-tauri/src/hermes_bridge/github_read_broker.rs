@@ -37,6 +37,11 @@ enum FrameError {
     Json(#[from] serde_json::Error),
 }
 
+enum FrameDisposition {
+    Continue,
+    Close,
+}
+
 pub(super) struct PublicErrorResponse {
     pub(super) status: u16,
     pub(super) body: serde_json::Value,
@@ -243,28 +248,39 @@ async fn serve_admitted_connection(
             }
             frame = tokio::time::timeout(
                 request_deadline,
-                serve_request_frame(&mut stream, executor.clone()),
+                serve_bounded_frame(&mut stream, executor.clone()),
             ) => {
                 match frame {
                     Err(_) | Ok(Err(FrameError::Closed)) => return Ok(()),
-                    Ok(Err(FrameError::TooLarge | FrameError::Malformed)) => {
-                        write_frame(
-                            &mut stream,
-                            public_error(
-                                AppError::new(
-                                    "github_input_invalid",
-                                    "GitHub input is invalid.",
-                                ),
-                                false,
-                            ).body,
-                        ).await?;
-                        return Ok(());
-                    }
                     Ok(Err(error)) => return Err(error),
-                    Ok(Ok(())) => {}
+                    Ok(Ok(FrameDisposition::Close)) => return Ok(()),
+                    Ok(Ok(FrameDisposition::Continue)) => {}
                 }
             }
         }
+    }
+}
+
+#[cfg(unix)]
+async fn serve_bounded_frame(
+    stream: &mut UnixStream,
+    executor: RequestExecutor,
+) -> Result<FrameDisposition, FrameError> {
+    match serve_request_frame(stream, executor).await {
+        Ok(()) => Ok(FrameDisposition::Continue),
+        Err(FrameError::TooLarge | FrameError::Malformed) => {
+            write_frame(
+                stream,
+                public_error(
+                    AppError::new("github_input_invalid", "GitHub input is invalid."),
+                    false,
+                )
+                .body,
+            )
+            .await?;
+            Ok(FrameDisposition::Close)
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -406,6 +422,53 @@ mod tests {
         assert_eq!(response, input_invalid_response());
         assert!(seen.lock().expect("seen").is_empty());
         task.await.expect("serve task").expect("serve result");
+    }
+
+    #[tokio::test]
+    async fn github_read_broker_bounds_frame_error_response_writes_by_deadline() {
+        let (mut server, client) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        server
+            .set_nonblocking(true)
+            .expect("set server nonblocking");
+        client
+            .set_nonblocking(true)
+            .expect("set client nonblocking");
+
+        let fill = [0_u8; 8 * 1024];
+        loop {
+            match std::io::Write::write(&mut server, &fill) {
+                Ok(0) => panic!("socket send buffer stopped accepting bytes without blocking"),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => panic!("fill socket send buffer: {error}"),
+            }
+        }
+
+        let server = tokio::net::UnixStream::from_std(server).expect("async server stream");
+        let mut client = tokio::net::UnixStream::from_std(client).expect("async client stream");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut task = tokio::spawn(serve_admitted_connection(
+            server,
+            recording_executor(seen.clone(), serde_json::json!({"success": true})),
+            watch::channel(active_state()).1,
+            Duration::from_millis(25),
+        ));
+
+        client
+            .write_all(&((MAX_REQUEST_BYTES + 1) as u32).to_be_bytes())
+            .await
+            .expect("write oversized prefix");
+        let serve_result = match tokio::time::timeout(Duration::from_millis(250), &mut task).await {
+            Ok(result) => result,
+            Err(_) => {
+                task.abort();
+                panic!("frame error response write exceeded the request deadline");
+            }
+        };
+
+        serve_result.expect("serve task").expect("serve result");
+        assert!(seen.lock().expect("seen").is_empty());
     }
 
     #[test]
