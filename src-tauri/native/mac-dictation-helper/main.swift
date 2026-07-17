@@ -1656,7 +1656,7 @@ final class DictationController {
     /// sees the mismatch and does nothing.
     private var dictationStartGeneration = 0
 
-    func start(playCue: Bool) {
+    func start() {
         if startPending {
             return
         }
@@ -1693,16 +1693,10 @@ final class DictationController {
                     self.startPending = false
                     self.startRecording(purpose: .dictation, durationSeconds: nil)
                 }
-                if playCue {
-                    // Toggle dictation has no key-up timing contract, so its
-                    // cue can finish before capture starts without entering
-                    // the recording. Push-to-talk skips this cue and calls
-                    // beginRecording immediately so the down edge remains
-                    // the start of capture.
-                    RecordingCuePlayer.play(.start, completion: beginRecording)
-                } else {
-                    beginRecording()
-                }
+                // The cue defines the start-speaking boundary and finishes
+                // before capture begins, keeping June's own sound out of the
+                // recording while providing feedback for every start mode.
+                RecordingCuePlayer.play(.start, completion: beginRecording)
             }
         }
     }
@@ -1733,7 +1727,7 @@ final class DictationController {
             stop()
         } else if !isFinalizing {
             emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
-            start(playCue: true)
+            start()
         }
     }
 
@@ -2409,7 +2403,7 @@ func handleCommandLine(_ line: String) {
         }
     case "start_listening":
         runOnMain {
-            dictation.start(playCue: false)
+            dictation.start()
         }
     case "stop_and_paste":
         runOnMain {
