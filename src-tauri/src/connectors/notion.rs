@@ -40,6 +40,7 @@ const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+const MCP_ACTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const TOKEN_EXPIRY_BUFFER_SECS: i64 = 60;
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_RESPONSE_MAX_BYTES: usize = 512 * 1024;
@@ -527,7 +528,17 @@ pub async fn call_hosted_action_tool(
     {
         return Err(AppError::new("connector_action_denied", reason));
     }
-    call_hosted_tool_unchecked(app, tool_name, request.arguments).await
+    tokio::time::timeout(
+        MCP_ACTION_REQUEST_TIMEOUT,
+        call_hosted_tool_unchecked(app, tool_name, request.arguments),
+    )
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "notion_mcp_action_timeout",
+            "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
+        )
+    })?
 }
 
 async fn call_hosted_tool_unchecked(
@@ -1326,10 +1337,13 @@ fn preview_create_pages_action(arguments: &serde_json::Value) -> String {
         .unwrap_or_else(|| "(title not specified)".to_string());
     let parent = create_pages_parent(arguments).unwrap_or_else(|| "Not specified".to_string());
     let count = create_pages_count(arguments).unwrap_or(1);
+    let payload =
+        summarize_create_payload(arguments).unwrap_or_else(|| "Not specified".to_string());
     format!(
-        "Operation: create Notion page | Pages: {count} | Title: {} | Parent: {}",
+        "Operation: create Notion page | Pages: {count} | Title: {} | Parent: {} | Content: {}",
         truncate_approval_value(&title),
-        truncate_approval_value(&parent)
+        truncate_approval_value(&parent),
+        truncate_approval_value(&payload)
     )
 }
 
@@ -1341,11 +1355,13 @@ fn preview_update_page_action(arguments: &serde_json::Value) -> String {
     let target = update_page_target(arguments).unwrap_or_else(|| "Unknown".to_string());
     let title = update_page_title(arguments).unwrap_or_else(|| "Not specified".to_string());
     let changes = summarize_update_change_keys(arguments);
+    let values = summarize_update_values(arguments).unwrap_or_else(|| "Not specified".to_string());
     format!(
-        "Operation: update Notion page | Target: {} | Title: {} | Changes: {}",
+        "Operation: update Notion page | Target: {} | Title: {} | Changes: {} | Values: {}",
         truncate_approval_value(&target),
         truncate_approval_value(&title),
-        truncate_approval_value(&changes)
+        truncate_approval_value(&changes),
+        truncate_approval_value(&values)
     )
 }
 
@@ -1363,6 +1379,79 @@ fn summarize_update_change_keys(arguments: &serde_json::Value) -> String {
         "None".to_string()
     } else {
         keys.join(", ")
+    }
+}
+
+fn summarize_create_payload(arguments: &serde_json::Value) -> Option<String> {
+    let pages = arguments
+        .get("pages")
+        .and_then(serde_json::Value::as_array)
+        .filter(|pages| !pages.is_empty());
+    let source = pages.and_then(|pages| pages.first()).unwrap_or(arguments);
+    summarize_payload_fields(
+        source,
+        &["properties", "content", "children", "body", "markdown"],
+    )
+}
+
+fn summarize_update_values(arguments: &serde_json::Value) -> Option<String> {
+    summarize_payload_fields(
+        arguments,
+        &[
+            "properties",
+            "content",
+            "children",
+            "body",
+            "markdown",
+            "title",
+            "name",
+        ],
+    )
+}
+
+fn summarize_payload_fields(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let object = value.as_object()?;
+    let mut parts = Vec::new();
+    for key in keys {
+        let Some(field_value) = object
+            .get(*key)
+            .filter(|field_value| !field_value.is_null())
+        else {
+            continue;
+        };
+        parts.push(format!("{key}: {}", summarize_approval_json(field_value)));
+        if parts.len() >= 3 {
+            break;
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
+fn summarize_approval_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.split_whitespace().collect::<Vec<_>>().join(" "),
+        serde_json::Value::Number(_) | serde_json::Value::Bool(_) => value.to_string(),
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Array(items) => {
+            let mut rendered = Vec::new();
+            for item in items.iter().take(3) {
+                rendered.push(summarize_approval_json(item));
+            }
+            let suffix = if items.len() > 3 { ", ..." } else { "" };
+            format!("[{}{}]", rendered.join(", "), suffix)
+        }
+        serde_json::Value::Object(map) => {
+            let mut rendered = Vec::new();
+            for (key, child) in map.iter().take(5) {
+                rendered.push(format!("{key}: {}", summarize_approval_json(child)));
+            }
+            let suffix = if map.len() > 5 { ", ..." } else { "" };
+            format!("{{{}{} }}", rendered.join(", "), suffix)
+        }
     }
 }
 
@@ -1925,6 +2014,39 @@ mod tests {
         });
 
         assert!(preview_create_pages_action(&arguments).contains("Parent: page-123"));
+    }
+
+    #[test]
+    fn create_pages_preview_shows_bounded_content() {
+        let arguments = serde_json::json!({
+            "pages": [{
+                "title": "Decision log",
+                "parent": { "page_id": "page-123" },
+                "properties": { "Status": "Draft" },
+                "content": "Publish the Q3 decision summary"
+            }]
+        });
+
+        let preview = preview_create_pages_action(&arguments);
+        assert!(preview.contains("Content: properties:"));
+        assert!(preview.contains("Status"));
+        assert!(preview.contains("Publish the Q3 decision summary"));
+    }
+
+    #[test]
+    fn update_page_preview_shows_bounded_values() {
+        let arguments = serde_json::json!({
+            "page_id": "page-123",
+            "title": "Decision log",
+            "properties": { "Status": "Approved" },
+            "content": "Update with approved launch notes"
+        });
+
+        let preview = preview_update_page_action(&arguments);
+        assert!(preview.contains("Changes: content, properties, title"));
+        assert!(preview.contains("Values: properties:"));
+        assert!(preview.contains("Approved"));
+        assert!(preview.contains("Update with approved launch notes"));
     }
 
     #[test]

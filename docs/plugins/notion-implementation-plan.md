@@ -40,7 +40,10 @@ chain:
 
 This reported result supports transport/auth viability only. It does not prove
 June can safely claim that Notion access is limited to user-selected pages. The
-reported transport result remains provisional until the prototype source or
+hosted `notion-search` surface is also provider-defined and may include sources
+connected to the user's Notion workspace when that workspace enables them, so the
+preview copy must disclose that June is not exposing a page-only search index.
+The reported transport result remains provisional until the prototype source or
 complete JSON evidence with secrets and private identifiers/content redacted is
 recovered.
 
@@ -232,10 +235,12 @@ implementation slice so users and reviewers can see the intended account path.
   copy may graduate from preview language to the proven privacy claim.
 - **Connecting:** show a waiting state while the browser flow is active.
 - **Connected preview:** show that Notion is connected locally for hosted MCP
-  auth, with unverified-access copy. Apply the runtime so Hermes can discover
-  the read-only `june_notion` bridge and the approved-create
-  `june_notion_actions` bridge. Do not show workspace/account content or a
-  selected-resource privacy claim in this slice.
+  auth, with unverified-access copy. The copy must also disclose that hosted
+  Notion search may include Notion-connected sources when the user's workspace
+  enables them. Apply the runtime so Hermes can discover the read-only
+  `june_notion` bridge and the approved-create `june_notion_actions` bridge. Do
+  not show workspace/account content or a selected-resource privacy claim in
+  this slice.
 - **Connected verified:** show workspace/account metadata and the exact
   selected-resource privacy claim proven by Phase 0B. Under the current content
   PRD, this state is not reachable for broad workspace access.

@@ -183,3 +183,18 @@ privacy posture: selected-resource scoping remains unverified, the caveat stays
 visible in connector guidance, and the same Rust preflight, exact top-level
 `page_id` target display, and immutable approved-request boundary apply to a
 routine action. Autonomous publishing remains out of scope.
+
+## Addendum: Notion search disclosure
+
+The hosted MCP preview keeps the provider's `notion-search` tool available so
+users can find pages before fetching or updating them. This is a provider-hosted
+search surface, not a June-enforced page-only index. If the user's Notion
+workspace has Notion-connected sources enabled, search results may include those
+connected sources in addition to Notion pages.
+
+Because June does not verify or narrow that search boundary in this preview,
+settings copy and SOUL connector guidance must disclose that Notion search may
+include Notion-connected sources. This disclosure is required alongside the
+existing selected-resource caveat until June either proves the provider boundary,
+adds a Rust-enforced filter before Hermes receives results, or replaces hosted
+search with a narrower page-only search path.

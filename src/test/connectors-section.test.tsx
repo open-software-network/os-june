@@ -139,8 +139,8 @@ describe("ConnectorsSection", () => {
     expect(screen.getByText("Notion")).toBeInTheDocument();
     expect(screen.getByText("Preview")).toBeInTheDocument();
     expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
+    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
     expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();
-    expect(screen.getByText(/Notion may allow access beyond selected pages/i)).toBeInTheDocument();
 
     await userEvent.click(connect);
 
@@ -165,6 +165,7 @@ describe("ConnectorsSection", () => {
 
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
+    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
     expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();
 
     mocks.connectorsList.mockResolvedValue([]);

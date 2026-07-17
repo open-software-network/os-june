@@ -58,13 +58,13 @@ const PROVIDER_BLURBS = {
 } satisfies Record<OAuthConnectorProvider, string>;
 
 const NOTION_CONNECTOR_BLURB =
-  "Hosted preview. Search and read Notion content. Create and update pages with approval. Notion may allow access beyond selected pages.";
+  "Search and read Notion content. Search may include Notion-connected sources. Create and update pages with approval.";
 
 const NOTION_CONNECTED_BLURB =
-  "Search and read Notion content. Create and update pages with approval. Notion may allow access beyond selected pages.";
+  "Search and read Notion content. Search may include Notion-connected sources. Create and update pages with approval. Notion may allow access beyond selected pages.";
 
 const NOTION_RECONNECT_BLURB =
-  "Reconnect Notion to restore search, read, and approved page actions.";
+  "Reconnect Notion to restore search, read, and approved page actions. Search may include Notion-connected sources.";
 
 type NotionConnectorRowProps = {
   account: ConnectorAccount | null;

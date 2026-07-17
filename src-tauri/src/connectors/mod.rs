@@ -650,7 +650,9 @@ pub async fn list_accounts_resilient(
     let records = repos.list_connector_accounts().await?;
     let mut accounts = Vec::with_capacity(records.len() + 1);
     for record in records {
-        accounts.push(account_dto(&repos, record).await?);
+        if record.provider != ConnectorProvider::Notion.as_str() {
+            accounts.push(account_dto(&repos, record).await?);
+        }
     }
     append_notion_account(&mut accounts, notion::account_status(app).await, true)?;
     Ok(accounts)
