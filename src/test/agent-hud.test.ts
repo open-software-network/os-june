@@ -61,6 +61,24 @@ describe("agent HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
   });
 
+  it("fits the native window to the visible HUD surface", async () => {
+    const surface = surfaceElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, width: 112, height: 32 },
+    });
+  });
+
   it("shortens the collapsed label when multiple agents are running", async () => {
     await loadAgentHud();
 
@@ -850,6 +868,12 @@ function stackElement() {
   const stack = document.querySelector<HTMLElement>("#agent-hud-stack");
   expect(stack).toBeTruthy();
   return stack as HTMLElement;
+}
+
+function surfaceElement() {
+  const surface = document.querySelector<HTMLElement>(".agent-hud-surface");
+  expect(surface).toBeTruthy();
+  return surface as HTMLElement;
 }
 
 function menuElement() {

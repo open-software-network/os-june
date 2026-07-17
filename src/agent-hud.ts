@@ -760,7 +760,8 @@ function statusSubject(record: StatusRecord) {
 async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {
   const menuOpen = state.menuOpen;
   const visible = state.enabled && hasEntries;
-  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}`;
+  const bounds = visibleHudBounds();
+  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}:${bounds.width ?? 0}:${bounds.height ?? 0}`;
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
   if (!visible) {
@@ -770,12 +771,13 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   }
   cancelWindowHide();
   cancelPendingResize();
-  const height = nativeWindowHeight(expanded, rowCount, menuOpen);
+  const height = bounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
   const apply = async () => {
     await agentHudSetLayout({
       expanded,
       cardCount: rowCount,
       ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
+      ...bounds,
     }).catch(() => {});
     if (!windowShown) {
       await agentHudShow().catch(() => {});
@@ -795,6 +797,17 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
     await apply();
   }
   lastWindowHeight = height;
+}
+
+function visibleHudBounds(): { width?: number; height?: number } {
+  if (!surface) return {};
+  const interactiveElements = state.menuOpen && menu ? [surface, menu] : [surface];
+  const width = Math.max(...interactiveElements.map((element) => element.offsetWidth));
+  const height = Math.max(
+    ...interactiveElements.map((element) => element.offsetTop + element.offsetHeight),
+  );
+  if (width <= 0 || height <= 0) return {};
+  return { width: Math.ceil(width), height: Math.ceil(height) };
 }
 
 /* Mirrors agent_hud_window_size in agent_hud.rs, only to tell growth from
