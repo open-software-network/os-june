@@ -110,6 +110,13 @@ describe("NoteEditor", () => {
     expect(printTitle).toHaveAttribute("aria-hidden", "true");
   });
 
+  it("uses the note placeholder for an empty print title", () => {
+    const { container } = render(<NoteEditor {...props} note={note({ title: "" })} />);
+
+    expect(screen.getByLabelText("Note title")).toHaveAttribute("placeholder", "New note");
+    expect(container.querySelector(".note-title-print")).toHaveTextContent("New note");
+  });
+
   it("shows raw transcript in transcription tab", () => {
     render(
       <NoteEditor
