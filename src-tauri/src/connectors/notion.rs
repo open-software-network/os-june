@@ -5,7 +5,10 @@
 //! bridge for Notion page creation. Other write/action tools stay denied;
 //! selected-resource scoping is not verified in this preview. See ADR 0028.
 
-use crate::domain::types::AppError;
+use crate::{
+    connectors::{ConnectorAccountStatus, ConnectorProvider},
+    domain::types::AppError,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -257,10 +260,12 @@ enum RefreshFailureKind {
     Retryable,
 }
 
-pub async fn status() -> Result<NotionConnectionStatus, AppError> {
+pub async fn status(app: &AppHandle) -> Result<NotionConnectionStatus, AppError> {
     let stored = store::load().await?;
+    let health = notion_health(app).await?;
+    let connected = stored.is_some() && health != ConnectorAccountStatus::ReconnectRequired;
     Ok(NotionConnectionStatus {
-        connected: stored.is_some(),
+        connected,
         account_id: NOTION_ACCOUNT_ID.to_string(),
         endpoint: MCP_ENDPOINT.to_string(),
         preview: true,
@@ -279,11 +284,73 @@ pub async fn status() -> Result<NotionConnectionStatus, AppError> {
     })
 }
 
-pub async fn has_connection() -> Result<bool, AppError> {
-    Ok(store::load().await?.is_some())
+pub async fn has_connection(app: &AppHandle) -> Result<bool, AppError> {
+    Ok(status(app).await?.connected)
 }
 
-pub async fn connect(flow: &NotionConnectFlow) -> Result<NotionConnection, AppError> {
+pub async fn account_status(app: &AppHandle) -> Result<Option<ConnectorAccountStatus>, AppError> {
+    if store::load().await?.is_none() {
+        return Ok(None);
+    }
+    notion_health(app).await.map(Some)
+}
+
+async fn notion_health(app: &AppHandle) -> Result<ConnectorAccountStatus, AppError> {
+    let repos = crate::commands::repositories(app).await?;
+    let record = repos.get_connector_account(NOTION_ACCOUNT_ID).await?;
+    Ok(record
+        .filter(|record| record.provider == ConnectorProvider::Notion.as_str())
+        .map(|record| ConnectorAccountStatus::from_db(&record.status))
+        // Existing preview credentials predate the non-secret account index.
+        // Treat them as connected until their next connect or refresh records
+        // an explicit health transition.
+        .unwrap_or(ConnectorAccountStatus::Connected))
+}
+
+async fn record_connected(app: &AppHandle) -> Result<(), AppError> {
+    let repos = crate::commands::repositories(app).await?;
+    repos
+        .upsert_connector_account(
+            NOTION_ACCOUNT_ID,
+            ConnectorProvider::Notion.as_str(),
+            NOTION_ACCOUNT_EMAIL,
+            &[],
+            ConnectorAccountStatus::Connected.as_str(),
+            "{}",
+        )
+        .await?;
+    Ok(())
+}
+
+async fn record_reconnect_required(app: &AppHandle) {
+    match crate::commands::repositories(app).await {
+        Ok(repos) => {
+            if let Err(error) = repos
+                .upsert_connector_account(
+                    NOTION_ACCOUNT_ID,
+                    ConnectorProvider::Notion.as_str(),
+                    NOTION_ACCOUNT_EMAIL,
+                    &[],
+                    ConnectorAccountStatus::ReconnectRequired.as_str(),
+                    "{}",
+                )
+                .await
+            {
+                tracing::warn!(error_code = %AppError::from(error).code, "failed to flag Notion connector for reconnect");
+            } else {
+                crate::connectors::emit_connectors_changed(app);
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error_code = %error.code, "failed to open repositories to flag Notion reconnect")
+        }
+    }
+}
+
+pub async fn connect(
+    app: &AppHandle,
+    flow: &NotionConnectFlow,
+) -> Result<NotionConnection, AppError> {
     let (resource, auth_server) = discover_and_validate().await?;
     let (verifier, challenge) = pkce();
     let csrf = random_b64url(24);
@@ -356,13 +423,17 @@ pub async fn connect(flow: &NotionConnectFlow) -> Result<NotionConnection, AppEr
     {
         let _guard = credential_lifecycle_lock().lock().await;
         store::store(&stored).await?;
+        record_connected(app).await?;
     }
     Ok(connection())
 }
 
-pub async fn disconnect() -> Result<(), AppError> {
+pub async fn disconnect(app: &AppHandle) -> Result<(), AppError> {
     let _guard = credential_lifecycle_lock().lock().await;
-    store::delete().await
+    store::delete().await?;
+    let repos = crate::commands::repositories(app).await?;
+    repos.delete_connector_account(NOTION_ACCOUNT_ID).await?;
+    Ok(())
 }
 
 async fn verify_hosted_mcp_discovery(access_token: &str) -> Result<(), AppError> {
@@ -378,8 +449,8 @@ async fn verify_hosted_mcp_discovery(access_token: &str) -> Result<(), AppError>
     Ok(())
 }
 
-pub async fn list_tools() -> Result<NotionToolInventory, AppError> {
-    let (tools, bytes, session_established) = run_with_fresh_client(|client| async move {
+pub async fn list_tools(app: &AppHandle) -> Result<NotionToolInventory, AppError> {
+    let (tools, bytes, session_established) = run_with_fresh_client(app, |client| async move {
         client.initialize().await?;
         let (tools, bytes) = client.tools_list().await?;
         Ok((tools, bytes, client.session_id().is_some()))
@@ -395,18 +466,19 @@ pub async fn list_tools() -> Result<NotionToolInventory, AppError> {
     })
 }
 
-pub async fn mcp_tool_list() -> Result<NotionMcpToolList, AppError> {
-    filtered_mcp_tool_list(tool_allowed_for_hermes).await
+pub async fn mcp_tool_list(app: &AppHandle) -> Result<NotionMcpToolList, AppError> {
+    filtered_mcp_tool_list(app, tool_allowed_for_hermes).await
 }
 
-pub async fn mcp_action_tool_list() -> Result<NotionMcpToolList, AppError> {
-    filtered_mcp_tool_list(action_tool_allowed_for_hermes).await
+pub async fn mcp_action_tool_list(app: &AppHandle) -> Result<NotionMcpToolList, AppError> {
+    filtered_mcp_tool_list(app, action_tool_allowed_for_hermes).await
 }
 
 async fn filtered_mcp_tool_list(
+    app: &AppHandle,
     allowed: fn(&str) -> Option<&'static str>,
 ) -> Result<NotionMcpToolList, AppError> {
-    let tools = run_with_fresh_client(|client| async move {
+    let tools = run_with_fresh_client(app, |client| async move {
         client.initialize().await?;
         client.hosted_tools_list().await
     })
@@ -417,6 +489,7 @@ async fn filtered_mcp_tool_list(
 }
 
 pub async fn call_hosted_tool(
+    app: &AppHandle,
     request: NotionHostedToolCallRequest,
 ) -> Result<NotionHostedToolCallResult, AppError> {
     let Some(tool_name) = tool_allowed_for_hermes(&request.tool_name) else {
@@ -425,7 +498,7 @@ pub async fn call_hosted_tool(
             "That Notion hosted MCP tool is not enabled in June yet.",
         ));
     };
-    call_hosted_tool_unchecked(tool_name, request.arguments).await
+    call_hosted_tool_unchecked(app, tool_name, request.arguments).await
 }
 
 pub async fn call_hosted_action_tool(
@@ -454,14 +527,15 @@ pub async fn call_hosted_action_tool(
     {
         return Err(AppError::new("connector_action_denied", reason));
     }
-    call_hosted_tool_unchecked(tool_name, request.arguments).await
+    call_hosted_tool_unchecked(app, tool_name, request.arguments).await
 }
 
 async fn call_hosted_tool_unchecked(
+    app: &AppHandle,
     tool_name: &str,
     arguments: serde_json::Value,
 ) -> Result<NotionHostedToolCallResult, AppError> {
-    let result = run_with_fresh_client(|client| {
+    let result = run_with_fresh_client(app, |client| {
         let arguments = arguments.clone();
         async move {
             client.initialize().await?;
@@ -484,21 +558,36 @@ async fn load_connected() -> Result<StoredNotionConnection, AppError> {
     })
 }
 
-async fn load_connected_with_fresh_token() -> Result<StoredNotionConnection, AppError> {
+async fn load_connected_with_fresh_token(
+    app: &AppHandle,
+) -> Result<StoredNotionConnection, AppError> {
+    if notion_health(app).await? == ConnectorAccountStatus::ReconnectRequired {
+        return Err(reconnect_required());
+    }
     let stored = load_connected().await?;
     if !notion_token_expired_at(&stored, now_unix()) {
         return Ok(stored);
     }
-    refresh_connected_token(false).await
+    refresh_connected_token(app, false).await
 }
 
-async fn refresh_connected_token(force: bool) -> Result<StoredNotionConnection, AppError> {
+async fn refresh_connected_token(
+    app: &AppHandle,
+    force: bool,
+) -> Result<StoredNotionConnection, AppError> {
     let _guard = credential_lifecycle_lock().lock().await;
     let stored = load_connected().await?;
     if !force && !notion_token_expired_at(&stored, now_unix()) {
         return Ok(stored);
     }
-    let refreshed = refresh_stored_connection(&stored).await?;
+    let refreshed = match refresh_stored_connection(&stored).await {
+        Ok(refreshed) => refreshed,
+        Err(error) if error.code == "notion_reconnect_required" => {
+            record_reconnect_required(app).await;
+            return Err(error);
+        }
+        Err(error) => return Err(error),
+    };
     store::store(&refreshed).await?;
     Ok(refreshed)
 }
@@ -611,16 +700,16 @@ fn refresh_failed(kind: RefreshFailureKind, error_code: Option<String>) -> AppEr
     }
 }
 
-async fn run_with_fresh_client<T, F, Fut>(operation: F) -> Result<T, AppError>
+async fn run_with_fresh_client<T, F, Fut>(app: &AppHandle, operation: F) -> Result<T, AppError>
 where
     F: Fn(McpHttpClient) -> Fut,
     Fut: Future<Output = Result<T, AppError>>,
 {
-    let stored = load_connected_with_fresh_token().await?;
+    let stored = load_connected_with_fresh_token(app).await?;
     let client = McpHttpClient::new(stored.access_token.clone());
     match operation(client).await {
         Err(error) if error.code == "notion_mcp_unauthorized" => {
-            let refreshed = refresh_connected_token(true).await?;
+            let refreshed = refresh_connected_token(app, true).await?;
             operation(McpHttpClient::new(refreshed.access_token.clone())).await
         }
         result => result,

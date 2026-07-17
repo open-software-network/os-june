@@ -614,19 +614,27 @@ pub async fn list_google_accounts(
     Ok(accounts)
 }
 
-/// Enumerate connected accounts for shared API consumers.
-///
-/// Unlike the settings-only resilient listing, this preserves Notion credential
-/// store errors so callers can distinguish a read failure from a genuinely
-/// disconnected Notion preview.
-pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
+/// Enumerate the persisted account index used for Google and Linear runtime
+/// registration. Notion is deliberately excluded: its optional Keychain state
+/// must never hide otherwise healthy database-backed connector accounts.
+pub async fn list_runtime_accounts(
+    app: &tauri::AppHandle,
+) -> Result<Vec<ConnectorAccount>, AppError> {
     let repos = crate::commands::repositories(app).await?;
     let records = repos.list_connector_accounts().await?;
-    let mut accounts = Vec::with_capacity(records.len() + 1);
+    let mut accounts = Vec::with_capacity(records.len());
     for record in records {
-        accounts.push(account_dto(&repos, record).await?);
+        if record.provider != ConnectorProvider::Notion.as_str() {
+            accounts.push(account_dto(&repos, record).await?);
+        }
     }
-    append_notion_account(&mut accounts, notion::has_connection().await, false)?;
+    Ok(accounts)
+}
+
+/// Enumerate connected accounts for shared API consumers.
+pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
+    let mut accounts = list_runtime_accounts(app).await?;
+    append_notion_account(&mut accounts, notion::account_status(app).await, false)?;
     Ok(accounts)
 }
 
@@ -644,27 +652,27 @@ pub async fn list_accounts_resilient(
     for record in records {
         accounts.push(account_dto(&repos, record).await?);
     }
-    append_notion_account(&mut accounts, notion::has_connection().await, true)?;
+    append_notion_account(&mut accounts, notion::account_status(app).await, true)?;
     Ok(accounts)
 }
 
 fn append_notion_account(
     accounts: &mut Vec<ConnectorAccount>,
-    status: Result<bool, AppError>,
+    status: Result<Option<ConnectorAccountStatus>, AppError>,
     suppress_error: bool,
 ) -> Result<(), AppError> {
     match status {
-        Ok(true) => accounts.push(ConnectorAccount {
+        Ok(Some(status)) => accounts.push(ConnectorAccount {
             account_id: notion::notion_account_id().to_string(),
             provider: ConnectorProvider::Notion,
             email: notion::notion_account_email().to_string(),
             scopes: Vec::new(),
-            status: ConnectorAccountStatus::Connected,
+            status,
             workspace_name: None,
             workspace_url_key: None,
             selected_teams: Vec::new(),
         }),
-        Ok(false) => {}
+        Ok(None) => {}
         Err(error) if suppress_error => {
             tracing::warn!(
                 error_code = %error.code,
@@ -1408,12 +1416,32 @@ mod tests {
     #[test]
     fn append_notion_account_adds_synthetic_connected_row() {
         let mut accounts = Vec::new();
-        append_notion_account(&mut accounts, Ok(true), false).unwrap();
+        append_notion_account(
+            &mut accounts,
+            Ok(Some(ConnectorAccountStatus::Connected)),
+            false,
+        )
+        .unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].provider, ConnectorProvider::Notion);
         assert_eq!(accounts[0].account_id, notion::notion_account_id());
         assert_eq!(accounts[0].email, notion::notion_account_email());
         assert!(accounts[0].selected_teams.is_empty());
+    }
+
+    #[test]
+    fn append_notion_account_preserves_reconnect_required_status() {
+        let mut accounts = Vec::new();
+        append_notion_account(
+            &mut accounts,
+            Ok(Some(ConnectorAccountStatus::ReconnectRequired)),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            accounts[0].status,
+            ConnectorAccountStatus::ReconnectRequired
+        );
     }
 
     #[test]

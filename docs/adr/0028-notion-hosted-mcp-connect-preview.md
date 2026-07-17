@@ -168,3 +168,18 @@ creation:
   sending the update again.
 - Logs must not include tokens, dynamic client material, raw private page
   bodies, or full hosted MCP payloads.
+
+## Addendum: routine access remains approval-gated
+
+The hosted MCP preview may make its Notion tools available to scheduled June
+routines. `june_notion` is a read toolset available in every routine trust mode.
+`june_notion_actions` is available only in the `approval` trust mode, so every
+page creation or update still parks at June's approval surface before it reaches
+Notion. Notion actions do not participate in earned autonomy and June mints no
+Notion automatic MCP server.
+
+This extends the preview's interactive tooling to routines without changing its
+privacy posture: selected-resource scoping remains unverified, the caveat stays
+visible in connector guidance, and the same Rust preflight, exact top-level
+`page_id` target display, and immutable approved-request boundary apply to a
+routine action. Autonomous publishing remains out of scope.

@@ -63,6 +63,131 @@ const NOTION_CONNECTOR_BLURB =
 const NOTION_CONNECTED_BLURB =
   "Preview connected. Create pages with approval. Notion may allow access beyond selected pages.";
 
+type NotionConnectorRowProps = {
+  account: ConnectorAccount | null;
+  connecting: boolean;
+  disconnecting: boolean;
+  onConnect: () => void;
+  onReconnect: () => void;
+  onDisconnect: () => void;
+};
+
+type NotionConnectorState = "disconnected" | "connected" | "reconnect_required";
+
+type NotionConnectorActionsProps = Pick<
+  NotionConnectorRowProps,
+  "connecting" | "disconnecting" | "onConnect" | "onReconnect" | "onDisconnect"
+> & {
+  state: NotionConnectorState;
+};
+
+function notionConnectorState(account: ConnectorAccount | null): NotionConnectorState {
+  if (account?.status === "reconnect_required") return "reconnect_required";
+  if (account?.status === "connected") return "connected";
+  return "disconnected";
+}
+
+function NotionConnectorActions({
+  state,
+  connecting,
+  disconnecting,
+  onConnect,
+  onReconnect,
+  onDisconnect,
+}: NotionConnectorActionsProps) {
+  const disconnectButton = (
+    <button
+      type="button"
+      className="btn btn-ghost"
+      aria-label="Disconnect Notion"
+      disabled={disconnecting}
+      aria-busy={disconnecting || undefined}
+      onClick={onDisconnect}
+    >
+      {disconnecting ? "Disconnecting…" : "Disconnect"}
+    </button>
+  );
+
+  if (state === "connected") return disconnectButton;
+  if (state === "reconnect_required") {
+    return (
+      <>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          aria-label="Reconnect Notion"
+          disabled={connecting}
+          aria-busy={connecting || undefined}
+          onClick={onReconnect}
+        >
+          {connecting ? "Waiting for browser…" : "Reconnect"}
+        </button>
+        {disconnectButton}
+      </>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-secondary"
+      aria-label="Connect Notion"
+      disabled={connecting}
+      aria-busy={connecting || undefined}
+      onClick={onConnect}
+    >
+      {connecting ? "Waiting for browser…" : "Connect"}
+    </button>
+  );
+}
+
+function NotionConnectorRow({
+  account,
+  connecting,
+  disconnecting,
+  onConnect,
+  onReconnect,
+  onDisconnect,
+}: NotionConnectorRowProps) {
+  const state = notionConnectorState(account);
+  const details = {
+    disconnected: { subtitle: NOTION_CONNECTOR_BLURB, statusLabel: "Preview", statusTone: "warning" },
+    connected: { subtitle: NOTION_CONNECTED_BLURB, statusLabel: "Preview connected", statusTone: "ok" },
+    reconnect_required: {
+      subtitle: NOTION_CONNECTOR_BLURB,
+      statusLabel: "Reconnect needed",
+      statusTone: "warning",
+    },
+  } as const;
+  const { subtitle, statusLabel, statusTone } = details[state];
+
+  return (
+    <li key="notion" className="connector-row">
+      <span className="connector-logo" aria-hidden>
+        <ConnectorProviderIcon provider="notion" />
+      </span>
+      <div className="connector-main">
+        <span className="connector-name">Notion</span>
+        <p className="connector-subtitle" title={subtitle}>
+          {subtitle}
+        </p>
+      </div>
+      <div className="connector-actions">
+        <span className="status-pill" data-tone={statusTone}>
+          {statusLabel}
+        </span>
+        <NotionConnectorActions
+          state={state}
+          connecting={connecting}
+          disconnecting={disconnecting}
+          onConnect={onConnect}
+          onReconnect={onReconnect}
+          onDisconnect={onDisconnect}
+        />
+      </div>
+    </li>
+  );
+}
+
 const CONNECT_TITLES = {
   google: { connect: "Connect Google account", add: "Add Google access" },
   linear: { connect: "Connect Linear workspace", add: "Add Linear access" },
@@ -357,6 +482,10 @@ export function ConnectorsSection() {
     }
   }
 
+  async function reconnectNotion() {
+    await connectNotion();
+  }
+
   async function disconnectNotion() {
     if (notionDisconnecting) return;
     setNotionDisconnecting(true);
@@ -616,51 +745,14 @@ export function ConnectorsSection() {
               </li>
             );
           })}
-          {(() => {
-            const account = accounts?.find((entry) => entry.provider === "notion") ?? null;
-            const subtitle = account ? NOTION_CONNECTED_BLURB : NOTION_CONNECTOR_BLURB;
-            return (
-              <li key="notion" className="connector-row">
-                <span className="connector-logo" aria-hidden>
-                  <ConnectorProviderIcon provider="notion" />
-                </span>
-                <div className="connector-main">
-                  <span className="connector-name">Notion</span>
-                  <p className="connector-subtitle" title={subtitle}>
-                    {subtitle}
-                  </p>
-                </div>
-                <div className="connector-actions">
-                  <span className="status-pill" data-tone={account ? "ok" : "warning"}>
-                    {account ? "Preview connected" : "Preview"}
-                  </span>
-                  {account ? (
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      aria-label="Disconnect Notion"
-                      disabled={notionDisconnecting}
-                      aria-busy={notionDisconnecting || undefined}
-                      onClick={() => void disconnectNotion()}
-                    >
-                      {notionDisconnecting ? "Disconnecting…" : "Disconnect"}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      aria-label="Connect Notion"
-                      disabled={accounts === null || notionConnecting}
-                      aria-busy={notionConnecting || undefined}
-                      onClick={() => void connectNotion()}
-                    >
-                      {notionConnecting ? "Waiting for browser…" : "Connect"}
-                    </button>
-                  )}
-                </div>
-              </li>
-            );
-          })()}
+          <NotionConnectorRow
+            account={accounts?.find((entry) => entry.provider === "notion") ?? null}
+            connecting={accounts === null || notionConnecting}
+            disconnecting={notionDisconnecting}
+            onConnect={() => void connectNotion()}
+            onReconnect={() => void reconnectNotion()}
+            onDisconnect={() => void disconnectNotion()}
+          />
         </ul>
       </div>
 

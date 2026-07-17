@@ -322,7 +322,7 @@ export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
  * grant on every team-scoped route), so `june_linear` is safe to grant
  * ambiently just like the Google read servers rather than gating it behind
  * trust mode. */
-export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear"];
+export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear", "june_notion"];
 
 /** Action connector MCP servers: every mutating call parks for approval in
  * the Rust proxy. Linear has no autonomous mode in v1 (see `grantable` on
@@ -332,6 +332,7 @@ export const CONNECTOR_ACTION_TOOLSETS = [
   "june_gmail_actions",
   "june_gcal_actions",
   "june_linear_actions",
+  "june_notion_actions",
 ];
 
 /** One connector action tool, for the approvals-surface label lookup
@@ -383,6 +384,18 @@ export const CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.fre
     label: "Post project updates",
     grantable: false,
   },
+  {
+    id: "notion-create-pages",
+    server: "june_notion_actions",
+    label: "Create Notion pages",
+    grantable: false,
+  },
+  {
+    id: "notion-update-page",
+    server: "june_notion_actions",
+    label: "Update Notion pages",
+    grantable: false,
+  },
 ]);
 
 /** The connector action tools eligible for the earned-autonomy grant
@@ -423,9 +436,10 @@ export function actionToolLabel(tool: string): string {
 
 /** The provider behind a connector MCP server name, for provider marks on the
  * approvals surface. Null for non-connector servers. */
-export function providerFromServer(server: string): "google" | "linear" | null {
+export function providerFromServer(server: string): "google" | "linear" | "notion" | null {
   if (server.startsWith("june_gmail") || server.startsWith("june_gcal")) return "google";
   if (server.startsWith("june_linear")) return "linear";
+  if (server.startsWith("june_notion")) return "notion";
   return null;
 }
 

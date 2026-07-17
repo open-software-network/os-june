@@ -1206,11 +1206,12 @@ async fn start_hermes_bridge_inner(
     // Google account (v1: the first connected account), and the Linear read
     // server needs a connected workspace with at least one selected team.
     let june_connector_mcp = sync_june_connector_mcps(app, &command).await?;
-    // The soul describes the connector toolsets only when at least one base
-    // (interactive) server is registered.
+    // The soul describes connector toolsets only when an interactive server
+    // is registered. Notion's servers are interactive even without a Google
+    // or Linear base config.
     let connectors_registered = june_connector_mcp
         .as_ref()
-        .is_some_and(|configs| configs.base.is_some());
+        .is_some_and(ConnectorMcpConfigs::has_interactive_servers);
     // Resolved from the live catalog so Hermes' vision tools attach an image
     // straight to a vision-capable model's context instead of falling back to
     // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
@@ -1576,6 +1577,15 @@ struct ConnectorMcpConfigs {
     notion: Option<JuneConnectorMcpConfig>,
     notion_actions: Option<JuneConnectorMcpConfig>,
     autos: Vec<ConnectorAutoMcpConfig>,
+}
+
+impl ConnectorMcpConfigs {
+    /// Whether an interactive connector MCP server is registered. Earned-
+    /// autonomy servers do not count: their routine-only grant context does
+    /// not warrant the general connector guidance in June's SOUL.md.
+    fn has_interactive_servers(&self) -> bool {
+        self.base.is_some() || self.notion.is_some() || self.notion_actions.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7360,7 +7370,7 @@ async fn sync_june_connector_mcps(
     // healthy account exists. The Linear resolution additionally requires a
     // non-empty selected-team set ([`linear_read_server_account`]): with no
     // grant there is nothing the server may read, so it does not exist.
-    let accounts = match crate::connectors::list_accounts(app).await {
+    let accounts = match crate::connectors::list_runtime_accounts(app).await {
         Ok(accounts) => accounts,
         Err(error) => {
             // A DB read failure must not wedge the whole bridge start; skip the
@@ -7399,10 +7409,13 @@ async fn sync_june_connector_mcps(
         }
     };
 
-    let notion_connected = crate::connectors::notion::status()
-        .await
-        .map(|status| status.connected)
-        .unwrap_or(false);
+    let notion_connected = match crate::connectors::notion::status(app).await {
+        Ok(status) => status.connected,
+        Err(error) => {
+            tracing::warn!(error_code = %error.code, "Notion connector status unavailable; skipping Notion MCP registration");
+            false
+        }
+    };
 
     // Nothing to register: no connected account and no usable grant.
     if account_email.is_none()
@@ -9340,12 +9353,24 @@ async fn handle_notion_connector_route(
     let body = serde_json::from_slice::<serde_json::Value>(request_body)
         .unwrap_or_else(|_| serde_json::json!({}));
     let result = match path {
-        "/v1/notion/tools" => crate::connectors::notion::mcp_tool_list()
-            .await
-            .and_then(connector_json),
-        "/v1/notion-actions/tools" => crate::connectors::notion::mcp_action_tool_list()
-            .await
-            .and_then(connector_json),
+        "/v1/notion/tools" => match state.app.as_ref() {
+            Some(app) => crate::connectors::notion::mcp_tool_list(app)
+                .await
+                .and_then(connector_json),
+            None => Err(AppError::new(
+                "notion_unavailable",
+                "Notion is unavailable in this session.",
+            )),
+        },
+        "/v1/notion-actions/tools" => match state.app.as_ref() {
+            Some(app) => crate::connectors::notion::mcp_action_tool_list(app)
+                .await
+                .and_then(connector_json),
+            None => Err(AppError::new(
+                "notion_action_unavailable",
+                "Notion actions are unavailable in this session.",
+            )),
+        },
         "/v1/notion/call" => {
             let tool_name = body
                 .get("toolName")
@@ -9356,7 +9381,16 @@ async fn handle_notion_connector_route(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
+            let Some(app) = state.app.as_ref() else {
+                return connector_error_response(
+                    stream,
+                    "notion_unavailable",
+                    "Notion is unavailable in this session.",
+                )
+                .await;
+            };
             crate::connectors::notion::call_hosted_tool(
+                app,
                 crate::connectors::notion::NotionHostedToolCallRequest {
                     tool_name,
                     arguments,

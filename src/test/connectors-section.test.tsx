@@ -172,6 +172,26 @@ describe("ConnectorsSection", () => {
     expect(await findEnabledConnect("Connect Notion")).toBeInTheDocument();
   });
 
+  it("offers Notion reconnect when its grant is revoked", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      {
+        accountId: "notion-hosted-mcp",
+        provider: "notion",
+        email: "Notion hosted MCP preview",
+        scopes: [],
+        status: "reconnect_required",
+        workspaceName: null,
+        workspaceUrlKey: null,
+        selectedTeams: [],
+      },
+    ]);
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
+    await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
+  });
+
   it("lists connected accounts with feature labels and status", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);

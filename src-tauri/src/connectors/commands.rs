@@ -132,8 +132,10 @@ pub async fn connectors_disconnect(
 }
 
 #[tauri::command]
-pub async fn notion_connector_status() -> Result<notion::NotionConnectionStatus, AppError> {
-    notion::status().await
+pub async fn notion_connector_status(
+    app: tauri::AppHandle,
+) -> Result<notion::NotionConnectionStatus, AppError> {
+    notion::status(&app).await
 }
 
 #[tauri::command]
@@ -141,7 +143,7 @@ pub async fn notion_connector_connect(
     app: tauri::AppHandle,
     flow: tauri::State<'_, NotionConnectFlow>,
 ) -> Result<notion::NotionConnection, AppError> {
-    let connection = notion::connect(&flow).await?;
+    let connection = notion::connect(&app, &flow).await?;
     emit_connectors_changed(&app);
     Ok(connection)
 }
@@ -156,14 +158,16 @@ pub fn notion_connector_cancel_connect(
 
 #[tauri::command]
 pub async fn notion_connector_disconnect(app: tauri::AppHandle) -> Result<(), AppError> {
-    notion::disconnect().await?;
+    notion::disconnect(&app).await?;
     emit_connectors_changed(&app);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn notion_connector_list_tools() -> Result<notion::NotionToolInventory, AppError> {
-    notion::list_tools().await
+pub async fn notion_connector_list_tools(
+    app: tauri::AppHandle,
+) -> Result<notion::NotionToolInventory, AppError> {
+    notion::list_tools(&app).await
 }
 
 // --- Linear teams --------------------------------------------------------------
