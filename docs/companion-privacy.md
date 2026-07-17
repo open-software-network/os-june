@@ -7,10 +7,10 @@ and device credentials never enter the SwiftUI application model. Pairing
 secrets are held only as transient QR or manual-code input during bootstrap and
 are never published in a snapshot or persisted by the application model. The
 explicit copy action places the short-lived bootstrap capability on the system
-clipboard; Desktop clears it best-effort when pairing ends if it has not been
-replaced. The relay receives a device credential only for verification and
-persists only the SHA-256 hash of its encoded authorization value; it never
-receives the Noise pairing secret.
+clipboard, where it may remain in clipboard history after it expires. Desktop
+does not read the clipboard or risk erasing newer content. The relay receives a
+device credential only for verification and persists only the SHA-256 hash of
+its encoded authorization value; it never receives the Noise pairing secret.
 
 June API necessarily observes the desktop's OS Accounts user id, linked device ids and
 public keys, device display names, link/revocation timestamps, APNs device

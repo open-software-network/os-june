@@ -60,6 +60,14 @@ struct RootView: View {
         LockView(model: model)
       case .connecting:
         ProgressStateView(title: "Connecting securely", detail: "Verifying your Mac and this device.")
+          .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.isPairing {
+              Button("Cancel pairing", action: model.cancelPairing)
+                .buttonStyle(JuneSecondaryButtonStyle())
+                .padding(20)
+                .accessibilityIdentifier("cancel-pairing")
+            }
+          }
       case .error:
         FailureStateView(model: model)
       case .ready, .offline:

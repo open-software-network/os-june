@@ -29,12 +29,10 @@ records cleanup for any proposal already sent to the relay.
 The manual code is a URL-safe encoding of the exact short-lived QR bootstrap
 payload. It contains the same pairing secret, expires after five minutes, and
 still requires explicit Desktop approval. Treat it like the QR: do not log it,
-store it, or include it in screenshots. Copying is explicit; Desktop clears the
-clipboard on expiry, cancellation, approval, or leaving the settings surface
-when the clipboard still contains that code. Clipboard cleanup is best-effort,
-so the five-minute expiry remains the security backstop. The main-window
-clipboard read permission exists only for this equality check; do not use it to
-inspect or retain unrelated clipboard contents.
+store it, or include it in screenshots. Copying is explicit. Desktop does not
+read or automatically clear the clipboard because a read-then-clear sequence
+could erase newer content copied by another application. The five-minute
+expiry and explicit Desktop approval are the authorization backstops.
 
 ## Verify
 

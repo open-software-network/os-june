@@ -1127,17 +1127,17 @@ mod tests {
     }
 
     #[test]
-    fn main_window_can_compare_and_clear_copied_pairing_codes() {
+    fn main_window_can_copy_pairing_codes_without_reading_the_clipboard() {
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../../capabilities/main.json")).unwrap();
         let permissions = capability["permissions"].as_array().unwrap();
 
-        for permission in [
-            "clipboard-manager:allow-read-text",
-            "clipboard-manager:allow-write-text",
-        ] {
-            assert!(permissions.iter().any(|value| value == permission));
-        }
+        assert!(permissions
+            .iter()
+            .any(|value| value == "clipboard-manager:allow-write-text"));
+        assert!(!permissions
+            .iter()
+            .any(|value| value == "clipboard-manager:allow-read-text"));
     }
 
     #[test]

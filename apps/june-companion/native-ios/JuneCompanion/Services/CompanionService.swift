@@ -143,18 +143,21 @@ final class CompanionService {
 
   func pair(payloadJSON: String) async throws -> String {
     _ = try await reconcilePendingRevocation()
+    try Task.checkCancellation()
     let validated = try PairingPayloadValidation.decode(payloadJSON)
     let payload = validated.payload
     let secretData = validated.secret
     var secret = [UInt8](secretData)
     defer { secret.indices.forEach {secret[$0] = 0} }
     let pairingProof = PairingProof.make(secret: secretData)
+    try Task.checkCancellation()
     snapshot.connection = "connecting"
     emitSnapshot()
     let identity = try DeviceIdentityService.shared.identity()
     let deviceCredential = try pairingCredential()
     var cleanupRecorded = false
     do {
+      try Task.checkCancellation()
       // Persist the cleanup route before the relay can activate this credential,
       // so every ambiguous network outcome remains recoverable after relaunch.
       try recordPendingRevocation(
@@ -162,16 +165,19 @@ final class CompanionService {
         deviceID: identity.deviceID
       )
       cleanupRecorded = true
+      try Task.checkCancellation()
       _ = try await pairingAPI.propose(
         payload: payload,
         identity: identity,
         pairingProof: pairingProof,
         deviceCredentialHash: deviceCredential.hash
       )
+      try Task.checkCancellation()
       let approved = try await pairingAPI.waitForApproval(
         payload: payload,
         pairingProof: pairingProof
       )
+      try Task.checkCancellation()
       guard approved.desktopPublicKey.count == 32 else {
         throw CompanionNativeError.invalidData("The Mac identity is invalid.")
       }
@@ -186,6 +192,7 @@ final class CompanionService {
         expectedDesktopPublicKey: approved.desktopPublicKey,
         eventHandler: handleTransportEvent
       )
+      try Task.checkCancellation()
       let configuration = LinkedConfiguration(
         relayURL: payload.relayUrl,
         desktopDeviceID: approved.desktopDeviceId,
@@ -206,14 +213,13 @@ final class CompanionService {
     } catch {
       transport.disconnect()
       if cleanupRecorded {
-        do {
-          try await pairingAPI.revoke(
-            relayURL: payload.relayUrl,
-            deviceID: identity.deviceID,
-            deviceCredential: deviceCredential.value
-          )
+        if await revokeFailedPairing(
+          relayURL: payload.relayUrl,
+          deviceID: identity.deviceID,
+          deviceCredential: deviceCredential.value
+        ) {
           clearLocalAuthorization(connection: "unpaired")
-        } catch {
+        } else {
           presentPendingRevocationError()
         }
       } else {
@@ -223,6 +229,27 @@ final class CompanionService {
       throw error
     }
     return try await refresh()
+  }
+
+  private func revokeFailedPairing(
+    relayURL: URL,
+    deviceID: UUID,
+    deviceCredential: String
+  ) async -> Bool {
+    // Pairing cancellation must not cancel its own authorization cleanup. The
+    // durable pending record remains the fallback if this bounded attempt fails.
+    await Task { @MainActor in
+      do {
+        try await pairingAPI.revoke(
+          relayURL: relayURL,
+          deviceID: deviceID,
+          deviceCredential: deviceCredential
+        )
+        return true
+      } catch {
+        return false
+      }
+    }.value
   }
 
   func unlock() async throws -> Bool {

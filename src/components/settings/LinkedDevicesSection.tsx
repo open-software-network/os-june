@@ -1,7 +1,4 @@
-import {
-  readText as readClipboardText,
-  writeText as writeClipboardText,
-} from "@tauri-apps/plugin-clipboard-manager";
+import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   companionApprovePairing,
@@ -41,47 +38,23 @@ export function LinkedDevicesSection() {
   const [pairingCodeCopied, setPairingCodeCopied] = useState(false);
   const [error, setError] = useState<string>();
   const activePairingIdRef = useRef<string>();
-  const copiedPairingCodeRef = useRef<string>();
   const mountedRef = useRef(true);
 
-  const clearCopiedPairingCode = useCallback(async (pairingCode: string) => {
-    try {
-      if ((await readClipboardText()) === pairingCode) {
-        await writeClipboardText("");
-      }
-    } catch {
-      // Clipboard cleanup is best-effort and must not replace a pairing result.
-    }
+  const endPairing = useCallback((nextError?: string) => {
+    activePairingIdRef.current = undefined;
+    setPairing(undefined);
+    setStatus(undefined);
+    setPairingCodeCopied(false);
+    if (nextError) setError(nextError);
   }, []);
-
-  const endPairing = useCallback(
-    (nextError?: string) => {
-      activePairingIdRef.current = undefined;
-      const copiedPairingCode = copiedPairingCodeRef.current;
-      copiedPairingCodeRef.current = undefined;
-      if (copiedPairingCode) {
-        void clearCopiedPairingCode(copiedPairingCode);
-      }
-      setPairing(undefined);
-      setStatus(undefined);
-      setPairingCodeCopied(false);
-      if (nextError) setError(nextError);
-    },
-    [clearCopiedPairingCode],
-  );
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
       activePairingIdRef.current = undefined;
-      const copiedPairingCode = copiedPairingCodeRef.current;
-      copiedPairingCodeRef.current = undefined;
-      if (copiedPairingCode) {
-        void clearCopiedPairingCode(copiedPairingCode);
-      }
     };
-  }, [clearCopiedPairingCode]);
+  }, []);
 
   const refreshDevices = useCallback(async () => {
     setDevices(await companionListDevices());
@@ -159,10 +132,8 @@ export function LinkedDevicesSection() {
         activePairingIdRef.current !== pairingId ||
         pairing.expiresAtMs <= Date.now()
       ) {
-        await clearCopiedPairingCode(pairingCode);
         return;
       }
-      copiedPairingCodeRef.current = pairingCode;
       setPairingCodeCopied(true);
     } catch {
       setError("Couldn't copy the pairing code. Try again.");
@@ -262,14 +233,7 @@ export function LinkedDevicesSection() {
               <details className="companion-manual-pairing">
                 <summary>Enter a code instead</summary>
                 <p>In June Companion, choose Enter pairing code, then type or paste this code.</p>
-                <code
-                  onCopy={() => {
-                    copiedPairingCodeRef.current = pairing.pairingCode;
-                    setPairingCodeCopied(true);
-                  }}
-                >
-                  {pairing.pairingCode}
-                </code>
+                <code>{pairing.pairingCode}</code>
                 <button
                   type="button"
                   className="primary-action"
@@ -277,6 +241,7 @@ export function LinkedDevicesSection() {
                 >
                   {pairingCodeCopied ? "Pairing code copied" : "Copy pairing code"}
                 </button>
+                <p>Copied codes may remain in clipboard history. They expire after five minutes.</p>
               </details>
               {status?.state === "waitingForApproval" ? (
                 <>

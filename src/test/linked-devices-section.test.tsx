@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LinkedDevicesSection } from "../components/settings/LinkedDevicesSection";
@@ -10,7 +10,6 @@ const mocks = vi.hoisted(() => ({
   approvePairing: vi.fn(),
   renameDevice: vi.fn(),
   revokeDevice: vi.fn(),
-  readClipboardText: vi.fn(),
   writeClipboardText: vi.fn(),
 }));
 
@@ -25,7 +24,6 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
-  readText: mocks.readClipboardText,
   writeText: mocks.writeClipboardText,
 }));
 
@@ -45,7 +43,6 @@ beforeEach(() => {
     desktopDeviceId: "00000000-0000-0000-0000-000000000002",
     desktopPublicKey: Array(32).fill(7),
   });
-  mocks.readClipboardText.mockResolvedValue("manual-pairing-bootstrap-code");
   mocks.writeClipboardText.mockResolvedValue(undefined);
 });
 
@@ -66,72 +63,19 @@ describe("LinkedDevicesSection", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
+    expect(mocks.writeClipboardText).toHaveBeenCalledTimes(1);
   });
 
-  it("does not erase clipboard content that replaced the copied pairing code", async () => {
+  it("does not erase clipboard content when pairing ends", async () => {
     const user = userEvent.setup();
-    mocks.readClipboardText.mockResolvedValue("newer clipboard content");
     render(<LinkedDevicesSection />);
 
     await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
     await user.click(screen.getByText("Enter a code instead"));
+    expect(screen.getByText(/clipboard history/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Copy pairing code" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
 
-    await waitFor(() => expect(mocks.readClipboardText).toHaveBeenCalled());
     expect(mocks.writeClipboardText).not.toHaveBeenCalledWith("");
-  });
-
-  it("tracks copying the selectable code so cancellation clears it", async () => {
-    const user = userEvent.setup();
-    render(<LinkedDevicesSection />);
-
-    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
-    await user.click(screen.getByText("Enter a code instead"));
-    fireEvent.copy(screen.getByText("manual-pairing-bootstrap-code"));
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-
-    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
-  });
-
-  it("clears a clipboard write that finishes after pairing is cancelled", async () => {
-    const user = userEvent.setup();
-    let finishWrite: (() => void) | undefined;
-    mocks.writeClipboardText.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finishWrite = resolve;
-        }),
-    );
-    render(<LinkedDevicesSection />);
-
-    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
-    await user.click(screen.getByText("Enter a code instead"));
-    await user.click(screen.getByRole("button", { name: "Copy pairing code" }));
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    finishWrite?.();
-
-    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
-  });
-
-  it("clears a clipboard write that finishes after leaving settings", async () => {
-    const user = userEvent.setup();
-    let finishWrite: (() => void) | undefined;
-    mocks.writeClipboardText.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finishWrite = resolve;
-        }),
-    );
-    const { unmount } = render(<LinkedDevicesSection />);
-
-    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
-    await user.click(screen.getByText("Enter a code instead"));
-    await user.click(screen.getByRole("button", { name: "Copy pairing code" }));
-    unmount();
-    finishWrite?.();
-
-    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
   });
 });

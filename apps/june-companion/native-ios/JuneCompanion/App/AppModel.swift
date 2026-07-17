@@ -192,6 +192,10 @@ final class AppModel: ObservableObject {
         pairingTask?.cancel()
     }
 
+    var isPairing: Bool {
+        pairingTask != nil
+    }
+
     func unlock() {
         perform {
             guard try await self.service.unlock() else { return }

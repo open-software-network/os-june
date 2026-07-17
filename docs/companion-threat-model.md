@@ -27,9 +27,10 @@ control authority, linked-device grants, and APNs signing material.
   clock skew, also enforces a monotonic local wait deadline, and lets the user
   cancel an in-flight pairing.
 - A manually copied code can be observed by software with clipboard access.
-  Desktop clears it on pairing termination or when the settings surface closes
-  if it has not been replaced, while expiry and explicit device approval remain
-  the authorization backstops.
+  It may remain in clipboard history after expiry. Desktop does not read or
+  automatically clear the clipboard because a non-atomic cleanup could erase
+  newer content. Expiry and explicit device approval remain the authorization
+  backstops.
 - Replay, tampering, oversized payloads, stale controls, cross-user routes,
   duplicate connections, unbounded queues, and excessive frame rates fail
   closed.
