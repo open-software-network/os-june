@@ -1108,9 +1108,7 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
-    let june_github_mcp =
-        github_mcp_registration_or_none(sync_june_github_mcp(app, &command).await);
-    let github_registered = june_github_mcp.is_some();
+    let june_github_mcp_registration = sync_june_github_mcp(app, &command).await;
     // The four private-connector MCP servers are registered only when at least
     // one Google account is connected (v1: the first connected account).
     let june_connector_mcp = sync_june_connector_mcps(app, &command).await?;
@@ -1124,22 +1122,29 @@ async fn start_hermes_bridge_inner(
     // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
     // capability from Hermes, so June has to declare it via config.
     let supports_vision = crate::providers::generation_model_supports_vision().await;
-    sync_hermes_config(
-        app,
-        &hermes_home,
-        provider_proxy.port,
-        &provider_proxy.token,
-        &provider_proxy.recorder_token,
-        &provider_proxy.connector_token,
-        &provider_proxy.github_token,
-        supports_vision,
-        &june_context_mcp,
-        &june_web_mcp,
-        &june_image_mcp,
-        june_video_mcp.as_ref(),
-        &june_recorder_mcp,
-        june_connector_mcp.as_ref(),
-        june_github_mcp.as_ref(),
+    let config_path = hermes_home.join("config.yaml");
+    let github_registered = complete_github_registration_for_bridge_start(
+        june_github_mcp_registration,
+        &config_path,
+        |june_github_mcp| {
+            sync_hermes_config(
+                app,
+                &hermes_home,
+                provider_proxy.port,
+                &provider_proxy.token,
+                &provider_proxy.recorder_token,
+                &provider_proxy.connector_token,
+                &provider_proxy.github_token,
+                supports_vision,
+                &june_context_mcp,
+                &june_web_mcp,
+                &june_image_mcp,
+                june_video_mcp.as_ref(),
+                &june_recorder_mcp,
+                june_connector_mcp.as_ref(),
+                june_github_mcp,
+            )
+        },
     )?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
@@ -7040,18 +7045,34 @@ async fn sync_june_github_mcp(
     app: &AppHandle,
     hermes_command: &str,
 ) -> Result<Option<JuneGitHubMcpConfig>, AppError> {
-    crate::connectors::github::github_app_config()?;
     let repositories = crate::commands::repositories(app).await?;
-    crate::connectors::github::github_tool_eligibility(
-        &crate::connectors::github::PlatformGitHubTokenVault,
-        &repositories,
-    )
-    .await?;
-
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
-    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
-    fs::create_dir_all(&mcp_dir)
+    sync_june_github_mcp_with_dependencies(
+        hermes_command,
+        crate::connectors::github::github_app_config(),
+        &crate::connectors::github::PlatformGitHubTokenVault,
+        &repositories,
+        &data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME),
+    )
+    .await
+}
+
+/// Dependency-injected registration core used by bridge startup and security
+/// gate tests. The App configuration result is consumed first, then the live
+/// snapshot and credential vault are checked by the connector's authoritative
+/// eligibility function before any MCP script is written.
+async fn sync_june_github_mcp_with_dependencies(
+    hermes_command: &str,
+    app_config: Result<crate::connectors::github::GitHubAppConfig, AppError>,
+    vault: &dyn crate::connectors::github::GitHubTokenVault,
+    repositories: &crate::db::repositories::Repositories,
+    mcp_dir: &Path,
+) -> Result<Option<JuneGitHubMcpConfig>, AppError> {
+    let _app_config = app_config?;
+    crate::connectors::github::github_tool_eligibility(vault, repositories).await?;
+
+    fs::create_dir_all(mcp_dir)
         .map_err(|error| AppError::new("june_github_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_GITHUB_MCP_SCRIPT_NAME);
     fs::write(&script_path, JUNE_GITHUB_MCP_SCRIPT)
@@ -7077,6 +7098,27 @@ fn github_mcp_registration_or_none(
             None
         }
     }
+}
+
+/// Completes the GitHub portion of bridge startup without letting an optional
+/// connector failure wedge the rest of config generation. Availability is
+/// derived from the merged interactive toolsets, so an explicit `no_mcp`
+/// opt-out cannot leave GitHub instructions in `SOUL.md`.
+fn complete_github_registration_for_bridge_start<F>(
+    registration: Result<Option<JuneGitHubMcpConfig>, AppError>,
+    config_path: &Path,
+    sync_config: F,
+) -> Result<bool, AppError>
+where
+    F: FnOnce(Option<&JuneGitHubMcpConfig>) -> Result<(), AppError>,
+{
+    let github_mcp = github_mcp_registration_or_none(registration);
+    let registered = github_mcp.is_some();
+    sync_config(github_mcp.as_ref())?;
+    Ok(registered
+        && hermes_interactive_toolsets(config_path)
+            .iter()
+            .any(|toolset| toolset == JUNE_GITHUB_MCP_SERVER_NAME))
 }
 
 /// Writes the four connector MCP scripts and returns their configs, but ONLY
@@ -13740,6 +13782,135 @@ mcp_servers:
         }
     }
 
+    #[derive(Clone)]
+    struct TestGitHubTokenVault {
+        load_result: Result<Option<crate::connectors::github_store::StoredGitHubTokens>, AppError>,
+    }
+
+    impl TestGitHubTokenVault {
+        fn present() -> Self {
+            Self {
+                load_result: Ok(Some(crate::connectors::github_store::StoredGitHubTokens {
+                    github_user_id: "123".to_string(),
+                    access_token: "github-access-token".to_string(),
+                    refresh_token: "github-refresh-token".to_string(),
+                    expires_at_unix: i64::MAX,
+                    refresh_token_expires_at_unix: i64::MAX,
+                })),
+            }
+        }
+
+        fn missing() -> Self {
+            Self {
+                load_result: Ok(None),
+            }
+        }
+
+        fn storage_error() -> Self {
+            Self {
+                load_result: Err(AppError::new(
+                    "github_token_store_unavailable",
+                    "test storage failure",
+                )),
+            }
+        }
+    }
+
+    impl crate::connectors::github::GitHubTokenVault for TestGitHubTokenVault {
+        fn load<'a>(
+            &'a self,
+            _github_user_id: &'a str,
+        ) -> crate::connectors::github::GitHubVaultFuture<
+            'a,
+            Option<crate::connectors::github_store::StoredGitHubTokens>,
+        > {
+            Box::pin(async { self.load_result.clone() })
+        }
+
+        fn store<'a>(
+            &'a self,
+            _github_user_id: &'a str,
+            _tokens: &'a crate::connectors::github_store::StoredGitHubTokens,
+        ) -> crate::connectors::github::GitHubVaultFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn delete<'a>(
+            &'a self,
+            _github_user_id: &'a str,
+        ) -> crate::connectors::github::GitHubVaultFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    async fn github_registration_repositories(
+        status: &str,
+        installation_permissions: &str,
+        selected_repository: bool,
+    ) -> crate::db::repositories::Repositories {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repositories = crate::db::repositories::Repositories::new(pool);
+        let connection = crate::db::repositories::GitHubConnectionRecord {
+            github_user_id: "123".to_string(),
+            login: "octocat".to_string(),
+            avatar_url: None,
+            status: status.to_string(),
+        };
+        let installation = crate::db::repositories::GitHubInstallationRecord {
+            installation_id: "456".to_string(),
+            github_user_id: "123".to_string(),
+            owner_id: "321".to_string(),
+            owner_login: "open-software-network".to_string(),
+            owner_type: "Organization".to_string(),
+            management_url:
+                "https://github.com/organizations/open-software-network/settings/installations/456"
+                    .to_string(),
+            repository_selection: "selected".to_string(),
+            permissions_json: installation_permissions.to_string(),
+            suspended_at: None,
+            last_refreshed_at: "2026-07-17T00:00:00Z".to_string(),
+        };
+        let repository = crate::db::repositories::GitHubRepositoryRecord {
+            repository_id: "789".to_string(),
+            installation_id: "456".to_string(),
+            owner_login: "open-software-network".to_string(),
+            name: "test-repo".to_string(),
+            full_name: "open-software-network/test-repo".to_string(),
+            is_private: true,
+            is_archived: false,
+            permissions_json: r#"{"pull":true}"#.to_string(),
+        };
+        repositories
+            .replace_github_snapshot(
+                &connection,
+                &[installation],
+                if selected_repository {
+                    std::slice::from_ref(&repository)
+                } else {
+                    &[]
+                },
+            )
+            .await
+            .expect("seed GitHub snapshot");
+        repositories
+    }
+
+    fn valid_github_app_config() -> crate::connectors::github::GitHubAppConfig {
+        crate::connectors::github::GitHubAppConfig {
+            client_id: "Iv23example".to_string(),
+            slug: "june-staging".to_string(),
+        }
+    }
+
+    const TEST_GITHUB_READ_PERMISSIONS: &str = r#"{"metadata":"read","contents":"read","issues":"read","pull_requests":"read","checks":"read","statuses":"read"}"#;
+
     fn render_test_config_with_github(github: Option<&JuneGitHubMcpConfig>) -> String {
         let cron_toolsets = cron_platform_toolsets(&BuiltinMcpConfigs {
             context: None,
@@ -13780,14 +13951,140 @@ mcp_servers:
         )
     }
 
-    #[test]
-    fn github_mcp_renders_only_when_tool_eligible() {
-        let eligible = test_june_github_mcp_config();
-        let rendered = render_test_config_with_github(Some(&eligible));
-        let skipped = render_test_config_with_github(None);
+    fn sync_test_config_for_github_registration(
+        hermes_home: &Path,
+        registration: Result<Option<JuneGitHubMcpConfig>, AppError>,
+    ) -> Result<bool, AppError> {
+        let context = test_june_context_mcp_config();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
+        let config_path = hermes_home.join("config.yaml");
+        complete_github_registration_for_bridge_start(registration, &config_path, |github| {
+            sync_hermes_config_with_external_dirs(
+                hermes_home,
+                4242,
+                "provider-token",
+                "recorder-token",
+                "connector-token",
+                "github-token",
+                false,
+                &context,
+                &web,
+                &image,
+                None,
+                &recorder,
+                None,
+                github,
+                &[],
+            )
+        })
+    }
 
+    #[tokio::test]
+    async fn github_mcp_renders_only_when_tool_eligible() {
+        let repositories =
+            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
+        let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
+        let eligible = sync_june_github_mcp_with_dependencies(
+            "/tmp/hermes/bin/hermes",
+            Ok(valid_github_app_config()),
+            &TestGitHubTokenVault::present(),
+            &repositories,
+            mcp_dir.path(),
+        )
+        .await
+        .expect("eligible registration")
+        .expect("registered GitHub MCP");
+
+        let rendered = render_test_config_with_github(Some(&eligible));
         assert!(rendered.contains("  june_github:\n"));
-        assert!(!skipped.contains("june_github"));
+        assert!(mcp_dir.path().join(JUNE_GITHUB_MCP_SCRIPT_NAME).is_file());
+
+        let invalid_config_dir = tempfile::tempdir().expect("invalid config tempdir");
+        let error = sync_june_github_mcp_with_dependencies(
+            "/tmp/hermes/bin/hermes",
+            Err(AppError::new(
+                "github_not_configured",
+                "GitHub is not configured for this build.",
+            )),
+            &TestGitHubTokenVault::present(),
+            &repositories,
+            invalid_config_dir.path(),
+        )
+        .await
+        .expect_err("invalid app config must be ineligible");
+        assert_eq!(error.code, "github_not_configured");
+        assert!(!invalid_config_dir
+            .path()
+            .join(JUNE_GITHUB_MCP_SCRIPT_NAME)
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn github_mcp_registration_uses_authoritative_snapshot_status_selection_and_permissions()
+    {
+        for (status, permissions, selected_repository, expected_code) in [
+            (
+                "setup_incomplete",
+                TEST_GITHUB_READ_PERMISSIONS,
+                true,
+                "github_setup_required",
+            ),
+            (
+                "connected",
+                TEST_GITHUB_READ_PERMISSIONS,
+                false,
+                "github_setup_required",
+            ),
+            (
+                "connected",
+                r#"{"metadata":"read","contents":"read","issues":"read","pull_requests":"read","checks":"read"}"#,
+                true,
+                "github_setup_required",
+            ),
+        ] {
+            let repositories =
+                github_registration_repositories(status, permissions, selected_repository).await;
+            let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
+            let error = sync_june_github_mcp_with_dependencies(
+                "/tmp/hermes/bin/hermes",
+                Ok(valid_github_app_config()),
+                &TestGitHubTokenVault::present(),
+                &repositories,
+                mcp_dir.path(),
+            )
+            .await
+            .expect_err("ineligible authoritative snapshot");
+            assert_eq!(error.code, expected_code);
+            assert!(!mcp_dir.path().join(JUNE_GITHUB_MCP_SCRIPT_NAME).exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn github_mcp_registration_requires_credential_custody() {
+        let repositories =
+            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
+        for (vault, expected_code) in [
+            (TestGitHubTokenVault::missing(), "github_reconnect_required"),
+            (
+                TestGitHubTokenVault::storage_error(),
+                "github_storage_unavailable",
+            ),
+        ] {
+            let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
+            let error = sync_june_github_mcp_with_dependencies(
+                "/tmp/hermes/bin/hermes",
+                Ok(valid_github_app_config()),
+                &vault,
+                &repositories,
+                mcp_dir.path(),
+            )
+            .await
+            .expect_err("credential custody must gate registration");
+            assert_eq!(error.code, expected_code);
+            assert!(!mcp_dir.path().join(JUNE_GITHUB_MCP_SCRIPT_NAME).exists());
+        }
     }
 
     #[test]
@@ -13862,8 +14159,8 @@ mcp_servers:
         );
     }
 
-    #[test]
-    fn no_mcp_remains_an_explicit_global_opt_out() {
+    #[tokio::test]
+    async fn no_mcp_remains_an_explicit_global_opt_out() {
         let home = tempfile::tempdir().expect("tempdir");
         let config_path = home.path().join("config.yaml");
         std::fs::write(
@@ -13877,10 +14174,32 @@ mcp_servers:
         )
         .expect("write config");
 
+        let repositories =
+            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
+        let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
+        let registration = sync_june_github_mcp_with_dependencies(
+            "/tmp/hermes/bin/hermes",
+            Ok(valid_github_app_config()),
+            &TestGitHubTokenVault::present(),
+            &repositories,
+            mcp_dir.path(),
+        )
+        .await;
+        let github_available = sync_test_config_for_github_registration(home.path(), registration)
+            .expect("sync bridge config");
+        sync_june_soul(home.path(), false, false, false, false, github_available)
+            .expect("sync soul");
+
         assert_eq!(
             hermes_interactive_toolsets(&config_path),
             vec!["web", "no_mcp"]
         );
+        assert!(!github_available);
+        let config = std::fs::read_to_string(&config_path).expect("read config");
+        assert!(config.contains("  june_github:\n"));
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(!soul.contains("GitHub tools:"));
+        assert!(!soul.contains("`june_github`"));
     }
 
     #[test]
@@ -13977,14 +14296,37 @@ mcp_servers:
         assert_eq!(rendered.matches("github-token").count(), 1);
     }
 
-    #[test]
-    fn github_registration_failure_does_not_wedge_bridge_start() {
-        let registered = github_mcp_registration_or_none(Err(AppError::new(
-            "github_token_store_unavailable",
-            "provider body and tokens must not be logged",
-        )));
+    #[tokio::test]
+    async fn github_registration_failure_does_not_wedge_bridge_start() {
+        let home = tempfile::tempdir().expect("Hermes home");
+        let repositories =
+            github_registration_repositories("connected", TEST_GITHUB_READ_PERMISSIONS, true).await;
+        let mcp_dir = tempfile::tempdir().expect("MCP tempdir");
+        let failed_registration = sync_june_github_mcp_with_dependencies(
+            "/tmp/hermes/bin/hermes",
+            Ok(valid_github_app_config()),
+            &TestGitHubTokenVault::storage_error(),
+            &repositories,
+            mcp_dir.path(),
+        )
+        .await;
 
-        assert!(registered.is_none());
+        let github_available =
+            sync_test_config_for_github_registration(home.path(), failed_registration)
+                .expect("non-GitHub bridge config must still sync");
+        sync_june_soul(home.path(), false, false, false, false, github_available)
+            .expect("non-GitHub soul must still sync");
+
+        assert!(!github_available);
+        let config =
+            std::fs::read_to_string(home.path().join("config.yaml")).expect("read bridge config");
+        assert!(config.contains("model:\n"));
+        assert!(config.contains("  june_context:\n"));
+        assert!(config.contains("  june_web:\n"));
+        assert!(!config.contains("  june_github:\n"));
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are June"));
+        assert!(!soul.contains("GitHub tools:"));
     }
 
     #[test]
