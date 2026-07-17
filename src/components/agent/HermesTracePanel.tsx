@@ -1,9 +1,10 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { IconConsole } from "central-icons/IconConsole";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
-import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import type { HermesTraceBuffer, HermesTraceEntry } from "../../lib/hermes-trace-buffer";
 import type { JuneHermesEventKind } from "../../lib/hermes-control-plane";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
+import { HoverTip } from "../ui/HoverTip";
 
 /**
  * Dev/debug-only inspector for the raw Hermes wire (feature 15). Renders the
@@ -38,6 +39,17 @@ export function HermesTracePanel({
 
   const [sessionFilter, setSessionFilter] = useState<string | undefined>(sessionId);
   const [kindFilter, setKindFilter] = useState<TraceKindFilter>("all");
+  const [copied, setCopied] = useState(false);
+  const copyResetTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const sessionIds = useMemo(
     // `version` is the change signal; the buffer read returns live state.
@@ -64,6 +76,14 @@ export function HermesTracePanel({
     const bundle = buffer.exportSanitizedTrace(activeSession);
     try {
       await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
+      setCopied(true);
+      if (copyResetTimerRef.current !== undefined) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = window.setTimeout(() => {
+        setCopied(false);
+        copyResetTimerRef.current = undefined;
+      }, 1600);
     } catch {
       // Clipboard can reject (permissions, headless); a dev tool swallows it.
     }
@@ -107,14 +127,24 @@ export function HermesTracePanel({
               ))}
             </select>
           </label>
-          <button
-            type="button"
-            className="hermes-trace-panel-button"
-            onClick={() => void copyTrace()}
+          <HoverTip
+            compact
+            width={112}
+            tip={copied ? "Copied" : "Copy trace"}
+            forceOpen={copied}
+            className="hermes-trace-copy-tip"
           >
-            <IconArrowInbox size={14} aria-hidden="true" />
-            Copy trace
-          </button>
+            <button
+              type="button"
+              className="hermes-trace-panel-button"
+              aria-label={copied ? "Trace copied" : "Copy trace"}
+              data-copied={copied ? "true" : undefined}
+              onClick={() => void copyTrace()}
+            >
+              <CopyStateIcon copied={copied} />
+              Copy trace
+            </button>
+          </HoverTip>
           <button
             type="button"
             className="hermes-trace-panel-button hermes-trace-panel-close"

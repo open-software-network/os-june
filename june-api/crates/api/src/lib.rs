@@ -83,6 +83,10 @@ pub fn router(state: ApiState) -> Router {
             axum::routing::delete(handlers::share::revoke_invite),
         )
         .route("/v1/shares/{share_id}/view", get(handlers::share::view))
+        .route(
+            "/v1/shares/{share_id}/link-view",
+            get(handlers::share::link_view),
+        )
         .route("/v1/models", get(handlers::models::list_models))
         .route(
             "/v1/computer-use/rollout",
@@ -143,6 +147,56 @@ pub fn router(state: ApiState) -> Router {
             // The request span carries the calling app version so a deploy
             // that hurts only older shipped clients shows up in logs as a
             // per-version error spike instead of support tickets.
+            TraceLayer::new_for_http().make_span_with(|request: &Request| {
+                let app_version = request
+                    .headers()
+                    .get(JUNE_APP_VERSION_HEADER)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                tracing::info_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    version = ?request.version(),
+                    app_version,
+                )
+            }),
+        )
+        .layer(CorsLayer::new())
+        .with_state(state)
+}
+
+/// Read-only surface for the isolated `june.link` CVM.
+///
+/// Keeping this router separate is a deployment boundary, not just a UI
+/// convention: the short-link origin can render/decrypt shares and complete
+/// legacy recipient sign-in, but it cannot create, mutate, or delete shares
+/// and cannot invoke any inference or reporting endpoint.
+pub fn viewer_router(state: ApiState) -> Router {
+    let limits = state.limits();
+    let timeout = ServiceBuilder::new()
+        .layer(HandleErrorLayer::new(handle_timeout_error))
+        .layer(TimeoutLayer::new(Duration::from_secs(
+            limits.request_timeout_secs,
+        )));
+    Router::new()
+        .route("/livez", get(handlers::health::livez))
+        .route("/readyz", get(handlers::health::readyz))
+        .route("/healthz", get(handlers::health::healthz))
+        .route("/verify", get(handlers::verify::verify))
+        .route("/robots.txt", get(handlers::share_viewer::robots))
+        .route("/s/{share_id}", get(handlers::share_viewer::shell))
+        .route(
+            "/v1/share-viewer/token",
+            post(handlers::share_viewer::token_exchange),
+        )
+        .route("/v1/shares/{share_id}/view", get(handlers::share::view))
+        .route(
+            "/v1/shares/{share_id}/link-view",
+            get(handlers::share::link_view),
+        )
+        .layer(timeout)
+        .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request| {
                 let app_version = request
                     .headers()

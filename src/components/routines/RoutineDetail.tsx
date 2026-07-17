@@ -257,7 +257,11 @@ export function RoutineDetail({
     let triggerAccount: ConnectorAccount | undefined;
     const switchingToEvent = triggerChanged && trigger.source !== "schedule";
     if (switchingToEvent) {
-      triggerAccount = accounts.find((entry) => entry.status === "connected");
+      // Google only: triggers poll Gmail/Calendar, so a connected Linear
+      // workspace must never be picked as the trigger account.
+      triggerAccount = accounts.find(
+        (entry) => entry.provider === "google" && entry.status === "connected",
+      );
       if (!triggerAccount) {
         toast.error("Connect a Google account before using an event trigger.");
         return;
@@ -631,10 +635,14 @@ export function RoutineDetail({
                 <TriggerPicker
                   trigger={trigger}
                   scheduleDraft={draft}
-                  hasAccount={accounts.some((entry) => entry.status === "connected")}
+                  hasAccount={accounts.some(
+                    (entry) => entry.provider === "google" && entry.status === "connected",
+                  )}
                   scopeWarning={triggerScopeWarning(
                     trigger,
-                    accounts.find((entry) => entry.status === "connected")?.scopes ?? null,
+                    accounts.find(
+                      (entry) => entry.provider === "google" && entry.status === "connected",
+                    )?.scopes ?? null,
                   )}
                   onTriggerChange={changeTrigger}
                   onScheduleChange={setDraft}

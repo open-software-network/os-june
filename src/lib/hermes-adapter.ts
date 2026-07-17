@@ -1,7 +1,10 @@
+import { stripProjectContextFromPreview } from "./agent-project-context";
 import {
   deleteHermesBridgeSession,
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
+  shareDelete,
+  shareKeyGet,
   type HermesSessionInfo,
   type HermesSessionMessage,
 } from "./tauri";
@@ -40,6 +43,14 @@ export async function listHermesSessionMessages(sessionId: string) {
 }
 
 export async function deleteHermesSession(sessionId: string) {
+  // Revoke any share for this session before deleting it, so its server-side
+  // ciphertext and invite ACL don't outlive the session: once it's gone the
+  // owner has no Share dialog left to revoke from, and recipient links would
+  // keep opening. Fail closed - a failed revoke keeps the session.
+  const share = await shareKeyGet("session", sessionId);
+  if (share) {
+    await shareDelete(share.shareId);
+  }
   await deleteHermesBridgeSession(sessionId);
 }
 
@@ -47,8 +58,18 @@ export function normalizeHermesSessionsResponse(response: unknown) {
   return extractList(response, "sessions")
     .filter(isHermesSessionInfo)
     .filter((session) => !isDelegatedSubagentSession(session))
+    .map(withoutProjectContextPreview)
     .map(withScheduledRunDisplay)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
+}
+
+/** Hermes previews snippet the raw prompt text, which for project-filed
+ * sessions opens with the injected project-context block — never show that
+ * (or the instructions inside it) in session lists. */
+function withoutProjectContextPreview(session: HermesSessionInfo): HermesSessionInfo {
+  const preview = stripProjectContextFromPreview(session.preview ?? undefined);
+  if (preview === (session.preview ?? undefined)) return session;
+  return { ...session, preview };
 }
 
 function isDelegatedSubagentSession(session: HermesSessionInfo) {

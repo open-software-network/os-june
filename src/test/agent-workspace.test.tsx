@@ -10,6 +10,7 @@ import {
   AgentWorkspace,
   HERO_GREETINGS,
   SkillsToolsPanel,
+  canShareAgentSession,
   composerInSteerStateFor,
   generatedImagePathAliases,
   projectAgentActivityLevels,
@@ -105,6 +106,7 @@ const mocks = vi.hoisted(() => ({
   releaseAgentRunSettlement: vi.fn(),
   startAgentRunMonitoring: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
+  gatewayCloseHandlers: new Set<() => void>(),
   gatewayInstances: [] as Array<{
     connect: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -230,7 +232,10 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
       mocks.gatewayEventHandlers.add(handler);
       return () => mocks.gatewayEventHandlers.delete(handler);
     });
-    onClose = vi.fn(() => vi.fn());
+    onClose = vi.fn((handler: () => void) => {
+      mocks.gatewayCloseHandlers.add(handler);
+      return () => mocks.gatewayCloseHandlers.delete(handler);
+    });
     request = mocks.gatewayRequest;
   },
 }));
@@ -468,6 +473,7 @@ describe("AgentWorkspace", () => {
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
     mocks.gatewayEventHandlers.clear();
+    mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
@@ -627,6 +633,9 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
+      if (method === "approval.respond") {
+        return Promise.resolve({ resolved: 1 });
+      }
       return Promise.resolve({});
     });
   });
@@ -651,6 +660,24 @@ describe("AgentWorkspace", () => {
     expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
   });
 
+  it("keeps a session waiting while any distinct pending action remains", () => {
+    const projection = projectAgentActivityLevels([
+      {
+        id: "session-1",
+        mode: "sandboxed",
+        sessionId: "session-1",
+        phase: "running",
+        pendingActionCount: 1,
+        subagentCount: 0,
+        subagents: [],
+        lastEventAt: 1,
+      },
+    ]);
+
+    expect(projection.waitingSessionIds).toEqual(new Set(["session-1"]));
+    expect(projection.workingSessionIds).toEqual(new Set());
+  });
+
   it("scopes an in-flight submit's steer state to its owning session", () => {
     const base = {
       provisional: false,
@@ -662,6 +689,19 @@ describe("AgentWorkspace", () => {
 
     expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-1" })).toBe(true);
     expect(composerInSteerStateFor({ ...base, selectedSessionId: "session-2" })).toBe(false);
+  });
+
+  it("allows sharing only after a selected session has finished working", () => {
+    const readySession = {
+      selectedSessionId: "session-1",
+      newSessionMode: false,
+      provisional: false,
+      historyLoaded: true,
+      working: false,
+    };
+
+    expect(canShareAgentSession(readySession)).toBe(true);
+    expect(canShareAgentSession({ ...readySession, working: true })).toBe(false);
   });
 
   it("lets users cancel a clean skill editor without making changes", async () => {
@@ -959,6 +999,30 @@ describe("AgentWorkspace", () => {
     } finally {
       window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
     }
+  });
+
+  it("shows project instructions only for a project-filed session", async () => {
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Project instructions" })).toBeNull();
+
+    view.rerender(
+      <AgentWorkspace
+        initialSession={existingSession}
+        sessionInProject
+        projectContext={{
+          id: "project-1",
+          name: "Launch",
+          instructions: "Keep launch risks visible.",
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project instructions" }));
+    const dialog = screen.getByRole("dialog", { name: "Launch instructions" });
+    expect(within(dialog).getByText("Keep launch risks visible.")).toBeInTheDocument();
   });
 
   it("opens the issue report dialog without submitting", async () => {
@@ -6063,12 +6127,26 @@ describe("AgentWorkspace", () => {
       expect(userTurn).not.toBeNull();
       expect(assistantTurn).not.toBeNull();
 
-      await user.click(
-        within(assistantTurn as HTMLElement).getByRole("button", {
-          name: "Copy message",
-        }),
-      );
+      const assistantCopy = within(assistantTurn as HTMLElement).getByRole("button", {
+        name: "Copy message",
+      });
+      const iconSwap = assistantCopy.querySelector(".t-icon-swap");
+      const idleIcon = iconSwap?.querySelector('[data-icon="a"]');
+      const copiedIcon = iconSwap?.querySelector('[data-icon="b"]');
+
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+      expect(idleIcon).toBeInTheDocument();
+      expect(copiedIcon).toBeInTheDocument();
+      fireEvent.focus(assistantCopy);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copy message");
+
+      await user.click(assistantCopy);
       expect(writeText).toHaveBeenLastCalledWith("Here is the launch plan.");
+      expect(assistantCopy).toHaveAccessibleName("Copied message");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(iconSwap?.querySelector('[data-icon="a"]')).toBe(idleIcon);
+      expect(iconSwap?.querySelector('[data-icon="b"]')).toBe(copiedIcon);
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
 
       await user.click(
         within(userTurn as HTMLElement).getByRole("button", {
@@ -8208,6 +8286,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
         session_id: "runtime-session-2",
+        request_id: "approval-runtime",
         choice: "once",
       }),
     );
@@ -8215,6 +8294,454 @@ describe("AgentWorkspace", () => {
       expect(
         pendingActionStore.openRecords().some((record) => record.requestId === "approval-runtime"),
       ).toBe(false),
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+  });
+
+  it("keeps the session waiting until every distinct inbound approval resolves", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        for (const requestId of ["approval-a", "approval-b"]) {
+          handler({
+            type: "approval.request",
+            session_id: "runtime-session-2",
+            payload: {
+              request_id: requestId,
+              description: `Approve ${requestId}?`,
+              allow_permanent: false,
+            },
+          });
+        }
+      }
+    });
+
+    expect(
+      pendingActionStore
+        .openRecords()
+        .filter((record) => record.sessionId === "session-2" && record.action.kind === "approval"),
+    ).toHaveLength(2);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.response",
+          session_id: "runtime-session-2",
+          payload: { request_id: "approval-a", choice: "once" },
+        });
+      }
+    });
+
+    expect(pendingActionStore.openRecords().map((record) => record.requestId)).toContain(
+      "approval-b",
+    );
+    expect(pendingActionStore.openRecords().map((record) => record.requestId)).not.toContain(
+      "approval-a",
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "waitingForUser" }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.response",
+          session_id: "runtime-session-2",
+          payload: { request_id: "approval-b", choice: "deny" },
+        });
+      }
+    });
+
+    expect(
+      pendingActionStore.openRecords().some((record) => record.sessionId === "session-2"),
+    ).toBe(false);
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "running" }),
+    );
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("denies only the targeted approval and records the outcome", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-deny",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Deny" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        request_id: "mcp-deny",
+        choice: "deny",
+      }),
+    );
+    expect(await screen.findByText("Denied")).toBeInTheDocument();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-deny")).toBe(
+      false,
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+  });
+
+  it("fails closed when a targeted approval is no longer pending", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "approval.respond") return Promise.resolve({ resolved: 0 });
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-stale",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText("Approval expired")).toBeInTheDocument();
+    expect(
+      await screen.findByText("This approval is no longer pending. June did not approve anything."),
+    ).toBeInTheDocument();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-stale")).toBe(
+      false,
+    );
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails.at(-1)).toEqual(
+      expect.objectContaining({
+        sessionId: "session-2",
+        status: "running",
+        summary: "June is working.",
+      }),
+    );
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it.each([
+    ["null", null],
+    ["empty", {}],
+    ["invalid", { resolved: 2 }],
+  ])("keeps an approval pending when the gateway response is malformed: %s", async (responseKind, gatewayResponse) => {
+    const requestId = `mcp-indeterminate-${responseKind}`;
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "approval.respond") return Promise.resolve(gatewayResponse);
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: requestId,
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "June could not confirm the approval outcome. Reconnect, then try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Approval expired")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled());
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === requestId)).toBe(true);
+  });
+
+  it("retires a timed-out approval without approving it", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-expired",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.expire",
+          session_id: "runtime-session-2",
+          payload: { request_id: "mcp-expired", reason: "timeout" },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval expired")).toBeInTheDocument();
+    expect(screen.getByText(/June did not approve anything/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-expired")).toBe(
+      false,
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
+  });
+
+  it("retires an approval across an unexpected close and does not reopen its replay", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-reconnect",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("waiting");
+
+    act(() => {
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-2",
+        cols: 96,
+      }),
+    );
+    expect(await screen.findByText("Approval expired")).toBeInTheDocument();
+    expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
+    expect(statusDetails).toContainEqual(
+      expect.objectContaining({
+        sessionId: "session-2",
+        status: "running",
+        summary: "June is working.",
+      }),
+    );
+    const activityProjection = projectAgentActivityLevels(hermesActivityStore.getRecords());
+    expect(activityProjection.waitingSessionIds.has("session-2")).toBe(false);
+    expect(activityProjection.workingSessionIds.has("session-2")).toBe(true);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-1",
+          payload: {
+            request_id: "mcp-reconnect",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+
+    expect(screen.getAllByText("Approval expired")).toHaveLength(1);
+    expect(screen.queryByText("Approval required")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-reconnect")).toBe(
+      false,
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("retires an in-flight approval response without claiming its outcome after disconnect", async () => {
+    const user = userEvent.setup();
+    let rejectApproval: ((error: Error) => void) | undefined;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "approval.respond") {
+        return new Promise((_resolve, reject) => {
+          rejectApproval = reject;
+        });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "connect Todoist" }),
+    );
+    render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "connect Todoist",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "mcp-in-flight",
+            description: "Connect Todoist?",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("approval.respond", {
+        session_id: "runtime-session-2",
+        request_id: "mcp-in-flight",
+        choice: "once",
+      }),
+    );
+
+    // The real gateway rejects pending RPCs immediately before invoking its
+    // close handlers. The response may nevertheless have reached Hermes.
+    act(() => {
+      rejectApproval?.(new Error("Hermes gateway connection closed."));
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+
+    expect(await screen.findByText("Approval outcome unknown")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /This approval is no longer actionable, but it may have already been applied/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Approval expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/June did not approve anything/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(pendingActionStore.openRecords().some((row) => row.requestId === "mcp-in-flight")).toBe(
+      false,
     );
   });
 
@@ -10364,6 +10891,71 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
         true,
       ),
+    );
+  });
+
+  it("counts injected project context in the composer size warning", async () => {
+    // Regression: prompt.submit prepends the `[June project context]` block for
+    // a project-filed session, but the guard used to estimate the pre-injection
+    // text. A short prompt that fits the model alone can go over once a project
+    // with long instructions is injected, so the send bypassed the warning and
+    // failed only after submit. The base prompt here is well under the 30-token
+    // window; only the injected block tips it over.
+    const sizeSession = {
+      id: "session-size-guard",
+      title: "Size guard session",
+      preview: "",
+      last_active: "2026-06-04T12:00:00Z",
+    };
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "short-context",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "short-context",
+      models: [
+        {
+          provider: "venice",
+          id: "short-context",
+          name: "Short context",
+          modelType: "text",
+          privacy: "private",
+          contextTokens: 30,
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AgentWorkspace
+        initialSession={sizeSession}
+        sessionInProject
+        projectContext={{
+          id: "project-size-guard",
+          name: "Launch",
+          instructions:
+            "Always surface launch risks, blockers, and the rollback plan in every reply, and keep the changelog and stakeholder list current across the whole release window.",
+        }}
+      />,
+    );
+
+    await findCurrentModelLabel("Short context");
+    // ~16 chars => ~4 tokens on its own, comfortably under the 30-token window.
+    await user.type(screen.getByRole("textbox"), "Ship the release");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText(/This message is about/)).toHaveTextContent(
+      "over Short context's 30 token context window.",
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
     );
   });
 
@@ -13118,6 +13710,16 @@ describe("AgentWorkspace", () => {
         );
       }
       expect(section?.querySelector('[role="status"], [aria-live]')).toBeNull();
+
+      const runningToolSection = screen
+        .getByRole("heading", { name: "Thinking: in progress" })
+        .closest("section");
+      expect(runningToolSection).not.toBeNull();
+      expect(
+        within(runningToolSection as HTMLElement)
+          .getByRole("status", { name: "Running" })
+          .querySelector(".dot-spinner"),
+      ).not.toBeNull();
     } finally {
       act(() => void agentGallery(false));
     }

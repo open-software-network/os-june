@@ -119,6 +119,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(|app, event| {
@@ -163,6 +164,14 @@ pub fn run() {
             commands::create_dictionary_entry,
             commands::update_dictionary_entry,
             commands::delete_dictionary_entry,
+            commands::list_memories,
+            commands::create_memory,
+            commands::update_memory,
+            commands::delete_memory,
+            commands::set_folder_instructions,
+            commands::set_folder_memory_disabled,
+            commands::memory_settings,
+            commands::set_memory_enabled,
             commands::list_agent_tasks,
             commands::create_agent_task,
             commands::get_agent_task,
@@ -176,6 +185,17 @@ pub fn run() {
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,
+            commands::share_create,
+            commands::share_list,
+            commands::share_get,
+            commands::share_add_invites,
+            commands::share_revoke_invite,
+            commands::share_delete,
+            commands::share_key_save,
+            commands::share_key_get,
+            commands::share_invite_key_save,
+            commands::share_invite_keys_get,
+            commands::get_share_base_url,
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::ensure_hermes_bridge_gateway,
             hermes_bridge::resolve_agent_recorder_request,
@@ -301,6 +321,8 @@ pub fn run() {
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,
             connectors::commands::connectors_disconnect,
+            connectors::commands::connectors_linear_teams,
+            connectors::commands::connectors_selected_teams_set,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,

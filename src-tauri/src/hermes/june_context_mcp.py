@@ -1,28 +1,38 @@
 #!/usr/bin/env python3
-"""Read-only MCP server exposing June notes and dictation context.
+"""MCP server exposing June notes, dictation context, and the June memory store.
 
 The June app writes this script into the managed Hermes home and registers it
-as the built-in `june_context` MCP server. It intentionally depends only on the
-Python standard library so it can run inside the Hermes runtime venv without
-extra packaging.
+as the built-in `june_context` MCP server. Notes and dictation stay read-only;
+memory writes go through the June app's loopback provider proxy. The server
+intentionally depends only on the Python standard library so it can run inside
+the Hermes runtime venv without extra packaging.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 PROTOCOL_VERSION = "2025-03-26"
-SERVER_INFO = {"name": "june-context", "version": "0.2.0"}
+SERVER_INFO = {"name": "june-context", "version": "0.3.0"}
 MAX_LIMIT = 20
 DEFAULT_LIMIT = 8
+# Keep in sync with MEMORY_CONTENT_MAX_CHARS in commands.rs — the proxy
+# enforces it; this only shapes the advertised tool schema.
+MEMORY_CONTENT_MAX_CHARS = 4_000
 SNIPPET_CHARS = 900
 FULL_TEXT_CHARS = 60_000
+SQLITE_BUSY_TIMEOUT_MS = 5_000
+REQUEST_TIMEOUT_SECONDS = 30
+TOKEN_ENV_VAR = "JUNE_MEMORY_PROXY_TOKEN"
 # Keep this in sync with DICTATION_HISTORY_RETENTION_DAYS in db/repositories.rs.
 DICTATION_HISTORY_RETENTION_DAYS = 7
 
@@ -204,19 +214,77 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["note_id"],
         },
     },
+    {
+        "name": "save_memory",
+        "description": (
+            "Save a durable fact, preference, or decision in June's memory "
+            "store. Pass the project id from the June project context when "
+            "the memory belongs to that project; otherwise omit it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "maxLength": MEMORY_CONTENT_MAX_CHARS},
+                "project_id": {"type": "string"},
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "list_memories",
+        "description": (
+            "Recall durable facts, preferences, and decisions from June's "
+            "memory store. Pass the current project id to include that "
+            "project's memories; global memories are included by default. "
+            "Results are newest-first and paginated; use next_offset to "
+            "request another page when has_more is true."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "include_global": {"type": "boolean", "default": True},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "default": DEFAULT_LIMIT,
+                },
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+        },
+    },
+    {
+        "name": "forget_memory",
+        "description": (
+            "Permanently forget one memory by id. Use this when the user asks "
+            "June to forget something previously saved."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
 ]
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        raise SystemExit("Usage: june_context_mcp.py <notes.sqlite3>")
+    if len(sys.argv) < 4:
+        raise SystemExit(
+            "Usage: june_context_mcp.py <notes.sqlite3> <memory-settings.json> "
+            "<proxy_base_url>"
+        )
 
     db_path = Path(sys.argv[1]).expanduser()
+    settings_path = Path(sys.argv[2]).expanduser()
+    base_url = sys.argv[3].rstrip("/")
+    token = os.environ.get(TOKEN_ENV_VAR, "")
     while True:
         message = read_message()
         if message is None:
             return
-        response = handle_message(db_path, message)
+        response = handle_message(db_path, settings_path, base_url, token, message)
         if response is not None:
             write_message(response)
 
@@ -257,7 +325,13 @@ def write_message(payload: dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def handle_message(db_path: Path, message: dict[str, Any]) -> dict[str, Any] | None:
+def handle_message(
+    db_path: Path,
+    settings_path: Path,
+    base_url: str,
+    token: str,
+    message: dict[str, Any],
+) -> dict[str, Any] | None:
     method = message.get("method")
     request_id = message.get("id")
 
@@ -277,14 +351,28 @@ def handle_message(db_path: Path, message: dict[str, Any]) -> dict[str, Any] | N
     if method == "tools/list":
         return response(request_id, {"tools": TOOLS})
     if method == "tools/call":
-        return call_tool(db_path, request_id, message.get("params") or {})
+        return call_tool(
+            db_path,
+            settings_path,
+            base_url,
+            token,
+            request_id,
+            message.get("params") or {},
+        )
 
     if request_id is None:
         return None
     return error_response(request_id, -32601, f"Unknown method: {method}")
 
 
-def call_tool(db_path: Path, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+def call_tool(
+    db_path: Path,
+    settings_path: Path,
+    base_url: str,
+    token: str,
+    request_id: Any,
+    params: dict[str, Any],
+) -> dict[str, Any]:
     name = params.get("name")
     arguments = params.get("arguments") or {}
     try:
@@ -294,6 +382,12 @@ def call_tool(db_path: Path, request_id: Any, params: dict[str, Any]) -> dict[st
             result = search_dictation_history(db_path, arguments)
         elif name == "get_meeting_note":
             result = get_meeting_note(db_path, arguments)
+        elif name == "save_memory":
+            result = proxy_json(base_url, token, "/memory/save", arguments)
+        elif name == "list_memories":
+            result = list_memories(db_path, settings_path, arguments)
+        elif name == "forget_memory":
+            result = proxy_json(base_url, token, "/memory/forget", arguments)
         else:
             return error_response(request_id, -32602, f"Unknown tool: {name}")
     except Exception as exc:
@@ -518,6 +612,148 @@ def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[s
     return {"query": query, "count": len(items), "items": items}
 
 
+def list_memories(
+    db_path: Path, settings_path: Path, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    disabled = memory_disabled_result(settings_path)
+    if disabled:
+        return disabled
+
+    project_id, project_error = memory_project_id(arguments)
+    if project_error:
+        return project_error
+    include_global = arguments.get("include_global", True)
+    if not isinstance(include_global, bool):
+        return memory_error(
+            "memory_include_global_invalid", "include_global must be a boolean."
+        )
+    limit = bounded_limit(arguments.get("limit"))
+    offset = nonnegative_offset(arguments.get("offset"))
+    if not db_path.exists():
+        return memory_page([], limit, offset)
+
+    with connect_readonly(db_path) as conn:
+        conn.execute("BEGIN")
+        if project_id is not None:
+            scope_error = memory_scope_error(conn, project_id)
+            if scope_error:
+                conn.rollback()
+                return scope_error
+        if project_id is None:
+            rows = conn.execute(
+                """SELECT id, folder_id, content, created_at
+                   FROM memories
+                   WHERE folder_id IS NULL
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""",
+                [limit + 1, offset],
+            ).fetchall()
+        elif include_global:
+            rows = conn.execute(
+                """SELECT id, folder_id, content, created_at
+                   FROM memories
+                   WHERE folder_id = ? OR folder_id IS NULL
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""",
+                [project_id, limit + 1, offset],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT id, folder_id, content, created_at
+                   FROM memories
+                   WHERE folder_id = ?
+                   ORDER BY created_at DESC, rowid DESC
+                   LIMIT ? OFFSET ?""",
+                [project_id, limit + 1, offset],
+            ).fetchall()
+        conn.commit()
+
+    return memory_page(rows, limit, offset)
+
+
+def memory_page(
+    rows: list[sqlite3.Row], limit: int, offset: int
+) -> dict[str, Any]:
+    page_rows = rows[:limit]
+    items = [
+        memory_item(row["id"], row["folder_id"], row["content"], row["created_at"])
+        for row in page_rows
+    ]
+    has_more = len(rows) > limit
+    return {
+        "count": len(items),
+        "items": items,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + len(items) if has_more else None,
+    }
+
+
+def memory_project_id(
+    arguments: dict[str, Any],
+) -> tuple[str | None, dict[str, Any] | None]:
+    project_id = arguments.get("project_id")
+    if project_id is None:
+        return None, None
+    if not isinstance(project_id, str) or not project_id.strip():
+        return None, memory_error(
+            "folder_not_found", "Project was not found or has already been deleted."
+        )
+    return project_id.strip(), None
+
+
+def memory_scope_error(
+    conn: sqlite3.Connection, project_id: str | None
+) -> dict[str, Any] | None:
+    if project_id is None:
+        return None
+    row = conn.execute(
+        "SELECT memory_disabled FROM folders WHERE id = ? AND deleted_at IS NULL",
+        [project_id],
+    ).fetchone()
+    if row is None:
+        return memory_error(
+            "folder_not_found", "Project was not found or has already been deleted."
+        )
+    if row["memory_disabled"]:
+        return memory_error("memory_disabled", "Memory is disabled for this scope.")
+    return None
+
+
+def memory_disabled_result(settings_path: Path) -> dict[str, Any] | None:
+    if memory_enabled(settings_path):
+        return None
+    return memory_error("memory_disabled", "Memory is disabled for this scope.")
+
+
+def memory_enabled(settings_path: Path) -> bool:
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    if not isinstance(settings, dict):
+        return False
+    enabled = settings.get("enabled", True)
+    return enabled if isinstance(enabled, bool) else False
+
+
+def memory_error(code: str, message: str) -> dict[str, Any]:
+    return {"error": code, "message": message}
+
+
+def memory_item(
+    memory_id: str, project_id: str | None, content: str, created_at: str
+) -> dict[str, Any]:
+    return {
+        "id": memory_id,
+        "content": content,
+        "created_at": created_at,
+        "scope": "project" if project_id is not None else "global",
+    }
+
+
 def dictation_history_cutoff_timestamp() -> str:
     """Return the retention cutoff as an RFC3339 string.
 
@@ -532,9 +768,42 @@ def dictation_history_cutoff_timestamp() -> str:
 
 def connect_readonly(db_path: Path) -> sqlite3.Connection:
     uri = f"{db_path.resolve().as_uri()}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = sqlite3.connect(uri, uri=True, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     return conn
+
+
+def proxy_json(
+    base_url: str,
+    token: str,
+    path: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    request = urllib.request.Request(
+        f"{base_url}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=REQUEST_TIMEOUT_SECONDS
+        ) as response_value:
+            return json.loads(response_value.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return {
+                "ok": False,
+                "error_code": "memory_proxy_failed",
+                "message": body or str(exc.reason),
+            }
 
 
 def bounded_limit(value: Any) -> int:
@@ -543,6 +812,14 @@ def bounded_limit(value: Any) -> int:
     except (TypeError, ValueError):
         limit = DEFAULT_LIMIT
     return max(1, min(MAX_LIMIT, limit))
+
+
+def nonnegative_offset(value: Any) -> int:
+    try:
+        offset = int(value)
+    except (TypeError, ValueError):
+        offset = 0
+    return max(0, offset)
 
 
 def capped_text(text: str) -> tuple[str, bool]:

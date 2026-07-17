@@ -24,8 +24,23 @@ export type FolderDto = {
   id: string;
   name: string;
   description?: string;
+  instructions?: string;
+  memoryDisabled: boolean;
   createdAt: string;
   updatedAt: string;
+};
+
+export type MemoryDto = {
+  id: string;
+  folderId?: string;
+  content: string;
+  source: "agent" | "user";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemorySettingsDto = {
+  enabled: boolean;
 };
 
 /** Which project (folder) an agent session is filed under. Sessions live in
@@ -56,6 +71,8 @@ export type NoteListItemDto = {
 export type TranscriptDto = {
   id: string;
   text: string;
+  recordingSessionId?: string;
+  spanId?: string;
   sourceMode?: RecordingSourceMode;
   source?: RecordingSource;
   startMs?: number;
@@ -388,6 +405,8 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Recording whose saved-audio artifacts should be used by Retry. */
+  retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
 };
@@ -835,6 +854,51 @@ export async function deleteDictionaryEntry(entryId: string) {
   return invoke<void>("delete_dictionary_entry", {
     request: { entryId },
   });
+}
+
+export async function listMemories(folderId?: string, includeGlobal = false) {
+  return invoke<MemoryDto[]>("list_memories", {
+    folderId,
+    includeGlobal,
+  });
+}
+
+export async function createMemory(input: {
+  folderId?: string;
+  content: string;
+  source: "agent" | "user";
+}) {
+  return invoke<MemoryDto>("create_memory", input);
+}
+
+export async function updateMemory(id: string, content: string) {
+  return invoke<MemoryDto>("update_memory", { id, content });
+}
+
+export async function deleteMemory(id: string) {
+  return invoke<void>("delete_memory", { id });
+}
+
+export async function setFolderInstructions(folderId: string, instructions?: string) {
+  return invoke<FolderDto>("set_folder_instructions", {
+    folderId,
+    instructions,
+  });
+}
+
+export async function setFolderMemoryDisabled(folderId: string, disabled: boolean) {
+  return invoke<FolderDto>("set_folder_memory_disabled", {
+    folderId,
+    disabled,
+  });
+}
+
+export async function memorySettings() {
+  return invoke<MemorySettingsDto>("memory_settings");
+}
+
+export async function setMemoryEnabled(enabled: boolean) {
+  return invoke<MemorySettingsDto>("set_memory_enabled", { enabled });
 }
 
 export async function listAgentTasks() {
@@ -1599,9 +1663,11 @@ export async function resolveAgentRecorderRequest(request: ResolveAgentRecorderR
   return invoke<void>("resolve_agent_recorder_request", { request });
 }
 
-export async function retryProcessing(noteId: string) {
+export async function retryProcessing(noteId: string, recordingSessionId?: string) {
   return invoke<NoteDto>("retry_processing", {
-    request: { noteId, step: "all" },
+    request: recordingSessionId
+      ? { noteId, step: "all", recordingSessionId }
+      : { noteId, step: "all" },
   });
 }
 
@@ -1982,7 +2048,7 @@ export async function latestDictationEvent() {
 }
 
 // ---------------------------------------------------------------------------
-// Private Google connectors (local mode)
+// Private connectors (local mode): Google and Linear
 // ---------------------------------------------------------------------------
 
 /** Feature bundle wire names the connect flow requests. Mirrors the Rust
@@ -1993,19 +2059,46 @@ export type ConnectorScopeBundle =
   | "gmail_modify"
   | "gmail_send"
   | "calendar_read"
-  | "calendar_events";
+  | "calendar_events"
+  | "linear_read"
+  | "linear_write";
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required";
 
-/** One connected Google account, as the connectors module reports it. Carries
- * only metadata (email, granted scope URLs, health) — never a token. */
+export type ConnectorProvider = "google" | "linear";
+
+/** One Linear team: the granularity June's Linear read/write access is
+ * scoped to. Returned both by the live team list and on the account once
+ * selected. */
+export type LinearTeam = {
+  id: string;
+  key: string;
+  name: string;
+};
+
+/** One connected connector account, as the connectors module reports it.
+ * Carries only metadata (identity, granted scopes, health) — never a token.
+ * Google rows leave `workspaceName`/`workspaceUrlKey` null and
+ * `selectedTeams` empty. A Linear row's `accountId` is the Linear workspace
+ * id (an opaque UUID, not an email); `email` is the signed-in Linear user's
+ * email and may be empty. */
 export type ConnectorAccount = {
   accountId: string;
-  provider: "google";
+  provider: ConnectorProvider;
   email: string;
-  /** Granted Google scope URLs (not bundle names). */
+  /** Granted scope identifiers: Google's full auth URLs, Linear's short
+   * scope names ("read", "write") — not bundle names. */
   scopes: string[];
   status: ConnectorAccountStatus;
+  /** Linear workspace display name; null for Google rows. */
+  workspaceName: string | null;
+  /** Linear workspace URL key (the org's linear.app subdomain segment);
+   * null for Google rows. */
+  workspaceUrlKey: string | null;
+  /** Linear teams June may read/write on this workspace. Empty for Google
+   * rows, and for a fresh Linear connect before the user finishes team
+   * selection. */
+  selectedTeams: LinearTeam[];
 };
 
 /** Per-routine trust mode for connector action tools. Distinct from the
@@ -2110,15 +2203,19 @@ export async function connectorsList() {
   return invoke<ConnectorAccount[]>("connectors_list");
 }
 
-/** Runs the Google OAuth connect flow for the given feature bundles. Blocks
- * until the browser flow completes (the Rust side enforces a 300s timeout).
- * `loginHint` pre-selects the Google account, for reconnects. */
+/** Runs the OAuth connect flow for the given provider and feature bundles.
+ * Blocks until the browser flow completes (the Rust side enforces a 300s
+ * timeout). `provider` defaults to Google on the Rust side when omitted.
+ * `loginHint` pre-selects the account to reconnect or add scope to: a Google
+ * email for Google, the workspace's `accountId` for Linear (Linear
+ * escalates by workspace, not by user email). */
 export async function connectorsConnect(input: {
   scopes: ConnectorScopeBundle[];
   loginHint?: string;
+  provider?: ConnectorProvider;
 }) {
   return invoke<ConnectorAccount>("connectors_connect", {
-    request: { scopes: input.scopes, loginHint: input.loginHint },
+    request: { scopes: input.scopes, loginHint: input.loginHint, provider: input.provider },
   });
 }
 
@@ -2127,15 +2224,48 @@ export async function connectorsCancelConnect() {
 }
 
 /** Removes a connected account. With `revoke`, also revokes June's grant with
- * Google before clearing the Keychain item. */
+ * the provider before clearing the Keychain item. */
 export async function connectorsDisconnect(input: { accountId: string; revoke: boolean }) {
   return invoke<void>("connectors_disconnect", {
     request: { accountId: input.accountId, revoke: input.revoke },
   });
 }
 
+/** The live team listing for the selection dialog. `truncated` means the
+ * Rust side's pagination cap cut the listing short, so the UI must not
+ * present it as the complete team inventory. */
+export type LinearTeamsResult = {
+  teams: LinearTeam[];
+  truncated: boolean;
+};
+
+/** Lists the Linear teams the connected workspace's user can see, for the
+ * team-selection dialog. A live call, not cached client-side: a workspace's
+ * teams can change between visits. */
+export async function connectorsLinearTeams(input: { accountId: string }) {
+  return invoke<LinearTeamsResult>("connectors_linear_teams", {
+    request: { accountId: input.accountId },
+  });
+}
+
+/** Persists which Linear teams June may read/write on this workspace.
+ * Returns the updated account with `selectedTeams` set. The Rust side
+ * rejects an empty team list, so a workspace mid-setup stays in the
+ * "unfinished" state rather than recording zero teams on purpose. */
+export async function connectorsSetSelectedTeams(input: {
+  accountId: string;
+  teams: LinearTeam[];
+}) {
+  return invoke<ConnectorAccount>("connectors_selected_teams_set", {
+    request: { accountId: input.accountId, teams: input.teams },
+  });
+}
+
 /** Restarts the Hermes runtimes so a connect/disconnect/grant change lands in
- * the rendered MCP config. Call after connectorsConnect resolves. */
+ * the rendered MCP config. Call after connectorsConnect resolves for BOTH
+ * providers: Google registers its four servers, and Linear registers
+ * june_linear plus june_linear_actions once the workspace has selected
+ * teams. */
 export async function connectorsApplyRuntime() {
   return invoke<void>("connectors_apply_runtime");
 }
@@ -2276,4 +2406,123 @@ export async function respondComputerUseApproval(input: { approvalId: string; ap
 
 export function computerUseCaptureSrc(path: string) {
   return convertFileSrc(path);
+}
+
+// ---- Private sharing (JUN-308) -------------------------------------------
+// Owner-side share commands. Ciphertext, IVs, envelopes, and locally stored
+// keys cross the IPC boundary as base64url strings; plaintext and unwrapped
+// keys never leave the webview (see src/lib/share-crypto.ts).
+
+export type ShareKind = "note" | "session";
+
+export type ShareInviteState = "pending" | "accepted" | "revoked";
+
+export type ShareInvitePayload = {
+  email: string;
+  envelopeB64: string;
+  envelopeIvB64: string;
+};
+
+export type ShareCreatedInviteDto = {
+  inviteId: string;
+  email: string;
+};
+
+export type ShareCreatedDto = {
+  shareId: string;
+  invites: ShareCreatedInviteDto[];
+};
+
+// `POST /v1/shares/{id}/invites` returns only the new invites (no shareId).
+export type ShareInvitesAddedDto = {
+  invites: ShareCreatedInviteDto[];
+};
+
+// `GET /v1/shares` returns summaries only; invites live on the detail response.
+export type ShareSummaryDto = {
+  shareId: string;
+  kind: ShareKind;
+  createdAt?: string;
+};
+
+export type ShareInviteDto = {
+  inviteId: string;
+  email: string;
+  state: ShareInviteState;
+  lastAccessAt?: string;
+};
+
+export type ShareDto = {
+  shareId: string;
+  kind: ShareKind;
+  createdAt?: string;
+  invites: ShareInviteDto[];
+};
+
+export type ShareKeyDto = {
+  shareId: string;
+  contentKeyB64: string;
+};
+
+export type ShareInviteKeyDto = {
+  inviteId: string;
+  inviteKeyB64: string;
+};
+
+export async function shareCreate(input: {
+  kind: ShareKind;
+  ciphertextB64: string;
+  ivB64: string;
+  invites: ShareInvitePayload[];
+}) {
+  return invoke<ShareCreatedDto>("share_create", { request: input });
+}
+
+export async function shareList() {
+  return invoke<ShareSummaryDto[]>("share_list");
+}
+
+export async function shareGet(shareId: string) {
+  return invoke<ShareDto>("share_get", { request: { shareId } });
+}
+
+export async function shareAddInvites(shareId: string, invites: ShareInvitePayload[]) {
+  return invoke<ShareInvitesAddedDto>("share_add_invites", { request: { shareId, invites } });
+}
+
+export async function shareRevokeInvite(shareId: string, inviteId: string) {
+  return invoke<void>("share_revoke_invite", { request: { shareId, inviteId } });
+}
+
+export async function shareDelete(shareId: string) {
+  return invoke<void>("share_delete", { request: { shareId } });
+}
+
+export async function shareKeySave(input: {
+  shareId: string;
+  itemKind: ShareKind;
+  itemId: string;
+  contentKeyB64: string;
+}) {
+  return invoke<void>("share_key_save", { request: input });
+}
+
+export async function shareKeyGet(itemKind: ShareKind, itemId: string) {
+  return invoke<ShareKeyDto | null>("share_key_get", { request: { itemKind, itemId } });
+}
+
+export async function shareInviteKeySave(input: {
+  inviteId: string;
+  shareId: string;
+  inviteKeyB64: string;
+}) {
+  return invoke<void>("share_invite_key_save", { request: input });
+}
+
+export async function shareInviteKeysGet(shareId: string) {
+  return invoke<ShareInviteKeyDto[]>("share_invite_keys_get", { request: { shareId } });
+}
+
+export async function getShareBaseUrl() {
+  return invoke<string>("get_share_base_url");
 }

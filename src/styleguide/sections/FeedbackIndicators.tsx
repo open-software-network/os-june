@@ -37,12 +37,30 @@ export function FeedbackIndicators() {
       </p>
 
       <h2 className="sg-subheading">Spinner</h2>
+      <p className="sg-section-intro">
+        A full dot grid with a smooth highlight that climbs June's mark from bottom-left to
+        top-right, then settles briefly before the next pass. The sm and md variants use the compact
+        3×3 mark at two inline sizes; size="lg" uses the full 5×5 mark for standalone loading
+        moments. Its neutral follows the active theme and contexts can override --spinner-color.
+      </p>
       <div className="sg-row">
         <div className="sg-card">
           <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
-            <span className="sg-token-name">Spinner</span>
+            <span className="sg-token-name">Spinner (sm)</span>
           </div>
           <Spinner aria-label="Loading" />
+        </div>
+        <div className="sg-card">
+          <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
+            <span className="sg-token-name">Spinner (md)</span>
+          </div>
+          <Spinner size="md" aria-label="Loading" />
+        </div>
+        <div className="sg-card">
+          <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>
+            <span className="sg-token-name">Spinner (lg)</span>
+          </div>
+          <Spinner size="lg" aria-label="Loading" />
         </div>
         <div className="sg-card">
           <div className="sg-token-meta" style={{ marginBottom: "var(--sp-4)" }}>

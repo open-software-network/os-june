@@ -235,13 +235,14 @@ fn computer_use_signature_matches(app_dir: &std::path::Path, identity: &str) -> 
 /// placeholder keeps the build green and the app falls back to the managed
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
 ///
-/// A populated bundle carries a PIN stamp (the hermes-agent commit it was
-/// built from). When that stamp no longer matches the pin in
-/// src/hermes_bridge.rs — a developer bumped the pin after bundling — the
-/// stale bundle is evicted and replaced with the placeholder rather than
-/// silently shipping outdated runtime code.
+/// A populated bundle carries PIN and PATCHSET stamps (the hermes-agent commit
+/// and June compatibility patch it was built from). When either stamp no
+/// longer matches src/hermes_bridge.rs, the stale bundle is evicted and
+/// replaced with the placeholder rather than silently shipping outdated
+/// runtime code.
 fn ensure_bundled_hermes_dir() {
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PATCHSET");
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
@@ -262,12 +263,21 @@ fn ensure_bundled_hermes_dir() {
             .map(|raw| raw.trim().to_string())
             .unwrap_or_default();
         let pinned = hermes_agent_pinned_commit(&manifest_dir);
-        if !stamped.is_empty() && stamped == pinned {
+        let stamped_patch_set = std::fs::read_to_string(hermes_dir.join("PATCHSET"))
+            .map(|raw| raw.trim().to_string())
+            .unwrap_or_default();
+        let pinned_patch_set = hermes_runtime_patch_set(&manifest_dir);
+        if !stamped.is_empty()
+            && stamped == pinned
+            && !stamped_patch_set.is_empty()
+            && stamped_patch_set == pinned_patch_set
+        {
             return;
         }
         println!(
-            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?}, pin is \
-             {pinned:?}); evicting it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
+            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?} with patch \
+             {stamped_patch_set:?}, expected {pinned:?} with patch {pinned_patch_set:?}); evicting \
+             it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
         );
         if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {
             println!(
@@ -296,11 +306,19 @@ ship the runtime inside the app.\n";
 /// script cannot import crate constants, so this parses the declaration the
 /// same way scripts/bundle-hermes-runtime.sh does — one source of truth.
 fn hermes_agent_pinned_commit(manifest_dir: &std::path::Path) -> String {
+    hermes_bridge_constant(manifest_dir, "HERMES_AGENT_INSTALL_COMMIT")
+}
+
+fn hermes_runtime_patch_set(manifest_dir: &std::path::Path) -> String {
+    hermes_bridge_constant(manifest_dir, "HERMES_RUNTIME_PATCH_SET")
+}
+
+fn hermes_bridge_constant(manifest_dir: &std::path::Path, name: &str) -> String {
     let source = std::fs::read_to_string(manifest_dir.join("src").join("hermes_bridge.rs"))
         .unwrap_or_default();
     source
         .lines()
-        .find(|line| line.contains("const HERMES_AGENT_INSTALL_COMMIT"))
+        .find(|line| line.contains(&format!("const {name}")))
         .and_then(|line| {
             let start = line.find('"')? + 1;
             let end = line[start..].find('"')? + start;
@@ -628,6 +646,7 @@ fn build_dictation_helper() {
                 "Carbon",
                 "CoreMedia",
                 "CoreGraphics",
+                "SoundAnalysis",
             ],
         );
         if !built {

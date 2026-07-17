@@ -288,6 +288,11 @@
   --border-subtle: color-mix(in oklch, var(--border) 55%, transparent);
   --detail-bar-border: color-mix(in oklch, var(--border-subtle) 58%, transparent);
   --body-copy: color-mix(in oklch, var(--foreground) 86%, var(--muted-foreground));
+  /* Loading dots need more presence than muted supporting copy. Light mode
+   * leans well past muted toward the foreground because the dots render at low
+   * opacity on bright surfaces; the dark theme re-mixes a gentler value below.
+   * Individual contexts can override --spinner-color. */
+  --spinner-neutral: color-mix(in oklch, var(--muted-foreground) 45%, var(--foreground));
   --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
   /* Default accent — the clay terracotta, the base every derived token mixes
@@ -356,6 +361,10 @@
   --t-fast: 100ms;
   --t-med: 160ms;
   --t-slow: 240ms;
+  --icon-swap-dur: 250ms;
+  --icon-swap-blur: 2px;
+  --icon-swap-start-scale: 0.25;
+  --icon-swap-ease: ease-in-out;
   transition: --brand 220ms var(--ease-out);
 
   /* Shadows ---------------------------------------------------------- */
@@ -475,6 +484,9 @@
   --border-subtle: color-mix(in oklch, var(--border) 80%, transparent);
   --detail-bar-border: color-mix(in oklch, var(--border-subtle) 66%, transparent);
   --body-copy: color-mix(in oklch, var(--foreground) 88%, var(--muted-foreground));
+  /* Dark surfaces don't wash the low-opacity dots out the way light ones do,
+   * so the spinner keeps the softer muted-leaning mix here. */
+  --spinner-neutral: color-mix(in oklch, var(--muted-foreground) 72%, var(--foreground));
   --popover-border: color-mix(in oklch, white 12%, transparent);
   /* Dark inverts the roles: a deep brand-tinted surface + a lifted brand
    * foreground. Both still derive from --brand so theming cascades. */

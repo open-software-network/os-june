@@ -435,6 +435,68 @@ describe("notes recording reliability", () => {
     expect(screen.queryByText(/Transcribing audio/)).not.toBeInTheDocument();
   });
 
+  it("keeps provisional transcript visible after Stop while saved-audio processing is pending", async () => {
+    const pendingFinish = deferred<never>();
+    mocks.finishRecording.mockReturnValue(pendingFinish.promise);
+
+    await startRecordingOnFirstNote();
+    await waitFor(() => expect(mocks.listeners.has("live-transcript-event")).toBe(true));
+    await act(async () => {
+      await mocks.listeners.get("live-transcript-event")?.({
+        payload: {
+          noteId: "note-1",
+          sessionId: "rec-1",
+          sourceMode: "microphonePlusSystem",
+          source: "microphone",
+          segmentId: "microphone-0",
+          startMs: 0,
+          endMs: 4000,
+          text: "Provisional words survive Stop",
+          stability: "final",
+        },
+      });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
+    expect(await screen.findByText("Provisional words survive Stop")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+    expect(screen.getByText("Provisional words survive Stop")).toBeInTheDocument();
+  });
+
+  it("does not clear a newer preview when the note still has queued recordings", async () => {
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, activeTab: "transcription", queuedRecordings: 1 },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+    });
+
+    await startRecordingOnFirstNote();
+    await waitFor(() => expect(mocks.listeners.has("live-transcript-event")).toBe(true));
+    await act(async () => {
+      await mocks.listeners.get("live-transcript-event")?.({
+        payload: {
+          noteId: "note-1",
+          sessionId: "rec-1",
+          sourceMode: "microphonePlusSystem",
+          source: "microphone",
+          segmentId: "microphone-queued",
+          startMs: 0,
+          endMs: 4000,
+          text: "Queued session preview remains",
+          stability: "final",
+        },
+      });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+    expect(await screen.findByText("Queued session preview remains")).toBeInTheDocument();
+  });
+
   it("shows a sidebar recorder indicator off the recording's note and reopens it on click", async () => {
     await startRecordingOnFirstNote();
 
@@ -859,6 +921,58 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
   });
 
+  it("polls newly persisted turns while note transcription remains active", async () => {
+    const selectedNote = note({
+      processingStatus: "transcribing",
+      activeTab: "transcription",
+      sourceTranscripts: [],
+    });
+    let pollResponse = selectedNote;
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async () => pollResponse);
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await waitFor(() => expect(screen.getByText("Transcribing audio")).toBeInTheDocument());
+
+    expect(screen.queryByText("The first saved turn is visible.")).not.toBeInTheDocument();
+    mocks.getNote.mockClear();
+    pollResponse = {
+      ...selectedNote,
+      processingStatus: "transcribing",
+      sourceTranscripts: [
+        {
+          id: "turn-1",
+          text: "The first saved turn is visible.",
+          source: "microphone",
+          sourceMode: "microphonePlusSystem",
+          startMs: 0,
+          endMs: 4_000,
+          turnIndex: 0,
+          language: "en",
+          status: "succeeded",
+          recordedSilence: false,
+        },
+      ],
+    };
+
+    await waitFor(
+      () => {
+        expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
+        expect(screen.getByText("The first saved turn is visible.")).toBeInTheDocument();
+      },
+      { timeout: 3_000 },
+    );
+    const transcribingStatus = screen.getByText("Transcribing audio");
+    expect(transcribingStatus.closest('[role="status"]')).not.toBeNull();
+  });
+
   it("keeps retry failures scoped to the failed note", async () => {
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2"
@@ -912,6 +1026,7 @@ describe("notes recording reliability", () => {
       ...first,
       activeTab: "notes" as const,
       processingStatus: "failed" as const,
+      retryRecordingSessionId: "recording-to-retry",
       lastError: "The processing service returned an invalid response.",
       audio: {
         id: "audio-1",
@@ -942,6 +1057,10 @@ describe("notes recording reliability", () => {
     await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
 
     await userEvent.click(screen.getByRole("button", { name: /Retry/ }));
+
+    await waitFor(() =>
+      expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-to-retry"),
+    );
 
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
     expect(container.querySelector(".note-failure-banner")).toBeNull();

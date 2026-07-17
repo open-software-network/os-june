@@ -4,7 +4,7 @@
 - **Date:** 2026-07-13
 - **Status:** Implemented for review
 - **PRD:** [computer-use-prd.md](computer-use-prd.md)
-- **Decisions:** [ADR-0017](../adr/0017-browser-use-via-june-extension.md), [ADR-0025](../adr/0025-private-stdio-broker-for-computer-use.md)
+- **Decisions:** [ADR-0017](../adr/0017-browser-use-via-june-extension.md), [ADR-0028](../adr/0028-private-stdio-broker-for-computer-use.md)
 
 ## Technical objective
 

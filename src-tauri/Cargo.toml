@@ -1,6 +1,6 @@
 [package]
 name = "os-june"
-version = "0.0.33"
+version = "0.0.34"
 description = "June"
 authors = ["Open Software Network"]
 license = "MIT"
@@ -49,6 +49,7 @@ sha2 = "0.10"
 sqlx = { package = "sqlx-core", version = "0.8", default-features = false, features = ["_rt-tokio", "chrono", "uuid"] }
 sqlx-sqlite = { version = "0.8", default-features = false, features = ["bundled", "chrono", "uuid"] }
 tauri = { version = "2.8.0", features = ["protocol-asset", "macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
