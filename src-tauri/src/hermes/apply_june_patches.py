@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v12"
+PATCH_SET = "june-approval-memory-v13"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "8e1b335effd44f46b1b3660f95a448f69d2fbf1ac69bf2643179844d0ae61242",
+    "tui_gateway/server.py": "f375627e61af5e61434592d4d17d39c20e7ba1a7e1280715b0e5a7387a0f26a1",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -720,10 +720,27 @@ def patch_server(source: str) -> str:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    if initialization_error := session.get("agent_error"):
-        return _err(rid, 5032, str(initialization_error))
 ''',
         "image byte attach without Hermes initialization",
+    )
+    source = replace_once(
+        source,
+        '''def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
+''',
+        '''class _ImageAttachInitializationError(RuntimeError):
+    """Hermes initialization failed while atomically claiming an image queue."""
+
+
+def _queue_attached_image(
+    session: dict,
+    img_bytes: bytes,
+    ext: str,
+    *,
+    prefix: str,
+    fail_on_initialization_error: bool = False,
+) -> Path:
+''',
+        "image queue initialization error type",
     )
     source = replace_once(
         source,
@@ -754,6 +771,13 @@ def patch_server(source: str) -> str:
     # that boundary stays queued for the next prompt instead of being lost or
     # consumed by the agent run already starting.
     with session["history_lock"]:
+        # The byte-upload path does not wait for full Hermes initialization, but
+        # it must join reset's state boundary before trusting agent_error. A
+        # successful reset clears a stale error while holding this same lock.
+        if fail_on_initialization_error and (
+            initialization_error := session.get("agent_error")
+        ):
+            raise _ImageAttachInitializationError(str(initialization_error))
         session["image_counter"] = session.get("image_counter", 0) + 1
         img_dir = _hermes_home / "images"
         img_dir.mkdir(parents=True, exist_ok=True)
@@ -768,6 +792,28 @@ def patch_server(source: str) -> str:
         return img_path
 ''',
         "serialized image queue append",
+    )
+    source = replace_once(
+        source,
+        '''    try:
+        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
+    except Exception as e:
+        return _err(rid, 5027, f"write failed: {e}")
+''',
+        '''    try:
+        img_path = _queue_attached_image(
+            session,
+            img_bytes,
+            ext,
+            prefix="upload",
+            fail_on_initialization_error=True,
+        )
+    except _ImageAttachInitializationError as e:
+        return _err(rid, 5032, str(e))
+    except Exception as e:
+        return _err(rid, 5027, f"write failed: {e}")
+''',
+        "image byte queue initialization error",
     )
     source = replace_once(
         source,

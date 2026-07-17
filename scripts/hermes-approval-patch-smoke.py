@@ -130,6 +130,13 @@ def _function(tree: ast.AST, name: str) -> ast.FunctionDef:
     raise AssertionError("missing Hermes function: %s" % name)
 
 
+def _class(tree: ast.AST, name: str) -> ast.ClassDef:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return node
+    raise AssertionError("missing Hermes class: %s" % name)
+
+
 def _rpc_method(tree: ast.AST, method_name: str) -> ast.FunctionDef:
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
@@ -184,6 +191,9 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         "_sniff_image_ext",
         "_queue_attached_image",
     )
+    initialization_error = copy.deepcopy(
+        _class(tree, "_ImageAttachInitializationError")
+    )
     functions = [copy.deepcopy(_function(tree, name)) for name in helper_names]
     build_function = copy.deepcopy(_function(tree, "_start_agent_build"))
     reset_function = copy.deepcopy(_function(tree, "_reset_session_agent"))
@@ -192,7 +202,13 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     executable_handler.decorator_list = []
     source = "from __future__ import annotations\n" + "\n\n".join(
         ast.unparse(node)
-        for node in (*functions, build_function, reset_function, executable_handler)
+        for node in (
+            initialization_error,
+            *functions,
+            build_function,
+            reset_function,
+            executable_handler,
+        )
     )
 
     fresh_session = {
@@ -582,6 +598,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         reset_session = {
             "session_key": "reset-session-key",
             "agent": object(),
+            "agent_error": "stale lazy Hermes build failure",
             "attached_images": ["stale-before-reset.png"],
             "history": ["stale history"],
             "history_lock": threading.Lock(),
