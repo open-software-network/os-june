@@ -41,13 +41,13 @@ pub enum FrontendIntent {
         stored_session_id: String,
     },
     RecordingPause {
-        session_id: String,
+        recording_session_id: String,
     },
     RecordingResume {
-        session_id: String,
+        recording_session_id: String,
     },
     RecordingStop {
-        session_id: String,
+        recording_session_id: String,
     },
 }
 
@@ -267,22 +267,46 @@ impl Controller {
             Body::AgentCancel { stored_session_id } => {
                 ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
             }
-            Body::RecordingPause { session_id } => {
-                commands::pause_recording(app.clone(), SessionRequest { session_id }).await?;
+            Body::RecordingPause {
+                recording_session_id,
+            } => {
+                commands::pause_recording(
+                    app.clone(),
+                    SessionRequest {
+                        session_id: recording_session_id,
+                    },
+                )
+                .await?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
-            Body::RecordingResume { session_id } => {
-                commands::resume_recording(app.clone(), SessionRequest { session_id }).await?;
+            Body::RecordingResume {
+                recording_session_id,
+            } => {
+                commands::resume_recording(
+                    app.clone(),
+                    SessionRequest {
+                        session_id: recording_session_id,
+                    },
+                )
+                .await?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
-            Body::RecordingStop { session_id } => {
-                commands::finish_recording(app.clone(), SessionRequest { session_id }).await?;
+            Body::RecordingStop {
+                recording_session_id,
+            } => {
+                commands::finish_recording(
+                    app.clone(),
+                    SessionRequest {
+                        session_id: recording_session_id,
+                    },
+                )
+                .await?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::RecordingGetActive => {
                 let active =
                     crate::audio::capture::current_status().map(|status| ActiveRecording {
-                        session_id: status.session_id,
+                        recording_session_id: status.session_id,
                         state: match status.state {
                             crate::domain::types::RecordingState::Paused => {
                                 ActiveRecordingState::Paused
@@ -515,7 +539,7 @@ mod tests {
                 message: "Hello".to_string(),
             }),
             Body::RecordingPause {
-                session_id: "active".to_string(),
+                recording_session_id: "active".to_string(),
             },
             Body::DeviceRevokeSelf,
         ];

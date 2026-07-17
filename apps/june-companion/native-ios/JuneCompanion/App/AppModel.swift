@@ -94,7 +94,7 @@ struct DeviceModel: Codable, Equatable, Sendable {
 }
 
 struct ActiveRecordingModel: Codable, Equatable, Sendable {
-    let sessionId: String
+    let recordingSessionId: String
     let state: String
 }
 
@@ -377,10 +377,10 @@ final class AppModel: ObservableObject {
     }
 
     func controlRecording(_ action: String) {
-        guard let runtimeSessionID = snapshot.activeRecording?.sessionId else { return }
+        guard let recordingSessionID = snapshot.activeRecording?.recordingSessionId else { return }
         perform {
             try await self.service.controlRecording(
-                runtimeSessionID: runtimeSessionID,
+                recordingSessionID: recordingSessionID,
                 action: action
             )
             try await self.refreshSnapshot()

@@ -100,13 +100,13 @@ pub enum Body {
     SettingsGet,
     SettingsEditSafe(SafeSettingsPatch),
     RecordingPause {
-        session_id: String,
+        recording_session_id: String,
     },
     RecordingResume {
-        session_id: String,
+        recording_session_id: String,
     },
     RecordingStop {
-        session_id: String,
+        recording_session_id: String,
     },
     RecordingGetActive,
     AppFocus {
@@ -170,13 +170,13 @@ impl Body {
                 stored_session_id: note_id,
             }
             | Self::RecordingPause {
-                session_id: note_id,
+                recording_session_id: note_id,
             }
             | Self::RecordingResume {
-                session_id: note_id,
+                recording_session_id: note_id,
             }
             | Self::RecordingStop {
-                session_id: note_id,
+                recording_session_id: note_id,
             } => validate_id(note_id),
             Self::NoteEdit(request) => request.validate(),
             Self::AgentSend(request) => request.validate(),
@@ -404,7 +404,7 @@ pub struct ActiveRecordingSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveRecording {
-    pub session_id: String,
+    pub recording_session_id: String,
     pub state: ActiveRecordingState,
 }
 
@@ -668,7 +668,7 @@ mod tests {
         );
         assert!(
             Body::RecordingStop {
-                session_id: "runtime-1".to_string(),
+                recording_session_id: "recording-1".to_string(),
             }
             .is_mutation()
         );

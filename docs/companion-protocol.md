@@ -67,8 +67,10 @@ display text as June Desktop: machine context, provider routing details,
 reasoning, tool calls/results, approvals, secrets, and media internals stay on
 the Mac. The always-mounted app shell serves reads even when the Agent screen
 is closed. Send and cancel intents wake the existing Agent workspace.
-Agent wire fields use `storedSessionId` explicitly; `sessionId` remains
-reserved for contexts where the stored/runtime distinction is not present.
+Wire session identifiers are qualified explicitly: agent data uses
+`storedSessionId`, while active-recording snapshots and controls use
+`recordingSessionId`. The companion protocol does not expose a Hermes runtime
+session id.
 
 Agent transcript pagination starts with the newest page and walks backward;
 items within each page remain chronological so the mobile client can prepend

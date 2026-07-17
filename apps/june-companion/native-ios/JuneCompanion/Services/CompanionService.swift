@@ -305,7 +305,7 @@ final class CompanionService {
     return try jsonString(resultData(response) ?? [:])
   }
 
-  func controlRecording(runtimeSessionID: String, action: String) async throws {
+  func controlRecording(recordingSessionID: String, action: String) async throws {
     let type: String
     switch action {
     case "pause": type = "recordingPause"
@@ -313,7 +313,7 @@ final class CompanionService {
     case "stop": type = "recordingStop"
     default: throw CompanionNativeError.invalidData("That recording control is not allowed.")
     }
-    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["sessionId": runtimeSessionID]], mutation: true)
+    _ = try await request(capability: "recordingControlExisting", body: ["type": type, "data": ["recordingSessionId": recordingSessionID]], mutation: true)
   }
 
   func focusDesktop(targetJSON: String) async throws {

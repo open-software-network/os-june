@@ -1831,9 +1831,9 @@ export function App() {
             const consumerAvailable = companionFrontendConsumerAvailable();
             queueCompanionFrontendRequest(payload);
             if (consumerAvailable) return;
-            const sessionId = payload.intent.data.storedSessionId;
+            const storedSessionId = payload.intent.data.storedSessionId;
             setAgentOrigin(undefined);
-            setActiveAgentSession(sessionId ? { id: sessionId } : undefined);
+            setActiveAgentSession(storedSessionId ? { id: storedSessionId } : undefined);
             setActiveView("agent");
             return;
           }
