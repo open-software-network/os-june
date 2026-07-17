@@ -185,11 +185,12 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         "_queue_attached_image",
     )
     functions = [copy.deepcopy(_function(tree, name)) for name in helper_names]
+    reset_function = copy.deepcopy(_function(tree, "_reset_session_agent"))
     executable_handler = copy.deepcopy(handler)
     executable_handler.name = "_image_attach_bytes"
     executable_handler.decorator_list = []
     source = "from __future__ import annotations\n" + "\n\n".join(
-        ast.unparse(node) for node in (*functions, executable_handler)
+        ast.unparse(node) for node in (*functions, reset_function, executable_handler)
     )
 
     fresh_session = {
@@ -290,6 +291,81 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         assert accepted_batch == [], accepted_batch
         assert attachment_result["response"].get("result", {}).get("attached") is True
         assert len(concurrent_session["attached_images"]) == 1, concurrent_session
+
+        # Reset must own the same lock before agent construction starts. An
+        # attachment arriving during a slow rebuild waits, then queues after
+        # reset instead of being acknowledged and silently cleared.
+        reset_build_started = threading.Event()
+        reset_build_release = threading.Event()
+
+        def make_agent_for_reset(*_args, **_kwargs):
+            reset_build_started.set()
+            assert reset_build_release.wait(2), "reset build was not released"
+            return object()
+
+        namespace.update(
+            {
+                "_make_agent": make_agent_for_reset,
+                "_set_session_context": lambda _key: None,
+                "_clear_session_context": lambda _tokens: None,
+                "_config_model_target": lambda: "synthetic-model",
+                "_load_show_reasoning": lambda: False,
+                "_load_tool_progress_mode": lambda: "compact",
+                "_session_info": lambda _agent, _session: {},
+                "_emit": lambda *_args: None,
+                "_restart_slash_worker": lambda *_args: None,
+            }
+        )
+        reset_session = {
+            "session_key": "reset-session-key",
+            "agent": object(),
+            "attached_images": ["stale-before-reset.png"],
+            "history": ["stale history"],
+            "history_lock": threading.Lock(),
+            "history_version": 3,
+            "image_counter": 1,
+            "running": False,
+        }
+        namespace["_sessions"]["reset-session"] = reset_session
+        reset_result = {}
+        reset_attachment_result = {}
+
+        def reset_worker() -> None:
+            reset_result["info"] = namespace["_reset_session_agent"](
+                "reset-session", reset_session
+            )
+
+        def attach_during_reset() -> None:
+            reset_attachment_result["response"] = namespace["_image_attach_bytes"](
+                "attach-during-reset",
+                {
+                    "session_id": "reset-session",
+                    "filename": "after-reset.png",
+                    "content_base64": (
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                        "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                    ),
+                },
+            )
+
+        reset_thread = threading.Thread(target=reset_worker)
+        reset_thread.start()
+        assert reset_build_started.wait(1), "reset build did not start"
+        reset_attachment_worker = threading.Thread(target=attach_during_reset)
+        reset_attachment_worker.start()
+        reset_attachment_worker.join(0.1)
+        assert reset_attachment_worker.is_alive(), (
+            "attachment must wait while reset owns history_lock"
+        )
+        reset_build_release.set()
+        reset_thread.join(2)
+        reset_attachment_worker.join(2)
+        assert not reset_thread.is_alive(), "reset did not finish"
+        assert not reset_attachment_worker.is_alive(), "attachment did not finish"
+        assert reset_result["info"] == {}
+        assert reset_attachment_result["response"].get("result", {}).get("attached") is True
+        assert len(reset_session["attached_images"]) == 1, reset_session
+        assert "stale-before-reset.png" not in reset_session["attached_images"]
 
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,

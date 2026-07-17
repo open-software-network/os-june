@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v4"
+PATCH_SET = "june-approval-memory-v5"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "a512306bbddc51f4f78f90f3bfb7ad6014b3cd6c0e4393a5359a474c17a60fb7",
+    "tui_gateway/server.py": "fc87fd63ac66d81a18745b5d12d74d0059f99e2a284b7bebaf6ddb635b61c0f1",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -841,33 +841,46 @@ def patch_server(source: str) -> str:
 ''',
         "completion prompt image isolation",
     )
-    source = replace_once(
+    source = replace_region(
         source,
-        '''    session["agent"] = new_agent
-    session["config_model_seen"] = _config_model_target()
-    session["attached_images"] = []
-    session["edit_snapshots"] = {}
-    session["image_counter"] = 0
-    session["running"] = False
-    session["show_reasoning"] = _load_show_reasoning()
-    session["tool_progress_mode"] = _load_tool_progress_mode()
-    session["tool_started_at"] = {}
+        "def _reset_session_agent(sid: str, session: dict) -> dict:\n",
+        "\n\ndef _schedule_mcp_late_refresh(sid: str, agent) -> None:\n",
+        '''def _reset_session_agent(sid: str, session: dict) -> dict:
+    # Own the session state before rebuilding the agent. An attachment that
+    # arrives during the rebuild must wait and queue after reset, never receive
+    # an acknowledgement and then get erased by reset's queue clear.
     with session["history_lock"]:
-        session["history"] = []
-''',
-        '''    session["agent"] = new_agent
-    session["config_model_seen"] = _config_model_target()
-    session["edit_snapshots"] = {}
-    session["running"] = False
-    session["show_reasoning"] = _load_show_reasoning()
-    session["tool_progress_mode"] = _load_tool_progress_mode()
-    session["tool_started_at"] = {}
-    with session["history_lock"]:
+        tokens = _set_session_context(session["session_key"])
+        try:
+            new_agent = _make_agent(
+                sid,
+                session["session_key"],
+                session_id=session["session_key"],
+                # Preserve this session's chosen model across /new so a reset
+                # doesn't silently revert to global config (or to a model another
+                # session set). See the cross-session-contamination note in
+                # _apply_model_switch.
+                model_override=session.get("model_override"),
+            )
+        finally:
+            _clear_session_context(tokens)
+        session["agent"] = new_agent
+        session["config_model_seen"] = _config_model_target()
         session["attached_images"] = []
+        session["edit_snapshots"] = {}
         session["image_counter"] = 0
+        session["running"] = False
+        session["show_reasoning"] = _load_show_reasoning()
+        session["tool_progress_mode"] = _load_tool_progress_mode()
+        session["tool_started_at"] = {}
         session["history"] = []
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        info = _session_info(new_agent, session)
+    _emit("session.info", sid, info)
+    _restart_slash_worker(sid, session)
+    return info
 ''',
-        "serialized session image reset",
+        "session reset ownership",
     )
     source = replace_once(
         source,
