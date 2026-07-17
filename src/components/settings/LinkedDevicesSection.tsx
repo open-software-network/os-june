@@ -1,4 +1,7 @@
-import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  readText as readClipboardText,
+  writeText as writeClipboardText,
+} from "@tauri-apps/plugin-clipboard-manager";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   companionApprovePairing,
@@ -38,6 +41,16 @@ export function LinkedDevicesSection() {
   const [pairingCodeCopied, setPairingCodeCopied] = useState(false);
   const [error, setError] = useState<string>();
 
+  const clearCopiedPairingCode = useCallback(async (pairingCode: string) => {
+    try {
+      if ((await readClipboardText()) === pairingCode) {
+        await writeClipboardText("");
+      }
+    } catch {
+      // Clipboard cleanup is best-effort and must not replace a pairing result.
+    }
+  }, []);
+
   const refreshDevices = useCallback(async () => {
     setDevices(await companionListDevices());
   }, []);
@@ -65,6 +78,29 @@ export function LinkedDevicesSection() {
     };
   }, [pairing]);
 
+  useEffect(() => {
+    if (!pairing) return;
+    const timeout = window.setTimeout(
+      () => {
+        setPairing(undefined);
+        setStatus(undefined);
+        setPairingCodeCopied(false);
+        setError("The pairing code expired. Show a new code to try again.");
+      },
+      Math.max(0, pairing.expiresAtMs - Date.now()),
+    );
+    return () => window.clearTimeout(timeout);
+  }, [pairing]);
+
+  useEffect(
+    () => () => {
+      if (pairing && pairingCodeCopied) {
+        void clearCopiedPairingCode(pairing.pairingCode);
+      }
+    },
+    [clearCopiedPairingCode, pairing, pairingCodeCopied],
+  );
+
   const qrSource = useMemo(
     () =>
       pairing ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(pairing.qrSvg)}` : undefined,
@@ -88,6 +124,10 @@ export function LinkedDevicesSection() {
 
   const copyPairingCode = async () => {
     if (!pairing) return;
+    if (pairing.expiresAtMs <= Date.now()) {
+      setError("The pairing code expired. Show a new code to try again.");
+      return;
+    }
     setError(undefined);
     try {
       await writeClipboardText(pairing.pairingCode);
@@ -106,6 +146,7 @@ export function LinkedDevicesSection() {
       await refreshDevices();
       setPairing(undefined);
       setStatus(undefined);
+      setPairingCodeCopied(false);
     } catch (next) {
       setError(errorMessage(next));
     } finally {

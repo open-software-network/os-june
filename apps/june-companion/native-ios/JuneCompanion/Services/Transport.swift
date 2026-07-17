@@ -20,10 +20,16 @@ struct ValidatedPairingPayload {
 }
 
 enum PairingPayloadValidation {
+  private static let maxPairingCodeBytes = 4_096
+  private static let maxPairingPayloadBytes = 3_072
+
   static func decode(
     _ pairingCode: String,
     now: UInt64 = currentMilliseconds()
   ) throws -> ValidatedPairingPayload {
+    guard pairingCode.utf8.count <= maxPairingCodeBytes else {
+      throw CompanionNativeError.invalidData("The pairing code is invalid.")
+    }
     let trimmed = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines)
     let data: Data
     if trimmed.first == "{" {
@@ -38,7 +44,7 @@ enum PairingPayloadValidation {
       }
       data = decoded
     }
-    guard !data.isEmpty else {
+    guard !data.isEmpty, data.count <= maxPairingPayloadBytes else {
       throw CompanionNativeError.invalidData("The pairing code is invalid.")
     }
     let decoder = JSONDecoder()

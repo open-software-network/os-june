@@ -17,14 +17,15 @@ cannot express a desktop command or application payload.
 
 ## Crypto sessions
 
-Pairing uses `Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s`; the QR contributes a
-32-byte single-use PSK and the transcript authenticates both static identities.
-Linked reconnects use `Noise_KK_25519_ChaChaPoly_BLAKE2s` with the approved
-static keys. Noise nonces reject replay and reordering/tampering. A fresh
-handshake is required after 2^20 messages or 24 hours.
+Pairing uses `Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s`; the scanned or manually
+entered pairing code contributes a 32-byte single-use PSK and the transcript
+authenticates both static identities. Linked reconnects use
+`Noise_KK_25519_ChaChaPoly_BLAKE2s` with the approved static keys. Noise nonces
+reject replay and reordering/tampering. A fresh handshake is required after
+2^20 messages or 24 hours.
 
-The relay pairing API receives only SHA-256 of the QR secret as a five-minute
-proof. The phone generates an opaque device credential and submits only its
+The relay pairing API receives only SHA-256 of the pairing secret as a
+five-minute proof. The phone generates an opaque device credential and submits only its
 encoded UTF-8 value's hash during pairing. Desktop approval activates that
 hash. The phone later presents the same encoded value with the `Device` scheme;
 the relay hashes that representation and compares it without retaining the
@@ -32,8 +33,8 @@ plaintext. Noise separately authenticates the device's private key and protects
 all content.
 
 The signed-in Desktop creates the pending pairing under its OS Accounts user.
-The matching QR proof authorizes one phone proposal to that exact pairing, so
-the phone neither supplies an account id nor carries an account bearer. The
+The matching pairing proof authorizes one phone proposal to that exact pairing,
+so the phone neither supplies an account id nor carries an account bearer. The
 relay binds the proposed device to the user already fixed by Desktop creation,
 and explicit Desktop approval remains required before the device credential or
 link becomes active.

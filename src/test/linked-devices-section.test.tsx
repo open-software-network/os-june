@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   approvePairing: vi.fn(),
   renameDevice: vi.fn(),
   revokeDevice: vi.fn(),
+  readClipboardText: vi.fn(),
   writeClipboardText: vi.fn(),
 }));
 
@@ -24,6 +25,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
+  readText: mocks.readClipboardText,
   writeText: mocks.writeClipboardText,
 }));
 
@@ -43,6 +45,7 @@ beforeEach(() => {
     desktopDeviceId: "00000000-0000-0000-0000-000000000002",
     desktopPublicKey: Array(32).fill(7),
   });
+  mocks.readClipboardText.mockResolvedValue("manual-pairing-bootstrap-code");
   mocks.writeClipboardText.mockResolvedValue(undefined);
 });
 
@@ -61,5 +64,22 @@ describe("LinkedDevicesSection", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Pairing code copied" })).toBeInTheDocument(),
     );
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(mocks.writeClipboardText).toHaveBeenCalledWith(""));
+  });
+
+  it("does not erase clipboard content that replaced the copied pairing code", async () => {
+    const user = userEvent.setup();
+    mocks.readClipboardText.mockResolvedValue("newer clipboard content");
+    render(<LinkedDevicesSection />);
+
+    await user.click(await screen.findByRole("button", { name: "Show pairing code" }));
+    await user.click(screen.getByText("Enter a code instead"));
+    await user.click(screen.getByRole("button", { name: "Copy pairing code" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(mocks.readClipboardText).toHaveBeenCalled());
+    expect(mocks.writeClipboardText).not.toHaveBeenCalledWith("");
   });
 });

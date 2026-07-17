@@ -27,7 +27,10 @@ phone. Review the device name and capabilities on Desktop, then approve.
 The manual code is a URL-safe encoding of the exact short-lived QR bootstrap
 payload. It contains the same pairing secret, expires after five minutes, and
 still requires explicit Desktop approval. Treat it like the QR: do not log it,
-store it, or include it in screenshots.
+store it, or include it in screenshots. Copying is explicit; Desktop clears the
+clipboard on expiry, cancellation, approval, or leaving the settings surface
+when the clipboard still contains that code. Clipboard cleanup is best-effort,
+so the five-minute expiry remains the security backstop.
 
 ## Verify
 

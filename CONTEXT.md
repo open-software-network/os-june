@@ -541,10 +541,11 @@ desktop session and does not sign in separately.
 _Avoid_: session, login, trusted account.
 
 **Companion pairing**:
-The five-minute, desktop-approved QR flow that authorizes the companion under
-the desktop's current account, authenticates the two device identities, and
-establishes a **linked device** relationship. The QR provisioning secret is
-single-use state for pairing, not a reusable device credential.
+The five-minute, desktop-approved flow that authorizes the companion under the
+desktop's current account, authenticates the two device identities, and
+establishes a **linked device** relationship. Its pairing code is available as
+a QR or a manual URL-safe encoding of the same bootstrap payload. The pairing
+secret is single-use state, not a reusable device credential.
 _Avoid_: login, sync, invite.
 
 **Device credential**:

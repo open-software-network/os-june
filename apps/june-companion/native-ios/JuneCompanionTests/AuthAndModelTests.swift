@@ -70,6 +70,15 @@ final class AuthAndModelTests: XCTestCase {
         XCTAssertEqual(entered.secret, scanned.secret)
     }
 
+    func testManualPairingCodeRejectsOversizedInputWithoutEchoingIt() {
+        let oversized = String(repeating: "sensitive-pairing-code", count: 256)
+
+        XCTAssertThrowsError(try PairingPayloadValidation.decode(oversized, now: 1_000)) { error in
+            XCTAssertFalse(error.localizedDescription.contains(oversized))
+            XCTAssertEqual(error.localizedDescription, "The pairing code is invalid.")
+        }
+    }
+
     func testSecureStoreRoundTripAndDeletionUseAnIsolatedAccount() throws {
         let account = "test.\(UUID().uuidString)"
         let value = Data("secret".utf8)

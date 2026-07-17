@@ -6,8 +6,8 @@
 - Confirm Keychain access classes, deletion paths, device-authentication policy,
   encrypted cache key separation, file protection, and that Curve25519 is not
   described as Secure Enclave-backed.
-- Confirm the QR proof is derived from a 32-byte secret, compared in constant
-  time, expires after five minutes, and gates the device proposal without
+- Confirm the pairing proof is derived from a 32-byte secret, compared in
+  constant time, expires after five minutes, and gates the device proposal without
   exposing the Noise secret to the relay.
 - Confirm device credentials are generated with the system random source,
   never returned by the pairing API, stored only in Keychain on-device and as a

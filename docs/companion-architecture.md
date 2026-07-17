@@ -40,11 +40,11 @@ desktop allowlist, note compare-and-swap, durable linked-device metadata, and
 the blind relay. The companion generates its device credential and sends only
 the hash of its encoded authorization value during pairing. June API stores
 that hash; it hashes the same UTF-8 value when verifying a `Device`
-authorization header and never stores the credential or QR secret.
-The signed-in Desktop creates each pending pairing under its current OS Accounts
-user. The short-lived QR proof authorizes one phone proposal to that pairing;
-the relay takes the account only from the authenticated Desktop creation and
-never from the phone.
+authorization header and never stores the credential or pairing secret. The
+signed-in Desktop creates each pending pairing under its current OS Accounts
+user. The short-lived pairing proof authorizes one phone proposal to that
+pairing; the relay takes the account only from the authenticated Desktop
+creation and never from the phone.
 Desktop device identities are keyed by OS Accounts user rather than a global
 `current` Keychain slot, and local linked-device lists are filtered by that
 same user id. Desktop sign-out disconnects the relay, revokes the user's
