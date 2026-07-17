@@ -40,9 +40,9 @@ note (copy `docs/hermes-upstream-template.md` to
 
 ## June compatibility patch set
 
-The current pin also carries the checksum-gated `june-approval-v3` patch set
-documented in `docs/hermes-upstream-v2026.6.19.md`, ADR 0025, and ADR 0028. On every pin
-bump:
+The current pin also carries the checksum-gated `june-approval-memory-v3` patch
+set documented in `docs/hermes-upstream-v2026.6.19.md`, ADR 0009, ADR 0025,
+ADR 0027, and ADR 0028. On every pin bump:
 
 1. Check whether upstream now preserves MCP request identity, deduplicates one
    still-pending logical elicitation across transport reconnects without
@@ -53,12 +53,31 @@ bump:
 3. Otherwise rebase `apply_june_patches.py` onto the exact new sources and seal
    both upstream and patched SHA-256 values. Source drift must remain a hard
    failure.
-4. Build both macOS and Windows bundles. Confirm both packaging paths apply the
+4. Re-audit `agent.disabled_toolsets` propagation through the main desktop/TUI
+   agent constructor, the background and preview agent factories, and cron's
+   per-run agent construction. Confirm cron still layers the global disabled
+   list over each job's `enabled_toolsets`, and `model_tools.py` still subtracts
+   disabled toolsets after resolving enabled toolsets. Confirm the central
+   constructor turns a global Memory deny into its lifecycle gate so native
+   prompt memory and external provider prefetch/sync stay off. Seal the exact
+   scheduler and model-tool source hashes even when those files need no
+   transformation.
+5. Confirm every shared-`config.yaml` mutation reachable from June's runtime
+   and admin surfaces still funnels through `utils.atomic_yaml_write`, and
+   rebase June's cross-process writer-lock and stale-snapshot Memory-policy
+   preservation there. Exercise it on macOS and Windows because the
+   advisory-lock APIs differ.
+6. Build both macOS and Windows bundles. Confirm both packaging paths apply the
    same patch, stamp the patch set, verify it after relocation, and run
    `scripts/hermes-approval-patch-smoke.py`.
-5. Confirm managed installs record the new commit and patch set independently
+7. Confirm managed installs record the new commit and patch set independently
    and verify patched source hashes before launch. Confirm production cannot
    fall back to an unpatched user-local or `PATH` runtime.
+8. Confirm both the Rust and Python atomic writers preserve a symlinked
+   `config.yaml` target and its security metadata. On macOS this includes ACLs;
+   on Windows the replacement must retain the destination security descriptor.
+   Confirm the macOS Seatbelt profile grants only the resolved target and its
+   atomic-temp prefix when the symlink points outside the normal write roots.
 
 Never carry the old post-patch hashes onto a new pin, patch only one platform,
 or treat a UI deduplication filter as a replacement for the runtime protocol.

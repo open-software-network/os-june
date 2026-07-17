@@ -221,4 +221,69 @@ describe("MemorySettingsSection", () => {
     expect(mocks.setMemoryEnabled).toHaveBeenCalledWith(true);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add memory" })).toBeEnabled());
   });
+
+  it("shows persisted off after native enforcement fails without rolling the setting back", async () => {
+    mocks.memorySettings
+      .mockResolvedValueOnce({ enabled: true })
+      .mockResolvedValueOnce({ enabled: false });
+    mocks.setMemoryEnabled.mockRejectedValueOnce(new Error("Runtime enforcement failed"));
+    const user = userEvent.setup();
+    render(<MemorySettingsSection folders={folders} />);
+
+    const toggle = await screen.findByRole("switch", { name: "Let June remember things" });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your memory setting was saved, but June could not finish applying it. Quit and reopen June before starting another agent run.",
+    );
+    expect(screen.queryByText("Runtime enforcement failed")).toBeNull();
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(screen.getByRole("button", { name: "Add memory" })).toBeDisabled();
+    expect(mocks.memorySettings).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows persisted on after native restart fails without rolling the setting back", async () => {
+    mocks.memorySettings
+      .mockResolvedValueOnce({ enabled: false })
+      .mockResolvedValueOnce({ enabled: true });
+    mocks.setMemoryEnabled.mockRejectedValueOnce(new Error("Runtime restart failed"));
+    const user = userEvent.setup();
+    render(<MemorySettingsSection folders={folders} />);
+
+    const toggle = await screen.findByRole("switch", { name: "Let June remember things" });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your memory setting was saved, but June could not finish applying it. Quit and reopen June before starting another agent run.",
+    );
+    expect(screen.queryByText("Runtime restart failed")).toBeNull();
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(screen.getByRole("button", { name: "Add memory" })).toBeEnabled();
+    expect(mocks.memorySettings).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the switch disabled until the authoritative toggle response returns", async () => {
+    let resolveToggle: ((settings: { enabled: boolean }) => void) | undefined;
+    mocks.setMemoryEnabled.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveToggle = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<MemorySettingsSection folders={folders} />);
+
+    const toggle = await screen.findByRole("switch", { name: "Let June remember things" });
+    await user.click(toggle);
+    expect(toggle).toBeDisabled();
+
+    await user.click(toggle);
+    expect(mocks.setMemoryEnabled).toHaveBeenCalledTimes(1);
+
+    resolveToggle?.({ enabled: false });
+    await waitFor(() => expect(toggle).not.toBeDisabled());
+    expect(toggle).not.toBeChecked();
+  });
 });

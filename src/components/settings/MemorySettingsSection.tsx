@@ -26,6 +26,8 @@ import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
 
 const MEMORY_MAX_CHARS = 4_000;
+const MEMORY_TOGGLE_ERROR =
+  "Your memory setting was saved, but June could not finish applying it. Quit and reopen June before starting another agent run.";
 // Filter sentinel for memories that aren't tied to any project.
 const SCOPE_ALL = "__all__";
 const SCOPE_GENERAL = "__general__";
@@ -44,6 +46,7 @@ export function MemorySettingsSection({
   const [memories, setMemories] = useState<MemoryDto[]>([]);
   const [enabled, setEnabled] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [savingEnabled, setSavingEnabled] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [error, setError] = useState<string>();
   const [query, setQuery] = useState("");
@@ -86,12 +89,28 @@ export function MemorySettingsSection({
   }
 
   async function toggleEnabled(next: boolean) {
+    if (savingEnabled) return;
+    setSavingEnabled(true);
     try {
       const settings = await setMemoryEnabled(next);
       setEnabled(settings.enabled);
       setError(undefined);
     } catch (caught) {
-      setError(messageFromError(caught));
+      // The Tauri command deliberately does not roll back the authoritative setting
+      // when native-runtime enforcement or restart fails. Re-read it so the
+      // switch and write controls never keep showing the pre-toggle state while
+      // the persisted write gate already enforces the opposite choice.
+      try {
+        const settings = await memorySettings();
+        setEnabled(settings.enabled);
+      } catch {
+        // Keep the last confirmed state if even the authoritative read fails;
+        // the original enforcement error remains the actionable message.
+      }
+      console.warn("Failed to finish applying the Memory setting", caught);
+      setError(MEMORY_TOGGLE_ERROR);
+    } finally {
+      setSavingEnabled(false);
     }
   }
 
@@ -185,7 +204,7 @@ export function MemorySettingsSection({
           <div className="settings-row-control">
             <Switch
               checked={enabled}
-              disabled={!loaded}
+              disabled={!loaded || savingEnabled}
               aria-label="Let June remember things"
               onCheckedChange={(next) => void toggleEnabled(next)}
             />
