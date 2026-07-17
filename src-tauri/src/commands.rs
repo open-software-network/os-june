@@ -435,30 +435,46 @@ pub async fn set_memory_enabled(
     bridge: tauri::State<'_, crate::hermes_bridge::HermesBridge>,
     enabled: bool,
 ) -> Result<MemorySettingsDto, AppError> {
-    let settings = {
-        let _guard = MEMORY_SETTINGS_LOCK.lock().await;
-        let settings = MemorySettingsDto { enabled };
-        let path = memory_settings_path(&app)?;
-        persist_memory_settings(&path, &settings)?;
-        settings
-    };
-    // The persisted file is the authoritative enforcement point: the write
-    // boundary and the next Hermes spawn both read it, so the user's choice
-    // already holds regardless of what happens next. Re-rendering config.yaml
-    // for live runtimes and restarting the routine gateway (the SOUL stanza +
-    // the native `memory` entry in `platform_toolsets.cron`) is a best-effort
-    // "apply now"; on failure the change still lands on the next spawn. Never
-    // fail the command or roll back here — rolling back an "off" toggle would
-    // silently leave memory ON, the wrong direction for a privacy switch — so
-    // log and still return the persisted state so the UI can't diverge from
-    // the file.
-    if let Err(error) = crate::hermes_bridge::reapply_hermes_runtime(&app, &bridge).await {
+    // Keep the transaction lock through persistence, direct policy mutation,
+    // live-runtime convergence, and the authoritative response read. Otherwise
+    // two commands can persist in order but finish out of order, allowing an
+    // older response to overwrite the UI after a newer choice has landed.
+    let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+    let settings = MemorySettingsDto { enabled };
+    let path = memory_settings_path(&app)?;
+    persist_memory_settings(&path, &settings)?;
+    // The persisted file is authoritative for June's own memory write gate and
+    // every future Hermes config render. Apply the native global toolset policy
+    // directly before relying on live runtime state: the launchd routine
+    // gateway can outlive every bridge connection, and cron reloads config.yaml
+    // for each run. Do not roll the persisted choice back if either enforcement
+    // step fails, but do return the failure so the UI never reports that native
+    // runtime enforcement succeeded when it did not.
+    let direct_error = crate::hermes_bridge::apply_memory_runtime_policy(&app, &bridge)
+        .await
+        .err();
+    if let Some(error) = direct_error.as_ref() {
+        tracing::warn!(
+            ?error,
+            "memory setting saved but the direct Hermes config policy update failed",
+        );
+    }
+    let reapply_error = crate::hermes_bridge::reapply_hermes_runtime(&app, &bridge)
+        .await
+        .err();
+    if let Some(error) = reapply_error.as_ref() {
         tracing::warn!(
             ?error,
             "memory setting saved but live runtime reapply failed; it will take effect on the next spawn",
         );
     }
-    Ok(settings)
+    if let Some(error) = direct_error {
+        return Err(error);
+    }
+    if let Some(error) = reapply_error {
+        return Err(error);
+    }
+    Ok(load_memory_settings(&path))
 }
 
 pub(crate) async fn create_memory_with_settings(
@@ -516,8 +532,9 @@ fn persist_memory_settings(path: &Path, settings: &MemorySettingsDto) -> Result<
     fs::write(&temporary_path, serialized)
         .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
     // `fs::rename` does not replace an existing destination on Windows;
-    // `replace_file` is the repo's platform-aware wrapper (POSIX rename, or a
-    // remove-then-rename fallback on Windows) so a second toggle can't fail.
+    // `replace_file` is the repo's platform-aware wrapper (POSIX rename, or
+    // ReplaceFileW/MoveFileExW on Windows) so a second toggle can't fail and an
+    // existing destination keeps its security metadata.
     crate::hermes_bridge::replace_file(&temporary_path, path).map_err(|error| {
         let _ = fs::remove_file(&temporary_path);
         AppError::new("memory_settings_save_failed", error.to_string())
@@ -2979,7 +2996,7 @@ mod tests {
         capture_start_timeout_error, create_memory_with_settings, is_share_not_found,
         load_memory_settings, persist_memory_settings, recovery_validation_expected_duration_ms,
         should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
-        update_memory_with_settings, validated_folder_instructions,
+        update_memory_with_settings, validated_folder_instructions, MEMORY_SETTINGS_LOCK,
     };
 
     #[test]
@@ -3067,6 +3084,37 @@ mod tests {
 
         assert_eq!(error.code, "memory_settings_save_failed");
         assert!(load_memory_settings(&path).enabled);
+    }
+
+    #[tokio::test]
+    async fn memory_settings_transaction_lock_serializes_awaiting_callers() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut callers = Vec::new();
+        for _ in 0..6 {
+            let active = Arc::clone(&active);
+            let max_seen = Arc::clone(&max_seen);
+            callers.push(tokio::spawn(async move {
+                let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                // The production command holds this same guard across its
+                // enforcement awaits; force scheduling here to catch a lock
+                // that no longer protects the full asynchronous transaction.
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for caller in callers {
+            caller.await.expect("memory settings caller");
+        }
+
+        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

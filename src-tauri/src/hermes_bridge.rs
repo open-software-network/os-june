@@ -34,8 +34,12 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v1";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v2";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
+    (
+        "agent/agent_init.py",
+        "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
+    ),
     (
         "tools/approval.py",
         "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
@@ -46,7 +50,23 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+        "988e462b640f0da4e47b8164b5ca433021ace080fccfe55322b5b284c7c944ac",
+    ),
+    (
+        "cron/scheduler.py",
+        "2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa",
+    ),
+    (
+        "model_tools.py",
+        "d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d",
+    ),
+    (
+        "utils.py",
+        "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
+    ),
+    (
+        "gateway/platforms/telegram.py",
+        "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =
@@ -428,9 +448,109 @@ const HERMES_CONFIG_FILE: &str = "config.yaml";
 /// target and the temp, and the temp is named with a random suffix
 /// (`.config_<random>.tmp`), so it must be granted via a prefix regex rather
 /// than a literal — exactly like `AGENT_CLI_STATE_FILE_PREFIXES` does for
-/// Claude Code's `.claude.json.<hash>` atomic writes. The prefix is relative to
-/// `$HERMES_HOME`; the trailing wildcard covers the random suffix.
+/// Claude Code's `.claude.json.<hash>` atomic writes. The profile joins this
+/// basename beside the resolved config target; its wildcard covers the random
+/// suffix without granting the target's whole directory.
 const HERMES_CONFIG_ATOMIC_TEMP_PREFIX: &str = ".config_";
+const HERMES_CONFIG_CORRUPT_BACKUP_PREFIX: &str = "config.yaml.corrupt-";
+const HERMES_CONFIG_WRITER_LOCK_FILE: &str = ".june-config.lock";
+
+/// Cross-process advisory lock shared with June's sealed Hermes
+/// `utils.atomic_yaml_write` patch. The Rust host and every pinned Hermes
+/// config writer take this lock around config.yaml replacement. The Hermes
+/// patch also reconciles Memory's deny from the file while holding this lock,
+/// so a stale snapshot cannot erase that policy. OS locks are released
+/// automatically if either process crashes.
+struct HermesConfigWriterLock {
+    file: fs::File,
+    #[cfg(target_os = "windows")]
+    overlapped: Box<windows::Win32::System::IO::OVERLAPPED>,
+}
+
+impl HermesConfigWriterLock {
+    fn acquire(config_path: &Path) -> Result<Self, AppError> {
+        let parent = config_path.parent().ok_or_else(|| {
+            AppError::new(
+                "hermes_bridge_config_failed",
+                "Hermes config path has no parent directory.",
+            )
+        })?;
+        fs::create_dir_all(parent)
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+        let lock_path = parent.join(HERMES_CONFIG_WRITER_LOCK_FILE);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                return Err(AppError::new(
+                    "hermes_bridge_config_failed",
+                    io::Error::last_os_error().to_string(),
+                ));
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows::Win32::{
+                Foundation::HANDLE,
+                Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK},
+                System::IO::OVERLAPPED,
+            };
+            // LockFileEx and Python's msvcrt.locking both allow a range beyond
+            // EOF. Keep the coordination file data-free: initializing a byte
+            // before taking the first lock would itself create a race.
+            let mut overlapped = Box::<OVERLAPPED>::default();
+            unsafe {
+                LockFileEx(
+                    HANDLE(file.as_raw_handle()),
+                    LOCKFILE_EXCLUSIVE_LOCK,
+                    None,
+                    1,
+                    0,
+                    overlapped.as_mut(),
+                )
+            }
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+            return Ok(Self { file, overlapped });
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        Ok(Self { file })
+    }
+}
+
+impl Drop for HermesConfigWriterLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows::Win32::{Foundation::HANDLE, Storage::FileSystem::UnlockFileEx};
+            let _ = unsafe {
+                UnlockFileEx(
+                    HANDLE(self.file.as_raw_handle()),
+                    None,
+                    1,
+                    0,
+                    self.overlapped.as_mut(),
+                )
+            };
+        }
+    }
+}
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
@@ -468,11 +588,12 @@ pub struct HermesBridge {
     /// multi-process access). Starting one mode never disturbs the other.
     processes: Mutex<HashMap<bool, HermesProcess>>,
     /// Serializes the whole start sequence (config sync, runtime install,
-    /// spawn, readiness wait). Concurrent starts would otherwise write
-    /// `config.yaml` concurrently and could run two installers at once.
-    /// This must be an async mutex because it is held across awaits; the
-    /// `processes` mutex above is std::sync and must never be held across
-    /// an await.
+    /// spawn, readiness wait) and every June-mediated `config.yaml` writer:
+    /// direct policy edits plus mutating dashboard requests. Concurrent starts
+    /// would otherwise run two installers, while uncoordinated whole-file
+    /// config writes could erase each other. This must be an async mutex
+    /// because it is held across awaits; the `processes` mutex above is
+    /// std::sync and must never be held across an await.
     start_lock: tokio::sync::Mutex<()>,
     /// Monotonic id assigned to each spawned Hermes process so a start
     /// attempt only tears down the exact process it launched (and not a
@@ -1646,7 +1767,20 @@ pub async fn connectors_apply_runtime(
     app: AppHandle,
     bridge: State<'_, HermesBridge>,
 ) -> Result<(), AppError> {
-    reapply_hermes_runtime(&app, &bridge).await
+    reapply_hermes_runtime(&app, &bridge)
+        .await
+        .map_err(runtime_apply_command_error)
+}
+
+fn runtime_apply_command_error(error: AppError) -> AppError {
+    tracing::warn!(
+        ?error,
+        "runtime apply command failed; returning June-owned user-facing copy",
+    );
+    AppError::new(
+        "runtime_apply_failed",
+        "June could not finish applying this change. Try again or restart June.",
+    )
 }
 
 /// Serializes `reapply_hermes_runtime` so two rapid settings toggles cannot
@@ -1657,6 +1791,24 @@ pub async fn connectors_apply_runtime(
 /// `config.yaml` from the persisted settings file, serializing also guarantees
 /// the last reapply to run reads the last-persisted value.
 static REAPPLY_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Apply June's native-memory toolset policy without requiring a live bridge
+/// connection. The launchd routine gateway can remain alive after both bridge
+/// modes stop, but it reloads config.yaml before every cron run, so this direct
+/// shared-config mutation closes the gateway-only window immediately.
+pub(crate) async fn apply_memory_runtime_policy(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+) -> Result<(), AppError> {
+    // Serialize against spawn-time config rendering and every June-mediated
+    // dashboard mutation. Read the authoritative setting only after acquiring
+    // the writer lock: a caller that persisted an older toggle can never apply
+    // its stale argument after a newer toggle has won.
+    let _start_guard = bridge.start_lock.lock().await;
+    let hermes_home = resolve_june_hermes_home(app)?;
+    let settings_path = crate::commands::memory_settings_path(app)?;
+    apply_persisted_memory_policy_file(&hermes_home.join(HERMES_CONFIG_FILE), &settings_path)
+}
 
 /// Re-render `config.yaml` for every live runtime and restart the routine
 /// gateway so a settings change that feeds the rendered config (connector MCP
@@ -2522,19 +2674,38 @@ fn write_managed_skill_file(
 
 #[cfg(windows)]
 pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
-    match fs::rename(temp_path, path) {
-        Ok(()) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            fs::remove_file(path)?;
-            fs::rename(temp_path, path)
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        MoveFileExW, ReplaceFileW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        REPLACEFILE_WRITE_THROUGH,
+    };
+
+    let temp_wide: Vec<u16> = temp_path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let path_wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // ReplaceFileW keeps the destination's ACL and other security metadata.
+    // A missing destination has no metadata to preserve, so fall back to the
+    // replace-existing move used for first creation. Both are same-volume,
+    // write-through swaps with no visibility gap.
+    unsafe {
+        if path.exists() {
+            ReplaceFileW(
+                PCWSTR(path_wide.as_ptr()),
+                PCWSTR(temp_wide.as_ptr()),
+                PCWSTR::null(),
+                REPLACEFILE_WRITE_THROUGH,
+                None,
+                None,
+            )
+        } else {
+            MoveFileExW(
+                PCWSTR(temp_wide.as_ptr()),
+                PCWSTR(path_wide.as_ptr()),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
         }
-        Err(error) => Err(error),
     }
+    .map_err(|_| io::Error::last_os_error())
 }
 
 #[cfg(not(windows))]
@@ -3646,6 +3817,16 @@ async fn hermes_api_json(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
+    // Hermes dashboard mutations may rewrite the same config.yaml that June
+    // renders at spawn and edits for Memory. The app-side lock avoids overlap
+    // with other June requests while the pinned Hermes writer's file lock and
+    // stale-snapshot reconciliation preserve the current Memory deny across
+    // the separate dashboard process.
+    let _config_write_guard = if hermes_request_may_write(&method) {
+        Some(bridge.start_lock.lock().await)
+    } else {
+        None
+    };
     let connections = live_connections(bridge)?;
     let Some(connection) = connections.first() else {
         return Err(AppError::new(
@@ -3691,6 +3872,16 @@ pub async fn hermes_admin_request(
     let method = reqwest::Method::from_bytes(method.to_uppercase().as_bytes())
         .map_err(|_| AppError::new("hermes_admin_invalid_method", "Unsupported HTTP method."))?;
 
+    // Every foundation admin mutation reaches the separate dashboard process
+    // here. Avoid overlapping it with other June mutations; the pinned Hermes
+    // writer separately locks the file and reconciles the current Memory deny
+    // before replacing config.yaml.
+    let _config_write_guard = if hermes_request_may_write(&method) {
+        Some(bridge.start_lock.lock().await)
+    } else {
+        None
+    };
+
     let connections = live_connections(&bridge)?;
     let Some(connection) = connections
         .iter()
@@ -3702,6 +3893,10 @@ pub async fn hermes_admin_request(
         ));
     };
     hermes_connection_json(connection, method, &path, body).await
+}
+
+fn hermes_request_may_write(method: &reqwest::Method) -> bool {
+    !matches!(method.as_str(), "GET" | "HEAD")
 }
 
 /// How long June waits for the `hermes mcp login` CLI to finish before
@@ -6173,10 +6368,12 @@ fn managed_hermes_runtime_current(app: &AppHandle) -> Result<bool, AppError> {
     let Ok(metadata) = fs::read_to_string(metadata_path) else {
         return Ok(false);
     };
-    Ok(
-        metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#))
-            && metadata.contains(&format!(r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#)),
-    )
+    Ok(hermes_runtime_metadata_is_current(&metadata))
+}
+
+fn hermes_runtime_metadata_is_current(metadata: &str) -> bool {
+    metadata.contains(&format!(r#""commit":"{HERMES_AGENT_INSTALL_COMMIT}""#))
+        && metadata.contains(&format!(r#""patchSet":"{HERMES_RUNTIME_PATCH_SET}""#))
 }
 
 fn hermes_venv_command(venv_dir: &Path) -> PathBuf {
@@ -6806,7 +7003,7 @@ fn prepare_sandbox(app: &AppHandle, hermes_home: &Path, agent_cli_access: bool) 
     let image_source_key_path = image_source_capability_secret_path(&app_data_dir);
     let write_roots = sandbox_write_roots(hermes_home, &runtime_dir);
     let config_write_path = sandbox_config_write_path(hermes_home);
-    let config_temp_prefix = sandbox_config_temp_prefix(hermes_home);
+    let config_temp_prefix = sandbox_config_temp_prefix(&config_write_path);
     // Block the jailed agent from reading the connector token stores: the
     // Keychain is already denied above; add the dev plaintext connector token
     // files (debug builds' fallback custody, one per provider) explicitly.
@@ -6934,20 +7131,25 @@ fn sandbox_write_roots(hermes_home: &Path, runtime_dir: &Path) -> Vec<PathBuf> {
     canonical
 }
 
-/// The Hermes config file the jailed runtime persists through `save_config`,
-/// as an absolute path under `$HERMES_HOME`. Returned separately from the broad
-/// write roots so the grant is auditable and scoped to exactly this one file.
+/// The Hermes config target the jailed runtime persists through `save_config`.
+/// Resolve an existing symlink exactly as both atomic writers do so a target
+/// outside `$HERMES_HOME` receives the narrow file grant instead of failing
+/// inside Seatbelt or replacing the symlink itself.
 #[cfg(target_os = "macos")]
 fn sandbox_config_write_path(hermes_home: &Path) -> PathBuf {
-    hermes_home.join(HERMES_CONFIG_FILE)
+    let path = hermes_home.join(HERMES_CONFIG_FILE);
+    hermes_config_replacement_target(&path).unwrap_or(path)
 }
 
-/// Absolute atomic-temp prefix for `config.yaml` writes under `$HERMES_HOME`
-/// (e.g. `…/hermes/.config_`). Granted as a regex prefix so the random suffix
-/// in `.config_<random>.tmp` is covered.
+/// Absolute atomic-temp prefix beside the resolved config target (for example,
+/// `…/.config_`). Granted as a regex prefix so the random suffix in
+/// `.config_<random>.tmp` is covered without widening the target directory.
 #[cfg(target_os = "macos")]
-fn sandbox_config_temp_prefix(hermes_home: &Path) -> PathBuf {
-    hermes_home.join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
+fn sandbox_config_temp_prefix(config_write_path: &Path) -> PathBuf {
+    config_write_path
+        .parent()
+        .unwrap_or(config_write_path)
+        .join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
 }
 
 /// Renders the Seatbelt (SBPL) profile text. Strategy: allow broadly, because
@@ -6989,10 +7191,10 @@ fn build_sandbox_profile(
     // through Hermes' `save_config` whenever an admin surface mutates skills,
     // toolsets, or MCP servers. That write is atomic: a `.config_<random>.tmp`
     // is streamed then `os.replace`d onto config.yaml, which needs write+unlink
-    // on the target and the temp. The temp already lives under a write root
-    // ($HERMES_HOME), but spell out both the config file and its random-suffixed
-    // temp prefix explicitly so the grant is auditable and survives any future
-    // tightening of the broad roots. Nothing outside $HERMES_HOME is widened.
+    // on the target and the temp. Spell out both the resolved config file and
+    // its random-suffixed temp prefix so an external symlink target works
+    // without granting its whole directory. The explicit grants also stay
+    // auditable if the broad roots are tightened later.
     out.push_str(";; Hermes' own config.yaml: the jailed runtime persists admin changes\n");
     out.push_str(";; through save_config (atomic temp + os.replace). Grant the file and its\n");
     out.push_str(";; random-suffixed atomic temp; everything else stays under the write jail.\n");
@@ -7585,6 +7787,7 @@ fn sync_hermes_config_with_external_dirs(
     let model = crate::providers::generation_model();
     let base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
     let config_path = hermes_home.join("config.yaml");
+    let _config_lock = HermesConfigWriterLock::acquire(&config_path)?;
     let external_skill_dirs =
         effective_external_skill_dirs_from_config(&config_path, default_external_skill_dirs);
     let connector_base = june_connector_mcp.and_then(|configs| configs.base.as_ref());
@@ -7604,6 +7807,9 @@ fn sync_hermes_config_with_external_dirs(
             .map(|configs| configs.autos.as_slice())
             .unwrap_or(&[]),
     };
+    let memory_enabled = mcp_configs.context.map_or(true, |context| {
+        june_memory_enabled(&context.memory_settings_path)
+    });
     let cron_toolsets = cron_platform_toolsets(&mcp_configs);
     let config = render_hermes_config(
         &model,
@@ -7623,9 +7829,14 @@ fn sync_hermes_config_with_external_dirs(
     // wiped them on every June spawn. June's rendered keys still win — the
     // provider proxy port/token legitimately change per spawn — but every key
     // June does not render survives.
-    let merged = merge_hermes_config(&config_path, &config);
-    std::fs::write(config_path, merged)
-        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
+    preserve_replaced_hermes_config_if_needed(&config_path, memory_enabled)?;
+    let mut merged =
+        serde_yaml::from_str::<serde_yaml::Value>(&merge_hermes_config(&config_path, &config))
+            .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    apply_memory_toolset_policy(&mut merged, memory_enabled);
+    let merged = serde_yaml::to_string(&merged)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    write_hermes_config_atomic(&config_path, &merged)
 }
 
 /// Deep-merges June's freshly rendered config over the existing `config.yaml`,
@@ -7654,6 +7865,291 @@ fn merge_hermes_config(existing_path: &std::path::Path, rendered: &str) -> Strin
     prune_connector_mcp_servers(&mut existing);
     let merged = deep_merge_yaml(existing, overlay);
     serde_yaml::to_string(&merged).unwrap_or_else(|_| rendered.to_string())
+}
+
+/// Mutates only June's global native-memory policy. Every other agent setting,
+/// user-added MCP server, skill setting, and unrelated disabled toolset stays
+/// intact. `memory` is normalized to at most one entry while disabled and is
+/// the only entry removed when memory is re-enabled.
+fn apply_memory_toolset_policy(config: &mut serde_yaml::Value, memory_enabled: bool) -> bool {
+    let serde_yaml::Value::Mapping(root) = config else {
+        return false;
+    };
+    let agent_key = serde_yaml::Value::String("agent".to_string());
+    let disabled_key = serde_yaml::Value::String("disabled_toolsets".to_string());
+
+    if memory_enabled {
+        let Some(agent) = root.get_mut(&agent_key) else {
+            return false;
+        };
+        let Some(agent) = agent.as_mapping_mut() else {
+            return false;
+        };
+        let Some(disabled) = agent.get_mut(&disabled_key) else {
+            return false;
+        };
+        let Some(disabled) = disabled.as_sequence_mut() else {
+            return false;
+        };
+        disabled.retain(|item| item.as_str() != Some("memory"));
+        if disabled.is_empty() {
+            agent.remove(&disabled_key);
+        }
+        return false;
+    }
+
+    let mut repaired_invalid_shape = false;
+    let agent = root
+        .entry(agent_key)
+        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    if !agent.is_mapping() {
+        *agent = serde_yaml::Value::Mapping(Default::default());
+        repaired_invalid_shape = true;
+    }
+    let agent = agent
+        .as_mapping_mut()
+        .expect("agent was normalized to a mapping");
+    let disabled = agent.entry(disabled_key).or_insert_with(|| {
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("memory".to_string())])
+    });
+    let Some(disabled) = disabled.as_sequence_mut() else {
+        *disabled =
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("memory".to_string())]);
+        return true;
+    };
+    disabled.retain(|item| item.as_str() != Some("memory"));
+    disabled.push(serde_yaml::Value::String("memory".to_string()));
+    repaired_invalid_shape
+}
+
+fn hermes_config_has_invalid_root(config: &serde_yaml::Value) -> bool {
+    !config.is_mapping()
+}
+
+fn memory_policy_has_invalid_shape(config: &serde_yaml::Value) -> bool {
+    let Some(agent) = config.get("agent") else {
+        return false;
+    };
+    let Some(agent) = agent.as_mapping() else {
+        return true;
+    };
+    agent
+        .get(serde_yaml::Value::String("disabled_toolsets".to_string()))
+        .is_some_and(|disabled| !disabled.is_sequence())
+}
+
+/// Preserve config text before a normal spawn replaces YAML that cannot be
+/// safely merged or must repair a malformed disabled-toolset shape. This is
+/// especially important while Memory is off: fail closed with a valid global
+/// denylist, but retain the original bytes beside config.yaml for diagnosis.
+fn preserve_replaced_hermes_config_if_needed(
+    config_path: &Path,
+    memory_enabled: bool,
+) -> Result<(), AppError> {
+    let existing = match fs::read_to_string(config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_bridge_config_failed",
+                error.to_string(),
+            ))
+        }
+    };
+    let parsed = serde_yaml::from_str::<serde_yaml::Value>(&existing);
+    let needs_backup = match parsed {
+        Ok(ref config) => {
+            hermes_config_has_invalid_root(config)
+                || (!memory_enabled && memory_policy_has_invalid_shape(config))
+        }
+        Err(_) => true,
+    };
+    if needs_backup {
+        backup_corrupt_hermes_config(config_path, existing.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Narrow, connection-independent config mutation used by the Memory toggle.
+/// Missing and corrupt files fail closed while disabling: June writes a valid
+/// minimal policy, preserving corrupt bytes first. Enabling against corrupt
+/// YAML leaves it untouched; no deny can be safely identified or removed, and
+/// the setting permits memory in that state anyway.
+fn update_hermes_memory_policy_file(
+    config_path: &Path,
+    memory_enabled: bool,
+) -> Result<(), AppError> {
+    let _config_lock = HermesConfigWriterLock::acquire(config_path)?;
+    let existing = match fs::read_to_string(config_path) {
+        Ok(existing) => Some(existing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_bridge_config_failed",
+                error.to_string(),
+            ))
+        }
+    };
+    if memory_enabled && existing.is_none() {
+        return Ok(());
+    }
+
+    let mut config = match existing.as_deref() {
+        Some(raw) => match serde_yaml::from_str::<serde_yaml::Value>(raw) {
+            Ok(config) if config.is_mapping() => config,
+            Ok(_) | Err(_) if memory_enabled => return Ok(()),
+            Ok(_) | Err(_) => {
+                backup_corrupt_hermes_config(config_path, raw.as_bytes())?;
+                serde_yaml::Value::Mapping(Default::default())
+            }
+        },
+        None => serde_yaml::Value::Mapping(Default::default()),
+    };
+    let repaired_invalid_shape = apply_memory_toolset_policy(&mut config, memory_enabled);
+    if repaired_invalid_shape {
+        if let Some(raw) = existing.as_deref() {
+            backup_corrupt_hermes_config(config_path, raw.as_bytes())?;
+        }
+    }
+    let serialized = serde_yaml::to_string(&config)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    write_hermes_config_atomic(config_path, &serialized)
+}
+
+/// Re-read the fail-closed authoritative setting at the point of mutation.
+/// Keeping the setting out of the caller's arguments prevents an older toggle
+/// from overwriting a newer one after waiting for the shared config writer lock.
+fn apply_persisted_memory_policy_file(
+    config_path: &Path,
+    settings_path: &Path,
+) -> Result<(), AppError> {
+    update_hermes_memory_policy_file(config_path, june_memory_enabled(settings_path))
+}
+
+fn backup_corrupt_hermes_config(config_path: &Path, contents: &[u8]) -> Result<PathBuf, AppError> {
+    let parent = config_path.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_bridge_config_failed",
+            "Hermes config path has no parent directory.",
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let backup_path = parent.join(format!(
+        "{HERMES_CONFIG_CORRUPT_BACKUP_PREFIX}{}.bak",
+        uuid::Uuid::new_v4()
+    ));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut backup = options
+        .open(&backup_path)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    backup
+        .write_all(contents)
+        .and_then(|_| backup.sync_all())
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    Ok(backup_path)
+}
+
+fn write_hermes_config_atomic(config_path: &Path, contents: &str) -> Result<(), AppError> {
+    let target_path = hermes_config_replacement_target(config_path)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let parent = target_path.parent().ok_or_else(|| {
+        AppError::new(
+            "hermes_bridge_config_failed",
+            "Hermes config path has no parent directory.",
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    let temporary_path = parent.join(format!(
+        "{HERMES_CONFIG_ATOMIC_TEMP_PREFIX}{}.tmp",
+        uuid::Uuid::new_v4()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // config.yaml contains on-device provider proxy and connector
+            // credentials. Match Hermes' mkstemp writer so a new file is never
+            // briefly broader than owner-only before final metadata is applied.
+            options.mode(0o600);
+        }
+        let mut temporary = options.open(&temporary_path)?;
+        preserve_hermes_config_metadata(&target_path, &temporary)?;
+        temporary.write_all(contents.as_bytes())?;
+        temporary.sync_all()?;
+        drop(temporary);
+        replace_file(&temporary_path, &target_path)
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(AppError::new(
+            "hermes_bridge_config_failed",
+            error.to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve an existing symlink before replacing config.yaml. Replacing the link
+/// itself would detach managed/dotfile-backed Hermes homes and leave the real
+/// config unchanged. A dangling link fails closed instead of being destroyed.
+fn hermes_config_replacement_target(config_path: &Path) -> io::Result<PathBuf> {
+    match fs::symlink_metadata(config_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::canonicalize(config_path),
+        Ok(_) => Ok(config_path.to_path_buf()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(config_path.to_path_buf()),
+        Err(error) => Err(error),
+    }
+}
+
+fn preserve_hermes_config_metadata(target_path: &Path, temporary: &fs::File) -> io::Result<()> {
+    let metadata = match fs::metadata(target_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    temporary.set_permissions(metadata.permissions())?;
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+
+        // Preserve the existing file's ACL in addition to its POSIX mode. The
+        // content is deliberately excluded; only COPYFILE_SECURITY metadata is
+        // copied onto the still-empty temporary file before secret bytes land.
+        const COPYFILE_SECURITY: u32 = (1 << 0) | (1 << 1);
+        extern "C" {
+            fn fcopyfile(
+                from: libc::c_int,
+                to: libc::c_int,
+                state: *mut libc::c_void,
+                flags: u32,
+            ) -> libc::c_int;
+        }
+        let source = fs::File::open(target_path)?;
+        let result = unsafe {
+            fcopyfile(
+                source.as_raw_fd(),
+                temporary.as_raw_fd(),
+                std::ptr::null_mut(),
+                COPYFILE_SECURITY,
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+
+    Ok(())
 }
 
 /// Removes June's connector MCP server entries (`june_gmail`, `june_gcal`,
@@ -14362,6 +14858,287 @@ mcp_servers:
     }
 
     #[test]
+    fn memory_policy_adds_and_removes_only_the_native_memory_deny() {
+        let mut config: serde_yaml::Value = serde_yaml::from_str(
+            r#"agent:
+  max_turns: 42
+  disabled_toolsets: [browser, memory, memory]
+skills:
+  config:
+    user-skill:
+      enabled: true
+mcp_servers:
+  user_server:
+    url: https://example.com/mcp
+"#,
+        )
+        .expect("valid config");
+
+        apply_memory_toolset_policy(&mut config, false);
+        let disabled = config["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list");
+        assert_eq!(
+            disabled
+                .iter()
+                .filter(|item| item.as_str() == Some("memory"))
+                .count(),
+            1,
+        );
+        assert!(disabled.iter().any(|item| item.as_str() == Some("browser")));
+
+        apply_memory_toolset_policy(&mut config, true);
+        let disabled = config["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("other deny remains");
+        assert_eq!(disabled.len(), 1);
+        assert_eq!(disabled[0], "browser");
+        assert_eq!(config["agent"]["max_turns"], 42);
+        assert_eq!(config["skills"]["config"]["user-skill"]["enabled"], true);
+        assert_eq!(
+            config["mcp_servers"]["user_server"]["url"],
+            "https://example.com/mcp"
+        );
+    }
+
+    #[test]
+    fn direct_memory_policy_update_preserves_gateway_only_config_state() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"agent:
+  max_turns: 12
+  disabled_toolsets: [browser]
+skills:
+  external_dirs: [/tmp/shared-skills]
+mcp_servers:
+  user_server:
+    url: https://example.com/mcp
+"#,
+        )
+        .expect("seed config");
+
+        // This path takes no HermesBridgeConnection: it is the exact mutation
+        // used when only the launchd routine gateway remains alive.
+        update_hermes_memory_policy_file(&config_path, false).expect("disable memory");
+        let disabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read disabled config"),
+        )
+        .expect("disabled config parses");
+        assert!(disabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
+        assert_eq!(disabled["agent"]["max_turns"], 12);
+        assert_eq!(disabled["skills"]["external_dirs"][0], "/tmp/shared-skills");
+        assert_eq!(
+            disabled["mcp_servers"]["user_server"]["url"],
+            "https://example.com/mcp"
+        );
+
+        update_hermes_memory_policy_file(&config_path, true).expect("enable memory");
+        let enabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read enabled config"),
+        )
+        .expect("enabled config parses");
+        let disabled = enabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("browser deny remains");
+        assert_eq!(
+            disabled,
+            &[serde_yaml::Value::String("browser".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_config_write_preserves_symlink_target_and_private_mode() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let managed = home.path().join("managed");
+        std::fs::create_dir_all(&managed).expect("managed dir");
+        let target = managed.join("config.yaml");
+        std::fs::write(&target, "agent:\n  max_turns: 3\n").expect("seed target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("private mode");
+        let link = home.path().join("config.yaml");
+        symlink(&target, &link).expect("config symlink");
+
+        write_hermes_config_atomic(&link, "agent:\n  disabled_toolsets: [memory]\n")
+            .expect("atomic config write");
+
+        assert!(std::fs::symlink_metadata(&link)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("target contents"),
+            "agent:\n  disabled_toolsets: [memory]\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&target)
+                .expect("target metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_atomic_config_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home.path().join("config.yaml");
+        write_hermes_config_atomic(&config, "agent:\n  disabled_toolsets: [memory]\n")
+            .expect("atomic config write");
+        assert_eq!(
+            std::fs::metadata(&config)
+                .expect("config metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn atomic_config_write_preserves_macos_acl() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home.path().join("config.yaml");
+        std::fs::write(&config, "agent:\n  max_turns: 3\n").expect("seed config");
+        let chmod = std::process::Command::new("/bin/chmod")
+            .arg("+a")
+            .arg("everyone allow read")
+            .arg(&config)
+            .status()
+            .expect("apply test ACL");
+        assert!(chmod.success());
+
+        write_hermes_config_atomic(&config, "agent:\n  disabled_toolsets: [memory]\n")
+            .expect("atomic config write");
+
+        let listing = std::process::Command::new("/bin/ls")
+            .arg("-le")
+            .arg(&config)
+            .output()
+            .expect("list config ACL");
+        assert!(listing.status.success());
+        assert!(String::from_utf8_lossy(&listing.stdout).contains("allow read"));
+    }
+
+    #[test]
+    fn direct_memory_policy_update_reads_the_latest_persisted_toggle() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let config_path = home.path().join("config.yaml");
+        let settings_path = home.path().join("memory-settings.json");
+        std::fs::write(&config_path, "agent:\n  disabled_toolsets: [browser]\n")
+            .expect("seed config");
+
+        std::fs::write(&settings_path, r#"{"enabled":false}"#).expect("persist disabled setting");
+        apply_persisted_memory_policy_file(&config_path, &settings_path)
+            .expect("apply latest disabled setting");
+        let disabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read disabled config"),
+        )
+        .expect("disabled config parses");
+        assert!(disabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
+
+        // This newer persisted value is the only policy input. There is no
+        // stale caller-provided bool that an older waiter can apply later.
+        std::fs::write(&settings_path, r#"{"enabled":true}"#).expect("persist enabled setting");
+        apply_persisted_memory_policy_file(&config_path, &settings_path)
+            .expect("apply latest enabled setting");
+        let enabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read enabled config"),
+        )
+        .expect("enabled config parses");
+        assert_eq!(
+            enabled["agent"]["disabled_toolsets"]
+                .as_sequence()
+                .expect("browser deny remains"),
+            &[serde_yaml::Value::String("browser".to_string())],
+        );
+    }
+
+    #[test]
+    fn dashboard_mutations_are_classified_as_config_writers() {
+        assert!(!hermes_request_may_write(&reqwest::Method::GET));
+        assert!(!hermes_request_may_write(&reqwest::Method::HEAD));
+        assert!(hermes_request_may_write(&reqwest::Method::POST));
+        assert!(hermes_request_may_write(&reqwest::Method::PUT));
+        assert!(hermes_request_may_write(&reqwest::Method::PATCH));
+        assert!(hermes_request_may_write(&reqwest::Method::DELETE));
+    }
+
+    #[test]
+    fn memory_off_repairs_missing_or_corrupt_config_fail_closed() {
+        let missing_home = tempfile::tempdir().expect("missing tempdir");
+        let missing = missing_home.path().join("config.yaml");
+        update_hermes_memory_policy_file(&missing, false).expect("repair missing config");
+        let repaired: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&missing).expect("read repaired missing config"),
+        )
+        .expect("missing replacement parses");
+        assert_eq!(repaired["agent"]["disabled_toolsets"][0], "memory");
+
+        let corrupt_home = tempfile::tempdir().expect("corrupt tempdir");
+        let corrupt = corrupt_home.path().join("config.yaml");
+        let original = b": invalid yaml: [";
+        std::fs::write(&corrupt, original).expect("seed corrupt config");
+        update_hermes_memory_policy_file(&corrupt, false).expect("repair corrupt config");
+        let repaired: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&corrupt).expect("read repaired corrupt config"),
+        )
+        .expect("corrupt replacement parses");
+        assert_eq!(repaired["agent"]["disabled_toolsets"][0], "memory");
+
+        let entries: Vec<PathBuf> = std::fs::read_dir(corrupt_home.path())
+            .expect("read config directory")
+            .map(|entry| entry.expect("directory entry").path())
+            .collect();
+        let backup = entries
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(HERMES_CONFIG_CORRUPT_BACKUP_PREFIX)
+                            && name.ends_with(".bak")
+                    })
+            })
+            .expect("corrupt backup");
+        assert_eq!(std::fs::read(backup).expect("read backup"), original);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(backup)
+                    .expect("backup metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+            );
+        }
+        assert!(!entries.iter().any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(HERMES_CONFIG_ATOMIC_TEMP_PREFIX))
+        }));
+    }
+
+    #[test]
     fn merge_hermes_config_prunes_stale_connector_servers() {
         let home = tempfile::tempdir().expect("tempdir");
         let config_path = home.path().join("config.yaml");
@@ -15208,6 +15985,19 @@ mcp_servers:
     }
 
     #[test]
+    fn managed_runtime_provenance_rejects_the_previous_patch_set() {
+        let current = format!(
+            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"{HERMES_RUNTIME_PATCH_SET}"}}"#
+        );
+        assert!(hermes_runtime_metadata_is_current(&current));
+
+        let previous = format!(
+            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"june-approval-v1"}}"#
+        );
+        assert!(!hermes_runtime_metadata_is_current(&previous));
+    }
+
+    #[test]
     fn gateway_start_spawns_the_bare_hermes_cli_outside_the_sandbox() {
         let connection = HermesBridgeConnection {
             base_url: "http://127.0.0.1:1".to_string(),
@@ -15280,6 +16070,21 @@ mcp_servers:
 
         assert_eq!(error.code, "hermes_gateway_start_failed");
         assert!(error.message.contains("exited"));
+    }
+
+    #[test]
+    fn runtime_apply_command_error_hides_embedded_runtime_details() {
+        let error = runtime_apply_command_error(AppError::new(
+            "hermes_bridge_start_failed",
+            "Hermes runtime failed to start.",
+        ));
+
+        assert_eq!(error.code, "runtime_apply_failed");
+        assert_eq!(
+            error.message,
+            "June could not finish applying this change. Try again or restart June."
+        );
+        assert!(!error.message.contains("Hermes"));
     }
 
     #[test]
@@ -15554,37 +16359,40 @@ mcp_servers:
         .expect("sync config");
 
         let config = std::fs::read_to_string(home.path().join("config.yaml")).expect("read config");
-        assert!(config.contains("platform_toolsets:"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&config).expect("valid config YAML");
         // Naming any MCP server flips cron's auto-include into an allowlist, so
         // every built-in READ server that must stay available to routines is
         // listed explicitly alongside the sandboxed toolsets, plus the
         // connector READ servers (june_linear joins the ambient reads exactly
         // like the gmail/gcal read servers). The base toolset gate still holds.
-        let cron_line = format!(
-            "cron: [{}, june_context, june_web, june_image, june_recorder, june_video, june_gmail, june_gcal, june_linear]",
-            CRON_SANDBOXED_TOOLSETS.join(", ")
-        );
-        assert!(
-            config.contains(&cron_line),
-            "cron allowlist mismatch:\n{config}"
-        );
+        let cron = parsed["platform_toolsets"]["cron"]
+            .as_sequence()
+            .expect("cron allowlist");
+        let expected: Vec<serde_yaml::Value> = CRON_SANDBOXED_TOOLSETS
+            .iter()
+            .copied()
+            .chain([
+                "june_context",
+                "june_web",
+                "june_image",
+                "june_recorder",
+                "june_video",
+                "june_gmail",
+                "june_gcal",
+                "june_linear",
+            ])
+            .map(|toolset| serde_yaml::Value::String(toolset.to_string()))
+            .collect();
+        assert_eq!(cron, &expected, "cron allowlist mismatch:\n{config}");
         // The connector ACTION servers and per-job AUTO servers are NEVER in
         // the cron default: approval and autonomy are opted into per job by
-        // trust-mode enabled_toolsets. The exact cron_line match above (it ends
-        // at `june_linear]`) already proves no action/auto server is in the
-        // list; these guard the substrings directly too.
-        assert!(!config.contains("june_gmail_actions,"));
-        assert!(!config.contains("june_gcal_actions,"));
-        assert!(!config.contains("june_gcal_actions]"));
-        assert!(!config.contains("june_linear_actions,"));
-        assert!(!config.contains("june_linear_actions]"));
-        assert!(!config.contains("_auto_]"));
-        assert!(!config.contains("_auto_,"));
+        // trust-mode enabled_toolsets. The exact sequence match above proves
+        // no action or auto server is in the list.
         // The auto server IS registered under mcp_servers, just not in cron.
-        assert!(config.contains("  june_gmail_auto_ab12cd34:\n"));
+        assert!(parsed["mcp_servers"]["june_gmail_auto_ab12cd34"].is_mapping());
         // The Linear actions server is registered under mcp_servers too,
         // reachable only through approval-mode enabled_toolsets.
-        assert!(config.contains("  june_linear_actions:\n"));
+        assert!(parsed["mcp_servers"]["june_linear_actions"].is_mapping());
         for toolset in [
             "terminal",
             "file",
@@ -15637,6 +16445,90 @@ mcp_servers:
         assert!(cron_platform_toolsets(&configs)
             .split(", ")
             .any(|toolset| toolset == "memory"));
+    }
+
+    #[test]
+    fn config_sync_self_heals_the_persisted_global_memory_policy() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let settings = home.path().join("memory-settings.json");
+        let mut context = test_june_context_mcp_config();
+        context.memory_settings_path = settings.clone();
+        let web = test_june_web_mcp_config();
+        let image = test_june_image_mcp_config();
+        let recorder = test_june_recorder_mcp_config();
+
+        std::fs::write(&settings, r#"{"enabled":false}"#).expect("disable memory");
+        sync_hermes_config_with_external_dirs(
+            home.path(),
+            4242,
+            "proxy-token",
+            "memory-proxy-token",
+            "recorder-proxy-token",
+            "connector-proxy-token",
+            false,
+            &context,
+            &web,
+            &image,
+            None,
+            &recorder,
+            None,
+            &[],
+        )
+        .expect("sync disabled config");
+        let config_path = home.path().join("config.yaml");
+        let mut disabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read disabled config"),
+        )
+        .expect("disabled config parses");
+        assert!(disabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("disabled list")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
+        disabled["agent"]["disabled_toolsets"] = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("browser".to_string()),
+            serde_yaml::Value::String("memory".to_string()),
+        ]);
+        std::fs::write(
+            &config_path,
+            serde_yaml::to_string(&disabled).expect("serialize user config"),
+        )
+        .expect("add unrelated deny");
+
+        std::fs::write(&settings, r#"{"enabled":true}"#).expect("enable memory");
+        sync_hermes_config_with_external_dirs(
+            home.path(),
+            4242,
+            "proxy-token",
+            "memory-proxy-token",
+            "recorder-proxy-token",
+            "connector-proxy-token",
+            false,
+            &context,
+            &web,
+            &image,
+            None,
+            &recorder,
+            None,
+            &[],
+        )
+        .expect("sync enabled config");
+        let enabled: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(&config_path).expect("read enabled config"),
+        )
+        .expect("enabled config parses");
+        let remaining = enabled["agent"]["disabled_toolsets"]
+            .as_sequence()
+            .expect("browser deny remains");
+        assert_eq!(
+            remaining,
+            &[serde_yaml::Value::String("browser".to_string())]
+        );
+        assert!(enabled["platform_toolsets"]["cron"]
+            .as_sequence()
+            .expect("cron allowlist")
+            .iter()
+            .any(|item| item.as_str() == Some("memory")));
     }
 
     #[tokio::test]
@@ -16477,7 +17369,7 @@ mcp_servers:
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16530,11 +17422,95 @@ mcp_servers:
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn sandbox_profile_allows_only_an_external_config_symlink_target() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = std::fs::canonicalize(dir.path()).expect("canonicalize home");
+        let workspace = home.join("workspace");
+        let external = home.join("external-config");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        std::fs::create_dir_all(&external).expect("external config dir");
+        let target = external.join("managed-config.yaml");
+        std::fs::write(&target, "agent: {}\n").expect("target config");
+        symlink(&target, workspace.join(HERMES_CONFIG_FILE)).expect("config symlink");
+
+        let config_path = sandbox_config_write_path(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
+        assert_eq!(config_path, target);
+        assert_eq!(
+            config_temp_prefix,
+            external.join(HERMES_CONFIG_ATOMIC_TEMP_PREFIX)
+        );
+        let profile = build_sandbox_profile(
+            &home,
+            std::slice::from_ref(&workspace),
+            &config_path,
+            &config_temp_prefix,
+            &[],
+            false,
+        );
+        assert!(profile.contains(&format!(
+            "(literal {})",
+            sbpl_quote(&target.to_string_lossy())
+        )));
+        assert!(profile.contains(&format!(
+            "(regex #\"^{}.*$\")",
+            sbpl_regex_escape(&config_temp_prefix.to_string_lossy())
+        )));
+        assert!(!profile.contains(&format!(
+            "(subpath {})",
+            sbpl_quote(&external.to_string_lossy())
+        )));
+
+        let profile_path = home.join("external-config-test.sb");
+        std::fs::write(&profile_path, profile).expect("profile");
+        let temporary = external.join(".config_external-test.tmp");
+        let write = std::process::Command::new(SANDBOX_EXEC_PATH)
+            .arg("-f")
+            .arg(&profile_path)
+            .arg("/bin/bash")
+            .arg("-c")
+            .arg(format!(
+                "printf changed > {} && mv {} {}",
+                sbpl_shell_quote(&temporary),
+                sbpl_shell_quote(&temporary),
+                sbpl_shell_quote(&target),
+            ))
+            .output()
+            .expect("run sandboxed atomic replacement");
+        assert!(
+            write.status.success(),
+            "resolved config replacement should be allowed: {}",
+            String::from_utf8_lossy(&write.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("updated target"),
+            "changed"
+        );
+
+        let denied = std::process::Command::new(SANDBOX_EXEC_PATH)
+            .arg("-f")
+            .arg(&profile_path)
+            .arg("/bin/bash")
+            .arg("-c")
+            .arg(format!(
+                "printf denied > {}",
+                sbpl_shell_quote(&external.join("unrelated.txt"))
+            ))
+            .output()
+            .expect("run sandboxed unrelated write");
+        assert!(!denied.status.success());
+        assert!(!external.join("unrelated.txt").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn sandbox_profile_opt_in_grants_agent_cli_state_only() {
         let home = PathBuf::from("/Users/test");
         let workspace = PathBuf::from("/Users/test/Library/Application Support/june/hermes");
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16602,7 +17578,7 @@ mcp_servers:
         std::fs::write(home.join(".ssh").join("id_secret"), "TOPSECRET").expect("seed secret");
 
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile_text = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16711,7 +17687,7 @@ mcp_servers:
         let workspace = dir.path().join("workspace");
         std::fs::create_dir_all(&workspace).expect("workspace");
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),
@@ -16773,7 +17749,7 @@ mcp_servers:
         std::fs::create_dir_all(&workspace).expect("create workspace");
 
         let config_path = sandbox_config_write_path(&workspace);
-        let config_temp_prefix = sandbox_config_temp_prefix(&workspace);
+        let config_temp_prefix = sandbox_config_temp_prefix(&config_path);
         let profile_text = build_sandbox_profile(
             &home,
             std::slice::from_ref(&workspace),

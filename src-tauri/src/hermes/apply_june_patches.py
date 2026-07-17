@@ -13,20 +13,35 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-v1"
+PATCH_SET = "june-approval-memory-v2"
 
 UPSTREAM_SHA256: Dict[str, str] = {
+    "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
     "tools/approval.py": "e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85",
     "tools/mcp_tool.py": "3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01",
     "tui_gateway/server.py": "1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a",
+    "utils.py": "572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c",
+    "gateway/platforms/telegram.py": "3943dc748827f81bf4e40a2a6711e4dfb6f65304bff552474ffbc23fd91e23a6",
 }
 
 # Filled after applying the transformations to the exact upstream files. These
 # hashes are part of the runtime provenance contract, not best-effort checks.
 PATCHED_SHA256: Dict[str, str] = {
+    "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "41197c75c3aee760a05a8ecdce4daa3d0ca7f62b34486f29a21f097086a4ef4e",
+    "tui_gateway/server.py": "988e462b640f0da4e47b8164b5ca433021ace080fccfe55322b5b284c7c944ac",
+    "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
+    "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
+}
+
+# These policy files are not transformed, but their exact bytes are part of
+# the patch set's provenance contract. June relies on this pinned scheduler
+# layering and final deny subtraction to make agent.disabled_toolsets win over
+# every stored per-job allowlist.
+POLICY_SHA256: Dict[str, str] = {
+    "cron/scheduler.py": "2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa",
+    "model_tools.py": "d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d",
 }
 
 
@@ -535,6 +550,28 @@ def patch_mcp_tool(source: str) -> str:
 def patch_server(source: str) -> str:
     source = replace_once(
         source,
+        '''        enabled_toolsets=_load_enabled_toolsets(),
+''',
+        '''        enabled_toolsets=_load_enabled_toolsets(),
+        disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
+''',
+        "server global disabled toolsets",
+    )
+    source = replace_once(
+        source,
+        '''        "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
+        or _load_enabled_toolsets(),
+''',
+        '''        "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
+        or _load_enabled_toolsets(),
+        "disabled_toolsets": (cfg.get("agent") or {}).get("disabled_toolsets")
+        or getattr(agent, "disabled_toolsets", None)
+        or [],
+''',
+        "server background disabled toolsets",
+    )
+    source = replace_once(
+        source,
         '''            session["transport"] = _detached_ws_transport
             detached += 1
             try:
@@ -640,14 +677,429 @@ def _(rid, params: dict) -> dict:
         handler,
         "targeted approval response",
     )
-    return source
+    save_config = r'''def _save_cfg(cfg: dict):
+    global _cfg_cache, _cfg_mtime, _cfg_path
+    import yaml
+    from utils import atomic_yaml_write
+
+    path = _hermes_home / "config.yaml"
+    # This TUI JSON-RPC writer used to truncate config.yaml directly. Route it
+    # through June's shared lock and stale-snapshot Memory reconciliation too.
+    atomic_yaml_write(path, cfg, default_flow_style=False, sort_keys=False)
+    try:
+        with path.open(encoding="utf-8") as saved:
+            saved_cfg = yaml.safe_load(saved) or {}
+    except Exception:
+        saved_cfg = cfg
+    with _cfg_lock:
+        _cfg_cache = copy.deepcopy(saved_cfg)
+        _cfg_path = path
+        try:
+            _cfg_mtime = path.stat().st_mtime
+        except Exception:
+            _cfg_mtime = None
+
+
+'''
+    return replace_region(
+        source,
+        "def _save_cfg(cfg: dict):\n",
+        "def _cwd_for_session_key(session_key: str) -> str:\n",
+        save_config,
+        "TUI config writer lock",
+    )
+
+
+def patch_agent_init(source: str) -> str:
+    source = replace_once(
+        source,
+        "\ndef init_agent(\n",
+        "\ndef _june_resolve_memory_policy(disabled_toolsets):\n"
+        "    \"\"\"Merge June's global Memory deny into one agent lifecycle.\"\"\"\n"
+        "    try:\n"
+        "        from hermes_cli.config import load_config as _load_june_policy_config\n"
+        "        _june_agent_config = (_load_june_policy_config().get(\"agent\") or {})\n"
+        "        _june_global_disabled = _june_agent_config.get(\"disabled_toolsets\") or []\n"
+        "    except Exception:\n"
+        "        _june_global_disabled = []\n"
+        "    memory_denied = any(\n"
+        "        item == \"memory\" for item in (disabled_toolsets or [])\n"
+        "    ) or (\n"
+        "        isinstance(_june_global_disabled, (list, tuple, set))\n"
+        "        and any(item == \"memory\" for item in _june_global_disabled)\n"
+        "    )\n"
+        "    merged = list(disabled_toolsets or [])\n"
+        "    if memory_denied and \"memory\" not in merged:\n"
+        "        merged.append(\"memory\")\n"
+        "    return (merged if merged else disabled_toolsets), memory_denied\n"
+        "\n"
+        "\n"
+        "def init_agent(\n",
+        "agent init memory policy helper",
+    )
+    source = replace_once(
+        source,
+        "    # Store toolset filtering options\n"
+        "    agent.enabled_toolsets = enabled_toolsets\n"
+        "    agent.disabled_toolsets = disabled_toolsets\n",
+        "    # June's global Memory deny is a runtime-wide privacy boundary, not\n"
+        "    # only a tool-definition filter. Resolve it from config inside the\n"
+        "    # central constructor so every CLI, TUI, gateway, cron, background,\n"
+        "    # preview, messaging, and future AIAgent path inherits the policy.\n"
+        "    disabled_toolsets, _june_memory_denied = _june_resolve_memory_policy(\n"
+        "        disabled_toolsets\n"
+        "    )\n"
+        "\n"
+        "    # Store toolset filtering options\n"
+        "    agent.enabled_toolsets = enabled_toolsets\n"
+        "    agent.disabled_toolsets = disabled_toolsets\n",
+        "agent init global memory deny",
+    )
+    return replace_once(
+        source,
+        "    agent._memory_nudge_interval = 10\n"
+        "    agent._turns_since_memory = 0\n"
+        "    agent._iters_since_skill = 0\n"
+        "    if not skip_memory:\n",
+        "    agent._memory_nudge_interval = 10\n"
+        "    agent._turns_since_memory = 0\n"
+        "    agent._iters_since_skill = 0\n"
+        "    # The same global deny also suppresses MEMORY.md / USER.md prompt\n"
+        "    # injection and external provider prefetch/sync. Tool subtraction\n"
+        "    # alone cannot provide the privacy semantics of June's Memory switch.\n"
+        "    skip_memory = skip_memory or _june_memory_denied\n"
+        "    if not skip_memory:\n",
+        "agent init memory lifecycle deny",
+    )
+
+
+def patch_utils(source: str) -> str:
+    source = replace_once(
+        source,
+        "import errno\nimport json\n",
+        "from contextlib import contextmanager\nimport copy\nimport errno\nimport json\nimport sys\n",
+        "utils config writer lock imports",
+    )
+    replacement = r'''@contextmanager
+def _june_config_writer_lock(path: Path):
+    """Coordinate config.yaml replacement with the June desktop host."""
+    if path.name != "config.yaml":
+        yield
+        return
+
+    lock_path = path.parent / ".june-config.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as lock_file:
+        if os.name == "nt":
+            import msvcrt
+
+            # Byte-range locks may extend beyond EOF. Do not initialize a byte
+            # before locking because two first-time writers could race there.
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _june_sync_memory_deny(path: Path, data: Any) -> Any:
+    """Make the current on-disk Memory deny win over stale config writers."""
+    if not isinstance(data, dict):
+        return data
+    try:
+        existing = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        existing = {}
+    existing_agent = existing.get("agent") if isinstance(existing, dict) else None
+    existing_disabled = (
+        existing_agent.get("disabled_toolsets")
+        if isinstance(existing_agent, dict)
+        else None
+    )
+    memory_denied = isinstance(existing_disabled, list) and any(
+        item == "memory" for item in existing_disabled
+    )
+
+    updated = copy.deepcopy(data)
+    agent = updated.get("agent")
+    if not isinstance(agent, dict):
+        if not memory_denied:
+            return updated
+        agent = {}
+        updated["agent"] = agent
+    disabled = agent.get("disabled_toolsets")
+    retained = (
+        [item for item in disabled if item != "memory"]
+        if isinstance(disabled, list)
+        else []
+    )
+    if memory_denied:
+        retained.append("memory")
+    if retained:
+        agent["disabled_toolsets"] = retained
+    else:
+        agent.pop("disabled_toolsets", None)
+    return updated
+
+
+def _june_config_replacement_target(path: Path) -> Path:
+    """Resolve an existing config symlink before creating its temp peer."""
+    return path.resolve(strict=True) if path.is_symlink() else path
+
+
+def _june_copy_config_security(source: Path, temporary: Path) -> None:
+    """Copy destination security metadata onto a same-volume temp file."""
+    if not source.exists() or sys.platform != "darwin":
+        return
+
+    import ctypes
+
+    copyfile = ctypes.CDLL(
+        "/usr/lib/libSystem.B.dylib", use_errno=True
+    ).fcopyfile
+    copyfile.argtypes = [
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    copyfile.restype = ctypes.c_int
+    copyfile_security = (1 << 0) | (1 << 1)  # COPYFILE_ACL | COPYFILE_STAT
+    with source.open("rb") as existing, temporary.open("r+b") as replacement:
+        if copyfile(
+            existing.fileno(),
+            replacement.fileno(),
+            None,
+            copyfile_security,
+        ) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), str(source))
+
+
+def _june_replace_config(temporary: Path, target: Path) -> None:
+    """Atomically replace config while retaining platform security metadata."""
+    if os.name != "nt" or not target.exists():
+        os.replace(temporary, target)
+        return
+
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    replace_file = kernel32.ReplaceFileW
+    replace_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    replace_file.restype = ctypes.c_int
+    if not replace_file(str(target), str(temporary), None, 0, None, None):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def atomic_yaml_write(
+    path: Union[str, Path],
+    data: Any,
+    *,
+    default_flow_style: bool = False,
+    sort_keys: bool = False,
+    extra_content: str | None = None,
+) -> None:
+    """Write YAML data atomically under June's shared config writer lock."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _june_config_writer_lock(path):
+        data = _june_sync_memory_deny(path, data)
+        target = _june_config_replacement_target(path)
+        original_mode = _preserve_file_mode(target)
+
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(target.parent),
+            prefix=f".{path.stem}_",
+            suffix=".tmp",
+        )
+        tmp_path = Path(tmp_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml.dump(
+                    data,
+                    f,
+                    default_flow_style=default_flow_style,
+                    sort_keys=sort_keys,
+                )
+                if extra_content:
+                    f.write(extra_content)
+                f.flush()
+                os.fsync(f.fileno())
+            _june_copy_config_security(target, tmp_path)
+            _june_replace_config(tmp_path, target)
+            _restore_file_mode(target, original_mode)
+        except BaseException:
+            # Match atomic_json_write: cleanup must also happen for process-level
+            # interruptions before we re-raise them.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
+'''
+    source = replace_region(
+        source,
+        "def atomic_yaml_write(\n",
+        "def atomic_roundtrip_yaml_update(\n",
+        replacement,
+        "utils cross-process config writer lock",
+    )
+    roundtrip = r'''def atomic_roundtrip_yaml_update(
+    path: Union[str, Path],
+    key_path: str,
+    value: Any,
+) -> None:
+    """Update one dotted YAML key atomically under June's writer lock."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _june_config_writer_lock(path):
+        yaml_rt = YAML(typ="rt")
+        yaml_rt.preserve_quotes = True
+        yaml_rt.allow_unicode = True
+        yaml_rt.default_flow_style = False
+        yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                config = yaml_rt.load(f) or CommentedMap()
+        else:
+            config = CommentedMap()
+
+        if not isinstance(config, CommentedMap):
+            config = CommentedMap(config)
+
+        current = config
+        keys = key_path.split(".")
+        for key in keys[:-1]:
+            next_value = current.get(key)
+            if not isinstance(next_value, CommentedMap):
+                next_value = CommentedMap()
+                current[key] = next_value
+            current = next_value
+        current[keys[-1]] = value
+        config = _june_sync_memory_deny(path, config)
+
+        target = _june_config_replacement_target(path)
+        original_mode = _preserve_file_mode(target)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(target.parent),
+            prefix=f".{path.stem}_",
+            suffix=".tmp",
+        )
+        tmp_path = Path(tmp_path)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml_rt.dump(config, f)
+                f.flush()
+                os.fsync(f.fileno())
+            _june_copy_config_security(target, tmp_path)
+            _june_replace_config(tmp_path, target)
+            _restore_file_mode(target, original_mode)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
+'''
+    return replace_region(
+        source,
+        "def atomic_roundtrip_yaml_update(\n",
+        "# ─── JSON Helpers",
+        roundtrip,
+        "utils roundtrip config writer lock",
+    )
+
+
+def patch_telegram(source: str) -> str:
+    replacement = r'''            if changed:
+                # Funnel this live gateway writer through the same locked,
+                # Memory-policy-reconciling path as every other config save.
+                from utils import atomic_yaml_write
+
+                atomic_yaml_write(
+                    config_path,
+                    config,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+'''
+    return replace_region(
+        source,
+        "            if changed:\n                fd, tmp_path = tempfile.mkstemp(\n",
+        "                logger.info(\n",
+        replacement,
+        "telegram DM topic config writer",
+    )
 
 
 PATCHERS: Dict[str, Callable[[str], str]] = {
+    "agent/agent_init.py": patch_agent_init,
     "tools/approval.py": patch_approval,
     "tools/mcp_tool.py": patch_mcp_tool,
     "tui_gateway/server.py": patch_server,
+    "utils.py": patch_utils,
+    "gateway/platforms/telegram.py": patch_telegram,
 }
+
+
+def verify_memory_deny_contract(root: Path) -> None:
+    """Pin the upstream precedence that makes June's global deny authoritative."""
+    required = {
+        "cron/scheduler.py": (
+            'user_disabled = agent_cfg.get("disabled_toolsets") or []',
+            "disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),",
+        ),
+        "model_tools.py": (
+            "# Always apply disabled toolsets as a subtraction step at the end.",
+            "tools_to_include.difference_update(resolved)",
+        ),
+    }
+    for relative, snippets in required.items():
+        path = root / relative
+        if not path.is_file():
+            raise RuntimeError("missing pinned Hermes policy file: %s" % path)
+        observed = sha256(path)
+        if observed != POLICY_SHA256[relative]:
+            raise RuntimeError(
+                "%s hash mismatch: expected pinned policy %s, got %s"
+                % (relative, POLICY_SHA256[relative], observed)
+            )
+        source = path.read_text(encoding="utf-8")
+        for snippet in snippets:
+            if snippet not in source:
+                raise RuntimeError(
+                    "%s no longer satisfies the pinned memory deny contract: %s"
+                    % (relative, snippet)
+                )
 
 
 def apply(root: Path, verify_only: bool) -> Dict[str, str]:
@@ -678,6 +1130,7 @@ def apply(root: Path, verify_only: bool) -> Dict[str, str]:
                 "%s patched hash mismatch: expected %s, got %s"
                 % (relative, patched, observed[relative])
             )
+    verify_memory_deny_contract(root)
     return observed
 
 
