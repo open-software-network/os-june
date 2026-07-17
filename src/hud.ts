@@ -932,8 +932,11 @@ async function handleDictationEventPayload(payload: unknown) {
       return;
     }
     const message = String(dictationEvent.payload?.message ?? "Dictation failed.").trim();
-    await updateErrorPlacement();
     const transition = setHud("error", message || "Dictation failed.");
+    // Latch the error state before awaiting native placement. A key-up event
+    // can arrive during that IPC call, and its secondary not_listening error
+    // must not dismiss the actionable start failure.
+    await updateErrorPlacement();
     // Render the pill with the message layer drawn in, snap the window to
     // the full (layer-included) size with no native motion, then draw the
     // layer out in CSS — the pill never moves and nothing clips.

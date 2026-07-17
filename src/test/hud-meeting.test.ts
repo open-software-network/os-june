@@ -424,11 +424,31 @@ describe("meeting detection HUD", () => {
     vi.useFakeTimers();
     await loadHud();
 
-    await emit("dictation-event", {
+    let resolvePlacement: ((placement: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return new Promise<string>((resolve) => {
+          resolvePlacement = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const startError = emit("dictation-event", {
       type: "error",
       payload: {
         code: "microphone_permission_missing",
         message: "Microphone permission is required.",
+      },
+    });
+
+    // The key-up error can arrive before native window placement resolves.
+    expect(hudElement().dataset.state).toBe("error");
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "not_listening",
+        message: "Dictation is not listening.",
       },
     });
 
@@ -438,13 +458,8 @@ describe("meeting detection HUD", () => {
     );
     mocks.hide.mockClear();
 
-    await emit("dictation-event", {
-      type: "error",
-      payload: {
-        code: "not_listening",
-        message: "Dictation is not listening.",
-      },
-    });
+    resolvePlacement?.("below");
+    await startError;
 
     expect(hudElement().dataset.state).toBe("error");
     expect(document.querySelector("#hud-error-text")).toHaveTextContent(

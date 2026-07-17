@@ -238,13 +238,15 @@ enum RecordingCuePlayer {
         }
     }
 
-    static func cancel(_ cue: RecordingCueSound) {
-        completions.removeValue(forKey: cue)?.cancel()
+    @discardableResult
+    static func cancel(_ cue: RecordingCueSound) -> Bool {
+        let wasWaitingForCompletion = completions.removeValue(forKey: cue) != nil
         guard let sound = sounds[cue] else {
-            return
+            return wasWaitingForCompletion
         }
         sound.delegate = nil
         sound.stop()
+        return wasWaitingForCompletion
     }
 
     private static func load(_ cue: RecordingCueSound) -> NSSound? {
@@ -1708,8 +1710,11 @@ final class DictationController {
         // pending flag until a helper restart.
         if startPending && !isListening {
             dictationStartGeneration += 1
-            RecordingCuePlayer.cancel(.start)
+            let interruptedStartCue = RecordingCuePlayer.cancel(.start)
             resetRecordingState()
+            if interruptedStartCue {
+                RecordingCuePlayer.play(.stop)
+            }
             emit("recording_discarded", ["reason": "start_cancelled"])
             return
         }
