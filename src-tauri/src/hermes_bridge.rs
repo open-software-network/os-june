@@ -1044,32 +1044,73 @@ pub async fn hermes_bridge_status(
 /// Reap-and-collect: drops map entries whose process has exited and returns
 /// the connections that are still live, sandboxed first.
 fn live_connections(bridge: &HermesBridge) -> Result<Vec<HermesBridgeConnection>, AppError> {
-    let mut guard = bridge
-        .processes
-        .lock()
-        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
-    let mut connections = Vec::new();
-    for full_mode in [false, true] {
-        let exited = match guard.get_mut(&full_mode) {
-            None => continue,
-            Some(process) => match process.child.try_wait() {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
+    live_connections_with_shutdown(bridge, |process| {
+        shutdown_hermes_process(Some(process));
+    })
+}
+
+fn live_connections_with_shutdown<F>(
+    bridge: &HermesBridge,
+    mut shutdown_process: F,
+) -> Result<Vec<HermesBridgeConnection>, AppError>
+where
+    F: FnMut(HermesProcess),
+{
+    let (connections, exited_processes, liveness_error) = {
+        let mut guard = bridge.processes.lock().map_err(|_| {
+            AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed.")
+        })?;
+        let mut connections = Vec::new();
+        let mut exited_processes = Vec::new();
+        let mut liveness_error = None;
+        for full_mode in [false, true] {
+            let liveness = match guard.get_mut(&full_mode) {
+                None => continue,
+                Some(process) => hermes_process_liveness(process),
+            };
+            match liveness {
+                Ok(ChildLiveness::Exited) => {
+                    if let Some(process) = guard.remove(&full_mode) {
+                        exited_processes.push(process);
+                    }
+                }
+                Ok(ChildLiveness::Running) => {
+                    if let Some(process) = guard.get(&full_mode) {
+                        connections.push(process.connection.clone());
+                    }
+                }
                 Err(error) => {
-                    return Err(AppError::new(
+                    liveness_error = Some(AppError::new(
                         "hermes_bridge_status_failed",
                         error.to_string(),
                     ));
+                    break;
                 }
-            },
-        };
-        if exited {
-            guard.remove(&full_mode);
-        } else if let Some(process) = guard.get(&full_mode) {
-            connections.push(process.connection.clone());
+            }
         }
+        (connections, exited_processes, liveness_error)
+    };
+    for process in exited_processes {
+        shutdown_process(process);
+    }
+    if let Some(error) = liveness_error {
+        return Err(error);
     }
     Ok(connections)
+}
+
+fn hermes_process_liveness(process: &mut HermesProcess) -> io::Result<ChildLiveness> {
+    if process.github_broker.is_some() {
+        child_liveness_without_reaping(&mut process.child)
+    } else {
+        process.child.try_wait().map(|status| {
+            if status.is_some() {
+                ChildLiveness::Exited
+            } else {
+                ChildLiveness::Running
+            }
+        })
+    }
 }
 
 /// Builds the wire status. `primary_mode` selects which connection fills the
@@ -6164,18 +6205,28 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
 fn store_hermes_process_or_return_duplicate(
     bridge: &HermesBridge,
     full_mode: bool,
-    mut process: HermesProcess,
+    process: HermesProcess,
 ) -> Result<Option<HermesProcess>, AppError> {
+    store_hermes_process_or_return_duplicate_with_shutdown(bridge, full_mode, process, |process| {
+        shutdown_hermes_process(Some(process))
+    })
+}
+
+fn store_hermes_process_or_return_duplicate_with_shutdown<F>(
+    bridge: &HermesBridge,
+    full_mode: bool,
+    process: HermesProcess,
+    mut shutdown_process: F,
+) -> Result<Option<HermesProcess>, AppError>
+where
+    F: FnMut(HermesProcess),
+{
     let mut stale = None;
     let duplicate = {
         let mut guard = match bridge.processes.lock() {
             Ok(guard) => guard,
             Err(_) => {
-                if let Some(broker) = process.github_broker.as_ref() {
-                    broker.revoke_interactive(process.child.id(), process.generation);
-                }
-                let _ = process.child.kill();
-                let _ = process.child.wait();
+                shutdown_process(process);
                 return Err(AppError::new(
                     "hermes_bridge_unavailable",
                     "Hermes bridge lock failed.",
@@ -6186,7 +6237,10 @@ fn store_hermes_process_or_return_duplicate(
         // process already in the slot always wins; its generation and broker
         // are never mutated by cleanup for the redundant child.
         if let Some(existing) = guard.get_mut(&full_mode) {
-            if matches!(existing.child.try_wait(), Ok(None)) {
+            if matches!(
+                hermes_process_liveness(existing),
+                Ok(ChildLiveness::Running)
+            ) {
                 Some(process)
             } else {
                 stale = guard.insert(full_mode, process);
@@ -6197,17 +6251,28 @@ fn store_hermes_process_or_return_duplicate(
             None
         }
     };
-    shutdown_hermes_process(stale);
+    if let Some(stale) = stale {
+        shutdown_process(stale);
+    }
     Ok(duplicate)
 }
 
-fn shutdown_hermes_process(mut process: Option<HermesProcess>) {
+fn shutdown_hermes_process(process: Option<HermesProcess>) {
+    shutdown_hermes_process_with(process, |process| {
+        let _ = process.child.kill();
+        let _ = process.child.wait();
+    });
+}
+
+fn shutdown_hermes_process_with<C>(mut process: Option<HermesProcess>, mut cleanup_child: C)
+where
+    C: FnMut(&mut HermesProcess),
+{
     if let Some(process) = process.as_mut() {
         if let Some(broker) = process.github_broker.as_ref() {
             broker.revoke_interactive(process.child.id(), process.generation);
         }
-        let _ = process.child.kill();
-        let _ = process.child.wait();
+        cleanup_child(process);
     }
 }
 
@@ -15888,6 +15953,74 @@ esac
             );
         }
 
+        #[test]
+        fn production_child_reap_sites_are_exhaustive_and_broker_safe() {
+            // Any added production reap site must update this inventory and
+            // prove whether its Child can own GitHub broker admission.
+            let source = include_str!("hermes_bridge.rs");
+            let production = source
+                .split("\n#[cfg(test)]\nmod tests {")
+                .next()
+                .expect("production source");
+            assert_eq!(production.matches(".try_wait()").count(), 3);
+            assert_eq!(production.matches(".wait()").count(), 4);
+
+            let status = production
+                .split("fn live_connections(")
+                .nth(1)
+                .and_then(|tail| tail.split("fn hermes_process_liveness(").next())
+                .expect("status lifecycle functions");
+            assert!(status.contains("hermes_process_liveness(process)"));
+            assert!(!status.contains("process.child.try_wait()"));
+
+            let process_liveness = production
+                .split("fn hermes_process_liveness(")
+                .nth(1)
+                .and_then(|tail| tail.split("/// Builds the wire status").next())
+                .expect("Hermes process liveness");
+            let broker_owned = process_liveness
+                .find("if process.github_broker.is_some()")
+                .expect("broker ownership check");
+            let non_reaping = process_liveness
+                .find("child_liveness_without_reaping(&mut process.child)")
+                .expect("non-reaping broker probe");
+            let unbrokered_try_wait = process_liveness
+                .find("process.child.try_wait()")
+                .expect("unbrokered generic probe");
+            assert!(broker_owned < non_reaping && non_reaping < unbrokered_try_wait);
+
+            let duplicate = production
+                .split("fn store_hermes_process_or_return_duplicate(")
+                .nth(1)
+                .and_then(|tail| tail.split("fn shutdown_hermes_process(").next())
+                .expect("duplicate lifecycle functions");
+            assert!(duplicate.contains("hermes_process_liveness(existing)"));
+            assert!(!duplicate.contains("existing.child.try_wait()"));
+
+            let shutdown = production
+                .split("fn shutdown_hermes_process_with")
+                .nth(1)
+                .and_then(|tail| tail.split("async fn resolve_hermes_command").next())
+                .expect("shared Hermes shutdown");
+            let revoke = shutdown
+                .find("broker.revoke_interactive(process.child.id(), process.generation)")
+                .expect("exact broker revocation");
+            let cleanup = shutdown
+                .find("cleanup_child(process)")
+                .expect("child cleanup");
+            assert!(revoke < cleanup);
+
+            // The remaining direct calls belong to bounded OAuth and gateway
+            // CLI children, the macOS-ineligible generic fallback, or cleanup
+            // callbacks reached only after the tested exact revocation step.
+            assert!(production.contains("fn wait_with_timeout(mut child: Child"));
+            assert!(production.contains("fn spawn_hermes_gateway_start("));
+            assert!(production.contains(
+                "#[cfg(not(target_os = \"macos\"))]\nfn child_has_exited_without_reaping"
+            ));
+            assert!(production.contains("authorize_github_broker_for_child_with("));
+        }
+
         #[tokio::test]
         async fn managed_admission_stays_sticky_after_every_process_stops() {
             let bridge = HermesBridge::default();
@@ -19401,6 +19534,49 @@ mcp_servers:
     }
 
     #[cfg(target_os = "macos")]
+    fn exit_task_five_child_without_reaping(child: &mut Child) {
+        child.kill().expect("kill test dashboard child");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !child_has_exited_without_reaping(child).expect("probe exited test child") {
+            assert!(
+                Instant::now() < deadline,
+                "test dashboard child did not become waitable"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn assert_task_five_revoked_then_reap(
+        process: &mut HermesProcess,
+        expected_pid: u32,
+        expected_generation: u64,
+    ) {
+        assert_eq!(process.child.id(), expected_pid);
+        assert_eq!(process.generation, expected_generation);
+        assert!(
+            process
+                .github_broker
+                .as_ref()
+                .expect("broker-owned process")
+                .revoked_for_bridge_test(),
+            "exact broker admission must be revoked before cleanup"
+        );
+        assert!(
+            child_has_exited_without_reaping(&mut process.child)
+                .expect("probe exited child at cleanup entry"),
+            "child pid must remain waitable until after broker revocation"
+        );
+        process.child.wait().expect("reap child after revocation");
+        assert_eq!(
+            child_has_exited_without_reaping(&mut process.child)
+                .expect_err("child pid was reaped by lifecycle cleanup")
+                .raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
     fn task_five_connection(child: &Child, full_mode: bool) -> HermesBridgeConnection {
         HermesBridgeConnection {
             base_url: "http://127.0.0.1:4242".to_string(),
@@ -19734,6 +19910,168 @@ mcp_servers:
             let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
             assert!(!soul.contains("GitHub tools:"));
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn status_collection_revokes_exited_broker_before_reap_and_preserves_newer_slot() {
+        let bridge = HermesBridge::default();
+
+        let exited_dir = tempfile::tempdir().expect("exited socket dir");
+        let exited_broker = task_five_test_broker(exited_dir.path(), 71).await;
+        let exited_path = exited_broker.socket_path().to_path_buf();
+        let mut exited_child = spawn_task_five_child();
+        authorize_live_github_broker_for_child(Some(&exited_broker), &mut exited_child, 71)
+            .expect("authorize exited status child");
+        let exited_pid = exited_child.id();
+        exit_task_five_child_without_reaping(&mut exited_child);
+
+        let newer_dir = tempfile::tempdir().expect("newer socket dir");
+        let newer_broker = task_five_test_broker(newer_dir.path(), 72).await;
+        let newer_path = newer_broker.socket_path().to_path_buf();
+        let mut newer_child = spawn_task_five_child();
+        authorize_live_github_broker_for_child(Some(&newer_broker), &mut newer_child, 72)
+            .expect("authorize newer status child");
+        let newer_connection = task_five_connection(&newer_child, true);
+
+        {
+            let mut processes = bridge.processes.lock().expect("processes");
+            processes.insert(
+                false,
+                HermesProcess {
+                    generation: 71,
+                    connection: task_five_connection(&exited_child, false),
+                    child: exited_child,
+                    github_broker: Some(exited_broker),
+                },
+            );
+            processes.insert(
+                true,
+                HermesProcess {
+                    generation: 72,
+                    connection: newer_connection.clone(),
+                    child: newer_child,
+                    github_broker: Some(newer_broker),
+                },
+            );
+        }
+
+        let mut shutdown_checked = false;
+        let connections = live_connections_with_shutdown(&bridge, |process| {
+            {
+                let processes = bridge
+                    .processes
+                    .try_lock()
+                    .expect("status shutdown runs outside process-map lock");
+                assert!(!processes.contains_key(&false));
+                assert_eq!(processes.get(&true).expect("newer slot").generation, 72);
+            }
+            shutdown_hermes_process_with(Some(process), |process| {
+                assert_task_five_revoked_then_reap(process, exited_pid, 71);
+                shutdown_checked = true;
+            });
+        })
+        .expect("collect live status connections");
+
+        assert!(shutdown_checked);
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].pid, newer_connection.pid);
+        assert!(connections[0].full_mode);
+        assert_task_five_socket_rejects(&exited_path).await;
+        {
+            let mut processes = bridge.processes.lock().expect("processes");
+            let newer = processes.get_mut(&true).expect("newer process survives");
+            assert_eq!(newer.generation, 72);
+            assert!(!child_has_exited_without_reaping(&mut newer.child).expect("probe newer"));
+            assert!(!newer
+                .github_broker
+                .as_ref()
+                .expect("newer broker")
+                .revoked_for_bridge_test());
+        }
+
+        stop_hermes_bridge_inner(&bridge).expect("clean up newer status process");
+        assert_task_five_socket_rejects(&newer_path).await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn stale_duplicate_replacement_revokes_old_broker_before_reap_and_keeps_newer() {
+        let bridge = HermesBridge::default();
+
+        let stale_dir = tempfile::tempdir().expect("stale socket dir");
+        let stale_broker = task_five_test_broker(stale_dir.path(), 73).await;
+        let stale_path = stale_broker.socket_path().to_path_buf();
+        let mut stale_child = spawn_task_five_child();
+        authorize_live_github_broker_for_child(Some(&stale_broker), &mut stale_child, 73)
+            .expect("authorize stale duplicate child");
+        let stale_pid = stale_child.id();
+        exit_task_five_child_without_reaping(&mut stale_child);
+        bridge.processes.lock().expect("processes").insert(
+            false,
+            HermesProcess {
+                generation: 73,
+                connection: task_five_connection(&stale_child, false),
+                child: stale_child,
+                github_broker: Some(stale_broker),
+            },
+        );
+
+        let newer_dir = tempfile::tempdir().expect("newer socket dir");
+        let newer_broker = task_five_test_broker(newer_dir.path(), 74).await;
+        let newer_path = newer_broker.socket_path().to_path_buf();
+        let mut newer_child = spawn_task_five_child();
+        authorize_live_github_broker_for_child(Some(&newer_broker), &mut newer_child, 74)
+            .expect("authorize newer duplicate child");
+        let newer_pid = newer_child.id();
+        let newer = HermesProcess {
+            generation: 74,
+            connection: task_five_connection(&newer_child, false),
+            child: newer_child,
+            github_broker: Some(newer_broker),
+        };
+
+        let mut shutdown_checked = false;
+        let duplicate = store_hermes_process_or_return_duplicate_with_shutdown(
+            &bridge,
+            false,
+            newer,
+            |process| {
+                {
+                    let processes = bridge
+                        .processes
+                        .try_lock()
+                        .expect("duplicate shutdown runs outside process-map lock");
+                    let installed = processes.get(&false).expect("newer slot installed");
+                    assert_eq!(installed.generation, 74);
+                    assert_eq!(installed.child.id(), newer_pid);
+                }
+                shutdown_hermes_process_with(Some(process), |process| {
+                    assert_task_five_revoked_then_reap(process, stale_pid, 73);
+                    shutdown_checked = true;
+                });
+            },
+        )
+        .expect("store newer replacement");
+
+        assert!(duplicate.is_none());
+        assert!(shutdown_checked);
+        assert_task_five_socket_rejects(&stale_path).await;
+        {
+            let mut processes = bridge.processes.lock().expect("processes");
+            let newer = processes.get_mut(&false).expect("newer process survives");
+            assert_eq!(newer.generation, 74);
+            assert_eq!(newer.child.id(), newer_pid);
+            assert!(!child_has_exited_without_reaping(&mut newer.child).expect("probe newer"));
+            assert!(!newer
+                .github_broker
+                .as_ref()
+                .expect("newer broker")
+                .revoked_for_bridge_test());
+        }
+
+        stop_hermes_bridge_inner(&bridge).expect("clean up newer duplicate process");
+        assert_task_five_socket_rejects(&newer_path).await;
     }
 
     #[cfg(target_os = "macos")]
