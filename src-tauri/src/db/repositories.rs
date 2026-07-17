@@ -1445,18 +1445,44 @@ impl Repositories {
 
     pub async fn assign_note_to_folder(
         &self,
+        profile: &str,
         note_id: &str,
         folder_id: &str,
-    ) -> Result<NoteDto, sqlx::error::Error> {
+    ) -> Result<NoteDto, AppError> {
+        let mut transaction = self.pool.begin().await?;
+        let matches_active_profile = query(
+            "SELECT 1
+             FROM notes n
+             INNER JOIN folders f ON f.id = ?
+             WHERE n.id = ?
+               AND n.profile = ?
+               AND f.profile = ?
+               AND f.deleted_at IS NULL",
+        )
+        .bind(folder_id)
+        .bind(note_id)
+        .bind(profile)
+        .bind(profile)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .is_some();
+        if !matches_active_profile {
+            return Err(AppError::new(
+                "note_folder_profile_mismatch",
+                "The note and project must belong to the active profile.",
+            ));
+        }
+
         query(
             "INSERT OR IGNORE INTO note_folders (note_id, folder_id, assigned_at) VALUES (?, ?, ?)",
         )
         .bind(note_id)
         .bind(folder_id)
         .bind(timestamp())
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.get_note(note_id).await
+        transaction.commit().await?;
+        Ok(self.get_note(note_id).await?)
     }
 
     pub async fn remove_note_from_folder(

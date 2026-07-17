@@ -42,7 +42,7 @@ async fn assigning_and_removing_folder_keeps_note_in_all_notes() {
         .expect("folder");
 
     let assigned = repos
-        .assign_note_to_folder(&note.id, &folder.id)
+        .assign_note_to_folder("default", &note.id, &folder.id)
         .await
         .expect("assign");
     assert_eq!(assigned.folder_ids, vec![folder.id.clone()]);
@@ -59,6 +59,44 @@ async fn assigning_and_removing_folder_keeps_note_in_all_notes() {
         .expect("all notes");
     assert_eq!(all_notes.items.len(), 1);
     assert_eq!(all_notes.items[0].id, note.id);
+}
+
+#[tokio::test]
+async fn assigning_note_to_folder_requires_both_to_match_the_active_profile() {
+    let repos = repos().await;
+    let note_a = repos
+        .create_note("profile-a", None)
+        .await
+        .expect("profile A note");
+    let folder_a = repos
+        .create_folder("profile-a", "Profile A project", None)
+        .await
+        .expect("profile A project");
+    let folder_b = repos
+        .create_folder("profile-b", "Profile B project", None)
+        .await
+        .expect("profile B project");
+
+    let note_mismatch = repos
+        .assign_note_to_folder("profile-b", &note_a.id, &folder_b.id)
+        .await
+        .expect_err("profile A note must not be filed while profile B is active");
+    assert_eq!(note_mismatch.code, "note_folder_profile_mismatch");
+
+    let folder_mismatch = repos
+        .assign_note_to_folder("profile-a", &note_a.id, &folder_b.id)
+        .await
+        .expect_err("profile B project must not accept a profile A note");
+    assert_eq!(folder_mismatch.code, "note_folder_profile_mismatch");
+
+    let unchanged = repos.get_note(&note_a.id).await.expect("unchanged note");
+    assert!(unchanged.folder_ids.is_empty());
+
+    let assigned = repos
+        .assign_note_to_folder("profile-a", &note_a.id, &folder_a.id)
+        .await
+        .expect("matching profile assignment");
+    assert_eq!(assigned.folder_ids, vec![folder_a.id]);
 }
 
 #[tokio::test]

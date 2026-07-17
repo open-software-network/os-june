@@ -341,10 +341,11 @@ pub async fn assign_note_to_folder(
     app: AppHandle,
     request: AssignNoteToFolderRequest,
 ) -> Result<NoteDto, AppError> {
-    Ok(repositories(&app)
+    let profile = active_profile(&app);
+    repositories(&app)
         .await?
-        .assign_note_to_folder(&request.note_id, &request.folder_id)
-        .await?)
+        .assign_note_to_folder(&profile, &request.note_id, &request.folder_id)
+        .await
 }
 
 #[tauri::command]
