@@ -40,7 +40,7 @@ import {
 } from "../lib/active-hermes-profile";
 import { makeAdminHarness } from "./fixtures/hermes-admin-harness";
 
-const EMPTY_SUMMARY = { notes: 0, dictation: 0, folders: 0, sessions: 0 };
+const EMPTY_SUMMARY = { notes: 0, dictation: 0, folders: 0, sessions: 0, memories: 0 };
 
 // ---------------------------------------------------------------------------
 // Schema parsing.
@@ -217,6 +217,7 @@ describe("profile manager - hook flows", () => {
       dictation: 3,
       folders: 4,
       sessions: 1,
+      memories: 5,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -233,8 +234,38 @@ describe("profile manager - hook flows", () => {
     expect(ok).toBe(false);
     expect(controller.getSnapshot().pendingRemoval).toEqual({
       name: "research",
-      summary: { notes: 2, dictation: 3, folders: 4, sessions: 1 },
+      summary: { notes: 2, dictation: 3, folders: 4, sessions: 1, memories: 5 },
     });
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
+      ),
+    ).toBe(false);
+    controller.dispose();
+  });
+
+  it("treats a memory-only profile as data-owning", async () => {
+    mocks.profileDataSummary.mockResolvedValue({
+      notes: 0,
+      dictation: 0,
+      folders: 0,
+      sessions: 0,
+      memories: 1,
+    });
+    const harness = makeAdminHarness({
+      profiles: [
+        { name: "default", active: true },
+        { name: "research", active: false },
+      ],
+      activeProfile: "default",
+    });
+    const controller = new ProfileManagerController(harness as ProfileManagerEngine);
+    await controller.load();
+
+    const ok = await controller.beginRemove("research");
+
+    expect(ok).toBe(false);
+    expect(controller.getSnapshot().pendingRemoval?.summary.memories).toBe(1);
     expect(
       harness.server.requestLog.some(
         (entry) => entry.method === "DELETE" && entry.path === "/api/profiles/research",
@@ -249,6 +280,7 @@ describe("profile manager - hook flows", () => {
       dictation: 0,
       folders: 0,
       sessions: 1,
+      memories: 0,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -288,6 +320,7 @@ describe("profile manager - hook flows", () => {
       dictation: 1,
       folders: 0,
       sessions: 2,
+      memories: 0,
     });
     // Hermes owns the chat transcripts: delete-permanently must remove the
     // profile's sessions themselves, not just June's mapping rows — an
@@ -331,6 +364,7 @@ describe("profile manager - hook flows", () => {
       dictation: 0,
       folders: 0,
       sessions: 1,
+      memories: 0,
     });
     mocks.listSessionProfiles.mockResolvedValue([{ sessionId: "chat-1", profile: "research" }]);
     mocks.deleteHermesSession.mockRejectedValue(new Error("session delete failed"));
@@ -366,6 +400,7 @@ describe("profile manager - hook flows", () => {
       dictation: 1,
       folders: 1,
       sessions: 1,
+      memories: 0,
     });
     const harness = makeAdminHarness({
       profiles: [

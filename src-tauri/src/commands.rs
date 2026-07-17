@@ -429,9 +429,10 @@ pub async fn list_memories(
     folder_id: Option<String>,
     include_global: bool,
 ) -> Result<Vec<MemoryDto>, AppError> {
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
-        .list_memories(folder_id.as_deref(), include_global)
+        .list_memories(&profile, folder_id.as_deref(), include_global)
         .await?)
 }
 
@@ -442,11 +443,13 @@ pub async fn create_memory(
     content: String,
     source: String,
 ) -> Result<MemoryDto, AppError> {
+    let profile = active_profile(&app);
     let repos = repositories(&app).await?;
     let settings_path = memory_settings_path(&app)?;
     create_memory_with_settings(
         &repos,
         &settings_path,
+        &profile,
         folder_id.as_deref(),
         &content,
         &source,
@@ -460,14 +463,16 @@ pub async fn update_memory(
     id: String,
     content: String,
 ) -> Result<MemoryDto, AppError> {
+    let profile = active_profile(&app);
     let repos = repositories(&app).await?;
     let settings_path = memory_settings_path(&app)?;
-    update_memory_with_settings(&repos, &settings_path, &id, &content).await
+    update_memory_with_settings(&repos, &settings_path, &profile, &id, &content).await
 }
 
 #[tauri::command]
 pub async fn delete_memory(app: AppHandle, id: String) -> Result<(), AppError> {
-    repositories(&app).await?.delete_memory(&id).await
+    let profile = active_profile(&app);
+    repositories(&app).await?.delete_memory(&profile, &id).await
 }
 
 #[tauri::command]
@@ -537,6 +542,7 @@ pub async fn set_memory_enabled(
 pub(crate) async fn create_memory_with_settings(
     repos: &Repositories,
     settings_path: &Path,
+    profile: &str,
     folder_id: Option<&str>,
     content: &str,
     source: &str,
@@ -554,12 +560,15 @@ pub(crate) async fn create_memory_with_settings(
             "Memory source must be agent or user.",
         ));
     }
-    repos.create_memory(folder_id, content, source).await
+    repos
+        .create_memory(profile, folder_id, content, source)
+        .await
 }
 
 async fn update_memory_with_settings(
     repos: &Repositories,
     settings_path: &Path,
+    profile: &str,
     id: &str,
     content: &str,
 ) -> Result<MemoryDto, AppError> {
@@ -567,7 +576,7 @@ async fn update_memory_with_settings(
     let _guard = MEMORY_SETTINGS_LOCK.lock().await;
     ensure_memory_enabled(settings_path)?;
     let content = validated_memory_content(content)?;
-    repos.update_memory(id, content).await
+    repos.update_memory(profile, id, content).await
 }
 
 fn ensure_memory_enabled(settings_path: &Path) -> Result<(), AppError> {
@@ -3173,6 +3182,7 @@ mod tests {
                     let result = create_memory_with_settings(
                         &repos,
                         &settings_path,
+                        "default",
                         folder_scoped.then_some(folder.id.as_str()),
                         "Remember this",
                         "user",
@@ -3205,7 +3215,7 @@ mod tests {
             .await
             .expect("create folder");
         let memory = repos
-            .create_memory(Some(&folder.id), "Original", "user")
+            .create_memory("default", Some(&folder.id), "Original", "user")
             .await
             .expect("create memory");
         repos
@@ -3215,13 +3225,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join("memory-settings.json");
 
-        let error = update_memory_with_settings(&repos, &settings_path, &memory.id, "Replacement")
-            .await
-            .expect_err("update must be rejected");
+        let error = update_memory_with_settings(
+            &repos,
+            &settings_path,
+            "default",
+            &memory.id,
+            "Replacement",
+        )
+        .await
+        .expect_err("update must be rejected");
 
         assert_eq!(error.code, "memory_disabled");
         let unchanged = repos
-            .list_memories(Some(&folder.id), false)
+            .list_memories("default", Some(&folder.id), false)
             .await
             .expect("list memory");
         assert_eq!(unchanged[0].content, "Original");
@@ -3231,20 +3247,26 @@ mod tests {
     async fn update_memory_rejects_all_content_when_memory_is_globally_disabled() {
         let repos = test_repositories().await;
         let memory = repos
-            .create_memory(None, "Original", "user")
+            .create_memory("default", None, "Original", "user")
             .await
             .expect("create memory");
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join("memory-settings.json");
         std::fs::write(&settings_path, r#"{"enabled":false}"#).expect("disable memory");
 
-        let error = update_memory_with_settings(&repos, &settings_path, &memory.id, "Replacement")
-            .await
-            .expect_err("update must be rejected");
+        let error = update_memory_with_settings(
+            &repos,
+            &settings_path,
+            "default",
+            &memory.id,
+            "Replacement",
+        )
+        .await
+        .expect_err("update must be rejected");
 
         assert_eq!(error.code, "memory_disabled");
         let unchanged = repos
-            .list_memories(None, false)
+            .list_memories("default", None, false)
             .await
             .expect("list global memory");
         assert_eq!(unchanged[0].content, "Original");

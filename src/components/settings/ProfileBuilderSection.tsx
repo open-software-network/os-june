@@ -266,8 +266,8 @@ function BuilderShell({
         blurb={
           <>
             Create a profile with its own models, skills, and MCP servers. Every profile presents as
-            June, and its notes, note transcriptions, dictation history, and chat sessions stay
-            separate.{" "}
+            June, and its notes, note transcriptions, dictation history, memory entries, and chat
+            sessions stay separate.{" "}
             <ModeNote
               mode={mode}
               profile={profile}
@@ -464,7 +464,7 @@ function ProfilesShell({
         blurb={
           <>
             Manage profiles with their own models, skills, and MCP servers. Their notes, note
-            transcriptions, dictation history, and chat sessions stay separate.{" "}
+            transcriptions, dictation history, memory entries, and chat sessions stay separate.{" "}
             <ModeNote mode={mode} profile={profile} show={showModeNote} prefix="Showing" />
           </>
         }
@@ -669,11 +669,14 @@ function profileDataSummaryText(
   return `This profile has ${countLabel(summary.notes, "note")}, ${countLabel(
     summary.sessions,
     "chat",
-  )}, ${countLabel(summary.dictation, "dictation")}, ${countLabel(summary.folders, "project")}.`;
+  )}, ${countLabel(summary.dictation, "dictation")}, ${countLabel(
+    summary.folders,
+    "project",
+  )}, ${countLabel(summary.memories, "memory", "memories")}.`;
 }
 
-function countLabel(count: number, singular: string): string {
-  return `${count} ${count === 1 ? singular : `${singular}s`}`;
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function Stepper({

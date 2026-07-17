@@ -100,3 +100,17 @@ to delete the *active* profile without switching first — ADR 0028.)
   fragile. Revisit if a future pin confirms it.
 - **Gateway-per-profile.** Already rejected in ADR 0028 for memory/spawn cost
   and the one-gateway-per-mode sandbox invariant.
+
+## 2026-07-17 addendum: memory entries and agent context reads
+
+June's memory entry store was added on main after this decision was first
+implemented. Memory entries follow the same partition rule: migration 019 adds
+the additive profile key with a default backfill, every read and mutation uses
+the active profile, and profile move/delete includes memory entries and their
+tombstones. A project-scoped memory must match both the requested folder and
+its profile.
+
+The built-in june_context MCP reads the sticky active-profile file for every
+tool call and filters notes, dictation history, and memory entries by that
+profile. The file is passed by path rather than copied into process state so a
+profile switch takes effect without restarting the MCP server.

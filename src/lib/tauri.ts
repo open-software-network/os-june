@@ -62,6 +62,7 @@ export type ProfileDataSummary = {
   dictation: number;
   folders: number;
   sessions: number;
+  memories: number;
 };
 
 export type DictionaryEntryDto = {

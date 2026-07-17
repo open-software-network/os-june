@@ -46,7 +46,7 @@ vi.mock("../lib/hermes-adapter", () => ({
   deleteHermesSession: mocks.deleteHermesSession,
 }));
 
-const EMPTY_SUMMARY = { notes: 0, dictation: 0, folders: 0, sessions: 0 };
+const EMPTY_SUMMARY = { notes: 0, dictation: 0, folders: 0, sessions: 0, memories: 0 };
 
 function stubBuilder(overrides: Partial<ProfileBuilderState> = {}): ProfileBuilderState {
   return {
@@ -248,6 +248,7 @@ describe("profiles settings surface", () => {
       dictation: 3,
       folders: 4,
       sessions: 1,
+      memories: 5,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -263,7 +264,9 @@ describe("profiles settings surface", () => {
 
     const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
     expect(
-      within(dialog).getByText("This profile has 2 notes, 1 chat, 3 dictations, 4 projects."),
+      within(dialog).getByText(
+        "This profile has 2 notes, 1 chat, 3 dictations, 4 projects, 5 memories.",
+      ),
     ).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Move to default" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Delete permanently" })).toBeInTheDocument();
@@ -282,6 +285,7 @@ describe("profiles settings surface", () => {
       dictation: 0,
       folders: 0,
       sessions: 1,
+      memories: 0,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -314,6 +318,7 @@ describe("profiles settings surface", () => {
       dictation: 1,
       folders: 0,
       sessions: 0,
+      memories: 0,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -355,6 +360,7 @@ describe("profiles settings surface", () => {
       dictation: 1,
       folders: 1,
       sessions: 1,
+      memories: 0,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -445,6 +451,7 @@ describe("profiles settings surface", () => {
       dictation: 0,
       folders: 0,
       sessions: 0,
+      memories: 0,
     });
     const harness = makeAdminHarness({
       profiles: [
@@ -491,7 +498,7 @@ describe("profiles settings surface", () => {
     const cancelRemoval = vi.fn();
     const pendingRemoval = {
       name: "writing",
-      summary: { notes: 1, dictation: 0, folders: 0, sessions: 0 },
+      summary: { notes: 1, dictation: 0, folders: 0, sessions: 0, memories: 0 },
     };
     const { rerender } = render(
       <ProfilesSurfaceView

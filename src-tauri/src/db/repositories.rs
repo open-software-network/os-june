@@ -1047,6 +1047,7 @@ impl Repositories {
 
     pub async fn list_memories(
         &self,
+        profile: &str,
         folder_id: Option<&str>,
         include_global: bool,
     ) -> Result<Vec<MemoryDto>, sqlx::error::Error> {
@@ -1055,14 +1056,21 @@ impl Repositories {
                 query(
                     "SELECT m.id, m.folder_id, m.content, m.source, m.created_at, m.updated_at
                      FROM memories m
-                     WHERE m.folder_id IS NULL
-                        OR (m.folder_id = ? AND EXISTS (
-                            SELECT 1 FROM folders f
-                            WHERE f.id = m.folder_id AND f.deleted_at IS NULL
-                        ))
+                     WHERE m.profile = ?
+                       AND (
+                         m.folder_id IS NULL
+                         OR (m.folder_id = ? AND EXISTS (
+                           SELECT 1 FROM folders f
+                           WHERE f.id = m.folder_id
+                             AND f.profile = ?
+                             AND f.deleted_at IS NULL
+                         ))
+                       )
                      ORDER BY m.created_at DESC, m.rowid DESC",
                 )
+                .bind(profile)
                 .bind(folder_id)
+                .bind(profile)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1071,10 +1079,15 @@ impl Repositories {
                     "SELECT m.id, m.folder_id, m.content, m.source, m.created_at, m.updated_at
                      FROM memories m
                      INNER JOIN folders f ON f.id = m.folder_id
-                     WHERE m.folder_id = ? AND f.deleted_at IS NULL
+                     WHERE m.profile = ?
+                       AND m.folder_id = ?
+                       AND f.profile = ?
+                       AND f.deleted_at IS NULL
                      ORDER BY m.created_at DESC, m.rowid DESC",
                 )
+                .bind(profile)
                 .bind(folder_id)
+                .bind(profile)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1082,8 +1095,10 @@ impl Repositories {
                 query(
                     "SELECT id, folder_id, content, source, created_at, updated_at
                      FROM memories
+                     WHERE profile = ?
                      ORDER BY created_at DESC, rowid DESC",
                 )
+                .bind(profile)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1091,9 +1106,10 @@ impl Repositories {
                 query(
                     "SELECT id, folder_id, content, source, created_at, updated_at
                      FROM memories
-                     WHERE folder_id IS NULL
+                     WHERE profile = ? AND folder_id IS NULL
                      ORDER BY created_at DESC, rowid DESC",
                 )
+                .bind(profile)
                 .fetch_all(&self.pool)
                 .await?
             }
@@ -1103,6 +1119,7 @@ impl Repositories {
 
     pub async fn create_memory(
         &self,
+        profile: &str,
         folder_id: Option<&str>,
         content: &str,
         source: &str,
@@ -1118,28 +1135,36 @@ impl Repositories {
         };
         let result = if let Some(folder_id) = folder_id {
             query(
-                "INSERT INTO memories (id, folder_id, content, source, created_at, updated_at)
-                 SELECT ?, ?, ?, ?, ?, ?
+                "INSERT INTO memories
+                   (id, profile, folder_id, content, source, created_at, updated_at)
+                 SELECT ?, ?, ?, ?, ?, ?, ?
                  WHERE EXISTS (
                    SELECT 1 FROM folders
-                   WHERE id = ? AND deleted_at IS NULL AND memory_disabled = 0
+                   WHERE id = ?
+                     AND profile = ?
+                     AND deleted_at IS NULL
+                     AND memory_disabled = 0
                  )",
             )
             .bind(&memory.id)
+            .bind(profile)
             .bind(&memory.folder_id)
             .bind(&memory.content)
             .bind(&memory.source)
             .bind(&memory.created_at)
             .bind(&memory.updated_at)
             .bind(folder_id)
+            .bind(profile)
             .execute(&self.pool)
             .await?
         } else {
             query(
-                "INSERT INTO memories (id, folder_id, content, source, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO memories
+                   (id, profile, folder_id, content, source, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&memory.id)
+            .bind(profile)
             .bind(&memory.folder_id)
             .bind(&memory.content)
             .bind(&memory.source)
@@ -1150,22 +1175,29 @@ impl Repositories {
         };
         if result.rows_affected() == 0 {
             return Err(self
-                .memory_scope_write_error(folder_id.expect("scoped insert"))
+                .memory_scope_write_error(profile, folder_id.expect("scoped insert"))
                 .await?);
         }
         Ok(memory)
     }
 
-    pub async fn update_memory(&self, id: &str, content: &str) -> Result<MemoryDto, AppError> {
+    pub async fn update_memory(
+        &self,
+        profile: &str,
+        id: &str,
+        content: &str,
+    ) -> Result<MemoryDto, AppError> {
         let result = query(
             "UPDATE memories
              SET content = ?, updated_at = ?
              WHERE id = ?
+               AND profile = ?
                AND (
                  folder_id IS NULL
                  OR EXISTS (
                    SELECT 1 FROM folders
                    WHERE folders.id = memories.folder_id
+                     AND folders.profile = ?
                      AND folders.deleted_at IS NULL
                      AND folders.memory_disabled = 0
                  )
@@ -1174,26 +1206,30 @@ impl Repositories {
         .bind(content.trim())
         .bind(timestamp())
         .bind(id)
+        .bind(profile)
+        .bind(profile)
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 0 {
-            let folder_id = query("SELECT folder_id FROM memories WHERE id = ?")
+            let folder_id = query("SELECT folder_id FROM memories WHERE id = ? AND profile = ?")
                 .bind(id)
+                .bind(profile)
                 .fetch_optional(&self.pool)
                 .await?
                 .ok_or_else(|| AppError::new("memory_not_found", "Memory was not found."))?
                 .get::<Option<String>, _>("folder_id");
             if let Some(folder_id) = folder_id {
-                return Err(self.memory_scope_write_error(&folder_id).await?);
+                return Err(self.memory_scope_write_error(profile, &folder_id).await?);
             }
             return Err(AppError::new("memory_not_found", "Memory was not found."));
         }
         let row = query(
             "SELECT id, folder_id, content, source, created_at, updated_at
              FROM memories
-             WHERE id = ?",
+             WHERE id = ? AND profile = ?",
         )
         .bind(id)
+        .bind(profile)
         .fetch_one(&self.pool)
         .await?;
         Ok(memory_from_row(row))
@@ -1201,14 +1237,19 @@ impl Repositories {
 
     async fn memory_scope_write_error(
         &self,
+        profile: &str,
         folder_id: &str,
     ) -> Result<AppError, sqlx::error::Error> {
-        let memory_disabled =
-            query("SELECT memory_disabled FROM folders WHERE id = ? AND deleted_at IS NULL")
-                .bind(folder_id)
-                .fetch_optional(&self.pool)
-                .await?
-                .map(|row| row.get::<i64, _>("memory_disabled") != 0);
+        let memory_disabled = query(
+            "SELECT memory_disabled
+             FROM folders
+             WHERE id = ? AND profile = ? AND deleted_at IS NULL",
+        )
+        .bind(folder_id)
+        .bind(profile)
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| row.get::<i64, _>("memory_disabled") != 0);
         Ok(if memory_disabled == Some(true) {
             AppError::new("memory_disabled", "Memory is disabled for this scope.")
         } else {
@@ -1219,10 +1260,11 @@ impl Repositories {
         })
     }
 
-    pub async fn delete_memory(&self, id: &str) -> Result<(), AppError> {
+    pub async fn delete_memory(&self, profile: &str, id: &str) -> Result<(), AppError> {
         let mut tx = self.pool.begin().await?;
-        let result = query("DELETE FROM memories WHERE id = ?")
+        let result = query("DELETE FROM memories WHERE id = ? AND profile = ?")
             .bind(id)
+            .bind(profile)
             .execute(&mut *tx)
             .await?;
         if result.rows_affected() == 0 {
@@ -1513,6 +1555,7 @@ impl Repositories {
             dictation: count_profile_rows(&self.pool, "dictation_history", profile).await?,
             folders: count_profile_rows(&self.pool, "folders", profile).await?,
             sessions: count_profile_rows(&self.pool, "session_profiles", profile).await?,
+            memories: count_profile_rows(&self.pool, "memories", profile).await?,
         })
     }
 
@@ -1537,6 +1580,10 @@ impl Repositories {
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
+        query("UPDATE memories SET profile = 'default' WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
         query("UPDATE session_profiles SET profile = 'default' WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
@@ -1556,6 +1603,18 @@ impl Repositories {
             .execute(&mut *transaction)
             .await?;
         query("DELETE FROM dictation_history WHERE profile = ?")
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        query(
+            "INSERT OR IGNORE INTO memory_tombstones (id, deleted_at)
+             SELECT id, ? FROM memories WHERE profile = ?",
+        )
+        .bind(timestamp())
+        .bind(profile)
+        .execute(&mut *transaction)
+        .await?;
+        query("DELETE FROM memories WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
@@ -2190,10 +2249,33 @@ impl Repositories {
         profile: &str,
     ) -> Result<Vec<String>, sqlx::error::Error> {
         let rows = query(
-            "SELECT a.path FROM audio_artifacts a
-             JOIN notes n ON n.id = a.note_id
-             WHERE n.profile = ?",
+            "SELECT path
+             FROM (
+               SELECT a.path AS path
+               FROM audio_artifacts a
+               JOIN notes n ON n.id = a.note_id
+               WHERE n.profile = ?
+               UNION
+               SELECT a.partial_path AS path
+               FROM audio_artifacts a
+               JOIN notes n ON n.id = a.note_id
+               WHERE n.profile = ? AND a.partial_path IS NOT NULL
+               UNION
+               SELECT rs.final_path AS path
+               FROM recording_sessions rs
+               JOIN notes n ON n.id = rs.note_id
+               WHERE n.profile = ? AND rs.final_path IS NOT NULL
+               UNION
+               SELECT rs.partial_path AS path
+               FROM recording_sessions rs
+               JOIN notes n ON n.id = rs.note_id
+               WHERE n.profile = ? AND rs.partial_path IS NOT NULL
+             )
+             WHERE path IS NOT NULL AND trim(path) != ''",
         )
+        .bind(profile)
+        .bind(profile)
+        .bind(profile)
         .bind(profile)
         .fetch_all(&self.pool)
         .await?;
@@ -4968,6 +5050,7 @@ async fn count_profile_rows(
         "dictation_history" => "SELECT COUNT(*) AS count FROM dictation_history WHERE profile = ?",
         "folders" => "SELECT COUNT(*) AS count FROM folders WHERE profile = ?",
         "session_profiles" => "SELECT COUNT(*) AS count FROM session_profiles WHERE profile = ?",
+        "memories" => "SELECT COUNT(*) AS count FROM memories WHERE profile = ?",
         _ => return Err(sqlx::Error::RowNotFound),
     };
     let row = query(statement).bind(profile).fetch_one(pool).await?;
@@ -6057,26 +6140,31 @@ mod tests {
             .await
             .expect("create other folder");
         let global = repos
-            .create_memory(None, "Use concise summaries", "user")
+            .create_memory("default", None, "Use concise summaries", "user")
             .await
             .expect("create global memory");
         let scoped = repos
-            .create_memory(Some(&folder.id), "The launch is Friday", "agent")
+            .create_memory("default", Some(&folder.id), "The launch is Friday", "agent")
             .await
             .expect("create scoped memory");
         repos
-            .create_memory(Some(&other_folder.id), "The budget is approved", "agent")
+            .create_memory(
+                "default",
+                Some(&other_folder.id),
+                "The budget is approved",
+                "agent",
+            )
             .await
             .expect("create other scoped memory");
 
         let scoped_only = repos
-            .list_memories(Some(&folder.id), false)
+            .list_memories("default", Some(&folder.id), false)
             .await
             .expect("list scoped");
         assert_eq!(scoped_only, vec![scoped.clone()]);
 
         let scoped_and_global = repos
-            .list_memories(Some(&folder.id), true)
+            .list_memories("default", Some(&folder.id), true)
             .await
             .expect("list scoped and global");
         assert_eq!(scoped_and_global.len(), 2);
@@ -6087,11 +6175,14 @@ mod tests {
             .iter()
             .any(|memory| memory.id == scoped.id));
 
-        let global_only = repos.list_memories(None, false).await.expect("list global");
+        let global_only = repos
+            .list_memories("default", None, false)
+            .await
+            .expect("list global");
         assert_eq!(global_only, vec![global]);
         assert_eq!(
             repos
-                .list_memories(None, true)
+                .list_memories("default", None, true)
                 .await
                 .expect("list everything")
                 .len(),
@@ -6099,7 +6190,7 @@ mod tests {
         );
 
         let updated = repos
-            .update_memory(&scoped.id, "  The launch moved to Monday  ")
+            .update_memory("default", &scoped.id, "  The launch moved to Monday  ")
             .await
             .expect("update memory");
         assert_eq!(updated.content, "The launch moved to Monday");
@@ -6109,20 +6200,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memories_are_isolated_by_profile_for_reads_and_mutations() {
+        let repos = test_repositories().await;
+        let folder_a = repos
+            .create_folder("a", "Profile A project", None)
+            .await
+            .expect("profile a folder");
+        let folder_b = repos
+            .create_folder("b", "Profile B project", None)
+            .await
+            .expect("profile b folder");
+        let global_a = repos
+            .create_memory("a", None, "Profile A global", "user")
+            .await
+            .expect("profile a global memory");
+        let scoped_a = repos
+            .create_memory("a", Some(&folder_a.id), "Profile A project", "agent")
+            .await
+            .expect("profile a scoped memory");
+        let global_b = repos
+            .create_memory("b", None, "Profile B global", "user")
+            .await
+            .expect("profile b global memory");
+
+        let profile_a = repos
+            .list_memories("a", None, true)
+            .await
+            .expect("profile a memories");
+        assert_eq!(profile_a.len(), 2);
+        assert!(profile_a.iter().any(|memory| memory.id == global_a.id));
+        assert!(profile_a.iter().any(|memory| memory.id == scoped_a.id));
+        assert_eq!(
+            repos
+                .list_memories("b", None, true)
+                .await
+                .expect("profile b memories"),
+            vec![global_b.clone()]
+        );
+
+        let update_error = repos
+            .update_memory("b", &global_a.id, "Cross-profile edit")
+            .await
+            .expect_err("cross-profile update must fail closed");
+        assert_eq!(update_error.code, "memory_not_found");
+        let delete_error = repos
+            .delete_memory("b", &global_a.id)
+            .await
+            .expect_err("cross-profile delete must fail closed");
+        assert_eq!(delete_error.code, "memory_not_found");
+        let folder_error = repos
+            .create_memory("a", Some(&folder_b.id), "Wrong project", "user")
+            .await
+            .expect_err("cross-profile project scope must fail closed");
+        assert_eq!(folder_error.code, "folder_not_found");
+    }
+
+    #[tokio::test]
     async fn memory_delete_is_permanent_and_writes_tombstone() {
         let repos = test_repositories().await;
         let memory = repos
-            .create_memory(None, "Remember this briefly", "agent")
+            .create_memory("default", None, "Remember this briefly", "agent")
             .await
             .expect("create memory");
 
         repos
-            .delete_memory(&memory.id)
+            .delete_memory("default", &memory.id)
             .await
             .expect("delete memory");
 
         assert!(repos
-            .list_memories(None, true)
+            .list_memories("default", None, true)
             .await
             .expect("list memories")
             .is_empty());
@@ -6148,7 +6295,7 @@ mod tests {
             .expect("soft delete folder");
 
         let error = repos
-            .create_memory(Some(&folder.id), "Do not persist", "user")
+            .create_memory("default", Some(&folder.id), "Do not persist", "user")
             .await
             .expect_err("deleted folder must reject memory");
         assert_eq!(error.code, "folder_not_found");
@@ -6166,19 +6313,29 @@ mod tests {
             .await
             .expect("create other folder");
         let global = repos
-            .create_memory(None, "Global memory", "user")
+            .create_memory("default", None, "Global memory", "user")
             .await
             .expect("create global memory");
         let first_deleted = repos
-            .create_memory(Some(&folder.id), "First project memory", "user")
+            .create_memory("default", Some(&folder.id), "First project memory", "user")
             .await
             .expect("create first scoped memory");
         let second_deleted = repos
-            .create_memory(Some(&folder.id), "Second project memory", "agent")
+            .create_memory(
+                "default",
+                Some(&folder.id),
+                "Second project memory",
+                "agent",
+            )
             .await
             .expect("create second scoped memory");
         let retained = repos
-            .create_memory(Some(&other_folder.id), "Other project memory", "user")
+            .create_memory(
+                "default",
+                Some(&other_folder.id),
+                "Other project memory",
+                "user",
+            )
             .await
             .expect("create other scoped memory");
 
@@ -6188,7 +6345,7 @@ mod tests {
             .expect("delete folder");
 
         let remaining = repos
-            .list_memories(None, true)
+            .list_memories("default", None, true)
             .await
             .expect("list remaining memories");
         assert_eq!(remaining.len(), 2);

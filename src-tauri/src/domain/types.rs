@@ -245,6 +245,7 @@ pub struct ProfileDataSummaryDto {
     pub dictation: u32,
     pub folders: u32,
     pub sessions: u32,
+    pub memories: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

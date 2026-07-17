@@ -379,6 +379,10 @@ async fn profile_data_summary_counts_owned_profile_rows() {
         .assign_session_to_profile("session-x", "x")
         .await
         .expect("profile x session");
+    repos
+        .create_memory("x", None, "Profile X memory", "user")
+        .await
+        .expect("profile x memory");
 
     repos
         .create_folder("other", "Other folder", None)
@@ -393,6 +397,10 @@ async fn profile_data_summary_counts_owned_profile_rows() {
         .assign_session_to_profile("session-other", "other")
         .await
         .expect("other session");
+    repos
+        .create_memory("other", None, "Other memory", "user")
+        .await
+        .expect("other memory");
 
     let summary = repos
         .profile_data_summary("x")
@@ -403,6 +411,7 @@ async fn profile_data_summary_counts_owned_profile_rows() {
     assert_eq!(summary.dictation, 1);
     assert_eq!(summary.folders, 1);
     assert_eq!(summary.sessions, 1);
+    assert_eq!(summary.memories, 1);
 }
 
 #[tokio::test]
@@ -426,6 +435,10 @@ async fn move_profile_data_to_default_retags_owned_rows_only() {
         .assign_session_to_profile("session-x", "x")
         .await
         .expect("profile x session");
+    let memory_x = repos
+        .create_memory("x", Some(&folder_x.id), "Profile X memory", "user")
+        .await
+        .expect("profile x memory");
 
     let folder_default = repos
         .create_folder("default", "Default folder", None)
@@ -444,6 +457,10 @@ async fn move_profile_data_to_default_retags_owned_rows_only() {
         .assign_session_to_profile("session-default", "default")
         .await
         .expect("default session");
+    let memory_default = repos
+        .create_memory("default", None, "Default memory", "user")
+        .await
+        .expect("default memory");
 
     let folder_other = repos
         .create_folder("other", "Other folder", None)
@@ -462,6 +479,10 @@ async fn move_profile_data_to_default_retags_owned_rows_only() {
         .assign_session_to_profile("session-other", "other")
         .await
         .expect("other session");
+    let memory_other = repos
+        .create_memory("other", None, "Other memory", "user")
+        .await
+        .expect("other memory");
 
     repos
         .move_profile_data_to_default("x")
@@ -476,6 +497,7 @@ async fn move_profile_data_to_default_retags_owned_rows_only() {
     assert_eq!(summary_x.dictation, 0);
     assert_eq!(summary_x.folders, 0);
     assert_eq!(summary_x.sessions, 0);
+    assert_eq!(summary_x.memories, 0);
 
     let default_notes = repos
         .list_notes("default", None, 50, None)
@@ -547,6 +569,24 @@ async fn move_profile_data_to_default_retags_owned_rows_only() {
         vec![dictation_other.id.as_str()]
     );
 
+    let default_memories = repos
+        .list_memories("default", None, true)
+        .await
+        .expect("default memories");
+    let default_memory_ids = default_memories
+        .iter()
+        .map(|memory| memory.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(default_memory_ids.contains(&memory_x.id.as_str()));
+    assert!(default_memory_ids.contains(&memory_default.id.as_str()));
+    assert_eq!(
+        repos
+            .list_memories("other", None, true)
+            .await
+            .expect("other memories"),
+        vec![memory_other]
+    );
+
     let mut session_profiles = repos
         .list_session_profiles()
         .await
@@ -590,6 +630,10 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
         .assign_session_to_folder("session-x", &folder_x.id)
         .await
         .expect("profile x session folder");
+    let memory_x = repos
+        .create_memory("x", Some(&folder_x.id), "Profile X memory", "agent")
+        .await
+        .expect("profile x memory");
 
     let folder_default = repos
         .create_folder("default", "Default folder", None)
@@ -607,10 +651,18 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
         .assign_session_to_profile("session-default", "default")
         .await
         .expect("default session profile");
+    let memory_default = repos
+        .create_memory("default", None, "Default memory", "user")
+        .await
+        .expect("default memory");
 
     query(
-        "INSERT INTO recording_sessions (id, note_id, status, started_at)
-         VALUES ('recording-x', ?, 'completed', ?)",
+        "INSERT INTO recording_sessions
+           (id, note_id, status, started_at, partial_path, final_path)
+         VALUES (
+           'recording-x', ?, 'completed', ?,
+           '/tmp/audio-x.partial.wav', '/tmp/audio-x.wav'
+         )",
     )
     .bind(&note_x.id)
     .bind(&now)
@@ -627,8 +679,12 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
     .expect("recording checkpoint");
     query(
         "INSERT INTO audio_artifacts
-           (id, note_id, recording_session_id, path, format, duration_ms, size_bytes, checksum, created_at)
-         VALUES ('audio-x', ?, 'recording-x', '/tmp/audio-x.wav', 'wav', 1000, 10, 'checksum', ?)",
+           (id, note_id, recording_session_id, partial_path, path, format, duration_ms, size_bytes, checksum, created_at)
+         VALUES (
+           'audio-x', ?, 'recording-x',
+           '/tmp/audio-x.partial.wav', '/tmp/audio-x.wav',
+           'wav', 1000, 10, 'checksum', ?
+         )",
     )
     .bind(&note_x.id)
     .bind(&now)
@@ -669,6 +725,19 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
     .await
     .expect("generation block");
 
+    let mut profile_audio_paths = repos
+        .audio_artifact_paths_for_profile("x")
+        .await
+        .expect("profile audio paths");
+    profile_audio_paths.sort();
+    assert_eq!(
+        profile_audio_paths,
+        vec![
+            "/tmp/audio-x.partial.wav".to_string(),
+            "/tmp/audio-x.wav".to_string(),
+        ]
+    );
+
     repos
         .delete_profile_data("x")
         .await
@@ -682,6 +751,7 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
     assert_eq!(summary_x.dictation, 0);
     assert_eq!(summary_x.folders, 0);
     assert_eq!(summary_x.sessions, 0);
+    assert_eq!(summary_x.memories, 0);
 
     assert_eq!(
         count_rows(&repos, "SELECT COUNT(*) AS count FROM note_folders").await,
@@ -723,6 +793,22 @@ async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
         .await,
         0
     );
+
+    assert_eq!(
+        repos
+            .list_memories("default", None, true)
+            .await
+            .expect("default memories"),
+        vec![memory_default]
+    );
+    let tombstone_ids = query("SELECT id FROM memory_tombstones")
+        .fetch_all(&repos.pool)
+        .await
+        .expect("memory tombstones")
+        .into_iter()
+        .map(|row| row.get::<String, _>("id"))
+        .collect::<Vec<_>>();
+    assert_eq!(tombstone_ids, vec![memory_x.id]);
 
     let default_notes = repos
         .list_notes("default", None, 50, None)

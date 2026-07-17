@@ -483,5 +483,11 @@ export function useProfileManager(
 }
 
 function profileHasData(summary: ProfileDataSummary): boolean {
-  return summary.notes > 0 || summary.dictation > 0 || summary.folders > 0 || summary.sessions > 0;
+  return (
+    summary.notes > 0 ||
+    summary.dictation > 0 ||
+    summary.folders > 0 ||
+    summary.sessions > 0 ||
+    summary.memories > 0
+  );
 }

@@ -569,6 +569,7 @@ struct ProviderProxyState {
 struct MemoryProxyContext {
     repositories: crate::db::repositories::Repositories,
     settings_path: PathBuf,
+    hermes_home: PathBuf,
 }
 
 #[derive(Clone, Serialize)]
@@ -1489,6 +1490,7 @@ struct JuneContextMcpConfig {
     script_path: PathBuf,
     database_path: PathBuf,
     memory_settings_path: PathBuf,
+    active_profile_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -7199,6 +7201,7 @@ fn sync_june_context_mcp(
         script_path,
         database_path: paths.database_path,
         memory_settings_path,
+        active_profile_path: resolve_june_hermes_home(app)?.join("active_profile"),
     })
 }
 
@@ -8113,6 +8116,7 @@ fn render_context_mcp_entry(
       - {script_path}
       - {database_path}
       - {memory_settings_path}
+      - {active_profile_path}
       - {base_url}
     env:
       PYTHONUNBUFFERED: "1"
@@ -8125,6 +8129,7 @@ fn render_context_mcp_entry(
         script_path = yaml_string(&config.script_path.to_string_lossy()),
         database_path = yaml_string(&config.database_path.to_string_lossy()),
         memory_settings_path = yaml_string(&config.memory_settings_path.to_string_lossy()),
+        active_profile_path = yaml_string(&config.active_profile_path.to_string_lossy()),
         base_url = yaml_string(base_url),
         token_env = JUNE_MEMORY_MCP_TOKEN_ENV,
         token = yaml_string(memory_proxy_token),
@@ -8750,6 +8755,7 @@ async fn start_june_provider_proxy(
         Some(app) => Some(MemoryProxyContext {
             repositories: crate::commands::repositories(app).await?,
             settings_path: crate::commands::memory_settings_path(app)?,
+            hermes_home: resolve_june_hermes_home(app)?,
         }),
         None => None,
     };
@@ -9109,6 +9115,7 @@ async fn dispatch_memory_route(
     };
     let body = serde_json::from_slice::<serde_json::Value>(request_body)
         .unwrap_or_else(|_| serde_json::json!({}));
+    let profile = crate::providers::active_profile_for_hermes_home(&memory.hermes_home);
     let result = match path {
         "/v1/memory/save" => {
             let content = body
@@ -9131,6 +9138,7 @@ async fn dispatch_memory_route(
             crate::commands::create_memory_with_settings(
                 &memory.repositories,
                 &memory.settings_path,
+                &profile,
                 project_id,
                 content,
                 "agent",
@@ -9150,7 +9158,11 @@ async fn dispatch_memory_route(
                     "Memory id is required.",
                 ))
             } else {
-                memory.repositories.delete_memory(id).await.map(|()| None)
+                memory
+                    .repositories
+                    .delete_memory(&profile, id)
+                    .await
+                    .map(|()| None)
             }
         }
         _ => unreachable!("memory route guard only passes known routes"),
@@ -12411,15 +12423,21 @@ with sqlite3.connect(db_path) as conn:
     conn.execute("""CREATE TABLE memories (
         id TEXT PRIMARY KEY,
         folder_id TEXT,
+        profile TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at TEXT NOT NULL
     )""")
     conn.executemany(
-        "INSERT INTO memories (id, folder_id, content, created_at) VALUES (?, NULL, ?, ?)",
+        "INSERT INTO memories (id, folder_id, profile, content, created_at) VALUES (?, NULL, 'default', ?, ?)",
         [(f"memory-{index}", "x" * 4000, "2026-07-16T00:00:00Z") for index in range(25)],
     )
+    conn.execute(
+        "INSERT INTO memories (id, folder_id, profile, content, created_at) VALUES ('other-memory', NULL, 'other', 'private', '2026-07-17T00:00:00Z')"
+    )
 
-first = module.list_memories(module.Path(db_path), module.Path(settings_path), {})
+first = module.list_memories(
+    module.Path(db_path), module.Path(settings_path), "default", {}
+)
 assert first["count"] == 8, first
 assert len(first["items"]) == 8, first
 assert first["items"][0]["id"] == "memory-24", first
@@ -12429,6 +12447,7 @@ assert first["next_offset"] == 8, first
 second = module.list_memories(
     module.Path(db_path),
     module.Path(settings_path),
+    "default",
     {"limit": 20, "offset": first["next_offset"]},
 )
 assert second["count"] == 17, second
@@ -12438,7 +12457,7 @@ assert second["has_more"] is False, second
 assert second["next_offset"] is None, second
 
 capped = module.list_memories(
-    module.Path(db_path), module.Path(settings_path), {"limit": 100}
+    module.Path(db_path), module.Path(settings_path), "default", {"limit": 100}
 )
 assert capped["count"] == 20, capped
 assert capped["has_more"] is True, capped
@@ -12709,6 +12728,7 @@ assert capped["has_more"] is True, capped
             MemoryProxyContext {
                 repositories: crate::db::repositories::Repositories::new(pool.clone()),
                 settings_path,
+                hermes_home: settings_dir.path().join("hermes"),
             },
             pool,
             settings_dir,
@@ -13186,6 +13206,7 @@ assert capped["has_more"] is True, capped
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_context_mcp.py"),
             database_path: PathBuf::from("/tmp/june/notes.sqlite3"),
             memory_settings_path: PathBuf::from("/tmp/june/config/memory-settings.json"),
+            active_profile_path: PathBuf::from("/tmp/june/hermes/active_profile"),
         }
     }
 
@@ -14850,7 +14871,8 @@ mcp_servers:
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
         assert!(config.contains("      - \"/tmp/june/config/memory-settings.json\"\n"));
-        // Context keeps its read-side database/settings argv and gains only
+        assert!(config.contains("      - \"/tmp/june/hermes/active_profile\"\n"));
+        // Context keeps its read-side database/settings/profile argv and gains only
         // the loopback URL plus the dedicated memory-write token.
         assert!(config.contains("      JUNE_MEMORY_PROXY_TOKEN: \"memory-proxy-tok\"\n"));
         assert!(!config.contains("      JUNE_MEMORY_PROXY_TOKEN: \"proxy-tok\"\n"));
@@ -14862,6 +14884,7 @@ mcp_servers:
   "/tmp/june/hermes-mcp/june_context_mcp.py",
   "/tmp/june/notes.sqlite3",
   "/tmp/june/config/memory-settings.json",
+  "/tmp/june/hermes/active_profile",
   "http://127.0.0.1:9/v1"
 ]"#,
             )
