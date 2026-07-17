@@ -74,23 +74,17 @@ _SAFE_ERROR_MESSAGES = {
     UNAVAILABLE_ERROR_CODE: UNAVAILABLE_ERROR_MESSAGE,
 }
 
-_SENSITIVE_KEYS = {
+_CREDENTIAL_FIELDS = {
     "access_token",
     "authorization",
-    "bearer",
-    "credential",
-    "credentials",
-    "headers",
     "private_key",
     "refresh_token",
-    "secret",
-    "token",
 }
+_EXACT_HIGH_RISK_SENTINELS = ("github-secret-token-do-not-leak",)
 _TOKEN_PATTERNS = (
     re.compile(r"\bbearer\s+[a-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\b[a-z0-9_-]*(?:secret|token)[a-z0-9_-]{8,}\b", re.IGNORECASE),
     re.compile(
         r"(?:access_token|refresh_token|authorization|token)=[^&\s]{8,}",
         re.IGNORECASE,
@@ -368,7 +362,9 @@ class _BrokerClient:
                 if size > MAX_RESPONSE_BYTES:
                     self._close(authority_lost=True)
                     raise unavailable()
-                response = _validate_response(_recv_exact(connection, size))
+                response = _validate_response(
+                    _recv_exact(connection, size), self._socket_path
+                )
             except BrokerFailure:
                 if self._connected_once:
                     self._close(authority_lost=True)
@@ -454,7 +450,7 @@ def _recv_exact(connection: socket.socket, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def _validate_response(body: bytes) -> dict[str, Any]:
+def _validate_response(body: bytes, socket_path: str) -> dict[str, Any]:
     try:
         envelope = json.loads(
             body.decode("utf-8"),
@@ -462,7 +458,9 @@ def _validate_response(body: bytes) -> dict[str, Any]:
         )
     except Exception:
         raise unavailable() from None
-    if not isinstance(envelope, dict) or _contains_sensitive_value(envelope):
+    if not isinstance(envelope, dict) or _contains_sensitive_value(
+        envelope, socket_path
+    ):
         raise unavailable()
     if not isinstance(envelope.get("connectorStateChanged"), bool):
         raise unavailable()
@@ -544,19 +542,26 @@ def _valid_fixed_error(value: Any) -> bool:
     return set(value) == {"code", "message"}
 
 
-def _contains_sensitive_value(value: Any) -> bool:
+def _contains_sensitive_value(value: Any, socket_path: str) -> bool:
     if isinstance(value, dict):
         for key, item in value.items():
-            if isinstance(key, str) and key.casefold() in _SENSITIVE_KEYS:
+            if (
+                isinstance(key, str)
+                and key.casefold() in _CREDENTIAL_FIELDS
+                and isinstance(item, str)
+                and bool(item)
+            ):
                 return True
-            if _contains_sensitive_value(item):
+            if _contains_sensitive_value(item, socket_path):
                 return True
         return False
     if isinstance(value, list):
-        return any(_contains_sensitive_value(item) for item in value)
+        return any(_contains_sensitive_value(item, socket_path) for item in value)
     if not isinstance(value, str):
         return False
-    if BROKER_SOCKET_ENV in value or ".sock" in value or "\\\\.\\pipe\\" in value:
+    if socket_path and socket_path in value:
+        return True
+    if any(sentinel in value for sentinel in _EXACT_HIGH_RISK_SENTINELS):
         return True
     return any(pattern.search(value) for pattern in _TOKEN_PATTERNS)
 

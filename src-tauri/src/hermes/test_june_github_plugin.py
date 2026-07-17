@@ -443,7 +443,7 @@ def _recv_exact(connection: socket.socket, size: int) -> bytes:
 
 
 class RunningBroker(AbstractContextManager["RunningBroker"]):
-    def __init__(self, response_frames: list[bytes], *, close_after: int | None = None) -> None:
+    def __init__(self, response_frames: list[Any], *, close_after: int | None = None) -> None:
         self.response_frames = response_frames
         self.close_after = close_after
         self.requests: list[dict[str, Any]] = []
@@ -487,7 +487,10 @@ class RunningBroker(AbstractContextManager["RunningBroker"]):
                         except (EOFError, OSError, struct.error):
                             break
                         self.requests.append(json.loads(body.decode("utf-8")))
-                        connection.sendall(self.response_frames[response_index])
+                        response_frame = self.response_frames[response_index]
+                        if callable(response_frame):
+                            response_frame = response_frame(self)
+                        connection.sendall(response_frame)
                         response_index += 1
                         if self.close_after == response_index:
                             break
@@ -628,6 +631,7 @@ class JuneGitHubPluginContractTests(unittest.TestCase):
     def test_oversized_malformed_and_token_like_responses_fail_closed(self) -> None:
         token_sentinel = "github_pat_" + ("a" * 82)
         opaque_token_sentinel = "github-secret-token-do-not-leak"
+        bearer_token_sentinel = "Bearer ghp_" + ("b" * 36)
         url_token_sentinel = (
             "https://example.invalid/private?access_token=do-not-leak-123456"
         )
@@ -664,6 +668,16 @@ class JuneGitHubPluginContractTests(unittest.TestCase):
                     "connectorStateChanged": False,
                 }
             ),
+            _frame(
+                {
+                    "success": True,
+                    "result": {
+                        **SUCCESS_RESULT,
+                        "data": {"value": bearer_token_sentinel},
+                    },
+                    "connectorStateChanged": False,
+                }
+            ),
         )
         for response_frame in cases:
             with self.subTest(response_frame=response_frame[:24]):
@@ -677,8 +691,58 @@ class JuneGitHubPluginContractTests(unittest.TestCase):
                 )
                 self.assertNotIn(token_sentinel, returned)
                 self.assertNotIn(opaque_token_sentinel, returned)
+                self.assertNotIn(bearer_token_sentinel, returned)
                 self.assertNotIn(url_token_sentinel, returned)
                 self.assertNotIn("not-json", returned)
+
+    def test_ordinary_repository_identifiers_are_not_credential_false_positives(self) -> None:
+        legitimate_content = [
+            "socket.socket(AF_UNIX)",
+            "TokenizerConfiguration",
+            "tokenizer_model_name",
+            plugin.BROKER_SOCKET_ENV,
+        ]
+        result = {
+            **SUCCESS_RESULT,
+            "data": {"examples": legitimate_content},
+        }
+        response = _frame(
+            {
+                "success": True,
+                "result": result,
+                "connectorStateChanged": False,
+            }
+        )
+        with RunningBroker([response]) as broker:
+            registration = self._registrations(broker.socket_path)["get_issue"]
+            returned = registration["handler"](SAMPLE_ARGUMENTS["get_issue"])
+        self.assertEqual(json.loads(returned), result)
+        for example in legitimate_content:
+            self.assertIn(example, returned)
+
+    def test_exact_client_socket_path_in_success_result_fails_closed(self) -> None:
+        def response_with_socket_path(broker: RunningBroker) -> bytes:
+            return _frame(
+                {
+                    "success": True,
+                    "result": {
+                        **SUCCESS_RESULT,
+                        "data": {"value": broker.socket_path},
+                    },
+                    "connectorStateChanged": False,
+                }
+            )
+
+        with RunningBroker([response_with_socket_path]) as broker:
+            socket_path = broker.socket_path
+            registration = self._registrations(socket_path)["get_issue"]
+            returned = registration["handler"](SAMPLE_ARGUMENTS["get_issue"])
+        self.assert_error(
+            returned,
+            "github_read_unavailable",
+            "GitHub could not be read right now.",
+        )
+        self.assertNotIn(socket_path, returned)
 
     def test_only_fixed_broker_errors_can_reach_the_handler_result(self) -> None:
         safe = _frame(
