@@ -15,6 +15,63 @@ const skills: HermesSkillInfo[] = [
 ];
 
 describe("composer slash menu", () => {
+  it("keeps an asynchronously growing menu above a short viewport composer", async () => {
+    const user = userEvent.setup();
+    const innerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 174 });
+    const rect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("agent-composer-box")) {
+          return new DOMRect(20, 80, 600, 80);
+        }
+        // WKWebView can report a zero-height portal on the synchronous first
+        // placement pass, before React has painted the suggestion rows.
+        if (this.classList.contains("agent-category-menu-host")) {
+          return new DOMRect(20, 0, 600, 0);
+        }
+        return new DOMRect();
+      });
+
+    try {
+      const composer = (availableSkills: HermesSkillInfo[] | null) => (
+        <div className="agent-composer-box">
+          <ComposerEditor
+            placeholder="Message June"
+            skills={availableSkills}
+            onChange={vi.fn()}
+            onSubmit={vi.fn()}
+          />
+        </div>
+      );
+      const view = render(composer(null));
+
+      await user.type(await screen.findByRole("textbox", { name: "Message June" }), "/");
+      const host = await waitFor(() => {
+        const element = document.querySelector<HTMLElement>(".agent-category-menu-host");
+        expect(element).toBeTruthy();
+        return element as HTMLElement;
+      });
+      view.rerender(
+        composer(
+          Array.from({ length: 12 }, (_, index) => ({
+            name: `skill-${index}`,
+            description: `Skill ${index}`,
+            enabled: true,
+          })),
+        ),
+      );
+      await screen.findByRole("option", { name: "skill-11" });
+
+      expect(host.style.top).toBe("");
+      expect(host.style.bottom).toBe("100px");
+      expect(host.style.getPropertyValue("--agent-category-menu-max-height")).toBe("66px");
+    } finally {
+      rect.mockRestore();
+      if (innerHeight) Object.defineProperty(window, "innerHeight", innerHeight);
+    }
+  });
+
   it("dismisses on outside click without removing or retriggering the slash", async () => {
     const user = userEvent.setup();
     render(
