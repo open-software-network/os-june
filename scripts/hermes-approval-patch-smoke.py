@@ -147,6 +147,16 @@ def _rpc_method(tree: ast.AST, method_name: str) -> ast.FunctionDef:
     raise AssertionError("missing Hermes RPC method: %s" % method_name)
 
 
+def _named_call_lines(tree: ast.AST, name: str) -> list:
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
+    ]
+
+
 def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     tree = ast.parse(
         (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
@@ -231,6 +241,65 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         )
         assert failed_response.get("error", {}).get("code") == 5032, failed_response
         assert failed_session["attached_images"] == [], failed_session
+
+    # Lock the queue ownership boundary across prompt.submit. A failed Hermes
+    # initialization must clear this turn's queued images before returning;
+    # only the success path may hand them to _run_prompt_submit for one-time
+    # consumption. This prevents a failed first turn from silently attaching
+    # its image to a later, unrelated prompt.
+    prompt_submit = _rpc_method(tree, "prompt.submit")
+    run_after_ready = next(
+        node
+        for node in ast.walk(prompt_submit)
+        if isinstance(node, ast.FunctionDef) and node.name == "run_after_agent_ready"
+    )
+    wait_lines = _named_call_lines(run_after_ready, "_wait_agent")
+    submit_lines = _named_call_lines(run_after_ready, "_run_prompt_submit")
+    clear_lines = [
+        node.lineno
+        for node in ast.walk(run_after_ready)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "clear"
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Attribute)
+        and node.func.value.func.attr == "setdefault"
+        and any(
+            isinstance(argument, ast.Constant) and argument.value == "attached_images"
+            for argument in node.func.value.args
+        )
+    ]
+    assert len(wait_lines) == len(clear_lines) == len(submit_lines) == 1, (
+        wait_lines,
+        clear_lines,
+        submit_lines,
+    )
+    assert wait_lines[0] < clear_lines[0] < submit_lines[0], (
+        "queued images must clear on initialization failure before the success path",
+        wait_lines,
+        clear_lines,
+        submit_lines,
+    )
+    run_prompt_submit = _function(tree, "_run_prompt_submit")
+    attached_image_clears = [
+        node
+        for node in ast.walk(run_prompt_submit)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.List)
+        and not node.value.elts
+        and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "session"
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == "attached_images"
+            for target in node.targets
+        )
+    ]
+    assert len(attached_image_clears) == 1, (
+        "successful prompt runs must consume the queued image list exactly once",
+        len(attached_image_clears),
+    )
 
 
 def verify_tui_memory_deny_propagation(root: Path) -> None:

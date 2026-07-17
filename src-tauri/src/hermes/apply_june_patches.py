@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "e96df077c7f7bae4c477f94ae8231ee508d648c7fb54b939a57a3115d3f5d7e1",
+    "tui_gateway/server.py": "ff1f4e889920bb29d7c88e01077e7ca7f41ef22f6d62edf6233608c9f282b0f1",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -578,6 +578,22 @@ def patch_server(source: str) -> str:
         disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
 ''',
         "server global disabled toolsets",
+    )
+    source = replace_once(
+        source,
+        '''        err = _wait_agent(session, rid)
+        if err:
+            _emit(
+''',
+        '''        err = _wait_agent(session, rid)
+        if err:
+            # image.attach_bytes can queue images while Hermes initializes.
+            # This failed prompt owns that queue; do not let its images leak
+            # into a later, unrelated prompt in the same session.
+            session.setdefault("attached_images", []).clear()
+            _emit(
+''',
+        "failed prompt initialization clears queued images",
     )
     source = replace_once(
         source,
