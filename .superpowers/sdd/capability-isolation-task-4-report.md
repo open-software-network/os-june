@@ -207,3 +207,61 @@ The pinned console entry point is `hermes_cli.main:main`. Against the existing p
 - A fresh full schema-2 managed install was not attempted on this host: the data volume had about 1.0 GiB free and reported 100% capacity, with no cached pinned source/uv archives. Downloading CPython and all locked Hermes extras risked exhausting disk. Deterministic local tests cover streaming, archive trust, staged command construction, isolation, sealing, steady-state preparation, and no-reinstall schema-2 behavior; live artifact installation/restart qualification remains Task 8.
 - Windows GitHub exposure remains compile-time fail-closed. The Unix Rust-owned bootstrap is target-gated; native Windows bootstrap equivalence remains a later qualification item.
 - The existing narrow same-user verify-to-exec race remains. The final full-tree check is immediately before spawn, and ordinary sandboxed Hermes cannot write or link the protected runtime/seal, but only an OS primitive binding measurement to execution could eliminate that interval completely.
+
+## Fourth security review remediation
+
+Follow-up commit base: `723fc92c`
+
+### Fourth review RED evidence
+
+- The archive tests initially failed to compile after the path-backed verified archive was replaced in the test contract by immutable authenticated bytes. With the old HTTP builder restored, the behavioral proxy fixture reached the hostile proxy and returned `proxy` instead of the origin body.
+- Node tuple, locked-build-input, command, asset, and clean-install fixtures initially failed to compile because no pinned Node selector or Rust-owned dashboard preparation path existed.
+- The final clean-install audit caught that official Node Unix archives contain `bin/npm`, `bin/npx`, and `bin/corepack` symlinks while the strict shared archive policy rejected all links. The Node-specific ignored-link regression first failed to compile because no safe extractor policy existed.
+- The production-path regression found `verify_runtime_immediately_before_spawn` re-entering managed resolution, causing a second steady-state tree digest after the shared locked preparation.
+- Independent final review also found that merely deleting that second resolution left the only digest far before spawn, process-map state reopened fallback after stop, and a false byte-local plugin result was ignored. Late final-admission order, sticky lifetime state, and plugin-tamper regressions now cover those boundaries.
+- The fallback fixture failed to compile before an actual shebang resolver existed; the old fallback could fabricate ambient `python3`. The schema matrix proved malformed `{}` metadata was still admitted as legacy fallback.
+- The loader fixture proved `LD_PRELOAD` remained on the real bearer-bearing dashboard command. Older launcher assertions then failed until they were updated to the empty-environment Terminal contract.
+- Cleanup-failure injection now proves a failed builder cleanup returns before an integrity seal or runtime publication can exist.
+
+### Fourth review fixes
+
+- Verified archives now own checksum-authenticated bounded `Arc<[u8]>` bytes. Validation and extraction create independent readers over those same immutable bytes and independently run the same entry-state gate. Raw UTF-8 paths reject absolute paths, backslashes, repeated separators, internal or terminal dot components, parent components, and file trailing separators before `Path` normalization. The existing link, duplicate, case-collision, file-ancestor, count, expanded-size, top-level, type, and post-extraction containment constraints apply on both passes.
+- Official Node Unix archives' three convenience launcher symlinks are handled by a Node-only policy: both archive passes require the exact `bin/npm`, `bin/npx`, or `bin/corepack` path and exact pinned target, then ignore rather than extract the entry. Wrong paths/targets and every source/uv or other Node link fail closed.
+- The archive client uses redirects disabled, fixed timeouts, and `.no_proxy()`. Its behavioral origin/proxy fixture passed on a host that permits loopback sockets; sandbox runs retain the direct source assertion when loopback bind is denied.
+- Fresh managed Unix installs download one of four official checksum-pinned Node 24.18.0 archives, validate the exact Hermes source workspace and lockfile-v3 inputs, and require registry URL plus integrity for TypeScript, Vite, and all supported esbuild, Rolldown, Tailwind Oxide, and lightningcss native packages. Rust invokes the verified absolute Node executable for npm's JavaScript CLI, TypeScript, and Vite with an empty environment, staging-only npm state, the exact npm registry, strict TLS, disabled ambient proxy/config/update/audit/fund/script controls, and no shell, PATH-resolved npm, lifecycle script, or `.bin` shim.
+- The generated `web_dist` must be a plain regular-file tree with a nonempty UTF-8 index and a contained, present local asset graph. External, protocol-relative, query/fragment-ambiguous, percent-encoded, dot, repeated-separator, escaping, missing, and linked references fail closed. Node, `node_modules`, and npm bootstrap state must be removed and assets revalidated before sealing or publication.
+- Current schema-2 dashboard and TUI starts use cheap command prediction for config/sandbox preparation, then one shared full-tree final admission immediately before spawn. Fresh install/legacy repair may necessarily hash earlier to decide a permitted fallback. The subsequent exact embedded GitHub-plugin byte check is byte-local and now aborts the spawn if an eligible managed/bundled plugin changed. The real steady path therefore performs one full digest, while cheap availability performs none.
+- User-local/PATH fallback derives the canonical absolute Python interpreter from the selected executable's bounded shebang and symlink chain, including narrowly admitted `/usr/bin/env python*` launchers resolved through the selected PATH. It rejects loops, nonregular or nonexecutable endpoints, malformed/relative/shell shebangs, and never emits a fabricated bare `python3`.
+- Record admission parses `schema` before typed deserialization. Only a missing record and explicit legacy schema 1 may use the pre-admission fallback. Malformed JSON, missing/nonnumeric schema, 0, unknown/future schemas, and all current schema-2 integrity failures fail closed.
+- Managed admission sets a sticky app-lifetime guard. Stopping every managed process cannot reopen legacy/missing-record fallback before the app exits.
+- Bearer-bearing direct children remove every explicit or inherited `LD_*` and `DYLD_*` key in addition to Python startup controls. The generated TUI launcher enters `/usr/bin/env -i` and restores only quoted fixed Hermes/Python values plus June-captured `HOME`, `PATH`, and `TMPDIR`, so Terminal cannot reintroduce loader hooks.
+
+### Pinned Node checksum source
+
+The source of record is the official Node.js 24.18.0 release directory and its signed checksum manifest at `https://nodejs.org/download/release/v24.18.0/`.
+
+- macOS aarch64: `e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1`
+- macOS x86_64: `dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080`
+- Linux aarch64 glibc: `6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508`
+- Linux x86_64 glibc: `783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8`
+
+Every other OS, architecture, or libc tuple fails closed. The Hermes source remains the exact commit archive `2bd1977d8fad185c9b4be47884f7e87f1add0ce3`, SHA-256 `7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc`. The official PyPI wheel for the same pinned release was inspected and contains no `hermes_cli/web_dist`, so it cannot replace the trusted source build.
+
+### Fourth review GREEN evidence
+
+- Strict focused RED/GREEN filters passed for immutable archives and repeated constraints (3), Node tuple/input/link policy and command isolation (4), asset graph and cleanup failure (2), clean managed install (1), one-digest shared final admission plus real production-path order/source guards (1), fallback interpreter (1), schema admission and sticky lifetime policy (2), loader environment (1), plugin-tamper fail-close (1), and TUI launcher regressions (3).
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test --manifest-path src-tauri/Cargo.toml github_plugin -- --nocapture`: 45 passed, 0 failed after the Node-link, sticky-admission, and plugin-tamper regressions were added.
+- Native `sandbox_` qualification with host permission: 9 passed, 0 failed, 1 ignored (the existing unlocked-login-Keychain release-candidate probe).
+- Standalone Rust manifest parser: 3 passed, 0 failed. Python plugin contract with host Unix-socket permission: 11 passed, 0 failed.
+- `CARGO_INCREMENTAL=0 cargo check --manifest-path src-tauri/Cargo.toml`: passed.
+- `CARGO_INCREMENTAL=0 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`: passed.
+- The pinned v2026.6.19 Hermes smoke passed the exact 16-tool loader gate and every selected dashboard/session phase; the credential-dependent model phase remained skipped. The final rerun then hit the documented post-pass `ENOTEMPTY` temporary-home cleanup race and exited 1 after reporting all selected phases passed.
+- Rust formatting, Unix bundler shell syntax, scoped Biome, and `git diff --check` passed.
+- `python3 scripts/check-cargo-release-age.py --base HEAD` passed with all 8 current manifests locked and 0 new crate versions. The default `origin/main` comparison cannot complete because that base references the already-absent `src-tauri/native/windows-dictation-helper/Cargo.lock`; this change modifies no Cargo manifest or lockfile.
+
+### Qualification and residual notes
+
+- Local fixtures exercise the production archive policies and dashboard-preparation helpers, validate assets, remove all builder material, seal schema 2, resolve the authenticated Python launcher with one digest, and prove no second installer call. They do not launch a packaged dashboard from official downloads and do not mutate user app data.
+- A live artifact download, npm install/build, packaged-app restart, and dashboard render remains Task 8. It is deliberately not claimed here and was not attempted as part of this Task 4 remediation.
+- Windows GitHub exposure remains compile-time fail-closed. Native Windows parity is outside this Unix managed-install remediation.
+- The narrow same-user verify-to-exec race remains as previously documented. This change removes the duplicate steady-state digest without claiming that a userspace byte check can bind measurement atomically to `exec`.

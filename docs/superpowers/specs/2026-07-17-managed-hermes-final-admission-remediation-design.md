@@ -37,7 +37,10 @@ supported managed Unix tuples are:
 
 Musl, unknown libc, and unlisted tuples fail closed. Rust downloads, verifies,
 validates, and extracts the selected Node archive using the same pure-Rust
-archive boundary as the Hermes and uv archives.
+archive boundary as the Hermes and uv archives. The three exact official Node
+launcher symlinks (`bin/npm`, `bin/npx`, and `bin/corepack`) are admitted only
+when both path and target match the pinned layout, and are ignored rather than
+extracted; every other link remains forbidden.
 
 Rust invokes npm as:
 
@@ -56,8 +59,9 @@ dependency resolution input.
 
 Before npm runs, June parses the pinned root and web package manifests and the
 lockfile. It requires the expected npm workspace, lockfile version, exact web
-build script, and every supported tuple's locked esbuild and Rollup native
-package with registry URL and integrity. The build script is evidence only;
+build script, and every supported tuple's locked esbuild, Rolldown, Tailwind
+Oxide, and lightningcss native package with registry URL and integrity. The
+build script is evidence only;
 June does not execute it. After `npm ci`, Rust verifies the TypeScript and Vite
 JavaScript entrypoints are regular files and invokes each directly with the
 verified Node program from the `web` working directory. This reproduces
@@ -72,10 +76,11 @@ directories. `index.html` must be a nonempty regular UTF-8 file. Every local
 separators, empty/repeated components, `.` and `..` are rejected. Referenced
 CSS local URLs receive the same containment check. Before sealing, June removes
 the extracted Node tree, `node_modules`, npm home/cache/config, and build
-temporaries. The clean-install fixture exercises the real asset preparation,
-launcher, seal, and second preparation using only local checksum-pinned
-archives. Live official-archive qualification stays assigned to Task 8 after
-disk cleanup.
+temporaries. Local fixtures independently exercise the production archive
+extractors (including the official Node launcher-link policy), real asset
+preparation and cleanup, seal, launcher resolution, and second preparation.
+They do not claim to launch a packaged dashboard from official downloads. Live
+official-archive qualification stays assigned to Task 8 after disk cleanup.
 
 ## Immutable archive admission
 
@@ -88,8 +93,10 @@ entry validator prevents the two readers from drifting.
 
 Raw tar names are checked before `Path::components`, because that API erases
 ambiguous syntax. Splitting the UTF-8 header bytes on `/` must yield only
-nonempty components other than `.` and `..`; leading/trailing/repeated `/` and
-every backslash are rejected. A mutation regression replaces or edits any
+nonempty components other than `.` and `..`; leading and repeated `/`, file
+trailing `/`, and every backslash are rejected. One terminal separator is
+admitted only for a directory header, as emitted by the official archives. A
+mutation regression replaces or edits any
 diagnostic archive pathname between validation and extraction and proves that
 only the already-authenticated immutable bytes are extracted.
 
@@ -100,18 +107,26 @@ the client connects directly.
 
 ## One-digest final admission
 
-Command prediction and cheap availability read only paths plus admitted record
-metadata. They do not hash the runtime. Dashboard and TUI then use one shared
-final-admission helper under `HermesBridge.start_lock`. That helper applies the
-canonical overlay, installs or repairs when permitted, computes exactly one
-full base-tree digest for a current steady runtime, and returns the admitted
-resolution. No later plugin check calls managed preparation again.
+For a current schema-2 runtime, command prediction and cheap availability read
+only paths plus admitted record metadata. They do not hash the runtime.
+Dashboard and TUI then use one shared final-admission helper under
+`HermesBridge.start_lock`, after config/soul or sandbox preparation and before
+spawn. That helper applies the canonical overlay, repairs when needed,
+computes exactly one full base-tree digest for a current steady runtime, and
+returns the admitted resolution. A fresh or legacy repair may necessarily
+install and hash before config prediction so a permitted fallback can rerender
+without GitHub. No later plugin check calls managed preparation again; the
+byte-local pre-spawn check aborts if an eligible GitHub plugin changed.
 
-Both actual production start paths have an injected digest-counter test:
-dashboard steady preparation consumes one full digest and TUI steady
-preparation consumes one. Auto-start availability consumes zero. Repair may
-consume one digest before deciding to reinstall and one after the replacement,
-but no steady path computes two.
+The shared final-admission helper has an injected digest-counter test for the
+dashboard and TUI cases, while a production-source order regression requires
+both real start paths to call that helper after their preparation and before
+spawn/launch. A separate source guard keeps the later byte-local plugin check
+free of managed preparation. Together with the resolver's one-digest and cheap
+availability tests, this enforces one steady digest and zero for availability
+without requiring a mock Tauri `AppHandle` to execute a native spawn. Repair
+may consume one digest before deciding to reinstall and one after the
+replacement, but no steady path computes two.
 
 ## Fallback interpreter and schema policy
 
@@ -138,6 +153,10 @@ Fallback admission distinguishes integrity states explicitly:
   integrity or critical-path failure;
 - malformed JSON, missing or nonnumeric schema, schema 0, unknown/future
   schemas, and tampered records fail closed.
+
+Managed admission is sticky in `HermesBridge` for the entire app lifetime.
+Stopping or draining every runtime process does not reopen missing-record or
+legacy fallback after any managed admission in that app process.
 
 ## Loader environment boundary
 

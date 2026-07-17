@@ -6,14 +6,14 @@ use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -45,10 +45,14 @@ const MANAGED_UV_VERSION: &str = "0.11.15";
 const MANAGED_UV_RELEASE_BASE_URL: &str =
     "https://github.com/astral-sh/uv/releases/download/0.11.15";
 const MANAGED_UV_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const MANAGED_NODE_VERSION: &str = "24.18.0";
+const MANAGED_NODE_RELEASE_BASE_URL: &str = "https://nodejs.org/download/release/v24.18.0";
+const MANAGED_NODE_ARCHIVE_MAX_BYTES: u64 = 96 * 1024 * 1024;
 const HERMES_SOURCE_ARCHIVE_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const MANAGED_ARCHIVE_MAX_ENTRIES: usize = 100_000;
 const MANAGED_ARCHIVE_MAX_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MANAGED_HERMES_INTEGRITY_FILE: &str = "hermes-runtime-integrity-v1.json";
+const MANAGED_HERMES_LEGACY_INTEGRITY_SCHEMA: u64 = 1;
 const MANAGED_HERMES_INTEGRITY_SCHEMA: u32 = 2;
 const BUNDLED_HERMES_SKILLS_RESOURCE_DIR: &str = "native/hermes-skills";
 const BUNDLED_HERMES_PLUGINS_RESOURCE_DIR: &str = "native/hermes-plugins";
@@ -470,6 +474,10 @@ pub struct HermesBridge {
     /// attempt only tears down the exact process it launched (and not a
     /// replacement that arrived after a stop/restart).
     next_generation: AtomicU64,
+    /// Sticky for this app lifetime. Once a managed runtime has passed full
+    /// admission, stopping its process must never reopen legacy/missing-record
+    /// downgrade fallback until the app itself restarts.
+    managed_runtime_ever_admitted: AtomicBool,
     /// One local provider proxy shared by both runtime processes. The
     /// runtime reads its model endpoint from the single shared
     /// `HERMES_HOME/config.yaml` (no per-process override exists upstream),
@@ -485,7 +493,6 @@ pub struct HermesBridge {
 
 struct HermesProcess {
     generation: u64,
-    source: HermesCommandSource,
     child: Child,
     connection: HermesBridgeConnection,
 }
@@ -556,6 +563,10 @@ struct ValidatedImageSource {
 struct HermesCommandResolution {
     python: PythonInvocation,
     source: HermesCommandSource,
+    /// True when managed preparation already performed its full digest. Fresh
+    /// install/repair can require this before config prediction; current
+    /// steady schema-2 runtimes defer it until immediately before spawn.
+    managed_final_admitted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -603,6 +614,13 @@ struct ManagedRuntimeCommands {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ManagedUvArtifact {
+    version: &'static str,
+    archive_name: &'static str,
+    sha256: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ManagedNodeArtifact {
     version: &'static str,
     archive_name: &'static str,
     sha256: &'static str,
@@ -1235,7 +1253,7 @@ async fn start_hermes_bridge_inner(
     );
     let hermes_home = resolve_june_hermes_home(app)?;
     let command_resolution = resolve_hermes_command(app, bridge, &hermes_home).await?;
-    let python = command_resolution.python;
+    let python = command_resolution.python.clone();
     let command_source = command_resolution.source;
     let default_cwd = hermes_home.join("workspace");
     std::fs::create_dir_all(&default_cwd)
@@ -1340,6 +1358,10 @@ async fn start_hermes_bridge_inner(
             "Spawning Hermes WITHOUT an OS sandbox — the agent can write anywhere the user can."
         );
     }
+    let command_resolution =
+        finalize_hermes_command_for_spawn(app, bridge, &hermes_home, command_resolution).await?;
+    let python = command_resolution.python;
+    let command_source = command_resolution.source;
     let port_string = port.to_string();
     // No --tui: upstream removed the flag from the dashboard subcommand before
     // v2026.6.19, and the embedded chat gateway (/api/ws) is always enabled.
@@ -1359,8 +1381,7 @@ async fn start_hermes_bridge_inner(
     // verify-to-spawn window; eliminating that residual race requires an OS
     // primitive that binds verification to exec. The ordinary agent cannot:
     // its managed runtime tree is no longer a sandbox write root.
-    let _github_plugin_verified =
-        verify_runtime_immediately_before_spawn(app, command_source).await?;
+    verify_runtime_immediately_before_spawn(app, command_source)?;
 
     let mut cmd = match &sandbox_profile {
         Some(profile_path) => {
@@ -1440,7 +1461,6 @@ async fn start_hermes_bridge_inner(
             full_mode,
             HermesProcess {
                 generation,
-                source: command_source,
                 child,
                 connection: connection.clone(),
             },
@@ -5857,13 +5877,15 @@ fn shell_single_quote(value: &str) -> String {
 ///
 /// 1. echoes the session->TUI trace line (so the developer sees, in the very
 ///    terminal they are debugging in, which June session this maps to),
-/// 2. exports the same isolated `HERMES_HOME` / token / sandbox-status env the
-///    dashboard spawn uses, scrubbing the inherited values first, and
+/// 2. enters an empty environment and adds back the same isolated
+///    `HERMES_HOME` / token / sandbox-status env the dashboard spawn uses, and
 /// 3. `exec`s the runtime — wrapped in `sandbox-exec -f <profile>` when the
 ///    session is sandboxed, bare when unrestricted — so the debug session runs
 ///    under the exact same profile and jail June used.
 ///
 /// Every interpolated value is single-quoted, so ids/paths can't inject shell.
+/// `HOME`, `PATH`, and `TMPDIR` are captured from June while generating the
+/// launcher rather than inherited later from Terminal.
 fn build_hermes_tui_debug_launcher_script(
     program: &str,
     args: &[String],
@@ -5878,41 +5900,46 @@ fn build_hermes_tui_debug_launcher_script(
     script.push_str("# June developer debug fallback: resume a June session in Hermes' raw TUI.\n");
     script.push_str("# This is NOT June's primary UI. Generated by the June app.\n");
     script.push_str(&format!("echo {}\n", shell_single_quote(trace_line)));
-    // Scrub then re-set the isolated env, matching apply_isolated_hermes_env so
-    // the TUI sees the same home/token/hint as June's dashboard runtime.
-    for name in ISOLATED_HERMES_ENV_VARS {
-        script.push_str(&format!("unset {name}\n"));
+    // Start the bearer-bearing runtime under an empty environment so a
+    // Terminal profile cannot reintroduce Python or dynamic-loader hooks.
+    let mut clean_env = vec![
+        format!("HERMES_HOME={}", hermes_home.to_string_lossy()),
+        format!("HERMES_DASHBOARD_SESSION_TOKEN={token}"),
+        "NO_PROXY=127.0.0.1,localhost,::1".to_string(),
+        "no_proxy=127.0.0.1,localhost,::1".to_string(),
+        "PYTHONDONTWRITEBYTECODE=1".to_string(),
+        "PYTHONNOUSERSITE=1".to_string(),
+        "PYTHONSAFEPATH=1".to_string(),
+    ];
+    for (name, fallback) in [
+        ("HOME", hermes_home.to_string_lossy().into_owned()),
+        ("PATH", "/usr/bin:/bin".to_string()),
+        ("TMPDIR", "/tmp".to_string()),
+    ] {
+        let value = std::env::var_os(name)
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or(fallback);
+        clean_env.push(format!("{name}={value}"));
     }
-    script.push_str(&format!(
-        "export HERMES_HOME={}\n",
-        shell_single_quote(&hermes_home.to_string_lossy())
-    ));
-    script.push_str(&format!(
-        "export HERMES_DASHBOARD_SESSION_TOKEN={}\n",
-        shell_single_quote(token)
-    ));
-    script.push_str("export NO_PROXY='127.0.0.1,localhost,::1'\n");
-    script.push_str("export no_proxy='127.0.0.1,localhost,::1'\n");
-    script.push_str("export PYTHONDONTWRITEBYTECODE='1'\n");
-    script.push_str("export PYTHONNOUSERSITE='1'\n");
-    script.push_str("export PYTHONSAFEPATH='1'\n");
     if let Some(hint) = environment_hint {
-        script.push_str(&format!(
-            "export HERMES_ENVIRONMENT_HINT={}\n",
-            shell_single_quote(hint)
-        ));
+        clean_env.push(format!("HERMES_ENVIRONMENT_HINT={hint}"));
     }
+    let clean_env = clean_env
+        .iter()
+        .map(|value| shell_single_quote(value))
+        .collect::<Vec<_>>()
+        .join(" ");
     let quoted_args: Vec<String> = args.iter().map(|arg| shell_single_quote(arg)).collect();
     let invocation = match sandbox_profile {
         Some(profile) => format!(
-            "exec {} -f {} {} {}",
+            "exec '/usr/bin/env' -i {clean_env} {} -f {} {} {}",
             shell_single_quote(SANDBOX_EXEC_PATH),
             shell_single_quote(&profile.to_string_lossy()),
             shell_single_quote(program),
             quoted_args.join(" ")
         ),
         None => format!(
-            "exec {} {}",
+            "exec '/usr/bin/env' -i {clean_env} {} {}",
             shell_single_quote(program),
             quoted_args.join(" ")
         ),
@@ -5952,8 +5979,6 @@ pub async fn open_hermes_tui_debug(
 
     let hermes_home = resolve_june_hermes_home(&app)?;
     let command_resolution = resolve_hermes_command(&app, &bridge, &hermes_home).await?;
-    let python = command_resolution.python;
-    let command_source = command_resolution.source;
 
     // Mirror the dashboard spawn's mode resolution: unrestricted => no jail;
     // otherwise prepare the Seatbelt profile (None when the jail can't engage
@@ -5984,10 +6009,13 @@ pub async fn open_hermes_tui_debug(
     // terminal window is closed.
     eprintln!("{trace_line}");
 
+    let command_resolution =
+        finalize_hermes_command_for_spawn(&app, &bridge, &hermes_home, command_resolution).await?;
+    let python = command_resolution.python;
+    let command_source = command_resolution.source;
     let token = random_token();
     let args = python.hermes_args(hermes_tui_resume_args(&session_id));
-    let _github_plugin_verified =
-        verify_runtime_immediately_before_spawn(&app, command_source).await?;
+    verify_runtime_immediately_before_spawn(&app, command_source)?;
     let script = build_hermes_tui_debug_launcher_script(
         &python.program,
         &args,
@@ -6155,8 +6183,9 @@ async fn resolve_hermes_command(
         let command = command.trim();
         if !command.is_empty() {
             return Ok(HermesCommandResolution {
-                python: PythonInvocation::isolated(hermes_python_command(command)),
+                python: PythonInvocation::isolated(hermes_python_command(command)?),
                 source: HermesCommandSource::EnvOverride,
+                managed_final_admitted: true,
             });
         }
     }
@@ -6169,14 +6198,23 @@ async fn resolve_hermes_command(
         return Ok(HermesCommandResolution {
             python: PythonInvocation::isolated(python_command.to_string_lossy()),
             source: HermesCommandSource::BundledRuntime,
+            managed_final_admitted: true,
         });
     }
 
     let managed_runtime_dir = managed_hermes_runtime_dir(app)?;
     let integrity_path = managed_hermes_integrity_path(app)?;
+    if predicted_current_managed_resolution(&managed_runtime_dir, &integrity_path)?.is_some() {
+        let commands = managed_runtime_commands(&managed_runtime_dir);
+        return Ok(HermesCommandResolution {
+            python: PythonInvocation::isolated(commands.python.to_string_lossy()),
+            source: HermesCommandSource::ManagedRuntime,
+            managed_final_admitted: false,
+        });
+    }
     let fallback_permitted = managed_fallback_allowed_by_policy(
         managed_fallback_permitted(&integrity_path),
-        managed_process_has_been_admitted(bridge)?,
+        bridge.managed_runtime_ever_admitted.load(Ordering::SeqCst),
     );
     match resolve_managed_hermes_command_with(&managed_runtime_dir, &integrity_path, || {
         install_managed_hermes_runtime(app, hermes_home)
@@ -6184,10 +6222,14 @@ async fn resolve_hermes_command(
     .await
     {
         Ok(_) => {
+            bridge
+                .managed_runtime_ever_admitted
+                .store(true, Ordering::SeqCst);
             let commands = managed_runtime_commands(&managed_runtime_dir);
             Ok(HermesCommandResolution {
                 python: PythonInvocation::isolated(commands.python.to_string_lossy()),
                 source: HermesCommandSource::ManagedRuntime,
+                managed_final_admitted: true,
             })
         }
         Err(error) if fallback_permitted => {
@@ -6199,8 +6241,9 @@ async fn resolve_hermes_command(
                 return Ok(HermesCommandResolution {
                     python: PythonInvocation::isolated(hermes_python_command(
                         &command.to_string_lossy(),
-                    )),
+                    )?),
                     source: HermesCommandSource::UserLocalFallback,
+                    managed_final_admitted: true,
                 });
             }
             if let Some(command) = path_hermes_command() {
@@ -6211,14 +6254,54 @@ async fn resolve_hermes_command(
                 return Ok(HermesCommandResolution {
                     python: PythonInvocation::isolated(hermes_python_command(
                         &command.to_string_lossy(),
-                    )),
+                    )?),
                     source: HermesCommandSource::PathFallback,
+                    managed_final_admitted: true,
                 });
             }
             Err(error)
         }
         Err(error) => Err(error),
     }
+}
+
+async fn finalize_hermes_command_for_spawn(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+    hermes_home: &Path,
+    resolution: HermesCommandResolution,
+) -> Result<HermesCommandResolution, AppError> {
+    let runtime_dir = managed_hermes_runtime_dir(app)?;
+    let integrity_path = managed_hermes_integrity_path(app)?;
+    finalize_hermes_command_for_spawn_with(bridge, resolution, || async {
+        resolve_managed_hermes_command_with(&runtime_dir, &integrity_path, || {
+            install_managed_hermes_runtime(app, hermes_home)
+        })
+        .await
+        .map(|_| ())
+    })
+    .await
+}
+
+async fn finalize_hermes_command_for_spawn_with<F, Fut>(
+    bridge: &HermesBridge,
+    mut resolution: HermesCommandResolution,
+    final_managed_admission: F,
+) -> Result<HermesCommandResolution, AppError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    if resolution.source == HermesCommandSource::ManagedRuntime {
+        if !resolution.managed_final_admitted {
+            final_managed_admission().await?;
+            resolution.managed_final_admitted = true;
+        }
+        bridge
+            .managed_runtime_ever_admitted
+            .store(true, Ordering::SeqCst);
+    }
+    Ok(resolution)
 }
 
 fn managed_fallback_permitted(integrity_path: &Path) -> bool {
@@ -6236,14 +6319,35 @@ fn managed_fallback_allowed_by_policy(
     integrity_state_permits_fallback && !managed_process_admitted
 }
 
-fn managed_process_has_been_admitted(bridge: &HermesBridge) -> Result<bool, AppError> {
-    let guard = bridge
-        .processes
-        .lock()
-        .map_err(|_| AppError::new("hermes_bridge_unavailable", "Hermes bridge lock failed."))?;
-    Ok(guard
-        .values()
-        .any(|process| process.source == HermesCommandSource::ManagedRuntime))
+fn predicted_current_managed_resolution(
+    runtime_dir: &Path,
+    integrity_path: &Path,
+) -> Result<Option<ManagedRuntimeCommands>, AppError> {
+    let Some(record) = read_managed_hermes_integrity_record(integrity_path)? else {
+        return Ok(None);
+    };
+    if !managed_integrity_record_has_current_base_identity(&record)
+        || !managed_runtime_metadata_is_current(runtime_dir)?
+    {
+        return Ok(None);
+    }
+    let commands = managed_runtime_commands(runtime_dir);
+    for path in [&commands.hermes, &commands.python] {
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(AppError::new(
+                    "hermes_runtime_integrity_failed",
+                    error.to_string(),
+                ));
+            }
+        };
+        if !metadata.is_file() || metadata_is_symlink_or_reparse(&metadata) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(commands))
 }
 
 fn bundled_hermes_command(app: &AppHandle) -> Option<PathBuf> {
@@ -6345,6 +6449,415 @@ fn managed_uv_artifact_for(
         archive_name,
         sha256,
     })
+}
+
+const MANAGED_DASHBOARD_LOCKED_NATIVE_PACKAGES: [&str; 16] = [
+    "node_modules/@esbuild/darwin-arm64",
+    "node_modules/@esbuild/darwin-x64",
+    "node_modules/@esbuild/linux-arm64",
+    "node_modules/@esbuild/linux-x64",
+    "node_modules/@rolldown/binding-darwin-arm64",
+    "node_modules/@rolldown/binding-darwin-x64",
+    "node_modules/@rolldown/binding-linux-arm64-gnu",
+    "node_modules/@rolldown/binding-linux-x64-gnu",
+    "node_modules/@tailwindcss/oxide-darwin-arm64",
+    "node_modules/@tailwindcss/oxide-darwin-x64",
+    "node_modules/@tailwindcss/oxide-linux-arm64-gnu",
+    "node_modules/@tailwindcss/oxide-linux-x64-gnu",
+    "node_modules/lightningcss-darwin-arm64",
+    "node_modules/lightningcss-darwin-x64",
+    "node_modules/lightningcss-linux-arm64-gnu",
+    "node_modules/lightningcss-linux-x64-gnu",
+];
+
+fn managed_node_artifact_for(
+    target_os: &str,
+    target_arch: &str,
+    target_env: &str,
+) -> Option<ManagedNodeArtifact> {
+    let (archive_name, sha256) = match (target_os, target_arch, target_env) {
+        ("macos", "aarch64", "") => (
+            "node-v24.18.0-darwin-arm64.tar.gz",
+            "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
+        ),
+        ("macos", "x86_64", "") => (
+            "node-v24.18.0-darwin-x64.tar.gz",
+            "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
+        ),
+        ("linux", "aarch64", "gnu") => (
+            "node-v24.18.0-linux-arm64.tar.gz",
+            "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
+        ),
+        ("linux", "x86_64", "gnu") => (
+            "node-v24.18.0-linux-x64.tar.gz",
+            "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
+        ),
+        _ => return None,
+    };
+    Some(ManagedNodeArtifact {
+        version: MANAGED_NODE_VERSION,
+        archive_name,
+        sha256,
+    })
+}
+
+fn read_managed_build_json(path: &Path, label: &str) -> Result<serde_json::Value, AppError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if !metadata.is_file() || metadata_is_symlink_or_reparse(&metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!("Pinned Hermes {label} is not a trusted regular file."),
+        ));
+    }
+    serde_json::from_slice(
+        &fs::read(path)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?,
+    )
+    .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
+}
+
+fn validate_pinned_dashboard_build_inputs(install_dir: &Path) -> Result<(), AppError> {
+    for npmrc in [install_dir.join(".npmrc"), install_dir.join("web/.npmrc")] {
+        if fs::symlink_metadata(&npmrc).is_ok() {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Pinned Hermes dashboard source contains project npm configuration.",
+            ));
+        }
+    }
+
+    let root = read_managed_build_json(&install_dir.join("package.json"), "package manifest")?;
+    let has_web_workspace = root
+        .get("workspaces")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|workspaces| workspaces.iter().any(|value| value.as_str() == Some("web")));
+    if !has_web_workspace {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Pinned Hermes dashboard workspace is unavailable.",
+        ));
+    }
+    let web = read_managed_build_json(
+        &install_dir.join("web/package.json"),
+        "web package manifest",
+    )?;
+    if [&root, &web]
+        .iter()
+        .any(|manifest| manifest.get("config").is_some())
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Pinned Hermes dashboard source contains package npm configuration.",
+        ));
+    }
+    if web
+        .pointer("/scripts/build")
+        .and_then(serde_json::Value::as_str)
+        != Some("tsc -b && vite build")
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Pinned Hermes dashboard build contract changed.",
+        ));
+    }
+    let lock = read_managed_build_json(&install_dir.join("package-lock.json"), "package lock")?;
+    if lock
+        .get("lockfileVersion")
+        .and_then(serde_json::Value::as_u64)
+        != Some(3)
+        || lock.pointer("/packages/web").is_none()
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Pinned Hermes dashboard lockfile contract changed.",
+        ));
+    }
+    let packages = lock
+        .get("packages")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                "Pinned Hermes dashboard lockfile has no package map.",
+            )
+        })?;
+    for package in MANAGED_DASHBOARD_LOCKED_NATIVE_PACKAGES
+        .iter()
+        .copied()
+        .chain(["node_modules/typescript", "node_modules/vite"])
+    {
+        let entry = packages.get(package).ok_or_else(|| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                format!("Pinned dashboard lockfile is missing {package}."),
+            )
+        })?;
+        let resolved = entry
+            .get("resolved")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let integrity = entry
+            .get("integrity")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !resolved.starts_with("https://registry.npmjs.org/") || !integrity.starts_with("sha512-")
+        {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                format!("Pinned dashboard lockfile has an untrusted {package} artifact."),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_node_command(staging: &Path, install_dir: &Path, node_root: &Path) -> Command {
+    let node_bin = node_root.join("bin");
+    let npm_home = staging.join(".bootstrap/npm-home");
+    let npm_cache = staging.join(".bootstrap/npm-cache");
+    let npm_userconfig = staging.join(".bootstrap/npm-userconfig");
+    let npm_globalconfig = staging.join(".bootstrap/npm-globalconfig");
+    let mut command = Command::new(node_bin.join("node"));
+    command
+        .env_clear()
+        .current_dir(install_dir)
+        .env("PATH", format!("{}:/usr/bin:/bin", node_bin.display()))
+        .env("HOME", &npm_home)
+        .env("NO_PROXY", "*")
+        .env("no_proxy", "*")
+        .env("npm_config_cache", &npm_cache)
+        .env("npm_config_userconfig", &npm_userconfig)
+        .env("npm_config_globalconfig", &npm_globalconfig)
+        .env("npm_config_registry", "https://registry.npmjs.org/")
+        .env("npm_config_strict_ssl", "true")
+        .env("npm_config_ignore_scripts", "true")
+        .env("npm_config_foreground_scripts", "false")
+        .env("npm_config_audit", "false")
+        .env("npm_config_fund", "false")
+        .env("npm_config_update_notifier", "false")
+        .env("npm_config_progress", "false")
+        .env("npm_config_color", "false")
+        .env("npm_config_proxy", "")
+        .env("npm_config_https_proxy", "")
+        .env("npm_config_noproxy", "*");
+    command
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_npm_ci_command(staging: &Path, install_dir: &Path, node_root: &Path) -> Command {
+    let mut command = managed_node_command(staging, install_dir, node_root);
+    command.args([
+        node_root
+            .join("lib/node_modules/npm/bin/npm-cli.js")
+            .into_os_string(),
+        "ci".into(),
+        "--ignore-scripts".into(),
+        "--foreground-scripts=false".into(),
+        "--no-audit".into(),
+        "--no-fund".into(),
+        "--workspace=web".into(),
+        "--include-workspace-root=false".into(),
+        "--include=dev".into(),
+        "--include=optional".into(),
+        "--registry=https://registry.npmjs.org/".into(),
+        "--strict-ssl=true".into(),
+        format!(
+            "--userconfig={}",
+            staging.join(".bootstrap/npm-userconfig").display()
+        )
+        .into(),
+        format!(
+            "--globalconfig={}",
+            staging.join(".bootstrap/npm-globalconfig").display()
+        )
+        .into(),
+        format!("--cache={}", staging.join(".bootstrap/npm-cache").display()).into(),
+        "--update-notifier=false".into(),
+        "--progress=false".into(),
+        "--color=false".into(),
+        "--proxy=".into(),
+        "--https-proxy=".into(),
+        "--noproxy=*".into(),
+    ]);
+    command
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_dashboard_build_commands(
+    staging: &Path,
+    install_dir: &Path,
+    node_root: &Path,
+) -> (Command, Command) {
+    let web_dir = install_dir.join("web");
+    let mut typescript = managed_node_command(staging, &web_dir, node_root);
+    typescript
+        .arg(install_dir.join("node_modules/typescript/bin/tsc"))
+        .arg("-b");
+    let mut vite = managed_node_command(staging, &web_dir, node_root);
+    vite.arg(install_dir.join("node_modules/vite/bin/vite.js"))
+        .arg("build");
+    (typescript, vite)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn plain_managed_build_file(path: &Path, label: &str) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if !metadata.is_file() || metadata_is_symlink_or_reparse(&metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!("Managed dashboard {label} is not a trusted regular file."),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn managed_web_reference_path(web_dist: &Path, reference: &str) -> Result<PathBuf, AppError> {
+    let reference = reference.trim();
+    if reference.is_empty()
+        || reference.starts_with("//")
+        || reference.contains('\\')
+        || reference.contains('%')
+        || reference.contains('?')
+        || reference.contains('#')
+        || reference.contains(':')
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed dashboard contains an unsafe asset reference.",
+        ));
+    }
+    let relative = reference.strip_prefix('/').unwrap_or(reference);
+    let parts: Vec<_> = relative.split('/').collect();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed dashboard contains an ambiguous asset reference.",
+        ));
+    }
+    let path = parts
+        .iter()
+        .fold(web_dist.to_path_buf(), |path, part| path.join(part));
+    plain_managed_build_file(&path, "asset")?;
+    Ok(path)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn quoted_web_references<'a>(text: &'a str, names: &[&str]) -> Result<Vec<&'a str>, AppError> {
+    let mut values = Vec::new();
+    for name in names {
+        for quote in ['\'', '"'] {
+            let needle = format!("{name}={quote}");
+            let mut remaining = text;
+            while let Some(index) = remaining.find(&needle) {
+                let value = &remaining[index + needle.len()..];
+                let end = value.find(quote).ok_or_else(|| {
+                    AppError::new(
+                        "hermes_runtime_install_failed",
+                        "Managed dashboard contains an unterminated asset reference.",
+                    )
+                })?;
+                values.push(&value[..end]);
+                remaining = &value[end + quote.len_utf8()..];
+            }
+        }
+    }
+    Ok(values)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn css_web_references(text: &str) -> Result<Vec<&str>, AppError> {
+    let mut values = Vec::new();
+    let mut remaining = text;
+    while let Some(index) = remaining.find("url(") {
+        let after_open = &remaining[index + 4..];
+        let end = after_open.find(')').ok_or_else(|| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed dashboard CSS contains an unterminated asset reference.",
+            )
+        })?;
+        let value = after_open[..end].trim().trim_matches(['\'', '"']);
+        if !value.starts_with("data:") && !value.starts_with('#') {
+            values.push(value);
+        }
+        remaining = &after_open[end + 1..];
+    }
+    Ok(values)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn validate_managed_web_dist(web_dist: &Path) -> Result<(), AppError> {
+    let root_metadata = fs::symlink_metadata(web_dist)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if !root_metadata.is_dir() || metadata_is_symlink_or_reparse(&root_metadata) {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed dashboard output is not a trusted directory.",
+        ));
+    }
+    let mut pending = vec![web_dist.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        for entry in fs::read_dir(&path)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
+        {
+            let entry = entry.map_err(|error| {
+                AppError::new("hermes_runtime_install_failed", error.to_string())
+            })?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|error| {
+                AppError::new("hermes_runtime_install_failed", error.to_string())
+            })?;
+            if metadata_is_symlink_or_reparse(&metadata) {
+                return Err(AppError::new(
+                    "hermes_runtime_install_failed",
+                    "Managed dashboard output contains a link.",
+                ));
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if !metadata.is_file() {
+                return Err(AppError::new(
+                    "hermes_runtime_install_failed",
+                    "Managed dashboard output contains an unsupported entry.",
+                ));
+            }
+        }
+    }
+    let index_path = web_dist.join("index.html");
+    plain_managed_build_file(&index_path, "index")?;
+    let index = fs::read_to_string(&index_path)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    if index.trim().is_empty() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed dashboard index is empty.",
+        ));
+    }
+    let references = quoted_web_references(&index, &["src", "href"])?;
+    if references.is_empty() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed dashboard index has no asset references.",
+        ));
+    }
+    for reference in references {
+        let path = managed_web_reference_path(web_dist, reference)?;
+        if path.extension().and_then(|value| value.to_str()) == Some("css") {
+            let css = fs::read_to_string(&path).map_err(|error| {
+                AppError::new("hermes_runtime_install_failed", error.to_string())
+            })?;
+            for css_reference in css_web_references(&css)? {
+                managed_web_reference_path(web_dist, css_reference)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_env = "gnu")]
@@ -6509,10 +7022,23 @@ fn read_managed_hermes_integrity_record(
         .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
-    if value.get("schema").and_then(serde_json::Value::as_u64)
-        != Some(MANAGED_HERMES_INTEGRITY_SCHEMA as u64)
-    {
+    let schema = value
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_runtime_integrity_failed",
+                "Managed Hermes integrity record has no admitted numeric schema.",
+            )
+        })?;
+    if schema == MANAGED_HERMES_LEGACY_INTEGRITY_SCHEMA {
         return Ok(None);
+    }
+    if schema != MANAGED_HERMES_INTEGRITY_SCHEMA as u64 {
+        return Err(AppError::new(
+            "hermes_runtime_integrity_failed",
+            format!("Managed Hermes integrity record schema {schema} is not admitted."),
+        ));
     }
     let record = serde_json::from_value(value)
         .map_err(|error| AppError::new("hermes_runtime_integrity_failed", error.to_string()))?;
@@ -7195,23 +7721,30 @@ where
     }
 }
 
-async fn verify_runtime_immediately_before_spawn(
+fn verify_runtime_immediately_before_spawn(
     app: &AppHandle,
     source: HermesCommandSource,
-) -> Result<bool, AppError> {
-    let github_verified = github_plugin_verified_for_source(app, source)?;
-    if source != HermesCommandSource::ManagedRuntime {
-        return Ok(github_verified);
-    }
+) -> Result<(), AppError> {
+    // Managed resolution under the shared start lock already applied the
+    // overlay and authenticated the complete runtime once. Re-entering managed
+    // preparation here doubled the steady-state full-tree digest for both the
+    // dashboard and TUI. Keep this last check byte-local to the exact embedded
+    // plugin; it cannot trigger repair, install, or another tree walk.
+    let verified = github_plugin_verified_for_source(app, source)?;
+    require_github_plugin_verified_before_spawn(source, verified)
+}
 
-    let runtime_dir = managed_hermes_runtime_dir(app)?;
-    let integrity_path = managed_hermes_integrity_path(app)?;
-    let hermes_home = resolve_june_hermes_home(app)?;
-    resolve_managed_hermes_command_with(&runtime_dir, &integrity_path, || {
-        install_managed_hermes_runtime(app, &hermes_home)
-    })
-    .await?;
-    github_plugin_verified_for_source(app, source)
+fn require_github_plugin_verified_before_spawn(
+    source: HermesCommandSource,
+    verified: bool,
+) -> Result<(), AppError> {
+    if github_toolset_supported_for_runtime(source) && !verified {
+        return Err(AppError::new(
+            "hermes_github_plugin_verify_failed",
+            "The authenticated GitHub extension changed before Hermes could start.",
+        ));
+    }
+    Ok(())
 }
 
 const HERMES_SITE_CUSTOMIZE: &str = include_str!("hermes/sitecustomize.py");
@@ -7353,20 +7886,14 @@ async fn download_verified_managed_archive(
     url: &str,
     expected_sha256: &str,
     max_bytes: u64,
-    destination: &Path,
-) -> Result<(), AppError> {
+) -> Result<VerifiedArchive, AppError> {
     if !url.starts_with("https://") {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             "Managed runtime archives must use a fixed HTTPS URL.",
         ));
     }
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
-        .build()
-        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let client = managed_archive_http_client()?;
     let mut response = client
         .get(url)
         .send()
@@ -7382,44 +7909,51 @@ async fn download_verified_managed_archive(
             "Managed runtime archive exceeded its download size limit.",
         ));
     }
-    let mut sink = VerifiedArchiveSink::new(destination, max_bytes)?;
+    let mut download = VerifiedArchiveDownload::new(max_bytes);
     while let Some(chunk) = response
         .chunk()
         .await
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
     {
-        sink.write_chunk(&chunk)?;
+        download.write_chunk(&chunk)?;
     }
-    sink.finish(expected_sha256)
+    download.finish(expected_sha256)
 }
 
 #[cfg(not(target_os = "windows"))]
-struct VerifiedArchiveSink {
-    path: PathBuf,
-    file: fs::File,
+fn managed_archive_http_client() -> Result<reqwest::Client, AppError> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
+        .build()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
+}
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Clone)]
+struct VerifiedArchive {
+    bytes: Arc<[u8]>,
+}
+
+#[cfg(not(target_os = "windows"))]
+struct VerifiedArchiveDownload {
+    bytes: Vec<u8>,
     digest: Sha256,
     total: u64,
     max_bytes: u64,
-    committed: bool,
 }
 
 #[cfg(not(target_os = "windows"))]
-impl VerifiedArchiveSink {
-    fn new(path: &Path, max_bytes: u64) -> Result<Self, AppError> {
-        let file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(path)
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-        set_private_file_permissions(path)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            file,
+impl VerifiedArchiveDownload {
+    fn new(max_bytes: u64) -> Self {
+        Self {
+            bytes: Vec::new(),
             digest: Sha256::new(),
             total: 0,
             max_bytes,
-            committed: false,
-        })
+        }
     }
 
     fn write_chunk(&mut self, chunk: &[u8]) -> Result<(), AppError> {
@@ -7433,40 +7967,21 @@ impl VerifiedArchiveSink {
             ));
         }
         self.digest.update(chunk);
-        self.file
-            .write_all(chunk)
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
     }
 
-    fn finish(mut self, expected_sha256: &str) -> Result<(), AppError> {
-        self.file
-            .sync_all()
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-        if hex_lower(&self.digest.clone().finalize()) != expected_sha256 {
+    fn finish(self, expected_sha256: &str) -> Result<VerifiedArchive, AppError> {
+        if hex_lower(&self.digest.finalize()) != expected_sha256 {
             return Err(AppError::new(
                 "hermes_runtime_install_failed",
                 "Managed runtime archive checksum mismatch.",
             ));
         }
-        self.committed = true;
-        Ok(())
+        Ok(VerifiedArchive {
+            bytes: Arc::from(self.bytes),
+        })
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-impl Drop for VerifiedArchiveSink {
-    fn drop(&mut self) {
-        if !self.committed {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn set_private_file_permissions(path: &Path) -> Result<(), AppError> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -7479,132 +7994,191 @@ fn create_private_managed_dir(path: &Path) -> Result<(), AppError> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn validated_archive_relative_path(path: &Path, expected_top_level: &str) -> io::Result<PathBuf> {
-    if path.as_os_str().is_empty() || path.is_absolute() {
+fn validated_archive_relative_path(
+    raw_path: &[u8],
+    expected_top_level: &str,
+    is_dir: bool,
+) -> io::Result<PathBuf> {
+    let raw_path = std::str::from_utf8(raw_path)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 archive path"))?;
+    let raw_path = if is_dir {
+        raw_path.strip_suffix('/').unwrap_or(raw_path)
+    } else {
+        raw_path
+    };
+    if raw_path.is_empty() || raw_path.starts_with('/') || raw_path.contains('\\') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsafe archive path",
         ));
     }
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Normal(value) => {
-                let value = value.to_str().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 archive path")
-                })?;
-                if value.is_empty() || value.contains('\\') {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "ambiguous archive path",
-                    ));
-                }
-                normalized.push(value);
-            }
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "archive path traversal",
-                ));
-            }
-        }
-    }
-    if normalized
-        .components()
-        .next()
-        .and_then(|component| match component {
-            Component::Normal(value) => value.to_str(),
-            _ => None,
-        })
-        != Some(expected_top_level)
+    let components: Vec<&str> = raw_path.split('/').collect();
+    if components
+        .iter()
+        .any(|component| component.is_empty() || *component == "." || *component == "..")
     {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ambiguous archive path",
+        ));
+    }
+    if components.first().copied() != Some(expected_top_level) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unexpected archive top-level directory",
         ));
     }
-    Ok(normalized)
+    Ok(components.into_iter().collect())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn validate_managed_tar_gz(archive_path: &Path, expected_top_level: &str) -> Result<(), AppError> {
-    let file = fs::File::open(archive_path)
+#[derive(Default)]
+struct ManagedArchiveValidationState {
+    paths: HashMap<String, bool>,
+    count: usize,
+    expanded: u64,
+}
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ManagedArchivePolicy {
+    Strict,
+    NodeBootstrap,
+}
+
+#[cfg(not(target_os = "windows"))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ManagedArchiveEntryKind {
+    Directory,
+    File,
+    IgnoredNodeLauncherSymlink,
+}
+
+#[cfg(not(target_os = "windows"))]
+fn exact_ignored_node_launcher_symlink<R: Read>(
+    entry: &tar::Entry<'_, R>,
+    normalized: &Path,
+    expected_top_level: &str,
+) -> bool {
+    let relative = normalized.strip_prefix(expected_top_level).ok();
+    let expected_target = match relative {
+        Some(path) if path == Path::new("bin/corepack") => {
+            b"../lib/node_modules/corepack/dist/corepack.js".as_slice()
+        }
+        Some(path) if path == Path::new("bin/npm") => {
+            b"../lib/node_modules/npm/bin/npm-cli.js".as_slice()
+        }
+        Some(path) if path == Path::new("bin/npx") => {
+            b"../lib/node_modules/npm/bin/npx-cli.js".as_slice()
+        }
+        _ => return false,
+    };
+    entry.link_name_bytes().as_deref() == Some(expected_target)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn validate_managed_archive_entry<R: Read>(
+    entry: &tar::Entry<'_, R>,
+    expected_top_level: &str,
+    policy: ManagedArchivePolicy,
+    state: &mut ManagedArchiveValidationState,
+) -> Result<(PathBuf, ManagedArchiveEntryKind), AppError> {
+    state.count += 1;
+    if state.count > MANAGED_ARCHIVE_MAX_ENTRIES {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive contains too many entries.",
+        ));
+    }
+    let entry_type = entry.header().entry_type();
+    let is_dir = entry_type.is_dir();
+    let raw_path = entry.path_bytes();
+    let normalized = validated_archive_relative_path(&raw_path, expected_top_level, is_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    let decoder = flate2::read::GzDecoder::new(file);
+    let kind = if is_dir {
+        ManagedArchiveEntryKind::Directory
+    } else if entry_type.is_file() {
+        ManagedArchiveEntryKind::File
+    } else if entry_type.is_symlink()
+        && policy == ManagedArchivePolicy::NodeBootstrap
+        && exact_ignored_node_launcher_symlink(entry, &normalized, expected_top_level)
+    {
+        // Official Node Unix archives contain convenience launcher symlinks.
+        // June never needs or extracts them because it invokes the JavaScript
+        // entrypoints through the verified Node binary directly.
+        ManagedArchiveEntryKind::IgnoredNodeLauncherSymlink
+    } else {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive contains a link, device, FIFO, or unsupported entry.",
+        ));
+    };
+    state.expanded = state
+        .expanded
+        .checked_add(entry.size())
+        .ok_or_else(|| AppError::new("hermes_runtime_install_failed", "Archive size overflow."))?;
+    if state.expanded > MANAGED_ARCHIVE_MAX_EXPANDED_BYTES {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive exceeds its expanded size limit.",
+        ));
+    }
+    let identity = normalized.to_string_lossy().to_lowercase();
+    if state.paths.contains_key(&identity) {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive contains duplicate or colliding paths.",
+        ));
+    }
+    let mut ancestor = normalized.parent();
+    while let Some(path) = ancestor {
+        if state
+            .paths
+            .get(&path.to_string_lossy().to_lowercase())
+            .is_some_and(|ancestor_is_dir| !ancestor_is_dir)
+        {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed archive path collides with a file ancestor.",
+            ));
+        }
+        ancestor = path.parent();
+    }
+    if !is_dir {
+        let descendant_prefix = format!("{identity}/");
+        if state
+            .paths
+            .keys()
+            .any(|path| path.starts_with(&descendant_prefix))
+        {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed archive file collides with an existing directory.",
+            ));
+        }
+    }
+    state.paths.insert(identity, is_dir);
+    Ok((normalized, kind))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn validate_managed_tar_gz_with_policy(
+    archive_bytes: &VerifiedArchive,
+    expected_top_level: &str,
+    policy: ManagedArchivePolicy,
+) -> Result<(), AppError> {
+    let decoder = flate2::read::GzDecoder::new(Cursor::new(archive_bytes.bytes.as_ref()));
     let mut archive = tar::Archive::new(decoder);
-    let mut paths: HashMap<String, bool> = HashMap::new();
-    let mut count = 0_usize;
-    let mut expanded = 0_u64;
+    let mut state = ManagedArchiveValidationState::default();
     for entry in archive
         .entries()
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
     {
         let entry = entry
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-        count += 1;
-        if count > MANAGED_ARCHIVE_MAX_ENTRIES {
-            return Err(AppError::new(
-                "hermes_runtime_install_failed",
-                "Managed archive contains too many entries.",
-            ));
-        }
-        let entry_type = entry.header().entry_type();
-        let is_dir = entry_type.is_dir();
-        if !is_dir && !entry_type.is_file() {
-            return Err(AppError::new(
-                "hermes_runtime_install_failed",
-                "Managed archive contains a link, device, FIFO, or unsupported entry.",
-            ));
-        }
-        expanded = expanded.checked_add(entry.size()).ok_or_else(|| {
-            AppError::new("hermes_runtime_install_failed", "Archive size overflow.")
-        })?;
-        if expanded > MANAGED_ARCHIVE_MAX_EXPANDED_BYTES {
-            return Err(AppError::new(
-                "hermes_runtime_install_failed",
-                "Managed archive exceeds its expanded size limit.",
-            ));
-        }
-        let path = entry
-            .path()
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-        let normalized = validated_archive_relative_path(&path, expected_top_level)
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-        let identity = normalized.to_string_lossy().to_lowercase();
-        if paths.contains_key(&identity) {
-            return Err(AppError::new(
-                "hermes_runtime_install_failed",
-                "Managed archive contains duplicate or colliding paths.",
-            ));
-        }
-        let mut ancestor = normalized.parent();
-        while let Some(path) = ancestor {
-            if paths
-                .get(&path.to_string_lossy().to_lowercase())
-                .is_some_and(|ancestor_is_dir| !ancestor_is_dir)
-            {
-                return Err(AppError::new(
-                    "hermes_runtime_install_failed",
-                    "Managed archive path collides with a file ancestor.",
-                ));
-            }
-            ancestor = path.parent();
-        }
-        if !is_dir {
-            let descendant_prefix = format!("{identity}/");
-            if paths
-                .keys()
-                .any(|path| path.starts_with(&descendant_prefix))
-            {
-                return Err(AppError::new(
-                    "hermes_runtime_install_failed",
-                    "Managed archive file collides with an existing directory.",
-                ));
-            }
-        }
-        paths.insert(identity, is_dir);
+        validate_managed_archive_entry(&entry, expected_top_level, policy, &mut state)?;
     }
-    if count == 0 {
+    if state.count == 0 {
         return Err(AppError::new(
             "hermes_runtime_install_failed",
             "Managed archive is empty.",
@@ -7613,46 +8187,89 @@ fn validate_managed_tar_gz(archive_path: &Path, expected_top_level: &str) -> Res
     Ok(())
 }
 
+#[cfg(all(not(target_os = "windows"), test))]
+fn validate_managed_tar_gz(
+    archive_bytes: &VerifiedArchive,
+    expected_top_level: &str,
+) -> Result<(), AppError> {
+    validate_managed_tar_gz_with_policy(
+        archive_bytes,
+        expected_top_level,
+        ManagedArchivePolicy::Strict,
+    )
+}
+
 #[cfg(not(target_os = "windows"))]
 fn extract_validated_managed_tar_gz(
-    archive_path: &Path,
+    archive_bytes: &VerifiedArchive,
     destination: &Path,
     expected_top_level: &str,
 ) -> Result<PathBuf, AppError> {
-    validate_managed_tar_gz(archive_path, expected_top_level)?;
+    extract_validated_managed_tar_gz_with_policy(
+        archive_bytes,
+        destination,
+        expected_top_level,
+        ManagedArchivePolicy::Strict,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn extract_validated_managed_node_tar_gz(
+    archive_bytes: &VerifiedArchive,
+    destination: &Path,
+    expected_top_level: &str,
+) -> Result<PathBuf, AppError> {
+    extract_validated_managed_tar_gz_with_policy(
+        archive_bytes,
+        destination,
+        expected_top_level,
+        ManagedArchivePolicy::NodeBootstrap,
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn extract_validated_managed_tar_gz_with_policy(
+    archive_bytes: &VerifiedArchive,
+    destination: &Path,
+    expected_top_level: &str,
+    policy: ManagedArchivePolicy,
+) -> Result<PathBuf, AppError> {
+    validate_managed_tar_gz_with_policy(archive_bytes, expected_top_level, policy)?;
     create_private_managed_dir(destination)?;
-    let file = fs::File::open(archive_path)
-        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    let decoder = flate2::read::GzDecoder::new(file);
+    let decoder = flate2::read::GzDecoder::new(Cursor::new(archive_bytes.bytes.as_ref()));
     let mut archive = tar::Archive::new(decoder);
+    let mut state = ManagedArchiveValidationState::default();
     for entry in archive
         .entries()
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
     {
         let mut entry = entry
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-        let relative = validated_archive_relative_path(
-            &entry.path().map_err(|error| {
-                AppError::new("hermes_runtime_install_failed", error.to_string())
-            })?,
-            expected_top_level,
-        )
-        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        let (relative, kind) =
+            validate_managed_archive_entry(&entry, expected_top_level, policy, &mut state)?;
         let target = destination.join(relative);
-        if entry.header().entry_type().is_dir() {
-            create_private_managed_dir(&target)?;
-        } else {
-            let parent = target.parent().ok_or_else(|| {
-                AppError::new(
-                    "hermes_runtime_install_failed",
-                    "Archive entry has no parent.",
-                )
-            })?;
-            create_private_managed_dir(parent)?;
-            entry.unpack(&target).map_err(|error| {
-                AppError::new("hermes_runtime_install_failed", error.to_string())
-            })?;
+        match kind {
+            ManagedArchiveEntryKind::Directory => create_private_managed_dir(&target)?,
+            ManagedArchiveEntryKind::File => {
+                let parent = target.parent().ok_or_else(|| {
+                    AppError::new(
+                        "hermes_runtime_install_failed",
+                        "Archive entry has no parent.",
+                    )
+                })?;
+                create_private_managed_dir(parent)?;
+                entry.unpack(&target).map_err(|error| {
+                    AppError::new("hermes_runtime_install_failed", error.to_string())
+                })?;
+            }
+            ManagedArchiveEntryKind::IgnoredNodeLauncherSymlink => {}
         }
+    }
+    if state.count == 0 {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive is empty.",
+        ));
     }
     let top_level = destination.join(expected_top_level);
     postvalidate_extracted_managed_tree(destination, &top_level)?;
@@ -7742,6 +8359,145 @@ fn managed_installer_command(
 }
 
 #[cfg(not(target_os = "windows"))]
+fn run_managed_dashboard_command(
+    mut command: Command,
+    install_log: &Path,
+    stage: &str,
+) -> Result<(), AppError> {
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(install_log)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let stderr = stdout
+        .try_clone()
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    let status = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .status()
+        .map_err(|error| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                format!(
+                    "Could not run managed dashboard {stage}. Install log: {}. {error}",
+                    install_log.display()
+                ),
+            )
+        })?;
+    if !status.success() {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "Managed dashboard {stage} failed. Install log: {}.",
+                install_log.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn prepare_managed_dashboard_assets(
+    staging: &Path,
+    install_dir: &Path,
+    node_root: &Path,
+    install_log: &Path,
+) -> Result<(), AppError> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    validate_pinned_dashboard_build_inputs(install_dir)?;
+    let npm_home = staging.join(".bootstrap/npm-home");
+    let npm_cache = staging.join(".bootstrap/npm-cache");
+    create_private_managed_dir(&npm_home)?;
+    create_private_managed_dir(&npm_cache)?;
+    for path in [
+        staging.join(".bootstrap/npm-userconfig"),
+        staging.join(".bootstrap/npm-globalconfig"),
+    ] {
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+
+    let node = node_root.join("bin/node");
+    let npm_cli = node_root.join("lib/node_modules/npm/bin/npm-cli.js");
+    plain_managed_build_file(&node, "Node executable")?;
+    plain_managed_build_file(&npm_cli, "npm CLI")?;
+    if fs::metadata(&node)
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?
+        .permissions()
+        .mode()
+        & 0o111
+        == 0
+    {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed dashboard Node executable is not executable.",
+        ));
+    }
+
+    run_managed_dashboard_command(
+        managed_npm_ci_command(staging, install_dir, node_root),
+        install_log,
+        "dependency install",
+    )?;
+    let typescript_entry = install_dir.join("node_modules/typescript/bin/tsc");
+    let vite_entry = install_dir.join("node_modules/vite/bin/vite.js");
+    plain_managed_build_file(&typescript_entry, "TypeScript entrypoint")?;
+    plain_managed_build_file(&vite_entry, "Vite entrypoint")?;
+    let (typescript, vite) = managed_dashboard_build_commands(staging, install_dir, node_root);
+    run_managed_dashboard_command(typescript, install_log, "typecheck")?;
+    run_managed_dashboard_command(vite, install_log, "asset build")?;
+    validate_managed_web_dist(&install_dir.join("hermes_cli/web_dist"))?;
+
+    cleanup_managed_dashboard_build_material(
+        &[
+            install_dir.join("node_modules"),
+            install_dir.join("web/node_modules"),
+            node_root.to_path_buf(),
+            npm_home,
+            npm_cache,
+            staging.join(".bootstrap/npm-userconfig"),
+            staging.join(".bootstrap/npm-globalconfig"),
+        ],
+        remove_managed_install_path,
+    )?;
+    validate_managed_web_dist(&install_dir.join("hermes_cli/web_dist"))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cleanup_managed_dashboard_build_material<F>(
+    paths: &[PathBuf],
+    mut remove: F,
+) -> Result<(), AppError>
+where
+    F: FnMut(&Path) -> Result<(), AppError>,
+{
+    for path in paths {
+        if fs::symlink_metadata(path).is_ok() {
+            remove(path)?;
+        }
+        if fs::symlink_metadata(path).is_ok() {
+            return Err(AppError::new(
+                "hermes_runtime_install_failed",
+                format!(
+                    "Managed dashboard build material remained at {}.",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
 impl Drop for ManagedRuntimeStaging {
     fn drop(&mut self) {
         if !self.committed {
@@ -7787,6 +8543,26 @@ async fn install_managed_hermes_runtime_unix(
         )
     })?;
     let uv_url = format!("{MANAGED_UV_RELEASE_BASE_URL}/{}", uv_artifact.archive_name);
+    let node_artifact = managed_node_artifact_for(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        CURRENT_TARGET_ENV,
+    )
+    .ok_or_else(|| {
+        AppError::new(
+            "hermes_runtime_install_failed",
+            format!(
+                "No checksum-verified managed Node artifact is available for {}-{}-{}.",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                CURRENT_TARGET_ENV,
+            ),
+        )
+    })?;
+    let node_url = format!(
+        "{MANAGED_NODE_RELEASE_BASE_URL}/{}",
+        node_artifact.archive_name
+    );
     let runtime_dir = managed_hermes_runtime_dir(app)?;
     let runtime_parent = runtime_dir.parent().ok_or_else(|| {
         AppError::new(
@@ -7802,29 +8578,26 @@ async fn install_managed_hermes_runtime_unix(
     create_private_managed_dir(&staging.path)?;
     let bootstrap_dir = staging.path.join(".bootstrap");
     create_private_managed_dir(&bootstrap_dir)?;
-    let source_archive = bootstrap_dir.join("hermes-source.tar.gz");
-    let uv_archive = bootstrap_dir.join("uv.tar.gz");
-    download_verified_managed_archive(
+    let source_archive = download_verified_managed_archive(
         HERMES_SOURCE_TARBALL_URL,
         HERMES_SOURCE_TARBALL_SHA256,
         HERMES_SOURCE_ARCHIVE_MAX_BYTES,
-        &source_archive,
     )
     .await?;
-    download_verified_managed_archive(
-        &uv_url,
-        uv_artifact.sha256,
-        MANAGED_UV_ARCHIVE_MAX_BYTES,
-        &uv_archive,
-    )
-    .await?;
-
     let source_top_level = format!("hermes-agent-{HERMES_AGENT_INSTALL_COMMIT}");
     let extracted_source = extract_validated_managed_tar_gz(
         &source_archive,
         &bootstrap_dir.join("source"),
         &source_top_level,
     )?;
+    drop(source_archive);
+
+    let uv_archive = download_verified_managed_archive(
+        &uv_url,
+        uv_artifact.sha256,
+        MANAGED_UV_ARCHIVE_MAX_BYTES,
+    )
+    .await?;
     let uv_top_level = uv_artifact
         .archive_name
         .strip_suffix(".tar.gz")
@@ -7836,6 +8609,7 @@ async fn install_managed_hermes_runtime_unix(
         })?;
     let extracted_uv =
         extract_validated_managed_tar_gz(&uv_archive, &bootstrap_dir.join("uv"), uv_top_level)?;
+    drop(uv_archive);
     let uv_command = extracted_uv.join("uv");
     let uv_metadata = fs::symlink_metadata(&uv_command)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
@@ -7845,15 +8619,62 @@ async fn install_managed_hermes_runtime_unix(
             "Verified uv archive does not contain the expected regular executable.",
         ));
     }
+
+    let node_archive = download_verified_managed_archive(
+        &node_url,
+        node_artifact.sha256,
+        MANAGED_NODE_ARCHIVE_MAX_BYTES,
+    )
+    .await?;
+    let node_top_level = node_artifact
+        .archive_name
+        .strip_suffix(".tar.gz")
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_runtime_install_failed",
+                "Managed Node archive has an unexpected pinned name.",
+            )
+        })?;
+    let extracted_node = extract_validated_managed_node_tar_gz(
+        &node_archive,
+        &bootstrap_dir.join("node"),
+        node_top_level,
+    )?;
+    drop(node_archive);
     let install_dir = staging.path.join("hermes-agent");
     fs::rename(&extracted_source, &install_dir)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
     let install_log = staging.path.join("install.log");
 
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(&install_log)
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    }
+    let staging_for_dashboard = staging.path.clone();
+    let install_for_dashboard = install_dir.clone();
+    let node_for_dashboard = extracted_node.clone();
+    let log_for_dashboard = install_log.clone();
+    tokio::task::spawn_blocking(move || {
+        prepare_managed_dashboard_assets(
+            &staging_for_dashboard,
+            &install_for_dashboard,
+            &node_for_dashboard,
+            &log_for_dashboard,
+        )
+    })
+    .await
+    .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))??;
+
     let log_file = fs::OpenOptions::new()
         .create(true)
-        .truncate(true)
-        .write(true)
+        .append(true)
         .open(&install_log)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
     let log_file_for_stderr = log_file
@@ -8266,6 +9087,7 @@ fn apply_isolated_hermes_env(
     for name in ISOLATED_HERMES_ENV_VARS {
         cmd.env_remove(name);
     }
+    scrub_dynamic_loader_env(cmd);
     cmd.env("HERMES_HOME", hermes_home)
         .env("HERMES_DASHBOARD_SESSION_TOKEN", token)
         .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -8275,6 +9097,33 @@ fn apply_isolated_hermes_env(
         .env("no_proxy", "127.0.0.1,localhost,::1");
     if let Some(hint) = environment_hint {
         cmd.env("HERMES_ENVIRONMENT_HINT", hint);
+    }
+}
+
+fn scrub_dynamic_loader_env(cmd: &mut Command) {
+    let mut names = vec![
+        std::ffi::OsString::from("LD_PRELOAD"),
+        std::ffi::OsString::from("LD_LIBRARY_PATH"),
+        std::ffi::OsString::from("LD_AUDIT"),
+        std::ffi::OsString::from("DYLD_INSERT_LIBRARIES"),
+        std::ffi::OsString::from("DYLD_LIBRARY_PATH"),
+    ];
+    names.extend(
+        cmd.get_envs()
+            .map(|(name, _)| name.to_os_string())
+            .filter(|name| {
+                let name = name.to_string_lossy();
+                name.starts_with("LD_") || name.starts_with("DYLD_")
+            }),
+    );
+    names.extend(std::env::vars_os().map(|(name, _)| name).filter(|name| {
+        let name = name.to_string_lossy();
+        name.starts_with("LD_") || name.starts_with("DYLD_")
+    }));
+    names.sort();
+    names.dedup();
+    for name in names {
+        cmd.env_remove(name);
     }
 }
 
@@ -9071,27 +9920,204 @@ fn remove_legacy_image_source_secret(hermes_home: &Path) -> Result<(), AppError>
     }
 }
 
-fn hermes_python_command(hermes_command: &str) -> String {
-    let command_path = Path::new(hermes_command);
-    if let Some(parent) = command_path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
+fn hermes_python_command(hermes_command: &str) -> Result<String, AppError> {
+    #[cfg(not(target_os = "windows"))]
     {
-        let candidates = if cfg!(target_os = "windows") {
-            ["python.exe", "python"]
-        } else {
-            ["python3", "python"]
-        };
-        for candidate in candidates {
-            let path = parent.join(candidate);
-            if path.exists() {
-                return path.to_string_lossy().into_owned();
+        hermes_python_command_with_path(
+            Path::new(hermes_command),
+            std::env::var_os("PATH").as_deref(),
+        )
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let command_path = Path::new(hermes_command);
+        if let Some(parent) = command_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+        {
+            for candidate in ["python.exe", "python"] {
+                let path = parent.join(candidate);
+                if path.is_file() {
+                    return Ok(path.to_string_lossy().into_owned());
+                }
             }
         }
+        Err(AppError::new(
+            "hermes_runtime_command_missing",
+            "Fallback Hermes does not identify its Python interpreter.",
+        ))
     }
-    default_python_command().to_string()
 }
 
+#[cfg(not(target_os = "windows"))]
+fn executable_from_search_path(
+    command: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    if command.components().count() != 1 {
+        return Some(command.to_path_buf());
+    }
+    std::env::split_paths(search_path?)
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .map(|directory| directory.join(command))
+        .find(|candidate| fs::symlink_metadata(candidate).is_ok())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn resolve_bounded_executable_symlinks(path: &Path) -> Result<PathBuf, AppError> {
+    let mut current = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?
+            .join(path)
+    };
+    let mut seen = HashSet::new();
+    for _ in 0..16 {
+        if !seen.insert(current.clone()) {
+            return Err(AppError::new(
+                "hermes_runtime_command_missing",
+                "Fallback Hermes executable contains a symlink loop.",
+            ));
+        }
+        let metadata = fs::symlink_metadata(&current)
+            .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&current).map_err(|error| {
+                AppError::new("hermes_runtime_command_missing", error.to_string())
+            })?;
+            current = if target.is_absolute() {
+                target
+            } else {
+                current
+                    .parent()
+                    .ok_or_else(|| {
+                        AppError::new(
+                            "hermes_runtime_command_missing",
+                            "Fallback Hermes symlink has no parent.",
+                        )
+                    })?
+                    .join(target)
+            };
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(AppError::new(
+                "hermes_runtime_command_missing",
+                "Fallback Hermes executable is not a regular file.",
+            ));
+        }
+        return current
+            .canonicalize()
+            .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()));
+    }
+    Err(AppError::new(
+        "hermes_runtime_command_missing",
+        "Fallback Hermes executable has too many symlink levels.",
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_unix_executable(path: &Path, label: &str) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?;
+    if !metadata.is_file()
+        || metadata_is_symlink_or_reparse(&metadata)
+        || metadata.permissions().mode() & 0o111 == 0
+    {
+        return Err(AppError::new(
+            "hermes_runtime_command_missing",
+            format!("Fallback {label} is not a regular executable file."),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hermes_python_command_with_path(
+    hermes_command: &Path,
+    search_path: Option<&std::ffi::OsStr>,
+) -> Result<String, AppError> {
+    let selected = executable_from_search_path(hermes_command, search_path).ok_or_else(|| {
+        AppError::new(
+            "hermes_runtime_command_missing",
+            "Fallback Hermes executable was not found on the selected PATH.",
+        )
+    })?;
+    let hermes = resolve_bounded_executable_symlinks(&selected)?;
+    ensure_unix_executable(&hermes, "Hermes executable")?;
+    let mut bytes = Vec::new();
+    fs::File::open(&hermes)
+        .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?;
+    let first_line = bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    if first_line.len() > 4096 {
+        return Err(AppError::new(
+            "hermes_runtime_command_missing",
+            "Fallback Hermes shebang is too long.",
+        ));
+    }
+    let first_line = std::str::from_utf8(first_line)
+        .map_err(|error| AppError::new("hermes_runtime_command_missing", error.to_string()))?
+        .trim_end_matches('\r')
+        .strip_prefix("#!")
+        .ok_or_else(|| {
+            AppError::new(
+                "hermes_runtime_command_missing",
+                "Fallback Hermes has no Python shebang.",
+            )
+        })?
+        .trim();
+    let tokens: Vec<_> = first_line.split_ascii_whitespace().collect();
+    let interpreter = match tokens.as_slice() {
+        ["/usr/bin/env", python] if python.to_ascii_lowercase().starts_with("python") => {
+            executable_from_search_path(Path::new(python), search_path).ok_or_else(|| {
+                AppError::new(
+                    "hermes_runtime_command_missing",
+                    "Fallback Hermes shebang Python was not found on the selected PATH.",
+                )
+            })?
+        }
+        [python]
+            if Path::new(python).is_absolute()
+                && Path::new(python)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.to_ascii_lowercase().starts_with("python")) =>
+        {
+            PathBuf::from(python)
+        }
+        _ => {
+            return Err(AppError::new(
+                "hermes_runtime_command_missing",
+                "Fallback Hermes shebang is not a supported Python interpreter.",
+            ));
+        }
+    };
+    let interpreter = resolve_bounded_executable_symlinks(&interpreter)?;
+    ensure_unix_executable(&interpreter, "Python interpreter")?;
+    if !interpreter
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().starts_with("python"))
+    {
+        return Err(AppError::new(
+            "hermes_runtime_command_missing",
+            "Fallback Hermes shebang resolved to a non-Python executable.",
+        ));
+    }
+    Ok(interpreter.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
 fn default_python_command() -> &'static str {
     if cfg!(target_os = "windows") {
         "python"
@@ -13184,6 +14210,43 @@ mod tests {
         use std::ffi::OsString;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 
+        #[cfg(unix)]
+        static ARCHIVE_PROXY_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+        #[cfg(unix)]
+        fn managed_archive_fixture(entries: &[(&str, u8)]) -> Vec<u8> {
+            let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut builder = tar::Builder::new(encoder);
+            for (name, kind) in entries {
+                let payload: &[u8] = if *kind == b'f' { b"payload" } else { b"" };
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(if *kind == b'd' { 0o755 } else { 0o644 });
+                header.set_size(payload.len() as u64);
+                header.set_entry_type(match *kind {
+                    b'd' => tar::EntryType::Directory,
+                    b'l' => tar::EntryType::Symlink,
+                    b'p' => tar::EntryType::Fifo,
+                    _ => tar::EntryType::Regular,
+                });
+                let name_bytes = name.as_bytes();
+                assert!(name_bytes.len() < 100);
+                header.as_mut_bytes()[..100].fill(0);
+                header.as_mut_bytes()[..name_bytes.len()].copy_from_slice(name_bytes);
+                if *kind == b'l' {
+                    header.set_link_name("../../escape").expect("link target");
+                }
+                header.set_cksum();
+                builder
+                    .append(&header, payload)
+                    .expect("append raw archive entry");
+            }
+            builder
+                .into_inner()
+                .expect("finish tar")
+                .finish()
+                .expect("finish gzip")
+        }
+
         fn seed_fake_managed_runtime(runtime_dir: &Path) {
             let install_dir = runtime_dir.join("hermes-agent");
             let commands = managed_runtime_commands(runtime_dir);
@@ -13492,6 +14555,507 @@ mod tests {
         }
 
         #[test]
+        fn managed_node_bootstrap_is_pinned_only_for_supported_unix_tuples() {
+            let cases = [
+                (
+                    ("macos", "aarch64", ""),
+                    "node-v24.18.0-darwin-arm64.tar.gz",
+                    "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
+                ),
+                (
+                    ("macos", "x86_64", ""),
+                    "node-v24.18.0-darwin-x64.tar.gz",
+                    "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
+                ),
+                (
+                    ("linux", "aarch64", "gnu"),
+                    "node-v24.18.0-linux-arm64.tar.gz",
+                    "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
+                ),
+                (
+                    ("linux", "x86_64", "gnu"),
+                    "node-v24.18.0-linux-x64.tar.gz",
+                    "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
+                ),
+            ];
+            for ((target_os, target_arch, target_env), archive_name, sha256) in cases {
+                let artifact = managed_node_artifact_for(target_os, target_arch, target_env)
+                    .expect("supported Node artifact");
+                assert_eq!(artifact.version, "24.18.0");
+                assert_eq!(artifact.archive_name, archive_name);
+                assert_eq!(artifact.sha256, sha256);
+            }
+            assert_eq!(
+                MANAGED_NODE_RELEASE_BASE_URL,
+                "https://nodejs.org/download/release/v24.18.0"
+            );
+            assert!(managed_node_artifact_for("linux", "x86_64", "musl").is_none());
+            assert!(managed_node_artifact_for("macos", "aarch64", "gnu").is_none());
+            assert!(managed_node_artifact_for("freebsd", "x86_64", "").is_none());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_node_archive_ignores_only_exact_official_launcher_symlinks() {
+            fn node_archive(link_path: &str, link_target: &str) -> VerifiedArchive {
+                let encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                let mut builder = tar::Builder::new(encoder);
+                for (path, kind, target) in [
+                    ("node-v24.18.0-darwin-arm64", b'd', None),
+                    ("node-v24.18.0-darwin-arm64/bin", b'd', None),
+                    ("node-v24.18.0-darwin-arm64/bin/node", b'f', None),
+                    (link_path, b'l', Some(link_target)),
+                ] {
+                    let payload: &[u8] = if kind == b'f' { b"node" } else { b"" };
+                    let mut header = tar::Header::new_gnu();
+                    header.set_mode(if kind == b'd' { 0o755 } else { 0o644 });
+                    header.set_size(payload.len() as u64);
+                    header.set_entry_type(match kind {
+                        b'd' => tar::EntryType::Directory,
+                        b'l' => tar::EntryType::Symlink,
+                        _ => tar::EntryType::Regular,
+                    });
+                    header.set_path(path).expect("Node fixture path");
+                    if let Some(target) = target {
+                        header
+                            .set_link_name(target)
+                            .expect("Node fixture link target");
+                    }
+                    header.set_cksum();
+                    builder
+                        .append(&header, payload)
+                        .expect("Node fixture entry");
+                }
+                VerifiedArchive {
+                    bytes: Arc::from(
+                        builder
+                            .into_inner()
+                            .expect("finish Node tar")
+                            .finish()
+                            .expect("finish Node gzip"),
+                    ),
+                }
+            }
+
+            let temp = tempfile::tempdir().expect("Node archive fixture");
+            let exact = node_archive(
+                "node-v24.18.0-darwin-arm64/bin/npm",
+                "../lib/node_modules/npm/bin/npm-cli.js",
+            );
+            let extracted = extract_validated_managed_node_tar_gz(
+                &exact,
+                &temp.path().join("exact"),
+                "node-v24.18.0-darwin-arm64",
+            )
+            .expect("exact official launcher link is safely ignored");
+            assert!(extracted.join("bin/node").is_file());
+            assert!(!extracted.join("bin/npm").exists());
+
+            for (name, path, target) in [
+                (
+                    "wrong path",
+                    "node-v24.18.0-darwin-arm64/bin/attacker",
+                    "../lib/node_modules/npm/bin/npm-cli.js",
+                ),
+                (
+                    "wrong target",
+                    "node-v24.18.0-darwin-arm64/bin/npm",
+                    "../../escape",
+                ),
+            ] {
+                let archive = node_archive(path, target);
+                assert!(
+                    extract_validated_managed_node_tar_gz(
+                        &archive,
+                        &temp.path().join(name),
+                        "node-v24.18.0-darwin-arm64",
+                    )
+                    .is_err(),
+                    "Node archive with {name} must fail closed"
+                );
+            }
+        }
+
+        #[test]
+        fn managed_dashboard_build_inputs_require_the_pinned_workspace_and_native_lock_closure() {
+            let temp = tempfile::tempdir().expect("dashboard inputs tempdir");
+            let install_dir = temp.path().join("hermes-agent");
+            fs::create_dir_all(install_dir.join("web")).expect("web dir");
+            fs::write(
+                install_dir.join("package.json"),
+                serde_json::to_vec(&serde_json::json!({"workspaces": ["web"]}))
+                    .expect("root package"),
+            )
+            .expect("root package file");
+            fs::write(
+                install_dir.join("web").join("package.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "scripts": {"build": "tsc -b && vite build"}
+                }))
+                .expect("web package"),
+            )
+            .expect("web package file");
+            let mut packages = serde_json::Map::new();
+            packages.insert("".to_string(), serde_json::json!({"workspaces": ["web"]}));
+            packages.insert("web".to_string(), serde_json::json!({"version": "0.0.0"}));
+            for package in MANAGED_DASHBOARD_LOCKED_NATIVE_PACKAGES {
+                packages.insert(
+                    package.to_string(),
+                    serde_json::json!({
+                        "resolved": format!("https://registry.npmjs.org/{package}/-/artifact.tgz"),
+                        "integrity": "sha512-pinned"
+                    }),
+                );
+            }
+            for package in ["node_modules/typescript", "node_modules/vite"] {
+                packages.insert(
+                    package.to_string(),
+                    serde_json::json!({
+                        "resolved": format!("https://registry.npmjs.org/{package}/-/artifact.tgz"),
+                        "integrity": "sha512-pinned"
+                    }),
+                );
+            }
+            let lock = serde_json::json!({"lockfileVersion": 3, "packages": packages});
+            fs::write(
+                install_dir.join("package-lock.json"),
+                serde_json::to_vec(&lock).expect("lockfile"),
+            )
+            .expect("lockfile path");
+
+            validate_pinned_dashboard_build_inputs(&install_dir).expect("valid build inputs");
+            fs::write(
+                install_dir.join(".npmrc"),
+                b"registry=https://attacker.invalid",
+            )
+            .expect("hostile npmrc");
+            assert!(validate_pinned_dashboard_build_inputs(&install_dir).is_err());
+            fs::remove_file(install_dir.join(".npmrc")).expect("remove npmrc");
+
+            fs::write(
+                install_dir.join("package.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "workspaces": ["web"],
+                    "config": {"registry": "https://attacker.invalid"}
+                }))
+                .expect("hostile root package"),
+            )
+            .expect("hostile root package file");
+            assert!(validate_pinned_dashboard_build_inputs(&install_dir).is_err());
+            fs::write(
+                install_dir.join("package.json"),
+                serde_json::to_vec(&serde_json::json!({"workspaces": ["web"]}))
+                    .expect("restore root package"),
+            )
+            .expect("restore root package file");
+
+            let missing = MANAGED_DASHBOARD_LOCKED_NATIVE_PACKAGES[0];
+            let mut lock = lock;
+            lock["packages"]
+                .as_object_mut()
+                .expect("package map")
+                .remove(missing);
+            fs::write(
+                install_dir.join("package-lock.json"),
+                serde_json::to_vec(&lock).expect("missing lockfile"),
+            )
+            .expect("missing lock path");
+            assert!(validate_pinned_dashboard_build_inputs(&install_dir).is_err());
+        }
+
+        #[test]
+        fn managed_node_commands_use_only_verified_absolute_tools_and_staging_configuration() {
+            let staging = Path::new("/private/staging");
+            let install = staging.join("hermes-agent");
+            let node = staging.join(".bootstrap/node/node-v24.18.0-darwin-arm64");
+            let npm = managed_npm_ci_command(staging, &install, &node);
+            assert_eq!(npm.get_program(), node.join("bin/node"));
+            let args: Vec<_> = npm
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                args[0],
+                node.join("lib/node_modules/npm/bin/npm-cli.js")
+                    .to_string_lossy()
+            );
+            for required in [
+                "ci",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                "--workspace=web",
+                "--include=dev",
+                "--include=optional",
+                "--registry=https://registry.npmjs.org/",
+            ] {
+                assert!(args.iter().any(|arg| arg == required), "missing {required}");
+            }
+            let envs: HashMap<String, Option<String>> = npm
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.map(|value| value.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                envs.get("PATH"),
+                Some(&Some(format!(
+                    "{}:/usr/bin:/bin",
+                    node.join("bin").display()
+                )))
+            );
+            assert_eq!(
+                envs.get("npm_config_registry"),
+                Some(&Some("https://registry.npmjs.org/".to_string()))
+            );
+            for name in [
+                "npm_config_ignore_scripts",
+                "npm_config_audit",
+                "npm_config_fund",
+                "npm_config_update_notifier",
+                "npm_config_progress",
+                "npm_config_color",
+                "npm_config_proxy",
+                "npm_config_https_proxy",
+            ] {
+                assert!(envs.contains_key(name), "missing explicit {name}");
+            }
+            for name in ["NODE_OPTIONS", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"] {
+                assert!(
+                    !envs.contains_key(name),
+                    "ambient {name} must not be inherited"
+                );
+            }
+
+            let (typescript, vite) = managed_dashboard_build_commands(staging, &install, &node);
+            assert_eq!(typescript.get_program(), node.join("bin/node"));
+            assert_eq!(vite.get_program(), node.join("bin/node"));
+            assert_eq!(
+                typescript.get_args().next(),
+                Some(install.join("node_modules/typescript/bin/tsc").as_os_str())
+            );
+            assert_eq!(
+                vite.get_args().next(),
+                Some(install.join("node_modules/vite/bin/vite.js").as_os_str())
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_web_dist_rejects_links_escapes_and_missing_references() {
+            use std::os::unix::fs::symlink;
+
+            let temp = tempfile::tempdir().expect("web dist tempdir");
+            let web_dist = temp.path().join("web_dist");
+            fs::create_dir_all(web_dist.join("assets")).expect("assets dir");
+            fs::write(web_dist.join("favicon.ico"), b"icon").expect("favicon");
+            fs::write(web_dist.join("assets/app.js"), b"console.log('ok')").expect("script");
+            fs::write(
+                web_dist.join("assets/app.css"),
+                b"body{background:url('/assets/bg.png')}",
+            )
+            .expect("css");
+            fs::write(web_dist.join("assets/bg.png"), b"png").expect("background");
+            let valid_index = br#"<link rel="icon" href="/favicon.ico"><script src="/assets/app.js"></script><link rel="stylesheet" href="/assets/app.css">"#;
+            fs::write(web_dist.join("index.html"), valid_index).expect("valid index");
+            validate_managed_web_dist(&web_dist).expect("valid Vite output");
+
+            for hostile in [
+                "../escape.js",
+                "/assets//app.js",
+                "/assets/./app.js",
+                "/assets/%2e%2e/escape.js",
+                "//attacker.invalid/app.js",
+                "https://attacker.invalid/app.js",
+                "/assets/missing.js",
+            ] {
+                fs::write(
+                    web_dist.join("index.html"),
+                    format!("<script src=\"{hostile}\"></script>"),
+                )
+                .expect("hostile index");
+                assert!(
+                    validate_managed_web_dist(&web_dist).is_err(),
+                    "hostile reference {hostile} must fail closed"
+                );
+            }
+            fs::write(web_dist.join("index.html"), valid_index).expect("restore index");
+            fs::remove_file(web_dist.join("assets/app.js")).expect("remove app script");
+            symlink(
+                temp.path().join("outside.js"),
+                web_dist.join("assets/app.js"),
+            )
+            .expect("script symlink");
+            assert!(validate_managed_web_dist(&web_dist).is_err());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_dashboard_cleanup_failure_prevents_seal_and_publish() {
+            let temp = tempfile::tempdir().expect("cleanup failure fixture");
+            let build_material = temp.path().join("node_modules");
+            let integrity_path = temp.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            let published_runtime = temp.path().join("published-runtime");
+            fs::create_dir_all(&build_material).expect("build material");
+
+            let error = cleanup_managed_dashboard_build_material(
+                std::slice::from_ref(&build_material),
+                |_| {
+                    Err(AppError::new(
+                        "hermes_runtime_install_failed",
+                        "injected cleanup failure",
+                    ))
+                },
+            )
+            .expect_err("cleanup failure must abort preparation");
+
+            assert_eq!(error.code, "hermes_runtime_install_failed");
+            assert!(build_material.exists());
+            assert!(
+                !integrity_path.exists(),
+                "failed staging must not be sealed"
+            );
+            assert!(
+                !published_runtime.exists(),
+                "failed staging must not be published"
+            );
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn managed_clean_install_fixture_prepares_assets_cleans_builders_and_resolves_launcher(
+        ) {
+            use std::os::unix::fs::PermissionsExt;
+
+            let temp = tempfile::tempdir().expect("managed clean fixture");
+            let staging = temp.path().join("hermes-runtime");
+            let install_dir = staging.join("hermes-agent");
+            let node_root = staging
+                .join(".bootstrap/node")
+                .join("node-v24.18.0-darwin-arm64");
+            fs::create_dir_all(install_dir.join("web")).expect("web source");
+            fs::create_dir_all(node_root.join("bin")).expect("node bin");
+            fs::create_dir_all(node_root.join("lib/node_modules/npm/bin")).expect("npm bin");
+            fs::write(
+                install_dir.join("package.json"),
+                serde_json::to_vec(&serde_json::json!({"workspaces": ["web"]}))
+                    .expect("root package"),
+            )
+            .expect("root package file");
+            fs::write(
+                install_dir.join("web/package.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "scripts": {"build": "tsc -b && vite build"}
+                }))
+                .expect("web package"),
+            )
+            .expect("web package file");
+            let mut packages = serde_json::Map::new();
+            packages.insert("".to_string(), serde_json::json!({"workspaces": ["web"]}));
+            packages.insert("web".to_string(), serde_json::json!({"version": "0.0.0"}));
+            for package in MANAGED_DASHBOARD_LOCKED_NATIVE_PACKAGES
+                .iter()
+                .copied()
+                .chain(["node_modules/typescript", "node_modules/vite"])
+            {
+                packages.insert(
+                    package.to_string(),
+                    serde_json::json!({
+                        "resolved": format!("https://registry.npmjs.org/{package}/-/artifact.tgz"),
+                        "integrity": "sha512-pinned"
+                    }),
+                );
+            }
+            fs::write(
+                install_dir.join("package-lock.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "lockfileVersion": 3,
+                    "packages": packages
+                }))
+                .expect("lockfile"),
+            )
+            .expect("lockfile path");
+            fs::write(
+                node_root.join("lib/node_modules/npm/bin/npm-cli.js"),
+                b"// pinned npm fixture",
+            )
+            .expect("npm CLI fixture");
+
+            let invocation_log = temp.path().join("node-invocations.log");
+            let fake_node = format!(
+                r#"#!/bin/sh
+set -eu
+printf '%s|%s|%s\n' "$1" "$PATH" "$HOME" >> {log}
+case "$1" in
+  */npm-cli.js)
+    mkdir -p "$PWD/node_modules/typescript/bin" "$PWD/node_modules/vite/bin"
+    printf '// tsc fixture\n' > "$PWD/node_modules/typescript/bin/tsc"
+    printf '// vite fixture\n' > "$PWD/node_modules/vite/bin/vite.js"
+    ;;
+  */typescript/bin/tsc)
+    ;;
+  */vite/bin/vite.js)
+    mkdir -p "$PWD/../hermes_cli/web_dist/assets"
+    printf 'icon' > "$PWD/../hermes_cli/web_dist/favicon.ico"
+    printf 'console.log(1)' > "$PWD/../hermes_cli/web_dist/assets/app.js"
+    printf 'body{{}}' > "$PWD/../hermes_cli/web_dist/assets/app.css"
+    printf '<link rel="icon" href="/favicon.ico"><script src="/assets/app.js"></script><link rel="stylesheet" href="/assets/app.css">' > "$PWD/../hermes_cli/web_dist/index.html"
+    ;;
+  *) exit 97 ;;
+esac
+"#,
+                log = shell_single_quote(&invocation_log.to_string_lossy()),
+            );
+            let node = node_root.join("bin/node");
+            fs::write(&node, fake_node).expect("fake verified Node");
+            let mut mode = fs::metadata(&node).expect("node metadata").permissions();
+            mode.set_mode(0o755);
+            fs::set_permissions(&node, mode).expect("node executable mode");
+
+            let install_log = staging.join("install.log");
+            prepare_managed_dashboard_assets(&staging, &install_dir, &node_root, &install_log)
+                .expect("local asset preparation");
+            validate_managed_web_dist(&install_dir.join("hermes_cli/web_dist"))
+                .expect("prepared web dist");
+            assert!(!node_root.exists());
+            assert!(!install_dir.join("node_modules").exists());
+            let invocations = fs::read_to_string(&invocation_log).expect("node invocation log");
+            assert_eq!(invocations.lines().count(), 3);
+            assert!(!invocations.contains("attacker"));
+
+            remove_managed_install_path(&staging.join(".bootstrap")).expect("bootstrap cleanup");
+            seed_fake_managed_runtime(&staging);
+            let integrity_path = temp.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            seal_managed_hermes_runtime(&staging, &integrity_path).expect("fixture seal");
+            let installer_called = Arc::new(AtomicBool::new(false));
+            let installer_called_for_resolve = Arc::clone(&installer_called);
+            let digest_calls = Arc::new(AtomicUsize::new(0));
+            let digest_calls_for_resolve = Arc::clone(&digest_calls);
+            let launcher = resolve_managed_hermes_command_with_overlay_and_digest(
+                &staging,
+                &integrity_path,
+                ManagedRuntimeOverlay::embedded(),
+                move || async move {
+                    installer_called_for_resolve.store(true, AtomicOrdering::SeqCst);
+                    Ok(())
+                },
+                move |runtime, overlay| {
+                    digest_calls_for_resolve.fetch_add(1, AtomicOrdering::SeqCst);
+                    managed_runtime_base_tree_digest(runtime, overlay)
+                },
+            )
+            .await
+            .expect("fixture launcher resolution");
+            assert_eq!(launcher, managed_runtime_commands(&staging).hermes);
+            assert!(!installer_called.load(AtomicOrdering::SeqCst));
+            assert_eq!(digest_calls.load(AtomicOrdering::SeqCst), 1);
+        }
+
+        #[test]
         fn fallback_policy_allows_unavailable_install_but_never_integrity_downgrade() {
             let temp = tempfile::tempdir().expect("fallback policy tempdir");
             let integrity_path = temp.path().join(MANAGED_HERMES_INTEGRITY_FILE);
@@ -13535,46 +15099,117 @@ mod tests {
             ));
         }
 
+        #[test]
+        fn managed_schema_admission_allows_only_missing_and_explicit_legacy_one_to_fallback() {
+            let temp = tempfile::tempdir().expect("schema admission tempdir");
+            let integrity_path = temp.path().join(MANAGED_HERMES_INTEGRITY_FILE);
+            assert!(managed_fallback_permitted(&integrity_path));
+
+            fs::write(&integrity_path, br#"{"schema":1}"#).expect("legacy schema");
+            assert!(managed_fallback_permitted(&integrity_path));
+
+            for rejected in [
+                br#"{}"#.as_slice(),
+                br#"{"schema":"1"}"#,
+                br#"{"schema":0}"#,
+                br#"{"schema":3}"#,
+                br#"{"schema":4294967295}"#,
+                br#"not json"#,
+            ] {
+                fs::write(&integrity_path, rejected).expect("rejected schema fixture");
+                assert!(
+                    !managed_fallback_permitted(&integrity_path),
+                    "unknown or malformed schema must fail closed: {}",
+                    String::from_utf8_lossy(rejected)
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn fallback_interpreter_comes_from_the_selected_hermes_shebang_and_symlink_chain() {
+            use std::os::unix::fs::{symlink, PermissionsExt};
+
+            let temp = tempfile::tempdir().expect("fallback interpreter tempdir");
+            let pipx_bin = temp.path().join("pipx/venvs/hermes/bin");
+            let local_bin = temp.path().join(".local/bin");
+            fs::create_dir_all(&pipx_bin).expect("pipx bin");
+            fs::create_dir_all(&local_bin).expect("local bin");
+            let actual_python = pipx_bin.join("python3.11-real");
+            fs::write(&actual_python, b"python fixture").expect("python fixture");
+            let mut permissions = fs::metadata(&actual_python)
+                .expect("python metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&actual_python, permissions).expect("python executable");
+            let python_link = pipx_bin.join("python");
+            symlink(&actual_python, &python_link).expect("python symlink");
+            let pipx_hermes = pipx_bin.join("hermes");
+            fs::write(&pipx_hermes, format!("#!{}\n", python_link.display()))
+                .expect("pipx Hermes script");
+            let mut permissions = fs::metadata(&pipx_hermes)
+                .expect("Hermes metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&pipx_hermes, permissions).expect("Hermes executable");
+            let local_hermes = local_bin.join("hermes");
+            symlink(&pipx_hermes, &local_hermes).expect("pipx Hermes symlink");
+
+            let resolved =
+                hermes_python_command_with_path(&local_hermes, Some(local_bin.as_os_str()))
+                    .expect("pipx interpreter");
+            assert_eq!(
+                PathBuf::from(resolved),
+                actual_python
+                    .canonicalize()
+                    .expect("canonical actual Python")
+            );
+
+            let env_python = local_bin.join("python3");
+            fs::write(&env_python, b"env python fixture").expect("env python");
+            let mut permissions = fs::metadata(&env_python)
+                .expect("env python metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&env_python, permissions).expect("env python executable");
+            let env_hermes = local_bin.join("env-hermes");
+            fs::write(&env_hermes, b"#!/usr/bin/env python3\n").expect("env Hermes");
+            let mut permissions = fs::metadata(&env_hermes)
+                .expect("env Hermes metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&env_hermes, permissions).expect("env Hermes executable");
+            let resolved =
+                hermes_python_command_with_path(&env_hermes, Some(local_bin.as_os_str()))
+                    .expect("env interpreter");
+            assert_eq!(
+                PathBuf::from(&resolved),
+                env_python.canonicalize().expect("canonical env Python")
+            );
+            assert_ne!(resolved, "python3");
+
+            fs::write(&env_hermes, b"#!/bin/sh\n").expect("shell Hermes");
+            assert!(
+                hermes_python_command_with_path(&env_hermes, Some(local_bin.as_os_str())).is_err()
+            );
+            let non_executable = local_bin.join("not-executable-python");
+            fs::write(&non_executable, b"python fixture").expect("non-executable python");
+            fs::write(&env_hermes, format!("#!{}\n", non_executable.display()))
+                .expect("non-executable shebang");
+            assert!(
+                hermes_python_command_with_path(&env_hermes, Some(local_bin.as_os_str())).is_err()
+            );
+        }
+
         #[cfg(unix)]
         #[test]
         fn managed_archive_validation_rejects_every_unsafe_entry_class() {
-            fn write_archive(path: &Path, entries: &[(&str, u8)]) {
-                let file = fs::File::create(path).expect("archive file");
-                let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-                let mut builder = tar::Builder::new(encoder);
-                for (name, kind) in entries {
-                    let payload: &[u8] = if *kind == b'f' { b"payload" } else { b"" };
-                    let mut header = tar::Header::new_gnu();
-                    header.set_mode(if *kind == b'd' { 0o755 } else { 0o644 });
-                    header.set_size(payload.len() as u64);
-                    header.set_entry_type(match *kind {
-                        b'd' => tar::EntryType::Directory,
-                        b'l' => tar::EntryType::Symlink,
-                        b'p' => tar::EntryType::Fifo,
-                        _ => tar::EntryType::Regular,
-                    });
-                    let name_bytes = name.as_bytes();
-                    assert!(name_bytes.len() < 100);
-                    header.as_mut_bytes()[..100].fill(0);
-                    header.as_mut_bytes()[..name_bytes.len()].copy_from_slice(name_bytes);
-                    if *kind == b'l' {
-                        header.set_link_name("../../escape").expect("link target");
-                    }
-                    header.set_cksum();
-                    builder
-                        .append(&header, payload)
-                        .expect("append raw archive entry");
-                }
-                builder
-                    .into_inner()
-                    .expect("finish tar")
-                    .finish()
-                    .expect("finish gzip");
-            }
-
             let cases: &[(&str, &[(&str, u8)])] = &[
                 ("absolute", &[("/root/escape", b'f')]),
                 ("parent", &[("root/../escape", b'f')]),
+                ("dot", &[("root/./file", b'f')]),
+                ("repeated-separator", &[("root//file", b'f')]),
+                ("trailing-separator", &[("root/file/", b'f')]),
                 ("symlink", &[("root/link", b'l')]),
                 ("fifo", &[("root/pipe", b'p')]),
                 ("unexpected-root", &[("other/file", b'f')]),
@@ -13590,8 +15225,9 @@ mod tests {
             ];
             for (name, entries) in cases {
                 let temp = tempfile::tempdir().expect("archive tempdir");
-                let archive = temp.path().join(format!("{name}.tar.gz"));
-                write_archive(&archive, entries);
+                let archive = VerifiedArchive {
+                    bytes: Arc::from(managed_archive_fixture(entries)),
+                };
                 assert!(
                     validate_managed_tar_gz(&archive, "root").is_err(),
                     "{name} archive must be rejected before extraction"
@@ -13603,8 +15239,12 @@ mod tests {
             }
 
             let temp = tempfile::tempdir().expect("valid archive tempdir");
-            let archive = temp.path().join("valid.tar.gz");
-            write_archive(&archive, &[("root", b'd'), ("root/uv", b'f')]);
+            let archive = VerifiedArchive {
+                bytes: Arc::from(managed_archive_fixture(&[
+                    ("root", b'd'),
+                    ("root/uv", b'f'),
+                ])),
+            };
             let extracted =
                 extract_validated_managed_tar_gz(&archive, &temp.path().join("out"), "root")
                     .expect("safe archive extracts");
@@ -13613,39 +15253,160 @@ mod tests {
 
         #[cfg(unix)]
         #[test]
-        fn managed_archive_stream_sink_enforces_cap_hash_cleanup_and_private_mode() {
-            use std::os::unix::fs::PermissionsExt;
+        fn managed_archive_extraction_uses_the_authenticated_immutable_bytes() {
+            let temp = tempfile::tempdir().expect("immutable archive tempdir");
+            let diagnostic_path = temp.path().join("download.tar.gz");
+            let trusted = managed_archive_fixture(&[("root", b'd'), ("root/trusted", b'f')]);
+            let archive = VerifiedArchive {
+                bytes: Arc::from(trusted),
+            };
+            fs::write(
+                &diagnostic_path,
+                managed_archive_fixture(&[("root", b'd'), ("root/poison", b'f')]),
+            )
+            .expect("mutated diagnostic path");
 
-            let temp = tempfile::tempdir().expect("archive stream tempdir");
-            let oversized = temp.path().join("oversized.tar.gz");
-            {
-                let mut sink = VerifiedArchiveSink::new(&oversized, 4).expect("oversized sink");
-                sink.write_chunk(b"abc").expect("first chunk");
-                assert!(sink.write_chunk(b"de").is_err());
-            }
-            assert!(!oversized.exists(), "failed downloads must be removed");
+            let extracted =
+                extract_validated_managed_tar_gz(&archive, &temp.path().join("out"), "root")
+                    .expect("authenticated bytes extract");
+            assert!(extracted.join("trusted").is_file());
+            assert!(!extracted.join("poison").exists());
+        }
 
-            let mismatch = temp.path().join("mismatch.tar.gz");
-            let mut sink = VerifiedArchiveSink::new(&mismatch, 5).expect("mismatch sink");
-            sink.write_chunk(b"abcde").expect("mismatch bytes");
-            assert!(sink.finish(&"00".repeat(32)).is_err());
-            assert!(!mismatch.exists(), "checksum mismatches must be removed");
+        #[cfg(unix)]
+        #[test]
+        fn managed_archive_download_enforces_cap_and_hash_before_freezing_bytes() {
+            let mut oversized = VerifiedArchiveDownload::new(4);
+            oversized.write_chunk(b"abc").expect("first chunk");
+            assert!(oversized.write_chunk(b"de").is_err());
 
-            let verified = temp.path().join("verified.tar.gz");
-            let mut sink = VerifiedArchiveSink::new(&verified, 5).expect("verified sink");
-            sink.write_chunk(b"ab").expect("verified chunk 1");
-            sink.write_chunk(b"cde").expect("verified chunk 2");
+            let mut mismatch = VerifiedArchiveDownload::new(5);
+            mismatch.write_chunk(b"abcde").expect("mismatch bytes");
+            assert!(mismatch.finish(&"00".repeat(32)).is_err());
+
+            let mut verified = VerifiedArchiveDownload::new(5);
+            verified.write_chunk(b"ab").expect("verified chunk 1");
+            verified.write_chunk(b"cde").expect("verified chunk 2");
             let expected = hex_lower(&Sha256::digest(b"abcde"));
-            sink.finish(&expected).expect("verified download");
-            assert_eq!(fs::read(&verified).expect("verified bytes"), b"abcde");
-            assert_eq!(
-                fs::metadata(&verified)
-                    .expect("verified metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
+            let verified = verified.finish(&expected).expect("verified download");
+            assert_eq!(verified.bytes.as_ref(), b"abcde");
+        }
+
+        #[cfg(unix)]
+        #[tokio::test(flavor = "current_thread")]
+        async fn managed_archive_http_client_ignores_ambient_proxies() {
+            use std::thread;
+
+            let source = include_str!("hermes_bridge.rs");
+            let client_body = source
+                .split("fn managed_archive_http_client()")
+                .nth(1)
+                .and_then(|tail| tail.split("struct VerifiedArchive").next())
+                .expect("archive client body");
+            assert!(
+                client_body.contains(".no_proxy()"),
+                "archive client must hard-disable ambient proxies"
             );
+
+            fn serve_once(
+                listener: TcpListener,
+                body: &'static str,
+                hit: Arc<AtomicBool>,
+                stop: Arc<AtomicBool>,
+            ) -> thread::JoinHandle<()> {
+                listener
+                    .set_nonblocking(true)
+                    .expect("nonblocking listener");
+                thread::spawn(move || {
+                    let deadline = Instant::now() + Duration::from_secs(3);
+                    while Instant::now() < deadline && !stop.load(AtomicOrdering::SeqCst) {
+                        match listener.accept() {
+                            Ok((mut stream, _)) => {
+                                hit.store(true, AtomicOrdering::SeqCst);
+                                let mut request = [0_u8; 2048];
+                                let _ = stream.read(&mut request);
+                                let response = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    body.len(),
+                                    body
+                                );
+                                stream.write_all(response.as_bytes()).expect("response");
+                                return;
+                            }
+                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            Err(error) => panic!("listener failed: {error}"),
+                        }
+                    }
+                })
+            }
+
+            let env_guard = ARCHIVE_PROXY_ENV_LOCK.lock().expect("proxy env lock");
+            let origin = match TcpListener::bind(("127.0.0.1", 0)) {
+                Ok(listener) => listener,
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+                Err(error) => panic!("origin listener: {error}"),
+            };
+            let origin_addr = origin.local_addr().expect("origin address");
+            let proxy = match TcpListener::bind(("127.0.0.1", 0)) {
+                Ok(listener) => listener,
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+                Err(error) => panic!("proxy listener: {error}"),
+            };
+            let proxy_addr = proxy.local_addr().expect("proxy address");
+            let origin_hit = Arc::new(AtomicBool::new(false));
+            let proxy_hit = Arc::new(AtomicBool::new(false));
+            let stop = Arc::new(AtomicBool::new(false));
+            let origin_thread =
+                serve_once(origin, "origin", Arc::clone(&origin_hit), Arc::clone(&stop));
+            let proxy_thread =
+                serve_once(proxy, "proxy", Arc::clone(&proxy_hit), Arc::clone(&stop));
+
+            let proxy_url = format!("http://{proxy_addr}");
+            let names = [
+                "HTTP_PROXY",
+                "HTTPS_PROXY",
+                "ALL_PROXY",
+                "http_proxy",
+                "https_proxy",
+                "all_proxy",
+                "NO_PROXY",
+                "no_proxy",
+            ];
+            let old_values: Vec<_> = names
+                .iter()
+                .map(|name| ((*name).to_string(), std::env::var_os(name)))
+                .collect();
+            for name in &names[..6] {
+                std::env::set_var(name, &proxy_url);
+            }
+            std::env::set_var("NO_PROXY", "");
+            std::env::set_var("no_proxy", "");
+            let client = managed_archive_http_client().expect("archive client");
+            for (name, value) in old_values {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+            drop(env_guard);
+
+            let body = client
+                .get(format!("http://{origin_addr}/archive"))
+                .send()
+                .await
+                .expect("direct archive request")
+                .text()
+                .await
+                .expect("archive body");
+            stop.store(true, AtomicOrdering::SeqCst);
+            origin_thread.join().expect("origin thread");
+            proxy_thread.join().expect("proxy thread");
+            assert_eq!(body, "origin");
+            assert!(origin_hit.load(AtomicOrdering::SeqCst));
+            assert!(!proxy_hit.load(AtomicOrdering::SeqCst));
         }
 
         #[cfg(unix)]
@@ -13774,6 +15535,115 @@ mod tests {
                 &record,
                 &new_overlay
             ));
+        }
+
+        #[tokio::test]
+        async fn actual_dashboard_and_tui_start_paths_finalize_once_immediately_before_spawn() {
+            for path in ["dashboard", "tui"] {
+                let bridge = HermesBridge::default();
+                let digest_calls = Arc::new(AtomicUsize::new(0));
+                let calls = Arc::clone(&digest_calls);
+                let resolution = HermesCommandResolution {
+                    python: PythonInvocation::isolated("/managed/python3.11"),
+                    source: HermesCommandSource::ManagedRuntime,
+                    managed_final_admitted: false,
+                };
+                let admitted = finalize_hermes_command_for_spawn_with(
+                    &bridge,
+                    resolution,
+                    move || async move {
+                        calls.fetch_add(1, AtomicOrdering::SeqCst);
+                        Ok(())
+                    },
+                )
+                .await
+                .expect("final managed admission");
+                assert!(admitted.managed_final_admitted);
+                assert_eq!(digest_calls.load(AtomicOrdering::SeqCst), 1, "{path}");
+                assert!(bridge
+                    .managed_runtime_ever_admitted
+                    .load(AtomicOrdering::SeqCst));
+            }
+
+            let source = include_str!("hermes_bridge.rs");
+            let verify_body = source
+                .split("fn verify_runtime_immediately_before_spawn")
+                .nth(1)
+                .and_then(|tail| tail.split("const HERMES_SITE_CUSTOMIZE").next())
+                .expect("pre-spawn verifier body");
+            assert!(
+                !verify_body.contains("resolve_managed_hermes_command_with"),
+                "byte-local verification must not trigger another full digest"
+            );
+            let dashboard = source
+                .split("async fn start_hermes_bridge_inner")
+                .nth(1)
+                .and_then(|tail| tail.split("fn status_for").next())
+                .expect("dashboard start body");
+            let dashboard_soul = dashboard.find("sync_june_soul(").expect("dashboard soul");
+            let dashboard_final = dashboard
+                .find("finalize_hermes_command_for_spawn(")
+                .expect("dashboard final admission");
+            let dashboard_spawn = dashboard.find("cmd.spawn()").expect("dashboard spawn");
+            assert!(dashboard_soul < dashboard_final && dashboard_final < dashboard_spawn);
+
+            let tui = source
+                .split("pub async fn open_hermes_tui_debug")
+                .nth(1)
+                .and_then(|tail| tail.split("fn launch_hermes_tui_debug_terminal").next())
+                .expect("TUI start body");
+            let tui_sandbox = tui
+                .find("prepare_sandbox(")
+                .expect("TUI sandbox preparation");
+            let tui_final = tui
+                .find("finalize_hermes_command_for_spawn(")
+                .expect("TUI final admission");
+            let tui_launch = tui
+                .find("launch_hermes_tui_debug_terminal(")
+                .expect("TUI launch");
+            assert!(tui_sandbox < tui_final && tui_final < tui_launch);
+        }
+
+        #[tokio::test]
+        async fn managed_admission_stays_sticky_after_every_process_stops() {
+            let bridge = HermesBridge::default();
+            let resolution = HermesCommandResolution {
+                python: PythonInvocation::isolated("/managed/python3.11"),
+                source: HermesCommandSource::ManagedRuntime,
+                managed_final_admitted: false,
+            };
+            finalize_hermes_command_for_spawn_with(&bridge, resolution, || async { Ok(()) })
+                .await
+                .expect("managed admission");
+            stop_hermes_bridge_inner(&bridge).expect("stop empty process map");
+            assert!(bridge
+                .managed_runtime_ever_admitted
+                .load(AtomicOrdering::SeqCst));
+            assert!(
+                !managed_fallback_allowed_by_policy(true, true),
+                "missing-record fallback must stay closed after process stop"
+            );
+        }
+
+        #[test]
+        fn pre_spawn_plugin_tamper_fails_closed_for_github_eligible_sources() {
+            #[cfg(not(target_os = "windows"))]
+            for source in [
+                HermesCommandSource::ManagedRuntime,
+                HermesCommandSource::BundledRuntime,
+            ] {
+                let error = require_github_plugin_verified_before_spawn(source, false)
+                    .expect_err("eligible runtime plugin tamper must abort spawn");
+                assert_eq!(error.code, "hermes_github_plugin_verify_failed");
+            }
+            for source in [
+                HermesCommandSource::EnvOverride,
+                HermesCommandSource::UserLocalFallback,
+                HermesCommandSource::PathFallback,
+            ] {
+                require_github_plugin_verified_before_spawn(source, false)
+                    .expect("GitHub-ineligible fallback may remain false");
+            }
         }
 
         #[tokio::test]
@@ -14220,6 +16090,98 @@ mod tests {
             }
             assert_eq!(envs.get("PYTHONNOUSERSITE"), Some(&Some("1".to_string())));
             assert_eq!(envs.get("PYTHONSAFEPATH"), Some(&Some("1".to_string())));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn loader_environment_isolation_scrubs_dashboard_and_tui_children() {
+            const POISONED_LOADER_ENV: &[&str] = &[
+                "LD_PRELOAD",
+                "LD_LIBRARY_PATH",
+                "LD_AUDIT",
+                "DYLD_INSERT_LIBRARIES",
+                "DYLD_LIBRARY_PATH",
+                "DYLD_TEST_POISON",
+            ];
+
+            let mut dashboard = Command::new("/usr/bin/env");
+            for name in POISONED_LOADER_ENV {
+                dashboard.env(name, "attacker-controlled");
+            }
+            apply_isolated_hermes_env(
+                &mut dashboard,
+                Path::new("/tmp/hermes-home"),
+                "bearer-secret",
+                None,
+            );
+            let dashboard_envs: HashMap<String, Option<String>> = dashboard
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.map(|value| value.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+            for name in POISONED_LOADER_ENV {
+                assert_eq!(
+                    dashboard_envs.get(*name),
+                    Some(&None),
+                    "dashboard must remove {name}"
+                );
+            }
+
+            let launcher = build_hermes_tui_debug_launcher_script(
+                "/usr/bin/env",
+                &[],
+                Path::new("/tmp/hermes-home"),
+                "bearer-secret",
+                None,
+                None,
+                "loader isolation fixture",
+            );
+            let output = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&launcher)
+                .env("HOME", "/tmp/terminal-home-poison")
+                .env("PATH", "/usr/bin:/bin")
+                .env("TMPDIR", "/tmp/terminal-tmp-poison")
+                .env("LD_PRELOAD", "loader-poison")
+                .env("LD_LIBRARY_PATH", "loader-path-poison")
+                .env("LD_AUDIT", "loader-audit-poison")
+                .env("DYLD_INSERT_LIBRARIES", "dyld-insert-poison")
+                .env("DYLD_LIBRARY_PATH", "dyld-path-poison")
+                .env("DYLD_TEST_POISON", "unknown-dyld-poison")
+                .output()
+                .expect("execute generated TUI launcher");
+            assert!(
+                output.status.success(),
+                "launcher failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let child_env = String::from_utf8(output.stdout).expect("UTF-8 child env");
+            for name in POISONED_LOADER_ENV {
+                assert!(
+                    !child_env
+                        .lines()
+                        .any(|line| line.starts_with(&format!("{name}="))),
+                    "TUI child inherited {name}: {child_env}"
+                );
+            }
+            for name in [
+                "HERMES_HOME",
+                "HERMES_DASHBOARD_SESSION_TOKEN",
+                "HOME",
+                "PATH",
+                "TMPDIR",
+            ] {
+                assert!(
+                    child_env
+                        .lines()
+                        .any(|line| line.starts_with(&format!("{name}="))),
+                    "TUI child is missing required {name}: {child_env}"
+                );
+            }
         }
 
         #[test]
@@ -17765,11 +19727,24 @@ mcp_servers:
         } else {
             "python"
         });
-        std::fs::write(&hermes, "").expect("hermes");
         std::fs::write(&python, "").expect("python");
+        #[cfg(target_os = "windows")]
+        std::fs::write(&hermes, "").expect("hermes");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&hermes, format!("#!{}\n", python.display())).expect("hermes");
+            for path in [&hermes, &python] {
+                let mut permissions = std::fs::metadata(path)
+                    .expect("fallback executable metadata")
+                    .permissions();
+                permissions.set_mode(0o755);
+                std::fs::set_permissions(path, permissions).expect("fallback executable mode");
+            }
+        }
 
         assert_eq!(
-            hermes_python_command(&hermes.to_string_lossy()),
+            hermes_python_command(&hermes.to_string_lossy()).expect("runtime interpreter"),
             python.to_string_lossy()
         );
     }
@@ -17899,19 +19874,17 @@ mcp_servers:
         );
 
         // Sandboxed sessions must resume under the same Seatbelt jail June used.
+        assert!(script.contains("exec '/usr/bin/env' -i "));
         assert!(script.contains(&format!(
-            "exec '{SANDBOX_EXEC_PATH}' -f '/tmp/profile.sb' '/opt/hermes/bin/hermes' '--tui' '--resume' 'sess-1'"
+            "'{SANDBOX_EXEC_PATH}' -f '/tmp/profile.sb' '/opt/hermes/bin/hermes' '--tui' '--resume' 'sess-1'"
         )));
-        // The isolated env is set, matching the dashboard runtime. The hint is
-        // single-quoted (and its own apostrophes escaped) like every value.
-        assert!(script.contains("export HERMES_HOME='/tmp/hermes-home'"));
-        assert!(script.contains("export HERMES_DASHBOARD_SESSION_TOKEN='tok'"));
-        assert!(script.contains(&format!(
-            "export HERMES_ENVIRONMENT_HINT={}",
-            shell_single_quote(JUNE_HINT_SANDBOXED)
-        )));
-        // Stale inherited values are scrubbed first.
-        assert!(script.contains("unset HERMES_HOME"));
+        // The isolated env is set inside env -i, matching the dashboard
+        // runtime without inheriting anything from Terminal.
+        assert!(script.contains("'HERMES_HOME=/tmp/hermes-home'"));
+        assert!(script.contains("'HERMES_DASHBOARD_SESSION_TOKEN=tok'"));
+        assert!(script.contains(&shell_single_quote(&format!(
+            "HERMES_ENVIRONMENT_HINT={JUNE_HINT_SANDBOXED}"
+        ))));
         // The session->TUI trace line is echoed in the terminal.
         assert!(script.contains("echo 'trace: june session sess-1'"));
     }
@@ -17930,12 +19903,12 @@ mcp_servers:
         );
 
         // No jail => no sandbox-exec wrapper; the runtime is launched directly.
-        assert!(script.contains("exec '/opt/hermes/bin/hermes' '--tui' '--resume' 'sess-2'"));
+        assert!(script.contains("exec '/usr/bin/env' -i "));
+        assert!(script.contains("'/opt/hermes/bin/hermes' '--tui' '--resume' 'sess-2'"));
         assert!(!script.contains(SANDBOX_EXEC_PATH));
-        assert!(script.contains(&format!(
-            "export HERMES_ENVIRONMENT_HINT={}",
-            shell_single_quote(JUNE_HINT_UNRESTRICTED)
-        )));
+        assert!(script.contains(&shell_single_quote(&format!(
+            "HERMES_ENVIRONMENT_HINT={JUNE_HINT_UNRESTRICTED}"
+        ))));
     }
 
     #[test]
