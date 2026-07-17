@@ -25,7 +25,6 @@ import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
-import { IconPeople } from "central-icons/IconPeople";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
@@ -54,6 +53,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   AGENT_SESSION_RENAMED_EVENT,
   markAgentNewSessionPending,
@@ -62,6 +62,7 @@ import {
 } from "../agent/AgentWorkspace";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
 import { JuneWordmark } from "../brand/JuneWordmark";
+import { AccountAvatar, accountDisplayName } from "../account/AccountAvatar";
 import { type ReportCategory, reportCategoryDef } from "../agent/composer/reportCategory";
 import {
   AGENT_DELETE_SESSION_EVENT,
@@ -1788,7 +1789,12 @@ function CommandPrompt({
 
   let itemIndex = 0;
 
-  return (
+  // Portal to the document body so the prompt renders above the whole app,
+  // never trapped inside the sidebar's DOM subtree. The collapsed sidebar is
+  // `display: none` (see .app-shell[data-sidebar="collapsed"] .sidebar), which
+  // would otherwise hide this overlay along with it — so ⌘K must open a prompt
+  // that lives outside the sidebar to fire regardless of the sidebar state.
+  return createPortal(
     <div
       className="command-prompt-backdrop"
       role="presentation"
@@ -1863,7 +1869,8 @@ function CommandPrompt({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1979,7 +1986,6 @@ const REPORT_MENU_ITEMS: { category: ReportCategory; label: string }[] = [
   { category: "feedback", label: "Send feedback" },
   { category: "feature", label: "Request a feature" },
 ];
-
 function SidebarIdentity({
   account,
   menuOpen,
@@ -2014,9 +2020,7 @@ function SidebarIdentity({
         aria-label={`${name}, account menu`}
         onClick={onToggleMenu}
       >
-        <span className="sidebar-nav-icon">
-          <IconPeople size={18} />
-        </span>
+        <AccountAvatar account={account} className="sidebar-nav-icon" />
         <span className="sidebar-nav-label">{name}</span>
       </button>
       {menuOpen ? (
@@ -2063,15 +2067,6 @@ function SidebarIdentity({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function accountDisplayName(account: AccountStatus) {
-  return (
-    account.user?.displayName?.trim() ||
-    account.user?.email?.trim() ||
-    account.user?.handle?.trim() ||
-    "Account"
   );
 }
 

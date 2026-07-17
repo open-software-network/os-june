@@ -122,6 +122,7 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
+          PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY: ${{ secrets.PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
@@ -149,6 +150,11 @@ jobs:
               Write-Host "::error::$name is required for a production Windows release."
               $missing = 1
             }
+          }
+
+          if ($env:PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY -ne "true") {
+            Write-Host "::error::Set PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true only after the June OAuth client allows profile:write and a fresh production sign-in succeeds."
+            $missing = 1
           }
 
           exit $missing

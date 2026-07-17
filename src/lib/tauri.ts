@@ -1683,6 +1683,7 @@ export type AccountUser = {
   email?: string;
   displayName?: string;
   avatarUrl?: string;
+  avatarSeed?: string;
 };
 
 export type AccountBalance = {
@@ -1768,6 +1769,11 @@ export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
   return invoke<void>("os_accounts_logout", {
     request: { clearBrowserSession: options.clearBrowserSession ?? false },
   });
+}
+
+/** Persist an explicit Avatar v1 selection on the signed-in OS Accounts User. */
+export async function osAccountsSetAvatarSeed(seed: string) {
+  return invoke<AccountUser>("os_accounts_set_avatar_seed", { seed });
 }
 
 /** Opens subscription checkout in the browser. Omitting `plan` keeps the

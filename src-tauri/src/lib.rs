@@ -320,6 +320,7 @@ pub fn run() {
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
+            os_accounts::os_accounts_set_avatar_seed,
             os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_upgrade_session,
             os_accounts::os_accounts_change_plan,

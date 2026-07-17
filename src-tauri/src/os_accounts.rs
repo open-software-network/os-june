@@ -29,11 +29,11 @@ use tokio::{
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
-// Scopes June needs. profile:read for /me, billing:read for /billing/balance,
-// billing:write for subscription checkout, and credits:spend so June API can
-// authorize-and-charge against the user's credits for transcription /
-// generation / dictation work.
-const OAUTH_SCOPES: &str = "profile:read billing:read billing:write credits:spend";
+// Scopes June needs. profile:read/profile:write for /me and the User's avatar
+// seed, billing:read for /billing/balance, billing:write for subscription
+// checkout, and credits:spend so June API can authorize-and-charge against the
+// user's credits for note transcription / generation / dictation work.
+const OAUTH_SCOPES: &str = "profile:read profile:write billing:read billing:write credits:spend";
 // June's OS Accounts token store. Keep this app-scoped so June does not
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.accounts";
@@ -73,6 +73,7 @@ const ALREADY_ON_PLAN_CODE: &str = "already_on_plan";
 const UNKNOWN_PLAN_CODE: &str = "unknown_plan";
 const PLAN_NOT_ENABLED_CODE: &str = "plan_not_enabled";
 const UPGRADE_SESSION_UNAVAILABLE_CODE: &str = "upgrade_session_unavailable";
+const ACCOUNT_PERMISSION_REQUIRED_CODE: &str = "account_permission_required";
 /// Error code for a refresh that failed transiently (OS Accounts unreachable or
 /// wobbling), as opposed to a definitive rejection of the refresh token. A
 /// transient failure must NOT be treated as a sign-out: the user is still
@@ -87,9 +88,11 @@ const AUTH_REFRESH_MAX_ATTEMPTS: usize = 3;
 /// Base backoff between transient refresh retries; multiplied by the attempt
 /// number for a short linear backoff (0.3s, 0.6s).
 const AUTH_REFRESH_RETRY_BACKOFF: Duration = Duration::from_millis(300);
+const AVATAR_SEED_MAX_LENGTH: usize = 128;
 
 static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 static REFRESH_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+static ACCOUNT_OPERATION_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 static ENV_LOADED: OnceLock<()> = OnceLock::new();
 static SIGNED_IN_CACHE: AtomicBool = AtomicBool::new(false);
 
@@ -167,7 +170,11 @@ fn access_token_subject(jwt: &str) -> Option<String> {
 }
 
 fn stored_account_matches_snapshot(stored: &StoredAccount, snapshot: &AccountSnapshot) -> bool {
-    access_token_subject(&stored.pair.access_token).as_deref() == Some(snapshot.user.id.as_str())
+    stored_account_matches_user(stored, &snapshot.user)
+}
+
+fn stored_account_matches_user(stored: &StoredAccount, user: &AccountUser) -> bool {
+    access_token_subject(&stored.pair.access_token).as_deref() == Some(user.id.as_str())
 }
 
 #[derive(Deserialize)]
@@ -177,6 +184,7 @@ struct MeWire {
     email: Option<String>,
     display_name: Option<String>,
     avatar_url: Option<String>,
+    avatar_seed: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -250,6 +258,8 @@ pub struct AccountUser {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_seed: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
@@ -324,6 +334,7 @@ impl From<MeWire> for AccountUser {
             email: w.email,
             display_name: w.display_name,
             avatar_url: w.avatar_url,
+            avatar_seed: w.avatar_seed,
         }
     }
 }
@@ -491,6 +502,7 @@ fn local_dev_account_status() -> AccountStatus {
             email: None,
             display_name: Some("Local developer".to_string()),
             avatar_url: None,
+            avatar_seed: None,
         }),
         balance: Some(AccountBalance {
             credits: 0,
@@ -552,6 +564,11 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
         return Ok(local_dev_account_status());
     }
     let cfg = Config::load();
+    // A status snapshot reads /me before two slower billing endpoints. Keep
+    // that whole operation ordered with profile writes so an old /me response
+    // cannot land after a newer Avatar selection and overwrite either the UI
+    // or the cached account snapshot.
+    let _operation_guard = account_operation_lock().lock().await;
     let Some(stored) = load_account().await else {
         set_cached_signed_in(false);
         return Ok(AccountStatus {
@@ -562,14 +579,15 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
     match fetch_snapshot(&cfg).await {
         Ok((user, balance, subscription)) => {
             set_cached_signed_in(true);
-            // Refresh the cached snapshot for the next launch fast-path
-            // (write-if-changed, detached so the response never waits on the
-            // refresh lock).
-            persist_snapshot_in_background(AccountSnapshot {
+            // Refresh the cached snapshot for the next launch fast-path. Keep
+            // the write inside the account-operation boundary so its ordering
+            // matches the User value returned to the frontend.
+            persist_snapshot(AccountSnapshot {
                 user: user.clone(),
                 balance: balance.clone(),
                 subscription: subscription.clone(),
-            });
+            })
+            .await;
             Ok(AccountStatus {
                 signed_in: true,
                 configured: cfg.configured(),
@@ -678,16 +696,21 @@ pub async fn os_accounts_login(
 
     let code = await_authorization_code(&cfg, &flow, &login_url, &csrf).await?;
     let pair = exchange_code(&cfg, &code, &verifier, &redirect_uri).await?;
+    let _operation_guard = account_operation_lock().lock().await;
+    // Account replacement is ordered with status, profile writes, and logout.
+    // Otherwise an in-flight operation for the previous User could land after
+    // this token pair and attach its result to the new session.
     store_tokens(&StoredAccount::new(pair, None)).await?;
     crate::companion::resume_account_transport(&app);
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     // Warm the cache from first sign-in so the next launch fast-path paints the
     // real identity instead of fallbacks.
-    persist_snapshot_in_background(AccountSnapshot {
+    persist_snapshot(AccountSnapshot {
         user: user.clone(),
         balance: balance.clone(),
         subscription: subscription.clone(),
-    });
+    })
+    .await;
     set_cached_signed_in(true);
     Ok(AccountStatus {
         signed_in: true,
@@ -729,14 +752,26 @@ pub async fn os_accounts_logout(
         return Err(error);
     }
     let cfg = Config::load();
-    if let Some(pair) = load_tokens().await {
+    // Take locks in the same operation -> refresh order as status, login, and
+    // Avatar writes, but hold them only across the token load+clear. This
+    // prevents an in-flight account request from returning signed-in state or
+    // mutating the profile after sign-out.
+    let pair = {
+        let _operation_guard = account_operation_lock().lock().await;
+        let _refresh_guard = refresh_lock().lock().await;
+        let pair = load_tokens().await;
+        clear_tokens().await;
+        pair
+    };
+    // Best-effort external revocation. It does not participate in the lock
+    // ordering, so it runs after the locks are released.
+    if let Some(pair) = pair {
         let _ = http_client()
             .post(format!("{}/auth/logout", cfg.api_url.trim_end_matches('/')))
             .json(&serde_json::json!({ "refresh_token": pair.refresh_token }))
             .send()
             .await;
     }
-    clear_tokens().await;
     set_cached_signed_in(false);
     if request
         .map(|request| request.clear_browser_session)
@@ -745,6 +780,53 @@ pub async fn os_accounts_logout(
         let _ = open_accounts_browser_logout(&cfg);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn os_accounts_set_avatar_seed(seed: String) -> Result<AccountUser, AppError> {
+    let seed = validate_avatar_seed(seed)?;
+    if local_dev_enabled() {
+        let mut user = local_dev_account_status()
+            .user
+            .expect("local dev status always carries a user");
+        user.avatar_seed = Some(seed);
+        return Ok(user);
+    }
+    let cfg = Config::load();
+    if !cfg.configured() {
+        return Err(AppError::new(
+            "os_accounts_unconfigured",
+            "OS Accounts is not configured for this build.",
+        ));
+    }
+
+    let _operation_guard = account_operation_lock().lock().await;
+    let me: MeWire = authed_patch(&cfg, "/me", serde_json::json!({ "avatar_seed": seed })).await?;
+    let user = AccountUser::from(me);
+    if user.avatar_seed.as_deref() != Some(seed.as_str()) {
+        return Err(AppError::new(
+            "avatar_sync_unavailable",
+            "Synced avatars are not available on this OS Accounts deployment yet.",
+        ));
+    }
+    persist_account_user(user.clone()).await;
+    Ok(user)
+}
+
+fn validate_avatar_seed(seed: String) -> Result<String, AppError> {
+    let payload = seed.strip_prefix("v1:").unwrap_or_default();
+    let is_valid = !payload.is_empty()
+        && seed.len() <= AVATAR_SEED_MAX_LENGTH
+        && payload
+            .bytes()
+            .all(|byte| byte == b' ' || byte.is_ascii_graphic());
+    if !is_valid {
+        return Err(AppError::new(
+            "invalid_avatar_seed",
+            "The avatar seed must use v1 with 1 to 125 printable ASCII payload characters.",
+        ));
+    }
+    Ok(seed)
 }
 
 fn open_accounts_browser_logout(cfg: &Config) -> Result<(), AppError> {
@@ -1230,6 +1312,10 @@ fn http_client() -> &'static reqwest::Client {
 
 fn refresh_lock() -> &'static AsyncMutex<()> {
     REFRESH_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+fn account_operation_lock() -> &'static AsyncMutex<()> {
+    ACCOUNT_OPERATION_LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
 async fn exchange_code(
@@ -1731,6 +1817,12 @@ fn accounts_request_error(error_code: Option<i64>, message: Option<String>) -> A
             "That plan is not available yet.",
             message,
         ),
+        // A known numeric code above always wins; the legacy scope token is
+        // only consulted when no numeric arm matched.
+        _ if message.as_deref() == Some("access token is missing required scope") => AppError::new(
+            ACCOUNT_PERMISSION_REQUIRED_CODE,
+            "Your current sign-in does not include this permission. Sign out and sign in again to update it.",
+        ),
         _ => AppError::new("request_failed", accounts_request_failed_message(message)),
     }
 }
@@ -1749,9 +1841,6 @@ fn accounts_request_error_for_response(
 
 fn accounts_request_failed_message(message: Option<String>) -> String {
     match message.as_deref() {
-        Some("access token is missing required scope") => {
-            "Sign in again to refresh your billing permissions.".to_string()
-        }
         Some(message) => message.to_string(),
         None => "OS Accounts request failed.".to_string(),
     }
@@ -1844,39 +1933,58 @@ fn net_error(e: reqwest::Error) -> AppError {
 
 /// Refresh the cached account snapshot, rewriting the keychain entry only when
 /// the snapshot actually changed. Status runs on every window focus, so a
-/// blind rewrite would churn the keychain each time; comparing first keeps the
-/// stored token pair untouched when nothing moved. Best-effort and detached
-/// from the caller: the write serialises on the refresh lock, which a
-/// concurrent refresh can hold for a full HTTP round-trip, and the status
-/// response must not stall behind it; a missed write is corrected by the next
-/// successful status. Errors are swallowed after logging.
-fn persist_snapshot_in_background(snapshot: AccountSnapshot) {
-    tokio::spawn(async move {
-        // Hold the refresh lock across the load-modify-write: refresh_locked
-        // rotates the token pair under this lock, and writing back a pair
-        // loaded before the rotation would resurrect a consumed refresh token
-        // (and sign the user out on the next refresh).
-        let _guard = refresh_lock().lock().await;
-        let Some(mut stored) = load_account().await else {
-            // Tokens vanished between the fetch and here (e.g. a concurrent
-            // logout); nothing to attach the snapshot to.
-            return;
-        };
-        if !stored_account_matches_snapshot(&stored, &snapshot) {
-            // The user may have signed out and into another OS Accounts identity
-            // while this best-effort task waited on the refresh lock. Never attach
-            // one user's cached identity/balance to a different token pair.
-            tracing::debug!("skipped stale cached account snapshot");
-            return;
-        }
-        if stored.snapshot.as_ref() == Some(&snapshot) {
-            return;
-        }
-        stored.snapshot = Some(snapshot);
-        if let Err(error) = store_tokens(&stored).await {
-            tracing::warn!(error_code = %error.code, "failed to cache account snapshot");
-        }
-    });
+/// blind rewrite would churn the keychain each time. The caller holds the
+/// account-operation lock through this write, keeping the cached snapshot in
+/// the same order as the User value returned to the frontend.
+async fn persist_snapshot(snapshot: AccountSnapshot) {
+    // Hold the refresh lock across the load-modify-write: refresh_locked
+    // rotates the token pair under this lock, and writing back a pair loaded
+    // before the rotation would resurrect a consumed refresh token.
+    let _guard = refresh_lock().lock().await;
+    let Some(mut stored) = load_account().await else {
+        // Tokens vanished between the fetch and here (e.g. a concurrent
+        // logout); nothing to attach the snapshot to.
+        return;
+    };
+    if !stored_account_matches_snapshot(&stored, &snapshot) {
+        // The user may have signed out and into another OS Accounts identity
+        // while this best-effort write waited on the refresh lock. Never attach
+        // one User's cached identity/balance to a different token pair.
+        tracing::debug!("skipped stale cached account snapshot");
+        return;
+    }
+    if stored.snapshot.as_ref() == Some(&snapshot) {
+        return;
+    }
+    stored.snapshot = Some(snapshot);
+    if let Err(error) = store_tokens(&stored).await {
+        tracing::warn!(error_code = %error.code, "failed to cache account snapshot");
+    }
+}
+
+/// Keep the keychain snapshot aligned after a successful profile write so the
+/// next offline/launch fast-path sees the new generated avatar immediately.
+/// The caller holds the account-operation lock, while the refresh lock guards
+/// token rotation, logout, and a different User signing in during the write.
+async fn persist_account_user(user: AccountUser) {
+    let _guard = refresh_lock().lock().await;
+    let Some(mut stored) = load_account().await else {
+        return;
+    };
+    if !stored_account_matches_user(&stored, &user) {
+        tracing::debug!("skipped stale cached account user");
+        return;
+    }
+    let Some(snapshot) = stored.snapshot.as_mut() else {
+        return;
+    };
+    if snapshot.user == user {
+        return;
+    }
+    snapshot.user = user;
+    if let Err(error) = store_tokens(&stored).await {
+        tracing::warn!(error_code = %error.code, "failed to cache account user");
+    }
 }
 
 async fn store_tokens(account: &StoredAccount) -> Result<(), AppError> {
@@ -2239,8 +2347,21 @@ mod tests {
 
     #[test]
     fn oauth_scope_allows_checkout_and_credit_spend() {
+        assert!(OAUTH_SCOPES.contains("profile:write"));
         assert!(OAUTH_SCOPES.contains("billing:write"));
         assert!(OAUTH_SCOPES.contains("credits:spend"));
+    }
+
+    #[test]
+    fn avatar_seed_validation_matches_the_os_accounts_contract() {
+        assert!(validate_avatar_seed("v1:seed".to_string()).is_ok());
+        assert!(validate_avatar_seed(format!("v1:{}", "x".repeat(125))).is_ok());
+        assert!(validate_avatar_seed(String::new()).is_err());
+        assert!(validate_avatar_seed("v1:".to_string()).is_err());
+        assert!(validate_avatar_seed("v2:future".to_string()).is_err());
+        assert!(validate_avatar_seed("v1:cloud-☁".to_string()).is_err());
+        assert!(validate_avatar_seed("v1:line\nbreak".to_string()).is_err());
+        assert!(validate_avatar_seed(format!("v1:{}", "x".repeat(126))).is_err());
     }
 
     #[test]
@@ -2340,6 +2461,27 @@ mod tests {
         let error = accounts_request_error(None, None);
         assert_eq!(error.code, "request_failed");
         assert_eq!(error.message, "OS Accounts request failed.");
+    }
+
+    #[test]
+    fn accounts_error_maps_a_legacy_scope_token_to_a_stable_code() {
+        let error = accounts_request_error(
+            None,
+            Some("access token is missing required scope".to_string()),
+        );
+        assert_eq!(error.code, ACCOUNT_PERMISSION_REQUIRED_CODE);
+        assert_eq!(
+            error.message,
+            "Your current sign-in does not include this permission. Sign out and sign in again to update it."
+        );
+
+        // A known numeric code takes precedence even when the legacy scope
+        // message rides along.
+        let error = accounts_request_error(
+            Some(ERR_ALREADY_ON_PLAN),
+            Some("access token is missing required scope".to_string()),
+        );
+        assert_eq!(error.code, ALREADY_ON_PLAN_CODE);
     }
 
     #[test]
@@ -2619,6 +2761,7 @@ mod tests {
                 email: Some("june@example.com".to_string()),
                 display_name: Some("June User".to_string()),
                 avatar_url: None,
+                avatar_seed: Some("v1:0123456789abcdef0123456789abcdef".to_string()),
             },
             balance: AccountBalance {
                 credits: 4200,
