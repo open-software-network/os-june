@@ -443,13 +443,15 @@ export function Sidebar({
   // Chats belong to the profile they were created under (ADR 0029): the
   // sidebar filters its list through the session→profile map and re-filters
   // live when the active profile switches, without waiting for a re-fetch.
-  const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap>({});
+  const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap | null>(null);
   const activeHermesProfileName = useActiveHermesProfileName();
   const profileAgentSessions = useMemo(
     () =>
-      allAgentSessions.filter((session) =>
-        sessionMatchesProfile(session, sessionProfiles, activeHermesProfileName),
-      ),
+      sessionProfiles === null
+        ? []
+        : allAgentSessions.filter((session) =>
+            sessionMatchesProfile(session, sessionProfiles, activeHermesProfileName),
+          ),
     [allAgentSessions, sessionProfiles, activeHermesProfileName],
   );
   // __emptyStates() preview (dev console): the agent section renders its

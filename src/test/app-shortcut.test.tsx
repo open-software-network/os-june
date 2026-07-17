@@ -97,6 +97,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
+  listSessionProfiles: vi.fn(),
   listVeniceModels: vi.fn(),
   localVideoFileSrc: vi.fn((path: string) => `asset://${path}`),
   p3aSettings: vi.fn(),
@@ -186,7 +187,7 @@ vi.mock("../lib/tauri", () => ({
   renameFolder: mocks.renameFolder,
   assignNoteToFolder: mocks.assignNoteToFolder,
   listSessionFolders: vi.fn(async () => []),
-  listSessionProfiles: vi.fn(async () => []),
+  listSessionProfiles: mocks.listSessionProfiles,
   assignSessionToFolder: mocks.assignSessionToFolder,
   assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
@@ -391,6 +392,7 @@ describe("App shortcuts", () => {
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listSessionProfiles.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
@@ -1571,6 +1573,37 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch),
     );
+  });
+
+  it("exposes no sessions before the profile mapping has loaded successfully", async () => {
+    const user = userEvent.setup();
+    const privateSession = {
+      id: "profile-a-session",
+      title: "Named profile secret",
+      preview: "Private profile conversation",
+      last_active: now,
+    };
+    mocks.listSessionProfiles.mockRejectedValue(new Error("session profile map unavailable"));
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listSessionProfiles).toHaveBeenCalled());
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [privateSession],
+            selectedSessionId: undefined,
+            workingSessionIds: [],
+          },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
+    expect(screen.queryByText(privateSession.title)).toBeNull();
   });
 
   it("invalidates note tabs from the previous profile", async () => {

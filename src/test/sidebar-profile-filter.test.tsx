@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "../components/sidebar/Sidebar";
 import { AGENT_SESSIONS_CHANGED_EVENT } from "../lib/agent-events";
@@ -97,12 +97,12 @@ describe("Sidebar profile-scoped chat list", () => {
     expect(screen.queryByText("Work chat")).toBeNull();
   });
 
-  it("keeps the chat list working when the profile map read fails", async () => {
+  it("hides chats when the first profile map read fails", async () => {
     mocks.listSessionProfiles.mockRejectedValue(new Error("no tauri shell"));
     renderSidebar();
 
-    // Everything resolves to default when no map is available.
-    expect(await screen.findByText("Default chat")).toBeInTheDocument();
-    expect(await screen.findByText("Work chat")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.listSessionProfiles).toHaveBeenCalled());
+    expect(screen.queryByText("Default chat")).toBeNull();
+    expect(screen.queryByText("Work chat")).toBeNull();
   });
 });

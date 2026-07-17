@@ -455,7 +455,11 @@ export function App() {
   // sessionId -> project (folder) ids. Sessions live in Hermes, so their
   // project assignments are tracked separately from the notes state.
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
-  const sessionProfilesRef = useRef<SessionProfileMap>({});
+  // `null` means the mapping has never loaded. An empty object is meaningful:
+  // it confirms every unmapped Hermes session belongs to Default. Keeping
+  // those states distinct lets failed reads retain a known-good map while the
+  // first failure exposes no sessions at all.
+  const sessionProfilesRef = useRef<SessionProfileMap | null>(null);
   const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
@@ -1042,6 +1046,7 @@ export function App() {
   }, []);
   const profileScopedAgentSessions = useCallback(
     (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
+      if (profiles === null) return [];
       const activeProfile = getActiveHermesProfileName().trim() || activeHermesProfileName;
       return filterAgentSessionsForProfile(sessions, profiles, activeProfile);
     },
