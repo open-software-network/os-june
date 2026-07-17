@@ -3097,20 +3097,22 @@ export function AgentWorkspace({
           case "agentMessagesList":
             return;
           case "agentSend": {
-            const { storedSessionId: requestedSessionId, message } = payload.intent.data;
-            const explicitSession = requestedSessionId
-              ? hermesSessionItemsRef.current.find((session) => session.id === requestedSessionId)
+            const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
+            const explicitSession = requestedStoredSessionId
+              ? hermesSessionItemsRef.current.find(
+                  (session) => session.id === requestedStoredSessionId,
+                )
               : undefined;
-            if (requestedSessionId && !explicitSession) {
+            if (requestedStoredSessionId && !explicitSession) {
               throw new Error("That agent session is no longer available.");
             }
-            const sessionId = await submitHermesSession(message, explicitSession, {
+            const storedSessionId = await submitHermesSession(message, explicitSession, {
               selectSession: false,
             });
-            if (!sessionId) throw new Error("June could not identify the agent session.");
+            if (!storedSessionId) throw new Error("June could not identify the agent session.");
             await companionCompleteFrontendRequest(payload.operationId, {
               type: "agentAccepted",
-              data: { storedSessionId: sessionId },
+              data: { storedSessionId },
             });
             return;
           }
