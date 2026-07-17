@@ -185,9 +185,10 @@ The previous startup design and plan are corrected to the implemented Python
 contract: Hermes uses
 `<python> -I -S -B -c <fixed bootstrap> ...`; the bootstrap temporarily removes
 the dashboard bearer, calls authenticated `site.main()`, restores the bearer,
-and runs `hermes_cli.main` with `runpy`. The 11 rendered first-party MCP
-registrations cover ten distinct standard-library-only script files; earned
-autonomy registrations reuse an authenticated action script.
+and runs `hermes_cli.main` with `runpy`. The rendered first-party MCP
+registrations cover nine distinct standard-library-only script files; earned
+autonomy registrations reuse an authenticated action script. GitHub reads load
+from the verified Hermes extension and do not render an MCP registration.
 
 Strict RED/GREEN covers every behavior above. Existing security, archive,
 sandbox, manifest, plugin, source-assertion, formatting, clippy, and smoke gates
