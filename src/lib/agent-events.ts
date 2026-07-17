@@ -1,4 +1,5 @@
 import type { HermesSessionInfo } from "./tauri";
+import type { HermesRuntimeIncarnation } from "./hermes-connection";
 
 export const AGENT_NEW_SESSION_EVENT = "june:agent:new-session";
 export const AGENT_DELETE_SESSION_EVENT = "june:agent:delete-session";
@@ -50,6 +51,8 @@ export type AgentRunStartedDetail = {
    * generations strictly older than this one. */
   runMonitorGeneration: number;
   runtimeSessionId?: string;
+  /** In-memory identity of the Hermes process that accepted this Agent run. */
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   fullMode: boolean;
 };
 

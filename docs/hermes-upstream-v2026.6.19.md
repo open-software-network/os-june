@@ -66,7 +66,7 @@ exact source states:
 | --- | --- | --- |
 | `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9` |
 | `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
-| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `1d5936df605119d67577b5b8aa07a7e49dff69a5a97474b9c6ec9710655c3d51` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `d99f47d92c81c20b334b7df8be95c03ee83dc56742b95666fac697d79394bf3e` |
 
 Both macOS and Windows bundlers apply the same patch, write `PATCHSET`, verify
 the patched hashes after relocation, and run

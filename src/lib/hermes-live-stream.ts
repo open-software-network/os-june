@@ -1,5 +1,6 @@
 import type { JuneHermesEvent, PendingHermesAction } from "./hermes-control-plane";
 import { stripRenderedMediaReferences, textFromHermesTransportContent } from "./agent-chat-runtime";
+import type { HermesRuntimeIncarnation } from "./hermes-connection";
 
 export type HermesLiveStream = {
   revision: number;
@@ -355,6 +356,120 @@ export function reconcileHermesLiveStream(
     // completed ID-less transcript proven equivalent to this run's persistence.
     persistedMessageIds: persistedMessageIds ?? current.persistedMessageIds,
   };
+}
+
+/** Retires an ID-less live transcript only when an idle atomic resume from a
+ * different Hermes process proves that the exact accepted Agent run persisted
+ * every corresponding assistant row. Ordinary reconnect reconciliation stays
+ * deliberately separate and cannot use this process-replacement authority. */
+export function reconcileHermesLiveStreamAfterRuntimeReplacement(
+  current: HermesLiveStream,
+  options: {
+    throughRevision: number;
+    runStartRevision: number;
+    acceptedRuntimeIncarnation?: HermesRuntimeIncarnation;
+    replacementRuntimeIncarnation?: HermesRuntimeIncarnation;
+    replacementRunning?: boolean;
+    replacementHasActiveInflightAssistant: boolean;
+    replacementHasPendingMessageComplete: boolean;
+    persistedAssistantTexts?: readonly string[];
+  },
+): HermesLiveStream {
+  if (
+    options.throughRevision !== current.revision ||
+    !Number.isSafeInteger(options.runStartRevision) ||
+    options.runStartRevision < 0 ||
+    options.runStartRevision >= options.throughRevision ||
+    !options.acceptedRuntimeIncarnation ||
+    !options.replacementRuntimeIncarnation ||
+    options.acceptedRuntimeIncarnation === options.replacementRuntimeIncarnation ||
+    options.replacementRunning !== false ||
+    options.replacementHasActiveInflightAssistant !== false ||
+    options.replacementHasPendingMessageComplete !== false ||
+    !options.persistedAssistantTexts?.length ||
+    options.persistedAssistantTexts.some((text) => !text.trim())
+  ) {
+    return current;
+  }
+
+  const transcriptRevisions = runtimeReplacementTranscriptRevisions(current.entries, {
+    runStartRevision: options.runStartRevision,
+    throughRevision: options.throughRevision,
+    persistedAssistantTexts: options.persistedAssistantTexts,
+  });
+  if (!transcriptRevisions) return current;
+  return {
+    ...current,
+    entries: current.entries.filter(({ revision }) => !transcriptRevisions.has(revision)),
+  };
+}
+
+function runtimeReplacementTranscriptRevisions(
+  entries: readonly StreamEntry[],
+  options: {
+    runStartRevision: number;
+    throughRevision: number;
+    persistedAssistantTexts: readonly string[];
+  },
+): Set<number> | undefined {
+  const transcripts: Array<{ revisions: number[]; transportText: string }> = [];
+  let activeTranscript: { revisions: number[]; transportText: string } | undefined;
+  let terminalReached = false;
+
+  for (const { event, revision } of entries) {
+    if (revision <= options.runStartRevision || revision > options.throughRevision) continue;
+    if (event.kind === "error") return undefined;
+    if (event.kind === "lifecycle" && event.flavor === "terminal") {
+      if (/(?:fail|error|timeout|cancel|stop|interrupt|abort)/i.test(event.status)) {
+        return undefined;
+      }
+      terminalReached = true;
+      continue;
+    }
+    if (event.kind !== "transcript") continue;
+    if (terminalReached) return undefined;
+    if (event.messageId || event.failed) return undefined;
+
+    const startsTranscript = event.complete !== true && event.delta === undefined;
+    if (startsTranscript) {
+      if (activeTranscript) return undefined;
+      activeTranscript = { revisions: [revision], transportText: "" };
+      continue;
+    }
+    // Starting before the accepted run boundary, losing a start frame, or
+    // receiving a second completion are all ambiguous and therefore retained.
+    if (!activeTranscript) return undefined;
+    activeTranscript.revisions.push(revision);
+
+    if (event.complete === true) {
+      if (
+        typeof event.delta !== "string" ||
+        !event.delta.startsWith(activeTranscript.transportText)
+      ) {
+        return undefined;
+      }
+      activeTranscript.transportText = event.delta;
+      transcripts.push(activeTranscript);
+      activeTranscript = undefined;
+      continue;
+    }
+    if (typeof event.delta !== "string") return undefined;
+    activeTranscript.transportText += event.delta;
+  }
+
+  if (activeTranscript) transcripts.push(activeTranscript);
+  if (
+    transcripts.length === 0 ||
+    transcripts.length !== options.persistedAssistantTexts.length ||
+    transcripts.some(({ transportText }, index) => {
+      const persistedText = options.persistedAssistantTexts[index];
+      return !transportText || !persistedText?.startsWith(transportText);
+    })
+  ) {
+    return undefined;
+  }
+
+  return new Set(transcripts.flatMap(({ revisions }) => revisions));
 }
 
 function persistedIdlessTranscriptRevisions(

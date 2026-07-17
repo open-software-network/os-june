@@ -45,10 +45,11 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
         "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
     ),
     // Includes atomic resume ownership, exact retry for a rejected ID-less
-    // message.complete, and a transport-owned autonomous response barrier.
+    // message.complete, and a transport-owned Agent run continuation
+    // resume-acknowledgement barrier.
     (
         "tui_gateway/server.py",
-        "1d5936df605119d67577b5b8aa07a7e49dff69a5a97474b9c6ec9710655c3d51",
+        "d99f47d92c81c20b334b7df8be95c03ee83dc56742b95666fac697d79394bf3e",
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =

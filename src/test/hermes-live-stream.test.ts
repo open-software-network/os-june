@@ -8,6 +8,7 @@ import {
   recordHermesIdlessTranscriptPersistenceBoundary,
   reconcileHermesInflightSnapshot,
   reconcileHermesLiveStream,
+  reconcileHermesLiveStreamAfterRuntimeReplacement,
   type HermesLiveStream,
 } from "../lib/hermes-live-stream";
 
@@ -133,6 +134,29 @@ function approvalExpiration(requestId: string, eventId: string): PendingActionEx
 
 function append(stream: HermesLiveStream, ...events: JuneHermesEvent[]): HermesLiveStream {
   return events.reduce((current, event) => appendHermesLiveEvent(current, event), stream);
+}
+
+function idlessTranscriptEvent(
+  eventId: string,
+  options: { delta?: string; complete?: boolean; failed?: boolean; messageId?: string } = {},
+): TranscriptEvent {
+  return {
+    kind: "transcript",
+    sessionId: "session-1",
+    ...(options.messageId ? { messageId: options.messageId } : {}),
+    ...(options.delta === undefined ? {} : { delta: options.delta }),
+    complete: options.complete ?? false,
+    failed: options.failed ?? false,
+    receivedAt: RECEIVED_AT,
+    delivery: delivery(eventId),
+  };
+}
+
+function reconcileAfterRuntimeReplacement(
+  current: HermesLiveStream,
+  options: Parameters<typeof reconcileHermesLiveStreamAfterRuntimeReplacement>[1],
+) {
+  return reconcileHermesLiveStreamAfterRuntimeReplacement(current, options);
 }
 
 function transcriptDeltas(stream: HermesLiveStream, messageId: string): string {
@@ -1140,5 +1164,226 @@ describe("Hermes live stream", () => {
     });
 
     expect(reconciled.persistedMessageIds).toEqual({ "media-only": true });
+  });
+
+  it("compacts an open ID-less transcript covered by an idle replacement snapshot", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      idlessTranscriptEvent("replacement-open-start"),
+      idlessTranscriptEvent("replacement-open-delta", { delta: "Final ans" }),
+    );
+
+    const reconciled = reconcileAfterRuntimeReplacement(stream, {
+      throughRevision: stream.revision,
+      runStartRevision: 0,
+      acceptedRuntimeIncarnation: "runtime-a",
+      replacementRuntimeIncarnation: "runtime-b",
+      replacementRunning: false,
+      replacementHasActiveInflightAssistant: false,
+      replacementHasPendingMessageComplete: false,
+      persistedAssistantTexts: ["Final answer"],
+    });
+
+    expect(reconciled.entries).toEqual([]);
+  });
+
+  it("keeps an open ID-less transcript on the ordinary path and in the same incarnation", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      idlessTranscriptEvent("same-open-start"),
+      idlessTranscriptEvent("same-open-delta", { delta: "Final ans" }),
+    );
+
+    expect(
+      reconcileHermesLiveStream(stream, {
+        throughRevision: stream.revision,
+        persistedMessages: new Map(),
+        idlessTranscriptRun: {
+          runStartRevision: 0,
+          persistedAssistantTexts: ["Final answer"],
+        },
+      }),
+    ).toBe(stream);
+    expect(
+      reconcileAfterRuntimeReplacement(stream, {
+        throughRevision: stream.revision,
+        runStartRevision: 0,
+        acceptedRuntimeIncarnation: "runtime-a",
+        replacementRuntimeIncarnation: "runtime-a",
+        replacementRunning: false,
+        replacementHasActiveInflightAssistant: false,
+        replacementHasPendingMessageComplete: false,
+        persistedAssistantTexts: ["Final answer"],
+      }),
+    ).toBe(stream);
+  });
+
+  it.each([
+    {
+      label: "text mismatch",
+      mutate: (stream: HermesLiveStream) => ({
+        stream,
+        options: { persistedAssistantTexts: ["Different answer"] },
+      }),
+    },
+    {
+      label: "wrong run boundary",
+      mutate: (stream: HermesLiveStream) => ({
+        stream,
+        options: { runStartRevision: 1 },
+      }),
+    },
+    {
+      label: "explicit message id",
+      mutate: (_stream: HermesLiveStream) => {
+        const stream = append(
+          createHermesLiveStream(),
+          idlessTranscriptEvent("explicit-start", { messageId: "assistant-1" }),
+          idlessTranscriptEvent("explicit-delta", {
+            messageId: "assistant-1",
+            delta: "Final ans",
+          }),
+        );
+        return { stream, options: {} };
+      },
+    },
+    {
+      label: "failed transcript",
+      mutate: (_stream: HermesLiveStream) => {
+        const stream = append(
+          createHermesLiveStream(),
+          idlessTranscriptEvent("failed-start"),
+          idlessTranscriptEvent("failed-delta", { delta: "Final ans", failed: true }),
+        );
+        return { stream, options: {} };
+      },
+    },
+    {
+      label: "failed lifecycle",
+      mutate: (stream: HermesLiveStream) => ({
+        stream: append(stream, {
+          kind: "lifecycle",
+          sessionId: "session-1",
+          flavor: "terminal",
+          status: "failed",
+          text: "Provider failed",
+          receivedAt: RECEIVED_AT,
+          delivery: delivery("failed-lifecycle"),
+        }),
+        options: {},
+      }),
+    },
+    {
+      label: "active replacement",
+      mutate: (stream: HermesLiveStream) => ({ stream, options: { replacementRunning: true } }),
+    },
+  ])("retains replacement transcript proof on $label", ({ mutate }) => {
+    const base = append(
+      createHermesLiveStream(),
+      idlessTranscriptEvent("uncertain-start"),
+      idlessTranscriptEvent("uncertain-delta", { delta: "Final ans" }),
+    );
+    const { stream, options } = mutate(base);
+
+    expect(
+      reconcileAfterRuntimeReplacement(stream, {
+        throughRevision: stream.revision,
+        runStartRevision: 0,
+        acceptedRuntimeIncarnation: "runtime-a",
+        replacementRuntimeIncarnation: "runtime-b",
+        replacementRunning: false,
+        replacementHasActiveInflightAssistant: false,
+        replacementHasPendingMessageComplete: false,
+        persistedAssistantTexts: ["Final answer"],
+        ...options,
+      }),
+    ).toBe(stream);
+  });
+
+  it.each([
+    ["MEDIA:/tmp/generated-result.png", "MEDIA:/tmp/generated-result.png"],
+    ["MEDIA:/tmp/generated-res", "MEDIA:/tmp/generated-result.png"],
+  ])("uses exact media transport text as replacement proof: %s", (liveText, persistedText) => {
+    const stream = append(
+      createHermesLiveStream(),
+      idlessTranscriptEvent(`media-start-${liveText.length}`),
+      idlessTranscriptEvent(`media-delta-${liveText.length}`, { delta: liveText }),
+    );
+
+    const reconciled = reconcileAfterRuntimeReplacement(stream, {
+      throughRevision: stream.revision,
+      runStartRevision: 0,
+      acceptedRuntimeIncarnation: "runtime-a",
+      replacementRuntimeIncarnation: "runtime-b",
+      replacementRunning: false,
+      replacementHasActiveInflightAssistant: false,
+      replacementHasPendingMessageComplete: false,
+      persistedAssistantTexts: [persistedText],
+    });
+
+    expect(reconciled.entries).toEqual([]);
+  });
+
+  it("ordinally compacts completed ID-less parts plus a final open part", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      idlessTranscriptEvent("part-one-start"),
+      idlessTranscriptEvent("part-one-delta", { delta: "First" }),
+      idlessTranscriptEvent("part-one-complete", { delta: "First answer", complete: true }),
+      reasoningEvent("kept reasoning", "between-parts-reasoning"),
+      idlessTranscriptEvent("part-two-start"),
+      idlessTranscriptEvent("part-two-delta", { delta: "Second answer" }),
+      idlessTranscriptEvent("part-two-complete", { delta: "Second answer", complete: true }),
+      idlessTranscriptEvent("part-three-start"),
+      idlessTranscriptEvent("part-three-delta", { delta: "Final ans" }),
+    );
+
+    const reconciled = reconcileAfterRuntimeReplacement(stream, {
+      throughRevision: stream.revision,
+      runStartRevision: 0,
+      acceptedRuntimeIncarnation: "runtime-a",
+      replacementRuntimeIncarnation: "runtime-b",
+      replacementRunning: false,
+      replacementHasActiveInflightAssistant: false,
+      replacementHasPendingMessageComplete: false,
+      persistedAssistantTexts: ["First answer", "Second answer", "Final answer"],
+    });
+
+    expect(reconciled.entries.map(({ event }) => event.kind)).toEqual(["reasoning"]);
+  });
+
+  it("retains transcripts that cross a successful terminal into a later Agent run", () => {
+    const stream = append(
+      createHermesLiveStream(),
+      idlessTranscriptEvent("first-run-start"),
+      idlessTranscriptEvent("first-run-complete", {
+        delta: "First answer",
+        complete: true,
+      }),
+      {
+        kind: "lifecycle",
+        sessionId: "session-1",
+        flavor: "terminal",
+        status: "completed",
+        text: "Finished",
+        receivedAt: RECEIVED_AT,
+        delivery: delivery("first-run-terminal"),
+      },
+      idlessTranscriptEvent("later-run-start"),
+      idlessTranscriptEvent("later-run-delta", { delta: "Later ans" }),
+    );
+
+    expect(
+      reconcileAfterRuntimeReplacement(stream, {
+        throughRevision: stream.revision,
+        runStartRevision: 0,
+        acceptedRuntimeIncarnation: "runtime-a",
+        replacementRuntimeIncarnation: "runtime-b",
+        replacementRunning: false,
+        replacementHasActiveInflightAssistant: false,
+        replacementHasPendingMessageComplete: false,
+        persistedAssistantTexts: ["First answer", "Later answer"],
+      }),
+    ).toBe(stream);
   });
 });

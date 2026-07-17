@@ -32,11 +32,12 @@ describe("June Hermes approval patch", () => {
       "def _deliver_message_complete(session: dict, sid: str, payload: dict)",
     );
     expect(patcher).toContain(
-      "def _retry_pending_message_complete(\n    session: dict,\n    transport: Transport,\n    *,\n    wait_for_resume_response: bool = False,",
+      "def _retry_pending_message_complete_locked(\n    session: dict,\n    transport: Transport,\n    *,\n    arm_agent_run_continuation_resume_ack_barrier: bool = False,",
     );
-    expect(patcher).toContain("_AUTONOMOUS_TURN_RESUME_BARRIER");
-    expect(patcher).toContain("autonomous_turn_response_transport=resume_transport");
-    expect(patcher).toContain("wait_for_resume_response=True");
+    expect(patcher).toContain("_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER");
+    expect(patcher).toContain("agent_run_continuation_resume_ack_transport=resume_transport");
+    expect(patcher).toContain("arm_agent_run_continuation_resume_ack_barrier=True");
+    expect(patcher).toContain("_bind_prompt_transport_for_submit(session, request_transport)");
     expect(patcher).toContain("_PENDING_MESSAGE_COMPLETE_PAYLOAD");
     expect(patcher).toContain("_clear_pending_message_complete(session)");
     expect(patcher).not.toContain("server pending-complete final cleanup");

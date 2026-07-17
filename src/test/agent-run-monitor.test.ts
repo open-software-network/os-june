@@ -986,6 +986,31 @@ describe("agent run monitor", () => {
     });
   });
 
+  it("preserves the accepted runtime incarnation in snapshots and the start event", async () => {
+    const runtimeIncarnation = "123\u0000ws://127.0.0.1:9123";
+    const generation = startRun({ runtimeIncarnation });
+
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      runtimeIncarnation,
+    });
+    await flush();
+    expect(monitorMocks.dispatchStarted).toHaveBeenCalledWith({
+      storedSessionId: "stored-1",
+      runMonitorGeneration: generation,
+      runtimeSessionId: "runtime-1",
+      runtimeIncarnation,
+      fullMode: false,
+    });
+
+    expect(markAgentRunFailed("stored-1", generation)).toBe(true);
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      runtimeIncarnation,
+      phase: "terminal",
+    });
+  });
+
   it("retains a finished tombstone independently of the live-run count", () => {
     for (let index = 0; index < 101; index += 1) {
       startRun({
@@ -1021,7 +1046,7 @@ describe("agent run monitor", () => {
       title: "Prepare launch notes",
       status: "failed",
       runMonitorGeneration: 1,
-      summary: "June stopped responding.",
+      summary: "June hit a problem.",
     });
     expect(isAgentRunMonitorGenerationCurrent("stored-1", latestGeneration)).toBe(false);
   });

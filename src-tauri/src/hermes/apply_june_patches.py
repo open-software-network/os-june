@@ -26,7 +26,7 @@ UPSTREAM_SHA256: Dict[str, str] = {
 PATCHED_SHA256: Dict[str, str] = {
     "tools/approval.py": "cb3cb292e34121dbfa452eea78243ce8ca1c31029f8cd047a3d8cc4f01c26df9",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "1d5936df605119d67577b5b8aa07a7e49dff69a5a97474b9c6ec9710655c3d51",
+    "tui_gateway/server.py": "d99f47d92c81c20b334b7df8be95c03ee83dc56742b95666fac697d79394bf3e",
 }
 
 
@@ -651,7 +651,9 @@ def patch_server(source: str) -> str:
 _PENDING_MESSAGE_COMPLETE_TEXT = "_june_pending_message_complete_text"
 _PENDING_MESSAGE_COMPLETE_PAYLOAD = "_june_pending_message_complete_payload"
 _DEFERRED_GOAL_FOLLOWUP = "_june_deferred_goal_followup"
-_AUTONOMOUS_TURN_RESUME_BARRIER = "_june_autonomous_turn_resume_barrier"
+_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER = (
+    "_june_agent_run_continuation_resume_ack_barrier"
+)
 
 
 def _clear_pending_message_complete(session: dict) -> None:
@@ -663,8 +665,8 @@ def _message_complete_is_pending(session: dict) -> bool:
     return isinstance(session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD), dict)
 
 
-def _autonomous_turn_waits_for_resume_response(session: dict) -> bool:
-    return bool(session.get(_AUTONOMOUS_TURN_RESUME_BARRIER))
+def _agent_run_continuation_waits_for_resume_ack(session: dict) -> bool:
+    return bool(session.get(_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER))
 
 
 def _defer_goal_followup(session: dict, rid: Any, text: Any) -> None:
@@ -672,18 +674,18 @@ def _defer_goal_followup(session: dict, rid: Any, text: Any) -> None:
     if followup:
         session[_DEFERRED_GOAL_FOLLOWUP] = {
             "rid": rid,
-            "resume_response_delivered": False,
+            "resume_ack_delivered": False,
             "text": followup,
         }
 
 
-def _release_autonomous_turns_after_resume_response(
-    response: dict, response_transport: Transport
+def _release_agent_run_continuations_after_resume_ack(
+    resume_result: dict, resume_ack_transport: Transport
 ) -> None:
-    # Long-handler dispatch calls this only after the session.resume response is
+    # Long-handler dispatch calls this only after the session.resume snapshot is
     # accepted by its transport. Keeping the wake-up behind that write prevents
     # a newly started continuation from racing ahead of the resume snapshot.
-    result = response.get("result") if isinstance(response, dict) else None
+    result = resume_result.get("result") if isinstance(resume_result, dict) else None
     sid = str(result.get("session_id") or "") if isinstance(result, dict) else ""
     if not sid:
         return
@@ -692,14 +694,17 @@ def _release_autonomous_turns_after_resume_response(
     if not isinstance(session, dict):
         return
     with session["history_lock"]:
-        if session.get("transport") is not response_transport:
+        if session.get("transport") is not resume_ack_transport:
             return
-        if session.get(_AUTONOMOUS_TURN_RESUME_BARRIER) is not response_transport:
+        if (
+            session.get(_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER)
+            is not resume_ack_transport
+        ):
             return
-        session.pop(_AUTONOMOUS_TURN_RESUME_BARRIER, None)
+        session.pop(_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER, None)
         followup = session.get(_DEFERRED_GOAL_FOLLOWUP)
         if isinstance(followup, dict):
-            followup["resume_response_delivered"] = True
+            followup["resume_ack_delivered"] = True
 
 
 def _take_deferred_goal_followup(session: dict) -> dict | None:
@@ -711,13 +716,13 @@ def _take_deferred_goal_followup(session: dict) -> dict | None:
         if (
             session.get("running")
             or _message_complete_is_pending(session)
-            or _autonomous_turn_waits_for_resume_response(session)
+            or _agent_run_continuation_waits_for_resume_ack(session)
         ):
             return None
         followup = session.get(_DEFERRED_GOAL_FOLLOWUP)
         if (
             not isinstance(followup, dict)
-            or not followup.get("resume_response_delivered")
+            or not followup.get("resume_ack_delivered")
             or not str(followup.get("text") or "")
         ):
             return None
@@ -757,9 +762,10 @@ def _mark_pending_message_complete(
 ) -> None:
     # Caller owns history_lock so committing the row and publishing this marker
     # are one transaction with session.resume's snapshot/transport swap.
-    # A later run must never replace proof for an exact completion that no
-    # transport has accepted. All turn-entry paths defer while this is true;
-    # this guard keeps the invariant fail-closed if a future path misses it.
+    # A later Agent run must never replace proof for an exact completion that no
+    # transport has accepted. All later Agent run and continuation entry paths
+    # defer while this is true; this guard keeps the invariant fail-closed if a
+    # future path misses it.
     if _message_complete_is_pending(session):
         return
     session.pop(_PENDING_MESSAGE_COMPLETE_TEXT, None)
@@ -801,31 +807,61 @@ def _deliver_message_complete(session: dict, sid: str, payload: dict) -> bool:
         return delivered
 
 
+def _retry_pending_message_complete_locked(
+    session: dict,
+    transport: Transport,
+    *,
+    arm_agent_run_continuation_resume_ack_barrier: bool = False,
+) -> bool:
+    pending = session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD)
+    if not isinstance(pending, dict):
+        return False
+    delivered = bool(
+        _emit(
+            "message.complete",
+            pending["session_id"],
+            pending["payload"],
+            transport=transport,
+        )
+    )
+    if delivered:
+        _clear_pending_message_complete(session)
+        if arm_agent_run_continuation_resume_ack_barrier:
+            session[_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER] = transport
+    return delivered
+
+
 def _retry_pending_message_complete(
     session: dict,
     transport: Transport,
     *,
-    wait_for_resume_response: bool = False,
+    arm_agent_run_continuation_resume_ack_barrier: bool = False,
 ) -> bool:
     # Original emission and resume retry use the same lock, so only one can
     # observe and successfully clear a retained payload.
     with session["history_lock"]:
-        pending = session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD)
-        if not isinstance(pending, dict):
-            return False
-        delivered = bool(
-            _emit(
-                "message.complete",
-                pending["session_id"],
-                pending["payload"],
-                transport=transport,
-            )
+        return _retry_pending_message_complete_locked(
+            session,
+            transport,
+            arm_agent_run_continuation_resume_ack_barrier=(
+                arm_agent_run_continuation_resume_ack_barrier
+            ),
         )
-        if delivered:
-            _clear_pending_message_complete(session)
-            if wait_for_resume_response:
-                session[_AUTONOMOUS_TURN_RESUME_BARRIER] = transport
-        return delivered
+
+
+def _bind_prompt_transport_for_submit(
+    session: dict, request_transport: Transport | None
+) -> bool:
+    # A resume snapshot owns transport selection until its delivery is accepted.
+    # A concurrent prompt must fail without stealing that transport; otherwise
+    # the snapshot release cannot prove ownership and the barrier never clears.
+    with session["history_lock"]:
+        if _agent_run_continuation_waits_for_resume_ack(session):
+            return False
+        if request_transport is not None:
+            session["transport"] = request_transport
+            _retry_pending_message_complete_locked(session, request_transport)
+        return True
 ''',
         "server atomic pending-complete transport proof",
     )
@@ -847,10 +883,10 @@ def _retry_pending_message_complete(
     cols: int | None = None,
     touch: bool = False,
     transport: Transport | None = None,
-    autonomous_turn_response_transport: Transport | None = None,
+    agent_run_continuation_resume_ack_transport: Transport | None = None,
 ) -> dict:
 ''',
-        "server live-resume autonomous response barrier argument",
+        "server live-resume Agent run continuation acknowledgement argument",
     )
     source = replace_once(
         source,
@@ -860,16 +896,16 @@ def _retry_pending_message_complete(
 ''',
         '''        if transport is not None:
             session["transport"] = transport
-        if autonomous_turn_response_transport is not None:
+        if agent_run_continuation_resume_ack_transport is not None:
             # Arm in the same history-lock transaction as the transport swap
-            # and resume snapshot. No autonomous turn can claim the gap between
-            # a completion write and its corresponding resume response.
-            session[_AUTONOMOUS_TURN_RESUME_BARRIER] = (
-                autonomous_turn_response_transport
+            # and resume snapshot. No Agent run continuation can claim the gap
+            # between a completion write and acknowledgement of that snapshot.
+            session[_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER] = (
+                agent_run_continuation_resume_ack_transport
             )
         if touch:
 ''',
-        "server live-resume autonomous response barrier arm",
+        "server live-resume Agent run continuation acknowledgement barrier",
     )
     source = replace_once(
         source,
@@ -947,17 +983,16 @@ def _retry_pending_message_complete(
         if session.get("running"):
 ''',
         '''    request_transport = current_transport()
-    if request_transport is not None:
-        session["transport"] = request_transport
-        _retry_pending_message_complete(session, request_transport)
+    if not _bind_prompt_transport_for_submit(session, request_transport):
+        return _err(rid, 4009, "session resume acknowledgement still settling")
     with session["history_lock"]:
         if _message_complete_is_pending(session):
             return _err(rid, 4009, "previous completion awaiting reconnect")
-        if _autonomous_turn_waits_for_resume_response(session):
-            return _err(rid, 4009, "session resume response still settling")
+        if _agent_run_continuation_waits_for_resume_ack(session):
+            return _err(rid, 4009, "session resume acknowledgement still settling")
         if session.get("running"):
 ''',
-        "server prompt retry before next run",
+        "server prompt retry before next Agent run",
     )
     source = replace_once(
         source,
@@ -980,11 +1015,11 @@ def _retry_pending_message_complete(
                 t.write(resp)
 ''',
         '''            if resp is not None:
-                response_delivered = t.write(resp)
-                if response_delivered and method == "session.resume":
-                    _release_autonomous_turns_after_resume_response(resp, t)
+                resume_ack_delivered = t.write(resp)
+                if resume_ack_delivered and method == "session.resume":
+                    _release_agent_run_continuations_after_resume_ack(resp, t)
 ''',
-        "server resume response ordered before deferred goal",
+        "server resume acknowledgement ordered before deferred goal",
     )
     source = replace_once(
         source,
@@ -1091,7 +1126,7 @@ def _retry_pending_message_complete(
     while not stop_event.is_set() and not session.get("_finalized"):
         # Goal continuations blocked by an undelivered message.complete stay on
         # the session until resume retries that exact frame. This existing
-        # long-lived poller wakes them without racing the resume response path.
+        # long-lived poller wakes them without racing the resume acknowledgement.
         deferred_goal = _take_deferred_goal_followup(session)
         if deferred_goal is not None:
             try:
@@ -1130,7 +1165,7 @@ def _retry_pending_message_complete(
             if (
                 session.get("running")
                 or _message_complete_is_pending(session)
-                or _autonomous_turn_waits_for_resume_response(session)
+                or _agent_run_continuation_waits_for_resume_ack(session)
                 or _DEFERRED_GOAL_FOLLOWUP in session
             ):
                 process_registry.completion_queue.put(evt)
@@ -1158,7 +1193,7 @@ def _retry_pending_message_complete(
             if (
                 session.get("running")
                 or _message_complete_is_pending(session)
-                or _autonomous_turn_waits_for_resume_response(session)
+                or _agent_run_continuation_waits_for_resume_ack(session)
                 or _DEFERRED_GOAL_FOLLOWUP in session
             ):
                 process_registry.completion_queue.put(evt)
@@ -1188,7 +1223,7 @@ def _retry_pending_message_complete(
             cols=cols,
             touch=True,
             transport=resume_transport,
-            autonomous_turn_response_transport=resume_transport,
+            agent_run_continuation_resume_ack_transport=resume_transport,
         )
         retired_request_ids = []
         if previous_transport is not resume_transport:
@@ -1203,7 +1238,7 @@ def _retry_pending_message_complete(
         _retry_pending_message_complete(
             session,
             resume_transport,
-            wait_for_resume_response=True,
+            arm_agent_run_continuation_resume_ack_barrier=True,
         )
         payload["retired_approval_request_ids"] = retired_request_ids
         payload["resumed"] = target
@@ -1258,7 +1293,7 @@ def _retry_pending_message_complete(
                     return
                 if (
                     _message_complete_is_pending(session)
-                    or _autonomous_turn_waits_for_resume_response(session)
+                    or _agent_run_continuation_waits_for_resume_ack(session)
                 ):
                     _defer_goal_followup(session, rid, goal_followup)
                 else:
@@ -1293,7 +1328,7 @@ def _retry_pending_message_complete(
                     if (
                         session.get("running")
                         or _message_complete_is_pending(session)
-                        or _autonomous_turn_waits_for_resume_response(session)
+                        or _agent_run_continuation_waits_for_resume_ack(session)
                         or _DEFERRED_GOAL_FOLLOWUP in session
                     ):
                         process_registry.completion_queue.put(_evt)

@@ -188,6 +188,43 @@ function noteChatReasoningText(chat: NoteChat) {
     .join(" ");
 }
 
+function hermesRuntimeStatus(pid: number, port: number) {
+  return {
+    running: true,
+    connection: {
+      port,
+      wsUrl: `ws://127.0.0.1:${port}`,
+      pid,
+      fullMode: false,
+    },
+  };
+}
+
+function persistedNoteChatRun(
+  prompt: string,
+  assistant: string,
+  suffix: string,
+): HermesSessionMessage[] {
+  return [
+    {
+      id: `persisted-runtime-replacement-user-${suffix}`,
+      role: "user",
+      content: prompt,
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    },
+    {
+      id: `persisted-runtime-replacement-assistant-${suffix}`,
+      role: "assistant",
+      content: assistant,
+      timestamp: new Date(Date.now() + 2_000).toISOString(),
+    },
+  ];
+}
+
+function rawResumeMessages(messages: HermesSessionMessage[]) {
+  return messages.map(({ id: _id, ...message }) => message);
+}
+
 describe("note chat session map", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1584,6 +1621,139 @@ describe("note chat session map", () => {
       "session.resume",
       expect.objectContaining({ session_id: "stored-note-chat" }),
     );
+  });
+
+  it("replaces an abandoned ID-less prefix after an idle distinct-process resume and keeps one copy across remount", async () => {
+    const prompt = "Keep the recovered answer singular.";
+    const livePrefix = "Final ans";
+    const persistedAnswer = "Final answer.";
+    const acceptedStatus = hermesRuntimeStatus(701, 61701);
+    const replacementStatus = hermesRuntimeStatus(702, 61702);
+    const persistedMessages = persistedNoteChatRun(prompt, persistedAnswer, "singular");
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.hermesBridgeStatus.mockResolvedValue(acceptedStatus);
+
+    let resumeCount = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return Promise.resolve(
+        resumeCount === 1
+          ? { session_id: "runtime-before-replacement" }
+          : {
+              messages: rawResumeMessages(persistedMessages),
+              retired_approval_request_ids: [],
+              running: false,
+              session_id: "runtime-after-replacement",
+            },
+      );
+    });
+
+    const first = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(first.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await first.result.current.submit(prompt)).toBe(true);
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayConnect).toHaveBeenCalledWith(acceptedStatus.connection.wsUrl),
+    );
+
+    const acceptedHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      acceptedHandler?.({
+        type: "message.start",
+        event_id: "runtime-replacement-open-start",
+        session_id: "runtime-before-replacement",
+        payload: {},
+      });
+      acceptedHandler?.({
+        type: "message.delta",
+        event_id: "runtime-replacement-open-delta",
+        session_id: "runtime-before-replacement",
+        payload: { delta: livePrefix },
+      });
+    });
+    expect(noteChatTextParts(first.result.current, "assistant")).toEqual([livePrefix]);
+
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: persistedMessages });
+    mocks.hermesBridgeStatus.mockResolvedValue(replacementStatus);
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+
+    await waitFor(() =>
+      expect(noteChatTextParts(first.result.current, "assistant")).toEqual([persistedAnswer]),
+    );
+    expect(mocks.gatewayConnect).toHaveBeenLastCalledWith(replacementStatus.connection.wsUrl);
+
+    first.unmount();
+    const second = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(second.result.current.loading).toBe(false));
+    expect(noteChatTextParts(second.result.current, "assistant")).toEqual([persistedAnswer]);
+    second.unmount();
+  });
+
+  it("keeps an abandoned ID-less prefix fail-closed when the process incarnation is unchanged", async () => {
+    const prompt = "Keep uncertain replacement text.";
+    const livePrefix = "Live partial";
+    const persistedAnswer = "Live partial completed.";
+    const acceptedStatus = hermesRuntimeStatus(711, 61711);
+    const persistedMessages = persistedNoteChatRun(prompt, persistedAnswer, "same-process");
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.hermesBridgeStatus.mockResolvedValue(acceptedStatus);
+
+    let resumeCount = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      return Promise.resolve(
+        resumeCount === 1
+          ? { session_id: "runtime-before-fail-closed-replacement" }
+          : {
+              messages: rawResumeMessages(persistedMessages),
+              retired_approval_request_ids: [],
+              running: false,
+              session_id: "runtime-after-fail-closed-replacement",
+            },
+      );
+    });
+
+    const view = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    await act(async () => {
+      expect(await view.result.current.submit(prompt)).toBe(true);
+    });
+    const acceptedHandler = [...mocks.gatewayEventHandlers].at(-1);
+    act(() => {
+      acceptedHandler?.({
+        type: "message.start",
+        event_id: "fail-closed-runtime-replacement-start",
+        session_id: "runtime-before-fail-closed-replacement",
+        payload: {},
+      });
+      acceptedHandler?.({
+        type: "message.delta",
+        event_id: "fail-closed-runtime-replacement-delta",
+        session_id: "runtime-before-fail-closed-replacement",
+        payload: { delta: livePrefix },
+      });
+    });
+
+    mocks.hermesBridgeSessionMessages.mockResolvedValue({ messages: persistedMessages });
+    mocks.hermesBridgeStatus.mockResolvedValue(acceptedStatus);
+    act(() => {
+      for (const close of mocks.gatewayCloseHandlers) close();
+    });
+
+    await waitFor(() => expect(resumeCount).toBe(2));
+    await waitFor(() => {
+      const assistantParts = noteChatTextParts(view.result.current, "assistant");
+      expect(assistantParts).toContain(persistedAnswer);
+      expect(assistantParts).toContain(livePrefix);
+      expect(assistantParts).toHaveLength(2);
+    });
+    view.unmount();
   });
 
   it("replays replacement text before the resume ACK, then fills only its missing snapshot suffix", async () => {

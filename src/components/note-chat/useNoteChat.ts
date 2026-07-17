@@ -14,7 +14,11 @@ import {
   listHermesSessions,
   normalizeHermesSessionMessagesResponse,
 } from "../../lib/hermes-adapter";
-import { hermesConnectionForMode } from "../../lib/hermes-connection";
+import {
+  hermesConnectionForMode,
+  hermesRuntimeIncarnation,
+  type HermesRuntimeIncarnation,
+} from "../../lib/hermes-connection";
 import { classifyHermesEvent } from "../../lib/hermes-control-plane/event-classifier";
 import { createHermesMethods } from "../../lib/hermes-control-plane/methods";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../../lib/hermes-control-plane/events";
@@ -33,6 +37,7 @@ import {
   recordHermesIdlessTranscriptPersistenceBoundary,
   reconcileHermesInflightSnapshot,
   reconcileHermesLiveStream,
+  reconcileHermesLiveStreamAfterRuntimeReplacement,
   type HermesIdlessTranscriptPersistenceBoundary,
   type HermesLiveStream,
 } from "../../lib/hermes-live-stream";
@@ -151,9 +156,11 @@ function attachmentPromptPath(path: string) {
  * monolith's ref-managed lifecycle. */
 let sharedGateway: HermesGatewayClient | null = null;
 let sharedGatewayConnecting: Promise<HermesGatewayClient> | null = null;
+let sharedGatewayIncarnation: HermesRuntimeIncarnation | undefined;
 type NoteChatIdlessTranscriptOrigin = {
   pendingUserTurn: AgentChatTurn;
   runStartRevision: number;
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   transcriptEntries: Array<{
     event: Extract<JuneHermesEvent, { kind: "transcript" }>;
     revision: number;
@@ -185,6 +192,7 @@ type NoteChatContinuityRecord = {
   terminalEventIds: string[];
   terminalFingerprints: string[];
   runAccepted: boolean;
+  acceptedRuntimeIncarnation?: HermesRuntimeIncarnation;
   deferredPreAcceptanceTerminals: JuneHermesEvent[];
   currentRunPendingUserTurn?: AgentChatTurn;
   lastAcceptedRunPendingUserTurn?: AgentChatTurn;
@@ -347,6 +355,7 @@ function noteChatContinuityFor(storedSessionId: string): NoteChatContinuityRecor
     const monitor = agentRunMonitorSnapshot(storedSessionId);
     if (monitor) {
       record.latestRunMonitorGeneration = monitor.generation;
+      record.acceptedRuntimeIncarnation = monitor.runtimeIncarnation;
       record.runGeneration = 1;
       record.runAccepted = true;
       record.working = monitor.phase === "active";
@@ -1048,6 +1057,7 @@ function routeNoteChatControlPlaneEvent(
           event,
           nextLiveStream.revision,
           record.runStartRevision,
+          record.acceptedRuntimeIncarnation,
         ),
       );
     } else {
@@ -1118,6 +1128,7 @@ function appendIdlessTranscriptTextPart(
   event: Extract<JuneHermesEvent, { kind: "transcript" }>,
   revision: number,
   runStartRevision: number,
+  runtimeIncarnation?: HermesRuntimeIncarnation,
 ): NoteChatIdlessTranscriptOrigin {
   const transcriptEntries = [...(current?.transcriptEntries ?? []), { event, revision }];
   const visibleTextParts = [...(current?.visibleTextParts ?? [])];
@@ -1143,6 +1154,7 @@ function appendIdlessTranscriptTextPart(
   return {
     pendingUserTurn,
     runStartRevision: current?.runStartRevision ?? runStartRevision,
+    runtimeIncarnation: current?.runtimeIncarnation ?? runtimeIncarnation,
     transcriptEntries,
     visibleTextParts,
     visibleTextPartRevisions,
@@ -1166,6 +1178,7 @@ function idlessTranscriptOriginThroughRevision(
       entry.event,
       entry.revision,
       origin.runStartRevision,
+      origin.runtimeIncarnation,
     );
   }
   if (
@@ -1333,6 +1346,7 @@ function confirmNoteChatRunAccepted({
   pendingUserTurn,
   record,
   runGeneration,
+  runtimeIncarnation,
   runtimeSessionId,
   storedSessionId,
 }: {
@@ -1340,6 +1354,7 @@ function confirmNoteChatRunAccepted({
   pendingUserTurn: AgentChatTurn;
   record: NoteChatContinuityRecord;
   runGeneration: number;
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   runtimeSessionId: string;
   storedSessionId: string;
 }) {
@@ -1349,6 +1364,7 @@ function confirmNoteChatRunAccepted({
     return false;
   }
   record.runAccepted = true;
+  record.acceptedRuntimeIncarnation = runtimeIncarnation;
   record.currentRunPendingUserTurn = pendingUserTurn;
   record.lastAcceptedRunPendingUserTurn = pendingUserTurn;
   const deferredTerminals = record.deferredPreAcceptanceTerminals;
@@ -1614,6 +1630,49 @@ function recordNoteChatResumePersistenceBoundary(
       persistedRun.pendingCompleteRunOrdinal ?? persistedRun.assistantTexts.length,
     pendingMessageComplete: persistedRun.pendingCompleteRunOrdinal !== undefined,
   });
+}
+
+function reconcileNoteChatRuntimeReplacement(
+  record: NoteChatContinuityRecord,
+  resumed: HermesRuntimeSessionResponse,
+  replacementRuntimeIncarnation: HermesRuntimeIncarnation | undefined,
+) {
+  if (!Array.isArray(resumed.messages)) return false;
+  const pendingUserTurn = record.currentRunPendingUserTurn ?? record.lastAcceptedRunPendingUserTurn;
+  if (!pendingUserTurn) return false;
+  const origin = record.unpersistedIdlessTranscriptOrigins.get(pendingUserTurn.id);
+  if (!origin) return false;
+  const persistedRun = persistedAssistantRunForAtomicNoteChatResume(
+    record,
+    pendingUserTurn,
+    resumed.messages,
+    undefined,
+  );
+  if (!persistedRun) return false;
+  const inflightAssistant = resumed.inflight?.assistant;
+  const replacementHasActiveInflightAssistant = Boolean(
+    resumed.inflight &&
+      (resumed.inflight.streaming !== false ||
+        (typeof inflightAssistant === "string" && inflightAssistant.length > 0)),
+  );
+  const current = record.liveStream;
+  const next = reconcileHermesLiveStreamAfterRuntimeReplacement(current, {
+    throughRevision: current.revision,
+    runStartRevision: origin.runStartRevision,
+    acceptedRuntimeIncarnation: origin.runtimeIncarnation,
+    replacementRuntimeIncarnation,
+    replacementRunning: resumed.running,
+    replacementHasActiveInflightAssistant,
+    replacementHasPendingMessageComplete: resumed.pending_message_complete !== undefined,
+    persistedAssistantTexts: persistedRun.assistantTexts,
+  });
+  if (next === current) return false;
+  record.liveStream = next;
+  const retainedRevisions = new Set(next.entries.map(({ revision }) => revision));
+  if (origin.transcriptEntries.every(({ revision }) => !retainedRevisions.has(revision))) {
+    record.unpersistedIdlessTranscriptOrigins.delete(pendingUserTurn.id);
+  }
+  return true;
 }
 
 function persistedAssistantCoversIdlessTranscript(
@@ -1978,6 +2037,7 @@ function observeNoteChatRunStarted(event: Event) {
   const latestGeneration = record.latestRunMonitorGeneration;
   if (latestGeneration !== undefined && latestGeneration >= detail.runMonitorGeneration) return;
   record.latestRunMonitorGeneration = detail.runMonitorGeneration;
+  record.acceptedRuntimeIncarnation = detail.runtimeIncarnation;
   if (
     record.runMonitorGeneration !== undefined &&
     record.runMonitorGeneration < detail.runMonitorGeneration
@@ -2080,6 +2140,7 @@ export function resetNoteChatContinuityForTest() {
   activeSubmissionByNoteId.clear();
   gatewayRecovery = null;
   gatewayRecoveryRetryRequested = false;
+  sharedGatewayIncarnation = undefined;
 }
 
 function terminalAgentStatus(
@@ -2260,6 +2321,7 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
         retireOpenNoteChatApprovalsForGatewayClose(noteChatStoredSessionIdsOwnedByGateway);
         abortNoteChatRuntimeResumeHandoffsForGateway(gateway);
         sharedGateway = null;
+        sharedGatewayIncarnation = undefined;
         gatewayEpoch += 1;
         runtimeResumeByStoredSessionId.clear();
         invalidateNoteChatRuntimeSessions();
@@ -2269,6 +2331,7 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
       sharedGateway = gateway;
     }
     await sharedGateway.connect(wsUrl);
+    sharedGatewayIncarnation = hermesRuntimeIncarnation(connection);
     return sharedGateway;
   })().finally(() => {
     sharedGatewayConnecting = null;
@@ -2350,14 +2413,22 @@ function resumeNoteChatRuntimeSession(
         // The successful response is the server-side handoff barrier: the old
         // notifier generation is deactivated and drained before these staged
         // replacement frames become actionable. Bind the replacement runtime
-        // session id first, replay transport frames second, then fill only a
-        // monotonic missing suffix from the atomic in-flight snapshot.
+        // session id first, reconcile process-replacement persistence while
+        // frames remain staged, then replay and fill only a missing suffix.
         const retiredApprovalRequestIds = Array.isArray(resumed.retired_approval_request_ids)
           ? resumed.retired_approval_request_ids.filter(
               (requestId): requestId is string => typeof requestId === "string",
             )
           : undefined;
+        const runtimeReplacementReconciled = reconcileNoteChatRuntimeReplacement(
+          record,
+          resumed,
+          sharedGatewayIncarnation,
+        );
         recordNoteChatResumePersistenceBoundary(record, resumed);
+        if (runtimeReplacementReconciled) {
+          notifyNoteChatStoredSessionContinuity(storedSessionId, record);
+        }
         completeNoteChatRuntimeResumeHandoff(
           resumeHandoff,
           runtimeSessionId,
@@ -3550,6 +3621,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
               pendingUserTurn: optimistic,
               record: acceptedRecord,
               runGeneration: submissionRunGeneration,
+              runtimeIncarnation: sharedGatewayIncarnation,
               runtimeSessionId: activeRuntimeSessionId,
               storedSessionId: activeStoredSessionId,
             })
@@ -3557,6 +3629,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             const runMonitorGeneration = startAgentRunMonitoring({
               storedSessionId: activeStoredSessionId,
               runtimeSessionId: activeRuntimeSessionId,
+              runtimeIncarnation: acceptedRecord.acceptedRuntimeIncarnation,
               title: noteTitle.trim() || "Note chat",
               fullMode: false,
               settlementHeld: false,

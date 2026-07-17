@@ -20,7 +20,8 @@ def load_server_handoff_helpers(root: Path):
         raise RuntimeError("patched Hermes gateway server is missing: %s" % path)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     wanted = {
-        "_autonomous_turn_waits_for_resume_response",
+        "_agent_run_continuation_waits_for_resume_ack",
+        "_bind_prompt_transport_for_submit",
         "_clear_pending_message_complete",
         "_clear_inflight_turn",
         "_coerce_message_text",
@@ -34,8 +35,9 @@ def load_server_handoff_helpers(root: Path):
         "_mark_pending_message_complete",
         "_message_complete_is_pending",
         "_pending_message_complete_proof",
-        "_release_autonomous_turns_after_resume_response",
+        "_release_agent_run_continuations_after_resume_ack",
         "_retry_pending_message_complete",
+        "_retry_pending_message_complete_locked",
         "_start_inflight_turn",
         "_take_deferred_goal_followup",
     }
@@ -52,7 +54,9 @@ def load_server_handoff_helpers(root: Path):
     namespace = {
         "Any": object,
         "Transport": object,
-        "_AUTONOMOUS_TURN_RESUME_BARRIER": "_june_autonomous_turn_resume_barrier",
+        "_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER": (
+            "_june_agent_run_continuation_resume_ack_barrier"
+        ),
         "_DEFERRED_GOAL_FOLLOWUP": "_june_deferred_goal_followup",
         "_PENDING_MESSAGE_COMPLETE_PAYLOAD": "_june_pending_message_complete_payload",
         "_PENDING_MESSAGE_COMPLETE_TEXT": "_june_pending_message_complete_text",
@@ -87,17 +91,19 @@ def load_server_handoff_helpers(root: Path):
 
 
 def assert_server_handoff_source(root: Path) -> None:
-    """Keep retained completion retry and autonomous-turn ordering sealed."""
+    """Keep retained completion retry and Agent run continuation ordering sealed."""
     source = (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
     start = source.index("    def _reuse_live_payload(sid: str, session: dict) -> dict:")
     end = source.index("\n    # Fast path: if the session is already live", start)
     handoff = source[start:end]
     snapshot = handoff.find("payload = _live_session_payload(")
     barrier_arm = handoff.find(
-        "autonomous_turn_response_transport=resume_transport"
+        "agent_run_continuation_resume_ack_transport=resume_transport"
     )
     retry = handoff.find("_retry_pending_message_complete(")
-    ordered_retry = handoff.find("wait_for_resume_response=True")
+    ordered_retry = handoff.find(
+        "arm_agent_run_continuation_resume_ack_barrier=True"
+    )
     response = handoff.find('payload["resumed"] = target')
     assert retry >= 0, "live session resume does not retry a retained message.complete"
     assert snapshot < barrier_arm < retry < ordered_retry < response, handoff
@@ -108,7 +114,7 @@ def assert_server_handoff_source(root: Path) -> None:
     live_lock = live_payload.find('with session["history_lock"]:')
     transport_swap = live_payload.find('session["transport"] = transport')
     atomic_arm = live_payload.find(
-        "session[_AUTONOMOUS_TURN_RESUME_BARRIER] = ("
+        "session[_AGENT_RUN_CONTINUATION_RESUME_ACK_BARRIER] = ("
     )
     history_snapshot = live_payload.find("history = list(")
     assert live_lock < transport_swap < atomic_arm < history_snapshot, live_payload
@@ -116,25 +122,31 @@ def assert_server_handoff_source(root: Path) -> None:
     dispatch_start = source.index("def dispatch(")
     dispatch_end = source.index("\ndef _wait_agent", dispatch_start)
     dispatch = source[dispatch_start:dispatch_end]
-    response_write = dispatch.find("response_delivered = t.write(resp)")
-    goal_release = dispatch.find("_release_autonomous_turns_after_resume_response(resp, t)")
-    assert response_write >= 0, "session.resume response delivery is not observed"
-    assert response_write < goal_release, dispatch
+    ack_write = dispatch.find("resume_ack_delivered = t.write(resp)")
+    goal_release = dispatch.find(
+        "_release_agent_run_continuations_after_resume_ack(resp, t)"
+    )
+    assert ack_write >= 0, "session.resume acknowledgement is not observed"
+    assert ack_write < goal_release, dispatch
 
     prompt_start = source.index('@method("prompt.submit")')
     prompt_end = source.index("\ndef _notification_event_belongs_elsewhere", prompt_start)
     prompt_submit = source[prompt_start:prompt_end]
-    prompt_retry = prompt_submit.find("_retry_pending_message_complete(session, request_transport)")
+    prompt_bind = prompt_submit.find(
+        "_bind_prompt_transport_for_submit(session, request_transport)"
+    )
     prompt_guard = prompt_submit.find("_message_complete_is_pending(session)")
     prompt_inflight = prompt_submit.find("_start_inflight_turn(session, text)")
-    assert prompt_retry >= 0, "prompt.submit does not retry a retained completion"
-    assert prompt_retry < prompt_guard < prompt_inflight, prompt_submit
+    assert prompt_bind >= 0, "prompt.submit does not bind through the resume barrier"
+    assert prompt_bind < prompt_guard < prompt_inflight, prompt_submit
 
     poller_start = source.index("def _notification_poller_loop(")
     poller_end = source.index("\ndef _start_notification_poller", poller_start)
     poller = source[poller_start:poller_end]
     assert "_take_deferred_goal_followup(session)" in poller, poller
-    assert poller.count("_autonomous_turn_waits_for_resume_response(session)") >= 2, poller
+    assert (
+        poller.count("_agent_run_continuation_waits_for_resume_ack(session)") >= 2
+    ), poller
     assert poller.count("_message_complete_is_pending(session)") >= 2, poller
     assert poller.count("process_registry.completion_queue.put(evt)") >= 3, poller
     deferral = poller.find("defer_notification = False")
@@ -150,7 +162,7 @@ def assert_server_handoff_source(root: Path) -> None:
     goal = run_prompt.index("if goal_followup:")
     defer = run_prompt.index("_defer_goal_followup(", goal)
     goal_barrier = run_prompt.index(
-        "_autonomous_turn_waits_for_resume_response(session)", goal
+        "_agent_run_continuation_waits_for_resume_ack(session)", goal
     )
     nested_run = run_prompt.index("_run_prompt_submit(rid, sid, session, goal_followup)", goal)
     assert goal < goal_barrier < defer < nested_run, run_prompt[goal:nested_run]
@@ -1098,8 +1110,8 @@ def exercise_server_handoff(server) -> None:
     # Snapshot/emitter race: resume observes the committed-row proof and swaps
     # transport before the original emitter stores its payload. The emitter can
     # then succeed on the replacement and clear the proof, but the atomically
-    # armed response barrier must still defer goal chaining until that exact
-    # resume response is accepted.
+    # armed acknowledgement barrier must still defer goal chaining until that
+    # exact resume acknowledgement is accepted.
     snapshot_race_old = RecordingTransport("snapshot-race-old")
     snapshot_race_new = RecordingTransport("snapshot-race-new")
     snapshot_race = session_for(snapshot_race_old)
@@ -1114,7 +1126,7 @@ def exercise_server_handoff(server) -> None:
         "snapshot-race-session",
         snapshot_race,
         transport=snapshot_race_new,
-        autonomous_turn_response_transport=snapshot_race_new,
+        agent_run_continuation_resume_ack_transport=snapshot_race_new,
     )
     assert race_payload["pending_message_complete"] == {"assistant_ordinal": 2}
     assert server["_deliver_message_complete"](
@@ -1125,27 +1137,58 @@ def exercise_server_handoff(server) -> None:
     assert snapshot_race_new.frames == [expected_frame]
     assert "_june_pending_message_complete_payload" not in snapshot_race
     assert (
-        snapshot_race["_june_autonomous_turn_resume_barrier"]
+        snapshot_race["_june_agent_run_continuation_resume_ack_barrier"]
         is snapshot_race_new
     )
     with snapshot_race["history_lock"]:
         snapshot_race["running"] = False
         server["_defer_goal_followup"](
-            snapshot_race, "snapshot-race-rid", "Continue after response."
+            snapshot_race, "snapshot-race-rid", "Continue after acknowledgement."
         )
     assert server["_take_deferred_goal_followup"](snapshot_race) is None
     server["_sessions"]["snapshot-race-session"] = snapshot_race
-    server["_release_autonomous_turns_after_resume_response"](
+    server["_release_agent_run_continuations_after_resume_ack"](
         {"result": {"session_id": "snapshot-race-session"}}, snapshot_race_new
     )
     assert server["_take_deferred_goal_followup"](snapshot_race) == {
         "rid": "snapshot-race-rid",
-        "text": "Continue after response.",
+        "text": "Continue after acknowledgement.",
     }
 
+    # A concurrent prompt cannot steal transport ownership while a resume
+    # snapshot is between its atomic capture and successful acknowledgement.
+    # Otherwise the release path would leave the acknowledgement barrier armed
+    # forever.
+    resume_ack_transport = RecordingTransport("resume-ack")
+    prompt_contender_transport = RecordingTransport("prompt-contender")
+    prompt_during_resume = session_for(old_transport)
+    server["_live_session_payload"](
+        "prompt-during-resume-session",
+        prompt_during_resume,
+        transport=resume_ack_transport,
+        agent_run_continuation_resume_ack_transport=resume_ack_transport,
+    )
+    server["_sessions"]["prompt-during-resume-session"] = prompt_during_resume
+    assert server["_bind_prompt_transport_for_submit"](
+        prompt_during_resume, prompt_contender_transport
+    ) is False
+    assert prompt_during_resume["transport"] is resume_ack_transport
+    server["_release_agent_run_continuations_after_resume_ack"](
+        {"result": {"session_id": "prompt-during-resume-session"}},
+        resume_ack_transport,
+    )
+    assert (
+        "_june_agent_run_continuation_resume_ack_barrier"
+        not in prompt_during_resume
+    )
+    assert server["_bind_prompt_transport_for_submit"](
+        prompt_during_resume, prompt_contender_transport
+    ) is True
+    assert prompt_during_resume["transport"] is prompt_contender_transport
+
     # Starting another in-flight row cannot abandon or replace a completion the
-    # previous transport rejected. Autonomous work must wait for that exact
-    # frame to reach a replacement transport first.
+    # previous transport rejected. Agent run continuation work must wait for
+    # that exact frame to reach a replacement transport first.
     retained_old = RecordingTransport("retained-old", outcomes=[False])
     retained_on_next_run = session_for(retained_old)
     with retained_on_next_run["history_lock"]:
@@ -1174,7 +1217,7 @@ def exercise_server_handoff(server) -> None:
     # Even a defensive second history-commit attempt cannot overwrite the
     # older proof while its exact completion payload is still pending.
     later_history = history_prefix + run_history + [
-        {"role": "user", "content": "Autonomous continuation."},
+        {"role": "user", "content": "Agent run continuation."},
         {"role": "assistant", "content": "Later reply."},
     ]
     with retained_on_next_run["history_lock"]:
@@ -1204,21 +1247,21 @@ def exercise_server_handoff(server) -> None:
     assert server["_take_deferred_goal_followup"](retained_on_next_run) is None
     assert retained_on_next_run["_june_deferred_goal_followup"] == {
         "rid": "goal-rid",
-        "resume_response_delivered": False,
+        "resume_ack_delivered": False,
         "text": "Continue the active goal.",
     }
     retained_new = RecordingTransport("retained-new")
     assert server["_retry_pending_message_complete"](
         retained_on_next_run,
         retained_new,
-        wait_for_resume_response=True,
+        arm_agent_run_continuation_resume_ack_barrier=True,
     ) is True
     assert retained_new.frames == [expected_frame]
     assert (
-        retained_on_next_run["_june_autonomous_turn_resume_barrier"]
+        retained_on_next_run["_june_agent_run_continuation_resume_ack_barrier"]
         is retained_new
     )
-    assert server["_autonomous_turn_waits_for_resume_response"](
+    assert server["_agent_run_continuation_waits_for_resume_ack"](
         retained_on_next_run
     )
     assert server["_take_deferred_goal_followup"](retained_on_next_run) is None
@@ -1229,20 +1272,23 @@ def exercise_server_handoff(server) -> None:
         "runtime-session",
         retained_on_next_run,
         transport=newest_resume,
-        autonomous_turn_response_transport=newest_resume,
+        agent_run_continuation_resume_ack_transport=newest_resume,
     )
-    server["_release_autonomous_turns_after_resume_response"](
+    server["_release_agent_run_continuations_after_resume_ack"](
         {"result": {"session_id": "runtime-session"}}, retained_new
     )
     assert (
-        retained_on_next_run["_june_autonomous_turn_resume_barrier"]
+        retained_on_next_run["_june_agent_run_continuation_resume_ack_barrier"]
         is newest_resume
     )
     assert server["_take_deferred_goal_followup"](retained_on_next_run) is None
-    server["_release_autonomous_turns_after_resume_response"](
+    server["_release_agent_run_continuations_after_resume_ack"](
         {"result": {"session_id": "runtime-session"}}, newest_resume
     )
-    assert "_june_autonomous_turn_resume_barrier" not in retained_on_next_run
+    assert (
+        "_june_agent_run_continuation_resume_ack_barrier"
+        not in retained_on_next_run
+    )
     deferred = server["_take_deferred_goal_followup"](retained_on_next_run)
     assert deferred == {
         "rid": "goal-rid",

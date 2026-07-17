@@ -5924,7 +5924,7 @@ describe("AgentWorkspace", () => {
               sessionId: "session-1",
               runMonitorGeneration: 1,
               status: "failed",
-              summary: "June stopped responding.",
+              summary: "June hit a problem.",
             },
           }),
         );
@@ -5936,7 +5936,7 @@ describe("AgentWorkspace", () => {
         expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
       );
       expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull();
-      expect(screen.getByText("June stopped responding.")).toBeInTheDocument();
+      expect(screen.getByText("June hit a problem.")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -14204,6 +14204,162 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Final reply crossing the resume boundary.")).toHaveLength(1),
     );
+  });
+
+  it.each([
+    {
+      name: "compacts only after a different process persists the exact reply",
+      replacement: "different" as const,
+      persistedAssistantText: "Final answer",
+      retainedPartial: false,
+    },
+    {
+      name: "retains the partial after an ordinary same-process reconnect",
+      replacement: "same" as const,
+      persistedAssistantText: "Final answer",
+      retainedPartial: true,
+    },
+    {
+      name: "retains the partial when replacement persistence does not match",
+      replacement: "different" as const,
+      persistedAssistantText: "Different answer",
+      retainedPartial: true,
+    },
+  ])("runtime replacement: $name", async ({
+    replacement,
+    persistedAssistantText,
+    retainedPartial,
+  }) => {
+    type PersistedMessage = {
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      timestamp: string;
+    };
+    const processAConnection = {
+      fullMode: false,
+      pid: 101,
+      port: 61234,
+      wsUrl: "ws://127.0.0.1:61234",
+    };
+    const processBConnection = {
+      fullMode: false,
+      pid: 202,
+      port: 61235,
+      wsUrl: "ws://127.0.0.1:61235",
+    };
+    const processAStatus = {
+      running: true,
+      connection: processAConnection,
+      connections: [processAConnection],
+    };
+    const processBStatus = {
+      running: true,
+      connection: processBConnection,
+      connections: [processBConnection],
+    };
+    let currentBridgeStatus = processAStatus;
+    let persistedMessages: PersistedMessage[] = [];
+    let resumeCount = 0;
+    mocks.hermesBridgeStatus.mockImplementation(async () => currentBridgeStatus);
+    mocks.startHermesBridge.mockImplementation(async () => currentBridgeStatus);
+    mocks.listHermesSessionMessages.mockImplementation(async () => persistedMessages);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method !== "session.resume") return Promise.resolve({});
+      resumeCount += 1;
+      if (resumeCount === 1) {
+        return Promise.resolve({
+          retired_approval_request_ids: [],
+          running: false,
+          session_id: "runtime-session-before-replacement",
+        });
+      }
+      return Promise.resolve({
+        messages: persistedMessages.map(({ id: _id, ...message }) => message),
+        retired_approval_request_ids: [],
+        running: false,
+        session_id: `runtime-session-after-replacement-${resumeCount}`,
+      });
+    });
+
+    const submittedText = "Recover the exact accepted reply.";
+    const user = userEvent.setup();
+    const first = render(<AgentWorkspace initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, submittedText);
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-before-replacement",
+        text: submittedText,
+      }),
+    );
+    const originGateway = mocks.gatewayInstances[0];
+    expect(originGateway).toBeDefined();
+    await waitFor(() =>
+      expect(originGateway?.connect).toHaveBeenCalledWith(processAConnection.wsUrl),
+    );
+
+    act(() => {
+      for (const handler of [...(originGateway?.eventHandlers ?? [])]) {
+        handler({
+          type: "message.start",
+          event_id: "runtime-replacement-open-start",
+          session_id: "runtime-session-before-replacement",
+          payload: {},
+        });
+        handler({
+          type: "message.delta",
+          event_id: "runtime-replacement-open-delta",
+          session_id: "runtime-session-before-replacement",
+          payload: { delta: "Final ans" },
+        });
+      }
+    });
+    expect(await screen.findByText("Final ans")).toBeVisible();
+
+    persistedMessages = [
+      {
+        id: "runtime-replacement-user",
+        role: "user",
+        content: submittedText,
+        timestamp: new Date(Date.now() + 1_000).toISOString(),
+      },
+      {
+        id: "runtime-replacement-assistant",
+        role: "assistant",
+        content: persistedAssistantText,
+        timestamp: new Date(Date.now() + 2_000).toISOString(),
+      },
+    ];
+    currentBridgeStatus = replacement === "different" ? processBStatus : processAStatus;
+    const statusCallsBeforeRecovery = mocks.hermesBridgeStatus.mock.calls.length;
+    act(() => {
+      for (const close of [...mocks.gatewayCloseHandlers]) close();
+    });
+    await waitFor(() => expect(resumeCount).toBe(2));
+    await waitFor(() =>
+      expect(mocks.hermesBridgeStatus.mock.calls.length).toBeGreaterThan(statusCallsBeforeRecovery),
+    );
+    const replacementConnection =
+      replacement === "different" ? processBConnection : processAConnection;
+    await waitFor(() =>
+      expect(originGateway?.connect).toHaveBeenLastCalledWith(replacementConnection.wsUrl),
+    );
+
+    const assertTranscript = async () => {
+      expect(await screen.findByText(persistedAssistantText)).toBeVisible();
+      if (retainedPartial) {
+        expect(await screen.findByText("Final ans")).toBeVisible();
+      } else {
+        await waitFor(() => expect(screen.queryByText("Final ans")).toBeNull());
+      }
+    };
+    await assertTranscript();
+
+    first.unmount();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await assertTranscript();
   });
 
   it("keeps identical staged prose when resume supplies no pending-complete proof", async () => {

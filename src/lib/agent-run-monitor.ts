@@ -4,7 +4,7 @@ import {
   dispatchAgentSessionStatus,
 } from "./agent-events";
 import { hasFinalContentBearingAssistantReply } from "./agent-chat-runtime";
-import { hermesConnectionForMode } from "./hermes-connection";
+import { hermesConnectionForMode, type HermesRuntimeIncarnation } from "./hermes-connection";
 import { HermesGatewayClient } from "./hermes-gateway";
 import { watchHermesRunSettlement, type HermesRunSettlementHandle } from "./hermes-run-settlement";
 import {
@@ -16,6 +16,8 @@ import {
 export type StartAgentRunMonitoringInput = {
   storedSessionId: string;
   runtimeSessionId?: string;
+  /** In-memory identity of the Hermes process that accepted this run. */
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   title: string;
   fullMode: boolean;
   settlementHeld: boolean;
@@ -44,6 +46,7 @@ export type AgentRunTerminalEvidence = {
 export type AgentRunMonitorSnapshot = {
   generation: number;
   runtimeSessionId?: string;
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   fullMode: boolean;
   phase: "active" | "stopping" | "succeeded" | "terminal";
 };
@@ -114,6 +117,7 @@ export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
       storedSessionId: run.storedSessionId,
       runMonitorGeneration: run.generation,
       runtimeSessionId: run.runtimeSessionId,
+      runtimeIncarnation: run.runtimeIncarnation,
       fullMode: run.fullMode,
     });
   });
@@ -250,6 +254,7 @@ export function agentRunMonitorSnapshot(
     return {
       generation: run.generation,
       runtimeSessionId: run.runtimeSessionId,
+      runtimeIncarnation: run.runtimeIncarnation,
       fullMode: run.fullMode,
       phase: run.stopping ? "stopping" : run.succeeded ? "succeeded" : "active",
     };
@@ -358,7 +363,7 @@ function startSettlementIfReady(run: AgentRunMonitor) {
       title: run.title,
       status: "failed",
       runMonitorGeneration: run.generation,
-      summary: "June stopped responding.",
+      summary: "June hit a problem.",
     });
   }, MONITOR_TIMEOUT_MS + 1);
 }
@@ -454,6 +459,7 @@ function rememberTerminalRunSnapshot(run: AgentRunMonitor) {
   terminalRunSnapshots.set(run.storedSessionId, {
     generation: run.generation,
     runtimeSessionId: run.runtimeSessionId,
+    runtimeIncarnation: run.runtimeIncarnation,
     fullMode: run.fullMode,
     phase: "terminal",
   });

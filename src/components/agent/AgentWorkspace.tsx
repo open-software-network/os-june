@@ -246,6 +246,7 @@ import {
   recordHermesIdlessTranscriptPersistenceBoundary,
   reconcileHermesInflightSnapshot,
   reconcileHermesLiveStream,
+  reconcileHermesLiveStreamAfterRuntimeReplacement,
   type HermesLiveStream,
 } from "../../lib/hermes-live-stream";
 import {
@@ -375,7 +376,11 @@ import {
   type ReportCategory,
 } from "./composer/reportCategory";
 import { ReportDialog, type ReportDialogAttachment } from "./ReportDialog";
-import { hermesConnectionForMode } from "../../lib/hermes-connection";
+import {
+  hermesConnectionForMode,
+  hermesRuntimeIncarnation,
+  type HermesRuntimeIncarnation,
+} from "../../lib/hermes-connection";
 import {
   forgetSessionMode,
   rememberSessionMode,
@@ -1939,6 +1944,7 @@ type AgentRunPersistenceBoundary = {
 
 type AgentRunAuthorityProof = {
   persistenceBoundary: AgentRunPersistenceBoundary;
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   submittedUserMessage: HermesSessionMessage;
 };
 
@@ -3567,7 +3573,7 @@ export function AgentWorkspace({
                 attachments: delivery.attachments ?? item.attachments,
                 dispatchReservation: undefined,
                 status: "failed",
-                error: delivery.error ?? "Delivery failed. Try again.",
+                error: delivery.error ?? "Delivery was interrupted. Try again.",
               },
             ];
           }
@@ -3616,7 +3622,7 @@ export function AgentWorkspace({
               attachments: delivery.attachments ?? item.attachments,
               dispatchReservation: undefined,
               status: "failed",
-              error: delivery.error ?? "Delivery failed. Try again.",
+              error: delivery.error ?? "Delivery was interrupted. Try again.",
             };
           });
         });
@@ -3822,6 +3828,12 @@ export function AgentWorkspace({
   // runtime processes run side by side, each with its own socket. Sessions
   // route to the gateway matching their recorded mode.
   const gatewaysRef = useRef<Map<boolean, HermesGatewayClient>>(new Map());
+  // Process identity is transport authority, distinct from the runtime or
+  // stored session ids that survive resume. Capture it when a mode connects so
+  // an accepted run can later prove that recovery crossed a process boundary.
+  const connectedHermesRuntimeIncarnationsRef = useRef<Map<boolean, HermesRuntimeIncarnation>>(
+    new Map(),
+  );
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
   // closure (see recoverFromGatewayClose).
@@ -4223,7 +4235,9 @@ export function AgentWorkspace({
         if (!resumeHandoff) continue;
         let restoredListener: ReturnType<typeof attachHermesSessionEventListener> | undefined;
         try {
-          const gateway = await ensureHermesGateway(sessionUnrestricted(storedSessionId));
+          const gateway = await ensureHermesGateway(sessionUnrestricted(storedSessionId), {
+            refreshBridgeStatus: true,
+          });
           if (cancelled) {
             resumeHandoff.cancel();
             continue;
@@ -4278,15 +4292,21 @@ export function AgentWorkspace({
                 return;
               }
               activeRestoredListener.rebindRuntimeSessionId(resumedRuntimeSessionId);
+              reconcileHermesRuntimeReplacementAfterResume(
+                storedSessionId,
+                resumed,
+                connectedHermesRuntimeIncarnationsRef.current.get(
+                  sessionUnrestricted(storedSessionId),
+                ),
+              );
               recordHermesResumePersistenceBoundary(
                 storedSessionId,
                 resumed.messages,
                 resumed.pending_message_complete,
               );
-              // Replay transport frames first, then use the atomic snapshot to
-              // fill only any missing suffix. A delta is appended to Hermes'
-              // in-flight buffer before it is emitted, so snapshot-first would
-              // duplicate a frame staged just ahead of the resume response.
+              // Retire only a process-replacement-proven open transcript before
+              // staged replacement frames can affect the live stream. Replay
+              // those frames next, then fill only a missing in-flight suffix.
               activeRestoredListener.completeResumeHandoff(resumed.retired_approval_request_ids);
               const inflightAssistant = resumed.inflight?.assistant;
               if (typeof inflightAssistant === "string" && inflightAssistant.length > 0) {
@@ -8245,6 +8265,7 @@ export function AgentWorkspace({
     persistenceBoundary,
     predecessorRunMonitorGeneration,
     runAlreadyAccepted = false,
+    runtimeIncarnation,
     runtimeSessionId,
     sessionDisplayTitle,
     stageEventsUntilResume = false,
@@ -8256,6 +8277,7 @@ export function AgentWorkspace({
     persistenceBoundary?: AgentRunPersistenceBoundary;
     predecessorRunMonitorGeneration?: number;
     runAlreadyAccepted?: boolean;
+    runtimeIncarnation?: HermesRuntimeIncarnation;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     stageEventsUntilResume?: boolean;
@@ -8277,7 +8299,7 @@ export function AgentWorkspace({
     agentRunListenerEpochsRef.current.set(storedSessionId, agentRunListenerEpoch);
     const providedAuthorityProof =
       persistenceBoundary && submittedUserMessage
-        ? { persistenceBoundary, submittedUserMessage }
+        ? { persistenceBoundary, runtimeIncarnation, submittedUserMessage }
         : undefined;
     if (providedAuthorityProof) {
       agentRunAuthorityProofsRef.current.set(storedSessionId, providedAuthorityProof);
@@ -9282,7 +9304,7 @@ export function AgentWorkspace({
           stagedEvent.kind === "pending_action_expiration"
             ? stagedEvent.action.requestId
             : undefined;
-        // The patched resume response names every request tombstoned by the
+        // The patched resume snapshot names every request tombstoned by the
         // old notifier generation. Drop only those exact transitions: a fresh
         // approval can legitimately arrive on the replacement transport just
         // before the ACK and must remain actionable.
@@ -9929,6 +9951,9 @@ export function AgentWorkspace({
         onSuperseded: clearQueuedIssueReport,
         persistenceBoundary,
         predecessorRunMonitorGeneration: runGenerationAtSend,
+        runtimeIncarnation: connectedHermesRuntimeIncarnationsRef.current.get(
+          sessionUnrestricted(storedSessionId),
+        ),
         runtimeSessionId: activeRuntimeSessionId,
         sessionDisplayTitle,
         storedSessionId,
@@ -9994,6 +10019,7 @@ export function AgentWorkspace({
           const runMonitorGeneration = startAgentRunMonitoring({
             storedSessionId,
             runtimeSessionId: activeRuntimeSessionId,
+            runtimeIncarnation: promptAuthorityProof?.runtimeIncarnation,
             title: sessionDisplayTitle,
             fullMode: sessionUnrestricted(storedSessionId),
             settlementHeld: true,
@@ -10106,8 +10132,16 @@ export function AgentWorkspace({
   // (the sandbox is applied at spawn and can't change on a live process, so
   // per-session modes mean a process per mode) — ensuring one never touches
   // the other's process or in-flight work.
-  async function ensureHermesGateway(fullMode = false) {
-    let connection = hermesConnectionForMode(bridge.running ? bridge : undefined, fullMode);
+  async function ensureHermesGateway(
+    fullMode = false,
+    options: { refreshBridgeStatus?: boolean } = {},
+  ) {
+    let status: HermesBridgeStatus | undefined = bridge.running ? bridge : undefined;
+    if (options.refreshBridgeStatus) {
+      status = await hermesBridgeStatus();
+      setBridge(status);
+    }
+    let connection = hermesConnectionForMode(status, fullMode);
     if (!connection) {
       const next = await startBridge(fullMode);
       connection = hermesConnectionForMode(next, fullMode);
@@ -10123,6 +10157,12 @@ export function AgentWorkspace({
       gateway.onClose(() => gatewayCloseHandlerRef.current(fullMode));
     }
     await gateway.connect(wsUrl);
+    const incarnation = hermesRuntimeIncarnation(connection);
+    if (incarnation) {
+      connectedHermesRuntimeIncarnationsRef.current.set(fullMode, incarnation);
+    } else {
+      connectedHermesRuntimeIncarnationsRef.current.delete(fullMode);
+    }
     return gateway;
   }
 
@@ -10151,13 +10191,13 @@ export function AgentWorkspace({
           const activeMonitor = monitor && monitor.phase !== "terminal" ? monitor : undefined;
           if (activeMonitor) {
             if (!activeMonitor.runtimeSessionId) {
-              throw new Error("Session usage is unavailable while June is working.");
+              throw new Error(SESSION_BUSY_NOTICE);
             }
             try {
               return await usageFor(activeMonitor.runtimeSessionId);
             } catch (err) {
               if (!isSessionGoneError(messageFromError(err))) throw err;
-              throw new Error("Session usage is unavailable while June is working.");
+              throw new Error(SESSION_BUSY_NOTICE);
             }
           }
 
@@ -10505,7 +10545,7 @@ export function AgentWorkspace({
     );
     gatewayRecoveringRef.current.add(fullMode);
     try {
-      const gateway = await ensureHermesGateway(fullMode);
+      const gateway = await ensureHermesGateway(fullMode, { refreshBridgeStatus: true });
       await Promise.all(
         Array.from(recoveryRuns).map(async ([storedSessionId, recoveryRun]) => {
           const { monitorOwner: recoveryMonitorOwner, source: recoverySource } = recoveryRun;
@@ -10583,16 +10623,19 @@ export function AgentWorkspace({
                   return;
                 }
                 activeRecoveryListener.rebindRuntimeSessionId(resumedRuntimeSessionId);
+                reconcileHermesRuntimeReplacementAfterResume(
+                  storedSessionId,
+                  resumed,
+                  connectedHermesRuntimeIncarnationsRef.current.get(fullMode),
+                );
                 recordHermesResumePersistenceBoundary(
                   storedSessionId,
                   resumed.messages,
                   resumed.pending_message_complete,
                 );
-                // Replay replacement-transport frames first, then append only
-                // a missing suffix from the atomic in-flight snapshot. Approval
-                // transitions retired by the old notifier generation are
-                // filtered by exact request id; absent retirement metadata
-                // keeps staged approvals fail closed.
+                // Process-replacement reconciliation runs while replacement
+                // frames remain staged. Replay them next, then append only a
+                // missing suffix from the atomic in-flight snapshot.
                 activeRecoveryListener.completeResumeHandoff(resumed.retired_approval_request_ids);
                 const inflightAssistant = resumed.inflight?.assistant;
                 if (typeof inflightAssistant === "string" && inflightAssistant.length > 0) {
@@ -10995,6 +11038,46 @@ export function AgentWorkspace({
       persistedAssistantOrdinal:
         persistedRun.pendingCompleteRunOrdinal ?? persistedRun.assistantTexts.length,
       pendingMessageComplete: persistedRun.pendingCompleteRunOrdinal !== undefined,
+    });
+    if (next === current) return;
+    liveEventsRef.current = {
+      ...liveEventsRef.current,
+      [storedSessionId]: next,
+    };
+    setLiveEvents(liveEventsRef.current);
+  }
+
+  function reconcileHermesRuntimeReplacementAfterResume(
+    storedSessionId: string,
+    resumed: HermesRuntimeSessionResponse,
+    replacementRuntimeIncarnation: HermesRuntimeIncarnation | undefined,
+  ) {
+    if (!Array.isArray(resumed.messages)) return;
+    const runStartRevision = agentRunStartRevisionsRef.current.get(storedSessionId);
+    const authorityProof = agentRunAuthorityProofsRef.current.get(storedSessionId);
+    if (runStartRevision === undefined || !authorityProof) return;
+    const persistedRun = persistedAssistantRunForAtomicResume(
+      normalizeAtomicHermesResumeMessages(resumed.messages),
+      authorityProof,
+      undefined,
+    );
+    if (!persistedRun) return;
+    const inflightAssistant = resumed.inflight?.assistant;
+    const replacementHasActiveInflightAssistant = Boolean(
+      resumed.inflight &&
+        (resumed.inflight.streaming !== false ||
+          (typeof inflightAssistant === "string" && inflightAssistant.length > 0)),
+    );
+    const current = liveEventsRef.current[storedSessionId] ?? createHermesLiveStream();
+    const next = reconcileHermesLiveStreamAfterRuntimeReplacement(current, {
+      throughRevision: current.revision,
+      runStartRevision,
+      acceptedRuntimeIncarnation: authorityProof.runtimeIncarnation,
+      replacementRuntimeIncarnation,
+      replacementRunning: resumed.running,
+      replacementHasActiveInflightAssistant,
+      replacementHasPendingMessageComplete: resumed.pending_message_complete !== undefined,
+      persistedAssistantTexts: persistedRun.assistantTexts,
     });
     if (next === current) return;
     liveEventsRef.current = {
