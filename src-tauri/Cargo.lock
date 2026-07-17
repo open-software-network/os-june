@@ -94,16 +94,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "apple-metal"
-version = "0.8.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b1c24b280fad9eadf6f2bf560d826392020ac6258b4c88c6dd356ae7a24f4e3"
-dependencies = [
- "doom-fish-utils",
- "libc",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3320,7 +3310,7 @@ name = "os-june"
 version = "0.0.34"
 dependencies = [
  "anyhow",
- "apple-metal 0.6.0",
+ "apple-metal",
  "base64 0.22.1",
  "block2 0.6.2",
  "chrono",
@@ -4375,7 +4365,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d826cde3e3238feab5cd87fc73f9d0d9d1132e31d02db37e1a510401882392e9"
 dependencies = [
  "apple-cf",
- "apple-metal 0.8.8",
+ "apple-metal",
 ]
 
 [[package]]
