@@ -49,6 +49,7 @@ if (preparedBundleMatches()) {
   console.error(
     `Reusing ${profile} Computer use helper for ${architectures.join("+")} from ${pin.sourceCommit}.`,
   );
+  stageUniversalCargoBin();
   process.exit(0);
 }
 
@@ -160,6 +161,27 @@ if (version.version !== pin.version || version.commit !== pin.sourceCommit) {
 console.error(
   `Prepared authenticated Computer use helper from cua-driver ${pin.version} (${pin.sourceCommit}).`,
 );
+stageUniversalCargoBin();
+
+// Tauri bundles every cargo binary of the crate and, for the pseudo-target
+// universal-apple-darwin, expects each one already lipo-merged under
+// target/universal-apple-darwin/<profile>/. Cargo only produces per-arch
+// binaries and Tauri merges only the main one, so stage the merged helper
+// executable there ourselves.
+function stageUniversalCargoBin() {
+  if (target !== "universal-apple-darwin") return;
+  const stagedBin = path.join(
+    rootDir,
+    "src-tauri",
+    "target",
+    "universal-apple-darwin",
+    profile,
+    pin.executable,
+  );
+  mkdirSync(path.dirname(stagedBin), { recursive: true });
+  cpSync(executable, stagedBin);
+  run("/bin/chmod", ["755", stagedBin]);
+}
 
 function helperVersion(file) {
   const result = spawnSync(file, ["--version"], { encoding: "utf8" });
