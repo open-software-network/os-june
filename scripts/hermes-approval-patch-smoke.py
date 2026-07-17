@@ -128,6 +128,40 @@ def _function(tree: ast.AST, name: str) -> ast.FunctionDef:
     raise AssertionError("missing Hermes function: %s" % name)
 
 
+def _rpc_method(tree: ast.AST, method_name: str) -> ast.FunctionDef:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "method"
+                and len(decorator.args) == 1
+                and isinstance(decorator.args[0], ast.Constant)
+                and decorator.args[0].value == method_name
+            ):
+                return node
+    raise AssertionError("missing Hermes RPC method: %s" % method_name)
+
+
+def verify_image_attach_does_not_wait_for_agent(root: Path) -> None:
+    tree = ast.parse(
+        (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
+    )
+    handler = _rpc_method(tree, "image.attach_bytes")
+    session_calls = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if node.func.id in {"_sess", "_sess_nowait"}
+    }
+    assert session_calls == {"_sess_nowait"}, (
+        "image.attach_bytes must persist to a newly created session without "
+        "waiting for agent initialization: %s" % sorted(session_calls)
+    )
+
+
 def verify_tui_memory_deny_propagation(root: Path) -> None:
     tree = ast.parse(
         (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
@@ -899,6 +933,7 @@ def main() -> int:
         root = args.root.resolve()
         upstream_root = args.upstream_root.resolve() if args.upstream_root else None
         verify_patch_state_machine(root, upstream_root)
+        verify_image_attach_does_not_wait_for_agent(root)
         verify_tui_memory_deny_propagation(root)
         verify_memory_lifecycle_deny(root)
         verify_cross_process_config_writer(root)

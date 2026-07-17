@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v2"
+PATCH_SET = "june-approval-memory-v3"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "988e462b640f0da4e47b8164b5ca433021ace080fccfe55322b5b284c7c944ac",
+    "tui_gateway/server.py": "3b9d2c7012da31212f93e76bf76665e1f9aeea425acef78ee60ac6cde2b21673",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -548,6 +548,22 @@ def patch_mcp_tool(source: str) -> str:
 
 
 def patch_server(source: str) -> str:
+    source = replace_once(
+        source,
+        '''        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
+    """
+    session, err = _sess(params, rid)
+''',
+        '''        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
+    """
+    # Persisting attachment bytes only needs the lightweight session created by
+    # session.create. Waiting for the full agent here makes the first image in a
+    # new session hit the agent initialization timeout before prompt.submit can
+    # start the turn.
+    session, err = _sess_nowait(params, rid)
+''',
+        "image byte attach without agent initialization",
+    )
     source = replace_once(
         source,
         '''        enabled_toolsets=_load_enabled_toolsets(),

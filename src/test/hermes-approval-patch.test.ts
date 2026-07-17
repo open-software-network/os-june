@@ -24,7 +24,8 @@ describe("June Hermes compatibility patch", () => {
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(1);
       expect(bridge).toContain(`"${path}",`);
     }
-    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v2"');
+    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v3"');
+    expect(patcher).toContain("session, err = _sess_nowait(params, rid)");
     expect(patcher).toContain('upstream_request_id = getattr(context, "request_id", None)');
     expect(patcher).toContain("request_id=request_id");
     expect(patcher).toContain("_MAX_GATEWAY_APPROVALS_PER_SESSION = 32");
@@ -38,6 +39,7 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain('user_disabled = agent_cfg.get("disabled_toolsets") or []');
     expect(patcher).toContain("tools_to_include.difference_update(resolved)");
     expect(protocolSmoke).toContain("verify_patch_state_machine");
+    expect(protocolSmoke).toContain("verify_image_attach_does_not_wait_for_agent");
     expect(protocolSmoke).toContain("verify_tui_memory_deny_propagation");
     expect(protocolSmoke).toContain("verify_cross_process_config_writer");
     expect(protocolSmoke).toContain("verify_model_deny_wins");
@@ -55,7 +57,7 @@ describe("June Hermes compatibility patch", () => {
   });
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
-    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v2"');
+    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v3"');
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
     expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
     for (const mapName of ["PATCHED_SHA256", "POLICY_SHA256"]) {

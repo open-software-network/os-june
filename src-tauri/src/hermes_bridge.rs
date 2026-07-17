@@ -41,7 +41,7 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v2";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v3";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "agent/agent_init.py",
@@ -57,7 +57,7 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "988e462b640f0da4e47b8164b5ca433021ace080fccfe55322b5b284c7c944ac",
+        "3b9d2c7012da31212f93e76bf76665e1f9aeea425acef78ee60ac6cde2b21673",
     ),
     (
         "cron/scheduler.py",
@@ -17498,7 +17498,7 @@ mcp_servers:
         assert!(hermes_runtime_metadata_is_current(&current));
 
         let previous = format!(
-            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"june-approval-v1"}}"#
+            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"june-approval-memory-v2"}}"#
         );
         assert!(!hermes_runtime_metadata_is_current(&previous));
     }
