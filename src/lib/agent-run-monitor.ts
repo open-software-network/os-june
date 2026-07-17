@@ -203,7 +203,8 @@ export function cancelAgentRunMonitoring(storedSessionId: string, expectedGenera
 
 /** Sends Stop to the exact runtime session and mode owned by this generation.
  * This owns monitor cancellation so passive surfaces never guess from a stale
- * local runtime session id. The UI still retires immediately if the observer reconnects. */
+ * local runtime session id. The UI updates immediately, while the monitor
+ * remains stopping until the interrupt is issued or reconnect fails. */
 export function stopAgentRunMonitoring(
   storedSessionId: string,
   expectedGeneration: number,
@@ -219,17 +220,26 @@ export function stopAgentRunMonitoring(
   run.stopping = true;
   cancelSettlement(run);
   const runtimeSessionId = run.runtimeSessionId ?? run.storedSessionId;
-  let stopTimeout: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    stopTimeout = setTimeout(resolve, MONITOR_STOP_TIMEOUT_MS);
-  });
   const interrupt = (async () => {
     const observer = await ensureObserver(run.fullMode);
     if (!isCurrent(run)) return;
-    await observer.gateway.request("session.interrupt", { session_id: runtimeSessionId });
+    // Reconnect is part of delivering Stop and cannot share the acknowledgement
+    // timeout: retiring this generation first would make the guard above drop
+    // the interrupt. Once request() has issued it, bound only the reply wait.
+    const request = observer.gateway.request("session.interrupt", {
+      session_id: runtimeSessionId,
+    });
+    let stopTimeout: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      stopTimeout = setTimeout(resolve, MONITOR_STOP_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([request, timeout]);
+    } finally {
+      if (stopTimeout !== undefined) clearTimeout(stopTimeout);
+    }
   })().catch(() => {});
-  void Promise.race([interrupt, timeout]).finally(() => {
-    if (stopTimeout !== undefined) clearTimeout(stopTimeout);
+  void interrupt.finally(() => {
     if (isCurrent(run)) finishRun(run);
     const callbacks = [...(run.stopCallbacks ?? [])];
     run.stopCallbacks?.clear();

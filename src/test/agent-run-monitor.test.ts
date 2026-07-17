@@ -931,6 +931,16 @@ describe("agent run monitor", () => {
     expect(stopAgentRunMonitoring("stored-1", generation, onStopped)).toBe(true);
     expect(isAgentRunMonitorGenerationCurrent("stored-1", generation)).toBe(true);
     expect(onStopped).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(monitorMocks.request).not.toHaveBeenCalledWith("session.interrupt", {
+      session_id: "runtime-full-stop",
+    });
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      runtimeSessionId: "runtime-full-stop",
+      phase: "stopping",
+    });
+    expect(onStopped).not.toHaveBeenCalled();
     resolveBridgeStatus?.({
       running: true,
       connections: [SANDBOXED_CONNECTION, UNRESTRICTED_CONNECTION],
@@ -943,6 +953,74 @@ describe("agent run monitor", () => {
     expect(monitorMocks.instances).toHaveLength(1);
     expect(monitorMocks.instances[0]?.connect).toHaveBeenCalledWith(UNRESTRICTED_CONNECTION.wsUrl);
     expect(isAgentRunMonitorGenerationCurrent("stored-1", generation)).toBe(false);
+    expect(onStopped).toHaveBeenCalledOnce();
+  });
+
+  it("bounds only the Stop acknowledgement after the interrupt is issued", async () => {
+    const stalledInterrupt = new Promise<void>(() => undefined);
+    monitorMocks.request.mockImplementation((method: string) =>
+      method === "session.interrupt"
+        ? stalledInterrupt
+        : Promise.resolve({ sessions: [{ id: "runtime-1", status: "working" }] }),
+    );
+    const generation = startRun();
+    await flush();
+    const onStopped = vi.fn();
+
+    expect(stopAgentRunMonitoring("stored-1", generation, onStopped)).toBe(true);
+    await flush();
+    expect(monitorMocks.request).toHaveBeenCalledWith("session.interrupt", {
+      session_id: "runtime-1",
+    });
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      phase: "stopping",
+    });
+
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(onStopped).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation,
+      phase: "terminal",
+    });
+    expect(onStopped).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a reconnecting old Stop interrupt a replacement generation", async () => {
+    let resolveBridgeStatus:
+      | ((value: { running: boolean; connections: Array<typeof SANDBOXED_CONNECTION> }) => void)
+      | undefined;
+    monitorMocks.bridgeStatus.mockReturnValue(
+      new Promise((resolve) => {
+        resolveBridgeStatus = resolve;
+      }),
+    );
+    const oldGeneration = startRun({
+      runtimeSessionId: "runtime-old",
+      fullMode: true,
+    });
+    const onStopped = vi.fn();
+    expect(stopAgentRunMonitoring("stored-1", oldGeneration, onStopped)).toBe(true);
+
+    const replacementGeneration = startRun({
+      runtimeSessionId: "runtime-new",
+      fullMode: true,
+    });
+    resolveBridgeStatus?.({
+      running: true,
+      connections: [SANDBOXED_CONNECTION, UNRESTRICTED_CONNECTION],
+    });
+    await flush();
+
+    expect(monitorMocks.request).not.toHaveBeenCalledWith("session.interrupt", {
+      session_id: "runtime-old",
+    });
+    expect(agentRunMonitorSnapshot("stored-1")).toMatchObject({
+      generation: replacementGeneration,
+      runtimeSessionId: "runtime-new",
+    });
+    expect(isAgentRunMonitorGenerationCurrent("stored-1", replacementGeneration)).toBe(true);
     expect(onStopped).toHaveBeenCalledOnce();
   });
 
