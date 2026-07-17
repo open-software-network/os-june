@@ -1,3 +1,5 @@
+mod github_read_broker;
+
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng, RngCore};
@@ -8911,111 +8913,15 @@ fn github_read_success_body(
     result: crate::connectors::github_read::GitHubReadEnvelope,
     connector_state_changed: bool,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "success": true,
-        "result": result,
-        "connectorStateChanged": connector_state_changed,
-    })
+    github_read_broker::public_success(result, connector_state_changed)
 }
 
 fn github_read_error_response(
     error: AppError,
     connector_state_changed: bool,
 ) -> (u16, serde_json::Value) {
-    let (status, code, message) = match error.code.as_str() {
-        "github_reconnect_required" => (
-            409,
-            "github_reconnect_required",
-            "GitHub access expired. Reconnect it in settings.",
-        ),
-        "github_setup_required" => (
-            409,
-            "github_setup_required",
-            "GitHub setup is incomplete. Refresh it in settings.",
-        ),
-        "github_repository_not_selected" => (
-            400,
-            "github_repository_not_selected",
-            "This GitHub repository is not selected.",
-        ),
-        "github_access_removed_or_not_found" => (
-            400,
-            "github_access_removed_or_not_found",
-            "GitHub access was removed or the content was not found.",
-        ),
-        "github_input_invalid" => (400, "github_input_invalid", "GitHub input is invalid."),
-        "github_cursor_invalid" => (
-            400,
-            "github_cursor_invalid",
-            "The GitHub cursor is invalid or expired.",
-        ),
-        "github_file_ref_invalid" => (
-            400,
-            "github_file_ref_invalid",
-            "The GitHub file reference is invalid or expired.",
-        ),
-        "github_sensitive_path_blocked" => (
-            400,
-            "github_sensitive_path_blocked",
-            "GitHub content at this path cannot be read.",
-        ),
-        "github_binary_content" => (
-            400,
-            "github_binary_content",
-            "GitHub content is not supported text.",
-        ),
-        "github_response_too_large" => (
-            400,
-            "github_response_too_large",
-            "GitHub content exceeds the response limit.",
-        ),
-        "github_pull_request_changed" => (
-            400,
-            "github_pull_request_changed",
-            "The GitHub pull request changed while it was being read.",
-        ),
-        "github_rate_limited" => (
-            429,
-            "github_rate_limited",
-            "GitHub rate limited the request. Try again later.",
-        ),
-        "github_read_unavailable" => (
-            502,
-            "github_read_unavailable",
-            "GitHub could not be read right now.",
-        ),
-        _ => (
-            502,
-            "github_read_unavailable",
-            "GitHub could not be read right now.",
-        ),
-    };
-
-    let details = if code == "github_rate_limited" {
-        error
-            .details
-            .as_ref()
-            .and_then(|details| details.get("retryAfterSeconds"))
-            .and_then(serde_json::Value::as_u64)
-            .map(|seconds| serde_json::json!({"retryAfterSeconds": seconds.min(86_400)}))
-    } else {
-        None
-    };
-    let mut public_error = serde_json::json!({
-        "code": code,
-        "message": message,
-    });
-    if let Some(details) = details {
-        public_error["details"] = details;
-    }
-    (
-        status,
-        serde_json::json!({
-            "success": false,
-            "error": public_error,
-            "connectorStateChanged": connector_state_changed,
-        }),
-    )
+    let response = github_read_broker::public_error(error, connector_state_changed);
+    (response.status, response.body)
 }
 
 async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Result<()> {
