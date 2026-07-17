@@ -148,3 +148,7 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #826 | Standards (codex, r1+final) | 0 | — | clean on the native cue sequencing, HUD state ownership, tests, and comments |
 | #826 | Spec (codex, r1+final) | 2 | 2 | found interrupted start cues losing normal stop feedback and the actionable HUD error being latched only after an await; final clean |
 | #826 | Adversarial (codex, iterative) | 3 | 3 | documented the deliberate 300 ms start-speaking boundary, then found the short-press discard bypass and a stale error continuation hiding a newer listening HUD; convergence approved |
+| JUN-272 (pre-PR) | Standards (codex, iterative+final) | 2 | 2 | caught unqualified Recording session identifiers and Rust syntax newer than the desktop crate's 1.80 MSRV; final pass clean |
+| JUN-272 (pre-PR) | Spec (codex, iterative+final) | 2 | 2 | caught pathname reopen TOCTOU and the ZIP crate's direct MSRV mismatch; final pass clean after retained handles and an exact compatible pin |
+| JUN-272 (pre-PR) | Adversarial (codex, iterative) | 7 | 7 | found Note/Recording-session ownership confinement, UI/backend eligibility drift, legacy layout compatibility, Unix and Windows validation-to-read races, and two MSRV blockers; two independent clean rounds followed |
+| JUN-272 (pre-PR) | Cross-harness (claude) | — | — | unavailable: the harness refused the private diff under its privacy policy; review continued with alternating fresh read-only Codex reviewers and never counted missing output as approval |
