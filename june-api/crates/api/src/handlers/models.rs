@@ -81,7 +81,7 @@ fn to_dto(id: &str, model: &ModelPriceConfig) -> ModelDto {
 
 fn price_description(model: &ModelPriceConfig) -> String {
     // `pricing` may contain raw upstream metadata. The user-facing description
-    // must come from June's configured credit price, including margin.
+    // must come from June's configured credit price.
     match model.unit {
         june_config::PriceUnit::Seconds => format!(
             "{} per second audio",
@@ -129,7 +129,7 @@ mod tests {
             unit: PriceUnit::Seconds,
             // gpt-4o-mini-transcribe's packaged price; also pins the display
             // string default_pricing() carries for the same model.
-            credits_per_million_seconds: Some(60_000),
+            credits_per_million_seconds: Some(50_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -143,6 +143,6 @@ mod tests {
             capabilities: Vec::new(),
         };
 
-        assert_eq!(price_description(&model), "$0.00006 per second audio");
+        assert_eq!(price_description(&model), "$0.00005 per second audio");
     }
 }

@@ -478,6 +478,11 @@ pub struct ShareConfig {
     /// Public OAuth client id registered for the browser viewer.
     #[serde(default)]
     pub viewer_client_id: String,
+    /// Restrict this process to the read-only browser viewer surface. This is
+    /// used by the isolated june.link CVM so its ingress and certificate
+    /// lifecycle cannot expose or disrupt the primary June API deployment.
+    #[serde(default)]
+    pub viewer_only: bool,
     /// Max accepted ciphertext, in bytes.
     #[serde(default = "default_share_max_ciphertext_bytes")]
     pub max_ciphertext_bytes: usize,
@@ -495,6 +500,7 @@ impl Default for ShareConfig {
             database_url: String::new(),
             viewer_accounts_url: String::new(),
             viewer_client_id: String::new(),
+            viewer_only: false,
             max_ciphertext_bytes: default_share_max_ciphertext_bytes(),
         }
     }
@@ -522,6 +528,7 @@ impl Debug for RedactedShare<'_> {
             )
             .field("viewer_accounts_url", &self.0.viewer_accounts_url)
             .field("viewer_client_id", &self.0.viewer_client_id)
+            .field("viewer_only", &self.0.viewer_only)
             .field("max_ciphertext_bytes", &self.0.max_ciphertext_bytes)
             .finish()
     }
@@ -764,8 +771,8 @@ struct TextModelFallback {
 /// authoritative numbers and extends over this on every boot. Split out of
 /// `AppConfig::default` to keep that constructor under the line limit.
 ///
-/// Usage credit prices include June's 1.2x retail multiplier over upstream
-/// cost. `$1 = 1000 credits`.
+/// Usage credit prices pass through upstream cost without a June markup.
+/// `$1 = 1000 credits`.
 fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = BTreeMap::new();
     pricing.insert(
@@ -773,8 +780,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
             // OpenAI lists ASR prices per MINUTE ($0.003/min for mini);
-            // converted per second with the 1.2x retail multiplier.
-            credits_per_million_seconds: Some(60_000),
+            // converted per second at upstream cost.
+            credits_per_million_seconds: Some(50_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Openai,
@@ -784,7 +791,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             privacy: Some("anonymized".to_string()),
             // Matches what `models.rs::price_description` derives from the
             // credit price above (raw metadata only — the API recomputes it).
-            pricing: Some(serde_json::json!({ "display": "$0.00006 per second audio" })),
+            pricing: Some(serde_json::json!({ "display": "$0.00005 per second audio" })),
             context_tokens: Some(16_000),
             traits: vec!["prompt".to_string()],
             capabilities: Vec::new(),
@@ -794,7 +801,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         "nvidia/parakeet-tdt-0.6b-v3".to_string(),
         ModelPriceConfig {
             unit: PriceUnit::Seconds,
-            credits_per_million_seconds: Some(120_000),
+            credits_per_million_seconds: Some(100_000),
             input_credits_per_million_tokens: None,
             output_credits_per_million_tokens: None,
             provider: ModelProvider::Venice,
@@ -817,8 +824,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-2",
             display_name: "GLM 5.2",
-            input_credits_per_million_tokens: 1_680,
-            output_credits_per_million_tokens: 5_280,
+            input_credits_per_million_tokens: 1_400,
+            output_credits_per_million_tokens: 4_400,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -831,8 +838,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "kimi-k2-6",
             display_name: "Kimi K2.6",
-            input_credits_per_million_tokens: 1_308,
-            output_credits_per_million_tokens: 5_520,
+            input_credits_per_million_tokens: 1_090,
+            output_credits_per_million_tokens: 4_600,
             context_tokens: 256_000,
             // Kimi K2.6 is natively multimodal (Venice `supportsVision`), so it
             // is the image-input fallback the frontend switches to when an image
@@ -848,8 +855,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5-1",
             display_name: "GLM 5.1",
-            input_credits_per_million_tokens: 1_680,
-            output_credits_per_million_tokens: 5_280,
+            input_credits_per_million_tokens: 1_400,
+            output_credits_per_million_tokens: 4_400,
             context_tokens: 200_000,
             capabilities: &[
                 "supportsFunctionCalling",
@@ -862,8 +869,8 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
         TextModelFallback {
             id: "zai-org-glm-5",
             display_name: "GLM 5",
-            input_credits_per_million_tokens: 1_680,
-            output_credits_per_million_tokens: 5_280,
+            input_credits_per_million_tokens: 1_400,
+            output_credits_per_million_tokens: 4_400,
             context_tokens: 198_000,
             capabilities: &["supportsFunctionCalling"],
         },
@@ -1122,6 +1129,10 @@ const VENICE_API_KEY_PLACEHOLDERS: &[&str] = &["VENICE_API_KEY_REPLACE_ME"];
 const LOCAL_DEV_BEARER_TOKEN_PLACEHOLDERS: &[&str] = &[LOCAL_DEV_BEARER_TOKEN_PLACEHOLDER];
 
 fn validate(config: &AppConfig) -> Result<(), ConfigError> {
+    if config.share.viewer_only {
+        return validate_viewer_only(config);
+    }
+
     if config.local_dev.enabled {
         validate_local_dev_bearer_token(config)?;
         validate_required_text("local_dev.user_id", &config.local_dev.user_id)?;
@@ -1220,6 +1231,34 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     }
     validate_image_pricing(config)?;
     validate_video_pricing(config)?;
+    Ok(())
+}
+
+/// The isolated short-link process does not expose product routes and must not
+/// need their billing/provider credentials. Validate only the network origins
+/// and limits its viewer routes actually use. Sharing itself still fails closed
+/// at runtime (501) when the database or public client id is absent; the deploy
+/// contract probes the shell and a missing link so a partially sealed CVM
+/// cannot pass activation.
+fn validate_viewer_only(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_absolute_http_url("os_accounts.api_url", &config.os_accounts.api_url)?;
+    let (viewer_accounts_field, viewer_accounts_url) =
+        if config.share.viewer_accounts_url.trim().is_empty() {
+            ("os_accounts.iss", &config.os_accounts.iss)
+        } else {
+            (
+                "share.viewer_accounts_url",
+                &config.share.viewer_accounts_url,
+            )
+        };
+    validate_absolute_http_url(viewer_accounts_field, viewer_accounts_url)?;
+    validate_request_limits(config)?;
+    if config.share.max_ciphertext_bytes == 0 {
+        return Err(ConfigError::InvalidRequired {
+            field: "share.max_ciphertext_bytes",
+            reason: "must be > 0",
+        });
+    }
     Ok(())
 }
 
@@ -1638,6 +1677,59 @@ mod tests {
     }
 
     #[test]
+    fn viewer_only_config_does_not_require_product_secrets() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn viewer_only_config_still_validates_its_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "not-a-url".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn viewer_only_config_names_the_invalid_fallback_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.iss",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn viewer_only_config_names_an_invalid_explicit_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+        config.share.viewer_accounts_url = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "share.viewer_accounts_url",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn default_kimi_declares_vision_but_glm_does_not() {
         // Kimi K2.6 is the image-input fallback the app switches to, so it must
         // read as vision-capable even from these built-in defaults, before the
@@ -1690,67 +1782,67 @@ mod tests {
     }
 
     #[test]
-    fn packaged_config_toml_includes_usage_margin() {
+    fn packaged_config_toml_passes_through_upstream_cost() {
         let config = packaged_config_toml();
 
         // Per-second conversions of OpenAI's per-MINUTE ASR list prices
-        // ($0.003/min mini, $0.006/min 4o) with the 1.2x retail multiplier.
+        // ($0.003/min mini, $0.006/min 4o) at upstream cost.
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-mini-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(60_000)
+            Some(50_000)
         );
         assert_eq!(
             config
                 .pricing
                 .get("gpt-4o-transcribe")
                 .and_then(|model| model.credits_per_million_seconds),
-            Some(120_000)
+            Some(100_000)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(1_680)
+            Some(1_400)
         );
         assert_eq!(
             config
                 .pricing
                 .get("zai-org-glm-5-2")
                 .and_then(|model| model.output_credits_per_million_tokens),
-            Some(5_280)
+            Some(4_400)
         );
         for model_id in ["zai-org-glm-5-1", "zai-org-glm-5"] {
             let model = config.pricing.get(model_id);
             assert_eq!(
                 model.and_then(|model| model.input_credits_per_million_tokens),
-                Some(1_680),
+                Some(1_400),
                 "{model_id} must use the routed GLM 5.2 input price"
             );
             assert_eq!(
                 model.and_then(|model| model.output_credits_per_million_tokens),
-                Some(5_280),
+                Some(4_400),
                 "{model_id} must use the routed GLM 5.2 output price"
             );
         }
         let kimi = config.pricing.get("kimi-k2-6");
         assert_eq!(
             kimi.and_then(|model| model.input_credits_per_million_tokens),
-            Some(1_308)
+            Some(1_090)
         );
         assert_eq!(
             kimi.and_then(|model| model.output_credits_per_million_tokens),
-            Some(5_520)
+            Some(4_600)
         );
         assert_eq!(
             config
                 .pricing
                 .get("nvidia-nemotron-3-nano-30b-a3b")
                 .and_then(|model| model.input_credits_per_million_tokens),
-            Some(84)
+            Some(70)
         );
     }
 

@@ -107,6 +107,11 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #798 | Spec (codex, r1+final) | 0 | — | clean against the RC Slack announcement contract and documented amendments |
 | #798 | Adversarial (codex, r1-r5) | 5 | 3.5 | found mutable historical download links, fail-open provenance guards, and duplicate non-idempotent webhook retries; the notification-only recovery request was partly deliberate, and fixed-alias atomicity was verified as origin/main parity; final approve |
 | #798 | Cross-harness convergence (claude + codex CLI) | — | — | both runner attempts produced no usable verdict; the cycle continued with fresh read-only reviewers rather than treating missing output as approval |
+| #804 | Standards (codex, r1+final) | 4 | 4 | caught three design-token violations in the new CSS, then stale comments after the state-lifecycle fix; final clean |
+| #804 | Spec (codex, r1+final) | 0 | — | clean against the chronological design-feedback transcript before and after the review fixes |
+| #804 | Adversarial (codex, r1+convergence) | 2 | 2 | found periodic checks animating stale failures and new statuses inheriting the success exit phase; convergence approved the guarded reducer and manual-only spinner |
+| #804 | Adversarial (claude, cross-harness) | 0 | — | two detailed approve passes traced timer ordering, explicit failure propagation, reduced motion, demo cleanup, and exact spinner/mark geometry |
+| #804 | Greptile (stale initial SHA) | 2 | 2 | both real: raw mark sizing duplicated the Standards finding and failure styling depended on message wording; precise despite reviewing the initial commit |
 | #786 | Standards (codex, r1+final) | 3 | 3 | caught two OS Accounts glossary-name violations, raw avatar effect sizes instead of tokens, and the missing canonical avatar-seed term; final clean |
 | #786 | Spec (codex, r1+final) | 2 | 2 | found the old remote seed suppressing a required unsynced local fallback, then the unmount path that bypassed the first stale-response guard; final clean |
 | #786 | Adversarial (codex, r1-r3) | 3 | 3 | found credential resurrection from logout racing a detached cache writer, the legacy-scope fallback hole, and delayed avatar completion restoring signed-in UI after Settings unmounted; final approve |

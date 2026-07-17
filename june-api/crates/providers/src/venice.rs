@@ -63,8 +63,6 @@ const RATE_SCALE: f64 = 1_000_000.0;
 const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 #[cfg(test)]
 const STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
-/// A 20% markup over upstream cost is a 1.2x retail price.
-const RETAIL_PRICE_MULTIPLIER: f64 = 1.2;
 
 /// Standing safety policy injected as the leading system message on every
 /// Venice chat completion — note generation, dictation cleanup, and agent
@@ -1494,11 +1492,11 @@ fn usd_at_path(value: &serde_json::Value, path: &[&str]) -> Option<f64> {
 }
 
 fn credits_per_million_units(usd_per_million_units: f64) -> Option<u64> {
-    ceil_positive_u64(usd_per_million_units * CREDITS_PER_USD * RETAIL_PRICE_MULTIPLIER)
+    ceil_positive_u64(usd_per_million_units * CREDITS_PER_USD)
 }
 
 fn credits_per_million_seconds(usd_per_second: f64) -> Option<u64> {
-    ceil_positive_u64(usd_per_second * CREDITS_PER_USD * RATE_SCALE * RETAIL_PRICE_MULTIPLIER)
+    ceil_positive_u64(usd_per_second * CREDITS_PER_USD * RATE_SCALE)
 }
 
 fn ceil_positive_u64(value: f64) -> Option<u64> {
@@ -2921,8 +2919,8 @@ mod tests {
             model.capabilities,
             vec!["nested.enabled", "supportsFunctionCalling"]
         );
-        assert_eq!(model.input_credits_per_million_tokens, Some(84));
-        assert_eq!(model.output_credits_per_million_tokens, Some(360));
+        assert_eq!(model.input_credits_per_million_tokens, Some(70));
+        assert_eq!(model.output_credits_per_million_tokens, Some(300));
         assert!(model.pricing.is_some());
     }
 
@@ -2948,6 +2946,6 @@ mod tests {
         let models = venice_priced_model_items(response, ModelType::Asr);
         let model = models.get("asr-model").expect("asr model");
 
-        assert_eq!(model.credits_per_million_seconds, Some(120_000));
+        assert_eq!(model.credits_per_million_seconds, Some(100_000));
     }
 }

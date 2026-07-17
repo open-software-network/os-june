@@ -229,6 +229,37 @@ describe("Sidebar primary navigation", () => {
     expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
   });
 
+  it("opens the command prompt with Command-K while the sidebar is collapsed", async () => {
+    const { container } = render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        collapsed
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    const prompt = screen.getByRole("dialog", { name: "Search" });
+    const search = within(prompt).getByRole("textbox", { name: "Search" });
+    await waitFor(() => expect(search).toHaveFocus());
+
+    // The collapsed sidebar is `display: none`, so the prompt must live outside
+    // the sidebar subtree (portaled to the body) to stay visible.
+    const sidebar = container.querySelector(".sidebar");
+    expect(sidebar).not.toBeNull();
+    expect(sidebar?.contains(prompt)).toBe(false);
+    expect(document.body.contains(prompt)).toBe(true);
+  });
+
   it("closes the command prompt on Escape even when a result row is focused", async () => {
     render(
       <Sidebar
