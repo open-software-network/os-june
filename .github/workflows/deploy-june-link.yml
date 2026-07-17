@@ -113,6 +113,7 @@ jobs:
           container=$(docker run -d --rm -p 127.0.0.1:18080:8080 \
             -e JUNE__SHARE__VIEWER_ONLY=true \
             -e JUNE__OS_ACCOUNTS__API_URL=https://accounts-api.opensoftware.co \
+            -e JUNE__OS_ACCOUNTS__ISS=https://accounts.opensoftware.co \
             "${IMAGE}:${IMAGE_TAG}")
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
           code=""

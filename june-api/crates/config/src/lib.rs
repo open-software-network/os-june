@@ -1242,12 +1242,16 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
 /// cannot pass activation.
 fn validate_viewer_only(config: &AppConfig) -> Result<(), ConfigError> {
     validate_absolute_http_url("os_accounts.api_url", &config.os_accounts.api_url)?;
-    let viewer_accounts_url = if config.share.viewer_accounts_url.trim().is_empty() {
-        &config.os_accounts.iss
-    } else {
-        &config.share.viewer_accounts_url
-    };
-    validate_absolute_http_url("share.viewer_accounts_url", viewer_accounts_url)?;
+    let (viewer_accounts_field, viewer_accounts_url) =
+        if config.share.viewer_accounts_url.trim().is_empty() {
+            ("os_accounts.iss", &config.os_accounts.iss)
+        } else {
+            (
+                "share.viewer_accounts_url",
+                &config.share.viewer_accounts_url,
+            )
+        };
+    validate_absolute_http_url(viewer_accounts_field, viewer_accounts_url)?;
     validate_request_limits(config)?;
     if config.share.max_ciphertext_bytes == 0 {
         return Err(ConfigError::InvalidRequired {
@@ -1690,6 +1694,39 @@ mod tests {
         config.os_accounts.iss = "https://accounts.example".to_string();
 
         assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn viewer_only_config_names_the_invalid_fallback_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "os_accounts.iss",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn viewer_only_config_names_an_invalid_explicit_accounts_origin() {
+        let mut config = AppConfig::default();
+        config.share.viewer_only = true;
+        config.os_accounts.api_url = "https://accounts-api.example".to_string();
+        config.os_accounts.iss = "https://accounts.example".to_string();
+        config.share.viewer_accounts_url = "not-a-url".to_string();
+
+        assert!(matches!(
+            validate(&config),
+            Err(ConfigError::InvalidRequired {
+                field: "share.viewer_accounts_url",
+                ..
+            })
+        ));
     }
 
     #[test]
