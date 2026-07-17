@@ -18043,10 +18043,13 @@ mcp_servers:
         .expect("enabled config parses");
         let remaining = enabled["agent"]["disabled_toolsets"]
             .as_sequence()
-            .expect("browser deny remains");
+            .expect("browser and Computer use denies remain");
         assert_eq!(
             remaining,
-            &[serde_yaml::Value::String("browser".to_string())]
+            &[
+                serde_yaml::Value::String("browser".to_string()),
+                serde_yaml::Value::String("computer_use".to_string()),
+            ]
         );
         assert!(enabled["platform_toolsets"]["cron"]
             .as_sequence()
