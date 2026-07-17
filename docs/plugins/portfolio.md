@@ -232,8 +232,9 @@ Every launch plugin must satisfy the same contract:
    and retention policy. The approval preview identifies the June-originated
    content disclosed by that specific action.
 2. Install, connect, grant, trust mode, and runtime mode are separate states.
-3. The Plugins tile, Settings control, and contextual in-chat suggestion point
-   to one source of truth.
+3. The Plugins tile, any capability-specific Settings control, and contextual
+   in-chat suggestion point to one source of truth. A plugin can keep management
+   exclusively in Plugins when a second Settings surface would only duplicate it.
 4. Read tools return compact structured summaries first. Full bodies or files
    are fetched only when the task requires them.
 5. Mutating tools are separate from read tools and enforced in Rust, not by

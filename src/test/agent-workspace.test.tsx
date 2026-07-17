@@ -54,6 +54,7 @@ import {
   reserveHermesSessionDispatch,
   resetHermesSessionDispatchForTests,
 } from "../lib/hermes-session-dispatch-mutex";
+import { forgetComputerUseRunLeases } from "../lib/computer-use-run-leases";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -64,6 +65,9 @@ const mocks = vi.hoisted(() => ({
   agentRunMonitorSnapshot: vi.fn(),
   cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
+  computerUseBeginRun: vi.fn().mockResolvedValue(undefined),
+  computerUseEndRun: vi.fn().mockResolvedValue(undefined),
+  computerUseStop: vi.fn().mockResolvedValue(undefined),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
@@ -170,6 +174,9 @@ vi.mock("../lib/tauri", () => ({
   // `invoke`. A quiet stub keeps these workspace tests off that path.
   invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
+  computerUseBeginRun: mocks.computerUseBeginRun,
+  computerUseEndRun: mocks.computerUseEndRun,
+  computerUseStop: mocks.computerUseStop,
   createAgentTask: mocks.createAgentTask,
   editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
@@ -515,6 +522,7 @@ describe("AgentWorkspace", () => {
 
   beforeEach(() => {
     resetHermesSessionDispatchForTests();
+    forgetComputerUseRunLeases();
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
     mocks.gatewayEventHandlers.clear();
@@ -13443,13 +13451,20 @@ describe("AgentWorkspace", () => {
         text: "summarize the current page",
       }),
     );
+    expect(mocks.computerUseBeginRun).toHaveBeenCalledOnce();
+    expect(mocks.computerUseBeginRun).toHaveBeenCalledWith(expect.stringMatching(/^session-2:/));
+    expect(mocks.computerUseStop).not.toHaveBeenCalled();
 
     // The session is now working, so the composer offers a stop control.
     const stop = await screen.findByRole("button", { name: "Stop June" });
     expect(mocks.gatewayEventHandlers.size).toBe(1);
     await userEvent.click(stop);
 
+    expect(mocks.computerUseStop).toHaveBeenCalledOnce();
     expect(mocks.stopAgentRunMonitoring).toHaveBeenCalledWith("session-2", 1, expect.any(Function));
+    expect(mocks.computerUseStop.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.stopAgentRunMonitoring.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.interrupt", expect.anything());
     // The working flag clears even before any gateway event arrives, so the
     // stop control goes away and the session no longer reads as thinking.
@@ -13514,10 +13529,79 @@ describe("AgentWorkspace", () => {
         session_id: "runtime-session-2",
       }),
     );
+    expect(mocks.computerUseStop).toHaveBeenCalledOnce();
+    const interruptCallIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "session.interrupt",
+    );
+    expect(interruptCallIndex).toBeGreaterThanOrEqual(0);
+    expect(mocks.computerUseStop.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.gatewayRequest.mock.invocationCallOrder[interruptCallIndex] ?? Number.POSITIVE_INFINITY,
+    );
     // ...yet the Stop control is already gone and the listener torn down,
     // proving the stop did not block on the RPC.
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull());
     expect(mocks.gatewayEventHandlers.size).toBe(0);
+  });
+
+  it("releases Computer use when a newer cross-surface run supersedes the Workspace turn", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "summarize the current page",
+      }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "summarize the current page",
+      }),
+    );
+    const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+    expect(computerUseRunLeaseId).toMatch(/^session-2:/);
+    expect(mocks.computerUseEndRun).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "session-2",
+            runMonitorGeneration: 1,
+            runtimeSessionId: "runtime-session-2",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+    expect(mocks.computerUseEndRun).not.toHaveBeenCalled();
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_RUN_STARTED_EVENT, {
+          detail: {
+            storedSessionId: "session-2",
+            runMonitorGeneration: 2,
+            runtimeSessionId: "runtime-note-chat",
+            fullMode: false,
+          },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId),
+    );
   });
 
   it("keeps one thinking shimmer mounted until visible response content arrives", async () => {
@@ -17701,6 +17785,8 @@ describe("AgentWorkspace", () => {
         text: "run the build",
       }),
     );
+    const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+    expect(computerUseRunLeaseId).toMatch(/^session-2:/);
     expect(mocks.gatewayEventHandlers.size).toBe(1);
 
     act(() => {
@@ -17721,6 +17807,9 @@ describe("AgentWorkspace", () => {
           summary: "June finished.",
         }),
       ),
+    );
+    await waitFor(() =>
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId),
     );
     expect(mocks.gatewayEventHandlers.size).toBe(0);
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
@@ -18374,6 +18463,7 @@ describe("AgentWorkspace", () => {
     try {
       render(<AgentWorkspace />);
       await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+      expect(mocks.computerUseBeginRun).not.toHaveBeenCalled();
 
       // Two reconcile polls: the first miss is tolerated (a fresh submit can
       // race the runtime registering), the second clears the activity.

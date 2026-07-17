@@ -149,6 +149,12 @@ import {
   type VeniceModelDto,
 } from "../../lib/tauri";
 import {
+  beginComputerUseRunLease,
+  releaseComputerUseRunLease,
+  releaseComputerUseRunsForSession,
+  stopComputerUseRuns,
+} from "../../lib/computer-use-run-leases";
+import {
   deleteHermesSession,
   listHermesSessionMessages,
   listHermesSessions,
@@ -4192,6 +4198,39 @@ export function AgentWorkspace({
     runtimeSessionIdsRef.current = runtimeSessionIds;
   }, [runtimeSessionIds]);
 
+  useEffect(
+    () => () => {
+      void stopComputerUseRuns().catch(() => undefined);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const releaseSupersededComputerUseRun = (event: Event) => {
+      const detail = (event as CustomEvent<AgentRunStartedDetail>).detail;
+      if (!detail?.storedSessionId || detail.runMonitorGeneration === undefined) return;
+      // Ignore stale announcements and this Workspace's own accepted
+      // generation. Only another surface taking newer ownership may revoke the
+      // visible turn's attended lease. These comparisons stay correct whether
+      // this listener runs before or after the app-lifetime run observer.
+      const latestGeneration = latestAgentRunGenerationRegistry.get(detail.storedSessionId);
+      const localGeneration = agentRunMonitorOwnersRef.current.get(
+        detail.storedSessionId,
+      )?.generation;
+      if (
+        (latestGeneration !== undefined && detail.runMonitorGeneration < latestGeneration) ||
+        (localGeneration !== undefined && detail.runMonitorGeneration <= localGeneration)
+      ) {
+        return;
+      }
+      void releaseComputerUseRunsForSession(detail.storedSessionId).catch(() => undefined);
+    };
+    window.addEventListener(AGENT_RUN_STARTED_EVENT, releaseSupersededComputerUseRun);
+    return () => {
+      window.removeEventListener(AGENT_RUN_STARTED_EVENT, releaseSupersededComputerUseRun);
+    };
+  }, []);
+
   useEffect(() => {
     // The activity projection is UI state and may lag a navigation cleanup by
     // one React commit. Completion-source continuity is the stronger signal
@@ -4231,6 +4270,9 @@ export function AgentWorkspace({
             resumeHandoff.cancel();
             continue;
           }
+          // Reconnect only to observe the existing run. A process restored
+          // after an app relaunch did not cross this mount's visible Send
+          // boundary, so it must not receive a fresh Computer use lease.
           restoredListener = attachHermesSessionEventListener({
             gateway,
             runAlreadyAccepted: true,
@@ -5940,6 +5982,7 @@ export function AgentWorkspace({
     }
     workingReconcileMissesRef.current.delete(sessionId);
     pendingActionStore.resolveSession(sessionId);
+    void releaseComputerUseRunsForSession(sessionId).catch(() => undefined);
     clearSubmittedSteers(sessionId);
     if (!ownsLocalGeneration) {
       if (detail.status === "cancelled") clearSessionActivity(sessionId, "cancelled");
@@ -5991,6 +6034,7 @@ export function AgentWorkspace({
     pendingAgentRunTerminalEvidenceRef.current.delete(sessionId);
     workingReconcileMissesRef.current.delete(sessionId);
     pendingActionStore.resolveSession(sessionId);
+    void releaseComputerUseRunsForSession(sessionId).catch(() => undefined);
     promotePendingIssueReportToReview(sessionId, { queueDiagnosisRefresh: true });
     const activityCounts = clearSessionActivity(sessionId);
     if (ownsLocalGeneration) {
@@ -8248,6 +8292,7 @@ export function AgentWorkspace({
     stageEventsUntilResume = false,
     storedSessionId,
     submittedUserMessage,
+    computerUseRunLeaseId,
   }: {
     gateway: HermesGatewayClient;
     onSuperseded?: () => void;
@@ -8260,9 +8305,11 @@ export function AgentWorkspace({
     stageEventsUntilResume?: boolean;
     storedSessionId: string;
     submittedUserMessage?: HermesSessionMessage;
+    computerUseRunLeaseId?: string;
   }) {
     const previousUnlisten = sessionGatewayUnlistenRef.current.get(storedSessionId);
     let currentRuntimeSessionId = runtimeSessionId;
+    let activeComputerUseRunLeaseId = computerUseRunLeaseId;
     let resumeHandoffPending = stageEventsUntilResume;
     let stagedResumeHandoffEvents: HermesGatewayEvent[] = [];
     const previousAuthorityProof = agentRunAuthorityProofsRef.current.get(storedSessionId);
@@ -8599,6 +8646,10 @@ export function AgentWorkspace({
       // generation-matched cross-surface terminal; otherwise keep listening
       // without making the rejected optimistic message persistence authority
       // for that runtime work.
+      // The attempted turn's lease is released by its submit catch. This
+      // listener now observes the predecessor, whose lease must be retired when
+      // that run reaches its terminal edge.
+      activeComputerUseRunLeaseId = undefined;
       restorePredecessorAuthority(acceptance);
       retirePreviousListener();
       acceptedAgentRunCompletionSourcesRef.current.add(agentRunCompletionSource);
@@ -9116,6 +9167,13 @@ export function AgentWorkspace({
         });
       }
       if (terminal) {
+        if (activeComputerUseRunLeaseId) {
+          void releaseComputerUseRunLease(storedSessionId, activeComputerUseRunLeaseId).catch(
+            () => undefined,
+          );
+        } else {
+          void releaseComputerUseRunsForSession(storedSessionId).catch(() => undefined);
+        }
         unlisten();
         if (
           agentRunCompletionSourcesRef.current.get(storedSessionId) === agentRunCompletionSource
@@ -9913,6 +9971,8 @@ export function AgentWorkspace({
         status: "running",
         summary: "June is working.",
       });
+      const computerUseRunLeaseId = `${storedSessionId}:${crypto.randomUUID()}`;
+      let computerUseRunStarted = false;
       const {
         authorityProof: promptAuthorityProof,
         clearPendingRunAcceptance,
@@ -9935,6 +9995,7 @@ export function AgentWorkspace({
         sessionDisplayTitle,
         storedSessionId,
         submittedUserMessage: pendingUserMessage,
+        computerUseRunLeaseId,
       });
       try {
         const targetProjectContext = explicitSession
@@ -9945,6 +10006,8 @@ export function AgentWorkspace({
           targetProjectContext,
           projectContextSignaturesBySessionId.get(storedSessionId),
         );
+        await beginComputerUseRunLease(storedSessionId, computerUseRunLeaseId);
+        computerUseRunStarted = true;
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
         // params are sanitized before storage (the text is the user's own prompt,
         // kept; any secret-like value would be masked). This is the primary
@@ -9983,6 +10046,11 @@ export function AgentWorkspace({
         const promptAttemptWasCurrent = promptAttemptIsCurrent();
         if (!promptAttemptWasCurrent || !promptGenerationIsCurrent()) {
           clearQueuedIssueReport();
+          if (computerUseRunStarted) {
+            await releaseComputerUseRunLease(storedSessionId, computerUseRunLeaseId).catch(
+              () => undefined,
+            );
+          }
           return undefined;
         }
         if (
@@ -10033,6 +10101,11 @@ export function AgentWorkspace({
           suppressStartupRequestError: !hermesSessionsHydratedRef.current,
         });
       } catch (err) {
+        if (computerUseRunStarted) {
+          await releaseComputerUseRunLease(storedSessionId, computerUseRunLeaseId).catch(
+            () => undefined,
+          );
+        }
         // Record the rejection so the trace panel shows failed outbound calls
         // alongside the inbound stream. messageFromError yields a user-safe string.
         hermesTraceBuffer.recordError({
@@ -10874,6 +10947,7 @@ export function AgentWorkspace({
         agentRunAuthorityProofsRef.current.delete(sessionId);
         pendingAgentRunAcceptanceRef.current.delete(sessionId);
         pendingAgentRunTerminalEvidenceRef.current.delete(sessionId);
+        void releaseComputerUseRunsForSession(sessionId).catch(() => undefined);
         promotePendingIssueReportToReview(sessionId, {
           queueDiagnosisRefresh: false,
         });
@@ -10911,6 +10985,7 @@ export function AgentWorkspace({
       agentRunAuthorityProofsRef.current.delete(sessionId);
       pendingAgentRunAcceptanceRef.current.delete(sessionId);
       pendingAgentRunTerminalEvidenceRef.current.delete(sessionId);
+      void releaseComputerUseRunsForSession(sessionId).catch(() => undefined);
       cancelAgentRunSettlement(sessionId);
       agentRunMonitorOwnersRef.current.delete(sessionId);
       clearSubmittedSteers(sessionId);
@@ -12622,6 +12697,10 @@ export function AgentWorkspace({
       ? activeRunMonitorGeneration
       : undefined;
     const stopDispatchHold = holdHermesSessionDispatch(sessionId);
+    // Revoke the native broker before waiting for the Hermes interrupt. This
+    // cancels pending approvals, kills the helper, clears captures, and makes
+    // Stop sticky until a later visible chat turn opens a fresh lease.
+    const computerUseStopRequest = stopComputerUseRuns().catch(() => undefined);
     const monitorStopAccepted =
       taggedRunMonitorGeneration !== undefined &&
       stopAgentRunMonitoring(sessionId, taggedRunMonitorGeneration, () => {
@@ -12693,6 +12772,7 @@ export function AgentWorkspace({
     });
 
     try {
+      await computerUseStopRequest;
       const runtimeSessionId = runtimeSessionIds[sessionId];
       const localOwnerCanInterrupt =
         taggedRunMonitorGeneration === undefined ||

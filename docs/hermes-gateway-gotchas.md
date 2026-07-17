@@ -139,7 +139,7 @@ genuinely new request just before the response. Disconnect cleanup rechecks
 transport ownership under the same resume lock so an old socket's stale session
 snapshot cannot detach the newly resumed route. Queue arbitration also verifies
 the captured notifier generation, preventing a delayed old request from joining
-a fresh request through reconnect deduplication. See ADR 0028.
+a fresh request through reconnect deduplication. See ADR 0029.
 
 **Resume transcript overlap needs server proof, not matching text.** Hermes can
 commit the final assistant row before emitting its ID-less `message.complete`.
@@ -164,7 +164,7 @@ in the same history-lock transaction as the live swap and snapshot, so an older
 response on the same transport cannot release a newer snapshot. The old
 completion and resume snapshot precede the next
 `message.start` even if the emitter wins immediately after the snapshot. See
-ADR 0028. `session.activate` also swaps transport and returns a live snapshot,
+ADR 0029. `session.activate` also swaps transport and returns a live snapshot,
 so it shares resume/disconnect serialization, retargets the barrier, and
 releases only its own token after its response is accepted.
 Resume, activation, and prompt admission share a receive-ordered ownership

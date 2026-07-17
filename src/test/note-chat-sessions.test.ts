@@ -31,12 +31,19 @@ import {
   AGENT_SESSION_STATUS_EVENT,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
+import {
+  beginComputerUseRunLease,
+  forgetComputerUseRunLeases,
+} from "../lib/computer-use-run-leases";
 import type { HermesSessionMessage } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   agentRunMonitorSnapshot: vi.fn(),
   canAttributeUntaggedAgentRun: vi.fn(() => true),
   cancelAgentRunMonitoring: vi.fn(),
+  computerUseBeginRun: vi.fn(),
+  computerUseEndRun: vi.fn(),
+  computerUseStop: vi.fn(),
   stopAgentRunMonitoring: vi.fn(
     (_storedSessionId: string, _generation: number, onStopped?: () => void) => {
       queueMicrotask(() => onStopped?.());
@@ -75,6 +82,9 @@ vi.mock("../lib/agent-run-monitor", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  computerUseBeginRun: mocks.computerUseBeginRun,
+  computerUseEndRun: mocks.computerUseEndRun,
+  computerUseStop: mocks.computerUseStop,
   dictationHelperCommand: vi.fn(),
   hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
   hermesBridgeSessionMessages: mocks.hermesBridgeSessionMessages,
@@ -228,6 +238,10 @@ function rawResumeMessages(messages: HermesSessionMessage[]) {
 describe("note chat session map", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    forgetComputerUseRunLeases();
+    mocks.computerUseBeginRun.mockReset().mockResolvedValue(undefined);
+    mocks.computerUseEndRun.mockReset().mockResolvedValue(undefined);
+    mocks.computerUseStop.mockReset().mockResolvedValue({ stopped: true });
     resetHermesSessionDispatchForTests();
     resetNoteChatContinuityForTest();
     window.localStorage.clear();
@@ -6510,6 +6524,58 @@ describe("note chat session map", () => {
     } finally {
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
     }
+  });
+
+  it("revokes the Workspace Computer-use lease before Note Chat submits", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    let resolveEndRun: () => void = () => undefined;
+    mocks.computerUseEndRun.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveEndRun = resolve;
+        }),
+    );
+    await beginComputerUseRunLease("stored-note-chat", "stored-note-chat:workspace-lease");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mocks.gatewayRequest.mockClear();
+
+    let submission: Promise<boolean> = Promise.resolve(false);
+    act(() => {
+      submission = result.current.submit("Continue from Note Chat.");
+    });
+
+    await waitFor(() =>
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith("stored-note-chat:workspace-lease"),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+
+    resolveEndRun();
+    await act(async () => {
+      expect(await submission).toBe(true);
+    });
+    const promptIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "prompt.submit",
+    );
+    expect(mocks.computerUseEndRun.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.gatewayRequest.mock.invocationCallOrder[promptIndex] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it("aborts Note Chat submission when Workspace lease revocation fails", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.computerUseEndRun.mockRejectedValueOnce(new Error("native unavailable"));
+    await beginComputerUseRunLease("stored-note-chat", "stored-note-chat:workspace-lease");
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mocks.gatewayRequest.mockClear();
+
+    await act(async () => {
+      expect(await result.current.submit("Keep this fail-closed.")).toBe(false);
+    });
+
+    expect(mocks.computerUseEndRun).toHaveBeenCalledWith("stored-note-chat:workspace-lease");
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
   });
 
   it("waits behind an earlier cross-surface Send before submitting the same model", async () => {

@@ -1118,7 +1118,7 @@ pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Resul
             "accessibility" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
             }
-            "systemAudio" => {
+            "screenRecording" | "systemAudio" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
             }
             _ => "x-apple.systempreferences:com.apple.preference.security",

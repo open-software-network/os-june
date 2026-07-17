@@ -54,6 +54,7 @@ import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
+import { ComputerUseApprovalsTray } from "../components/agent/ComputerUseApprovalsTray";
 import {
   OPEN_REFERRAL_DIALOG_EVENT,
   ReferralNudge,
@@ -4509,7 +4510,10 @@ export function App() {
       />
       {/* Connector action approvals (approval trust mode) can arrive from a
           routine or chat in any view, so the tray is mounted at the shell. */}
-      <ConnectorApprovalsTray />
+      <div className="shell-approvals-stack">
+        <ComputerUseApprovalsTray />
+        <ConnectorApprovalsTray />
+      </div>
       {/* The referral delight nudge floats bottom-left at the shell so it can
           appear over any view; click-through opens the sidebar-owned referral
           dialog by event. */}

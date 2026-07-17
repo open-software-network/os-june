@@ -26,6 +26,26 @@ mod support;
 use support::*;
 
 #[tokio::test]
+async fn integration_computer_use_rollout_is_public_and_version_aware() -> Result<(), Box<dyn Error>>
+{
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/computer-use/rollout")
+        .header("x-june-app-version", "0.0.33")
+        .header("x-june-macos-version", "15.5.1")
+        .body(Body::empty())?;
+    let response = send(request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["enabled"], true);
+    assert_eq!(body["data"]["reason"], serde_json::Value::Null);
+    assert_eq!(body["data"]["cacheTtlSeconds"], 300);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_missing_auth_returns_unauthorized_envelope() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/notes/generate",

@@ -12684,6 +12684,304 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
+/* Plugins ------------------------------------------------------------ */
+
+.plugins-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--plugin-tile-min-w)), 1fr));
+  gap: var(--sp-4);
+}
+
+.plugin-tile {
+  padding: var(--sp-6);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+}
+
+.computer-use-control {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.computer-use-control-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-4);
+}
+
+.computer-use-mark {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.computer-use-control-heading {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.computer-use-title-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.computer-use-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+}
+
+.computer-use-description,
+.computer-use-message {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.computer-use-switch-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.computer-use-state-label {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.computer-use-setup {
+  display: grid;
+  gap: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.computer-use-permission-assistant {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.computer-use-permission-assistant-copy {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.computer-use-permission-assistant-copy h4,
+.computer-use-permission-assistant-copy p {
+  margin: 0;
+}
+
+.computer-use-permission-assistant-copy h4 {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.computer-use-permission-assistant-copy p {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.computer-use-permission-drag-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: var(--shadow-sm);
+  cursor: grab;
+  user-select: none;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.computer-use-permission-drag-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.computer-use-permission-drag-card:active {
+  cursor: grabbing;
+  transform: translateY(0);
+}
+
+.computer-use-permission-drag-card:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.computer-use-permission-drag-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-xl);
+  height: var(--control-xl);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+}
+
+.computer-use-permission-drag-copy {
+  display: grid;
+  gap: var(--sp-px);
+  min-width: 0;
+  text-align: left;
+}
+
+.computer-use-permission-drag-copy strong {
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-use-permission-drag-copy span {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.computer-use-education {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.computer-use-education p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.computer-use-requirements {
+  display: flex;
+  flex-direction: column;
+}
+
+.computer-use-requirements-heading {
+  margin: 0 0 var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+
+.computer-use-requirement {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.computer-use-requirement:last-child {
+  border-bottom: 0;
+}
+
+.computer-use-requirement-icon {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+
+.computer-use-requirement-icon[data-ready="true"] {
+  color: var(--success);
+}
+
+.computer-use-requirement-copy {
+  display: grid;
+  gap: var(--sp-px);
+  min-width: 0;
+}
+
+.computer-use-requirement-copy strong {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.computer-use-requirement-copy span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-use-inline-action {
+  height: var(--control-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.computer-use-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.computer-use-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+@media (max-width: 720px) {
+  .computer-use-control-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .computer-use-switch-wrap {
+    grid-column: 2;
+    justify-content: space-between;
+  }
+
+  .computer-use-permission-assistant {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .computer-use-permission-drag-card {
+    justify-self: stretch;
+  }
+
+  .computer-use-requirement {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .computer-use-inline-action {
+    grid-column: 2;
+    justify-self: start;
+  }
+}
+
 .settings-row-stack {
   align-items: start;
 }
@@ -26528,6 +26826,22 @@ button.memory-project:hover {
    floating-surface recipe the steer queue and funding notice share (solid
    card, hairline ring folded into the shadow), and collapses to its header
    line so an unanswered batch stops covering the composer corner. */
+.shell-approvals-stack {
+  position: fixed;
+  right: var(--sp-6);
+  bottom: var(--sp-6);
+  z-index: 60;
+  width: min(var(--approvals-stack-w), calc(100vw - var(--sp-8)));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  pointer-events: none;
+}
+
+.shell-approvals-stack > * {
+  pointer-events: auto;
+}
+
 .connector-approvals {
   position: fixed;
   right: var(--sp-6);
@@ -26546,6 +26860,88 @@ button.memory-project:hover {
     var(--shadow-md),
     0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
   animation: connector-approvals-settle var(--t-med) var(--ease-out) both;
+}
+
+.shell-approvals-stack .connector-approvals {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+  z-index: auto;
+}
+
+.computer-use-stop-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.computer-use-approvals-list {
+  list-style: none;
+  margin: 0 calc(-1 * var(--sp-2));
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: min(var(--computer-use-approvals-max-h), 62vh);
+  overflow-y: auto;
+}
+
+.computer-use-approval-card {
+  display: grid;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-top: 1px solid var(--detail-bar-border);
+}
+
+.computer-use-approval-card:first-child {
+  border-top: 0;
+}
+
+.computer-use-approval-capture {
+  display: block;
+  width: 100%;
+  max-height: var(--computer-use-capture-max-h);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  object-fit: contain;
+}
+
+.computer-use-approval-copy {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.computer-use-approval-copy strong {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.4;
+}
+
+.computer-use-approval-copy span {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.computer-use-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+}
+
+.computer-use-approval-actions .btn,
+.computer-use-stop-button {
+  height: var(--control-sm);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
+}
+
+.computer-use-approval-error {
+  margin: var(--sp-1) var(--sp-2);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 /* The funding notice's settle: a short rise as the tray appears. */

@@ -18,8 +18,9 @@ products in June's category ship both capabilities, and the Plugins area
 ## Solution
 
 Two plugins in the Plugins area, each a consent surface over an app-owned
-capability. A plugin tile here is not a catalog install: enabling the tile,
-the Settings toggle, or the in-chat request card all set one stored grant.
+capability. A plugin tile here is not a catalog install. Computer use is
+managed from its Plugins tile; capability-specific in-chat requests and the
+Browser use Settings toggle set their corresponding stored grants.
 
 **Browser use (v1).** The user connects once by installing the June extension
 in their own Chromium-family browser. June then works in visibly marked tabs
@@ -31,10 +32,12 @@ get a separate, anonymous, June-managed headless browser that reaches the
 public web only.
 
 **Computer use (phase 2).** June operates Mac apps in the background without
-stealing the cursor, keyboard focus, or the active Space, using the pinned
-agent runtime's computer-use toolset backed by a June-bundled, pinned, signed
-driver. Every mutating action requires approval, and the capability requires
-a vision-capable model.
+stealing the cursor, keyboard focus, or the active Space, using a pinned macOS
+driver implementation behind a June-bundled, signed helper and native policy
+broker. The first access to each verified app requires one authorization for
+the active task, and the capability requires a vision-capable model. June can
+open a missing app by display name. A parked window is added automatically to
+June's current Stage Manager group after that app authorization.
 
 ## User stories
 
@@ -89,7 +92,12 @@ a vision-capable model.
     alarming.
 23. As a June developer, I want to load the extension unpacked with a stable
     id, so that local testing never waits on the store.
-24. As a June developer, I want the extension and app to negotiate protocol
+24. As a June user, I want June to open the requested Mac app when needed, so
+    that a desktop task does not depend on me preparing its window first.
+25. As a Stage Manager user, I want June to recognize a parked thumbnail and
+    offer to bring that exact window forward, so that it never mistakes the
+    shelf preview for my document.
+26. As a June developer, I want the extension and app to negotiate protocol
     versions on connect, so that a store-updated extension against an older
     app fails cleanly with an update prompt instead of misbehaving.
 
@@ -201,17 +209,22 @@ a vision-capable model.
 
 ### Computer use (phase 2)
 
-- Productize the pinned runtime's computer-use toolset rather than building
-  an executor: it already provides background control (events posted to the
-  target process, no cursor or focus theft), element-indexed captures, an
-  accessibility-only mode, and built-in approval hooks on every mutating
-  action.
+- Productize the pinned runtime's macOS capture and input implementation behind
+  June's private helper and Rust policy broker. The runtime receives only the
+  single app-owned Computer use action surface, never the upstream registry or
+  helper transport.
 - Bundle a pinned, signed cua-driver as an app resource and point the
   runtime at it through its supported binary-path and version overrides; the
   upstream network installer never runs.
 - TCC onboarding (Accessibility, Screen recording) follows the dictation
   helper pattern: bundle-scoped, prompting variant, polled re-checks.
-- Runtime action approvals surface as June chat approval cards.
+- First app access parks in Rust and surfaces as a native June authorization
+  card. The agent invokes the operation immediately and never asks for a
+  textual approval. Authorization clears when the task ends.
+- App lifecycle is narrow: background launch accepts only an app display name;
+  current-stage restoration accepts only the exact PID and window selected and
+  revalidated by Rust after app authorization. Paths, URLs, launch arguments,
+  debug options, and arbitrary process activation are unavailable.
 - The capability hard-requires a vision-capable model; otherwise the plugin
   is unavailable with a switch-model notice. Routines never get the toolset.
 - A release self-test starts the bundled driver and fails the build if the

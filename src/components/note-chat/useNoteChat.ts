@@ -9,6 +9,7 @@ import {
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
 import { withTimeout } from "../../lib/async-timeout";
+import { releaseComputerUseRunsForSession } from "../../lib/computer-use-run-leases";
 import { messageFromError } from "../../lib/errors";
 import {
   listHermesSessions,
@@ -3606,6 +3607,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           dispatchRunBoundary = { record: activeRecord, boundary };
           activeRecord.pendingDispatchRunBoundary = boundary;
           activeRecord.runStartRevision = activeRecord.liveStream.revision;
+          await releaseComputerUseRunsForSession(activeStoredSessionId);
           await gateway.request("prompt.submit", {
             session_id: activeRuntimeSessionId,
             text: content,
