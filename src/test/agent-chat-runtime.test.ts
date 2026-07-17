@@ -2431,7 +2431,7 @@ describe("Agent chat runtime", () => {
       {
         id: "assistant-2",
         role: "assistant",
-        content: `MEDIA:/tmp/generated-videos/${name}`,
+        content: `MEDIA:/tmp/videos/${name}`,
         timestamp: "2026-06-04T10:00:01.000Z",
       },
     ]);
@@ -2522,8 +2522,7 @@ describe("Agent chat runtime", () => {
   });
 
   it("hands a live video tool result from its placeholder to an inline video", () => {
-    const path =
-      "/Users/alex/Library/Application Support/June/generated-videos/generated-video-ab12.mp4";
+    const path = "/Users/alex/Library/Application Support/June/videos/generated-video-ab12.mp4";
     const turns = buildHermesSessionChatTurns(
       [],
       [

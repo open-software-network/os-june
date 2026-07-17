@@ -154,8 +154,28 @@ describe("Routines Hermes integration", () => {
     });
   });
 
-  it("keeps image generation out of unrestricted routine toolsets", () => {
+  it("keeps non-routine capabilities out of unrestricted routine toolsets", () => {
     expect(UNRESTRICTED_ROUTINE_TOOLSETS).not.toContain("image_gen");
+    expect(UNRESTRICTED_ROUTINE_TOOLSETS).not.toContain("browser");
+    expect(UNRESTRICTED_ROUTINE_TOOLSETS).not.toContain("computer_use");
+  });
+
+  it("strips Computer use from explicit routine toolset overrides", async () => {
+    await createRoutine({
+      prompt: "Try to drive an app.",
+      schedule: "0 9 * * *",
+      enabledToolsets: ["web", "computer_use", "june_computer_use"],
+    });
+    expect(mocks.updateHermesBridgeCronJob).toHaveBeenCalledWith("routine-1", {
+      enabled_toolsets: ["web"],
+    });
+
+    await updateRoutine("routine-1", {
+      enabledToolsets: ["vision", "june_computer_use"],
+    });
+    expect(mocks.updateHermesBridgeCronJob).toHaveBeenLastCalledWith("routine-1", {
+      enabled_toolsets: ["vision"],
+    });
   });
 
   it("strips the native memory toolset from an unrestricted routine when memory is off", async () => {

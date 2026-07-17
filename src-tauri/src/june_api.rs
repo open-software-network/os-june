@@ -63,6 +63,7 @@ const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 // tells them apart. src-tauri/Cargo.toml stays in lockstep with
 // tauri.conf.json (asserted by app_version_matches_tauri_conf below).
 const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
+const JUNE_MACOS_VERSION_HEADER: &str = "x-june-macos-version";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
@@ -221,6 +222,14 @@ pub struct ModelDto {
     pub credits_per_million_seconds: Option<u64>,
     pub input_credits_per_million_tokens: Option<u64>,
     pub output_credits_per_million_tokens: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseRolloutDto {
+    pub enabled: bool,
+    pub reason: Option<String>,
+    pub cache_ttl_seconds: u64,
 }
 
 #[derive(Deserialize)]
@@ -475,6 +484,18 @@ pub async fn list_models(model_type: &str) -> Result<Vec<ModelDto>, AppError> {
         .await
         .map_err(network_error)?;
     parse_response("/v1/models", response).await
+}
+
+pub async fn computer_use_rollout(macos_version: &str) -> Result<ComputerUseRolloutDto, AppError> {
+    let url = format!("{}/v1/computer-use/rollout", june_api_url());
+    let response = http_client()
+        .get(url)
+        .header(JUNE_MACOS_VERSION_HEADER, macos_version)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(network_error)?;
+    parse_response("/v1/computer-use/rollout", response).await
 }
 
 // ---- Private sharing (JUN-308) -------------------------------------------

@@ -2,6 +2,8 @@ pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
 pub mod commands;
+pub mod computer_use;
+mod computer_use_permission_drag;
 pub mod connectors;
 pub mod db;
 pub mod dictation;
@@ -311,6 +313,7 @@ pub fn run() {
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
+            os_accounts::os_accounts_set_avatar_seed,
             os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_upgrade_session,
             os_accounts::os_accounts_change_plan,
@@ -336,6 +339,15 @@ pub fn run() {
             connectors::approvals::connector_approvals_respond_all,
             hermes_bridge::connectors_apply_runtime,
             hermes_bridge::obsidian_apply_runtime,
+            computer_use::computer_use_status,
+            computer_use::set_computer_use_grant,
+            computer_use::computer_use_request_permissions,
+            computer_use_permission_drag::set_computer_use_permission_drag_bounds,
+            computer_use::computer_use_stop,
+            computer_use::computer_use_begin_run,
+            computer_use::computer_use_end_run,
+            computer_use::computer_use_approvals_pending,
+            computer_use::computer_use_approval_respond,
             updates::get_release_channel,
             updates::set_release_channel,
             updates::fetch_update,
@@ -344,6 +356,7 @@ pub fn run() {
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
+        .manage(computer_use::ComputerUseState::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(connectors::ConnectFlow::default())
         .setup(|app| {
@@ -351,6 +364,7 @@ pub fn run() {
             menu_bar::setup(app)?;
             providers::setup(app);
             setup_video_asset_scope(app);
+            setup_computer_use_asset_scope(app);
             p3a::setup(app);
             updates::setup(app);
             dictation::setup(app);
@@ -374,6 +388,7 @@ pub fn run() {
         .run(|app, event| match event {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);
+                tauri::async_runtime::block_on(computer_use::shutdown(app));
                 hermes_bridge::shutdown(app);
             }
             #[cfg(target_os = "macos")]
@@ -402,6 +417,25 @@ fn setup_video_asset_scope(app: &mut tauri::App) {
         .allow_directory(&videos_dir, false)
     {
         tracing::warn!(%error, path = %videos_dir.display(), "video asset scope: allow_directory failed");
+    }
+}
+
+fn setup_computer_use_asset_scope(app: &mut tauri::App) {
+    let captures_dir = match crate::app_paths::app_data_dir(app.handle()) {
+        Ok(data_dir) => data_dir
+            .join("hermes")
+            .join("computer-use")
+            .join("captures"),
+        Err(error) => {
+            tracing::warn!(%error, "computer use asset scope: could not resolve app data dir");
+            return;
+        }
+    };
+    if let Err(error) = app
+        .asset_protocol_scope()
+        .allow_directory(&captures_dir, false)
+    {
+        tracing::warn!(%error, path = %captures_dir.display(), "computer use asset scope: allow_directory failed");
     }
 }
 
@@ -699,6 +733,7 @@ extern "C-unwind" fn main_window_send_event(
     use objc2::msg_send;
 
     const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: i64 = 1;
+    const NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED: i64 = 6;
 
     unsafe {
         let is_registered_main_window = MAIN_WINDOW_NS_WINDOW
@@ -715,6 +750,13 @@ extern "C-unwind" fn main_window_send_event(
                 && main_first_mouse_hits_recording_presence(this, event)
             {
                 emit_recording_presence_reopen();
+            }
+            if event_type == NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED
+                && MAIN_WINDOW_APP
+                    .get()
+                    .is_some_and(|app| computer_use::begin_permission_drag(app, this, event))
+            {
+                return;
             }
         }
 

@@ -24,18 +24,22 @@ also take over the desktop, expose unrelated content, and make silent mistakes.
 
 ## Product promise
 
-Grant access deliberately, see every mutating step before it runs, keep using
-the Mac while June works in the background, and revoke the capability at any
-time.
+Grant each target app deliberately for the current task, keep using the Mac
+while June works, and revoke the capability at any time.
 
 ## V1 experience
 
 - The plugin tile explains Accessibility and Screen recording before macOS
   prompts appear.
 - June reports whether the selected model can use the capability.
-- The user chooses a target app/task; June captures a bounded representation
-  and proposes actions.
-- Every mutating action requires approval in chat.
+- The user chooses a target app/task. June can open a missing app, capture a
+  bounded representation, and propose actions.
+- The first access to each target app requires one task-scoped decision in
+  June's native approval tray. Later captures and actions in that app do not
+  ask again until the task ends. June never asks for approval in chat.
+- A parked Stage Manager window is restored automatically after the app is
+  authorized. June adds it to June's current group without moving the user's
+  pointer or asking for a separate bring-forward decision.
 - The user sees progress and can stop immediately.
 - Disconnect removes June's runtime grant; macOS permissions can also be
   revoked from System Settings.
@@ -66,8 +70,8 @@ are available regardless of plan.
 | --- | ---: |
 | Eligible users completing TCC setup | 60% |
 | Supported tasks completed without user takeover | 65% |
-| Mutating actions without a June approval | 0 |
-| Cursor/focus theft incidents | 0 |
+| Apps used without a current-task June authorization | 0 |
+| Unexpected cursor/focus theft incidents | 0 |
 | Driver crash rate per task | under 1% |
 | Median user corrections per completed task | under 1 |
 

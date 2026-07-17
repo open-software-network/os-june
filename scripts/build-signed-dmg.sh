@@ -142,9 +142,45 @@ cd "$ROOT_DIR"
 # (python, extension .so) get the Developer ID + hardened runtime signature
 # notarization requires.
 ./scripts/bundle-hermes-runtime.sh
+# Build the nested helper for the same requested architecture before Tauri's
+# generic before-build hook runs. The preparation stamp lets that hook reuse a
+# universal release helper instead of replacing it with the runner's slice.
+computer_use_prepare_args=(--release)
+computer_use_target=""
+build_args=("$@")
+for ((index = 0; index < ${#build_args[@]}; index += 1)); do
+  if [[ "${build_args[$index]}" == "--target" ]]; then
+    if ((index + 1 >= ${#build_args[@]})); then
+      echo "--target requires a value" >&2
+      exit 2
+    fi
+    computer_use_target="${build_args[$((index + 1))]}"
+    computer_use_prepare_args+=(--target "$computer_use_target")
+    break
+  fi
+  if [[ "${build_args[$index]}" == --target=* ]]; then
+    computer_use_target="${build_args[$index]#--target=}"
+    computer_use_prepare_args+=(--target "$computer_use_target")
+    break
+  fi
+done
+pnpm computer-use:prepare -- "${computer_use_prepare_args[@]}"
 # Trailing args after `--` reach the cargo runner; --locked keeps the
 # signed build from re-resolving past Cargo.lock (spec/package-install-security.md).
 pnpm tauri build --bundles dmg "$@" -- --locked
+
+# Validate the copy inside the signed app, not the pre-bundle staging resource.
+# Hosted staging runners run the deterministic contract gate; a pre-granted
+# desktop release runner can opt into the live TCC/capture/background-action
+# fixture with JUNE_COMPUTER_USE_LIVE_SELF_TEST=1.
+computer_use_self_test_args=()
+if [[ -n "$computer_use_target" ]]; then
+  computer_use_self_test_args+=(--target "$computer_use_target")
+fi
+if [[ "${JUNE_COMPUTER_USE_LIVE_SELF_TEST:-0}" == "1" ]]; then
+  computer_use_self_test_args+=(--live)
+fi
+./scripts/computer-use-release-self-test.sh "${computer_use_self_test_args[@]}"
 
 shopt -s nullglob
 dmgs=(

@@ -235,7 +235,10 @@ _Avoid_: web browsing (that is `june_web` search/fetch), browser toolset
 The consent-gated capability (JUN-278 phase 2) that lets the agent operate
 Mac apps in the background - no cursor, focus, or Space theft - via the
 pinned runtime's computer-use toolset and a June-bundled pinned cua-driver.
-Every mutating action requires approval; requires a vision-capable model.
+The first access to each verified target app requires one authorization for
+the current attended task; requires a vision-capable model. Bringing a parked
+window into June's current Stage Manager group is part of that authorized app
+use and does not ask again.
 _Avoid_: desktop automation (vague), computer_use toolset (that is the
 upstream mechanism, not the June capability).
 
@@ -552,6 +555,16 @@ _Avoid_: model config (unqualified).
 The user + credit balance + subscription state fetched from OS Accounts and
 surfaced to the UI.
 _Avoid_: profile, balance (unqualified).
+
+**Avatar** (`avatar_seed`):
+The network-wide generated account presentation owned by OS Accounts. A saved
+selection is a renderer-versioned `v1:<payload>` seed; without a supported
+selection, June derives `v1:default:<User.id>` without writing it. The seed
+fixes cloud geometry across conforming Apps, while June supplies colors from
+the active theme. An explicit refresh may remain local while its profile write
+cannot sync.
+_Avoid_: App avatar, unversioned avatar seed, silently replacing an unsupported
+future version.
 
 **AccountGate** / **FundingGate**:
 The sign-in wall (`AccountGate`) versus the credits-exhausted / upgrade wall

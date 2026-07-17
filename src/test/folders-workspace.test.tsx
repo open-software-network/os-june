@@ -120,6 +120,15 @@ function baseProps() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index);
+    if (
+      key?.startsWith("june:account-avatar-variant:") ||
+      key?.startsWith("june:account-avatar-pending:")
+    ) {
+      localStorage.removeItem(key);
+    }
+  }
   mocks.osAccountsReferralSummary.mockResolvedValue({
     code: "JUNE-ALEX",
     url: "https://accounts.opensoftware.co/join?ref=JUNE-ALEX",
@@ -218,6 +227,37 @@ describe("Sidebar primary navigation", () => {
     fireEvent.keyDown(search, { key: "Escape" });
 
     expect(screen.queryByRole("dialog", { name: "Search" })).toBeNull();
+  });
+
+  it("opens the command prompt with Command-K while the sidebar is collapsed", async () => {
+    const { container } = render(
+      <Sidebar
+        notes={notes}
+        activeView="notes"
+        collapsed
+        onChangeView={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    const prompt = screen.getByRole("dialog", { name: "Search" });
+    const search = within(prompt).getByRole("textbox", { name: "Search" });
+    await waitFor(() => expect(search).toHaveFocus());
+
+    // The collapsed sidebar is `display: none`, so the prompt must live outside
+    // the sidebar subtree (portaled to the body) to stay visible.
+    const sidebar = container.querySelector(".sidebar");
+    expect(sidebar).not.toBeNull();
+    expect(sidebar?.contains(prompt)).toBe(false);
+    expect(document.body.contains(prompt)).toBe(true);
   });
 
   it("closes the command prompt on Escape even when a result row is focused", async () => {
@@ -363,10 +403,13 @@ describe("Sidebar primary navigation", () => {
         id: "usr_123",
         handle: "alex",
         email: "alex@example.com",
-        displayName: "Alex",
+        displayName: "Alex Rivera",
       },
     });
-    expect(screen.getByRole("button", { name: "Alex, account menu" })).toBeInTheDocument();
+    const namedAccount = screen.getByRole("button", { name: "Alex Rivera, account menu" });
+    expect(namedAccount).toBeInTheDocument();
+    const namedAvatarStyle = namedAccount.querySelector(".account-avatar")?.getAttribute("style");
+    expect(namedAvatarStyle).toContain("--avatar-cloud-x");
     unmountNamed();
 
     const { unmount: unmountEmail } = renderSidebar({
@@ -375,25 +418,52 @@ describe("Sidebar primary navigation", () => {
       user: {
         id: "usr_123",
         handle: "alex",
-        email: "alex@example.com",
+        email: "alex.rivera@example.com",
         displayName: " ",
       },
     });
-    expect(
-      screen.getByRole("button", { name: "alex@example.com, account menu" }),
-    ).toBeInTheDocument();
+    const emailAccount = screen.getByRole("button", {
+      name: "alex.rivera@example.com, account menu",
+    });
+    expect(emailAccount).toBeInTheDocument();
+    expect(emailAccount.querySelector(".account-avatar")?.getAttribute("style")).toBe(
+      namedAvatarStyle,
+    );
     unmountEmail();
+
+    const { unmount: unmountHandle } = renderSidebar({
+      signedIn: true,
+      configured: true,
+      user: {
+        id: "usr_123",
+        handle: "alex-rivera",
+        email: " ",
+      },
+    });
+    const handleAccount = screen.getByRole("button", {
+      name: "alex-rivera, account menu",
+    });
+    expect(handleAccount).toBeInTheDocument();
+    expect(handleAccount.querySelector(".account-avatar")?.getAttribute("style")).toBe(
+      namedAvatarStyle,
+    );
+    unmountHandle();
 
     renderSidebar({
       signedIn: true,
       configured: true,
       user: {
-        id: "usr_123",
-        handle: "alex",
-        email: " ",
+        id: "usr_456",
+        handle: "alex-rivera-2",
+        displayName: "Alex Rivera",
       },
     });
-    expect(screen.getByRole("button", { name: "alex, account menu" })).toBeInTheDocument();
+    const differentAccount = screen.getByRole("button", {
+      name: "Alex Rivera, account menu",
+    });
+    expect(differentAccount.querySelector(".account-avatar")?.getAttribute("style")).not.toBe(
+      namedAvatarStyle,
+    );
   });
 
   it("opens dictation history from the primary nav", async () => {

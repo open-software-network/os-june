@@ -1602,7 +1602,9 @@ export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceM
   });
 }
 
-export async function openPrivacySettings(pane: "microphone" | "accessibility" | "systemAudio") {
+export async function openPrivacySettings(
+  pane: "microphone" | "accessibility" | "screenRecording" | "systemAudio",
+) {
   return invoke<void>("open_privacy_settings", { request: { pane } });
 }
 
@@ -1681,6 +1683,7 @@ export type AccountUser = {
   email?: string;
   displayName?: string;
   avatarUrl?: string;
+  avatarSeed?: string;
 };
 
 export type AccountBalance = {
@@ -1766,6 +1769,11 @@ export async function osAccountsLogout(options: AccountsLogoutOptions = {}) {
   return invoke<void>("os_accounts_logout", {
     request: { clearBrowserSession: options.clearBrowserSession ?? false },
   });
+}
+
+/** Persist an explicit Avatar v1 selection on the signed-in OS Accounts User. */
+export async function osAccountsSetAvatarSeed(seed: string) {
+  return invoke<AccountUser>("os_accounts_set_avatar_seed", { seed });
 }
 
 /** Opens subscription checkout in the browser. Omitting `plan` keeps the
@@ -2140,6 +2148,46 @@ export type PendingConnectorApproval = {
   requestedAtMs: number;
 };
 
+export type ComputerUseStatusDto = {
+  platformSupported: boolean;
+  planEligible: boolean;
+  grantEnabled: boolean;
+  driverAvailable: boolean;
+  driverVersion?: string;
+  accessibility: boolean;
+  screenRecording: boolean;
+  modelSupportsVision: boolean;
+  generationModel: string;
+  ready: boolean;
+  state:
+    | "off"
+    | "permission_missing"
+    | "model_unsupported"
+    | "plan_required"
+    | "ready"
+    | "unsupported"
+    | "driver_missing"
+    | "driver_mismatch"
+    | "rollout_disabled"
+    | "error"
+    | (string & {});
+  error?: string;
+};
+
+/** One state-changing Computer use call parked in the app-owned Rust broker.
+ * The capture path, when present, is already scoped for read-only asset access
+ * by the native shell. */
+export type PendingComputerUseApprovalDto = {
+  approvalId: string;
+  actionId: string;
+  action: string;
+  targetApp: string;
+  summary: string;
+  capturePath?: string;
+  requestedAtMs: number;
+  expiresAtMs: number;
+};
+
 /** Tauri event: the connected-accounts list changed (connect, disconnect, or
  * a reconnect_required transition). Payload carries no account data; listeners
  * re-fetch via connectorsList(). */
@@ -2148,6 +2196,14 @@ export const CONNECTORS_CHANGED_EVENT = "june://connectors-changed";
 /** Tauri event: the pending connector-approval set changed.
  * Payload: `{ pendingCount: number }`. */
 export const CONNECTOR_APPROVALS_CHANGED_EVENT = "june://connector-approvals-changed";
+
+/** Tauri event: the app-owned Computer use approval queue changed.
+ * Payload: `{ pendingCount: number }`. */
+export const COMPUTER_USE_APPROVALS_CHANGED_EVENT = "june://computer-use-approvals-changed";
+
+/** Browser-local signal used to keep the Plugins and Settings fronts in sync
+ * after either one changes the single native grant. */
+export const COMPUTER_USE_STATUS_CHANGED_EVENT = "june:computer-use-status-changed";
 
 export async function connectorsList() {
   return invoke<ConnectorAccount[]>("connectors_list");
@@ -2331,6 +2387,58 @@ export async function connectorApprovalsRespondAll(input: {
     approve: input.approve,
     approvalIds: input.approvalIds,
   });
+}
+
+export async function computerUseStatus() {
+  return invoke<ComputerUseStatusDto>("computer_use_status");
+}
+
+export async function setComputerUseGrant(enabled: boolean) {
+  return invoke<ComputerUseStatusDto>("set_computer_use_grant", {
+    request: { enabled },
+  });
+}
+
+export async function computerUseRequestPermissions() {
+  return invoke<ComputerUseStatusDto>("computer_use_request_permissions");
+}
+
+export async function setComputerUsePermissionDragBounds(
+  bounds: RecordingPresenceBoundsDto | null,
+) {
+  return invoke<void>("set_computer_use_permission_drag_bounds", {
+    request: { bounds },
+  });
+}
+
+export async function computerUseStop() {
+  return invoke<{ stopped: boolean }>("computer_use_stop");
+}
+
+export async function computerUseBeginRun(sessionId: string) {
+  return invoke<void>("computer_use_begin_run", {
+    request: { sessionId },
+  });
+}
+
+export async function computerUseEndRun(sessionId: string) {
+  return invoke<void>("computer_use_end_run", {
+    request: { sessionId },
+  });
+}
+
+export async function computerUseApprovalsPending() {
+  return invoke<PendingComputerUseApprovalDto[]>("computer_use_approvals_pending");
+}
+
+export async function respondComputerUseApproval(input: { approvalId: string; approve: boolean }) {
+  return invoke<void>("computer_use_approval_respond", {
+    request: { approvalId: input.approvalId, approve: input.approve },
+  });
+}
+
+export function computerUseCaptureSrc(path: string) {
+  return convertFileSrc(path);
 }
 
 // ---- Private sharing (JUN-308) -------------------------------------------

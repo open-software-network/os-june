@@ -15,6 +15,7 @@ export function toolActivityLabel(toolName: string | undefined, payload?: unknow
   const rawName =
     nonEmptyString(toolName) ?? firstString(records, ["name", "tool_name", "tool"]) ?? "tool";
   const normalized = normalizeToolName(rawName);
+  if (isComputerUseToolName(normalized)) return "Computer use";
   const command = firstString(records, ["command", "cmd", "script", "shell_command"]);
   const commandLabel = command ? labelFromCommand(command) : undefined;
   if (commandLabel) return commandLabel;
@@ -164,6 +165,10 @@ function isWebToolName(value: string) {
     hasPhrase(value, ["fetch_url", "open_url"]) ||
     hasSegment(value, ["http", "url"])
   );
+}
+
+function isComputerUseToolName(value: string) {
+  return /(^|_)computer_use($|_)/.test(value);
 }
 
 function isWebSearchToolName(value: string) {

@@ -77,7 +77,6 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "file",
   "code_execution",
   "web",
-  "browser",
   "vision",
   "tts",
   "skills",
@@ -86,21 +85,17 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "context_engine",
   "session_search",
   "delegation",
-  "computer_use",
 ];
 
 /** Toolsets that let a routine change the machine or act on it: their
  * presence in a job's override is what "Unrestricted" means for routines.
  * The sandboxed cron default contains none of them. */
-const MACHINE_TOOLSETS = new Set([
-  "terminal",
-  "file",
-  "code_execution",
-  "browser",
-  "computer_use",
-  "delegation",
-  "skills",
-]);
+const MACHINE_TOOLSETS = new Set(["terminal", "file", "code_execution", "delegation", "skills"]);
+const INTERACTIVE_ONLY_TOOLSETS = new Set(["computer_use", "june_computer_use"]);
+
+function routineToolsets(toolsets: string[]) {
+  return toolsets.filter((toolset) => !INTERACTIVE_ONLY_TOOLSETS.has(toolset.trim()));
+}
 
 /** Whether a routine can touch the machine when it fires. Derived from the
  * stored job rather than any UI state, so the badge reflects what the
@@ -193,7 +188,7 @@ export async function createRoutine(input: {
     const requested =
       input.enabledToolsets ?? (input.unrestricted ? UNRESTRICTED_ROUTINE_TOOLSETS : undefined);
     if (!requested) return routineFromRecord(created);
-    const toolsets = await stripNativeMemoryIfDisabled(requested);
+    const toolsets = await stripNativeMemoryIfDisabled(routineToolsets(requested));
     const widened = await updateHermesBridgeCronJob(created.id, {
       enabled_toolsets: toolsets,
     });
@@ -232,7 +227,7 @@ export async function updateRoutine(jobId: string, updates: RoutineUpdates): Pro
     payload.enabled_toolsets =
       updates.enabledToolsets === null
         ? null
-        : await stripNativeMemoryIfDisabled(updates.enabledToolsets);
+        : await stripNativeMemoryIfDisabled(routineToolsets(updates.enabledToolsets));
   } else if (updates.unrestricted === true) {
     payload.enabled_toolsets = await stripNativeMemoryIfDisabled(UNRESTRICTED_ROUTINE_TOOLSETS);
   } else if (updates.unrestricted === false) {

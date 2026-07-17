@@ -35,6 +35,12 @@ describe("toolActivityLabel", () => {
     expect(toolActivityLabel("june_video.animate_image")).toBe("Working with video");
   });
 
+  it("labels June's private desktop tool as Computer use", () => {
+    expect(toolActivityLabel("mcp__june_computer_use__computer_use")).toBe("Computer use");
+    expect(toolActivityLabel("june_computer_use.computer_use")).toBe("Computer use");
+    expect(toolActivityLabel("computer_user_lookup")).toBe("Computer user lookup");
+  });
+
   it("keeps an understandable fallback for unknown tools", () => {
     expect(humanizeToolName("custom_deploy_tool")).toBe("Custom deploy tool");
     expect(toolActivityLabel("custom_deploy_tool")).toBe("Custom deploy tool");

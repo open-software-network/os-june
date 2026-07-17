@@ -13,6 +13,52 @@ export type UpdateCheckMode = "launch" | "manual" | "periodic";
 
 export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
+// The manual-check success status. Shared so the reporter and the auto-dismiss
+// effect that matches on it (App), plus the dev demo, can't drift apart.
+export const UP_TO_DATE_STATUS = "June is up to date.";
+
+export type UpdateStatusDisplayState = {
+  status: string | null;
+  leaving: boolean;
+  failed: boolean;
+};
+
+export type UpdateStatusDisplayAction =
+  | { type: "show"; status: string | null; failed?: boolean }
+  | { type: "beginUpToDateExit" }
+  | { type: "clearUpToDate" };
+
+export const INITIAL_UPDATE_STATUS_DISPLAY: UpdateStatusDisplayState = {
+  status: null,
+  leaving: false,
+  failed: false,
+};
+
+// Status changes reset the exit phase synchronously. Timed exit actions are
+// guarded by the current value, so a stale success timer cannot fade or clear
+// a newer check/failure status if its effect cleanup is delayed.
+export function updateStatusDisplayReducer(
+  state: UpdateStatusDisplayState,
+  action: UpdateStatusDisplayAction,
+): UpdateStatusDisplayState {
+  if (action.type === "show") {
+    const failed = action.status !== null && action.failed === true;
+    if (state.status === action.status && state.failed === failed && !state.leaving) return state;
+    return { status: action.status, leaving: false, failed };
+  }
+  if (state.status !== UP_TO_DATE_STATUS) return state;
+  if (action.type === "beginUpToDateExit") {
+    return { ...state, leaving: true };
+  }
+  return INITIAL_UPDATE_STATUS_DISPLAY;
+}
+
+// Launch and periodic checks are silent unless they discover an update. Only
+// manual checks render the transient checking status and its spinner.
+export function updateCheckShowsStatus(mode: UpdateCheckMode): boolean {
+  return mode === "manual";
+}
+
 export type UpdaterUpdate = {
   version: string;
   body?: string;

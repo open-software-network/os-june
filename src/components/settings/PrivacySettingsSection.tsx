@@ -53,7 +53,7 @@ export function PrivacySettingsSection() {
         Privacy
       </h2>
       <p className="settings-group-description">
-        Choose whether June shares anonymous usage statistics with Open Software. Off by default.
+        Choose whether June shares anonymous usage statistics with OpenSoftware. Off by default.
       </p>
       <div className="settings-card">
         <div className="settings-rows">

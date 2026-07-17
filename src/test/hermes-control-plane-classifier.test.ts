@@ -307,7 +307,7 @@ describe("classifyHermesEvent — tools", () => {
 
   it("preserves a video MEDIA result without forwarding unrelated tool text", () => {
     const mediaText =
-      "MEDIA:/Users/alex/Library/Application Support/June/generated-videos/generated-video-ab12.mp4";
+      "MEDIA:/Users/alex/Library/Application Support/June/videos/generated-video-ab12.mp4";
     const result = classifyHermesEvent(
       event("tool.complete", {
         tool_call_id: "video1",
