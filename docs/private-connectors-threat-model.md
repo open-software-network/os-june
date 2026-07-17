@@ -144,9 +144,9 @@ of this slice. The Google analysis above remains unchanged.
 - Terminal children, sibling MCP servers, the launchd gateway, scheduled jobs,
   and sessions using `no_mcp` receive no GitHub read authority. Separate
   processes cannot pass the peer-pid check merely by learning the socket path.
-- GitHub agent reads are macOS-first and require June's sandbox to be engaged.
-  The sandbox denies the agent-writable `$HERMES_HOME/plugins` tree so code the
-  agent persists cannot later run inside the broker-authorized dashboard pid.
+- GitHub reads are macOS-first and require June's sandbox to be engaged. The
+  sandbox denies the Hermes-writable `$HERMES_HOME/plugins` tree so code Hermes
+  persists cannot later run inside the broker-authorized dashboard pid.
   Unrestricted sessions, sandbox-disabled or sandbox-failed starts, and other
   platforms fail closed. A host-approved extension deliberately loaded in the
   same process would still be same-trust code; peer-pid admission cannot isolate

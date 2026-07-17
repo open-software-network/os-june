@@ -20195,6 +20195,10 @@ mcp_servers:
                 if checks == 1 {
                     Ok(ChildLiveness::Running)
                 } else {
+                    assert!(
+                        !broker.revoked_for_bridge_test(),
+                        "second liveness check must start with active admission"
+                    );
                     child.kill().expect("kill between authorization checks");
                     let deadline = Instant::now() + Duration::from_secs(2);
                     while !child_has_exited_without_reaping(child)? {
@@ -20204,10 +20208,6 @@ mcp_servers:
                         );
                         std::thread::yield_now();
                     }
-                    assert!(
-                        !broker.revoked_for_bridge_test(),
-                        "post-authorization fixture must observe active admission"
-                    );
                     Ok(ChildLiveness::Exited)
                 }
             },

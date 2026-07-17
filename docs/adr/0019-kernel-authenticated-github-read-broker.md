@@ -99,13 +99,14 @@ downgrade path after stronger trust has been established.
 The detailed contracts and verification evidence are indexed under the GitHub
 agent-read capability isolation documents in [docs/index.md](../index.md).
 
-## 2026-07-17 addendum: Agent-writable code exclusion and stop ordering
+## 2026-07-17 addendum: Hermes-writable code exclusion and stop ordering
 
 Peer-pid admission cannot distinguish June's verified extension from other
 Python code imported into the admitted dashboard process. Review found that
-`$HERMES_HOME/plugins` is writable by the sandboxed agent and that Hermes has
-multiple user-plugin loaders, including lazy model and memory provider paths.
-Treating those files as "user-enabled" was therefore insufficient: the agent
+`$HERMES_HOME/plugins` is writable by the sandboxed Hermes runtime and that
+Hermes has multiple user-plugin loaders, including lazy model and memory
+provider paths.
+Treating those files as "user-enabled" was therefore insufficient: Hermes
 could persist and enable code itself, then have it execute inside a later
 broker-authorized pid.
 
