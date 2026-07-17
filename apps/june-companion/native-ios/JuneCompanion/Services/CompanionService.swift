@@ -118,15 +118,9 @@ final class CompanionService {
     do {
       // Persist the cleanup route before the relay can activate this credential,
       // so every ambiguous network outcome remains recoverable after relaunch.
-      try SecureStore.shared.save(
-        JSONEncoder().encode(
-          PendingPairingRevocation(
-            relayURL: payload.relayUrl,
-            deviceID: identity.deviceID
-          )
-        ),
-        account: pendingRevocationAccount,
-        accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      try recordPendingRevocation(
+        relayURL: payload.relayUrl,
+        deviceID: identity.deviceID
       )
       cleanupRecorded = true
       _ = try await pairingAPI.propose(
@@ -289,6 +283,10 @@ final class CompanionService {
     guard let linked else { return }
     let identity = try DeviceIdentityService.shared.identity()
     let credential = try deviceCredential()
+    try recordPendingRevocation(
+      relayURL: linked.relayURL,
+      deviceID: identity.deviceID
+    )
     // Mirror revocation in Desktop's local list, then require the
     // authoritative relay revocation to succeed before deleting local keys.
     _ = try? await request(capability: "devicesRevokeSelf", body: ["type": "deviceRevokeSelf"])
@@ -438,6 +436,16 @@ final class CompanionService {
     )
     clearLocalAuthorization(connection: "unpaired")
     return true
+  }
+
+  private func recordPendingRevocation(relayURL: URL, deviceID: UUID) throws {
+    try SecureStore.shared.save(
+      JSONEncoder().encode(
+        PendingPairingRevocation(relayURL: relayURL, deviceID: deviceID)
+      ),
+      account: pendingRevocationAccount,
+      accessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    )
   }
 
   private func presentPendingRevocationError() {
@@ -607,7 +615,10 @@ final class CompanionService {
         account: "device.credential",
         to: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
       )
-      return DeviceCredential(value: value, hash: Array(SHA256.hash(data: bytes)))
+      return DeviceCredential(
+        value: value,
+        hash: DeviceCredential.hash(value: value)
+      )
     }
     let credential = try DeviceCredential.generate()
     try SecureStore.shared.save(

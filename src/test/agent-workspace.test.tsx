@@ -39,6 +39,7 @@ import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
+import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -469,6 +470,12 @@ describe("AgentWorkspace", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.listen.mockImplementation(
+      async (eventName: string, handler: (event: { payload?: unknown }) => unknown) => {
+        mocks.eventHandlers.set(eventName, handler);
+        return () => mocks.eventHandlers.delete(eventName);
+      },
+    );
     mocks.suggestAgentSessionTitle.mockReset();
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayCloseHandlers.clear();
@@ -638,6 +645,37 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
+  });
+
+  it("advertises the companion consumer only after its listener is installed", async () => {
+    let installCompanionListener: (() => void) | undefined;
+    mocks.listen.mockImplementation(
+      (eventName: string, handler: (event: { payload?: unknown }) => unknown) => {
+        if (eventName !== "june://companion-request") {
+          mocks.eventHandlers.set(eventName, handler);
+          return Promise.resolve(() => mocks.eventHandlers.delete(eventName));
+        }
+        return new Promise((resolve) => {
+          installCompanionListener = () => {
+            mocks.eventHandlers.set(eventName, handler);
+            resolve(() => mocks.eventHandlers.delete(eventName));
+          };
+        });
+      },
+    );
+
+    const view = render(<AgentWorkspace />);
+    await waitFor(() => expect(installCompanionListener).toBeDefined());
+    expect(companionFrontendConsumerAvailable()).toBe(false);
+
+    await act(async () => {
+      installCompanionListener?.();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(companionFrontendConsumerAvailable()).toBe(true));
+
+    view.unmount();
+    expect(companionFrontendConsumerAvailable()).toBe(false);
   });
 
   it("reuses activity projection set identities when membership is unchanged", () => {

@@ -5,7 +5,8 @@ messages/deltas/status payloads, safe settings, recording controls, focus
 targets, operation results, and protocol errors. Device private/session keys,
 device credentials, and QR secrets never enter the SwiftUI application model.
 The relay receives a device credential only for verification and persists only
-its SHA-256 hash; it never receives the Noise pairing secret.
+the SHA-256 hash of its encoded authorization value; it never receives the
+Noise pairing secret.
 
 June API necessarily observes the desktop's OS Accounts user id, linked device ids and
 public keys, device display names, link/revocation timestamps, APNs device

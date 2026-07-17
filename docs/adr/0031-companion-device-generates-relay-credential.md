@@ -23,8 +23,10 @@ proposing its public identity.
 
 - The companion generates a random 32-byte device credential with the system
   cryptographic random source before it proposes pairing.
-- The proposal sends SHA-256 of the credential together with the companion
-  device id, Curve25519 public key, display name, and pairing proof.
+- The random bytes are encoded as an unpadded base64url credential. The
+  proposal sends SHA-256 of that exact UTF-8 credential representation together
+  with the companion device id, Curve25519 public key, display name, and pairing
+  proof. The relay hashes the same authorization-header representation.
 - June API holds and persists only the 32-byte hash. Desktop approval activates
   that hash and the explicit device link; no API response contains the
   plaintext credential.
@@ -41,8 +43,8 @@ proposing its public identity.
 ## Consequences
 
 - June API does not generate, return, or retain the reusable plaintext
-  credential during pairing. It receives the credential later only in the
-  `Device` authorization header and compares its hash without storing it.
+  credential during pairing. It receives the encoded credential later only in
+  the `Device` authorization header and compares its hash without storing it.
 - Possession of a QR secret still does not activate the credential hash. The
   signed-in desktop must approve the presented companion identity.
 - Reinstalling or revoking the companion discards the credential and requires

@@ -14,6 +14,9 @@ deletes the linked configuration, device credential, and device identity from
 Keychain, and clears render state. A live desktop revocation event performs the
 same native cleanup immediately, including deletion of the encrypted cache and
 its Keychain key, even if no SwiftUI screen is observing the connection.
+The companion records self-revocation before asking the desktop to mirror it,
+so an interrupted relay call is retried independently even after the desktop
+has disabled the encrypted local path.
 
 Before proposing a pairing, the companion records the relay address and device
 id in Keychain. If any later pairing step fails, it keeps that record, the

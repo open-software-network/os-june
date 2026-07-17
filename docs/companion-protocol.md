@@ -25,10 +25,11 @@ handshake is required after 2^20 messages or 24 hours.
 
 The relay pairing API receives only SHA-256 of the QR secret as a five-minute
 proof. The phone generates an opaque device credential and submits only its
-hash during pairing. Desktop approval activates that hash. The phone later
-presents the credential with the `Device` scheme; the relay compares its hash
-without retaining the plaintext. Noise separately authenticates the device's
-private key and protects all content.
+encoded UTF-8 value's hash during pairing. Desktop approval activates that
+hash. The phone later presents the same encoded value with the `Device` scheme;
+the relay hashes that representation and compares it without retaining the
+plaintext. Noise separately authenticates the device's private key and protects
+all content.
 
 During an explicit pairing, the authenticated desktop may establish its relay
 socket while the pairing is still pending, but pending phones remain unable to
@@ -41,7 +42,10 @@ the two boundaries. The relay also refuses to start its bounded persistence
 step in the final 16 seconds of the pairing window. Postgres checks the pairing
 expiry in the same transaction that activates the durable device link. Only a
 durably activated link may finish in memory after the wall-clock expiry passes;
-an expired transaction rolls back the device and link writes together.
+an expired transaction rolls back the device and link writes together. An
+approval retry recognizes an already committed matching link and reconciles the
+in-memory pairing instead of treating a lost commit response as an identity
+conflict.
 
 ## Capabilities
 

@@ -24,7 +24,11 @@ final class AuthAndModelTests: XCTestCase {
 
         XCTAssertEqual(decoded?.count, 32)
         XCTAssertEqual(credential.hash.count, 32)
-        XCTAssertEqual(credential.hash, decoded.map { Array(SHA256.hash(data: $0)) })
+        XCTAssertEqual(
+          credential.hash,
+          Array(SHA256.hash(data: Data(credential.value.utf8)))
+        )
+        XCTAssertNotEqual(credential.hash, decoded.map { Array(SHA256.hash(data: $0)) })
         XCTAssertNotEqual(credential.hash, decoded.map(Array.init))
     }
 

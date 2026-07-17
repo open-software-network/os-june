@@ -191,6 +191,27 @@ impl CompanionStore for PgCompanionStore {
         .await
         .map_err(companion_query_error)?;
         if linked.rows_affected() != 1 {
+            let already_linked = sqlx::query_scalar::<_, bool>(
+                r"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM companion_device_links
+                    WHERE left_device_id = $1
+                      AND right_device_id = $2
+                      AND user_id = $3
+                )
+                ",
+            )
+            .bind(approval.link.left_device_id)
+            .bind(approval.link.right_device_id)
+            .bind(&user_id.0)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(companion_query_error)?;
+            if already_linked {
+                transaction.commit().await.map_err(companion_query_error)?;
+                return Ok(());
+            }
             let expired = sqlx::query_scalar::<_, bool>(
                 "SELECT clock_timestamp() > to_timestamp(($1::double precision) / 1000.0)",
             )

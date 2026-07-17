@@ -24,6 +24,10 @@ struct DeviceCredential {
   let value: String
   let hash: [UInt8]
 
+  static func hash(value: String) -> [UInt8] {
+    Array(SHA256.hash(data: Data(value.utf8)))
+  }
+
   static func generate() throws -> DeviceCredential {
     var bytes = [UInt8](repeating: 0, count: 32)
     guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
@@ -35,7 +39,10 @@ struct DeviceCredential {
       .replacingOccurrences(of: "+", with: "-")
       .replacingOccurrences(of: "/", with: "_")
       .replacingOccurrences(of: "=", with: "")
-    return DeviceCredential(value: value, hash: Array(SHA256.hash(data: data)))
+    return DeviceCredential(
+      value: value,
+      hash: hash(value: value)
+    )
   }
 }
 

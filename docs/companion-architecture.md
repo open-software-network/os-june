@@ -37,13 +37,14 @@ Accounts session.
 Rust owns the shared Noise state machine, the versioned protocol, the closed
 desktop allowlist, note compare-and-swap, durable linked-device metadata, and
 the blind relay. The companion generates its device credential and sends only
-its hash during pairing. June API stores that hash; it receives the credential
-only when verifying a `Device` authorization header and never stores the
-credential or QR secret.
+the hash of its encoded authorization value during pairing. June API stores
+that hash; it hashes the same UTF-8 value when verifying a `Device`
+authorization header and never stores the credential or QR secret.
 
 The always-mounted desktop app shell handles sanitized agent session and
 message reads without changing the visible Mac view. Agent send and cancel
 requests are queued briefly while the existing Agent workspace mounts, so the
+consumer is advertised only after its Tauri listener is installed. The
 companion reuses June's normal session, model, and transcript behavior rather
 than creating a second agent control path.
 
