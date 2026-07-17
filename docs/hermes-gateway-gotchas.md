@@ -44,6 +44,14 @@ therefore read-modify-write of the full tree, and a multi-leaf change must
 batch into ONE put (`config.applyWritesAtSegments`) or a mid-sequence failure
 leaves config half-mutated.
 
+**Mutating admin requests serialize with Memory policy writes.** June holds the
+bridge start/config guard for the full dashboard round-trip so a whole-tree
+Hermes write cannot race spawn rendering or a direct Memory-policy edit. One
+request is bounded by `HERMES_API_REQUEST_TIMEOUT` (45 seconds), but the mutex
+is FIFO, so a Memory toggle can also wait behind earlier queued mutations.
+Review that user-visible aggregate delay before increasing the request budget
+or adding another long-running mutating admin call.
+
 **Secrets are write-only.** Server listings strip `env` and `headers` values;
 June can never read them back. "Edit" therefore only covers non-secret
 connection fields; changing a secret is delete-and-re-add.

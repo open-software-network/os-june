@@ -3821,7 +3821,10 @@ async fn hermes_api_json(
     // renders at spawn and edits for Memory. The app-side lock avoids overlap
     // with other June requests while the pinned Hermes writer's file lock and
     // stale-snapshot reconciliation preserve the current Memory deny across
-    // the separate dashboard process.
+    // the separate dashboard process. One HTTP round-trip holds this guard for
+    // at most HERMES_API_REQUEST_TIMEOUT; FIFO wait can still include earlier
+    // queued mutations, so increasing that bound also increases Memory-toggle
+    // latency and must be reviewed as part of this serialization contract.
     let _config_write_guard = if hermes_request_may_write(&method) {
         Some(bridge.start_lock.lock().await)
     } else {
@@ -3875,7 +3878,10 @@ pub async fn hermes_admin_request(
     // Every foundation admin mutation reaches the separate dashboard process
     // here. Avoid overlapping it with other June mutations; the pinned Hermes
     // writer separately locks the file and reconciles the current Memory deny
-    // before replacing config.yaml.
+    // before replacing config.yaml. Each request holds this guard for at most
+    // HERMES_API_REQUEST_TIMEOUT, but FIFO wait can include earlier queued
+    // mutations; keep that aggregate delay in mind for settings operations
+    // that need the same lock.
     let _config_write_guard = if hermes_request_may_write(&method) {
         Some(bridge.start_lock.lock().await)
     } else {
@@ -6170,7 +6176,7 @@ async fn hermes_connection_json(
         // source-search timeout) so a slow but successful response — partial
         // results included — wins over a proxy-level timeout that would
         // otherwise surface as a misleading "could not reach Hermes" error.
-        .timeout(Duration::from_secs(45))
+        .timeout(HERMES_API_REQUEST_TIMEOUT)
         .build()
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))?;
     let mut request = client
@@ -6201,6 +6207,11 @@ async fn hermes_connection_json(
     serde_json::from_str(&text)
         .map_err(|error| AppError::new("hermes_bridge_api_failed", error.to_string()))
 }
+
+/// Total request budget for one Hermes dashboard round-trip. Mutating requests
+/// hold `HermesBridge::start_lock` for this interval to serialize whole-tree
+/// config writes with spawn and direct Memory-policy changes.
+const HERMES_API_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Stops every runtime process. The shared provider proxy stays up — it is
 /// process-independent and the next start reuses it; `shutdown()` is the
@@ -7829,11 +7840,26 @@ fn sync_hermes_config_with_external_dirs(
     // wiped them on every June spawn. June's rendered keys still win — the
     // provider proxy port/token legitimately change per spawn — but every key
     // June does not render survives.
-    preserve_replaced_hermes_config_if_needed(&config_path, memory_enabled)?;
+    let source_backup_created =
+        preserve_replaced_hermes_config_if_needed(&config_path, memory_enabled)?;
     let mut merged =
         serde_yaml::from_str::<serde_yaml::Value>(&merge_hermes_config(&config_path, &config))
             .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
-    apply_memory_toolset_policy(&mut merged, memory_enabled);
+    let repaired_invalid_shape = apply_memory_toolset_policy(&mut merged, memory_enabled);
+    if repaired_invalid_shape && !source_backup_created {
+        match fs::read(&config_path) {
+            Ok(existing) => {
+                backup_corrupt_hermes_config(&config_path, &existing)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(AppError::new(
+                    "hermes_bridge_config_failed",
+                    error.to_string(),
+                ))
+            }
+        }
+    }
     let merged = serde_yaml::to_string(&merged)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
     write_hermes_config_atomic(&config_path, &merged)
@@ -7945,10 +7971,10 @@ fn memory_policy_has_invalid_shape(config: &serde_yaml::Value) -> bool {
 fn preserve_replaced_hermes_config_if_needed(
     config_path: &Path,
     memory_enabled: bool,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let existing = match fs::read_to_string(config_path) {
         Ok(existing) => existing,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
             return Err(AppError::new(
                 "hermes_bridge_config_failed",
@@ -7967,7 +7993,7 @@ fn preserve_replaced_hermes_config_if_needed(
     if needs_backup {
         backup_corrupt_hermes_config(config_path, existing.as_bytes())?;
     }
-    Ok(())
+    Ok(needs_backup)
 }
 
 /// Narrow, connection-independent config mutation used by the Memory toggle.
@@ -16451,6 +16477,9 @@ mcp_servers:
     fn config_sync_self_heals_the_persisted_global_memory_policy() {
         let home = tempfile::tempdir().expect("tempdir");
         let settings = home.path().join("memory-settings.json");
+        let config_path = home.path().join("config.yaml");
+        let invalid_source = b"agent:\n  disabled_toolsets: not-a-list\nskills:\n  config:\n    user-skill:\n      enabled: true\n";
+        std::fs::write(&config_path, invalid_source).expect("seed invalid policy shape");
         let mut context = test_june_context_mcp_config();
         context.memory_settings_path = settings.clone();
         let web = test_june_web_mcp_config();
@@ -16475,7 +16504,6 @@ mcp_servers:
             &[],
         )
         .expect("sync disabled config");
-        let config_path = home.path().join("config.yaml");
         let mut disabled: serde_yaml::Value = serde_yaml::from_str(
             &std::fs::read_to_string(&config_path).expect("read disabled config"),
         )
@@ -16485,6 +16513,24 @@ mcp_servers:
             .expect("disabled list")
             .iter()
             .any(|item| item.as_str() == Some("memory")));
+        assert_eq!(disabled["skills"]["config"]["user-skill"]["enabled"], true);
+        let backups = std::fs::read_dir(home.path())
+            .expect("read config directory")
+            .map(|entry| entry.expect("directory entry").path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(HERMES_CONFIG_CORRUPT_BACKUP_PREFIX)
+                            && name.ends_with(".bak")
+                    })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1, "spawn repair archives source once");
+        assert_eq!(
+            std::fs::read(&backups[0]).expect("read policy-shape backup"),
+            invalid_source,
+        );
         disabled["agent"]["disabled_toolsets"] = serde_yaml::Value::Sequence(vec![
             serde_yaml::Value::String("browser".to_string()),
             serde_yaml::Value::String("memory".to_string()),

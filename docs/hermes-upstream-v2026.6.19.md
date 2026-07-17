@@ -33,6 +33,11 @@ and preview desktop sessions without changing the upstream pin.
 The central `AIAgent` constructor also resolves the global deny itself and uses
 Hermes' existing `skip_memory` gate, so native prompt injection and external
 memory provider prefetch/sync are disabled across every construction path.
+That resolution intentionally re-reads `config.yaml` once per construction,
+even when the caller already supplies `disabled_toolsets`: constructor
+arguments or an in-process cache can predate a Memory toggle, while the file is
+the cross-process authority updated by June. Do not cache this read without a
+new invalidation contract that also covers the gateway-only runtime.
 
 The patch also coordinates Hermes' central atomic YAML writer with June's Rust
 config writer through an OS advisory lock. Before any stale Hermes snapshot is

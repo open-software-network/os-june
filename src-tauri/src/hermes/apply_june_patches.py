@@ -711,6 +711,11 @@ def _(rid, params: dict) -> dict:
 
 
 def patch_agent_init(source: str) -> str:
+    # Deliberately keep load_config inside the helper and uncached. Constructor
+    # arguments can be stale or absent on future Hermes paths, and a long-lived
+    # gateway must observe June's latest direct config mutation after a Memory
+    # toggle. One synchronous local read per agent construction is the accepted
+    # cost of making config.yaml authoritative at this privacy boundary.
     source = replace_once(
         source,
         "\ndef init_agent(\n",
