@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,17 @@ const rawUserArgs = process.argv.slice(2);
 const userArgs = rawUserArgs[0] === "--" ? rawUserArgs.slice(1) : rawUserArgs;
 const target = optionValue(userArgs, "--target");
 const buildPlatform = platformForTarget(target) ?? process.platform;
+if (buildPlatform === "darwin") {
+  const prepareArgs = [
+    resolve(dirname(fileURLToPath(import.meta.url)), "prepare-cua-driver.mjs"),
+    "--release",
+  ];
+  if (target) prepareArgs.push("--target", target);
+  const prepare = spawnSync(process.execPath, prepareArgs, {
+    stdio: "inherit",
+  });
+  if (prepare.status !== 0) process.exit(prepare.status ?? 1);
+}
 const bundles = platformBundles[buildPlatform];
 const config = platformConfigs[buildPlatform];
 const hasBundleOverride = userArgs.some(

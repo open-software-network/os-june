@@ -319,6 +319,7 @@ pub(crate) fn test_state_from_deps_with_viewer(
 
     ApiState::new(ApiStateParams {
         pricing: pricing.clone(),
+        computer_use: june_config::ComputerUseConfig::default(),
         local_dev_enabled: deps.local_dev_enabled,
         token_verifier: Arc::new(FakeTokenVerifier),
         note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {

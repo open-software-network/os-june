@@ -46,7 +46,10 @@ for arg in "$@"; do
   esac
 done
 
-cargo build "${cargo_args[@]}"
+# The Computer use helper is prepared and signed separately before Tauri runs.
+# Building only June here prevents Cargo from relinking that helper with the
+# app's lower deployment target or a different active Swift toolchain.
+cargo build --bin os-june "${cargo_args[@]}"
 
 target_dir="${CARGO_TARGET_DIR:-target}"
 if [[ "$target_dir" != /* ]]; then
@@ -60,11 +63,19 @@ else
 fi
 
 binary="$bin_dir/os-june"
-launcher="$bin_dir/June"
-tmp_launcher="$bin_dir/.June.tmp"
+launcher_name="${OS_JUNE_DEV_APP_NAME:-June}"
+if [[ -z "$launcher_name" || "$launcher_name" == */* || "$launcher_name" == *:* || "$launcher_name" == *$'\n'* || ${#launcher_name} -gt 80 ]]; then
+  echo "Invalid development app name: $launcher_name" >&2
+  exit 2
+fi
+launcher="$bin_dir/$launcher_name"
+tmp_launcher="$bin_dir/.June-launcher.tmp"
 
 rm -f "$tmp_launcher"
-cp "$binary" "$tmp_launcher"
+# Keep the product-named launcher and Cargo's canonical binary on the same
+# inode. The Computer use helper verifies this identity before accepting the
+# private peer, including issue-suffixed Codex and Claude development names.
+ln "$binary" "$tmp_launcher"
 chmod +x "$tmp_launcher"
 mv -f "$tmp_launcher" "$launcher"
 

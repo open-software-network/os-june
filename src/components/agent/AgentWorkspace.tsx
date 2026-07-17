@@ -88,6 +88,9 @@ import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
   cancelAgentTask,
+  computerUseBeginRun,
+  computerUseEndRun,
+  computerUseStop,
   dictationHelperCommand,
   explainAgentApproval,
   finalizeHermesBridgeBranch,
@@ -361,6 +364,7 @@ import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
+  isGeneratedVideoFilename,
   stripRenderedMediaReferences,
   textFromHermesContent,
   type AgentApprovalChoice,
@@ -1016,8 +1020,6 @@ type PersistedVideoSlashTurn = {
   requestId?: string;
   model?: string;
   jobId?: string;
-  averageExecutionMs?: number;
-  executionMs?: number;
   /** True once the generation completed but its context has not yet ridden a
    * follow-up prompt (the video fold; see storedPendingVideoSlashContexts). */
   contextPending?: boolean;
@@ -1145,8 +1147,6 @@ function videoSlashAssistantTurn(
     | "requestId"
     | "model"
     | "jobId"
-    | "averageExecutionMs"
-    | "executionMs"
   >,
 ): AgentChatTurn {
   if (turn.pending) {
@@ -1165,8 +1165,6 @@ function videoSlashAssistantTurn(
           jobId: turn.jobId,
           userCreatedAt: turn.createdAt,
           videoCreatedAt: turn.videoCreatedAt,
-          averageExecutionMs: turn.averageExecutionMs,
-          executionMs: turn.executionMs,
           error: turn.jobId ? undefined : "Generation was interrupted. Try again to resume.",
         },
       ],
@@ -1453,12 +1451,6 @@ function persistedVideoSlashTurn(
           requestId: candidate.requestId,
           model: typeof candidate.model === "string" ? candidate.model : undefined,
           jobId: typeof candidate.jobId === "string" ? candidate.jobId : undefined,
-          averageExecutionMs:
-            typeof candidate.averageExecutionMs === "number"
-              ? candidate.averageExecutionMs
-              : undefined,
-          executionMs:
-            typeof candidate.executionMs === "number" ? candidate.executionMs : undefined,
         }
       : {
           model: typeof candidate.model === "string" ? candidate.model : undefined,
@@ -2636,6 +2628,7 @@ export function AgentWorkspace({
     Record<string, Map<number, PendingAttachmentPreparation>>
   >({});
   const completedAgentRunAwaitingAttachmentPreparationRef = useRef(new Set<string>());
+  const computerUseRunLeasesRef = useRef(new Map<string, Set<string>>());
   const [upNextDemoFollowUpsBySessionId, setUpNextDemoFollowUpsBySessionId] = useState<
     Record<string, QueuedAttachmentFollowUp[]>
   >({});
@@ -3030,6 +3023,14 @@ export function AgentWorkspace({
     runtimeSessionIdsRef.current = runtimeSessionIds;
   }, [runtimeSessionIds]);
 
+  useEffect(
+    () => () => {
+      computerUseRunLeasesRef.current.clear();
+      void computerUseStop().catch(() => undefined);
+    },
+    [],
+  );
+
   useEffect(() => {
     const restoredSessionIds = Array.from(workingSessionIdsRef.current);
     if (!restoredSessionIds.length) return;
@@ -3044,6 +3045,9 @@ export function AgentWorkspace({
           if (cancelled || !workingSessionIdsRef.current.has(sessionId)) {
             continue;
           }
+          // Reconnect only to observe the existing run. A process restored
+          // after an app relaunch did not cross this mount's visible Send
+          // boundary, so it must not receive a fresh Computer use lease.
           attachHermesSessionEventListener({
             gateway,
             runtimeSessionId,
@@ -5202,8 +5206,6 @@ export function AgentWorkspace({
               onProgress: (progress) => {
                 updateVideoSlashPart(sessionId, assistantTurnId, {
                   jobId: progress.jobId,
-                  averageExecutionMs: progress.averageExecutionMs,
-                  executionMs: progress.executionMs,
                 });
                 upsertStoredVideoSlashTurn({
                   id: turnId,
@@ -5217,8 +5219,6 @@ export function AgentWorkspace({
                   requestId,
                   model: input.model,
                   jobId: progress.jobId,
-                  averageExecutionMs: progress.averageExecutionMs,
-                  executionMs: progress.executionMs,
                 });
               },
             },
@@ -5302,8 +5302,6 @@ export function AgentWorkspace({
       onProgress: (progress) => {
         updateVideoSlashPart(input.sessionId, `${input.turnId}:assistant`, {
           jobId: progress.jobId,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
         upsertStoredVideoSlashTurn({
           id: input.turnId,
@@ -5317,8 +5315,6 @@ export function AgentWorkspace({
           requestId: input.requestId,
           model: input.model,
           jobId: input.jobId,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
       },
     });
@@ -5339,14 +5335,10 @@ export function AgentWorkspace({
         updateVideoSlashPart(turn.sessionId, assistantTurnId, {
           status: "running",
           jobId: progress.jobId,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
         upsertStoredVideoSlashTurn({
           ...turn,
           pending: true,
-          averageExecutionMs: progress.averageExecutionMs,
-          executionMs: progress.executionMs,
         });
       },
     });
@@ -6764,16 +6756,37 @@ export function AgentWorkspace({
     }
   }
 
+  function rememberComputerUseRun(sessionId: string, runLeaseId: string) {
+    const leases = computerUseRunLeasesRef.current.get(sessionId) ?? new Set<string>();
+    leases.add(runLeaseId);
+    computerUseRunLeasesRef.current.set(sessionId, leases);
+  }
+
+  async function releaseComputerUseRun(sessionId: string, runLeaseId: string) {
+    const leases = computerUseRunLeasesRef.current.get(sessionId);
+    leases?.delete(runLeaseId);
+    if (leases?.size === 0) computerUseRunLeasesRef.current.delete(sessionId);
+    await computerUseEndRun(runLeaseId).catch(() => undefined);
+  }
+
+  async function releaseAllComputerUseRuns(sessionId: string) {
+    const leases = [...(computerUseRunLeasesRef.current.get(sessionId) ?? [])];
+    computerUseRunLeasesRef.current.delete(sessionId);
+    await Promise.all(leases.map((lease) => computerUseEndRun(lease).catch(() => undefined)));
+  }
+
   function attachHermesSessionEventListener({
     gateway,
     runtimeSessionId,
     sessionDisplayTitle,
     storedSessionId,
+    computerUseRunLeaseId,
   }: {
     gateway: HermesGatewayClient;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
+    computerUseRunLeaseId?: string;
   }) {
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
@@ -6892,6 +6905,11 @@ export function AgentWorkspace({
         });
       }
       if (isTerminalHermesEvent(classified)) {
+        if (computerUseRunLeaseId) {
+          void releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
+        } else {
+          void releaseAllComputerUseRuns(storedSessionId);
+        }
         unlisten();
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
@@ -7407,12 +7425,8 @@ export function AgentWorkspace({
         status: "running",
         summary: "June is working.",
       });
-      attachHermesSessionEventListener({
-        gateway,
-        runtimeSessionId,
-        sessionDisplayTitle,
-        storedSessionId,
-      });
+      const computerUseRunLeaseId = `${storedSessionId}:${crypto.randomUUID()}`;
+      let computerUseRunStarted = false;
       try {
         const targetProjectContext = explicitSession
           ? resolveSessionProjectContext?.(storedSessionId)
@@ -7422,6 +7436,16 @@ export function AgentWorkspace({
           targetProjectContext,
           projectContextSignaturesBySessionId.get(storedSessionId),
         );
+        await computerUseBeginRun(computerUseRunLeaseId);
+        computerUseRunStarted = true;
+        rememberComputerUseRun(storedSessionId, computerUseRunLeaseId);
+        attachHermesSessionEventListener({
+          gateway,
+          runtimeSessionId,
+          sessionDisplayTitle,
+          storedSessionId,
+          computerUseRunLeaseId,
+        });
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
         // params are sanitized before storage (the text is the user's own prompt,
         // kept; any secret-like value would be masked). This is the primary
@@ -7463,6 +7487,9 @@ export function AgentWorkspace({
           suppressStartupRequestError: !hermesSessionsHydratedRef.current,
         });
       } catch (err) {
+        if (computerUseRunStarted) {
+          await releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
+        }
         // Record the rejection so the trace panel shows failed outbound calls
         // alongside the inbound stream. messageFromError yields a user-safe string.
         hermesTraceBuffer.recordError({
@@ -7936,6 +7963,7 @@ export function AgentWorkspace({
         );
         const activityCounts = clearSessionActivity(sessionId);
         if (wasActive) {
+          void releaseAllComputerUseRuns(sessionId);
           markAgentRunSucceeded(sessionId);
           dispatchAgentSessionStatus({
             sessionId,
@@ -9298,6 +9326,11 @@ export function AgentWorkspace({
   // the RPC fails (gateway drop, runtime session already gone).
   async function stopHermesSession(sessionId: string) {
     if (stoppingSessionIds.has(sessionId)) return;
+    // Revoke the native broker before waiting for the Hermes interrupt. This
+    // cancels pending approvals, kills the helper, clears captures, and makes
+    // Stop sticky until a later visible chat turn opens a fresh lease.
+    const computerUseStopRequest = computerUseStop().catch(() => undefined);
+    computerUseRunLeasesRef.current.clear();
     cancelAgentRunSettlement(sessionId);
     setStoppingSessionIds((current) => new Set(current).add(sessionId));
 
@@ -9326,6 +9359,7 @@ export function AgentWorkspace({
     });
 
     try {
+      await computerUseStopRequest;
       const runtimeSessionId = runtimeSessionIds[sessionId];
       if (runtimeSessionId) {
         const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
@@ -14315,10 +14349,27 @@ function AgentGeneratedVideo({
   retryDisabledReason?: string;
 }) {
   const src = part.status === "complete" && part.path ? localVideoFileSrc(part.path) : undefined;
+  const [capturedPoster, setCapturedPoster] = useState<{ src: string; dataUrl: string }>();
+  const poster =
+    part.posterDataUrl ??
+    (capturedPoster && capturedPoster.src === src ? capturedPoster.dataUrl : undefined);
   const revealing = useGeneratedMediaReveal(part.status, Boolean(src));
 
+  useEffect(() => {
+    // Capture the poster off an offscreen element so the visible player can stay
+    // in no-CORS mode: the asset protocol omits `Access-Control-Allow-Origin` on
+    // 416 range responses, and only the canvas capture needs CORS.
+    if (!src || part.posterDataUrl || poster) return;
+    let mounted = true;
+    void capturedGeneratedVideoPoster(src).then((dataUrl) => {
+      if (mounted && dataUrl) setCapturedPoster({ src, dataUrl });
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [src, part.posterDataUrl, poster]);
+
   if (part.status === "running") {
-    const progress = videoProgressLabel(part);
     return (
       <div
         className="agent-generated-video"
@@ -14328,9 +14379,6 @@ function AgentGeneratedVideo({
         aria-live="polite"
       >
         <AgentGeneratedMediaPlaceholder kind="video" />
-        <div className="agent-generated-media-caption">
-          <span className="agent-generated-media-note">{progress ?? "This can take a minute"}</span>
-        </div>
       </div>
     );
   }
@@ -14365,7 +14413,7 @@ function AgentGeneratedVideo({
     >
       <div className="agent-generated-video-frame">
         {src ? (
-          <video controls src={src} poster={part.posterDataUrl} preload="metadata" />
+          <video controls src={firstFrameVideoSource(src)} poster={poster} preload="metadata" />
         ) : (
           <span className="agent-generated-image-loading text-shimmer shimmer">
             Loading video...
@@ -14398,14 +14446,58 @@ function AgentGeneratedVideo({
   );
 }
 
-function videoProgressLabel(part: Extract<AgentChatPart, { type: "video" }>) {
-  if (typeof part.executionMs !== "number" || part.executionMs <= 0) return undefined;
-  const elapsed = Math.max(1, Math.round(part.executionMs / 1000));
-  if (typeof part.averageExecutionMs !== "number" || part.averageExecutionMs <= 0) {
-    return `${elapsed}s elapsed`;
+function firstFrameVideoSource(src: string) {
+  return src.includes("#") ? src : `${src}#t=0.001`;
+}
+
+// Poster capture is CORS-mode work (canvas.toDataURL taints without it), so it
+// runs on a throwaway offscreen element rather than the visible player. Cache
+// the in-flight promise per src so the capture runs at most once per app run,
+// even across remounts.
+const generatedVideoPosterCache = new Map<string, Promise<string | undefined>>();
+
+export function resetGeneratedVideoPosterCacheForTest() {
+  generatedVideoPosterCache.clear();
+}
+
+function capturedGeneratedVideoPoster(src: string): Promise<string | undefined> {
+  const cached = generatedVideoPosterCache.get(src);
+  if (cached) return cached;
+  const capture = new Promise<string | undefined>((resolve) => {
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.preload = "auto";
+    video.muted = true;
+    const finish = (dataUrl?: string) => {
+      video.removeAttribute("src");
+      video.load();
+      resolve(dataUrl);
+    };
+    video.addEventListener("loadeddata", () => finish(firstFramePosterDataUrl(video)), {
+      once: true,
+    });
+    video.addEventListener("error", () => finish(), { once: true });
+    video.src = firstFrameVideoSource(src);
+  });
+  generatedVideoPosterCache.set(src, capture);
+  return capture;
+}
+
+function firstFramePosterDataUrl(video: HTMLVideoElement): string | undefined {
+  if (!video.videoWidth || !video.videoHeight) return undefined;
+  const scale = Math.min(1, 960 / Math.max(video.videoWidth, video.videoHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) return undefined;
+  try {
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    // Asset-protocol or codec restrictions should never block video playback.
+    return undefined;
   }
-  const total = Math.max(elapsed, Math.round(part.averageExecutionMs / 1000));
-  return `${elapsed}s of about ${total}s`;
 }
 
 /** A resolved action card renders as a quiet, expandable one-line row instead
@@ -16364,11 +16456,10 @@ function assignArtifactsToTurns(
   return byTurn;
 }
 
-// The inline media renderer owns generated-image cards, so
+// The inline media renderer owns generated image and video cards, so
 // assignArtifactsToTurns deliberately excludes their workspace files. The
-// Files panel still needs those path-backed images: collect them beside the
-// ordinary per-turn artifacts, preserving conversation order and listing each
-// file once.
+// Files panel still needs that path-backed media: collect it beside the ordinary
+// per-turn artifacts, preserving conversation order and listing each file once.
 function surfacedArtifactsFromTurns(
   turns: AgentChatTurn[],
   artifactsByTurn: Map<string, AgentArtifact[]>,
@@ -16376,7 +16467,7 @@ function surfacedArtifactsFromTurns(
 ): AgentArtifact[] {
   const surfaced: AgentArtifact[] = [];
   const surfacedPaths = new Set<string>();
-  const surfacedImageAliases = new Set<string>();
+  const surfacedMediaAliases = new Map<string, string>();
 
   function addArtifact(artifact: AgentArtifact) {
     if (surfacedPaths.has(artifact.path)) return;
@@ -16387,35 +16478,84 @@ function surfacedArtifactsFromTurns(
   for (const turn of turns) {
     for (const artifact of artifactsByTurn.get(turn.id) ?? []) addArtifact(artifact);
     for (const part of turn.parts) {
-      if (part.type !== "image" || part.status !== "complete") continue;
-      const imagePath = part.path?.trim();
-      if (!imagePath) continue;
-      const aliases = generatedImagePathAliases(imagePath, part.name);
-      if (aliases.some((alias) => surfacedImageAliases.has(alias))) continue;
-      const matchingArtifacts = availableArtifacts.filter(
-        (artifact) => artifact.path === imagePath,
-      );
-      const matchedArtifact = matchingArtifacts.length === 1 ? matchingArtifacts[0] : undefined;
-      if (matchedArtifact) {
-        addArtifact(matchedArtifact);
-      } else {
-        addArtifact({
-          name: part.name?.trim() || "Generated image",
-          path: imagePath,
-          rootLabel: "Workspace",
-        });
+      if ((part.type !== "image" && part.type !== "video") || part.status !== "complete") {
+        continue;
       }
-      for (const alias of aliases) surfacedImageAliases.add(alias);
+      const mediaPath = part.path?.trim();
+      if (!mediaPath) continue;
+      const aliases =
+        part.type === "image"
+          ? generatedImagePathAliases(mediaPath, part.name)
+          : generatedVideoPathAliases(mediaPath);
+      const matchingArtifacts = availableArtifacts.filter(
+        (artifact) => artifact.path === mediaPath,
+      );
+      let matchedArtifact = matchingArtifacts.length === 1 ? matchingArtifacts[0] : undefined;
+      if (!matchedArtifact && part.type === "video" && isBareMediaPath(mediaPath)) {
+        const aliasMatches = availableArtifacts.filter((artifact) =>
+          generatedVideoPathAliases(artifact.path).some((alias) => aliases.includes(alias)),
+        );
+        if (aliasMatches.length === 1) matchedArtifact = aliasMatches[0];
+      }
+      const artifact =
+        matchedArtifact ??
+        ({
+          name:
+            part.name?.trim() || (part.type === "image" ? "Generated image" : "Generated video"),
+          path: mediaPath,
+          rootLabel: "Workspace",
+        } satisfies AgentArtifact);
+      const existingPath = aliases
+        .map((alias) => surfacedMediaAliases.get(alias))
+        .find((path) => path !== undefined);
+      if (existingPath) {
+        // A bare MEDIA reference can arrive before the filesystem snapshot or
+        // a later absolute MEDIA reference. Keep the canonical path so Files
+        // preview/download actions reach the native validator successfully.
+        // Only video aliases are strict generated-video-<hex> filenames (1:1
+        // with files); image aliases can derive from tool-supplied display
+        // names, so two different files can be alias-equal — never upgrade
+        // (and erase) a surfaced image row on that basis.
+        let canonicalPath = existingPath;
+        if (
+          part.type === "video" &&
+          isBareMediaPath(existingPath) &&
+          !isBareMediaPath(artifact.path)
+        ) {
+          const index = surfaced.findIndex((item) => item.path === existingPath);
+          if (index >= 0) {
+            if (surfacedPaths.has(artifact.path)) surfaced.splice(index, 1);
+            else {
+              surfaced[index] = artifact;
+              surfacedPaths.add(artifact.path);
+            }
+            surfacedPaths.delete(existingPath);
+            for (const [alias, path] of surfacedMediaAliases) {
+              if (path === existingPath) surfacedMediaAliases.set(alias, artifact.path);
+            }
+            canonicalPath = artifact.path;
+          }
+        }
+        // Register this part's own aliases against the surviving row so a later
+        // bare reference through an unregistered alias doesn't push a duplicate.
+        for (const alias of aliases) surfacedMediaAliases.set(alias, canonicalPath);
+        continue;
+      }
+      addArtifact(artifact);
+      for (const alias of aliases) surfacedMediaAliases.set(alias, artifact.path);
     }
   }
 
   return surfaced;
 }
 
+function isBareMediaPath(path: string): boolean {
+  return !path.replaceAll("\\", "/").includes("/");
+}
+
 export function generatedImagePathAliases(path: string, displayName?: string): string[] {
   const normalized = path.replaceAll("\\", "/");
-  const isBare = !normalized.includes("/");
-  if (!isBare && !/\/(?:image_cache|images)\//i.test(normalized)) return [];
+  if (!isBareMediaPath(path) && !/\/(?:image_cache|images)\//i.test(normalized)) return [];
   const aliases = new Set<string>();
   const pathName = normalized.split("/").at(-1);
   if (pathName) aliases.add(normalizedGeneratedImageName(pathName));
@@ -16428,6 +16568,13 @@ export function generatedImagePathAliases(path: string, displayName?: string): s
 
 function normalizedGeneratedImageName(name: string): string {
   return name.replace(/\.june-source-[^.]+(?=\.[^.]+$)/i, "").toLowerCase();
+}
+
+function generatedVideoPathAliases(path: string): string[] {
+  const normalized = path.replaceAll("\\", "/");
+  if (!isBareMediaPath(path) && !/\/(?:video_cache|videos)\//i.test(normalized)) return [];
+  const name = normalized.split("/").at(-1);
+  return name && isGeneratedVideoFilename(name) ? [name.toLowerCase()] : [];
 }
 
 function includesQuery(value: unknown, query: string) {

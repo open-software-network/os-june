@@ -6,5 +6,7 @@
   <string>June records microphone audio locally so it can transcribe and generate your notes.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>June records system audio locally when you choose microphone plus system audio for a note.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>June captures only the app windows you ask it to operate so June can understand and complete your task.</string>
 </dict>
 </plist>
