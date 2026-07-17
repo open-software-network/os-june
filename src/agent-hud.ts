@@ -773,16 +773,18 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   cancelPendingResize();
   const height = bounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
   const apply = async () => {
+    const latestBounds = visibleHudBounds();
     await agentHudSetLayout({
       expanded,
       cardCount: rowCount,
       ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
-      ...bounds,
+      ...latestBounds,
     }).catch(() => {});
     if (!windowShown) {
       await agentHudShow().catch(() => {});
       windowShown = true;
     }
+    lastWindowHeight = latestBounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
   };
   // Growing: the window must be at full size before the CSS reveal plays.
   // Shrinking: the reveal collapses first, then the window snaps down under
@@ -796,11 +798,11 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   } else {
     await apply();
   }
-  lastWindowHeight = height;
 }
 
 function visibleHudBounds(): { width?: number; height?: number } {
   if (!surface) return {};
+  if (state.menuOpen && (!menu || menu.offsetWidth <= 0 || menu.offsetHeight <= 0)) return {};
   const interactiveElements = state.menuOpen && menu ? [surface, menu] : [surface];
   const width = Math.max(...interactiveElements.map((element) => element.offsetWidth));
   const height = Math.max(

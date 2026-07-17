@@ -79,6 +79,63 @@ describe("agent HUD", () => {
     });
   });
 
+  it("remeasures the HUD before a deferred collapse resize", async () => {
+    const surface = surfaceElement();
+    let width = 248;
+    let height = 180;
+    vi.spyOn(surface, "offsetWidth", "get").mockImplementation(() => width);
+    vi.spyOn(surface, "offsetHeight", "get").mockImplementation(() => height);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "waitingForUser",
+      title: "Review the branch.",
+      summary: "Needs input.",
+    });
+    await flushPromises();
+    expect(hudElement().dataset.expanded).toBe("true");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    width = 112;
+    height = 32;
+    vi.useFakeTimers();
+    mocks.invoke.mockClear();
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    width = 96;
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, width: 96, height: 32 },
+    });
+  });
+
+  it("uses the context-menu fallback until the menu has measurable bounds", async () => {
+    const surface = surfaceElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+    mocks.invoke.mockClear();
+
+    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, contextMenuOpen: true },
+    });
+  });
+
   it("shortens the collapsed label when multiple agents are running", async () => {
     await loadAgentHud();
 
