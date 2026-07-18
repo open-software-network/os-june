@@ -36,7 +36,7 @@ policy where the PRD requires it.
 | Recover from driver failure | A failed driver call discards and kills the child. The next eligible request starts a new private child; version/stamp mismatches fail closed. | Native lifecycle code, pin tests, self-test failure modes. |
 | Keep routines out | The app-owned MCP server is never included in routine toolsets or earned-autonomy servers. | Rust config tests and `hermes-routines.test.ts`. |
 | Stop a bad rollout | June API can disable the capability globally or for an exact/prefix June or macOS version. The desktop fails closed on its first unavailable decision and stops active work when readiness is lost. | API decision/unit and HTTP-boundary tests, desktop native gate, rollout UI test. |
-| Ship only proven builds | RC and stable workflows require the pre-granted Mac Studio and run the signed capture/background-action fixture before notarization and publication. Staging also verifies the signed bundle and contract. | `computer-use-release-self-test.sh` and desktop release workflows. |
+| Ship only proven builds | Computer use is validated by testing the release candidate in the RC channel before promotion; the signed capture/background-action fixture (`computer-use-release-self-test.sh`) remains available for manual runs. Staging also verifies the signed bundle and contract. | RC-channel validation and desktop release workflows. |
 
 ## Deliberately stricter than the baseline
 

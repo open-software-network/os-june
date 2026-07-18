@@ -238,13 +238,15 @@ enum RecordingCuePlayer {
         }
     }
 
-    static func cancel(_ cue: RecordingCueSound) {
-        completions.removeValue(forKey: cue)?.cancel()
+    @discardableResult
+    static func cancel(_ cue: RecordingCueSound) -> Bool {
+        let wasWaitingForCompletion = completions.removeValue(forKey: cue) != nil
         guard let sound = sounds[cue] else {
-            return
+            return wasWaitingForCompletion
         }
         sound.delegate = nil
         sound.stop()
+        return wasWaitingForCompletion
     }
 
     private static func load(_ cue: RecordingCueSound) -> NSSound? {
@@ -1656,7 +1658,7 @@ final class DictationController {
     /// sees the mismatch and does nothing.
     private var dictationStartGeneration = 0
 
-    func start(playCue: Bool) {
+    func start() {
         if startPending {
             return
         }
@@ -1693,16 +1695,10 @@ final class DictationController {
                     self.startPending = false
                     self.startRecording(purpose: .dictation, durationSeconds: nil)
                 }
-                if playCue {
-                    // Toggle dictation has no key-up timing contract, so its
-                    // cue can finish before capture starts without entering
-                    // the recording. Push-to-talk skips this cue and calls
-                    // beginRecording immediately so the down edge remains
-                    // the start of capture.
-                    RecordingCuePlayer.play(.start, completion: beginRecording)
-                } else {
-                    beginRecording()
-                }
+                // The cue defines the start-speaking boundary and finishes
+                // before capture begins, keeping June's own sound out of the
+                // recording while providing feedback for every start mode.
+                RecordingCuePlayer.play(.start, completion: beginRecording)
             }
         }
     }
@@ -1713,9 +1709,7 @@ final class DictationController {
         // never calling back); erroring not_listening here would wedge the
         // pending flag until a helper restart.
         if startPending && !isListening {
-            dictationStartGeneration += 1
-            RecordingCuePlayer.cancel(.start)
-            resetRecordingState()
+            cancelAndResetRecording()
             emit("recording_discarded", ["reason": "start_cancelled"])
             return
         }
@@ -1733,7 +1727,7 @@ final class DictationController {
             stop()
         } else if !isFinalizing {
             emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
-            start(playCue: true)
+            start()
         }
     }
 
@@ -1789,13 +1783,10 @@ final class DictationController {
     func discard() {
         // Cancel any start still waiting on the permission prompt — the
         // graze is over, so a later grant must not open the microphone.
-        dictationStartGeneration += 1
-        startPending = false
         // The HUD shows on listening_started, so a discard that interrupts a
         // live recording (a grazed push-to-talk key, a signed-out session)
         // must announce itself or the HUD stays stuck on "Listening".
-        let wasListening = isListening
-        resetRecordingState()
+        let wasListening = cancelAndResetRecording()
         if wasListening {
             emit("recording_discarded")
         }
@@ -2161,6 +2152,18 @@ final class DictationController {
         self.micTestSampleURL = nil
     }
 
+    @discardableResult
+    private func cancelAndResetRecording() -> Bool {
+        dictationStartGeneration += 1
+        let interruptedStartCue = RecordingCuePlayer.cancel(.start)
+        let wasListening = isListening
+        resetRecordingState()
+        if interruptedStartCue {
+            RecordingCuePlayer.play(.stop)
+        }
+        return wasListening
+    }
+
     private func resetRecordingState(keepRecordingFile: Bool = false) {
         RecordingCuePlayer.cancel(.start)
         FocusTargetController.shared.clearPinnedTarget()
@@ -2409,7 +2412,7 @@ func handleCommandLine(_ line: String) {
         }
     case "start_listening":
         runOnMain {
-            dictation.start(playCue: false)
+            dictation.start()
         }
     case "stop_and_paste":
         runOnMain {

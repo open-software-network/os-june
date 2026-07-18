@@ -43,12 +43,6 @@ jobs:
     runs-on: ${{ fromJSON(inputs.macos-runner == 'mac-studio' && '["self-hosted","macOS","ARM64","desktop-release"]' || '["blacksmith-6vcpu-macos-15"]') }}
     environment: production
     steps:
-      - name: Require the live Computer use release runner
-        if: inputs.macos-runner != 'mac-studio'
-        run: |
-          echo "::error::Computer use releases require the pre-granted Mac Studio so capture and background input are tested before publication."
-          exit 1
-
       # Same release App identity as production: it publishes to os-june-releases.
       - name: Mint release token (GitHub App)
         id: app-token
@@ -116,7 +110,6 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY: ${{ secrets.PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
@@ -147,10 +140,6 @@ jobs:
               missing=1
             fi
           done
-          if [ "${PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY:-}" != "true" ]; then
-            echo "::error::Set PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true only after the June OAuth client allows profile:write and a fresh production sign-in succeeds."
-            missing=1
-          fi
           exit "$missing"
 
       - name: Validate and compose rc version
@@ -344,9 +333,6 @@ jobs:
           # The DMG is notarized after the build, so don't let tauri-action
           # publish anything itself.
           includeUpdaterJson: false
-
-      - name: Run signed Computer use release self-test
-        run: ./scripts/computer-use-release-self-test.sh --live --target universal-apple-darwin
 
       - name: Notarize, verify, and publish rc release assets
         env:

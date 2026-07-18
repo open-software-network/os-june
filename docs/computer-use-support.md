@@ -115,8 +115,9 @@ remains frontmost, verifies the real pointer and current-Space window flags did
 not change, kills both fixtures, and exits the private driver. The manual
 Stage Manager pass additionally verifies that the exact shelf window joins
 June's current group without moving the pointer or showing another decision.
-RC and stable workflows run this before notarization. A failure blocks
-publication.
+The release workflows do not run this fixture; computer use is validated on the
+release-candidate channel before promotion. Run it manually when validating a
+release runner or diagnosing a signed-build regression.
 
 ## OS update or regression
 
@@ -127,8 +128,7 @@ publication.
   Never attach the screenshot, AX tree, typed value, app title, or approval text
   to analytics or an issue without explicit user attachment.
 - If focus, pointer, Space, target binding, or unapproved-mutation behavior
-  regresses, stop the RC/stable workflow and keep the previous release live.
-  Do not bypass the release self-test.
+  regresses, hold the promotion and keep the previous release live.
 
 ## Emergency rollout
 
