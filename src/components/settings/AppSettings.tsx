@@ -118,6 +118,7 @@ import { DEFAULT_IMAGE_MODEL, IMAGE_MODELS } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { ConnectorsSection } from "./ConnectorsSection";
 import { PluginsView } from "../plugins/PluginsView";
 import { ExternalDirsSection } from "./ExternalDirsSection";
 import { InstalledSkillsSection } from "./InstalledSkillsSection";
@@ -302,7 +303,7 @@ export type SettingsTab =
   | "models"
   | "agent"
   | "memory"
-  | "plugins"
+  | "connectors"
   | "skills"
   | "external-dirs"
   | "skill-review"
@@ -329,7 +330,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "models", label: "Models" },
   { id: "agent", label: "Agent" },
   { id: "memory", label: "Memory" },
-  { id: "plugins", label: "Plugins" },
+  { id: "connectors", label: "Connectors" },
   { id: "skills", label: "Installed skills" },
   { id: "external-dirs", label: "External skill directories" },
   { id: "skill-review", label: "Pending skill changes" },
@@ -2357,11 +2358,16 @@ export function AppSettings({
           />
         ) : null}
 
-        {activeTab === "plugins" ? (
-          <PluginsView
-            onOpenModels={() => setActiveTab("models")}
-            onOpenBilling={() => setActiveTab("billing")}
-          />
+        {activeTab === "connectors" ? (
+          <>
+            <ConnectorsSection />
+            {/* Plugins live inside Connectors until polished enough to graduate
+                back to a top-level page. */}
+            <PluginsView
+              onOpenModels={() => setActiveTab("models")}
+              onOpenBilling={() => setActiveTab("billing")}
+            />
+          </>
         ) : null}
 
         {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}
