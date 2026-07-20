@@ -35,6 +35,9 @@
  *   GET    /api/config
  *   PUT    /api/config
  *   DELETE /api/config
+ *   GET    /api/profiles/active
+ *   POST   /api/profiles/active
+ *   DELETE /api/profiles/{name}
  *
  * SECURITY: fixtures here use OBVIOUSLY FAKE secrets (e.g. `sk-FAKE-...`) so a
  * redaction-leak test that asserts a fake token never appears in a log line has
@@ -229,6 +232,11 @@ export type FakeHermesScenario = {
   gateway?: { gateway_running?: boolean; version?: string };
   /** Existing profiles, served by GET /api/profiles and grown by POST. */
   profiles?: FakeProfile[];
+  /** Sticky active profile served by GET /api/profiles/active. Defaults to the
+   * first profile with `active: true`, then the first profile, then `default`. */
+  activeProfile?: string;
+  /** When set, GET /api/profiles/active fails with this status. */
+  profileActiveError?: { status: number; code?: string; error?: string };
   /** When set, POST /api/profiles fails with this status (rollback testing). */
   profileCreateError?: { status: number; code?: string; error?: string };
   /** When set, PUT /api/profiles/{name}/soul fails with this status. */
@@ -299,13 +307,17 @@ export class FakeHermesServer {
     code?: string;
     error?: string;
   };
+  private profileActiveError?: {
+    status: number;
+    code?: string;
+    error?: string;
+  };
   private readonly profileSoulError?: {
     status: number;
     code?: string;
     error?: string;
   };
   private readonly profileActivateNotOk: boolean;
-  private profileSessionSeq = 0;
   private env: Record<string, string>;
   private config: Record<string, unknown>;
   private readonly backgroundActions: boolean;
@@ -332,7 +344,11 @@ export class FakeHermesServer {
     };
     this.profiles = clone(scenario.profiles ?? [{ name: "default", active: true }]);
     this.activeProfile =
-      this.profiles.find((p) => p.active)?.name ?? this.profiles[0]?.name ?? "default";
+      scenario.activeProfile ??
+      this.profiles.find((p) => p.active)?.name ??
+      this.profiles[0]?.name ??
+      "default";
+    this.profileActiveError = scenario.profileActiveError;
     this.profileCreateError = scenario.profileCreateError;
     this.profileSoulError = scenario.profileSoulError;
     this.profileActivateNotOk = scenario.profileActivateNotOk ?? false;
@@ -340,6 +356,10 @@ export class FakeHermesServer {
     this.config = clone(scenario.config ?? {});
     this.backgroundActions = scenario.backgroundActions ?? false;
     this.actionScripts = scenario.actionScripts ?? {};
+  }
+
+  setProfileActiveError(error?: { status: number; code?: string; error?: string }): void {
+    this.profileActiveError = error;
   }
 
   /** A `fetch`-compatible bound method to hand to the admin client. */
@@ -545,8 +565,8 @@ export class FakeHermesServer {
     }
 
     // Profiles. GET lists, POST creates, PUT /{name}/soul writes the SOUL,
-    // GET /sessions lists sessions, POST /active sets active,
-    // POST /{name}/open-terminal starts a session.
+    // GET /sessions lists sessions, GET/POST /active reads/sets active,
+    // DELETE /{name} removes a profile.
     if (method === "GET" && path === "/api/profiles") {
       return json(200, { profiles: this.profiles });
     }
@@ -556,19 +576,38 @@ export class FakeHermesServer {
     if (method === "GET" && path === "/api/profiles/sessions") {
       return json(200, { sessions: this.profileSessions });
     }
+    if (method === "GET" && path === "/api/profiles/active") {
+      if (this.profileActiveError) {
+        throw new HttpError(this.profileActiveError.status, {
+          code: this.profileActiveError.code ?? "error",
+          error: this.profileActiveError.error ?? "active profile read failed",
+        });
+      }
+      return json(200, {
+        active: this.activeProfile,
+        current: this.activeProfile,
+      });
+    }
     if (method === "POST" && path === "/api/profiles/active") {
       const name = (body as { name?: unknown })?.name;
       if (typeof name !== "string" || name.length === 0) {
-        throw new HttpError(422, {
+        throw new HttpError(400, {
           code: "validation_error",
           error: "field required: name",
         });
+      }
+      if (!this.profiles.some((profile) => profile.name === name)) {
+        throw new HttpError(404, { code: "not_found" });
       }
       if (this.profileActivateNotOk) {
         // A switch the transport accepts (2xx) but the server reports failed.
         return json(200, { ok: false, error: "could not switch profile" });
       }
       this.activeProfile = name;
+      this.profiles = this.profiles.map((profile) => ({
+        ...profile,
+        active: profile.name === name,
+      }));
       return json(200, { ok: true, active: name });
     }
     const soulMatch = matchPath(path, "/api/profiles/:name/soul");
@@ -588,15 +627,20 @@ export class FakeHermesServer {
       }
       return json(200, { ok: true, name: soulMatch.name });
     }
-    const terminalMatch = matchPath(path, "/api/profiles/:name/open-terminal");
-    if (method === "POST" && terminalMatch) {
-      const id = `session-${++this.profileSessionSeq}`;
-      this.profileSessions.push({
-        id,
-        profile: terminalMatch.name,
-        status: "running",
-      });
-      return json(200, { ok: true, session_id: id });
+    const profileRemoveMatch = matchPath(path, "/api/profiles/:name");
+    if (method === "DELETE" && profileRemoveMatch) {
+      if (profileRemoveMatch.name === "default") {
+        throw new HttpError(400, {
+          code: "invalid_profile",
+          error: "default profile cannot be deleted",
+        });
+      }
+      const before = this.profiles.length;
+      this.profiles = this.profiles.filter((profile) => profile.name !== profileRemoveMatch.name);
+      if (this.profiles.length === before) {
+        throw new HttpError(404, { code: "not_found" });
+      }
+      return json(200, { ok: true, path: `/tmp/fake-hermes-home/${profileRemoveMatch.name}` });
     }
 
     // Env. Matches the real contract: PUT to set, DELETE with the key in the

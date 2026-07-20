@@ -89,7 +89,13 @@ import type {
   RecordingStatusDto,
   ReferralSummary,
 } from "../../lib/tauri";
-import { osAccountsReferralSummary } from "../../lib/tauri";
+import { listSessionProfiles, osAccountsReferralSummary } from "../../lib/tauri";
+import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
+import {
+  sessionMatchesProfile,
+  sessionProfileMap,
+  type SessionProfileMap,
+} from "../../lib/session-profile-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
@@ -109,6 +115,17 @@ import {
 } from "../../lib/date-format";
 
 const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
+
+/** Full session→profile map from the local store; null when unavailable
+ * (outside the Tauri shell, or a transient read failure) so callers keep the
+ * last-known map instead of clearing it. */
+async function fetchSessionProfileMap(): Promise<SessionProfileMap | null> {
+  try {
+    return sessionProfileMap(await listSessionProfiles());
+  } catch {
+    return null;
+  }
+}
 
 export type SidebarView =
   | "notes"
@@ -335,7 +352,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       {
         id: "profile-builder",
-        label: "Profile builder",
+        label: "Profiles",
         icon: <IconMagicWand size={16} />,
       },
       {
@@ -369,7 +386,6 @@ export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<SettingsTa
   "taps",
   "toolsets",
   "bundles",
-  "profile-builder",
   "integrations-health",
   "import-export",
 ]);
@@ -424,9 +440,23 @@ export function Sidebar({
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  // Chats belong to the profile they were created under (ADR 0031): the
+  // sidebar filters its list through the session→profile map and re-filters
+  // live when the active profile switches, without waiting for a re-fetch.
+  const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap | null>(null);
+  const activeHermesProfileName = useActiveHermesProfileName();
+  const profileAgentSessions = useMemo(
+    () =>
+      sessionProfiles === null
+        ? []
+        : allAgentSessions.filter((session) =>
+            sessionMatchesProfile(session, sessionProfiles, activeHermesProfileName),
+          ),
+    [allAgentSessions, sessionProfiles, activeHermesProfileName],
+  );
   // __emptyStates() preview (dev console): the agent section renders its
   // "No sessions yet" line as a fresh install would, real data untouched.
-  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : allAgentSessions;
+  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : profileAgentSessions;
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
@@ -822,14 +852,14 @@ export function Sidebar({
 
       if (
         sidebarDevStateSnapshotRef.current &&
-        agentSessions[0]?.id === SIDEBAR_DEV_SESSION_IDS.selected
+        allAgentSessions[0]?.id === SIDEBAR_DEV_SESSION_IDS.selected
       ) {
         return;
       }
 
       if (!sidebarDevStateSnapshotRef.current) {
         sidebarDevStateSnapshotRef.current = {
-          sessions: agentSessions,
+          sessions: allAgentSessions,
           selectedSessionId: selectedAgentSessionId,
           workingSessionIds: new Set(workingAgentSessionIds),
           waitingSessionIds: new Set(waitingAgentSessionIds),
@@ -864,7 +894,7 @@ export function Sidebar({
     window.addEventListener(SIDEBAR_DEV_STATES_EVENT, onDevStates);
     return () => window.removeEventListener(SIDEBAR_DEV_STATES_EVENT, onDevStates);
   }, [
-    agentSessions,
+    allAgentSessions,
     deletingAgentSessionIds,
     onChangeView,
     query,
@@ -942,9 +972,13 @@ export function Sidebar({
     let retryTimeout: number | undefined;
 
     function loadAgentSessions(attempt: number) {
-      listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT })
-        .then((sessions) => {
+      Promise.all([
+        listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT }),
+        fetchSessionProfileMap(),
+      ])
+        .then(([sessions, profiles]) => {
           if (!cancelled) {
+            if (profiles) setSessionProfiles(profiles);
             setAgentSessions((current) => (current.length > 0 ? current : sessions));
             if (sessions.length > 0) {
               emitAgentSessionsChanged({
@@ -980,7 +1014,13 @@ export function Sidebar({
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT));
+      // Refresh the session→profile map before applying the list so a session
+      // just stamped to a named profile doesn't flash out of the filtered
+      // list; a failed refresh keeps the last-known map.
+      void fetchSessionProfileMap().then((profiles) => {
+        if (profiles) setSessionProfiles(profiles);
+        setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT));
+      });
       setSelectedAgentSessionId(detail.selectedSessionId);
       const nextWorking = new Set(detail.workingSessionIds);
       const nextWaiting = new Set(detail.waitingSessionIds ?? []);

@@ -221,6 +221,16 @@ write-jail, default) or `unrestricted`. Opt-in is per session; June keeps one
 gateway per mode so an unrestricted session can't un-sandbox others.
 _Avoid_: permission, profile.
 
+**Profile** (Hermes profile):
+A named Hermes configuration (its own home subtree, SOUL, model default,
+skills, MCP servers) a session runs under; `default` always exists. The
+**active profile** is the sticky default new sessions pick up — June writes
+it on switch and also threads it explicitly on `session.create` (ADR 0030).
+Managed in Settings under Profiles. A profile may specialize June, but the
+agent still presents as June.
+_Avoid_: "profile" for Runtime mode, the Seatbelt sandbox profile, or the
+Account snapshot; account profile.
+
 **Browser use**:
 The consent-gated capability (JUN-278, ADR 0017) that lets the agent operate
 a live browser. Attended sessions drive the user's own Chromium-family

@@ -16,6 +16,11 @@ vi.mock("../lib/hermes-adapter", () => ({
     session.last_active ?? session.started_at ?? "",
 }));
 
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  listSessionProfiles: vi.fn(async () => []),
+}));
+
 const sessions: HermesSessionInfo[] = [
   {
     id: "session-recent",

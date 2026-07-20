@@ -3,6 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import {
+  dispatchProfileDataChanged,
+  resetActiveHermesProfileForTests,
+  setActiveHermesProfileName,
+} from "../lib/active-hermes-profile";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_NEW_SESSION_EVENT,
@@ -58,8 +63,10 @@ const mocks = vi.hoisted(() => ({
   deleteFolder: vi.fn(),
   renameFolder: vi.fn(),
   assignNoteToFolder: vi.fn(),
+  assignSessionToFolder: vi.fn(),
   removeNoteFromFolder: vi.fn(),
   listNotes: vi.fn(),
+  listFolders: vi.fn(),
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   updateNote: vi.fn(),
@@ -90,6 +97,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
+  listSessionProfiles: vi.fn(),
   listVeniceModels: vi.fn(),
   localVideoFileSrc: vi.fn((path: string) => `asset://${path}`),
   p3aSettings: vi.fn(),
@@ -182,7 +190,9 @@ vi.mock("../lib/tauri", () => ({
   renameFolder: mocks.renameFolder,
   assignNoteToFolder: mocks.assignNoteToFolder,
   listSessionFolders: vi.fn(async () => []),
-  assignSessionToFolder: vi.fn(async () => undefined),
+  listSessionProfiles: mocks.listSessionProfiles,
+  assignSessionToFolder: mocks.assignSessionToFolder,
+  assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
   listMemories: vi.fn(async () => []),
   memorySettings: vi.fn(async () => ({ enabled: true })),
@@ -194,6 +204,7 @@ vi.mock("../lib/tauri", () => ({
   setFolderMemoryDisabled: vi.fn(),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
+  listFolders: mocks.listFolders,
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   updateNote: mocks.updateNote,
@@ -319,6 +330,8 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetActiveHermesProfileForTests();
+    setActiveHermesProfileName("default");
     const first = note();
     const created = note({
       id: "note-2",
@@ -341,7 +354,9 @@ describe("App shortcuts", () => {
     });
     mocks.bootstrapApp.mockResolvedValue(payload);
     mocks.getNote.mockResolvedValue(first);
+    mocks.listFolders.mockResolvedValue([]);
     mocks.createNote.mockResolvedValue(created);
+    mocks.assignSessionToFolder.mockResolvedValue(undefined);
     mocks.checkRecordingSourceReadiness.mockResolvedValue({
       sources: [
         { source: "microphone", ready: true },
@@ -380,6 +395,7 @@ describe("App shortcuts", () => {
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listSessionProfiles.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
@@ -1545,6 +1561,157 @@ describe("App shortcuts", () => {
     expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
     expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
+  });
+
+  it("refreshes profile-scoped chat sessions when the active profile switches", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+    const callsBeforeSwitch = mocks.listHermesSessions.mock.calls.length;
+
+    act(() => {
+      setActiveHermesProfileName("research");
+    });
+
+    await waitFor(() =>
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch),
+    );
+  });
+
+  it("exposes no sessions before the profile mapping has loaded successfully", async () => {
+    const user = userEvent.setup();
+    const privateSession = {
+      id: "profile-a-session",
+      title: "Named profile secret",
+      preview: "Private profile conversation",
+      last_active: now,
+    };
+    mocks.listSessionProfiles.mockRejectedValue(new Error("session profile map unavailable"));
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listSessionProfiles).toHaveBeenCalled());
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [privateSession],
+            selectedSessionId: undefined,
+            workingSessionIds: [],
+          },
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    expect(await screen.findByRole("heading", { name: "Sessions" })).toBeInTheDocument();
+    expect(screen.queryByText(privateSession.title)).toBeNull();
+  });
+
+  it("invalidates note tabs from the previous profile", async () => {
+    const user = userEvent.setup();
+    const profileANote = note({ id: "note-a", title: "Profile A private note" });
+    const profileBNote = note({ id: "note-b", title: "Profile B note" });
+    mocks.createNote.mockResolvedValue(profileANote);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "Profile A private note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "New tab" }));
+
+    mocks.listNotes.mockResolvedValue({ items: [profileBNote] });
+    mocks.listFolders.mockResolvedValue([]);
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === profileBNote.id ? profileBNote : profileANote,
+    );
+    act(() => setActiveHermesProfileName("profile-b"));
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(profileBNote.id));
+    mocks.getNote.mockClear();
+
+    fireEvent.keyDown(window, { key: "1", metaKey: true });
+
+    const invalidatedTab = await screen.findByRole("tab", { name: "Notes" });
+    await waitFor(() => expect(invalidatedTab).toHaveAttribute("data-active", "true"));
+    expect(mocks.getNote).not.toHaveBeenCalled();
+    expect(screen.queryByText("Profile A private note")).toBeNull();
+  });
+
+  it("abandons pending project intent when the active profile switches", async () => {
+    const user = userEvent.setup();
+    const folder = {
+      id: "folder-a",
+      name: "Profile A project",
+      memoryDisabled: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [folder],
+      notes: [note()],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await user.click(screen.getByRole("button", { name: "Projects" }));
+    const projectCard = (await screen.findByText(folder.name)).closest("article");
+    expect(projectCard).not.toBeNull();
+    await user.click(projectCard as HTMLElement);
+    const newSessionButtons = await screen.findAllByRole("button", { name: "New session" });
+    const projectNewSessionButton = newSessionButtons.at(-1);
+    expect(projectNewSessionButton).toBeDefined();
+    await user.click(projectNewSessionButton as HTMLElement);
+
+    mocks.listNotes.mockResolvedValue({ items: [] });
+    mocks.listFolders.mockResolvedValue([]);
+    act(() => setActiveHermesProfileName("profile-b"));
+    await waitFor(() => expect(mocks.listFolders).toHaveBeenCalled());
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+          detail: {
+            sessions: [{ id: "profile-b-session", title: "Profile B session" }],
+            selectedSessionId: "profile-b-session",
+            workingSessionIds: [],
+          },
+        }),
+      );
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.assignSessionToFolder).not.toHaveBeenCalled();
+  });
+
+  it("refreshes visible data when rows move into the already-active profile", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+    const noteCallsBeforeMove = mocks.listNotes.mock.calls.length;
+    const sessionCallsBeforeMove = mocks.listHermesSessions.mock.calls.length;
+
+    act(() => {
+      dispatchProfileDataChanged("default");
+    });
+
+    await waitFor(() =>
+      expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(noteCallsBeforeMove),
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(sessionCallsBeforeMove),
+    );
   });
 
   it("opens the chat for a notification click carrying a session id", async () => {

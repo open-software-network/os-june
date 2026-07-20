@@ -39,6 +39,8 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
 - [adr/0028](adr/0028-private-stdio-broker-for-computer-use.md) - Computer use runs through a June-owned private stdio driver broker with signed-helper TCC identity, task-scoped app authorization, and exact-window Stage Manager restoration
 - [adr/0029](adr/0029-dual-architecture-hermes-runtime.md) - the universal macOS app carries complete arm64 and x86_64 Hermes runtime trees and executes both before release
+- [adr/0030](adr/0030-explicit-per-session-profile-targeting.md) — profile switching writes the sticky active profile AND threads it explicitly on session.create; no per-profile Hermes process
+- [adr/0031](adr/0031-per-profile-data-isolation.md) — profiles isolate user data (notes/dictation/projects via a `profile` column, chat sessions via a `session_profiles` map); profile is the first data-partition key; delete prompts move-to-default vs delete
 
 ## Enforceable rules (spec/)
 

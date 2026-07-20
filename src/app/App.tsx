@@ -46,7 +46,15 @@ import { PermissionBanner } from "../components/permissions/PermissionBanner";
 import { AppSettings, SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import { TabBar, type TabItem } from "../components/tabs/TabBar";
-import { defaultNav, makeTabId, navEquals, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
+import {
+  defaultNav,
+  invalidateNoteTabs,
+  makeTabId,
+  navEquals,
+  reorderTabs,
+  type Tab,
+  type TabNav,
+} from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
@@ -82,8 +90,10 @@ import {
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
+  listFolders,
   listNotes,
   listSessionFolders,
+  listSessionProfiles,
   openPrivacySettings,
   osAccountsLogout,
   osAccountsOpenPortal,
@@ -130,6 +140,17 @@ import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import {
+  getActiveHermesProfileName,
+  PROFILE_DATA_CHANGED_EVENT,
+  useActiveHermesProfileName,
+  type ProfileDataChangedDetail,
+} from "../lib/active-hermes-profile";
+import {
+  filterAgentSessionsForProfile,
+  sessionProfileMap,
+  type SessionProfileMap,
+} from "../lib/session-profile-filter";
 import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
@@ -393,6 +414,8 @@ function tabMeta(
 
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
+  const activeHermesProfileName = useActiveHermesProfileName();
+  const [profileDataRefreshRevision, setProfileDataRefreshRevision] = useState(0);
   const [state, dispatch] = useReducer(notesReducer, undefined, createInitialState);
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -445,6 +468,11 @@ export function App() {
   // sessionId -> project (folder) ids. Sessions live in Hermes, so their
   // project assignments are tracked separately from the notes state.
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
+  // `null` means the mapping has never loaded. An empty object is meaningful:
+  // it confirms every unmapped Hermes session belongs to Default. Keeping
+  // those states distinct lets failed reads retain a known-good map while the
+  // first failure exposes no sessions at all.
+  const sessionProfilesRef = useRef<SessionProfileMap | null>(null);
   const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
@@ -457,6 +485,7 @@ export function App() {
   const pendingSessionProjectRef = useRef<{
     folderId: string;
     knownSessionIds: Set<string>;
+    profile: string;
   } | null>(null);
   const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
@@ -561,6 +590,10 @@ export function App() {
   // currently selected note — wrong whenever the user browsed away while
   // recording.
   const recordingNoteIdRef = useRef<string | undefined>(undefined);
+  // A recording may deliberately keep its owning note visible after the user
+  // switches profiles. Remember that exception so stopping the take can remove
+  // the old-profile note and its tab snapshots immediately.
+  const crossProfileRecordingNoteIdRef = useRef<string | undefined>(undefined);
   // Reactive mirror of recordingNoteIdRef. The ref serves the async finish/HUD
   // paths that need the latest value synchronously; this state drives render
   // decisions — which note shows the in-note RecorderBar, and whether the
@@ -1024,6 +1057,28 @@ export function App() {
       }),
     );
   }, []);
+  const profileScopedAgentSessions = useCallback(
+    (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
+      if (profiles === null) return [];
+      const activeProfile = getActiveHermesProfileName().trim() || activeHermesProfileName;
+      return filterAgentSessionsForProfile(sessions, profiles, activeProfile);
+    },
+    [activeHermesProfileName],
+  );
+  const refreshSessionProfiles = useCallback(async () => {
+    const profiles = sessionProfileMap(await listSessionProfiles());
+    sessionProfilesRef.current = profiles;
+    return profiles;
+  }, []);
+  const commitAgentSessions = useCallback(
+    (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
+      const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+      agentMenuBarSessionsRef.current = scopedSessions;
+      setAgentSessions(scopedSessions);
+      publishAgentMenuBarState();
+    },
+    [profileScopedAgentSessions, publishAgentMenuBarState],
+  );
   const applyAgentHudVisibility = useCallback(
     (enabled: boolean) => {
       if (agentHudEnabledRef.current === enabled) return;
@@ -1935,12 +1990,13 @@ export function App() {
     let retryTimeout: number | undefined;
 
     function loadAgentMenuBarSessions(attempt: number) {
-      listHermesSessions({ limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT })
-        .then((sessions) => {
+      Promise.all([
+        listHermesSessions({ limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT }),
+        refreshSessionProfiles(),
+      ])
+        .then(([sessions, profiles]) => {
           if (cancelled) return;
-          agentMenuBarSessionsRef.current = sessions;
-          setAgentSessions(sessions);
-          publishAgentMenuBarState();
+          commitAgentSessions(sessions, profiles);
         })
         .catch(() => {
           if (cancelled) return;
@@ -1958,7 +2014,7 @@ export function App() {
         window.clearTimeout(retryTimeout);
       }
     };
-  }, [appBlocked, bootstrapped, publishAgentMenuBarState]);
+  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionProfiles]);
 
   // Project assignments for agent sessions, loaded once storage is up.
   useEffect(() => {
@@ -1983,11 +2039,20 @@ export function App() {
   }, [appBlocked, bootstrapped]);
 
   useEffect(() => {
+    let cancelled = false;
+
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      agentMenuBarSessionsRef.current = detail.sessions;
-      setAgentSessions(detail.sessions);
+      void refreshSessionProfiles()
+        .then((profiles) => {
+          if (cancelled) return;
+          commitAgentSessions(detail.sessions, profiles);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          commitAgentSessions(detail.sessions);
+        });
       if (activeViewRef.current === "agent") {
         const selectedSessionId = detail.selectedSessionId;
         if (selectedSessionId) {
@@ -2006,7 +2071,9 @@ export function App() {
       if (pendingProject && detail.selectedSessionId) {
         pendingSessionProjectRef.current = null;
         const sessionId = detail.selectedSessionId;
-        if (!pendingProject.knownSessionIds.has(sessionId)) {
+        if (pendingProject.profile !== getActiveHermesProfileName()) {
+          setAgentOrigin(undefined);
+        } else if (!pendingProject.knownSessionIds.has(sessionId)) {
           void assignSessionToFolder(sessionId, pendingProject.folderId)
             .then(() =>
               setSessionFolders((prev) => ({
@@ -2064,11 +2131,12 @@ export function App() {
     window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatusForMenuBar);
     window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleAgentSessionDeleted);
     return () => {
+      cancelled = true;
       window.removeEventListener(AGENT_SESSIONS_CHANGED_EVENT, handleSessionsChanged);
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatusForMenuBar);
       window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleAgentSessionDeleted);
     };
-  }, [publishAgentMenuBarState]);
+  }, [commitAgentSessions, publishAgentMenuBarState, refreshSessionProfiles]);
 
   useEffect(() => {
     let aborted = false;
@@ -2140,10 +2208,11 @@ export function App() {
         setActiveView("agent");
         return;
       }
-      void listHermesSessions({ limit: 100 })
-        .then((sessions) => {
-          agentMenuBarSessionsRef.current = sessions;
-          const session = sessions.find((item) => item.id === sessionId);
+      void Promise.all([listHermesSessions({ limit: 100 }), refreshSessionProfiles()])
+        .then(([sessions, profiles]) => {
+          const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+          agentMenuBarSessionsRef.current = scopedSessions;
+          const session = scopedSessions.find((item) => item.id === sessionId);
           if (session) setActiveAgentSession(session);
           setActiveView("agent");
           publishAgentMenuBarState();
@@ -2162,7 +2231,12 @@ export function App() {
       aborted = true;
       for (const unlisten of unlisteners) unlisten();
     };
-  }, [handleAgentHudVisibilityRequest, publishAgentMenuBarState]);
+  }, [
+    handleAgentHudVisibilityRequest,
+    profileScopedAgentSessions,
+    publishAgentMenuBarState,
+    refreshSessionProfiles,
+  ]);
 
   // Dev-tools response gallery (window.__agentGallery): showing it jumps to the
   // Agent view so the command works no matter which view is active.
@@ -2307,6 +2381,108 @@ export function App() {
       })
       .catch((err: unknown) => setError(messageFromError(err)));
   }, [appBlocked]);
+
+  useEffect(() => {
+    function handleProfileDataChanged(event: Event) {
+      const detail = (event as CustomEvent<ProfileDataChangedDetail>).detail;
+      if (!detail || detail.profile !== getActiveHermesProfileName()) return;
+      setProfileDataRefreshRevision((revision) => revision + 1);
+    }
+
+    window.addEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+    return () => {
+      window.removeEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+    };
+  }, []);
+
+  // A profile switch swaps the visible data, not just the agent runtime
+  // (ADR 0031): re-read profile-scoped notes, projects, chat mappings, and
+  // sessions together. The same refresh runs when profile data moves into the
+  // already-active profile, where the active profile name itself does not
+  // change. If a recording is running its note keeps the selection (get_note
+  // is unscoped) so the recording view is never yanked mid-take.
+  const lastDataProfileRef = useRef<string | undefined>(undefined);
+  const lastProfileDataRefreshRevisionRef = useRef(0);
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    const previous = lastDataProfileRef.current;
+    const profileChanged = previous !== undefined && previous !== activeHermesProfileName;
+    const refreshRequested =
+      lastProfileDataRefreshRevisionRef.current !== profileDataRefreshRevision;
+    lastDataProfileRef.current = activeHermesProfileName;
+    lastProfileDataRefreshRevisionRef.current = profileDataRefreshRevision;
+    if (!refreshRequested && (previous === undefined || previous === activeHermesProfileName)) {
+      return;
+    }
+    // A project-scoped new-session request belongs to the profile that started
+    // it. Clear the handoff before any async reload can race a session-created
+    // event from the newly active profile.
+    if (profileChanged) pendingSessionProjectRef.current = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [notesResponse, folders, sessions, profiles] = await Promise.all([
+          listNotes(),
+          listFolders(),
+          listHermesSessions({ limit: 100 }),
+          refreshSessionProfiles(),
+        ]);
+        if (cancelled) return;
+        commitAgentSessions(sessions, profiles);
+        const visibleNoteIds = new Set(notesResponse.items.map((note) => note.id));
+        const recordingNoteId = recordingNoteIdRef.current;
+        crossProfileRecordingNoteIdRef.current =
+          recordingNoteId && !visibleNoteIds.has(recordingNoteId) ? recordingNoteId : undefined;
+        const invalidNoteIds = new Set<string>();
+        for (const tab of tabsRef.current) {
+          const noteId = tab.nav.view === "meetings" ? tab.nav.noteId : undefined;
+          if (noteId && noteId !== recordingNoteId && !visibleNoteIds.has(noteId)) {
+            invalidNoteIds.add(noteId);
+          }
+        }
+        const nextTabs = invalidateNoteTabs(tabsRef.current, invalidNoteIds);
+        if (nextTabs !== tabsRef.current) {
+          tabsRef.current = nextTabs;
+          setTabs(nextTabs);
+        }
+        // The old profile's folder selection and origins point at rows the
+        // new profile can't see — clear them before the new lists land.
+        dispatch({ type: "folderSelected", folderId: undefined });
+        dispatch({ type: "foldersLoaded", folders });
+        dispatch({ type: "notesLoaded", notes: notesResponse.items });
+        setOriginFolderId(undefined);
+        setOriginAllNotes(false);
+        setFolderReturnTarget(undefined);
+        // The open chat came from the old profile's list; keeping it selected
+        // would reopen it (workspace re-applies initialSessionId on mount).
+        setActiveAgentSession(undefined);
+        setAgentOrigin(undefined);
+        const nextNoteId = recordingNoteIdRef.current ?? notesResponse.items[0]?.id;
+        if (nextNoteId) {
+          const note = await getNote(nextNoteId);
+          if (!cancelled) dispatch({ type: "noteLoaded", note });
+        } else if (!cancelled) {
+          const currentView = activeViewRef.current;
+          if (currentView === "meetings" || currentView === "all-notes") {
+            setActiveView("notes");
+          }
+        }
+      } catch (err) {
+        if (!cancelled) setError(messageFromError(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeHermesProfileName,
+    appBlocked,
+    bootstrapped,
+    commitAgentSessions,
+    profileDataRefreshRevision,
+    refreshSessionProfiles,
+    setActiveAgentSession,
+  ]);
 
   // Probe with "microphonePlusSystem" on mount so sourceReadiness always
   // has the system source. Onboarding's permissions screen normally fires
@@ -2893,6 +3069,7 @@ export function App() {
     pendingSessionProjectRef.current = {
       folderId,
       knownSessionIds: new Set(agentSessions.map((session) => session.id)),
+      profile: getActiveHermesProfileName(),
     };
     setAgentOrigin({ kind: "project", folderId });
     markAgentNewSessionPending();
@@ -3423,8 +3600,29 @@ export function App() {
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
+    const wasCrossProfileRecording =
+      !!owningNoteId && crossProfileRecordingNoteIdRef.current === owningNoteId;
     dispatch({ type: "recordingStatusCleared" });
     setRecordingNote(undefined);
+    if (wasCrossProfileRecording && owningNoteId) {
+      crossProfileRecordingNoteIdRef.current = undefined;
+      const nextTabs = invalidateNoteTabs(tabsRef.current, new Set([owningNoteId]));
+      if (nextTabs !== tabsRef.current) {
+        tabsRef.current = nextTabs;
+        setTabs(nextTabs);
+      }
+      // The old-profile note was temporarily present only to control the
+      // recording. Once the take stops, remove it from the active profile's
+      // visible list before any tab or sidebar action can reopen it.
+      dispatch({
+        type: "notesLoaded",
+        notes: state.notes.filter((note) => note.id !== owningNoteId),
+      });
+      setOriginFolderId(undefined);
+      setOriginAllNotes(false);
+      setFolderReturnTarget(undefined);
+      if (activeViewRef.current === "meetings") setActiveView("notes");
+    }
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
     // The selected note isn't necessarily that note — the user may have
@@ -3438,13 +3636,35 @@ export function App() {
     }
     try {
       const result = await finishRecording(sessionId);
-      dispatch({ type: "noteProcessingUpdated", note: result.note });
+      // The result belongs to the profile where recording started. Once that
+      // profile's temporary recording view has been retired, do not let the
+      // finish response upsert the old note into the newly active profile.
+      if (!wasCrossProfileRecording) {
+        dispatch({ type: "noteProcessingUpdated", note: result.note });
+      }
     } catch (err) {
-      if (!owningNoteId || !(await applyNoteScopedProcessingFailure(owningNoteId, err))) {
+      if (
+        wasCrossProfileRecording ||
+        !owningNoteId ||
+        !(await applyNoteScopedProcessingFailure(owningNoteId, err))
+      ) {
         setError(messageFromError(err));
       }
       if (options.rethrow) throw err;
     } finally {
+      if (wasCrossProfileRecording) {
+        const finishingProfile = getActiveHermesProfileName();
+        try {
+          const response = await listNotes();
+          if (getActiveHermesProfileName() === finishingProfile) {
+            dispatch({ type: "notesLoaded", notes: response.items });
+          }
+        } catch (refreshErr) {
+          if (getActiveHermesProfileName() === finishingProfile) {
+            setError(messageFromError(refreshErr));
+          }
+        }
+      }
       finishingSessionsRef.current.delete(sessionId);
     }
   }

@@ -18,7 +18,10 @@ async fn test_repositories() -> Repositories {
 #[tokio::test]
 async fn persists_source_mode_with_recording_session() {
     let repos = test_repositories().await;
-    let note = repos.create_note(None).await.expect("note should exist");
+    let note = repos
+        .create_note("default", None)
+        .await
+        .expect("note should exist");
 
     repos
         .create_recording_session(
@@ -44,7 +47,10 @@ async fn persists_source_mode_with_recording_session() {
 #[tokio::test]
 async fn stores_source_artifacts_independently() {
     let repos = test_repositories().await;
-    let note = repos.create_note(None).await.expect("note should exist");
+    let note = repos
+        .create_note("default", None)
+        .await
+        .expect("note should exist");
 
     repos
         .create_recording_session(
@@ -93,7 +99,10 @@ async fn stores_source_artifacts_independently() {
 #[tokio::test]
 async fn upserts_source_turn_transcripts_for_retry() {
     let repos = test_repositories().await;
-    let note = repos.create_note(None).await.expect("note should exist");
+    let note = repos
+        .create_note("default", None)
+        .await
+        .expect("note should exist");
 
     repos
         .create_recording_session(
@@ -162,7 +171,10 @@ async fn upserts_source_turn_transcripts_for_retry() {
 #[tokio::test]
 async fn note_source_transcripts_are_ordered_by_session_then_turn() {
     let repos = test_repositories().await;
-    let note = repos.create_note(None).await.expect("note should exist");
+    let note = repos
+        .create_note("default", None)
+        .await
+        .expect("note should exist");
 
     repos
         .create_recording_session(
