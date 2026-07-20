@@ -50,6 +50,12 @@ sandbox is disabled or unavailable, GitHub agent reads fail closed. Credentials
 remain in Keychain and all GitHub provider calls originate in the desktop Rust
 host, not June API.
 
+When set to `1`, `true`, `yes`, or `on`, `OS_JUNE_USE_PROD_DATA_DIR` opts a
+debug build into the production app data directory and the production
+`provider-settings.json` location. Otherwise, app data and provider settings
+use debug-only paths with the `-dev` suffix. Other files read directly from the
+raw Tauri app config directory are unaffected.
+
 ## June API backend (`june-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**
@@ -67,7 +73,7 @@ Non-secret (usually left to `config.toml`): `JUNE__SERVER__HOST` / `PORT`,
 
 ## Backend knobs (`june-api/config.toml`)
 
-- **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB, `max_issue_report_bytes` 301 MiB total (one 300 MiB os-platform attachment plus multipart overhead), `max_image_edit_bytes` sized for a 50 MiB source image after base64 expansion.
+- **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB, `max_agent_chat_bytes` 12 MiB (dedicated `/v1/chat/completions` cap, aligned with the desktop proxy and sized for a 1M-token context window; must be ≥ the 12 MiB proxy cap), `max_issue_report_bytes` 301 MiB total (one 300 MiB os-platform attachment plus multipart overhead), `max_image_edit_bytes` sized for a 50 MiB source image after base64 expansion.
 - **Metering estimate:** `flat_estimate_credits` 250 — the flat credit Hold per metered action; skips per-request estimation.
 - **Hold TTLs (secs):** `note_transcribe` 60, `note_generate` 300, `dictate_transcribe` 30, `dictate_cleanup` 30, `web` 30, `image` defaults to `request_timeout_secs` + 30 (630) — validation rejects an image TTL that cannot outlive the request timeout, so a slow generation can still settle its charge.
 - **Web tools:** `web_search_credits` 20, `web_fetch_credits` 20 (flat).

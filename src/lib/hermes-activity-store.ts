@@ -186,6 +186,14 @@ export function createHermesActivityStore(
     if (mode === "unrestricted") row.mode = mode;
     row.lastEventAt = eventTimestamp(event);
     applyEvent(row, event);
+    if (
+      (event.kind === "pending_action_resolution" || event.kind === "pending_action_expiration") &&
+      pendingCountFor(sessionId) > 0 &&
+      row.phase !== "complete" &&
+      row.phase !== "error"
+    ) {
+      row.phase = "waiting";
+    }
 
     // Re-key so this becomes the most-recently-touched entry for eviction.
     bySession.delete(sessionId);
@@ -304,7 +312,8 @@ type InternalRecord = {
  * derived from event kind:
  * - `tool` (any phase)        -> running, and remember the tool name.
  * - `pending_action`          -> waiting (the agent is blocked on the user).
- * - `pending_action_resolution`-> running (the user answered; the agent resumes).
+ * - `pending_action_resolution`-> running when no other pending action remains.
+ * - `pending_action_expiration`-> running when no other pending action remains.
  * - `background_activity`     -> background, and track the subagent's id/count.
  * - `error`                   -> error.
  * - `lifecycle`               -> complete when the flavor is terminal, running when
@@ -328,6 +337,11 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       return;
     case "pending_action_resolution":
       // The user answered, so the run resumes unless a terminal event already won.
+      if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
+      return;
+    case "pending_action_expiration":
+      // Timeout/disconnect retires the request without approving it. Hermes
+      // resumes the tool with a deny result, so this session is no longer waiting.
       if (row.phase !== "complete" && row.phase !== "error") row.phase = "running";
       return;
     case "background_activity":

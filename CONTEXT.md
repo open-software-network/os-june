@@ -38,14 +38,25 @@ _Avoid_: accounts, the identity service, the auth service.
 
 **Upstream provider**:
 A third-party AI service June API calls on the user's behalf — currently
-**OpenAI** (transcription only) and **Venice** (transcription, generation,
-agent chat, web). Service-managed upstream provider API keys live only in June
-API's environment, never in June. A user's explicit Venice BYOK credential is
-stored locally by June and forwarded only on eligible Venice requests. In code,
-each upstream sits behind a domain trait
+**OpenAI** (transcription only), **Venice** (transcription, generation, agent
+chat, web), and **Phala** (TEE fallback for routed text inference).
+Service-managed upstream provider API keys live only in June API's environment,
+never in June. A user's explicit Venice BYOK credential is stored locally by
+June and forwarded only on eligible Venice requests. In code, each direct
+integration sits behind a domain trait
 (`Transcriber`, `Generator`, `AgentChatCompleter`, ...) defined in
-`june-domain` and implemented in `june-providers`.
+`june-domain` and implemented in `june-providers`; routed text calls reuse the
+OpenAI-compatible Venice adapter and report the selected upstream as additive
+route metadata.
 _Avoid_: AI provider, model provider, vendor, "the LLM".
+
+**Model routing service**:
+The Open Software API (`os-api`) used for service-managed text inference. June
+API requests `preferred` private routing; the service selects Venice private
+zero-retention first and Phala TEE as fallback, without falling below
+zero-retention. Venice BYOK requests remain direct and do not use this routing
+policy.
+_Avoid_: gateway (reserved for Hermes), router (unqualified).
 
 ### Notes
 
@@ -56,6 +67,33 @@ filled by **note generation**, and owns any manual notes the user types. A
 **recording session** is note-backed: the recording attaches to a note, never
 the reverse, and a note need not have a recording at all.
 _Avoid_: meeting (June has no meeting entity), document, summary.
+
+**Project (folder)**:
+The user-facing organizational unit — "Projects" in the UI, the `folders`
+entity in code — that groups notes and agent sessions and, since JUN-256,
+carries **project instructions** and scopes **memory entries**. One entity,
+two names: say "project" in UI copy, keep `folder` in code and schema.
+_Avoid_: workspace (overloaded), profile (a different, reverted concept).
+
+**Project instructions**:
+The user-written, per-project text (max 4000 chars, on the folder row) that
+June follows in sessions filed in that project. Delivered by injecting a
+delimited project-context block into the session's prompt text at run
+boundaries — never via the global SOUL.md (see
+[ADR-0027](docs/adr/0027-june-owned-project-memory-store.md)).
+_Avoid_: system prompt (that is SOUL territory), folder description (a
+separate, filing-help field).
+
+**Memory entry**:
+One durable fact June remembers, stored in June's own SQLite `memories`
+table — global or scoped to one project — written by the agent through
+`june_context` memory tools (or by the user in Settings), inspectable and
+editable in the "Memory" settings tab and the project detail view. Deletion
+is a hard DELETE plus a tombstone row (future-proofing for any later
+multi-device sync; nothing reads tombstones today).
+_Avoid_: the Hermes memory toolset's `memories/` files (the upstream
+mechanism June does not use for this), Biography (the connector-built user
+profile).
 
 ### Audio & recording
 
@@ -117,6 +155,16 @@ silence is not lost audio. Persisted per processing pass as a
 materially incomplete.
 _Avoid_: transcript completeness, duration coverage (wall-clock framing).
 
+**Note transcription job**:
+A durable unit of saved-audio processing for one Source and exact time range.
+Its stable Source-span identity is separate from `turn_index`, which is only
+presentation order; its versioned input fingerprint decides whether succeeded
+text may be reused. Jobs are workflow state, while transcript rows are the
+current user-visible output projection.
+_Avoid_: preview segment (ephemeral live-preview input), provider request (one
+job may make transient retries or bounded chunk requests), transcript row (the
+committed result, not the work).
+
 **System audio helper**:
 The out-of-process macOS `.app` (`june-system-audio-recorder`) that captures
 system audio via CoreAudio process taps and reports over a `status.json` file
@@ -124,9 +172,11 @@ system audio via CoreAudio process taps and reports over a `status.json` file
 _Avoid_: system driver, in-process capture.
 
 **Dictation helper**:
-The native macOS helper (`mac-dictation-helper`) that owns push-to-talk
-**dictation** capture and text insertion into the **paste target**, and is the
-authoritative source for microphone + accessibility permission state.
+The platform-native helper (`mac-dictation-helper` on macOS,
+`june-dictation-helper.exe` on Windows) that owns push-to-talk **dictation**
+capture and text insertion into the **paste target**. It is the authoritative
+source for helper-owned microphone state and platform paste readiness. On
+macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
 **Paste target**:
@@ -185,7 +235,10 @@ _Avoid_: web browsing (that is `june_web` search/fetch), browser toolset
 The consent-gated capability (JUN-278 phase 2) that lets the agent operate
 Mac apps in the background - no cursor, focus, or Space theft - via the
 pinned runtime's computer-use toolset and a June-bundled pinned cua-driver.
-Every mutating action requires approval; requires a vision-capable model.
+The first access to each verified target app requires one authorization for
+the current attended task; requires a vision-capable model. Bringing a parked
+window into June's current Stage Manager group is part of that authorized app
+use and does not ask again.
 _Avoid_: desktop automation (vague), computer_use toolset (that is the
 upstream mechanism, not the June capability).
 
@@ -281,12 +334,13 @@ integration (too broad), plugin for a Tauri framework package.
 
 **Connector**:
 A private-by-architecture integration between June and a third-party account
-(launch: Google Gmail + Calendar). The user authorizes the provider on their
-Mac; the grant lives in the Keychain and every provider API call originates
-on-device. June ships each connector as a read MCP server (`june_gmail`,
-`june_gcal`) plus a mutating actions server (`june_gmail_actions`,
-`june_gcal_actions`); neither holds the token, which stays in Rust behind the
-on-device provider proxy (see [ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
+(shipped: Google Gmail + Calendar; in progress: Linear). The user authorizes
+the provider on their Mac; the grant lives in the Keychain and every provider
+API call originates on-device. June ships each connector as a read MCP server
+(`june_gmail`, `june_gcal`) plus a mutating actions server
+(`june_gmail_actions`, `june_gcal_actions`); neither holds the token, which
+stays in Rust behind the on-device provider proxy (see
+[ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
 _Avoid_: integration (unqualified), plugin, the Google API.
 
 **GitHub read broker**:
@@ -295,9 +349,19 @@ read tools. It admits the exact June-managed Hermes dashboard process through
 kernel peer-process identity over a private Unix-domain socket, then delegates
 typed operations to the GitHub read service. The socket path is not authority;
 no GitHub bearer or provider credential enters Hermes configuration. See
-[ADR-0019](docs/adr/0019-kernel-authenticated-github-read-broker.md).
+[ADR-0030](docs/adr/0030-kernel-authenticated-github-read-broker.md).
 _Avoid_: GitHub proxy (there is no generic HTTP pass-through), GitHub MCP
 (the privileged boundary is not an MCP server), token broker.
+
+**Selected teams** (Linear):
+The June-side authorization grant limiting every Linear read and write to the
+teams the user checked at connect time (stored in SQLite, editable in
+settings, enforced in Rust). Not a provider OAuth scope: Linear's `read` and
+`write` scopes are workspace-wide, so team boundaries exist only because
+June's own proxy refuses anything outside the grant. An account with no
+selected teams is connected but inert.
+_Avoid_: team scopes (they are not OAuth scopes), team filter (it is an
+enforcement boundary, not a view preference), workspace access.
 
 **Local mode**:
 The default (and, in v1, only) connector trust model: the OAuth grant is
@@ -340,7 +404,8 @@ transcripts plus the user's mail and calendar ("here's what I already know, and
 it never left your Mac"). Stored locally, feeds the soul's context, fully
 deletable and regenerable.
 _Avoid_: profile (overloaded with **provider settings** and the account
-snapshot), persona, memory (that is the agent memory toolset).
+snapshot), persona, memory (that is the June **memory entry** store; the
+upstream agent memory toolset is a third thing again — qualify which).
 
 **Admin surface**:
 A June-native management view for the embedded Hermes runtime — skills hub,
@@ -501,6 +566,16 @@ The user + credit balance + subscription state fetched from OS Accounts and
 surfaced to the UI.
 _Avoid_: profile, balance (unqualified).
 
+**Avatar** (`avatar_seed`):
+The network-wide generated account presentation owned by OS Accounts. A saved
+selection is a renderer-versioned `v1:<payload>` seed; without a supported
+selection, June derives `v1:default:<User.id>` without writing it. The seed
+fixes cloud geometry across conforming Apps, while June supplies colors from
+the active theme. An explicit refresh may remain local while its profile write
+cannot sync.
+_Avoid_: App avatar, unversioned avatar seed, silently replacing an unsupported
+future version.
+
 **AccountGate** / **FundingGate**:
 The sign-in wall (`AccountGate`) versus the credits-exhausted / upgrade wall
 (`FundingGate`, keyed off `subscription.subscribed`).
@@ -513,12 +588,15 @@ _Avoid_: pet (legacy name — survives only in an old storage key), overlay
 (unqualified), floating window.
 
 **Permission**:
-A macOS TCC grant June needs — microphone, accessibility, or screen/system
-audio recording. TCC grants are bundle-scoped, so the authoritative source is
-the bundle that captures: the dictation helper for dictation mic +
-accessibility state, the main app's own `AVCaptureDevice` authorization for
-note-recording mic state (the helper's grant never covers the main app).
-System-audio permission is probe-driven (there is no query-only macOS API).
+A platform grant June needs for native capture or insertion. On macOS these
+are TCC grants: microphone, accessibility, or screen/system audio recording.
+TCC grants are bundle-scoped, so the authoritative source is the bundle that
+captures: the dictation helper for dictation mic + accessibility state, the
+main app's own `AVCaptureDevice` authorization for note-recording mic state
+(the helper's grant never covers the main app). System-audio permission is
+probe-driven (there is no query-only macOS API). On Windows, microphone access
+is controlled by Windows privacy settings and dictation paste does not require
+macOS Accessibility.
 _Avoid_: entitlement (that is the code-signing sense), treating one bundle's
 mic grant as covering the other.
 

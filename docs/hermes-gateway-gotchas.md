@@ -44,6 +44,14 @@ therefore read-modify-write of the full tree, and a multi-leaf change must
 batch into ONE put (`config.applyWritesAtSegments`) or a mid-sequence failure
 leaves config half-mutated.
 
+**Mutating admin requests serialize with Memory policy writes.** June holds the
+bridge start/config guard for the full dashboard round-trip so a whole-tree
+Hermes write cannot race spawn rendering or a direct Memory-policy edit. One
+request is bounded by `HERMES_API_REQUEST_TIMEOUT` (45 seconds), but the mutex
+is FIFO, so a Memory toggle can also wait behind earlier queued mutations.
+Review that user-visible aggregate delay before increasing the request budget
+or adding another long-running mutating admin call.
+
 **Secrets are write-only.** Server listings strip `env` and `headers` values;
 June can never read them back. "Edit" therefore only covers non-secret
 connection fields; changing a secret is delete-and-re-add.
@@ -105,6 +113,23 @@ cached token to connect). Detection of "this server is OAuth at all" also
 falls back to the config's `oauth` marker and OAuth-shaped probe errors.
 
 ## Events
+
+**MCP approvals are identity-addressed, not FIFO.** The pinned runtime carries
+June's checksum-gated `june-approval-memory-v13` patch. MCP elicitation preserves the
+SDK request id and emits an opaque stable `request_id` on `approval.request`.
+While unanswered, the same logical request retried after an MCP transport
+reconnect joins the existing entry; separate requests on one transport remain
+separate even when their prompt text matches.
+Send that exact id back with `approval.respond`; never use `all: true` and never
+assume the first visible card is the queue head. Timeout and disconnect emit
+`approval.expire` and must render as a retired, non-actionable request. A
+missing or malformed id fails closed. See ADR 0025.
+
+**A gateway drop retires pre-drop approvals.** The patched runtime drains them
+fail closed as soon as the WebSocket transport detaches. AgentWorkspace mirrors that boundary locally
+before `session.resume`, then replaces the session event listener with the new
+runtime id. A delayed replay is diagnostic noise, not a reason to reopen the
+card.
 
 **The control plane fails loudly on unknown event types — by design.** A new
 raw type renders as the red "event June does not support yet" banner until it

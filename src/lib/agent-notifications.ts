@@ -3,22 +3,34 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import type { AgentSessionStatusDetail, AgentSessionStatusKind } from "./agent-events";
+import type {
+  AgentRunSettledDetail,
+  AgentSessionStatusDetail,
+  AgentSessionStatusKind,
+} from "./agent-events";
+import { playAgentSound, type AgentSound } from "./agent-sounds";
+import { sendAppNotification } from "./tauri";
 
 type NotificationCopy = {
   title: string;
   body: string;
 };
 
-const NOTIFICATION_STATUSES = new Set<AgentSessionStatusKind>([
-  "waitingForUser",
-  "completed",
-  "failed",
-  "cancelled",
-]);
+export type AgentAttentionContext = {
+  away: boolean;
+  viewingSession: boolean;
+  captureActive: boolean;
+  soundsEnabled: boolean;
+};
+
+export type AgentAttentionDecision = {
+  cue?: AgentSound;
+  showNative: boolean;
+};
+
+type AgentAttentionKind = AgentSound | undefined;
 
 const DEDUPE_WINDOW_MS = 15_000;
-const NOTIFICATION_SOUND = "Ping";
 
 type AgentNotificationGlobal = typeof globalThis & {
   __juneAgentNotificationTimes?: Map<string, number>;
@@ -34,36 +46,121 @@ function recentNotificationTimes(now: number) {
   return recent;
 }
 
-export async function notifyAgentSessionStatus(detail: AgentSessionStatusDetail) {
-  if (!NOTIFICATION_STATUSES.has(detail.status)) return false;
+function attentionKindForStatus(status: AgentSessionStatusKind): AgentAttentionKind {
+  if (status === "waitingForUser" || status === "failed") return "needsInput";
+  return undefined;
+}
 
-  const copy = agentNotificationCopy(detail);
-  const group = agentNotificationGroup(detail);
+export function agentAttentionDecision(
+  kind: AgentAttentionKind,
+  context: AgentAttentionContext,
+): AgentAttentionDecision {
+  if (!kind || context.viewingSession) return { showNative: false };
+  return {
+    ...(context.soundsEnabled && !context.captureActive ? { cue: kind } : {}),
+    showNative: context.away,
+  };
+}
+
+export async function notifyAgentSessionStatus(
+  detail: AgentSessionStatusDetail,
+  context: AgentAttentionContext,
+) {
+  const kind = attentionKindForStatus(detail.status);
+  return deliverAgentAttention({
+    copy: agentNotificationCopy(detail),
+    context,
+    detail,
+    kind,
+  });
+}
+
+export async function notifyAgentRunSettled(
+  detail: AgentRunSettledDetail,
+  context: AgentAttentionContext,
+) {
+  return deliverAgentAttention({
+    copy: {
+      title: "June is ready",
+      body: detail.title.trim() || detail.summary.trim() || "Agent session",
+    },
+    context,
+    detail,
+    kind: "ready",
+  });
+}
+
+async function deliverAgentAttention({
+  copy,
+  context,
+  detail,
+  kind,
+}: {
+  copy: NotificationCopy;
+  context: AgentAttentionContext;
+  detail: { sessionId?: string; title?: string };
+  kind: AgentAttentionKind;
+}) {
+  const decision = agentAttentionDecision(kind, context);
+  if (!decision.cue && !decision.showNative) return false;
+
+  const group = agentNotificationGroup(detail, kind);
   const dedupeKey = `${group}:${copy.title}:${copy.body}`;
   const now = Date.now();
   const recent = recentNotificationTimes(now);
   const previous = recent.get(dedupeKey);
   if (previous && now - previous < DEDUPE_WINDOW_MS) return false;
+  // Reserve before any permission prompt or native delivery await. Two
+  // lifecycle frames can arrive in the same tick, and both must not pass the
+  // dedupe check while the first is waiting on Notification Center.
+  recent.set(dedupeKey, now);
 
+  let delivered = false;
+  if (decision.cue) {
+    playAgentSound(decision.cue);
+    // The coordinator may fold this into a cue already playing. That still
+    // covers the burst, so duplicate lifecycle frames should stay deduped.
+    delivered = true;
+  }
+
+  if (decision.showNative && (await notificationPermissionGranted())) {
+    try {
+      await sendAppNotification({
+        title: copy.title,
+        body: copy.body,
+        group,
+        sessionId: detail.sessionId,
+      });
+      delivered = true;
+    } catch {
+      // The backend command owns click routing. Older app shells may not have
+      // it yet, so keep the plugin as a silent visual fallback.
+      try {
+        sendNotification({
+          title: copy.title,
+          body: copy.body,
+          group,
+        });
+        delivered = true;
+      } catch {
+        // The branded local cue remains useful if native delivery also fails.
+      }
+    }
+  }
+
+  // A denied native-only attempt did not reach the user, so let a later event
+  // retry. Keep a newer reservation if another delivery replaced this one.
+  if (!delivered && recent.get(dedupeKey) === now) recent.delete(dedupeKey);
+  return delivered;
+}
+
+async function notificationPermissionGranted() {
   let granted = await isPermissionGranted().catch(() => false);
   if (!granted) {
     const permission = await requestPermission().catch(() => "denied" as const);
     granted = permission === "granted";
   }
-  if (!granted) return false;
-
-  // Record the dedupe slot only once we know the notification will be shown,
-  // so a permission denial does not swallow the next legitimate notification.
-  recent.set(dedupeKey, now);
-
-  sendNotification({
-    title: copy.title,
-    body: copy.body,
-    group,
-    sound: NOTIFICATION_SOUND,
-  });
-  playAgentNotificationTone(detail.status);
-  return true;
+  return granted;
 }
 
 export function agentNotificationCopy(detail: AgentSessionStatusDetail): NotificationCopy {
@@ -73,71 +170,20 @@ export function agentNotificationCopy(detail: AgentSessionStatusDetail): Notific
   if (detail.status === "waitingForUser") {
     return { title: "June needs your input", body };
   }
-
   if (detail.status === "completed") {
     return { title: "June finished", body };
   }
-
   if (detail.status === "cancelled") {
     return { title: "June stopped", body };
   }
-
   return { title: "June hit a problem", body };
 }
 
-function agentNotificationGroup(detail: AgentSessionStatusDetail) {
-  if (detail.sessionId) {
-    return `june-agent-${detail.sessionId}`;
-  }
-  const fallback = detail.title || detail.prompt || "session";
-  return `june-agent-${detail.status}-${fallback.slice(0, 64)}`;
-}
-
-function playAgentNotificationTone(status: AgentSessionStatusKind) {
-  if (typeof window === "undefined") return;
-  const AudioContextCtor =
-    window.AudioContext ??
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextCtor) return;
-
-  try {
-    const context = new AudioContextCtor();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    const now = context.currentTime;
-    const frequency =
-      status === "waitingForUser"
-        ? 660
-        : status === "completed"
-          ? 880
-          : status === "failed" || status === "cancelled"
-            ? 220
-            : 520;
-
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(frequency, now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.05, now + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(now);
-    oscillator.stop(now + 0.24);
-    let closed = false;
-    const closeContext = () => {
-      if (closed) return;
-      closed = true;
-      void context.close().catch(() => {});
-    };
-    oscillator.addEventListener("ended", closeContext);
-    // WKWebView can keep the context suspended (no user gesture), in which
-    // case "ended" never fires; resume it and close on a fallback timer so
-    // contexts cannot accumulate.
-    if (context.state === "suspended") {
-      void context.resume().catch(() => {});
-    }
-    window.setTimeout(closeContext, 2_000);
-  } catch {
-    // Native notifications remain authoritative; the local tone is a fallback.
-  }
+function agentNotificationGroup(
+  detail: { sessionId?: string; title?: string },
+  kind: AgentAttentionKind,
+) {
+  if (detail.sessionId) return `june-agent-${detail.sessionId}`;
+  const fallback = detail.title || "session";
+  return `june-agent-${kind ?? "status"}-${fallback.slice(0, 64)}`;
 }

@@ -35,6 +35,7 @@ const CURRENT_GATEWAY_EVENT_NAMES = [
   "clarify.response",
   "approval.request",
   "approval.response",
+  "approval.expire",
   "sudo.request",
   "sudo.response",
   "secret.request",
@@ -47,8 +48,15 @@ const CURRENT_GATEWAY_EVENT_NAMES = [
   "error",
 ] as const;
 
-function event<P>(type: string, payload?: P, sessionId = "sess-1") {
-  return { type, session_id: sessionId, payload, receivedAt: RECEIVED_AT } as HermesGatewayEvent<P>;
+function event<P>(
+  type: string,
+  payload?: P,
+  sessionId = "sess-1",
+  receivedAt = RECEIVED_AT,
+): HermesGatewayEvent<P> & { receivedAt: string } {
+  return { type, session_id: sessionId, payload, receivedAt } as HermesGatewayEvent<P> & {
+    receivedAt: string;
+  };
 }
 
 describe("classifyHermesEvent — totality", () => {
@@ -247,9 +255,59 @@ describe("classifyHermesEvent — tools", () => {
     }
   });
 
+  it("extracts media from the runtime's tool.complete result field", () => {
+    const content = [
+      { type: "image", data: "ZWRpdGVk", mimeType: "image/png" },
+      {
+        type: "text",
+        text: JSON.stringify({ filename: "generated-image-abc.png", label: "river scene" }),
+      },
+    ];
+    const result = classifyHermesEvent(
+      event("tool.complete", {
+        tool_id: "img1",
+        name: "mcp_june_image_generate_image",
+        result: { content, structuredContent: { filename: "generated-image-abc.png" } },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "tool",
+      toolCallId: "img1",
+      key: "img1",
+      phase: "complete",
+      content,
+    });
+  });
+
+  it("combines complementary media from content and result", () => {
+    const mediaPath = "MEDIA:/tmp/generated-image.png";
+    const metadata = { filename: "generated-image-signed.png", label: "river scene" };
+    const result = classifyHermesEvent(
+      event("tool.complete", {
+        tool_id: "img1",
+        name: "mcp_june_image_generate_image",
+        content: [{ type: "text", text: mediaPath }],
+        result: {
+          content: [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }],
+          structuredContent: metadata,
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "tool",
+      content: [
+        { type: "text", text: mediaPath },
+        { type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+        { type: "text", text: JSON.stringify(metadata) },
+      ],
+    });
+  });
+
   it("preserves a video MEDIA result without forwarding unrelated tool text", () => {
     const mediaText =
-      "MEDIA:/Users/alex/Library/Application Support/June/generated-videos/generated-video-ab12.mp4";
+      "MEDIA:/Users/alex/Library/Application Support/June/videos/generated-video-ab12.mp4";
     const result = classifyHermesEvent(
       event("tool.complete", {
         tool_call_id: "video1",
@@ -332,6 +390,58 @@ describe("classifyHermesEvent — pending actions", () => {
       expect(result.action.description).toBe("Run the build");
       expect(result.action.allowPermanent).toBe(true);
     }
+  });
+
+  it("keeps an idless approval stable across duplicate delivery timestamps", () => {
+    const first = classifyHermesEvent(
+      event(
+        "approval.request",
+        {
+          description: "An MCP server requests permission",
+          pattern_key: "mcp_elicitation",
+        },
+        "sess-1",
+        "2026-06-24T12:00:00.000Z",
+      ),
+    );
+    const replay = classifyHermesEvent(
+      event(
+        "approval.request",
+        {
+          pattern_key: "mcp_elicitation",
+          description: "An MCP server requests permission",
+        },
+        "sess-1",
+        "2026-06-24T12:00:05.000Z",
+      ),
+    );
+    expect(first.kind).toBe("pending_action");
+    expect(replay.kind).toBe("pending_action");
+    if (first.kind === "pending_action" && replay.kind === "pending_action") {
+      expect(first.action.requestId).toBe(replay.action.requestId);
+      expect(first.action.requestId).toMatch(/^legacy:approval\.request:/);
+    }
+  });
+
+  it("maps approval expiration only when it can target a stable request", () => {
+    const expired = classifyHermesEvent(
+      event("approval.expire", { request_id: "a-expired", reason: "timeout" }),
+    );
+    expect(expired).toMatchObject({
+      kind: "pending_action_expiration",
+      action: { kind: "approval", requestId: "a-expired", reason: "timeout" },
+    });
+
+    const unconfirmed = classifyHermesEvent(
+      event("approval.expire", { request_id: "a-unconfirmed", reason: "unconfirmed" }),
+    );
+    expect(unconfirmed).toMatchObject({
+      kind: "pending_action_expiration",
+      action: { kind: "approval", requestId: "a-unconfirmed", reason: "unconfirmed" },
+    });
+
+    const malformed = classifyHermesEvent(event("approval.expire", { reason: "timeout" }));
+    expect(malformed.kind).toBe("unsupported");
   });
 
   it("maps sudo.request to a sudo pending action carrying mode", () => {
@@ -738,6 +848,8 @@ describe("exhaustive switch ergonomics", () => {
           return "pending";
         case "pending_action_resolution":
           return "resolved";
+        case "pending_action_expiration":
+          return "expired";
         case "background_activity":
           return "background";
         case "steering":

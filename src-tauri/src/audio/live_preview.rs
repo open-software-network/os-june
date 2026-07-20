@@ -1,11 +1,11 @@
 use crate::{
+    audio::turns::normalize_wav_for_transcription,
     domain::types::{RecordingSource, RecordingSourceMode},
     june_api::{transcribe_saved_audio, TranscriptionRequest},
 };
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
 use std::{
-    collections::VecDeque,
     fs::File,
     io::{ErrorKind, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -23,9 +23,10 @@ pub const LIVE_TRANSCRIPT_EVENT: &str = "live-transcript-event";
 
 const PREVIEW_BATCH_BUFFER: usize = 512;
 const PREVIEW_STALE_BATCH_THRESHOLD: usize = PREVIEW_BATCH_BUFFER / 2;
-const PREVIEW_CHUNK_MS: i64 = 8_000;
-const PREVIEW_CONTEXT_TURNS: usize = 3;
+pub const PREVIEW_CHUNK_MS: i64 = 8_000;
 const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.001;
+const PREVIEW_ACTIVITY_WINDOW_MS: i64 = 30;
+const PREVIEW_MIN_SUSTAINED_ACTIVITY_MS: i64 = 180;
 const SYSTEM_PREVIEW_POLL_MS: u64 = 500;
 // The system lane tails a growing WAV rather than draining a bounded channel,
 // so it has no natural backpressure. If the transcription round-trip runs
@@ -113,7 +114,6 @@ struct PreviewChunkRequest<'a> {
     sample_rate: u32,
     channels: u16,
     samples: &'a [i16],
-    context: Option<String>,
 }
 
 impl LivePreviewController {
@@ -220,7 +220,6 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
     }
     let mut buffer: Vec<i16> = Vec::with_capacity(chunk_samples * 2);
     let mut buffer_start_sample = 0_u64;
-    let mut recent_preview_text = VecDeque::with_capacity(PREVIEW_CONTEXT_TURNS);
     let mut segment_index = 0_i64;
 
     while let Some(batch) = receiver.recv().await {
@@ -244,12 +243,11 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
             buffer_start_sample = buffer_start_sample.saturating_add(chunk_samples as u64);
             let start_ms = sample_offset_ms(chunk_start_sample, sample_rate, channels);
             let end_ms = sample_offset_ms(buffer_start_sample, sample_rate, channels);
-            if is_effectively_silent(&samples) {
+            if is_effectively_silent(&samples, sample_rate, channels) {
                 segment_index += 1;
                 continue;
             }
             let segment_id = preview_segment_id(source, segment_index);
-            let context = preview_context(&recent_preview_text);
             if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                 note_id: &note_id,
                 session_id: &session_id,
@@ -261,14 +259,12 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
                 sample_rate,
                 channels,
                 samples: &samples,
-                context,
             })
             .await
             {
                 if cancelled.load(Ordering::Acquire) {
                     return;
                 }
-                remember_preview_text(&mut recent_preview_text, &event.text);
                 let _ = app.emit(LIVE_TRANSCRIPT_EVENT, event);
             }
             segment_index += 1;
@@ -287,7 +283,6 @@ async fn run_system_live_preview_worker(
     let mut reader = WavTailReader::new(partial_path);
     let mut buffer = Vec::new();
     let mut buffer_start_sample = 0_u64;
-    let mut recent_preview_text = VecDeque::with_capacity(PREVIEW_CONTEXT_TURNS);
     let mut segment_index = 0_i64;
     let mut current_format = None;
 
@@ -325,13 +320,12 @@ async fn run_system_live_preview_worker(
                         sample_offset_ms(chunk_start_sample, read.sample_rate, read.channels);
                     let end_ms =
                         sample_offset_ms(buffer_start_sample, read.sample_rate, read.channels);
-                    if is_effectively_silent(&samples) {
+                    if is_effectively_silent(&samples, read.sample_rate, read.channels) {
                         segment_index += 1;
                         continue;
                     }
 
                     let segment_id = preview_segment_id(RecordingSource::System, segment_index);
-                    let context = preview_context(&recent_preview_text);
                     if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                         note_id: &note_id,
                         session_id: &session_id,
@@ -343,14 +337,12 @@ async fn run_system_live_preview_worker(
                         sample_rate: read.sample_rate,
                         channels: read.channels,
                         samples: &samples,
-                        context,
                     })
                     .await
                     {
                         if cancelled.load(Ordering::Acquire) {
                             return;
                         }
-                        remember_preview_text(&mut recent_preview_text, &event.text);
                         let _ = app.emit(LIVE_TRANSCRIPT_EVENT, event);
                     }
                     segment_index += 1;
@@ -584,7 +576,6 @@ async fn transcribe_preview_chunk(
         sample_rate,
         channels,
         samples,
-        context,
     } = request;
     let temp_path = preview_chunk_path(session_id, segment_id);
     if let Err(error) = write_preview_wav(&temp_path, sample_rate, channels, samples) {
@@ -593,17 +584,28 @@ async fn transcribe_preview_chunk(
         return None;
     }
 
-    let request = TranscriptionRequest {
-        provider: crate::providers::configured_transcription_provider(),
-        audio_path: temp_path.clone(),
-        title: "Live transcript preview".to_string(),
-        context,
-        language: crate::dictation::configured_transcription_language(),
-        operation_id: Some(format!("live-preview-{session_id}-{segment_id}")),
-        preview: true,
+    let normalized_path = preview_normalized_path(&temp_path);
+    let audio_path = match normalize_preview_audio(&temp_path) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp_path);
+            let _ = std::fs::remove_file(&normalized_path);
+            eprintln!(
+                "live transcript preview failed to normalize {} chunk: {} ({})",
+                source.as_db(),
+                error.message,
+                error.code
+            );
+            return None;
+        }
     };
+
+    let request = preview_transcription_request(audio_path.clone(), session_id, segment_id);
     let result = transcribe_saved_audio(request).await;
     let _ = std::fs::remove_file(&temp_path);
+    if audio_path != temp_path {
+        let _ = std::fs::remove_file(&audio_path);
+    }
     match result {
         Ok(transcript) => {
             let text = transcript.text.trim().to_string();
@@ -630,6 +632,33 @@ async fn transcribe_preview_chunk(
             );
             None
         }
+    }
+}
+
+fn preview_normalized_path(input_path: &Path) -> PathBuf {
+    input_path.with_extension("normalized.wav")
+}
+
+fn normalize_preview_audio(input_path: &Path) -> Result<PathBuf, crate::domain::types::AppError> {
+    normalize_wav_for_transcription(input_path, &preview_normalized_path(input_path))
+}
+
+fn preview_transcription_request(
+    audio_path: PathBuf,
+    session_id: &str,
+    segment_id: &str,
+) -> TranscriptionRequest {
+    TranscriptionRequest {
+        provider: crate::providers::configured_transcription_provider(),
+        audio_path,
+        title: "Live transcript preview".to_string(),
+        // Never feed unverified preview guesses back into ASR. A single
+        // hallucinated sparse System chunk otherwise primes every following
+        // chunk and produces a coherent but fictional conversation.
+        context: None,
+        language: crate::dictation::configured_transcription_language(),
+        operation_id: Some(format!("live-preview-{session_id}-{segment_id}")),
+        preview: true,
     }
 }
 
@@ -684,47 +713,35 @@ fn sample_offset_ms(sample_index: u64, sample_rate: u32, channels: u16) -> i64 {
     millis.min(i64::MAX as u64) as i64
 }
 
-fn is_effectively_silent(samples: &[i16]) -> bool {
+fn is_effectively_silent(samples: &[i16], sample_rate: u32, channels: u16) -> bool {
     if samples.is_empty() {
         return true;
     }
-    let sum_square = samples
-        .iter()
-        .map(|sample| {
-            let normalized = *sample as f64 / i16::MAX as f64;
-            normalized * normalized
-        })
-        .sum::<f64>();
-    let rms = (sum_square / samples.len() as f64).sqrt() as f32;
-    rms < PREVIEW_SILENCE_RMS_FLOOR
-}
-
-fn preview_context(recent_preview_text: &VecDeque<String>) -> Option<String> {
-    let text = recent_preview_text
-        .iter()
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "Previous live transcript preview segments:\n{text}\n\nUse this only as context. Do not repeat it."
-        ))
+    let samples_per_window =
+        samples_for_ms(sample_rate, channels, PREVIEW_ACTIVITY_WINDOW_MS).max(1);
+    let required_windows = ((PREVIEW_MIN_SUSTAINED_ACTIVITY_MS + PREVIEW_ACTIVITY_WINDOW_MS - 1)
+        / PREVIEW_ACTIVITY_WINDOW_MS)
+        .max(1);
+    let mut active_run = 0_i64;
+    for window in samples.chunks(samples_per_window) {
+        let sum_square = window
+            .iter()
+            .map(|sample| {
+                let normalized = *sample as f64 / i16::MAX as f64;
+                normalized * normalized
+            })
+            .sum::<f64>();
+        let rms = (sum_square / window.len() as f64).sqrt() as f32;
+        if rms >= PREVIEW_SILENCE_RMS_FLOOR {
+            active_run += 1;
+            if active_run >= required_windows {
+                return false;
+            }
+        } else {
+            active_run = 0;
+        }
     }
-}
-
-fn remember_preview_text(recent_preview_text: &mut VecDeque<String>, text: &str) {
-    let text = text.trim();
-    if text.is_empty() {
-        return;
-    }
-    recent_preview_text.push_back(text.to_string());
-    while recent_preview_text.len() > PREVIEW_CONTEXT_TURNS {
-        recent_preview_text.pop_front();
-    }
+    true
 }
 
 #[cfg(test)]
@@ -732,14 +749,13 @@ mod tests {
     use crate::domain::types::RecordingSource;
 
     use super::{
-        duration_ms, is_effectively_silent, newest_preview_batch, preview_chunk_path,
-        preview_context, preview_segment_id, read_wav_layout, remember_preview_text,
+        duration_ms, is_effectively_silent, newest_preview_batch, normalize_preview_audio,
+        preview_chunk_path, preview_segment_id, preview_transcription_request, read_wav_layout,
         sample_offset_ms, samples_for_ms, should_drop_stale_batches, trim_stale_system_backlog,
         write_preview_wav, LivePreviewBatch, LivePreviewSink, WavTailReader,
         PREVIEW_STALE_BATCH_THRESHOLD, SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS,
     };
     use std::{
-        collections::VecDeque,
         io::Write,
         sync::{
             atomic::{AtomicU64, Ordering},
@@ -806,11 +822,17 @@ mod tests {
     }
 
     #[test]
-    fn silence_gate_only_skips_near_zero_preview_chunks() {
-        assert!(is_effectively_silent(&[0; 128]));
-        assert!(is_effectively_silent(&[10; 128]));
-        assert!(!is_effectively_silent(&[170; 128]));
-        assert!(!is_effectively_silent(&[2_000; 128]));
+    fn silence_gate_requires_sustained_preview_activity() {
+        let mut transient = vec![0_i16; 16_000];
+        transient[..2_400].fill(2_000);
+        let mut short_reply = vec![0_i16; 16_000];
+        short_reply[..2_880].fill(2_000);
+
+        assert!(is_effectively_silent(&[0; 16_000], 16_000, 1));
+        assert!(is_effectively_silent(&[10; 16_000], 16_000, 1));
+        assert!(is_effectively_silent(&transient, 16_000, 1));
+        assert!(!is_effectively_silent(&short_reply, 16_000, 1));
+        assert!(!is_effectively_silent(&[2_000; 16_000], 16_000, 1));
     }
 
     #[test]
@@ -885,28 +907,40 @@ mod tests {
     }
 
     #[test]
-    fn preview_context_keeps_recent_nonempty_segments() {
-        let mut recent = VecDeque::new();
-
-        remember_preview_text(&mut recent, " first ");
-        remember_preview_text(&mut recent, "");
-        remember_preview_text(&mut recent, "second");
-        remember_preview_text(&mut recent, "third");
-        remember_preview_text(&mut recent, "fourth");
-
-        let context = preview_context(&recent).expect("context");
-        assert!(!context.contains("first"));
-        assert!(context.contains("second\nthird\nfourth"));
-        assert!(context.contains("Do not repeat it."));
-    }
-
-    #[test]
     fn preview_segment_ids_include_audio_source() {
         assert_eq!(
             preview_segment_id(RecordingSource::Microphone, 7),
             "microphone-7"
         );
         assert_eq!(preview_segment_id(RecordingSource::System, 3), "system-3");
+    }
+
+    #[test]
+    fn preview_audio_is_normalized_and_never_primed_by_preview_text() {
+        let input_path = preview_chunk_path("normalization", "system-stereo");
+        let samples = (0..48_000)
+            .flat_map(|index| {
+                let sample = if index % 200 < 100 { 4_000 } else { -4_000 };
+                [sample, sample]
+            })
+            .collect::<Vec<_>>();
+        write_preview_wav(&input_path, 48_000, 2, &samples).expect("write stereo preview");
+
+        let normalized_path = normalize_preview_audio(&input_path).expect("normalize preview");
+        let reader = hound::WavReader::open(&normalized_path).expect("read normalized preview");
+        assert_eq!(reader.spec().sample_rate, 16_000);
+        assert_eq!(reader.spec().channels, 1);
+
+        let request =
+            preview_transcription_request(normalized_path.clone(), "recording-session", "system-0");
+        assert!(request.context.is_none());
+        assert_eq!(
+            request.operation_id.as_deref(),
+            Some("live-preview-recording-session-system-0")
+        );
+
+        let _ = std::fs::remove_file(input_path);
+        let _ = std::fs::remove_file(normalized_path);
     }
 
     #[test]

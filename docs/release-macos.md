@@ -11,6 +11,9 @@ June supports macOS 14.0 and later on Apple Silicon and Intel Macs, including
 macOS 15. Production and staging builds ship as universal macOS apps. System
 audio capture uses Core Audio process taps and is available only on macOS 14.2
 and later. On macOS 14.0 or 14.1, recording falls back to microphone-only mode.
+The embedded Hermes resource carries separate complete `arm64` and `x86_64`
+Python and site-packages trees behind one relocatable launcher. Release builds
+execute both trees before the universal app is assembled.
 
 The first updater-capable build must be installed manually once — earlier builds
 ship without the updater, so they can't pull it in — and every release after that
@@ -36,6 +39,9 @@ Create or confirm these before cutting the first updater release:
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
   `PRODUCTION_JUNE_API_URL`.
+- Slack incoming-webhook secret: `SLACK_WEBHOOK_URL`, configured for the release
+  announcements channel. An absent or failing webhook warns but does not fail an
+  otherwise successful RC build.
 - Optional fast release runner: a dedicated self-hosted Mac Studio runner with
   the `desktop-release` label. See
   [desktop-release-runner.md](desktop-release-runner.md).
@@ -71,10 +77,16 @@ GitHub Actions -> rc-desktop-release -> Run workflow
 ```
 
 `rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
-version `X.Y.Z-rc.N` (bundling the Hermes runtime), and publishes it to a fixed
+version `X.Y.Z-rc.N` (bundling both Hermes runtime architectures), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
-It records the source commit in `rc-build.json` (so promote can rebuild the same
-tree) and does NOT touch `main`.
+The fixed `June_universal.dmg` asset follows the current RC for the updater, while
+an immutable versioned DMG remains available for each Slack announcement. The
+versioned asset is uploaded without replacement before the fixed RC release
+channel aliases; reuse a higher RC number if that append-only upload already
+exists. The workflow records the source commit in `rc-build.json` (so promote can
+rebuild the same tree) and does NOT touch `main`. It also fails closed if it
+cannot read the current RC metadata, preserving the RC release channel's
+forward-only ordering.
 
 ### 2. Test the candidate
 
@@ -116,16 +128,24 @@ it does not depend on the bump and can run as soon as promote finishes (see
 
 ## Release notifications
 
-Stable releases are announced in Slack by the org's GitHub Slack app. Subscribe a
-channel once with:
+Stable releases are announced in Slack by the org's GitHub Slack app. Subscribe
+the release announcements channel once with:
 
 ```text
 /github subscribe open-software-network/os-june-releases releases
 ```
 
 It posts when a `vX.Y.Z` stable release is published. RC builds reuse the fixed
-`rc` release tag and are edited in place rather than re-published, so they do not
-reliably trigger a Slack post; watch the `rc` release page for candidates.
+`rc` release tag and are edited in place rather than re-published, so the
+`rc-desktop-release` workflow posts each successful candidate through
+`SLACK_WEBHOOK_URL` after its release assets are available. The webhook message
+links the source commit, that candidate's immutable versioned macOS DMG, and the
+fixed `rc` release page. Delivery uses one bounded attempt and reports its result
+in the Actions summary. It remains best effort and never turns a successfully
+published candidate into a failed release run. If delivery is unconfirmed, check
+Slack before posting manually; automatically retrying an incoming webhook could
+duplicate an announcement when Slack accepted the request but its response was
+lost.
 
 The app polls:
 
@@ -168,10 +188,16 @@ plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 lipo -archs "$APP/Contents/MacOS/os-june"
 lipo -archs "$APP/Contents/Resources/native/bin/June Dictation Helper.app/Contents/MacOS/june-dictation-helper"
 lipo -archs "$APP/Contents/Resources/native/bin/June.app/Contents/MacOS/june-system-audio-recorder"
+./scripts/audit-hermes-runtime.sh "$APP/Contents/Resources/native/hermes" --require-signed
+/usr/bin/arch -arm64 "$APP/Contents/Resources/native/hermes/bin/hermes" --version
+/usr/bin/arch -x86_64 "$APP/Contents/Resources/native/hermes/bin/hermes" --version
 ```
 
 Confirm `osjune` appears in `CFBundleURLSchemes` and each `lipo` command
-prints both `x86_64` and `arm64`.
+prints both `x86_64` and `arm64`. The Hermes audit must report native files for
+both runtime trees, and both launcher commands must execute successfully. On an
+Apple Silicon validation host, the x86_64 command is a real Rosetta execution,
+not an architecture inferred from file metadata.
 
 For the first updater-to-updater validation, install an older updater-capable
 build, run **June -> Check for updates…**, confirm the prompt shows the

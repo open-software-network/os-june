@@ -60,6 +60,10 @@ services:
       - JUNE__UPSTREAMS__VENICE__API_KEY=${JUNE__UPSTREAMS__VENICE__API_KEY}
       - JUNE__UPSTREAMS__VENICE__BASE_URL=${JUNE__UPSTREAMS__VENICE__BASE_URL:-https://api.venice.ai/api/v1}
       - JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY=${JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY}
+      # Private sharing (JUN-308): sealed Postgres URL; sharing stays disabled
+      # (501) when unset. The viewer client id is public, not a secret.
+      - JUNE__SHARE__DATABASE_URL=${JUNE__SHARE__DATABASE_URL}
+      - JUNE__SHARE__VIEWER_CLIENT_ID=${JUNE__SHARE__VIEWER_CLIENT_ID}
 
 volumes:
   cert-data:

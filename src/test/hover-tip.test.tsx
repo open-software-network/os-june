@@ -56,6 +56,27 @@ describe("HoverTip", () => {
     expect(tooltip.style.left).not.toBe("");
   });
 
+  it("keeps forced feedback visible after the pointer leaves", () => {
+    const { rerender } = render(
+      <HoverTip tip="Copied" compact forceOpen>
+        Copy
+      </HoverTip>,
+    );
+
+    const anchor = screen.getByText("Copy");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+    fireEvent.mouseLeave(anchor);
+    fireEvent.blur(anchor);
+    expect(screen.getByRole("tooltip")).toHaveAttribute("data-state", "open");
+
+    rerender(
+      <HoverTip tip="Copy" compact forceOpen={false}>
+        Copy
+      </HoverTip>,
+    );
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
   it("fades out on blur, then unmounts once the exit timer elapses", () => {
     vi.useFakeTimers();
     try {

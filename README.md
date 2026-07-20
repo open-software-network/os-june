@@ -106,20 +106,24 @@ verifiable.
    own policies.
 3. **Minimal retention.** Open Software's services store account, login, and
    billing records. Prompts, audio, transcripts, and files are not among them.
-4. **Verifiable, not promised.** June API runs in an Intel TDX confidential VM
-   on Phala Cloud, and its trust chain has three public anchors:
+4. **Verifiable, not promised.** June and June API can be inspected independently
+   of any model routing service or Chat. The desktop releases are signed and
+   notarized, and their source is public. June API runs in an Intel TDX
+   confidential VM on Phala Cloud and publishes three useful anchors:
    - **Source:** this repository. The production image records its source
      commit in the OCI `org.opencontainers.image.revision` label.
    - **Image:** [`build-june-api.yml`](.github/workflows/build-june-api.yml)
      publishes [`ghcr.io/open-software-network/june-api`](https://github.com/open-software-network/os-june/pkgs/container/june-api);
      deploys pin immutable per-commit tags recorded as signed `deploy/<env>/<sha>` git tags.
    - **Attestation:** the [Phala Trust Center report](https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54)
-     proves that image is what actually runs inside the TEE.
+     reports evidence for the image running inside the TEE.
 
    Every deployment serves a self-contained walkthrough at
-   [`/verify`](https://june-api.opensoftware.co/verify). The chain proves the
-   code running in the confidential VM, not what upstream model providers do
-   with what they receive, which is why zero-retention routing is the default.
+   [`/verify`](https://june-api.opensoftware.co/verify). This evidence describes
+   June API only. The Open Software API and Chat publish their own source and
+   runtime evidence, and June does not need to pin their releases. Model privacy
+   remains explicit provider evidence, which is why zero-retention private
+   routing is the default.
 
 ## Download
 

@@ -420,6 +420,93 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
+  it("preserves the actionable start error when key-up finds nothing listening", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+
+    let resolvePlacement: ((placement: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return new Promise<string>((resolve) => {
+          resolvePlacement = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const startError = emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "microphone_permission_missing",
+        message: "Microphone permission is required.",
+      },
+    });
+
+    // The key-up error can arrive before native window placement resolves.
+    expect(hudElement().dataset.state).toBe("error");
+    await emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "not_listening",
+        message: "Dictation is not listening.",
+      },
+    });
+
+    expect(hudElement().dataset.state).toBe("error");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Microphone permission is required.",
+    );
+    mocks.hide.mockClear();
+
+    resolvePlacement?.("below");
+    await startError;
+
+    expect(hudElement().dataset.state).toBe("error");
+    expect(document.querySelector("#hud-error-text")).toHaveTextContent(
+      "Microphone permission is required.",
+    );
+    expect(mocks.hide).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_800);
+    await vi.advanceTimersByTimeAsync(320);
+    expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a delayed start error hide a newer listening state", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    mocks.hide.mockClear();
+
+    let resolvePlacement: ((placement: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return new Promise<string>((resolve) => {
+          resolvePlacement = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const startError = emit("dictation-event", {
+      type: "error",
+      payload: {
+        code: "microphone_permission_missing",
+        message: "Microphone permission is required.",
+      },
+    });
+    expect(hudElement().dataset.state).toBe("error");
+
+    void emit("dictation-event", { type: "listening_started" });
+    expect(hudElement().dataset.state).toBe("listening");
+
+    resolvePlacement?.("below");
+    await startError;
+    await vi.advanceTimersByTimeAsync(2_200);
+
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
   it("uses agent-style frostless chrome for the compact listening pill", async () => {
     await loadHud();
 
@@ -670,28 +757,9 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
-  it("does not claim the HUD for an agent handoff (the agent HUD announces it)", async () => {
+  it("does not listen for agent status sounds", async () => {
     await loadHud();
-
-    await emit(AGENT_SESSION_STATUS_EVENT, {
-      status: "received",
-      summary: "June is starting.",
-    });
-
-    expect(hudElement().dataset.state).toBe("idle");
-    expect(hudShowCalls()).toBe(0);
-  });
-
-  it("does not claim the HUD for ongoing agent progress", async () => {
-    await loadHud();
-
-    await emit(AGENT_SESSION_STATUS_EVENT, {
-      status: "running",
-      summary: "Using Filesystem.",
-    });
-
-    expect(hudElement().dataset.state).toBe("idle");
-    expect(hudShowCalls()).toBe(0);
+    expect(mocks.listeners.has(AGENT_SESSION_STATUS_EVENT)).toBe(false);
   });
 });
 

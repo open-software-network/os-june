@@ -1,4 +1,5 @@
 use crate::error::ServiceError;
+use crate::util::sha256_hex;
 use june_domain::{
     ActionSlug, Authorization, AuthorizeRequest, ChargeRequest, Credits, OsAccountsClient, Receipt,
     UserId,
@@ -135,6 +136,49 @@ pub(crate) async fn charge(params: ChargeParams<'_>) -> Result<Receipt, ServiceE
         })
         .await
         .map_err(ServiceError::from)
+}
+
+pub(crate) struct ReleaseHoldParams<'a> {
+    pub os_accounts: &'a dyn OsAccountsClient,
+    pub action: ActionSlug,
+    pub action_token: String,
+}
+
+/// Best-effort release of a Hold whose metered work failed: settles the grant
+/// at zero credits (os-accounts ADR-0032) so it stops counting against the
+/// user's concurrency cap and available balance. Before the release primitive,
+/// failed work stranded its hold until TTL + sweep — enough failures in one
+/// burst saturated the 10-open-grant cap and denied every following authorize
+/// (the 2026-07-14 lost-transcript incident). Errors are logged, never
+/// propagated: the caller is already returning the provider failure, and an
+/// unreleased hold degrades to the old TTL-expiry behavior.
+pub(crate) async fn release_hold(params: ReleaseHoldParams<'_>) {
+    // Grant-scoped key (token digest): a release can never collide with a
+    // later charge of the same logical work under a fresh grant, and a
+    // replayed release of the same grant settles idempotently.
+    let idempotency_key = format!(
+        "release:{}:{}",
+        params.action.as_str(),
+        &sha256_hex(params.action_token.as_bytes())[..32],
+    );
+    match charge(ChargeParams {
+        os_accounts: params.os_accounts,
+        action_token: params.action_token,
+        credits: Credits(0),
+        idempotency_key,
+    })
+    .await
+    {
+        Ok(_) => tracing::info!(
+            action = params.action.as_str(),
+            "released unused hold after failed metered work"
+        ),
+        Err(error) => tracing::warn!(
+            %error,
+            action = params.action.as_str(),
+            "failed to release unused hold; it expires via TTL"
+        ),
+    }
 }
 
 pub(crate) struct AsyncChargeParams {

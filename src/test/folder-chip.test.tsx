@@ -59,8 +59,8 @@ describe("Folder chip — move-to-folder popover", () => {
     render(
       <NoteEditor
         {...baseProps([
-          { id: "f1", name: "Ideas", createdAt: now, updatedAt: now },
-          { id: "f2", name: "Work", createdAt: now, updatedAt: now },
+          { id: "f1", name: "Ideas", memoryDisabled: false, createdAt: now, updatedAt: now },
+          { id: "f2", name: "Work", memoryDisabled: false, createdAt: now, updatedAt: now },
         ])}
       />,
     );
@@ -78,7 +78,9 @@ describe("Folder chip — move-to-folder popover", () => {
     const onNavigateToFolder = vi.fn();
     render(
       <NoteEditor
-        {...baseProps([{ id: "f1", name: "Ideas", createdAt: now, updatedAt: now }])}
+        {...baseProps([
+          { id: "f1", name: "Ideas", memoryDisabled: false, createdAt: now, updatedAt: now },
+        ])}
         note={{ ...note(), folderIds: ["f1"] }}
         onNavigateToFolder={onNavigateToFolder}
       />,
@@ -92,7 +94,9 @@ describe("Folder chip — move-to-folder popover", () => {
 
   it("offers 'Create' when no existing folder matches", async () => {
     const user = userEvent.setup();
-    const props = baseProps([{ id: "f1", name: "Ideas", createdAt: now, updatedAt: now }]);
+    const props = baseProps([
+      { id: "f1", name: "Ideas", memoryDisabled: false, createdAt: now, updatedAt: now },
+    ]);
     render(<NoteEditor {...props} />);
 
     await user.click(screen.getByRole("button", { name: /^Project/ }));

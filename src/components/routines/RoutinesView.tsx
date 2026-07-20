@@ -414,11 +414,12 @@ export function RoutinesView({
     const description = describeDraft.trim();
     if (!description) return;
     setDescribeDraft("");
-    onCreateRoutine(
-      routineCreationPrompt(description, {
-        unrestricted: describeUnrestricted,
-      }),
-    );
+    // routineCreationPrompt is async: for an unrestricted routine it strips the
+    // native memory toolset from the list it embeds when Memory is off, so the
+    // describe path can't grant Hermes' unscoped store behind the off switch.
+    void routineCreationPrompt(description, {
+      unrestricted: describeUnrestricted,
+    }).then(onCreateRoutine);
   }
 
   function openCreate(template?: RoutineTemplate) {

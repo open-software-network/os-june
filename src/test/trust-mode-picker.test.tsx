@@ -83,6 +83,13 @@ describe("TrustModePicker", () => {
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Create events" }));
     expect(onAutonomousToolsChange).toHaveBeenCalledWith(["create_draft", "create_event"]);
+
+    // Linear write tools are approval-only in v1: they must never render as
+    // autonomy checkboxes, even though they carry approvals-surface labels.
+    expect(screen.queryByRole("checkbox", { name: "Create issues" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Update issues" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Comment on issues" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Post project updates" })).toBeNull();
   });
 
   it("hides the grant checklist outside autonomous", () => {

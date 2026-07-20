@@ -2,7 +2,9 @@
 
 - **Mode:** CTO
 - **Date:** 2026-07-13
-- **Status:** Proposed; auth spike required
+- **Status:** Proposed; Phase 0 documentation spike complete, see
+  [linear-oauth-spike.md](linear-oauth-spike.md) (live verification pending
+  OAuth app registration)
 - **PRD:** [linear-prd.md](linear-prd.md)
 - **Issue:** JUN-284
 

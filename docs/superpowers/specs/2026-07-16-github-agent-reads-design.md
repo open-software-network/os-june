@@ -6,7 +6,7 @@
 > repository authorization, and content policy remain current; the transport and
 > runtime capability boundary are superseded by
 > [GitHub agent-read capability isolation design](2026-07-17-github-agent-read-capability-isolation-design.md)
-> and [ADR 0019](../../adr/0019-kernel-authenticated-github-read-broker.md).
+> and [ADR 0030](../../adr/0030-kernel-authenticated-github-read-broker.md).
 
 ## Context
 

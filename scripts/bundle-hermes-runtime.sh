@@ -6,23 +6,25 @@
 # when it is absent, so dev builds keep working without running this script.
 #
 # Layout produced under .tauri-hermes/hermes/ (repo root):
-#   bin/hermes        relocatable launcher (resolves everything relative to
-#                     itself, so it survives /Applications, renames, and
-#                     Gatekeeper app translocation)
-#   python/current/   standalone CPython (uv-managed python-build-standalone,
-#                     relocatable by design)
-#   hermes-agent/     the pinned source checkout + its uv-synced venv
+#   bin/hermes        architecture-selecting Hermes launcher
+#   bin/python3       architecture-selecting Python launcher used by June MCPs
+#   python/arm64/     arm64 standalone CPython
+#   python/x86_64/    x86_64 standalone CPython
+#   site-packages/arm64/ and site-packages/x86_64/
+#                     target-selected dependency trees
+#   hermes-agent/     shared pinned, patched Hermes source checkout
 #
 # Design notes, hard-won:
 # - The commit/sha256 pins are read from src-tauri/src/hermes_bridge.rs so the
 #   bundled runtime and the managed-install fallback can never drift apart.
 # - Dependencies install via `uv sync --extra all --locked` — the same
 #   hash-verified tier the on-device installer uses (install.sh "python-deps").
-# - The launcher runs the BASE python, not the venv python: venvs encode
-#   absolute build-machine paths (pyvenv.cfg home, bin symlinks, shebangs)
+# - The launchers run an architecture-specific BASE python, not a venv python:
+#   venvs encode absolute build-machine paths (pyvenv.cfg home, bin symlinks,
+#   shebangs)
 #   and cannot be relocated reliably. A .pth in the base interpreter's
-#   site-packages adds the checkout and the venv's site-packages via paths
-#   RELATIVE to the .pth itself. This also makes bare `sys.executable`
+#   site-packages adds the checkout and its architecture's dependency tree via
+#   paths RELATIVE to the .pth itself. This also makes bare `sys.executable`
 #   invocations work (the gateway's launchd job re-execs the interpreter
 #   directly, bypassing our launcher).
 # - sitecustomize.py pins sys.dont_write_bytecode and compileall uses
@@ -37,6 +39,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out_parent="$root/.tauri-hermes"
 out="$out_parent/hermes"
 bridge_rs="$root/src-tauri/src/hermes_bridge.rs"
+audit_script="$root/scripts/audit-hermes-runtime.sh"
+bundle_architectures=(arm64 x86_64)
 
 log() { printf '\033[1;34m[bundle-hermes]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[bundle-hermes]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -66,45 +70,97 @@ sync_june_plugins() {
 sign_macho_files() {
   if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     log "signing Mach-O files as: $APPLE_SIGNING_IDENTITY"
-    local signed=0
-    while IFS= read -r -d '' candidate; do
-      if file -b "$candidate" | grep -q 'Mach-O'; then
-        codesign --force --timestamp --options runtime \
-          --sign "$APPLE_SIGNING_IDENTITY" "$candidate"
-        signed=$((signed + 1))
-      fi
-    done < <(find "$out" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0)
+    local signed=0 candidate description
+    while IFS= read -r -d '' candidate && IFS= read -r description; do
+      description="${description#: }"
+      case "$description" in
+        *Mach-O*)
+          codesign --force --timestamp --options runtime \
+            --sign "$APPLE_SIGNING_IDENTITY" "$candidate"
+          signed=$((signed + 1))
+          ;;
+      esac
+    done < <(find "$out" -type f -exec file -0 -N {} +)
     log "signed $signed Mach-O files"
   else
     log "APPLE_SIGNING_IDENTITY not set; skipping codesign (dev bundle)"
   fi
 }
 
+audit_bundle() {
+  if [ "${APPLE_SIGNING_IDENTITY:-}" ]; then
+    /bin/bash "$audit_script" "$out" --require-signed
+  else
+    /bin/bash "$audit_script" "$out"
+  fi
+}
+
+run_for_arch() {
+  local arch="$1"
+  shift
+  case "$arch" in
+    arm64|x86_64) ;;
+    *) die "unsupported self-test architecture: $arch" ;;
+  esac
+  if ! /usr/bin/arch "-$arch" /usr/bin/true >/dev/null 2>&1; then
+    if [ "$arch" = "x86_64" ] && [ "$(uname -m)" = "arm64" ]; then
+      die "x86_64 execution is unavailable. Install Rosetta 2 on the ARM release runner; refusing to publish an Intel runtime that was not executed."
+    fi
+    die "$arch execution is unavailable on this release runner"
+  fi
+  /usr/bin/arch "-$arch" "$@"
+}
+
 run_self_test() {
-  log "self-test: running the launcher from a relocated copy"
-  local selftest_root selftest test_home version_output
+  log "self-test: running both architectures from a relocated copy"
+  local selftest_root selftest
   selftest_root="$(mktemp -d)"
   trap 'rm -rf "$selftest_root"' EXIT
   selftest="$selftest_root/re located"
   mkdir -p "$selftest"
   cp -R "$out" "$selftest/hermes"
-  test_home="$selftest_root/hermes-home"
-  mkdir -p "$test_home"
-  version_output="$(HERMES_HOME="$test_home" "$selftest/hermes/bin/hermes" --version)" \
-    || die "self-test failed: bundled hermes --version"
-  case "$version_output" in
-    *"$selftest/hermes/hermes-agent"*) ;;
-    *) die "self-test failed: hermes resolved the wrong project root: $version_output" ;;
-  esac
-  "$selftest/hermes/python/current/bin/python3.11" -c "import hermes_cli.main" \
-    || die "self-test failed: bare interpreter cannot import hermes_cli (pth broken)"
-  HERMES_HOME="$test_home" PYTHONDONTWRITEBYTECODE=1 \
-    "$selftest/hermes/python/current/bin/python3.11" -c "from hermes_cli.plugins import discover_plugins; discover_plugins(force=True); from tools.registry import registry; expected = sorted(['list_repositories', 'get_repository', 'list_directory', 'read_file', 'search_code', 'list_issues', 'get_issue', 'list_issue_comments', 'list_pull_requests', 'get_pull_request', 'list_pull_request_files', 'read_pull_request_file_diff', 'list_pull_request_commits', 'list_pull_request_reviews', 'list_pull_request_review_comments', 'list_pull_request_checks']); actual = registry.get_tool_names_for_toolset('june_github'); assert actual == expected, (actual, expected); assert {registry.get_entry(name).toolset for name in actual} == {'june_github'}" \
-    || die "self-test failed: june_github did not register the exact 16-tool toolset"
-  HERMES_PLUGIN_ROOT="$selftest/hermes/hermes-agent/plugins" \
-    "$selftest/hermes/python/current/bin/python3.11" \
-    -c "import os, sys; sys.path.insert(0, os.environ['HERMES_PLUGIN_ROOT']); from cron import jobs; assert '/hermes-agent/cron/jobs.py' in jobs.__file__.replace('\\\\', '/'), jobs.__file__" \
-    || die "self-test failed: top-level cron import was shadowed by plugins/cron"
+
+  local arch test_home version_output selected_arch
+  for arch in "${bundle_architectures[@]}"; do
+    test_home="$selftest_root/hermes-home-$arch"
+    mkdir -p "$test_home"
+    version_output="$(HERMES_HOME="$test_home" run_for_arch "$arch" "$selftest/hermes/bin/hermes" --version)" \
+      || die "self-test failed: $arch bundled hermes --version"
+    case "$version_output" in
+      *"$selftest/hermes/hermes-agent"*) ;;
+      *) die "self-test failed: $arch Hermes resolved the wrong project root: $version_output" ;;
+    esac
+
+    selected_arch="$(run_for_arch "$arch" "$selftest/hermes/bin/python3" -c 'import platform; print(platform.machine())')" \
+      || die "self-test failed: $arch Python launcher did not execute"
+    [ "$selected_arch" = "$arch" ] \
+      || die "self-test failed: requested $arch but launcher executed $selected_arch"
+
+    run_for_arch "$arch" "$selftest/hermes/bin/python3" -c \
+      "import cryptography.hazmat.bindings._rust, hermes_cli.main, httptools, psutil, pydantic_core, uvloop, yaml" \
+      || die "self-test failed: $arch patched Hermes or native dependencies cannot import"
+    run_for_arch "$arch" "$selftest/hermes/bin/python3" \
+      "$root/scripts/hermes-native-import-smoke.py" \
+      "$selftest/hermes/site-packages/$arch" \
+      || die "self-test failed: $arch native dependency import sweep"
+    run_for_arch "$arch" "$selftest/hermes/bin/python3" \
+      "$root/scripts/hermes-approval-patch-smoke.py" \
+      "$selftest/hermes/hermes-agent" \
+      || die "self-test failed: $arch June Hermes compatibility protocol"
+    HERMES_HOME="$test_home" PYTHONDONTWRITEBYTECODE=1 \
+      run_for_arch "$arch" "$selftest/hermes/bin/python3" \
+      -c "from hermes_cli.plugins import discover_plugins; discover_plugins(force=True); from tools.registry import registry; expected = sorted(['list_repositories', 'get_repository', 'list_directory', 'read_file', 'search_code', 'list_issues', 'get_issue', 'list_issue_comments', 'list_pull_requests', 'get_pull_request', 'list_pull_request_files', 'read_pull_request_file_diff', 'list_pull_request_commits', 'list_pull_request_reviews', 'list_pull_request_review_comments', 'list_pull_request_checks']); actual = registry.get_tool_names_for_toolset('june_github'); assert actual == expected, (actual, expected); assert {registry.get_entry(name).toolset for name in actual} == {'june_github'}" \
+      || die "self-test failed: $arch june_github did not register the exact 16-tool toolset"
+    HERMES_PLUGIN_ROOT="$selftest/hermes/hermes-agent/plugins" \
+      run_for_arch "$arch" "$selftest/hermes/bin/python3" \
+      -c "import os, sys; sys.path.insert(0, os.environ['HERMES_PLUGIN_ROOT']); from cron import jobs; assert '/hermes-agent/cron/jobs.py' in jobs.__file__.replace('\\\\', '/'), jobs.__file__" \
+      || die "self-test failed: $arch top-level cron import was shadowed by plugins/cron"
+    log "self-test: $arch execution passed"
+  done
+
+  /usr/bin/python3 "$root/src-tauri/src/hermes/apply_june_patches.py" \
+    "$selftest/hermes/hermes-agent" --verify \
+    || die "self-test failed: June Hermes patch checksums do not match"
   rm -rf "$selftest_root"
   trap - EXIT
 }
@@ -116,8 +172,18 @@ print_bundle_size() {
 bundle_is_reusable() {
   [ -f "$out/PIN" ] || return 1
   [ "$(cat "$out/PIN")" = "$commit" ] || return 1
+  [ -f "$out/PATCHSET" ] || return 1
+  [ "$(cat "$out/PATCHSET")" = "$patch_set" ] || return 1
+  [ -f "$out/ARCHITECTURES" ] || return 1
+  [ "$(tr '\n' ' ' < "$out/ARCHITECTURES" | awk '{$1=$1; print}')" = "arm64 x86_64" ] || return 1
   [ -x "$out/bin/hermes" ] || return 1
-  [ -x "$out/python/current/bin/python3.11" ] || return 1
+  [ -x "$out/bin/python3" ] || return 1
+  local arch
+  for arch in "${bundle_architectures[@]}"; do
+    [ -x "$out/python/$arch/current/bin/python3.11" ] || return 1
+    [ -d "$out/site-packages/$arch" ] || return 1
+    [ -f "$out/python/$arch/TARGET" ] || return 1
+  done
   [ -d "$out/hermes-agent" ] || return 1
   [ -f "$out/hermes-agent/hermes_cli/web_dist/index.html" ] || return 1
 }
@@ -139,12 +205,15 @@ pin() {
   ' "$bridge_rs"
 }
 commit="$(pin HERMES_AGENT_INSTALL_COMMIT)"
+patch_set="$(pin HERMES_RUNTIME_PATCH_SET)"
 tarball_sha256="$(pin HERMES_SOURCE_TARBALL_SHA256)"
 tarball_url="$(pin HERMES_SOURCE_TARBALL_URL)"
 [ -n "$commit" ] || die "could not read HERMES_AGENT_INSTALL_COMMIT from $bridge_rs"
+[ -n "$patch_set" ] || die "could not read HERMES_RUNTIME_PATCH_SET from $bridge_rs"
 [ -n "$tarball_sha256" ] || die "could not read HERMES_SOURCE_TARBALL_SHA256 from $bridge_rs"
 [ -n "$tarball_url" ] || die "could not read HERMES_SOURCE_TARBALL_URL from $bridge_rs"
 log "pin: $commit"
+log "patch set: $patch_set"
 
 work="$out_parent/work"
 if bundle_is_reusable; then
@@ -153,6 +222,7 @@ if bundle_is_reusable; then
   ensure_no_symlinks
   # Always sign restored binaries with the currently imported Developer ID cert.
   sign_macho_files
+  audit_bundle
   run_self_test
   print_bundle_size
   log "done: $out"
@@ -188,6 +258,15 @@ unpacked="$(find "$work" -maxdepth 1 -type d -name 'hermes-agent-*' | head -1)"
 [ -n "$unpacked" ] || die "tarball did not contain a hermes-agent directory"
 mkdir -p "$out"
 mv "$unpacked" "$out/hermes-agent"
+upstream_smoke="$work/hermes-agent-upstream-smoke"
+cp -R "$out/hermes-agent" "$upstream_smoke"
+
+# Apply June's sealed compatibility patch to the exact pinned sources. The
+# patcher verifies each upstream and post-patch file hash and fails on drift.
+/usr/bin/python3 "$root/src-tauri/src/hermes/apply_june_patches.py" "$out/hermes-agent"
+/usr/bin/python3 "$root/scripts/hermes-approval-patch-smoke.py" \
+  "$out/hermes-agent" --upstream-root "$upstream_smoke"
+rm -rf "$upstream_smoke"
 
 # Dev-only weight the runtime never imports. Conservative on purpose: web/ and
 # ui-tui/ stay (hermes resolves them relative to its project root), and they
@@ -210,7 +289,7 @@ mkdir -p "$out/third_party_notices"
   printf 'Hermes Agent commit: %s\n\n' "$commit"
   printf 'Preserved upstream license and notice files:\n'
   while IFS= read -r license_file; do
-    printf -- '- hermes-agent/%s\n' "${license_file#$out/hermes-agent/}"
+    printf -- '- hermes-agent/%s\n' "${license_file#"$out"/hermes-agent/}"
   done <<<"$hermes_license_files"
 } > "$out/third_party_notices/THIRD_PARTY_NOTICES.txt"
 
@@ -239,65 +318,95 @@ rm -rf "$out/hermes-agent/node_modules" \
   "$out/hermes-agent/ui-tui/node_modules"
 [ -f "$out/hermes-agent/hermes_cli/web_dist/index.html" ] || die "web_dist missing after build"
 
-# ---- relocatable CPython + hash-verified deps --------------------------------
-log "installing standalone CPython 3.11"
-UV_PYTHON_INSTALL_DIR="$out/python" UV_PYTHON_INSTALL_BIN=0 UV_NO_CONFIG=1 \
-  "$uv_cmd" python install 3.11 >/dev/null
-pydir="$(find "$out/python" -maxdepth 1 -type d -name 'cpython-3.11*' | head -1)"
-[ -n "$pydir" ] || die "uv did not install a cpython-3.11 runtime"
-# Fixed name so the launcher needs no globbing (paths with spaces stay safe).
-mv "$pydir" "$out/python/current"
-py="$out/python/current/bin/python3.11"
-[ -x "$py" ] || die "bundled python missing at $py"
+# ---- two relocatable CPythons + target-selected dependency trees ------------
+# Both trees are built on the ARM release runner. The target-qualified Python
+# request downloads the matching python-build-standalone interpreter; uv's
+# --python-platform plus --no-build make dependency selection target-aware and
+# forbid host-built native sdists. The architecture audit below then proves
+# every resulting Mach-O supports the tree it lives in.
+install_arch_runtime() {
+  local arch="$1"
+  local uv_arch target python_root pydir py venv venv_sp site_sp base_sp
+  case "$arch" in
+    arm64)
+      uv_arch=aarch64
+      target=aarch64-apple-darwin
+      ;;
+    x86_64)
+      uv_arch=x86_64
+      target=x86_64-apple-darwin
+      ;;
+    *) die "unsupported bundle architecture: $arch" ;;
+  esac
 
-# The Tauri bundler fails (opaquely: "failed to build app") on symlinked
-# resources, so the bundle must contain none. Drop uv's version-alias link,
-# the bin convenience links (the launcher execs python3.11 directly and
-# hermes re-execs sys.executable), and dev-only pkgconfig/man trees whose
-# files are links too.
-find "$out/python" -maxdepth 1 -type l -delete
-find "$out/python/current/bin" -type l -delete
-rm -rf "$out/python/current/lib/pkgconfig" "$out/python/current/share"
+  log "installing $arch standalone CPython 3.11"
+  python_root="$out/python/$arch"
+  mkdir -p "$python_root"
+  UV_PYTHON_INSTALL_DIR="$python_root" UV_PYTHON_INSTALL_BIN=0 UV_NO_CONFIG=1 \
+    "$uv_cmd" python install "cpython-3.11-macos-${uv_arch}-none" >/dev/null
+  pydir="$(find "$python_root" -maxdepth 1 -type d -name 'cpython-3.11*' | head -1)"
+  [ -n "$pydir" ] || die "uv did not install the $arch CPython 3.11 runtime"
+  mv "$pydir" "$python_root/current"
+  py="$python_root/current/bin/python3.11"
+  [ -x "$py" ] || die "$arch bundled python missing at $py"
 
-log "installing python deps (uv sync --extra all --locked)"
-# The GitHub-capable runtime never falls back to ordinary resolution. A stale
-# or incomplete lockfile is a release-blocking error, not permission to choose
-# new dependency bytes at build time.
-(
-  cd "$out/hermes-agent"
-  export UV_PROJECT_ENVIRONMENT="$out/hermes-agent/venv"
-  export UV_NO_CONFIG=1
-  export UV_PYTHON_INSTALL_DIR="$out/python"
-  "$uv_cmd" sync --extra all --locked --python "$py" >/dev/null
-)
+  # Drop uv's version aliases and standalone-distribution convenience links.
+  find "$python_root" -maxdepth 1 -type l -delete
+  find "$python_root/current/bin" -type l -delete
+  rm -rf "$python_root/current/lib/pkgconfig" "$python_root/current/share"
 
-venv_sp="$(find "$out/hermes-agent/venv/lib" -maxdepth 1 -type d -name 'python3.*' | head -1)/site-packages"
-[ -d "$venv_sp" ] || die "venv site-packages missing"
-base_sp="$(find "$out/python/current/lib" -maxdepth 1 -type d -name 'python3.*' | head -1)/site-packages"
-[ -d "$base_sp" ] || die "base site-packages missing"
-pyver_dir="$(basename "$(dirname "$venv_sp")")"
+  log "installing $arch Python deps for target $target"
+  venv="$work/venv-$arch"
+  (
+    cd "$out/hermes-agent"
+    export UV_PROJECT_ENVIRONMENT="$venv"
+    export UV_NO_CONFIG=1
+    export UV_PYTHON_INSTALL_DIR="$python_root"
+    # The GitHub-capable runtime never falls back to ordinary resolution. A
+    # stale or incomplete lockfile is a release-blocking error, not permission
+    # to choose new dependency bytes at build time.
+    "$uv_cmd" sync --extra all --locked --no-install-project --no-build \
+      --link-mode copy --python-platform "$target" --python "$py" >/dev/null
+  )
 
-# The venv's editable hooks and bin/ scripts encode absolute build-machine
-# paths and are never executed at runtime (the launcher and the .pth below
-# replace them). Removing venv/bin also keeps bundled_hermes_command off the
-# venv-script candidate and on the relocatable launcher.
-find "$venv_sp" -maxdepth 1 \( -name '*editable*' -o -name '_hermes*' \) -exec rm -rf {} +
-rm -rf "$out/hermes-agent/venv/bin"
+  venv_sp="$(find "$venv/lib" -maxdepth 1 -type d -name 'python3.*' | head -1)/site-packages"
+  [ -d "$venv_sp" ] || die "$arch venv site-packages missing"
+  site_sp="$out/site-packages/$arch"
+  mkdir -p "$(dirname "$site_sp")"
+  mv "$venv_sp" "$site_sp"
+  rm -rf "$venv"
 
-# Make the bare base interpreter resolve hermes + deps via relative paths.
-rel_root="../../../../.."
-cat > "$base_sp/hermes-bundle.pth" <<EOF
-$rel_root/hermes-agent
-$rel_root/hermes-agent/venv/lib/$pyver_dir/site-packages
+  # Editable hooks encode the build checkout. Hermes source comes from the
+  # relative bundle path below, so remove the hooks and their metadata.
+  find "$site_sp" -maxdepth 1 \( -name '*editable*' -o -name '_hermes*' \) -exec rm -rf {} +
+  base_sp="$(find "$python_root/current/lib" -maxdepth 1 -type d -name 'python3.*' | head -1)/site-packages"
+  [ -d "$base_sp" ] || die "$arch base site-packages missing"
+
+  # From python/<arch>/current/lib/python3.x/site-packages back to bundle root.
+  cat > "$base_sp/hermes-bundle.pth" <<EOF
+../../../../../../hermes-agent
+../../../../../../site-packages/$arch
 EOF
+  cp "$root/src-tauri/src/hermes/sitecustomize.py" "$base_sp/sitecustomize.py"
 
-# Never write .pyc into the signed bundle (it would break the signature seal).
-cp "$root/src-tauri/src/hermes/sitecustomize.py" "$base_sp/sitecustomize.py"
+  # No relocatable path file may retain the build machine's absolute checkout.
+  while IFS= read -r pth; do
+    if /usr/bin/grep -Fq "$root" "$pth"; then
+      die "$arch dependency metadata contains an absolute bundle path: $pth"
+    fi
+  done < <(find "$python_root/current" "$site_sp" -type f -name '*.pth')
 
-log "precompiling bytecode (checked-hash)"
-# Some shipped templates/vendored files don't compile; that only costs them
-# the precompile (sitecustomize stops runtime writes), so don't fail the build.
-"$py" -m compileall -q --invalidation-mode checked-hash "$out/hermes-agent" "$base_sp" >/dev/null 2>&1 || true
+  log "precompiling $arch bytecode (checked-hash)"
+  # Some shipped templates do not compile; sitecustomize still prevents all
+  # runtime writes into the signed bundle.
+  run_for_arch "$arch" "$py" -m compileall -q --invalidation-mode checked-hash \
+    "$out/hermes-agent" "$base_sp" "$site_sp" >/dev/null 2>&1 || true
+  printf '%s\n' "$target" > "$python_root/TARGET"
+}
+
+for arch in "${bundle_architectures[@]}"; do
+  install_arch_runtime "$arch"
+done
 
 # Apply the app-owned extension after bytecode precompilation so its runtime
 # directory contains exactly the two signed source files and no generated
@@ -308,30 +417,66 @@ sync_june_plugins
 # see above) — fail loudly here instead of opaquely at app-bundling time.
 ensure_no_symlinks
 
-# ---- launcher -----------------------------------------------------------------
+# ---- architecture-selecting launchers -----------------------------------------
 mkdir -p "$out/bin"
+cat > "$out/bin/python3" <<'EOF'
+#!/bin/sh
+# Relocatable selector for the bundled Python runtime. uname reports x86_64
+# inside Rosetta, so this also proves the Intel path during release self-tests.
+set -eu
+here="$(cd "$(dirname "$0")/.." && pwd)"
+machine="$(/usr/bin/uname -m)"
+case "$machine" in
+  arm64|x86_64) ;;
+  *)
+    printf 'June bundled Hermes does not support architecture: %s\n' "$machine" >&2
+    exit 1
+    ;;
+esac
+python="$here/python/$machine/current/bin/python3.11"
+if [ ! -x "$python" ]; then
+  printf 'June bundled Hermes is missing its %s Python runtime.\n' "$machine" >&2
+  exit 1
+fi
+exec "$python" "$@"
+EOF
+
 cat > "$out/bin/hermes" <<'EOF'
 #!/bin/sh
-# Relocatable launcher for the bundled Hermes runtime. Everything resolves
-# relative to this file, so the bundle works from /Applications, a renamed
-# app, or a Gatekeeper-translocated path. Module resolution comes from
-# hermes-bundle.pth inside the bundled interpreter, so re-execs of bare
-# sys.executable (the gateway's launchd job) resolve identically.
+# Relocatable, architecture-selecting launcher for the bundled Hermes runtime.
+set -eu
 here="$(cd "$(dirname "$0")/.." && pwd)"
-exec "$here/python/current/bin/python3.11" -m hermes_cli.main "$@"
+machine="$(/usr/bin/uname -m)"
+case "$machine" in
+  arm64|x86_64) ;;
+  *)
+    printf 'June bundled Hermes does not support architecture: %s\n' "$machine" >&2
+    exit 1
+    ;;
+esac
+python="$here/python/$machine/current/bin/python3.11"
+if [ ! -x "$python" ]; then
+  printf 'June bundled Hermes is missing its %s Python runtime.\n' "$machine" >&2
+  exit 1
+fi
+exec "$python" -m hermes_cli.main "$@"
 EOF
-chmod +x "$out/bin/hermes"
+chmod +x "$out/bin/hermes" "$out/bin/python3"
+
+# Provenance stamps are part of cache reuse and build.rs eviction. The exact
+# ARCHITECTURES contents make a legacy host-only bundle ineligible even when
+# its source PIN and PATCHSET still match.
+printf '%s\n' "$commit" > "$out/PIN"
+printf '%s\n' "$patch_set" > "$out/PATCHSET"
+printf 'arm64\nx86_64\n' > "$out/ARCHITECTURES"
+ensure_no_symlinks
 
 # ---- signing ------------------------------------------------------------------
 # Notarization rejects any unsigned Mach-O inside the app. Sign every binary
 # (interpreter, dylibs, extension modules) with the hardened runtime; the
 # outer app signature then seals the rest of the tree as resources.
 sign_macho_files
-
-# Stamp the bundle with its source pin. build.rs compares this against the
-# pins in hermes_bridge.rs and evicts a stale bundle (built before a pin
-# bump) instead of letting it ship silently from a developer machine.
-printf '%s\n' "$commit" > "$out/PIN"
+audit_bundle
 
 # ---- self-test: prove relocatability from a moved path with a space -----------
 run_self_test

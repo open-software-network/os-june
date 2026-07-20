@@ -283,6 +283,9 @@ export function NoteChatPanel({
   });
   const [modelId, setModelId] = useState("");
   const [costQuality, setCostQualityState] = useState<number | undefined>();
+  // Mirrors the saved Venice API key's presence so the model popover can show
+  // its Auto billing note (Auto meters June credits, never the key).
+  const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelFlyout, setModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
@@ -312,6 +315,7 @@ export function NoteChatPanel({
         apiKey: "",
       };
       setLocalGeneration(local);
+      setVeniceApiKeyConfigured(settings.settings.veniceApiKeyConfigured);
       setModels(withLocalGenerationOption(catalog.models, local));
       const fallbackModelId =
         settings.settings.generationProvider === "local" && local.modelId.trim()
@@ -771,6 +775,7 @@ export function NoteChatPanel({
               search={modelSearch}
               popoverRef={modelPopoverRef}
               searchRef={modelSearchRef}
+              veniceApiKeyConfigured={veniceApiKeyConfigured}
               onFlyoutChange={setModelFlyout}
               onSearchChange={setModelSearch}
               onSelect={(nextModelId, nextCostQuality) =>

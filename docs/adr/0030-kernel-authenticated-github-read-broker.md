@@ -1,4 +1,4 @@
-# ADR 0019: Kernel-authenticated broker for interactive GitHub reads
+# ADR 0030: Kernel-authenticated broker for interactive GitHub reads
 
 Date: 2026-07-17
 Status: accepted

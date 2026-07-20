@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "June",
-  "version": "0.0.33",
+  "version": "0.0.34",
   "identifier": "co.opensoftware.june",
   "build": {
     "beforeDevCommand": "node ./scripts/tauri-before-dev.mjs",
-    "beforeBuildCommand": "pnpm run build",
+    "beforeBuildCommand": "pnpm run computer-use:prepare -- --release && pnpm run build",
     "devUrl": "http://127.0.0.1:1421",
     "frontendDist": "../dist"
   },
@@ -82,6 +82,7 @@
         "enable": true,
         "scope": [
           "$TEMP/os-june-dictation-*.m4a",
+          "$TEMP/os-june-dictation-*.wav",
           "$APPDATA/hermes/videos/*"
         ]
       },

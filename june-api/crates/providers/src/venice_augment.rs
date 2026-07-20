@@ -27,6 +27,7 @@ pub struct VeniceAugment {
     http: reqwest::Client,
     api_key: String,
     base_url: String,
+    byok_base_url: String,
 }
 
 impl VeniceAugment {
@@ -35,6 +36,7 @@ impl VeniceAugment {
             http,
             api_key: config.api_key.clone(),
             base_url: config.base_url.trim_end_matches('/').to_string(),
+            byok_base_url: crate::venice::byok_base_url(config),
         }
     }
 
@@ -57,8 +59,13 @@ impl VeniceAugment {
         B: Serialize,
         T: DeserializeOwned,
     {
+        let base_url = crate::venice::request_base_url(
+            &self.base_url,
+            &self.byok_base_url,
+            provider_credentials,
+        );
         let endpoint = ResolvedAugmentEndpoint {
-            url: format!("{}{}", self.base_url, endpoint.path),
+            url: format!("{}{}", base_url, endpoint.path),
             client_error_reason: endpoint.client_error_reason,
         };
         for attempt in 0..retry::UPSTREAM_ATTEMPTS {
@@ -299,8 +306,49 @@ mod tests {
             &UpstreamConfig {
                 api_key: "venice_key".to_string(),
                 base_url: server.uri(),
+                byok_base_url: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn byok_search_routes_direct_to_byok_base_url() {
+        // A request carrying a user's own Venice key must go to the BYOK base;
+        // the configured base_url may be a June-managed gateway that rejects
+        // any bearer other than June's service key.
+        let byok_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/augment/search"))
+            .and(header("authorization", "Bearer user_venice_key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "query": "rust async",
+                "results": []
+            })))
+            .expect(1)
+            .mount(&byok_server)
+            .await;
+        let augment = VeniceAugment::from_config(
+            http::default_client(),
+            &UpstreamConfig {
+                api_key: "venice_key".to_string(),
+                base_url: "http://127.0.0.1:9".to_string(),
+                byok_base_url: Some(byok_server.uri()),
+            },
+        );
+
+        let results = augment
+            .search(WebSearchRequest {
+                query: "rust async".to_string(),
+                limit: Some(5),
+                provider: WebSearchProvider::Brave,
+                provider_credentials: ProviderCredentials {
+                    venice_api_key: Some("user_venice_key".to_string()),
+                },
+            })
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(results.results.len(), 0);
     }
 
     #[tokio::test]

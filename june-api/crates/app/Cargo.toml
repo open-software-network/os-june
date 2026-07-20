@@ -23,6 +23,7 @@ reqwest.workspace = true
 june-api.workspace = true
 june-config.workspace = true
 june-domain.workspace = true
+june-persistence.workspace = true
 june-providers.workspace = true
 june-services.workspace = true
 tokio.workspace = true

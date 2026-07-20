@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, authorize_or_deny, charge, clamp_to_cap, log_settled,
-        zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
+        log_settled, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -49,6 +49,7 @@ impl NoteGenerateService {
     ) -> Result<NoteGenerateOutput, ServiceError> {
         self.pricing
             .ensure_model_kind(&params.model_id.0, ModelKind::Text)?;
+        let inference_privacy = self.pricing.inference_privacy(&params.model_id.0);
         if uses_user_venice_key_for_model(
             &self.pricing,
             &params.model_id.0,
@@ -67,6 +68,7 @@ impl NoteGenerateService {
                     system_prompt: prompts::NOTE_GENERATE.to_string(),
                     cost_quality: params.cost_quality,
                     provider_credentials: params.provider_credentials.clone(),
+                    inference_privacy,
                     unmetered: true,
                 })
                 .await?;
@@ -75,14 +77,8 @@ impl NoteGenerateService {
                 &params.user_id,
                 &params.model_id.0,
             );
-            return Ok(NoteGenerateOutput {
-                generated,
-                receipt: zero_receipt(),
-                prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
-            });
+            return Ok(note_generate_output(generated, zero_receipt()));
         }
-        // Flat-estimate mode — see note_transcribe.rs. The actual charge below
-        // is still computed from real token usage; only the Hold size changes.
         let estimate = Credits(self.flat_estimate_credits);
         let authorization = authorize_or_deny(AuthorizeParams {
             os_accounts: self.os_accounts.as_ref(),
@@ -92,7 +88,7 @@ impl NoteGenerateService {
             hold_ttl_seconds: self.hold_ttl_seconds,
         })
         .await?;
-        let generated = self
+        let generated = match self
             .generator
             .generate(GenerationRequest {
                 title: params.title,
@@ -105,9 +101,22 @@ impl NoteGenerateService {
                 system_prompt: prompts::NOTE_GENERATE.to_string(),
                 cost_quality: params.cost_quality,
                 provider_credentials: params.provider_credentials.clone(),
+                inference_privacy,
                 unmetered: false,
             })
-            .await?;
+            .await
+        {
+            Ok(generated) => generated,
+            Err(error) => {
+                release_hold(ReleaseHoldParams {
+                    os_accounts: self.os_accounts.as_ref(),
+                    action: ActionSlug::NoteGenerate,
+                    action_token: authorization.action_token,
+                })
+                .await;
+                return Err(error.into());
+            }
+        };
         let actual = self
             .pricing
             .price_token_usage(&params.model_id.0, generated.usage)?;
@@ -129,11 +138,15 @@ impl NoteGenerateService {
             &params.model_id.0,
             &receipt,
         );
-        Ok(NoteGenerateOutput {
-            generated,
-            receipt,
-            prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
-        })
+        Ok(note_generate_output(generated, receipt))
+    }
+}
+
+fn note_generate_output(generated: GeneratedNote, receipt: Receipt) -> NoteGenerateOutput {
+    NoteGenerateOutput {
+        generated,
+        receipt,
+        prompt_version: NOTE_GENERATE_PROMPT_VERSION.to_string(),
     }
 }
 

@@ -56,6 +56,14 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     ensure_column(_pool, "recording_checkpoints", "source", "TEXT").await?;
     ensure_column(_pool, "recording_checkpoints", "source_artifact_id", "TEXT").await?;
     ensure_column(_pool, "folders", "description", "TEXT").await?;
+    ensure_column(_pool, "folders", "instructions", "TEXT").await?;
+    ensure_column(
+        _pool,
+        "folders",
+        "memory_disabled",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
     // Folder names don't need to be unique — each folder has a stable
     // UUID, and the user may legitimately want two "Inbox"es etc.
     drop_index_if_exists(_pool, "idx_folders_active_name").await?;
@@ -144,6 +152,17 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    // Non-secret, provider-specific account details that don't warrant their
+    // own column (Linear's workspace name/url key today; JSON so a future
+    // provider's own shape never forces another migration). Google rows keep
+    // the default empty object.
+    ensure_column(
+        _pool,
+        "connector_accounts",
+        "metadata",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    .await?;
     for statement in include_str!("../../migrations/012_connector_grants.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
@@ -156,7 +175,14 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
-    for statement in include_str!("../../migrations/014_github_connections.sql").split(';') {
+    ensure_column(_pool, "transcripts", "span_id", "TEXT").await?;
+    for statement in include_str!("../../migrations/014_note_transcription_jobs.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/015_memories.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
@@ -166,6 +192,30 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     // crediting only counts runs that finished at or after this instant, so
     // earlier read-only runs never retroactively unlock autonomy.
     ensure_column(_pool, "routine_trust", "approval_since", "TEXT").await?;
+    for statement in include_str!("../../migrations/014_share_keys.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/016_linear_connector.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/017_connector_actions.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/018_github_connections.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
     Ok(())
 }
 

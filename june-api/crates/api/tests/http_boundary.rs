@@ -1,36 +1,18 @@
 use async_trait::async_trait;
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::Body,
     http::{Method, Request, StatusCode, header},
 };
-use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
-use june_config::{
-    DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES, ModelPriceConfig, ModelProvider,
-    ModelType, PriceUnit,
-};
+use june_api::{AttestationInfo, router};
+use june_config::{DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES};
 use june_domain::{
-    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
-    AgentChatStreamOutcome, AudioDurationProbe, AuthError, Authorization, AuthorizeRequest,
-    CleanedText, Cleaner, CleanupRequest, Credits, DomainError, GeneratedImage, GeneratedNote,
-    GenerationRequest, Generator, ImageEditRequest, ImageEditor, ImageGenerationRequest,
-    ImageGenerator, IssueReport, IssueReportDelivery, IssueReportSink, OsAccountsClient, P3aReport,
-    P3aSink, Receipt, TokenUsage, Transcriber, Transcript, TranscriptionRequest, UserId,
-    VideoAnimationRequest, VideoGenerationRequest, VideoProvider, VideoQueued, VideoQuoteRequest,
-    VideoRetrieved, WebFetchRequest, WebFetchResult, WebFetcher, WebSearchRequest, WebSearchResult,
-    WebSearchResults, WebSearcher,
+    AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
+    GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportDelivery, IssueReportSink,
+    P3aReport, Transcriber, Transcript, TranscriptionRequest, UserId,
 };
-use june_services::{
-    AgentChatService, AgentChatServiceDeps, DictateService, DictateServiceDeps, ImageModelPrice,
-    ImageService, ImageServiceDeps, IssueReportService, IssueReportServiceDeps,
-    NOTE_GENERATE_PROMPT_VERSION, NoteGenerateService, NoteGenerateServiceDeps,
-    NoteTranscribeService, NoteTranscribeServiceDeps, P3aReportService, P3aReportServiceDeps,
-    PricingTable, VideoModelPrice, VideoService, VideoServiceDeps, WebAugmentService,
-    WebAugmentServiceDeps,
-};
+use june_services::NOTE_GENERATE_PROMPT_VERSION;
 use pretty_assertions::assert_eq;
 use std::{
-    collections::BTreeMap,
     error::Error,
     sync::{
         Arc, Mutex,
@@ -40,7 +22,28 @@ use std::{
 };
 use tower::ServiceExt;
 
-const AUTHORIZATION: &str = "Bearer valid-token";
+mod support;
+use support::*;
+
+#[tokio::test]
+async fn integration_computer_use_rollout_is_public_and_version_aware() -> Result<(), Box<dyn Error>>
+{
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/v1/computer-use/rollout")
+        .header("x-june-app-version", "0.0.33")
+        .header("x-june-macos-version", "15.5.1")
+        .body(Body::empty())?;
+    let response = send(request).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["enabled"], true);
+    assert_eq!(body["data"]["reason"], serde_json::Value::Null);
+    assert_eq!(body["data"]["cacheTtlSeconds"], 300);
+    Ok(())
+}
 
 #[tokio::test]
 async fn integration_missing_auth_returns_unauthorized_envelope() -> Result<(), Box<dyn Error>> {
@@ -93,6 +96,10 @@ async fn integration_note_generate_returns_enveloped_response() -> Result<(), Bo
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["content"], "Generated note body");
     assert_eq!(body["data"]["titleSuggestion"], "Generated title");
+    assert_eq!(body["data"]["provider"], "fake-generator");
+    assert_eq!(body["data"]["upstreamProvider"], "phala");
+    assert_eq!(body["data"]["privacyLevel"], "no-retention");
+    assert_eq!(body["data"]["upstreamEndpoint"], "venice-private");
     assert_eq!(body["data"]["promptVersion"], NOTE_GENERATE_PROMPT_VERSION);
     assert_eq!(body["data"]["creditsCharged"], 1);
     Ok(())
@@ -303,12 +310,164 @@ async fn integration_agent_chat_stream_returns_upstream_sse_body() -> Result<(),
     assert_eq!(
         response
             .headers()
+            .get("x-os-provider")
+            .and_then(|value| value.to_str().ok()),
+        Some("phala")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-os-privacy-level")
+            .and_then(|value| value.to_str().ok()),
+        Some("no-retention")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-os-endpoint")
+            .and_then(|value| value.to_str().ok()),
+        Some("venice-private")
+    );
+    assert_eq!(
+        response
+            .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
         Some("text/event-stream")
     );
     let body = response_text(response).await?;
     assert_eq!(body, "data: {\"choices\":[]}\n\n");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_admission_preserves_authenticated_happy_path()
+-> Result<(), Box<dyn Error>> {
+    let body = serde_json::json!({
+        "model": "text-model",
+        "stream": true,
+        "messages": [{ "role": "user", "content": "hello" }]
+    })
+    .to_string();
+    let response = send(
+        Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_LENGTH, body.len())
+            .header(header::AUTHORIZATION, AUTHORIZATION)
+            .body(Body::from(body))?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_accepts_tool_heavy_body_over_small_json_cap()
+-> Result<(), Box<dyn Error>> {
+    // 4 MiB: STRICTLY above `test_state`'s shared `max_json_bytes` (1 MiB in
+    // tests/support) so it would 413 under the old shared-cap route, AND above
+    // the previous 3 MiB agent cap so it exercises the raised 1M-token capacity.
+    // It stays under both the 12 MiB agent chat body cap (so the extractor lets
+    // it through) and the 6M-char semantic cap (~4.19M chars here, so
+    // `validate_agent_chat_body` accepts it), and must reach the handler and
+    // stream from the mocked upstream (200, not 413).
+    let body = tool_heavy_chat_body_with_len(4 * 1024 * 1024)?;
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_auth("/v1/chat/completions", body)?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_ne!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(response.status(), StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_rejects_body_over_agent_cap() -> Result<(), Box<dyn Error>> {
+    // One byte over the 3 MiB agent chat body cap: still fails deterministically with a
+    // 413 at the route boundary (JUN-336 acceptance: over-cap requests fail
+    // without wedging).
+    let body = tool_heavy_chat_body_with_len(DEFAULT_MAX_AGENT_CHAT_BYTES + 1)?;
+    let router = router(test_state());
+    let response = match router
+        .oneshot(raw_json_request_with_auth("/v1/chat/completions", body)?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_authenticates_before_buffering_the_body()
+-> Result<(), Box<dyn Error>> {
+    // Unauthenticated + malformed body → 401: auth runs on headers first, so the
+    // body is never buffered or parsed. If auth ran after extraction this would
+    // be the 400 a JSON parse failure gives. This closes the unauthenticated
+    // resource-exhaustion path that the JUN-336 cap increase widened (an
+    // unauthenticated client could otherwise force up to 12 MiB of buffering).
+    let unauthenticated = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{ not valid json"))?;
+    let response = match router(test_state()).oneshot(unauthenticated).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // Authenticated + malformed body → 400: auth passes, so parsing proceeds and
+    // fails normally. The gate adds auth without changing handler behaviour.
+    let authenticated = Request::builder()
+        .method(Method::POST)
+        .uri("/v1/chat/completions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::from("{ not valid json"))?;
+    let response = match router(test_state()).oneshot(authenticated).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_share_uploads_authenticate_before_buffering_the_body()
+-> Result<(), Box<dyn Error>> {
+    for path in ["/v1/shares", "/v1/shares/shr_test/invites"] {
+        let unauthenticated = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from("{ not valid json"))?;
+        let response = match router(test_state()).oneshot(unauthenticated).await {
+            Ok(response) => response,
+            Err(error) => match error {},
+        };
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+        let authenticated = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, AUTHORIZATION)
+            .body(Body::from("{ not valid json"))?;
+        let response = match router(test_state()).oneshot(authenticated).await {
+            Ok(response) => response,
+            Err(error) => match error {},
+        };
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
     Ok(())
 }
 
@@ -327,6 +486,206 @@ async fn integration_agent_chat_routes_stale_model_through_auto() -> Result<(), 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await?;
     assert_eq!(body["id"], "chatcmpl_test");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_fallback_strips_auto_policy()
+-> Result<(), Box<dyn Error>> {
+    let completer = Arc::new(RecordingChatCompleter::default());
+    let app = router(test_state_with_local_text_pricing(
+        Arc::new(FakeGenerator),
+        completer.clone(),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "auto": { "cost_quality": 0.75 },
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = completer
+        .requests
+        .lock()
+        .map_err(|_| "chat request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "zai-org-glm-5-2");
+    assert!(requests[0].body.get("auto").is_none());
+    assert!(!requests[0].body.to_string().contains("cost_quality"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_non_local_missing_auto_fails_loudly() -> Result<(), Box<dyn Error>>
+{
+    let app = router(test_state_with_text_pricing_without_auto(
+        false,
+        Arc::new(FakeGenerator),
+        Arc::new(FakeChatCompleter),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "messages": [{ "role": "user", "content": "hello" }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_not_priced");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_image_and_tools_falls_back_to_compatible_model()
+-> Result<(), Box<dyn Error>> {
+    let completer = Arc::new(RecordingChatCompleter::default());
+    let app = router(test_state_with_local_text_pricing(
+        Arc::new(FakeGenerator),
+        completer.clone(),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "auto": { "cost_quality": 0.75 },
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "text", "text": "describe this image" },
+                        {
+                            "type": "image_url",
+                            "image_url": { "url": "https://example.com/image.png" }
+                        }
+                    ]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "save_description",
+                        "parameters": { "type": "object" }
+                    }
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = completer
+        .requests
+        .lock()
+        .map_err(|_| "chat request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "kimi-k2-6");
+    assert!(requests[0].body.get("auto").is_none());
+    assert!(requests[0].body.get("tools").is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_agent_chat_local_auto_rejects_when_capabilities_are_unavailable()
+-> Result<(), Box<dyn Error>> {
+    let app = router(
+        test_state_with_text_pricing_without_auto_and_kimi_capabilities(
+            true,
+            Arc::new(FakeGenerator),
+            Arc::new(FakeChatCompleter),
+            vec!["supportsVision".to_string()],
+        ),
+    );
+    let response = match app
+        .oneshot(json_request(
+            "/v1/chat/completions",
+            &serde_json::json!({
+                "model": "open-software/auto",
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": { "url": "https://example.com/image.png" }
+                    }]
+                }],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "save_description",
+                        "parameters": { "type": "object" }
+                    }
+                }]
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response_json(response).await?;
+    assert_eq!(body["message"], "model_capability_unavailable");
+    Ok(())
+}
+
+#[tokio::test]
+async fn integration_note_generate_local_auto_fallback_omits_cost_quality()
+-> Result<(), Box<dyn Error>> {
+    let generator = Arc::new(RecordingGenerator::default());
+    let app = router(test_state_with_local_text_pricing(
+        generator.clone(),
+        Arc::new(FakeChatCompleter),
+    ));
+    let response = match app
+        .oneshot(json_request(
+            "/v1/notes/generate",
+            &serde_json::json!({
+                "noteId": "note-local-auto",
+                "promptVersion": "prompt-v1",
+                "title": "Planning",
+                "transcript": "System: launch is Friday",
+                "model": "open-software/auto",
+                "costQuality": 0.75
+            }),
+            Some(AUTHORIZATION),
+        )?)
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let requests = generator
+        .requests
+        .lock()
+        .map_err(|_| "generation request mutex poisoned")?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].model.0, "zai-org-glm-5-2");
+    assert_eq!(requests[0].cost_quality, None);
     Ok(())
 }
 
@@ -863,6 +1222,27 @@ async fn integration_note_transcribe_accepts_valid_audio_multipart() -> Result<(
 }
 
 #[tokio::test]
+async fn integration_note_transcribe_routes_retired_asr_model_through_priced_fallback()
+-> Result<(), Box<dyn Error>> {
+    let response = send(multipart_request(
+        "/v1/notes/transcribe",
+        multipart_body([
+            text_part("model", "retired-asr-model"),
+            text_part("title", "Standup"),
+            text_part("noteId", "note-stale-asr"),
+            file_part("audio", "recording.wav", valid_wav()),
+        ]),
+    )?)
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["text"], "Transcribed audio");
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_transcribe_keeps_byok_for_current_venice_model()
 -> Result<(), Box<dyn Error>> {
     let response = send(multipart_request_with_venice_api_key(
@@ -1057,6 +1437,8 @@ async fn integration_dictate_cleanup_returns_enveloped_response() -> Result<(), 
     let body = response_json(response).await?;
     assert_eq!(body["success"], true);
     assert_eq!(body["data"]["text"], "Cleaned dictation");
+    assert_eq!(body["data"]["provider"], "fake-cleaner");
+    assert_eq!(body["data"]["upstreamProvider"], "phala");
     assert_eq!(body["data"]["creditsCharged"], 0);
     Ok(())
 }
@@ -1603,333 +1985,6 @@ async fn integration_verify_page_without_commit_reports_unstamped_build()
     Ok(())
 }
 
-fn test_router() -> Router {
-    router(test_state())
-}
-
-const TEST_COMMIT: &str = "0123abc4567890def0123abc4567890def012345";
-
-fn test_attestation() -> AttestationInfo {
-    AttestationInfo {
-        source_commit: TEST_COMMIT.to_string(),
-        source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
-        image_repo: "ghcr.io/open-software-network/june-api".to_string(),
-        trust_center_url: "https://trust.phala.com/app/test-app-id".to_string(),
-    }
-}
-
-fn test_state() -> ApiState {
-    test_state_with_attestation(test_attestation())
-}
-
-fn test_state_with_attestation(attestation: AttestationInfo) -> ApiState {
-    test_state_with_sinks(
-        test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
-        attestation,
-    )
-}
-
-fn test_state_with_issue_sink(
-    issue_reports: Arc<dyn IssueReportSink>,
-    attestation: AttestationInfo,
-) -> ApiState {
-    test_state_with_issue_sink_and_timeout(issue_reports, attestation, 5)
-}
-
-fn test_state_with_issue_sink_and_timeout(
-    issue_reports: Arc<dyn IssueReportSink>,
-    attestation: AttestationInfo,
-    request_timeout_secs: u64,
-) -> ApiState {
-    test_state_from_deps(TestStateDeps {
-        issue_reports: test_issue_report_service(issue_reports),
-        attestation,
-        transcriber: Arc::new(FakeTranscriber),
-        generator: Arc::new(FakeGenerator),
-        request_timeout_secs,
-        p3a_sink: Arc::new(RecordingP3aSink::default()),
-    })
-}
-
-fn test_issue_report_service(issue_reports: Arc<dyn IssueReportSink>) -> Arc<IssueReportService> {
-    Arc::new(IssueReportService::new(IssueReportServiceDeps {
-        sink: issue_reports,
-        chat_completer: Arc::new(FakeChatCompleter),
-        config: june_config::IssueReportsConfig::default(),
-    }))
-}
-
-fn test_state_with_sinks(
-    issue_reports: Arc<IssueReportService>,
-    attestation: AttestationInfo,
-) -> ApiState {
-    test_state_with_sinks_and_transcriber(issue_reports, attestation, Arc::new(FakeTranscriber))
-}
-
-fn test_state_with_sinks_and_transcriber(
-    issue_reports: Arc<IssueReportService>,
-    attestation: AttestationInfo,
-    transcriber: Arc<dyn Transcriber>,
-) -> ApiState {
-    test_state_from_deps(TestStateDeps {
-        issue_reports,
-        attestation,
-        transcriber,
-        generator: Arc::new(FakeGenerator),
-        request_timeout_secs: 5,
-        p3a_sink: Arc::new(RecordingP3aSink::default()),
-    })
-}
-
-fn test_state_with_generator_and_timeout(
-    generator: Arc<dyn Generator>,
-    request_timeout_secs: u64,
-) -> ApiState {
-    test_state_from_deps(TestStateDeps {
-        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
-        attestation: test_attestation(),
-        transcriber: Arc::new(FakeTranscriber),
-        generator,
-        request_timeout_secs,
-        p3a_sink: Arc::new(RecordingP3aSink::default()),
-    })
-}
-
-fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
-    test_state_from_deps(TestStateDeps {
-        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
-        attestation: test_attestation(),
-        transcriber: Arc::new(FakeTranscriber),
-        generator: Arc::new(FakeGenerator),
-        request_timeout_secs: 5,
-        p3a_sink,
-    })
-}
-
-struct TestStateDeps {
-    issue_reports: Arc<IssueReportService>,
-    attestation: AttestationInfo,
-    transcriber: Arc<dyn Transcriber>,
-    generator: Arc<dyn Generator>,
-    request_timeout_secs: u64,
-    p3a_sink: Arc<dyn P3aSink>,
-}
-
-fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
-    let pricing = Arc::new(PricingTable::new(models()));
-    let os_accounts = Arc::new(FakeOsAccounts);
-    let cleaner = Arc::new(FakeCleaner);
-    let duration_probe = Arc::new(FakeDurationProbe);
-    let chat_completer = Arc::new(FakeChatCompleter);
-    let image = Arc::new(ImageService::new(ImageServiceDeps {
-        os_accounts: os_accounts.clone(),
-        generator: Arc::new(FakeImageGenerator),
-        editor: Arc::new(FakeImageEditor),
-        pricing: BTreeMap::from([("venice-sd35".to_string(), ImageModelPrice::venice(20))]),
-        edit_pricing: BTreeMap::from([(
-            "firered-image-edit".to_string(),
-            ImageModelPrice::venice(80),
-        )]),
-        default_edit_model: "firered-image-edit".to_string(),
-        hold_ttl_seconds: 30,
-    }));
-    let video = Arc::new(VideoService::new(VideoServiceDeps {
-        os_accounts: os_accounts.clone(),
-        provider: Arc::new(FakeVideoProvider),
-        pricing: BTreeMap::from([(
-            "wan-2.2-a14b-text-to-video".to_string(),
-            VideoModelPrice::venice(2000),
-        )]),
-        animate_pricing: BTreeMap::from([(
-            "wan-2.6-image-to-video".to_string(),
-            VideoModelPrice::venice(2000),
-        )]),
-        default_animate_model: "wan-2.6-image-to-video".to_string(),
-        max_credits_per_request: 20_000,
-        hold_ttl_seconds: 600,
-    }));
-
-    ApiState::new(ApiStateParams {
-        pricing: pricing.clone(),
-        token_verifier: Arc::new(FakeTokenVerifier),
-        note_transcribe: Arc::new(NoteTranscribeService::new(NoteTranscribeServiceDeps {
-            pricing: pricing.clone(),
-            os_accounts: os_accounts.clone(),
-            transcriber: deps.transcriber.clone(),
-            duration_probe: duration_probe.clone(),
-            hold_ttl_seconds: 30,
-            flat_estimate_credits: 1_000,
-            preview_max_audio_seconds: 30,
-        })),
-        note_generate: Arc::new(NoteGenerateService::new(NoteGenerateServiceDeps {
-            pricing: pricing.clone(),
-            os_accounts: os_accounts.clone(),
-            generator: deps.generator,
-            hold_ttl_seconds: 30,
-            flat_estimate_credits: 1_000,
-        })),
-        agent_chat: Arc::new(AgentChatService::new(AgentChatServiceDeps {
-            pricing: pricing.clone(),
-            os_accounts: os_accounts.clone(),
-            chat_completer,
-            hold_ttl_seconds: 30,
-            flat_estimate_credits: 1_000,
-        })),
-        dictate: Arc::new(DictateService::new(DictateServiceDeps {
-            pricing,
-            os_accounts: os_accounts.clone(),
-            transcriber: deps.transcriber,
-            cleaner,
-            duration_probe,
-            transcribe_hold_ttl_seconds: 30,
-            cleanup_hold_ttl_seconds: 30,
-            flat_estimate_credits: 1_000,
-        })),
-        web: Arc::new(WebAugmentService::new(WebAugmentServiceDeps {
-            os_accounts,
-            searcher: Arc::new(FakeWebSearcher),
-            fetcher: Arc::new(FakeWebFetcher),
-            search_credits: 20,
-            fetch_credits: 20,
-            hold_ttl_seconds: 30,
-        })),
-        image,
-        video,
-        issue_reports: deps.issue_reports,
-        p3a_reports: Arc::new(P3aReportService::new(P3aReportServiceDeps {
-            sink: deps.p3a_sink,
-        })),
-        limits: ApiLimits {
-            max_audio_bytes: 1024 * 1024,
-            max_json_bytes: 1024 * 1024,
-            max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
-            max_image_edit_bytes: DEFAULT_MAX_IMAGE_EDIT_BYTES,
-            request_timeout_secs: deps.request_timeout_secs,
-        },
-        attestation: deps.attestation,
-    })
-}
-
-fn models() -> BTreeMap<String, ModelPriceConfig> {
-    [
-        (
-            "nvidia/parakeet-tdt-0.6b-v3",
-            ModelPriceConfig {
-                unit: PriceUnit::Seconds,
-                credits_per_million_seconds: Some(250_000),
-                input_credits_per_million_tokens: None,
-                output_credits_per_million_tokens: None,
-                provider: ModelProvider::Venice,
-                model_type: ModelType::Asr,
-                display_name: "Private ASR Model".to_string(),
-                description: None,
-                privacy: None,
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        ),
-        (
-            "asr-model",
-            ModelPriceConfig {
-                unit: PriceUnit::Seconds,
-                credits_per_million_seconds: Some(250_000),
-                input_credits_per_million_tokens: None,
-                output_credits_per_million_tokens: None,
-                provider: ModelProvider::Openai,
-                model_type: ModelType::Asr,
-                display_name: "ASR Model".to_string(),
-                description: None,
-                privacy: None,
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        ),
-        (
-            "text-model",
-            ModelPriceConfig {
-                unit: PriceUnit::Tokens,
-                credits_per_million_seconds: None,
-                input_credits_per_million_tokens: Some(500),
-                output_credits_per_million_tokens: Some(500),
-                provider: ModelProvider::Openai,
-                model_type: ModelType::Text,
-                display_name: "Text Model".to_string(),
-                description: None,
-                privacy: None,
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        ),
-        (
-            "venice-text-model",
-            ModelPriceConfig {
-                unit: PriceUnit::Tokens,
-                credits_per_million_seconds: None,
-                input_credits_per_million_tokens: Some(500),
-                output_credits_per_million_tokens: Some(500),
-                provider: ModelProvider::Venice,
-                model_type: ModelType::Text,
-                display_name: "Venice Text Model".to_string(),
-                description: None,
-                privacy: None,
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        ),
-        (
-            "open-software/auto",
-            ModelPriceConfig {
-                unit: PriceUnit::Tokens,
-                credits_per_million_seconds: None,
-                input_credits_per_million_tokens: Some(500),
-                output_credits_per_million_tokens: Some(500),
-                provider: ModelProvider::Venice,
-                model_type: ModelType::Text,
-                display_name: "Auto".to_string(),
-                description: None,
-                privacy: None,
-                pricing: None,
-                context_tokens: None,
-                traits: Vec::new(),
-                capabilities: Vec::new(),
-            },
-        ),
-    ]
-    .into_iter()
-    .map(|(id, model)| (id.to_string(), model))
-    .collect()
-}
-
-async fn send(request: Request<Body>) -> axum::response::Response {
-    match test_router().oneshot(request).await {
-        Ok(response) => response,
-        Err(error) => match error {},
-    }
-}
-
-fn json_request(
-    uri: &str,
-    value: &serde_json::Value,
-    authorization: Option<&str>,
-) -> Result<Request<Body>, axum::http::Error> {
-    let mut builder = Request::builder()
-        .method(Method::POST)
-        .uri(uri)
-        .header(header::CONTENT_TYPE, "application/json");
-    if let Some(authorization) = authorization {
-        builder = builder.header(header::AUTHORIZATION, authorization);
-    }
-    builder.body(Body::from(value.to_string()))
-}
-
 fn note_generate_request(stream: bool) -> serde_json::Value {
     let mut request = serde_json::json!({
         "noteId": "note-1",
@@ -1943,17 +1998,6 @@ fn note_generate_request(stream: bool) -> serde_json::Value {
         request["stream"] = serde_json::Value::Bool(true);
     }
     request
-}
-
-fn sse_event_data(body: &str, event: &str) -> Result<String, Box<dyn Error>> {
-    let marker = format!("event: {event}\n");
-    let event_start = body.find(&marker).ok_or("missing SSE event")?;
-    let event_body = &body[event_start + marker.len()..];
-    let data = event_body
-        .lines()
-        .find_map(|line| line.strip_prefix("data: "))
-        .ok_or("missing SSE data")?;
-    Ok(data.to_string())
 }
 
 fn json_request_with_venice_api_key(
@@ -1984,6 +2028,87 @@ fn raw_json_request_with_venice_api_key(
         .body(Body::from(body))
 }
 
+/// Raw string body plus the standard bearer, with NO `x-venice-api-key` header.
+/// `text-model` is an OpenAI-provider model in test pricing, so a Venice BYOK
+/// header would trip `venice_api_key_model_unavailable` (422) before the body
+/// ever streams; the plain bearer routes to the mocked upstream so the only
+/// thing that can produce a 413 is the route body-limit layer (JUN-336).
+fn raw_json_request_with_auth(uri: &str, body: String) -> Result<Request<Body>, axum::http::Error> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, AUTHORIZATION)
+        .body(Body::from(body))
+}
+
+/// A tool-heavy `/v1/chat/completions` body of exactly `total_len` bytes,
+/// shaped like the JUN-336 production failure: several tool schemas plus a
+/// multi-turn assistant/tool-call/tool-result history, with the bulk of the
+/// size in the latest tool result (production: ~340k of ~382k chars were tool
+/// results from the current turn). `model`/`stream` route it to the mocked
+/// upstream. When the body clears the route extractor, `validate_agent_chat_body`
+/// still runs, so callers that want the accept path must keep `total_len` below
+/// the 1.5M-char semantic cap.
+fn tool_heavy_chat_body_with_len(total_len: usize) -> Result<String, Box<dyn Error>> {
+    let schema = |name: &str, description: &str| {
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Absolute path" },
+                        "query": { "type": "string", "description": "Search query" },
+                        "limit": { "type": "integer", "description": "Max results" }
+                    },
+                    "required": ["path"]
+                }
+            }
+        })
+    };
+    let tool_call = |id: &str, name: &str, arguments: &str| {
+        serde_json::json!({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": id,
+                "type": "function",
+                "function": { "name": name, "arguments": arguments }
+            }]
+        })
+    };
+    let mut body = serde_json::json!({
+        "model": "text-model",
+        "stream": true,
+        "tools": [
+            schema("read_file", "Read a file from disk and return its contents."),
+            schema("search_notes", "Full-text search across the user's notes."),
+            schema("list_dir", "List the entries of a directory."),
+            schema("web_fetch", "Fetch a URL and return its readable text.")
+        ],
+        "messages": [
+            { "role": "user", "content": "summarize everything the tools returned" },
+            tool_call("call_1", "read_file", "{\"path\":\"/notes/launch.md\"}"),
+            { "role": "tool", "tool_call_id": "call_1", "content": "earlier tool result: launch is Friday" },
+            tool_call("call_2", "search_notes", "{\"query\":\"rate limits\"}"),
+            // The current turn's tool result — padded below to dominate the body.
+            { "role": "tool", "tool_call_id": "call_2", "content": "" }
+        ]
+    });
+    let last = body["messages"]
+        .as_array()
+        .map_or(0, |messages| messages.len().saturating_sub(1));
+    let overhead = serde_json::to_string(&body)?.len();
+    let pad = total_len.saturating_sub(overhead);
+    body["messages"][last]["content"] = serde_json::Value::String("a".repeat(pad));
+    let out = serde_json::to_string(&body)?;
+    assert_eq!(out.len(), total_len, "body length must be exact");
+    Ok(out)
+}
+
 fn image_edit_body_with_len(total_len: usize) -> Result<String, Box<dyn Error>> {
     let prefix = "{\"image\":\"";
     for extra_prompt_chars in 0..4 {
@@ -2005,28 +2130,6 @@ fn image_edit_body_with_len(total_len: usize) -> Result<String, Box<dyn Error>> 
     Err("could not construct image edit body at requested length".into())
 }
 
-fn get_request(uri: &str) -> Result<Request<Body>, axum::http::Error> {
-    Request::builder()
-        .method(Method::GET)
-        .uri(uri)
-        .body(Body::empty())
-}
-
-fn get_request_with_auth(
-    uri: &str,
-    authorization: Option<&str>,
-) -> Result<Request<Body>, axum::http::Error> {
-    let mut builder = Request::builder().method(Method::GET).uri(uri);
-    if let Some(authorization) = authorization {
-        builder = builder.header(header::AUTHORIZATION, authorization);
-    }
-    builder.body(Body::empty())
-}
-
-fn multipart_request(uri: &str, body: Vec<u8>) -> Result<Request<Body>, axum::http::Error> {
-    multipart_request_with_auth(uri, body, Some(AUTHORIZATION))
-}
-
 fn multipart_request_with_venice_api_key(
     uri: &str,
     body: Vec<u8>,
@@ -2042,126 +2145,6 @@ fn multipart_request_with_venice_api_key(
         .header(header::AUTHORIZATION, AUTHORIZATION)
         .header("x-venice-api-key", venice_api_key)
         .body(Body::from(body))
-}
-
-fn multipart_request_with_auth(
-    uri: &str,
-    body: Vec<u8>,
-    authorization: Option<&str>,
-) -> Result<Request<Body>, axum::http::Error> {
-    let mut builder = Request::builder().method(Method::POST).uri(uri).header(
-        header::CONTENT_TYPE,
-        format!("multipart/form-data; boundary={}", boundary()),
-    );
-    if let Some(authorization) = authorization {
-        builder = builder.header(header::AUTHORIZATION, authorization);
-    }
-    builder.body(Body::from(body))
-}
-
-async fn response_json(
-    response: axum::response::Response,
-) -> Result<serde_json::Value, Box<dyn Error>> {
-    let bytes = to_bytes(response.into_body(), usize::MAX).await?;
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
-async fn response_text(response: axum::response::Response) -> Result<String, Box<dyn Error>> {
-    let bytes = to_bytes(response.into_body(), usize::MAX).await?;
-    Ok(String::from_utf8(bytes.to_vec())?)
-}
-
-fn boundary() -> &'static str {
-    "test-boundary"
-}
-
-enum MultipartPart {
-    Text {
-        name: &'static str,
-        value: &'static str,
-    },
-    File {
-        name: &'static str,
-        filename: &'static str,
-        content_type: &'static str,
-        bytes: Vec<u8>,
-    },
-}
-
-fn text_part(name: &'static str, value: &'static str) -> MultipartPart {
-    MultipartPart::Text { name, value }
-}
-
-fn file_part(name: &'static str, filename: &'static str, bytes: Vec<u8>) -> MultipartPart {
-    typed_file_part(name, filename, "audio/wav", bytes)
-}
-
-fn typed_file_part(
-    name: &'static str,
-    filename: &'static str,
-    content_type: &'static str,
-    bytes: Vec<u8>,
-) -> MultipartPart {
-    MultipartPart::File {
-        name,
-        filename,
-        content_type,
-        bytes,
-    }
-}
-
-fn multipart_body<const N: usize>(parts: [MultipartPart; N]) -> Vec<u8> {
-    let mut body = Vec::new();
-    for part in parts {
-        body.extend_from_slice(format!("--{}\r\n", boundary()).as_bytes());
-        match part {
-            MultipartPart::Text { name, value } => {
-                body.extend_from_slice(
-                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
-                );
-                body.extend_from_slice(value.as_bytes());
-                body.extend_from_slice(b"\r\n");
-            }
-            MultipartPart::File {
-                name,
-                filename,
-                content_type,
-                bytes,
-            } => {
-                body.extend_from_slice(
-                    format!(
-                        "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
-                    )
-                    .as_bytes(),
-                );
-                body.extend_from_slice(&bytes);
-                body.extend_from_slice(b"\r\n");
-            }
-        }
-    }
-    body.extend_from_slice(format!("--{}--\r\n", boundary()).as_bytes());
-    body
-}
-
-fn valid_wav() -> Vec<u8> {
-    b"RIFF....WAVEfmt ".to_vec()
-}
-
-#[derive(Default)]
-struct RecordingIssueReportSink {
-    reports: Mutex<Vec<IssueReport>>,
-    delivery: IssueReportDelivery,
-}
-
-#[async_trait]
-impl IssueReportSink for RecordingIssueReportSink {
-    async fn deliver(&self, report: IssueReport) -> Result<IssueReportDelivery, DomainError> {
-        self.reports
-            .lock()
-            .map_err(|_| DomainError::UpstreamProvider)?
-            .push(report);
-        Ok(self.delivery.clone())
-    }
 }
 
 struct FailingIssueReportSink;
@@ -2267,88 +2250,6 @@ impl IssueReportSink for DeadlineBudgetIssueReportSink {
     }
 }
 
-#[derive(Default)]
-struct RecordingP3aSink {
-    reports: Mutex<Vec<P3aReport>>,
-}
-
-impl RecordingP3aSink {
-    fn reports(&self) -> Result<Vec<P3aReport>, Box<dyn Error>> {
-        Ok(self
-            .reports
-            .lock()
-            .map_err(|_| "reports lock poisoned")?
-            .clone())
-    }
-}
-
-#[async_trait]
-impl P3aSink for RecordingP3aSink {
-    async fn submit(&self, report: P3aReport) -> Result<(), DomainError> {
-        self.reports
-            .lock()
-            .map_err(|_| DomainError::MeteringProvider)?
-            .push(report);
-        Ok(())
-    }
-}
-
-struct FakeTokenVerifier;
-
-#[async_trait]
-impl june_domain::TokenVerifier for FakeTokenVerifier {
-    async fn verify(&self, access_jwt: &str) -> Result<UserId, AuthError> {
-        if access_jwt == "valid-token" {
-            Ok(UserId("usr_test".to_string()))
-        } else {
-            Err(AuthError::InvalidToken)
-        }
-    }
-}
-
-struct FakeOsAccounts;
-
-#[async_trait]
-impl OsAccountsClient for FakeOsAccounts {
-    async fn authorize(&self, request: AuthorizeRequest) -> Result<Authorization, DomainError> {
-        Ok(Authorization {
-            allowed: true,
-            action_token: Some("agt_test".to_string()),
-            cap_credits: Some(request.estimate),
-            reason: None,
-        })
-    }
-
-    async fn charge(&self, _request: june_domain::ChargeRequest) -> Result<Receipt, DomainError> {
-        Ok(Receipt {
-            credits_charged: Credits(1),
-            idempotent_replay: false,
-        })
-    }
-}
-
-struct FakeDurationProbe;
-
-impl AudioDurationProbe for FakeDurationProbe {
-    fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
-        Ok(Duration::from_secs(1))
-    }
-}
-
-struct FakeTranscriber;
-
-#[async_trait]
-impl Transcriber for FakeTranscriber {
-    async fn transcribe(&self, request: TranscriptionRequest) -> Result<Transcript, DomainError> {
-        Ok(Transcript {
-            text: "Transcribed audio".to_string(),
-            language: request.language,
-            provider: "fake-transcriber".to_string(),
-        })
-    }
-}
-
-/// Mirrors Venice ASR: returns a real transcript but never a detected language,
 /// so the service layer must fill it in from the text.
 struct LanguagelessTranscriber;
 
@@ -2364,28 +2265,19 @@ impl Transcriber for LanguagelessTranscriber {
     }
 }
 
-struct FakeGenerator;
+#[derive(Default)]
+struct RecordingGenerator {
+    requests: Mutex<Vec<GenerationRequest>>,
+}
 
 #[async_trait]
-impl Generator for FakeGenerator {
+impl Generator for RecordingGenerator {
     async fn generate(&self, request: GenerationRequest) -> Result<GeneratedNote, DomainError> {
-        if request.transcript.contains("boom") {
-            return Err(DomainError::UpstreamProvider);
-        }
-        let content = if request.provider_credentials.has_venice_api_key() {
-            "Generated note body with user Venice key"
-        } else {
-            "Generated note body"
-        };
-        Ok(GeneratedNote {
-            content: content.to_string(),
-            title_suggestion: Some("Generated title".to_string()),
-            provider: "fake-generator".to_string(),
-            usage: TokenUsage {
-                prompt_tokens: 500,
-                completion_tokens: 500,
-            },
-        })
+        self.requests
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(request.clone());
+        FakeGenerator.generate(request).await
     }
 }
 
@@ -2399,175 +2291,32 @@ impl Generator for SlowGenerator {
     }
 }
 
-struct FakeCleaner;
-
-#[async_trait]
-impl Cleaner for FakeCleaner {
-    async fn cleanup(&self, _request: CleanupRequest) -> Result<CleanedText, DomainError> {
-        Ok(CleanedText {
-            text: "Cleaned dictation".to_string(),
-            provider: "fake-cleaner".to_string(),
-            usage: TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 100,
-            },
-        })
-    }
+#[derive(Default)]
+struct RecordingChatCompleter {
+    requests: Mutex<Vec<AgentChatRequest>>,
 }
 
-struct FakeChatCompleter;
-
 #[async_trait]
-impl AgentChatCompleter for FakeChatCompleter {
+impl AgentChatCompleter for RecordingChatCompleter {
     async fn complete(
         &self,
         request: AgentChatRequest,
     ) -> Result<AgentChatCompletion, DomainError> {
-        let id = if request.provider_credentials.has_venice_api_key() {
-            "chatcmpl_user_key"
-        } else {
-            "chatcmpl_test"
-        };
-        Ok(AgentChatCompletion {
-            body: format!(r#"{{"id":"{id}"}}"#).into_bytes(),
-            content_type: "application/json".to_string(),
-            provider: "fake-chat".to_string(),
-            usage: TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 100,
-            },
-        })
+        self.requests
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(request.clone());
+        FakeChatCompleter.complete(request).await
     }
 
     async fn complete_stream(
         &self,
-        _request: AgentChatRequest,
+        request: AgentChatRequest,
     ) -> Result<AgentChatStream, DomainError> {
-        let (chunks_tx, chunks_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (outcome_tx, outcome_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            let _ = chunks_tx.send(Ok(Vec::from(&b"data: {\"choices\":[]}\n\n"[..]).into()));
-            let _ = outcome_tx.send(AgentChatStreamOutcome::Usage(TokenUsage {
-                prompt_tokens: 100,
-                completion_tokens: 100,
-            }));
-        });
-        Ok(AgentChatStream {
-            content_type: "text/event-stream".to_string(),
-            provider: "fake-chat".to_string(),
-            chunks: chunks_rx,
-            outcome: outcome_rx,
-        })
-    }
-}
-
-struct FakeImageGenerator;
-
-#[async_trait]
-impl ImageGenerator for FakeImageGenerator {
-    async fn generate(
-        &self,
-        request: ImageGenerationRequest,
-    ) -> Result<GeneratedImage, DomainError> {
-        if request.prompt.contains("boom") {
-            return Err(DomainError::UpstreamProvider);
-        }
-        Ok(GeneratedImage {
-            image_base64: "aGVsbG8=".to_string(),
-            mime_type: "image/png".to_string(),
-            model: request.model.0,
-            provider: "fake-image".to_string(),
-        })
-    }
-}
-
-struct FakeImageEditor;
-
-#[async_trait]
-impl ImageEditor for FakeImageEditor {
-    async fn edit(&self, request: ImageEditRequest) -> Result<GeneratedImage, DomainError> {
-        if request.prompt.contains("boom") {
-            return Err(DomainError::UpstreamProvider);
-        }
-        Ok(GeneratedImage {
-            image_base64: "ZWRpdGVk".to_string(),
-            mime_type: "image/png".to_string(),
-            model: request.model.0,
-            provider: "fake-image".to_string(),
-        })
-    }
-}
-
-struct FakeVideoProvider;
-
-#[async_trait]
-impl VideoProvider for FakeVideoProvider {
-    async fn quote(&self, _request: VideoQuoteRequest) -> Result<f64, DomainError> {
-        Ok(0.11)
-    }
-
-    async fn queue(&self, request: VideoGenerationRequest) -> Result<VideoQueued, DomainError> {
-        if request.prompt.contains("boom") {
-            return Err(DomainError::UpstreamProvider);
-        }
-        Ok(VideoQueued {
-            venice_queue_id: "vq_boundary".to_string(),
-            download_url: None,
-        })
-    }
-
-    async fn queue_animation(
-        &self,
-        _request: VideoAnimationRequest,
-    ) -> Result<VideoQueued, DomainError> {
-        Ok(VideoQueued {
-            venice_queue_id: "vq_boundary_animate".to_string(),
-            download_url: None,
-        })
-    }
-
-    async fn retrieve(&self, _model: &str, _queue_id: &str) -> Result<VideoRetrieved, DomainError> {
-        Ok(VideoRetrieved::Processing {
-            average_execution_ms: 145_000,
-            execution_ms: 30_000,
-        })
-    }
-}
-
-struct FakeWebSearcher;
-
-#[async_trait]
-impl WebSearcher for FakeWebSearcher {
-    async fn search(&self, request: WebSearchRequest) -> Result<WebSearchResults, DomainError> {
-        Ok(WebSearchResults {
-            query: request.query,
-            provider: "brave".to_string(),
-            results: vec![WebSearchResult {
-                title: "Result one".to_string(),
-                url: "https://example.com/one".to_string(),
-                snippet: Some("A snippet.".to_string()),
-                published_at: Some("2026-01-01".to_string()),
-            }],
-        })
-    }
-}
-
-struct FakeWebFetcher;
-
-#[async_trait]
-impl WebFetcher for FakeWebFetcher {
-    async fn fetch(&self, request: WebFetchRequest) -> Result<WebFetchResult, DomainError> {
-        // Mirror Venice rejecting bot-walled sites with a deterministic error.
-        if request.url.contains("x.com") {
-            return Err(DomainError::InvalidInput {
-                reason: "web_fetch_unsupported_url".to_string(),
-            });
-        }
-        Ok(WebFetchResult {
-            url: request.url,
-            content: "# Heading\n\nBody.".to_string(),
-            format: "markdown".to_string(),
-            provider: "venice".to_string(),
-        })
+        self.requests
+            .lock()
+            .map_err(|_| DomainError::UpstreamProvider)?
+            .push(request.clone());
+        FakeChatCompleter.complete_stream(request).await
     }
 }

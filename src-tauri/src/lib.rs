@@ -2,6 +2,8 @@ pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
 pub mod commands;
+pub mod computer_use;
+mod computer_use_permission_drag;
 pub mod connectors;
 pub mod db;
 pub mod dictation;
@@ -14,6 +16,7 @@ pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
+pub mod notifications;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
@@ -116,6 +119,7 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(|app, event| {
@@ -160,6 +164,14 @@ pub fn run() {
             commands::create_dictionary_entry,
             commands::update_dictionary_entry,
             commands::delete_dictionary_entry,
+            commands::list_memories,
+            commands::create_memory,
+            commands::update_memory,
+            commands::delete_memory,
+            commands::set_folder_instructions,
+            commands::set_folder_memory_disabled,
+            commands::memory_settings,
+            commands::set_memory_enabled,
             commands::list_agent_tasks,
             commands::create_agent_task,
             commands::get_agent_task,
@@ -173,6 +185,17 @@ pub fn run() {
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,
+            commands::share_create,
+            commands::share_list,
+            commands::share_get,
+            commands::share_add_invites,
+            commands::share_revoke_invite,
+            commands::share_delete,
+            commands::share_key_save,
+            commands::share_key_get,
+            commands::share_invite_key_save,
+            commands::share_invite_keys_get,
+            commands::get_share_base_url,
             hermes_bridge::hermes_bridge_status,
             hermes_bridge::ensure_hermes_bridge_gateway,
             hermes_bridge::resolve_agent_recorder_request,
@@ -234,6 +257,7 @@ pub fn run() {
             commands::finish_recording,
             commands::retry_processing,
             commands::recover_recording,
+            dictation::dictation_capabilities,
             dictation::dictation_settings,
             dictation::list_dictation_history,
             dictation::delete_dictation_history_item,
@@ -258,6 +282,8 @@ pub fn run() {
             agent_hud::agent_hud_hide,
             agent_hud::agent_hud_set_layout,
             agent_hud::agent_hud_open_agent,
+            notifications::send_app_notification,
+            notifications::agent_open_ready,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,
@@ -286,6 +312,7 @@ pub fn run() {
             os_accounts::os_accounts_login,
             os_accounts::os_accounts_cancel_login,
             os_accounts::os_accounts_logout,
+            os_accounts::os_accounts_set_avatar_seed,
             os_accounts::os_accounts_upgrade,
             os_accounts::os_accounts_upgrade_session,
             os_accounts::os_accounts_change_plan,
@@ -302,6 +329,8 @@ pub fn run() {
             connectors::github_commands::github_installations_refresh,
             connectors::github_commands::github_installation_open,
             connectors::github_commands::github_disconnect,
+            connectors::commands::connectors_linear_teams,
+            connectors::commands::connectors_selected_teams_set,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,
@@ -312,13 +341,24 @@ pub fn run() {
             connectors::approvals::connector_approval_respond,
             connectors::approvals::connector_approvals_respond_all,
             hermes_bridge::connectors_apply_runtime,
+            computer_use::computer_use_status,
+            computer_use::set_computer_use_grant,
+            computer_use::computer_use_request_permissions,
+            computer_use_permission_drag::set_computer_use_permission_drag_bounds,
+            computer_use::computer_use_stop,
+            computer_use::computer_use_begin_run,
+            computer_use::computer_use_end_run,
+            computer_use::computer_use_approvals_pending,
+            computer_use::computer_use_approval_respond,
             updates::get_release_channel,
             updates::set_release_channel,
             updates::fetch_update,
             updates::install_update,
+            updates::relaunch_for_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
+        .manage(computer_use::ComputerUseState::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(connectors::ConnectFlow::default())
         .manage(connectors::github_auth::GitHubConnectFlow::default())
@@ -327,10 +367,12 @@ pub fn run() {
             menu_bar::setup(app)?;
             providers::setup(app);
             setup_video_asset_scope(app);
+            setup_computer_use_asset_scope(app);
             p3a::setup(app);
             updates::setup(app);
             dictation::setup(app);
             agent_hud::setup(app);
+            notifications::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
@@ -349,6 +391,7 @@ pub fn run() {
         .run(|app, event| match event {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);
+                tauri::async_runtime::block_on(computer_use::shutdown(app));
                 hermes_bridge::shutdown(app);
             }
             #[cfg(target_os = "macos")]
@@ -377,6 +420,25 @@ fn setup_video_asset_scope(app: &mut tauri::App) {
         .allow_directory(&videos_dir, false)
     {
         tracing::warn!(%error, path = %videos_dir.display(), "video asset scope: allow_directory failed");
+    }
+}
+
+fn setup_computer_use_asset_scope(app: &mut tauri::App) {
+    let captures_dir = match crate::app_paths::app_data_dir(app.handle()) {
+        Ok(data_dir) => data_dir
+            .join("hermes")
+            .join("computer-use")
+            .join("captures"),
+        Err(error) => {
+            tracing::warn!(%error, "computer use asset scope: could not resolve app data dir");
+            return;
+        }
+    };
+    if let Err(error) = app
+        .asset_protocol_scope()
+        .allow_directory(&captures_dir, false)
+    {
+        tracing::warn!(%error, path = %captures_dir.display(), "computer use asset scope: allow_directory failed");
     }
 }
 
@@ -674,6 +736,7 @@ extern "C-unwind" fn main_window_send_event(
     use objc2::msg_send;
 
     const NS_EVENT_TYPE_LEFT_MOUSE_DOWN: i64 = 1;
+    const NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED: i64 = 6;
 
     unsafe {
         let is_registered_main_window = MAIN_WINDOW_NS_WINDOW
@@ -690,6 +753,13 @@ extern "C-unwind" fn main_window_send_event(
                 && main_first_mouse_hits_recording_presence(this, event)
             {
                 emit_recording_presence_reopen();
+            }
+            if event_type == NS_EVENT_TYPE_LEFT_MOUSE_DRAGGED
+                && MAIN_WINDOW_APP
+                    .get()
+                    .is_some_and(|app| computer_use::begin_permission_drag(app, this, event))
+            {
+                return;
             }
         }
 

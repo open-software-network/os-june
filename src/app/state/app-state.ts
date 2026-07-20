@@ -29,6 +29,7 @@ export type NotesAction =
   | { type: "recordingSessionLost"; sessionId: string }
   | { type: "folderCreated"; folder: FolderDto }
   | { type: "folderRenamed"; folder: FolderDto }
+  | { type: "folderUpdated"; folder: FolderDto }
   | { type: "folderDeleted"; folderId: string }
   | { type: "folderSelected"; folderId?: string }
   | { type: "foldersLoaded"; folders: FolderDto[] }
@@ -100,6 +101,7 @@ export function notesReducer(state: NotesState, action: NotesAction): NotesState
         folders: sortFolders([...state.folders, action.folder]),
       };
     case "folderRenamed":
+    case "folderUpdated":
       return {
         ...state,
         folders: sortFolders(

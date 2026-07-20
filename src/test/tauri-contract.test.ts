@@ -65,16 +65,24 @@ describe("Tauri command contracts", () => {
 
   it("keeps retry and recovery commands authoritative", async () => {
     await retryProcessing("note-1");
+    await retryProcessing("note-1", "recording-2");
     await recoverRecording("session-1", "validate");
     await recoverRecording("session-2", "discard");
 
     expect(mocks.invoke).toHaveBeenNthCalledWith(1, "retry_processing", {
       request: { noteId: "note-1", step: "all" },
     });
-    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "recover_recording", {
-      request: { sessionId: "session-1", action: "validate" },
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "retry_processing", {
+      request: {
+        noteId: "note-1",
+        step: "all",
+        recordingSessionId: "recording-2",
+      },
     });
     expect(mocks.invoke).toHaveBeenNthCalledWith(3, "recover_recording", {
+      request: { sessionId: "session-1", action: "validate" },
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(4, "recover_recording", {
       request: { sessionId: "session-2", action: "discard" },
     });
   });

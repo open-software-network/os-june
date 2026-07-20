@@ -363,9 +363,9 @@ function resolveHermesPython(command: string, agentRoot: string): string {
 
 /**
  * The ordered binary locations the bridge probes, minus the env override (the
- * helper applies that). Mirrors `resolve_hermes_command` /
- * `bundled_hermes_command_candidates` / `user_local_hermes_command` closely
- * enough that a developer with any working June runtime can run the smoke test.
+ * helper applies that). The production bridge accepts only June-bundled or
+ * June-managed patched runtimes; this standalone developer smoke also probes
+ * common local install paths so it can be run before packaging.
  */
 function hermesCandidatePaths(): string[] {
   const windows = process.platform === "win32";
@@ -373,7 +373,7 @@ function hermesCandidatePaths(): string[] {
     windows ? join(root, "Scripts", "hermes.exe") : join(root, "bin", "hermes");
   const candidates: string[] = [];
   // Managed runtime under the worktree-local app data is not knowable here, so
-  // probe the user-local install locations the bridge falls back to.
+  // probe common developer-local install locations for this standalone smoke.
   const home = homedir();
   if (home) {
     candidates.push(venvBin(join(home, ".hermes", "hermes-agent", "venv")));

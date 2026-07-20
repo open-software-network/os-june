@@ -2,10 +2,12 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
+import { accountAvatarStyle } from "../components/account/AccountAvatar";
 import { beginMaxGrantWait, clearMaxGrantWait, markMaxGrantWaitSlow } from "../lib/max-upgrade";
 import type { AccountStatus, DictationSettingsDto } from "../lib/tauri";
 import { APP_COMMIT_HASH, APP_VERSION } from "../app/build-info";
 import { AGENT_HUD_ENABLED_KEY } from "../lib/agent-hud-settings";
+import { AGENT_SOUNDS_ENABLED_KEY } from "../lib/agent-sound-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
@@ -13,6 +15,7 @@ import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
 import { setStoredFontScale } from "../lib/font-scale";
 
 const mocks = vi.hoisted(() => ({
+  dictationCapabilities: vi.fn(),
   dictationSettings: vi.fn(),
   dictationHotkeyStatus: vi.fn(),
   dictationHelperCommand: vi.fn(),
@@ -41,6 +44,10 @@ const mocks = vi.hoisted(() => ({
   osAccountsUpgrade: vi.fn(),
   osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
+  osAccountsSetAvatarSeed: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastWarning: vi.fn(),
+  toastError: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeToolsets: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
@@ -74,6 +81,14 @@ vi.mock("../lib/updater", () => ({
   reconcileToStable: mocks.reconcileToStable,
 }));
 
+vi.mock("../components/ui/Toaster", () => ({
+  toast: {
+    success: mocks.toastSuccess,
+    warning: mocks.toastWarning,
+    error: mocks.toastError,
+  },
+}));
+
 // Pin a prerelease build so the leave-rc reconcile offer can be exercised; the
 // About meta rows read these same mocked constants.
 vi.mock("../app/build-info", () => ({
@@ -82,6 +97,7 @@ vi.mock("../app/build-info", () => ({
 }));
 
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: mocks.dictationCapabilities,
   JUNE_COMMUNITY_URL: "https://t.me/osjune",
   dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationSettings: mocks.dictationSettings,
@@ -111,6 +127,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsUpgrade: mocks.osAccountsUpgrade,
   osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
+  osAccountsSetAvatarSeed: mocks.osAccountsSetAvatarSeed,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
@@ -136,6 +153,20 @@ vi.mock("../lib/tauri", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
+
+// Enumerate storage the spec way (length + key(i)) rather than relying on
+// stored keys being own enumerable properties: portable across jsdom's
+// Storage, the setup.ts shim, and real browsers (see JUN-355).
+function storageKeys(): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key !== null) {
+      keys.push(key);
+    }
+  }
+  return keys;
+}
 
 const baseSettings: DictationSettingsDto = {
   pushToTalkShortcut: {
@@ -246,6 +277,17 @@ describe("AppSettings", () => {
     localStorage.clear();
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "macos",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: true,
+        systemAudio: true,
+      },
+    });
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.dictationHotkeyStatus.mockResolvedValue({
       type: "hotkey_trigger_ready",
@@ -487,6 +529,10 @@ describe("AppSettings", () => {
       plan: "max",
       status: "active",
     });
+    mocks.osAccountsSetAvatarSeed.mockImplementation(async (avatarSeed: string) => ({
+      ...signedInAccount.user,
+      avatarSeed,
+    }));
     mocks.agentHudShow.mockResolvedValue(undefined);
     mocks.agentHudHide.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
@@ -629,6 +675,11 @@ describe("AppSettings", () => {
       permissionsHeading.compareDocumentPosition(privacyHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(screen.getByText(/Anonymous counts of feature usage/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Choose whether June shares anonymous usage statistics with OpenSoftware. Off by default.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText("How usage statistics work")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
       "href",
@@ -645,6 +696,397 @@ describe("AppSettings", () => {
       await screen.findByText("Anonymous usage statistics are on for this device."),
     ).toBeInTheDocument();
     expect(screen.queryByText("2026-W28")).not.toBeInTheDocument();
+  });
+
+  it("refreshes and persists the account avatar from General settings", async () => {
+    const user = userEvent.setup();
+    const onAccountChanged = vi.fn();
+    const renderSettings = (account: AccountStatus = signedInAccount) =>
+      render(
+        <AppSettings
+          account={account}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={onAccountChanged}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+          activeTab="general"
+          onTabChange={vi.fn()}
+        />,
+      );
+
+    const { unmount } = renderSettings();
+    const avatar = document.querySelector(".account-avatar-preview");
+    const initialStyle = avatar?.getAttribute("style");
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    const refreshedStyle = avatar?.getAttribute("style");
+    expect(refreshedStyle).not.toBe(initialStyle);
+    const pendingStorageKey = storageKeys().find((key) =>
+      key.startsWith("june:account-avatar-pending:"),
+    );
+    expect(pendingStorageKey).toBeDefined();
+    const pendingRaw = pendingStorageKey ? localStorage.getItem(pendingStorageKey) : undefined;
+    const seed = pendingRaw ? (JSON.parse(pendingRaw) as { seed: string }).seed : undefined;
+    expect(seed).toMatch(/^v1:[0-9a-f]{32}$/);
+    expect(mocks.osAccountsSetAvatarSeed).toHaveBeenCalledWith(seed);
+    expect(onAccountChanged).toHaveBeenCalledWith({
+      ...signedInAccount,
+      user: { ...signedInAccount.user, avatarSeed: seed },
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Avatar updated everywhere");
+    unmount();
+
+    const { unmount: unmountSynced } = renderSettings({
+      ...signedInAccount,
+      user: { ...signedInAccount.user, avatarSeed: seed ?? undefined },
+    });
+    expect(document.querySelector(".account-avatar-preview")?.getAttribute("style")).toBe(
+      refreshedStyle,
+    );
+    await waitFor(() =>
+      expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(
+        false,
+      ),
+    );
+    unmountSynced();
+
+    renderSettings({
+      ...signedInAccount,
+      user: {
+        ...signedInAccount.user,
+        avatarSeed: "v1:ffffffffffffffffffffffffffffffff",
+      },
+    });
+    expect(document.querySelector(".account-avatar-preview")?.getAttribute("style")).not.toBe(
+      refreshedStyle,
+    );
+  });
+
+  it("waits for the signed-in User before offering Avatar refresh", () => {
+    render(
+      <AppSettings
+        account={{ ...signedInAccount, user: undefined }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("heading", { name: "Avatar" })).not.toBeInTheDocument();
+    expect(document.querySelector(".account-avatar-preview")).not.toBeInTheDocument();
+  });
+
+  it("keeps a refreshed avatar locally when an existing synced seed cannot update", async () => {
+    const user = userEvent.setup();
+    const accountWithRemoteSeed = {
+      ...signedInAccount,
+      user: {
+        ...signedInAccount.user,
+        avatarSeed: "v1:00000000000000000000000000000000",
+      },
+    };
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
+      code: "account_permission_required",
+      message: "Your current sign-in does not include this permission.",
+    });
+    const renderSettings = () =>
+      render(
+        <AppSettings
+          account={accountWithRemoteSeed}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+          activeTab="general"
+          onTabChange={vi.fn()}
+        />,
+      );
+
+    const { unmount } = renderSettings();
+    const avatar = document.querySelector(".account-avatar-preview");
+    const remoteStyle = avatar?.getAttribute("style");
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      "Avatar changed on this device, but it couldn't sync. Sign out and sign in again to update your account permissions.",
+    );
+    expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
+    expect(screen.queryByText(/account permissions/)).not.toBeInTheDocument();
+    expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(true);
+    const localStyle = avatar?.getAttribute("style");
+    expect(localStyle).not.toBe(remoteStyle);
+    unmount();
+
+    renderSettings();
+    expect(document.querySelector(".account-avatar-preview")?.getAttribute("style")).toBe(
+      localStyle,
+    );
+  });
+
+  it("warns when the OS Accounts environment cannot sync the locally refreshed avatar", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
+      code: "avatar_sync_unavailable",
+      message: "Synced avatars are not available on this OS Accounts deployment yet.",
+    });
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      "Avatar changed on this device, but syncing isn't available in this OS Accounts environment yet.",
+    );
+    expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+  });
+
+  it("uses the canonical default when a future Avatar version replaces a pending fallback", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
+      code: "account_permission_required",
+      message: "Your current sign-in does not include this permission.",
+    });
+    const settings = (account: AccountStatus) => (
+      <AppSettings
+        account={account}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(settings(signedInAccount));
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(true);
+
+    rerender(
+      settings({
+        ...signedInAccount,
+        user: { ...signedInAccount.user, avatarSeed: "v2:future" },
+      }),
+    );
+
+    const avatar = document.querySelector<HTMLElement>(".account-avatar-preview");
+    for (const [property, value] of Object.entries(accountAvatarStyle("v1:default:usr_123"))) {
+      expect(avatar?.style.getPropertyValue(property)).toBe(value);
+    }
+    await waitFor(() =>
+      expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(
+        false,
+      ),
+    );
+    expect(
+      screen.queryByText("This pattern is saved only on this device."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("clears a pending seed when a newer synced seed arrives from another device", async () => {
+    const user = userEvent.setup();
+    const accountWithRemoteSeed = {
+      ...signedInAccount,
+      user: {
+        ...signedInAccount.user,
+        avatarSeed: "v1:00000000000000000000000000000000",
+      },
+    };
+    // The sync fails, so the refreshed pattern stays pending against the
+    // account's current remote seed.
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
+      code: "account_permission_required",
+      message: "Your current sign-in does not include this permission.",
+    });
+    const settings = (account: AccountStatus) => (
+      <AppSettings
+        account={account}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(settings(accountWithRemoteSeed));
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(true);
+    expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
+
+    const newerRemote = {
+      ...signedInAccount,
+      user: {
+        ...signedInAccount.user,
+        avatarSeed: "v1:ffffffffffffffffffffffffffffffff",
+      },
+    };
+    rerender(settings(newerRemote));
+
+    const avatar = document.querySelector<HTMLElement>(".account-avatar-preview");
+    for (const [property, value] of Object.entries(
+      accountAvatarStyle("v1:ffffffffffffffffffffffffffffffff"),
+    )) {
+      expect(avatar?.style.getPropertyValue(property)).toBe(value);
+    }
+    await waitFor(() =>
+      expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(
+        false,
+      ),
+    );
+    expect(
+      screen.queryByText("This pattern is saved only on this device."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a local refresh made while the account uses a future Avatar version", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsSetAvatarSeed.mockRejectedValueOnce({
+      code: "account_permission_required",
+      message: "Your current sign-in does not include this permission.",
+    });
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          user: { ...signedInAccount.user, avatarSeed: "v2:future" },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />,
+    );
+    const avatar = document.querySelector(".account-avatar-preview");
+    const defaultStyle = avatar?.getAttribute("style");
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(avatar?.getAttribute("style")).not.toBe(defaultStyle);
+    expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
+    expect(mocks.toastWarning).toHaveBeenCalledWith(
+      "Avatar changed on this device, but it couldn't sync. Sign out and sign in again to update your account permissions.",
+    );
+  });
+
+  it("ignores an avatar response that lands after the account signs out", async () => {
+    const user = userEvent.setup();
+    const onAccountChanged = vi.fn();
+    let resolveAvatar: ((user: NonNullable<AccountStatus["user"]>) => void) | undefined;
+    mocks.osAccountsSetAvatarSeed.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveAvatar = resolve;
+      }),
+    );
+    const settings = (account: AccountStatus) => (
+      <AppSettings
+        account={account}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={onAccountChanged}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(settings(signedInAccount));
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeDisabled();
+    rerender(settings({ signedIn: false, configured: true }));
+    await act(async () => {
+      resolveAvatar?.({
+        ...signedInAccount.user,
+        avatarSeed: "v1:11111111111111111111111111111111",
+      });
+    });
+
+    expect(onAccountChanged).not.toHaveBeenCalled();
+  });
+
+  it("propagates a late avatar response to app state after settings unmounts", async () => {
+    const user = userEvent.setup();
+    const onAccountChanged = vi.fn();
+    let resolveAvatar: ((user: NonNullable<AccountStatus["user"]>) => void) | undefined;
+    mocks.osAccountsSetAvatarSeed.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveAvatar = resolve;
+      }),
+    );
+    const { unmount } = render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={onAccountChanged}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="general"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    unmount();
+    await act(async () => {
+      resolveAvatar?.({
+        ...signedInAccount.user,
+        avatarSeed: "v1:22222222222222222222222222222222",
+      });
+    });
+
+    // The App-level callback is safe post-unmount, so the synced seed still
+    // reaches app state; only the in-component toast stays behind the guard.
+    expect(onAccountChanged).toHaveBeenCalledWith({
+      ...signedInAccount,
+      user: { ...signedInAccount.user, avatarSeed: "v1:22222222222222222222222222222222" },
+    });
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
 
   it("shows usage remaining as a percentage instead of dollars", async () => {
@@ -1974,6 +2416,17 @@ describe("AppSettings", () => {
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "windows",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: false,
+        systemAudio: false,
+      },
+    });
     const onEnableMicrophone = vi.fn();
     const onEnableAccessibility = vi.fn();
     const onEnableSystemAudio = vi.fn();
@@ -2059,14 +2512,16 @@ describe("AppSettings", () => {
       );
       expect(onSourceModeChange).toHaveBeenCalledWith("microphonePlusSystem");
       expect(
-        screen.queryByRole("button", {
+        screen.getByRole("button", {
           name: "Start test",
         }),
-      ).not.toBeInTheDocument();
+      ).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole("tab", { name: "Shortcuts" }));
-      expect(screen.getByText("Dictation shortcuts unavailable")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+      expect(screen.getByText("Push to talk")).toBeInTheDocument();
+      expect(screen.getByText("Toggle dictation")).toBeInTheDocument();
+      expect(screen.queryByText("Dictation shortcuts unavailable")).not.toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Change" })).toHaveLength(2);
     } finally {
       restoreNavigator();
     }
@@ -2099,6 +2554,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -2141,6 +2597,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -2183,6 +2640,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "toggle",
         pressCount: 1,
       }),
     );
@@ -2248,6 +2706,7 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "start_shortcut_capture",
+        kind: "push_to_talk",
         pressCount: 1,
       }),
     );
@@ -3272,6 +3731,199 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("asks for a billing choice when a Venice key is saved while Auto is selected", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The save lands, but Auto would keep billing June credits, so the
+    // explicit choice dialog appears with the leading suggested Venice model.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "zai-org-glm-5-2"),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the billing choice dialog open when the model switch fails", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+    mocks.setVeniceModel.mockRejectedValueOnce(new Error("switch failed"));
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+
+    // The failed save must not read as a completed switch: the dialog stays
+    // open for a retry or an explicit Keep Auto.
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use GLM 5.2" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).toHaveBeenLastCalledWith("generation", "zai-org-glm-5-2");
+  });
+
+  it("keeps Auto when the billing choice dialog is declined", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+      },
+    });
+    mocks.setVeniceApiKey.mockResolvedValue({
+      ...buildProviderSettings(),
+      generationModel: "open-software/auto",
+      remoteGenerationModel: "open-software/auto",
+      veniceApiKeyConfigured: true,
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Auto does not use your Venice API key")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Keep Auto" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument(),
+    );
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
+  });
+
+  it("does not ask for a billing choice when a concrete model is selected", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Key saved.")).toBeInTheDocument();
+    expect(screen.queryByText("Auto does not use your Venice API key")).not.toBeInTheDocument();
+  });
+
+  it("shows the Auto billing note in the model picker while a Venice key is saved", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        veniceApiKeyConfigured: true,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(await screen.findByRole("button", { name: "Change text model" }));
+
+    expect(
+      await screen.findByText(
+        "Auto is billed to June credits and does not use your Venice API key.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(
@@ -3677,11 +4329,14 @@ describe("AppSettings", () => {
     // Files is its own settings group on the Agent tab now (no inner tabs).
     await user.click(screen.getByRole("tab", { name: "Agent" }));
 
-    expect(await screen.findByText("Workspace")).toBeInTheDocument();
-    expect(screen.getByText("Memory")).toBeInTheDocument();
-    expect(screen.getByText("sample.pdf")).toBeInTheDocument();
-    expect(screen.getByText("USER.md")).toBeInTheDocument();
-    expect(screen.queryByText("Logs")).toBeNull();
+    const panel = document.getElementById("settings-panel-agent");
+    expect(panel).not.toBeNull();
+    if (!panel) return;
+    expect(await within(panel).findByText("Workspace")).toBeInTheDocument();
+    expect(within(panel).getByText("Memory")).toBeInTheDocument();
+    expect(within(panel).getByText("sample.pdf")).toBeInTheDocument();
+    expect(within(panel).getByText("USER.md")).toBeInTheDocument();
+    expect(within(panel).queryByText("Logs")).toBeNull();
   });
 
   it("shows a refreshable messaging state when platform loading hangs", async () => {
@@ -3748,6 +4403,35 @@ describe("AppSettings", () => {
     await user.click(hudSwitch);
     expect(localStorage.getItem(AGENT_HUD_ENABLED_KEY)).toBe("true");
     expect(mocks.agentHudShow).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggles agent sounds from Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const soundsSwitch = await screen.findByRole("switch", {
+      name: "Play agent sounds",
+    });
+
+    expect(soundsSwitch).toHaveAttribute("aria-checked", "true");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("false");
+
+    await user.click(soundsSwitch);
+    expect(localStorage.getItem(AGENT_SOUNDS_ENABLED_KEY)).toBe("true");
   });
 
   it("edits June's character from Agent settings", async () => {

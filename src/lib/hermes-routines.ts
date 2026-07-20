@@ -5,10 +5,30 @@ import {
   hermesBridgeCronJobAction,
   hermesBridgeCronJobs,
   hermesBridgeStatus,
+  memorySettings,
   startHermesBridge,
   updateHermesBridgeCronJob,
   type HermesCronJobRecord,
 } from "./tauri";
+
+/** The native Hermes `memory` toolset. When the user turns Memory off, June
+ * must not compose it into a routine's explicit `enabled_toolsets` — those
+ * override `platform_toolsets.cron` (which the Rust side already gates), so a
+ * routine created/edited while Memory is off would otherwise still write
+ * Hermes' unscoped store. (Routines left on the sandboxed default carry no
+ * explicit list and are covered by the Rust gate; already-stored explicit
+ * lists are unaffected until re-saved.) */
+const NATIVE_MEMORY_TOOLSET = "memory";
+
+async function stripNativeMemoryIfDisabled(toolsets: string[]): Promise<string[]> {
+  if (!toolsets.includes(NATIVE_MEMORY_TOOLSET)) return toolsets;
+  const enabled = await memorySettings()
+    .then((settings) => settings.enabled)
+    // Fail closed for a privacy control: if the setting can't be read, do not
+    // grant the native memory toolset.
+    .catch(() => false);
+  return enabled ? toolsets : toolsets.filter((toolset) => toolset !== NATIVE_MEMORY_TOOLSET);
+}
 
 /** A Hermes cron job as the app works with it: the raw dashboard-API record
  * flattened to what the Routines surfaces read. Unlike the gateway's
@@ -57,7 +77,6 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "file",
   "code_execution",
   "web",
-  "browser",
   "vision",
   "tts",
   "skills",
@@ -66,21 +85,17 @@ export const UNRESTRICTED_ROUTINE_TOOLSETS = [
   "context_engine",
   "session_search",
   "delegation",
-  "computer_use",
 ];
 
 /** Toolsets that let a routine change the machine or act on it: their
  * presence in a job's override is what "Unrestricted" means for routines.
  * The sandboxed cron default contains none of them. */
-const MACHINE_TOOLSETS = new Set([
-  "terminal",
-  "file",
-  "code_execution",
-  "browser",
-  "computer_use",
-  "delegation",
-  "skills",
-]);
+const MACHINE_TOOLSETS = new Set(["terminal", "file", "code_execution", "delegation", "skills"]);
+const INTERACTIVE_ONLY_TOOLSETS = new Set(["computer_use", "june_computer_use"]);
+
+function routineToolsets(toolsets: string[]) {
+  return toolsets.filter((toolset) => !INTERACTIVE_ONLY_TOOLSETS.has(toolset.trim()));
+}
 
 /** Whether a routine can touch the machine when it fires. Derived from the
  * stored job rather than any UI state, so the badge reflects what the
@@ -170,9 +185,10 @@ export async function createRoutine(input: {
       schedule: input.schedule,
       name: input.name,
     });
-    const toolsets =
+    const requested =
       input.enabledToolsets ?? (input.unrestricted ? UNRESTRICTED_ROUTINE_TOOLSETS : undefined);
-    if (!toolsets) return routineFromRecord(created);
+    if (!requested) return routineFromRecord(created);
+    const toolsets = await stripNativeMemoryIfDisabled(routineToolsets(requested));
     const widened = await updateHermesBridgeCronJob(created.id, {
       enabled_toolsets: toolsets,
     });
@@ -208,9 +224,12 @@ export async function updateRoutine(jobId: string, updates: RoutineUpdates): Pro
   if (updates.schedule !== undefined) payload.schedule = updates.schedule;
   if (updates.prompt !== undefined) payload.prompt = updates.prompt;
   if (updates.enabledToolsets !== undefined) {
-    payload.enabled_toolsets = updates.enabledToolsets;
+    payload.enabled_toolsets =
+      updates.enabledToolsets === null
+        ? null
+        : await stripNativeMemoryIfDisabled(routineToolsets(updates.enabledToolsets));
   } else if (updates.unrestricted === true) {
-    payload.enabled_toolsets = UNRESTRICTED_ROUTINE_TOOLSETS;
+    payload.enabled_toolsets = await stripNativeMemoryIfDisabled(UNRESTRICTED_ROUTINE_TOOLSETS);
   } else if (updates.unrestricted === false) {
     payload.enabled_toolsets = null;
     payload.script = null;
@@ -250,11 +269,27 @@ export function removeRoutine(jobId: string) {
  * outcome. The mode line carries the user's per-routine sandbox choice:
  * sandboxed routines must NOT set enabled_toolsets (the cron platform gate
  * in config.yaml then applies), unrestricted ones set the explicit
- * override. */
-export function routineCreationPrompt(description: string, options?: { unrestricted?: boolean }) {
-  const mode = options?.unrestricted
-    ? `I chose to run this routine unrestricted. Create the job with enabled_toolsets set to exactly: ${UNRESTRICTED_ROUTINE_TOOLSETS.join(", ")}.`
-    : "I chose the sandboxed default for this routine. Do not set enabled_toolsets on the job: it then runs with the restricted cron toolset (web reading, vision, todo, memory, session search) and cannot use the terminal, change files, execute code, or drive a browser. Do not attach a script to the job either: cron scripts run as plain shell subprocesses outside that sandbox. If the task clearly needs any of this, stop and tell me it requires an unrestricted routine instead of creating it.";
+ * override.
+ *
+ * Async because the unrestricted branch strips the native `memory` toolset
+ * from the list it embeds when Memory is off — this describe path sends a
+ * direct agent prompt to the cronjob tool, so it bypasses createRoutine /
+ * updateRoutine and their `stripNativeMemoryIfDisabled` guard; without the
+ * strip here the explicit `enabled_toolsets` it dictates would override the
+ * gated `platform_toolsets.cron` and grant Hermes' unscoped store behind the
+ * global off switch. Fail-closed via the same helper. */
+export async function routineCreationPrompt(
+  description: string,
+  options?: { unrestricted?: boolean },
+): Promise<string> {
+  let mode: string;
+  if (options?.unrestricted) {
+    const toolsets = await stripNativeMemoryIfDisabled(UNRESTRICTED_ROUTINE_TOOLSETS);
+    mode = `I chose to run this routine unrestricted. Create the job with enabled_toolsets set to exactly: ${toolsets.join(", ")}.`;
+  } else {
+    mode =
+      "I chose the sandboxed default for this routine. Do not set enabled_toolsets on the job: it then runs with the restricted cron toolset (web reading, vision, todo, memory, session search) and cannot use the terminal, change files, execute code, or drive a browser. Do not attach a script to the job either: cron scripts run as plain shell subprocesses outside that sandbox. If the task clearly needs any of this, stop and tell me it requires an unrestricted routine instead of creating it.";
+  }
   return [
     "Set up a new routine (a scheduled cron job) for me using your cronjob tool.",
     `Here is what it should do: ${description.trim()}`,

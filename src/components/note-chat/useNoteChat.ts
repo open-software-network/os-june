@@ -11,6 +11,13 @@ import { isHermesFeatureSupported } from "../../lib/hermes-control-plane/compati
 import { HermesGatewayClient, isSessionBusyError } from "../../lib/hermes-gateway";
 import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
 import {
+  canAttributeUntaggedAgentRun,
+  cancelAgentRunMonitoring,
+  markAgentRunSucceeded,
+  startAgentRunMonitoring,
+} from "../../lib/agent-run-monitor";
+import { dispatchAgentSessionStatus } from "../../lib/agent-events";
+import {
   reserveHermesSessionDispatch,
   type HermesSessionDispatchReservation,
 } from "../../lib/hermes-session-dispatch-mutex";
@@ -93,6 +100,18 @@ const LIVE_EVENT_CAP = 200;
 let sharedGateway: HermesGatewayClient | null = null;
 let sharedGatewayConnecting: Promise<HermesGatewayClient> | null = null;
 const eventSubscribers = new Set<(event: JuneHermesEvent) => void>();
+
+function terminalAgentStatus(
+  event: JuneHermesEvent,
+): "completed" | "failed" | "cancelled" | undefined {
+  if (!isTerminalHermesEvent(event)) return undefined;
+  if (event.kind === "error") return "failed";
+  if (event.kind === "transcript") return event.failed ? "failed" : "completed";
+  if (event.kind !== "lifecycle") return undefined;
+  if (/(?:cancel|stop|interrupt|abort)/i.test(event.status)) return "cancelled";
+  if (/(?:fail|error|timeout)/i.test(event.status)) return "failed";
+  return "completed";
+}
 
 async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClient | null> {
   if (sharedGatewayConnecting) return sharedGatewayConnecting;
@@ -274,6 +293,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const [liveEvents, setLiveEvents] = useState<JuneHermesEvent[]>([]);
   const [pendingUserTurns, setPendingUserTurns] = useState<AgentChatTurn[]>([]);
   const [working, setWorking] = useState(false);
+  const workingRef = useRef(false);
   const [submissionPending, setSubmissionPending] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -305,6 +325,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   // double send (double-click, or Enter racing the send button) could both
   // pass the state-based check and each create a session / append a turn.
   const activeSubmissionRef = useRef<symbol>();
+  const stoppedRuntimeSessionIdRef = useRef<string>();
+  const stoppedRunRef = useRef(false);
   const liveEventsRef = useRef<JuneHermesEvent[]>([]);
   const pendingUserTurnsRef = useRef<AgentChatTurn[]>([]);
   liveEventsRef.current = liveEvents;
@@ -335,6 +357,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     setMessages([]);
     setLiveEvents([]);
     setPendingUserTurns([]);
+    workingRef.current = false;
     setWorking(false);
     setError(null);
     setModelSelection(rememberedSelection);
@@ -438,19 +461,52 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       // dropped (they can't be attributed to our transcript).
       if (eventRuntimeOrStoredSessionId && !matchesSession) return;
       if (!eventRuntimeOrStoredSessionId && !terminal) return;
+      if (
+        !eventRuntimeOrStoredSessionId &&
+        terminal &&
+        (!workingRef.current ||
+          !storedSessionIdRef.current ||
+          !canAttributeUntaggedAgentRun(storedSessionIdRef.current, false))
+      ) {
+        return;
+      }
       if (matchesSession) {
         setLiveEvents((current) => [...current, event].slice(-LIVE_EVENT_CAP));
       }
       if (terminal) {
+        workingRef.current = false;
         setWorking(false);
+        const currentStoredSessionId = storedSessionIdRef.current;
+        const stoppedByUser =
+          stoppedRunRef.current &&
+          (!eventRuntimeOrStoredSessionId ||
+            eventRuntimeOrStoredSessionId === stoppedRuntimeSessionIdRef.current);
         if (event.kind === "error") {
           setError(event.message);
         } else if (matchesSession) {
           void refreshTranscript();
         }
+        if (!currentStoredSessionId || stoppedByUser) return;
+        const terminalStatus = terminalAgentStatus(event);
+        if (terminalStatus === "completed") {
+          markAgentRunSucceeded(currentStoredSessionId);
+        } else if (terminalStatus) {
+          cancelAgentRunMonitoring(currentStoredSessionId);
+          dispatchAgentSessionStatus({
+            sessionId: currentStoredSessionId,
+            title: noteTitle.trim() || "Note chat",
+            status: terminalStatus,
+            summary:
+              terminalStatus === "cancelled"
+                ? "Stopped."
+                : event.kind === "error"
+                  ? event.message
+                  : "June stopped before replying.",
+          });
+        }
       }
     });
-  }, [refreshTranscript]);
+  }, [noteTitle, refreshTranscript]);
 
   const submit = useCallback(
     async (rawText: string, attachments: NoteChatAttachment[] = []): Promise<boolean> => {
@@ -500,6 +556,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         ],
       };
       setPendingUserTurns((current) => [...current, optimistic]);
+      workingRef.current = true;
       setWorking(true);
       try {
         const gateway = await connectGateway(true);
@@ -637,18 +694,40 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             session_id: runtimeSessionId,
             text: content,
           });
+          startAgentRunMonitoring({
+            storedSessionId: activeStoredSessionId,
+            runtimeSessionId,
+            title: noteTitle.trim() || "Note chat",
+            fullMode: false,
+            settlementHeld: false,
+          });
+          stoppedRuntimeSessionIdRef.current = undefined;
+          stoppedRunRef.current = false;
         });
         return submissionIsCurrent();
       } catch (err) {
         dispatchReservation?.cancel();
         if (submissionIsCurrent()) {
           setPendingUserTurns((current) => current.filter((turn) => turn !== optimistic));
+          workingRef.current = false;
           setWorking(false);
           setError(
             isSessionBusyError(err)
               ? "June is still working on the previous message."
               : messageFromError(err),
           );
+          if (!isSessionBusyError(err)) {
+            const currentStoredSessionId = storedSessionIdRef.current;
+            if (currentStoredSessionId) {
+              cancelAgentRunMonitoring(currentStoredSessionId);
+              dispatchAgentSessionStatus({
+                sessionId: currentStoredSessionId,
+                title: noteTitle.trim() || "Note chat",
+                status: "failed",
+                summary: messageFromError(err),
+              });
+            }
+          }
         }
         return false;
       } finally {
@@ -664,9 +743,22 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const stop = useCallback(() => {
     // Stopped is a UI-first state, mirroring the workspace: the moment the
     // user clicks, the turn reads as over; the interrupt follows best-effort.
+    workingRef.current = false;
     setWorking(false);
+    stoppedRunRef.current = true;
+    const storedSessionId = storedSessionIdRef.current;
+    if (storedSessionId) {
+      cancelAgentRunMonitoring(storedSessionId);
+      dispatchAgentSessionStatus({
+        sessionId: storedSessionId,
+        title: noteTitle.trim() || "Note chat",
+        status: "cancelled",
+        summary: "Stopped.",
+      });
+    }
     const runtimeSessionId = runtimeSessionIdRef.current;
     if (!runtimeSessionId) return;
+    stoppedRuntimeSessionIdRef.current = runtimeSessionId;
     void (async () => {
       try {
         const gateway = await connectGateway(false);
@@ -679,7 +771,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         void refreshTranscript();
       }
     })();
-  }, [refreshTranscript]);
+  }, [noteTitle, refreshTranscript]);
 
   const setSessionModel = useCallback((selection: SessionModelSelection) => {
     pendingModelSelectionRef.current = selection;
@@ -691,9 +783,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   }, []);
 
   const turns = useMemo(() => {
-    const built = buildHermesSessionChatTurns(messages, liveEvents);
-    if (!pendingUserTurns.length) return built;
-    return [...built, ...pendingUserTurns].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return buildHermesSessionChatTurns(messages, liveEvents, pendingUserTurns);
   }, [messages, liveEvents, pendingUserTurns]);
 
   return {

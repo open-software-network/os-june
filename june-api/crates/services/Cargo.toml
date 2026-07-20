@@ -11,6 +11,8 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
+base64.workspace = true
 bytes.workspace = true
 june-config.workspace = true
 june-domain.workspace = true

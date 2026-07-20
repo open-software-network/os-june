@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    begin_connect, disconnect, list_accounts, scopes::ScopeBundle, ConnectFlow, ConnectorAccount,
-    ConnectorAccountStatus,
+    begin_connect, begin_connect_linear, disconnect, linear, list_accounts, scopes::ScopeBundle,
+    ConnectFlow, ConnectorAccount, ConnectorAccountStatus, ConnectorProvider, SelectedTeamDto,
 };
 
 /// A routine earns autonomy only after this many completed approval-mode
@@ -36,11 +36,18 @@ pub async fn connectors_list(app: tauri::AppHandle) -> Result<Vec<ConnectorAccou
 #[serde(rename_all = "camelCase")]
 pub struct ConnectorsConnectRequest {
     /// Bundle names: "gmail_read" | "gmail_draft" | "gmail_send" |
-    /// "calendar_events".
+    /// "calendar_events" | "linear_read" | "linear_write". Every bundle must
+    /// belong to the requested provider.
     pub scopes: Vec<String>,
-    /// Existing account email for incremental scope escalation.
+    /// Existing account identity for a reconnect or incremental scope
+    /// escalation: the account EMAIL for Google, the ACCOUNT ID (workspace
+    /// id) for Linear.
     #[serde(default)]
     pub login_hint: Option<String>,
+    /// "google" | "linear". Absent means "google": the field predates
+    /// multi-provider support and older frontends never send it.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[tauri::command]
@@ -49,8 +56,20 @@ pub async fn connectors_connect(
     flow: tauri::State<'_, ConnectFlow>,
     request: ConnectorsConnectRequest,
 ) -> Result<ConnectorAccount, AppError> {
+    let provider = parse_provider(request.provider.as_deref())?;
     let bundles = parse_bundles(&request.scopes)?;
-    let account = begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await?;
+    validate_bundle_providers(&bundles, provider)?;
+    let account = match provider {
+        ConnectorProvider::Google => {
+            begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+        }
+        ConnectorProvider::Linear => {
+            begin_connect_linear(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+        }
+    };
+    if provider != ConnectorProvider::Google {
+        return Ok(account);
+    }
 
     // Re-mint autonomous grants for routines that still declare autonomous
     // trust. A prior disconnect deletes an account's grants but keeps the
@@ -61,6 +80,8 @@ pub async fn connectors_connect(
     // failure must not fail the connect, and each grant is recreated with the
     // token carried over when the tool set is unchanged, so this is a no-op for
     // routines that already hold valid grants (a plain scope escalation).
+    // Google-only: the grants are Gmail/Calendar autonomy, so a Linear connect
+    // never touches them.
     let repos = crate::commands::repositories(&app).await?;
     match repos.list_routine_trust_by_mode("autonomous").await {
         Ok(records) => {
@@ -100,6 +121,115 @@ pub async fn connectors_disconnect(
     request: ConnectorsDisconnectRequest,
 ) -> Result<(), AppError> {
     disconnect(&app, &request.account_id, request.revoke).await
+}
+
+// --- Linear teams --------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorsLinearTeamsRequest {
+    /// Linear account id (the workspace id).
+    pub account_id: String,
+}
+
+/// The workspace's teams for the selection UI, live from Linear. A rejected
+/// access token is force-refreshed once and the listing retried, matching
+/// the Google retry-once convention.
+#[tauri::command]
+pub async fn connectors_linear_teams(
+    app: tauri::AppHandle,
+    request: ConnectorsLinearTeamsRequest,
+) -> Result<LinearTeamsDto, AppError> {
+    let repos = crate::commands::repositories(&app).await?;
+    require_linear_account(&repos, &request.account_id).await?;
+    let token = super::linear_access_token(&app, &request.account_id).await?;
+    let listing = match linear::list_teams(&token).await {
+        Ok(listing) => listing,
+        Err(linear::LinearApiError::Unauthorized) => {
+            let token = super::force_refresh_linear_access_token(&app, &request.account_id).await?;
+            linear::list_teams(&token).await.map_err(AppError::from)?
+        }
+        Err(error) => return Err(error.into()),
+    };
+    Ok(LinearTeamsDto {
+        teams: listing
+            .teams
+            .into_iter()
+            .map(|team| SelectedTeamDto {
+                id: team.id,
+                key: team.key,
+                name: team.name,
+            })
+            .collect(),
+        truncated: listing.truncated,
+    })
+}
+
+/// The live team listing for the selection dialog. `truncated` means the
+/// pagination cap cut the listing short, so the UI must not present it as
+/// the complete team inventory.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinearTeamsDto {
+    pub teams: Vec<SelectedTeamDto>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectorsSelectedTeamsSetRequest {
+    /// Linear account id (the workspace id).
+    pub account_id: String,
+    /// The full desired team set; replaces the stored selection wholesale.
+    pub teams: Vec<SelectedTeamDto>,
+}
+
+/// Replace the account's selected-team set. The selection is June's own
+/// authorization boundary (Linear has no teams-scoped grant), so it must
+/// never be empty: an empty set would make every team query answer nothing
+/// while looking connected.
+#[tauri::command]
+pub async fn connectors_selected_teams_set(
+    app: tauri::AppHandle,
+    request: ConnectorsSelectedTeamsSetRequest,
+) -> Result<ConnectorAccount, AppError> {
+    let repos = crate::commands::repositories(&app).await?;
+    require_linear_account(&repos, &request.account_id).await?;
+    let teams = validate_selected_teams(&request.teams)?;
+    let records: Vec<crate::db::repositories::SelectedTeamRecord> = teams
+        .into_iter()
+        .map(|team| crate::db::repositories::SelectedTeamRecord {
+            team_id: team.id,
+            team_key: team.key,
+            team_name: team.name,
+        })
+        .collect();
+    repos
+        .set_selected_teams(&request.account_id, &records)
+        .await?;
+    super::emit_connectors_changed(&app);
+    let record = repos
+        .get_connector_account(&request.account_id)
+        .await?
+        .ok_or_else(linear_account_not_found)?;
+    super::account_dto(&repos, record).await
+}
+
+fn linear_account_not_found() -> AppError {
+    AppError::new(
+        "connector_account_not_found",
+        "That Linear workspace is not connected.",
+    )
+}
+
+/// The account must exist AND be a Linear row: a Google email passed as the
+/// account id must not pass the existence check and then hit Linear APIs.
+async fn require_linear_account(repos: &Repositories, account_id: &str) -> Result<(), AppError> {
+    let record = repos.get_connector_account(account_id).await?;
+    match record {
+        Some(record) if record.provider == ConnectorProvider::Linear.as_str() => Ok(()),
+        _ => Err(linear_account_not_found()),
+    }
 }
 
 // --- Routine trust modes -----------------------------------------------------
@@ -358,7 +488,13 @@ async fn first_connected_account_email(app: &tauri::AppHandle) -> String {
     match list_accounts(app).await {
         Ok(accounts) => accounts
             .into_iter()
-            .find(|account| account.status == ConnectorAccountStatus::Connected)
+            // Autonomy grants are Gmail/Calendar servers, so only a Google
+            // account can back them; a connected Linear workspace in the
+            // list must never leak its email into a Google grant.
+            .find(|account| {
+                account.provider == ConnectorProvider::Google
+                    && account.status == ConnectorAccountStatus::Connected
+            })
             .map(|account| account.email)
             .unwrap_or_default(),
         // Never fail the trust change on an account-enumeration hiccup; the
@@ -420,11 +556,16 @@ pub async fn connector_trigger_set(
 ) -> Result<ConnectorTriggerDto, AppError> {
     validate_trigger_kind(&request.kind)?;
     let repos = crate::commands::repositories(&app).await?;
-    if repos
+    // Triggers poll Gmail history and Calendar events, so the subscribed
+    // account must be a Google one: a Linear workspace id would pass a bare
+    // existence check and leave the routine silently never firing.
+    let is_google_account = repos
         .get_connector_account(&request.account_id)
         .await?
-        .is_none()
-    {
+        .is_some_and(|record| {
+            super::ConnectorProvider::from_db(&record.provider) == super::ConnectorProvider::Google
+        });
+    if !is_google_account {
         return Err(AppError::new(
             "connector_account_not_found",
             "That Google account is not connected.",
@@ -506,6 +647,78 @@ fn parse_bundles(names: &[String]) -> Result<Vec<ScopeBundle>, AppError> {
         .collect()
 }
 
+/// Parse the connect request's provider field. Absent means Google (the
+/// field predates multi-provider support); anything else must name a known
+/// provider exactly.
+fn parse_provider(value: Option<&str>) -> Result<ConnectorProvider, AppError> {
+    match value {
+        None => Ok(ConnectorProvider::Google),
+        Some(value) => match value.trim() {
+            "google" => Ok(ConnectorProvider::Google),
+            "linear" => Ok(ConnectorProvider::Linear),
+            _ => Err(AppError::new(
+                "connector_unknown_provider",
+                format!("Unknown connector provider \"{value}\"."),
+            )),
+        },
+    }
+}
+
+/// Every requested bundle must belong to the provider being connected: a
+/// mixed request would silently drop the foreign bundles' scopes from the
+/// consent screen while the caller believes they were granted.
+fn validate_bundle_providers(
+    bundles: &[ScopeBundle],
+    provider: ConnectorProvider,
+) -> Result<(), AppError> {
+    for bundle in bundles {
+        if bundle.provider() != provider {
+            return Err(AppError::new(
+                "connector_scope_provider_mismatch",
+                format!(
+                    "Scope bundle \"{}\" does not belong to the {} connector.",
+                    bundle.name(),
+                    provider.as_str()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a selected-teams payload: non-empty, every field non-blank
+/// (trimmed), deduplicated by team id preserving first-seen order. Returns
+/// the cleaned (trimmed, deduped) set to persist.
+fn validate_selected_teams(teams: &[SelectedTeamDto]) -> Result<Vec<SelectedTeamDto>, AppError> {
+    if teams.is_empty() {
+        return Err(AppError::new(
+            "connector_teams_required",
+            "Select at least one team.",
+        ));
+    }
+    let mut cleaned: Vec<SelectedTeamDto> = Vec::with_capacity(teams.len());
+    for team in teams {
+        let id = team.id.trim();
+        let key = team.key.trim();
+        let name = team.name.trim();
+        if id.is_empty() || key.is_empty() || name.is_empty() {
+            return Err(AppError::new(
+                "connector_teams_invalid",
+                "Team entries need an id, key, and name.",
+            ));
+        }
+        if cleaned.iter().any(|existing| existing.id == id) {
+            continue;
+        }
+        cleaned.push(SelectedTeamDto {
+            id: id.to_string(),
+            key: key.to_string(),
+            name: name.to_string(),
+        });
+    }
+    Ok(cleaned)
+}
+
 fn validate_trust_mode(mode: &str) -> Result<(), AppError> {
     if TRUST_MODES.contains(&mode) {
         Ok(())
@@ -549,6 +762,98 @@ mod tests {
         assert_eq!(error.code, "connector_unknown_scope_bundle");
         let error = parse_bundles(&[]).unwrap_err();
         assert_eq!(error.code, "connector_unknown_scope_bundle");
+    }
+
+    #[test]
+    fn provider_parsing_defaults_to_google_and_rejects_unknown() {
+        // Absent field: requests that predate multi-provider are Google.
+        assert_eq!(parse_provider(None).unwrap(), ConnectorProvider::Google);
+        assert_eq!(
+            parse_provider(Some("google")).unwrap(),
+            ConnectorProvider::Google
+        );
+        assert_eq!(
+            parse_provider(Some("linear")).unwrap(),
+            ConnectorProvider::Linear
+        );
+        let error = parse_provider(Some("jira")).unwrap_err();
+        assert_eq!(error.code, "connector_unknown_provider");
+        assert!(error.message.contains("\"jira\""));
+        assert_eq!(
+            parse_provider(Some("")).unwrap_err().code,
+            "connector_unknown_provider"
+        );
+    }
+
+    #[test]
+    fn bundle_provider_mismatch_is_rejected_both_ways() {
+        // A Google bundle cannot ride a Linear connect...
+        let error = validate_bundle_providers(
+            &[ScopeBundle::LinearRead, ScopeBundle::GmailRead],
+            ConnectorProvider::Linear,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "connector_scope_provider_mismatch");
+        assert!(error.message.contains("\"gmail_read\""));
+        assert!(error.message.contains("linear"));
+        // ...nor a Linear bundle a Google connect.
+        let error =
+            validate_bundle_providers(&[ScopeBundle::LinearWrite], ConnectorProvider::Google)
+                .unwrap_err();
+        assert_eq!(error.code, "connector_scope_provider_mismatch");
+        // Matching sets pass for both providers.
+        assert!(validate_bundle_providers(
+            &[ScopeBundle::GmailRead, ScopeBundle::CalendarEvents],
+            ConnectorProvider::Google
+        )
+        .is_ok());
+        assert!(validate_bundle_providers(
+            &[ScopeBundle::LinearRead, ScopeBundle::LinearWrite],
+            ConnectorProvider::Linear
+        )
+        .is_ok());
+    }
+
+    fn team(id: &str, key: &str, name: &str) -> SelectedTeamDto {
+        SelectedTeamDto {
+            id: id.to_string(),
+            key: key.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn selected_teams_payload_validation() {
+        // Empty set: the selection is June's authorization boundary and must
+        // never be cleared to nothing.
+        assert_eq!(
+            validate_selected_teams(&[]).unwrap_err().code,
+            "connector_teams_required"
+        );
+        // Blank fields (after trimming) are rejected.
+        for invalid in [
+            team(" ", "ENG", "Engineering"),
+            team("team-1", "", "Engineering"),
+            team("team-1", "ENG", "  "),
+        ] {
+            assert_eq!(
+                validate_selected_teams(&[invalid]).unwrap_err().code,
+                "connector_teams_invalid"
+            );
+        }
+        // Dedupe by id keeps the first entry and its order; fields come back
+        // trimmed.
+        let cleaned = validate_selected_teams(&[
+            team(" team-2 ", " DES ", " Design "),
+            team("team-1", "ENG", "Engineering"),
+            team("team-2", "DES2", "Design again"),
+        ])
+        .expect("valid payload");
+        assert_eq!(cleaned.len(), 2);
+        assert_eq!(cleaned[0].id, "team-2");
+        assert_eq!(cleaned[0].key, "DES");
+        assert_eq!(cleaned[0].name, "Design");
+        assert_eq!(cleaned[1].id, "team-1");
     }
 
     #[test]

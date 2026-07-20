@@ -38,6 +38,62 @@ On a bump, set the new version here, in the matrix constant, and in a new pin
 note (copy `docs/hermes-upstream-template.md` to
 `docs/hermes-upstream-v<version>.md`), then re-run `pnpm hermes:upgrade-check`.
 
+## June compatibility patch set
+
+The current pin also carries the checksum-gated `june-approval-memory-v13` patch set
+documented in `docs/hermes-upstream-v2026.6.19.md`. Its targeted-approval portion
+follows ADR 0025. On every pin bump:
+
+1. Check whether upstream now preserves MCP request identity, deduplicates one
+   still-pending logical elicitation across transport reconnects without
+   merging distinct same-transport requests, bounds unresolved approvals, targets
+   `approval.respond`, and retires timeout and disconnect fail closed.
+2. If upstream supplies the complete contract, remove the local patch and its
+   `PATCHSET` plumbing only after the protocol smoke passes against the new pin.
+3. Otherwise rebase `apply_june_patches.py` onto the exact new sources and seal
+   both upstream and patched SHA-256 values. Source drift must remain a hard
+   failure.
+4. Re-audit `agent.disabled_toolsets` propagation through the main desktop/TUI
+   agent constructor, the background and preview agent factories, and cron's
+   per-run agent construction. Confirm cron still layers the global disabled
+   list over each job's `enabled_toolsets`, and `model_tools.py` still subtracts
+   disabled toolsets after resolving enabled toolsets. Confirm the central
+   constructor turns a global Memory deny into its lifecycle gate so native
+   prompt memory and external provider prefetch/sync stay off. Seal the exact
+   scheduler and model-tool source hashes even when those files need no
+   transformation.
+5. Confirm every shared-`config.yaml` mutation reachable from June's runtime
+   and admin surfaces still funnels through `utils.atomic_yaml_write`, and
+   rebase June's cross-process writer-lock and stale-snapshot Memory-policy
+   preservation there. Exercise it on macOS and Windows because the
+   advisory-lock APIs differ.
+6. Confirm `image.attach_bytes` persists and queues image bytes against the
+   lightweight runtime session returned by `session.create` without waiting
+   for full Hermes initialization. Confirm `prompt.submit` atomically detaches
+   its image batch, failed Hermes initialization restores that batch ahead of
+   later image attachments for retry, prompt generations invalidate stale callbacks,
+   a separate reset epoch invalidates only pre-reset lazy builds, and a failed reset
+   restores both ownership values. Confirm slow Hermes construction does not hold
+   the image queue lock, publication and reset share a separate mutex, session-map
+   setup never acquires its lock while holding the image queue lock, successful
+   reset clears obsolete initialization errors, and a successful prompt consumes
+   its batch exactly once. Exercise these invariants against a new runtime session
+   in the compatibility smoke.
+7. Build both macOS and Windows bundles. Confirm both packaging paths apply the
+   same patch, stamp the patch set, verify it after relocation, and run
+   `scripts/hermes-approval-patch-smoke.py`.
+8. Confirm managed installs record the new commit and patch set independently
+   and verify patched source hashes before launch. Confirm production cannot
+   fall back to an unpatched user-local or `PATH` runtime.
+9. Confirm both the Rust and Python atomic writers preserve a symlinked
+   `config.yaml` target and its security metadata. On macOS this includes ACLs;
+   on Windows the replacement must retain the destination security descriptor.
+   Confirm the macOS Seatbelt profile grants only the resolved target and its
+   atomic-temp prefix when the symlink points outside the normal write roots.
+
+Never carry the old post-patch hashes onto a new pin, patch only one platform,
+or treat a UI deduplication filter as a replacement for the runtime protocol.
+
 ## Runtime start command
 
 Confirm June still launches the new build the same way (the smoke test asserts
@@ -71,6 +127,13 @@ url, status url, request/response framing, binary discovery) are pinned as pure
 helpers in `src/lib/hermes-smoke/helpers.ts` and unit-tested in
 `src/test/hermes-smoke.test.ts`. Run `pnpm test` to catch a framing change, and
 `pnpm test:hermes-smoke` to catch a behavior change against the live runtime.
+
+Recheck the targeted approval extension at the same time: `approval.request`
+must carry a stable `request_id`; `approval.respond` with that id must resolve
+exactly one request; `approval.response` and `approval.expire` must reference
+the same id. A missing or malformed id must not fall back to an actionable
+approval. Re-run the reconnect-retry, same-transport concurrency, disconnect
+drain, non-MCP command approval, alias-bound, and tombstone-bound smoke cases.
 
 ## New methods/events (gateway method + event catalog diff)
 

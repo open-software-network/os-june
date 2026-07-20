@@ -97,6 +97,7 @@ export function ModelPickerPopover({
   ariaLabel = `Choose ${modelModeLabel(mode)} model`,
   suggestedListLabel = `Suggested ${modelModeLabel(mode)} models`,
   allModelsLabel = `All ${modelModeLabel(mode)} models`,
+  veniceApiKeyConfigured = false,
   onFlyoutChange,
   onSearchChange,
   onSelect,
@@ -115,6 +116,11 @@ export function ModelPickerPopover({
   ariaLabel?: string;
   suggestedListLabel?: string;
   allModelsLabel?: string;
+  /** With a Venice API key saved, the pinned Auto section carries a billing
+   * note: Auto is a June-managed route, so it meters June credits and never
+   * uses the key. The note keeps that visible at the moment Auto could be
+   * switched on (JUN-329). */
+  veniceApiKeyConfigured?: boolean;
   onFlyoutChange: (flyout: ModelPickerFlyout) => void;
   onSearchChange: (value: string) => void;
   /** `keepOpen` asks the host to leave the popover mounted (used by the Auto
@@ -528,6 +534,11 @@ export function ModelPickerPopover({
               aria-label="Choose the model automatically"
             />
           </div>
+          {veniceApiKeyConfigured ? (
+            <p className="agent-composer-model-auto-note">
+              Auto is billed to June credits and does not use your Venice API key.
+            </p>
+          ) : null}
           {autoEnabled ? (
             <button
               type="button"

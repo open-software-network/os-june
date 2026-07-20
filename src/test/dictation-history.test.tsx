@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   listDictationHistory: vi.fn(),
   deleteDictationHistoryItem: vi.fn(),
   dictationSettings: vi.fn(),
+  dictationCapabilities: vi.fn(),
   listDictionaryEntries: vi.fn(),
   listen: vi.fn(),
   writeText: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock("../lib/tauri", () => ({
   listDictationHistory: mocks.listDictationHistory,
   deleteDictationHistoryItem: mocks.deleteDictationHistoryItem,
   dictationSettings: mocks.dictationSettings,
+  dictationCapabilities: mocks.dictationCapabilities,
   listDictionaryEntries: mocks.listDictionaryEntries,
 }));
 
@@ -56,6 +58,17 @@ describe("DictationHistoryView", () => {
     mocks.writeText.mockResolvedValue(undefined);
     mocks.deleteDictationHistoryItem.mockResolvedValue(undefined);
     mocks.listDictionaryEntries.mockResolvedValue([]);
+    mocks.dictationCapabilities.mockResolvedValue({
+      capabilities: {
+        available: true,
+        platform: "macos",
+        shortcuts: true,
+        paste: true,
+        microphoneSelection: true,
+        accessibilityPermission: true,
+        systemAudio: true,
+      },
+    });
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -105,7 +118,6 @@ describe("DictationHistoryView", () => {
   });
 
   it("renders recent dictations and copies with trailing space", async () => {
-    const user = userEvent.setup();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: mocks.writeText },
@@ -117,16 +129,138 @@ describe("DictationHistoryView", () => {
     expect(screen.getByText("Hands-free")).toBeInTheDocument();
     expect(screen.getByLabelText("Shortcut Ctrl+Opt+T")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Copy" }));
-    await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
+    const copyButton = screen.getByRole("button", { name: "Copy" });
+    const iconSwap = copyButton.querySelector(".t-icon-swap");
+    expect(iconSwap).toHaveAttribute("data-state", "a");
+    expect(iconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+    expect(iconSwap?.querySelector('[data-icon="a"]')).not.toBeNull();
+    expect(iconSwap?.querySelector('[data-icon="b"]')).not.toBeNull();
+
+    copyButton.focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Copy");
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. ");
+      expect(copyButton).toHaveAccessibleName("Copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+
+      act(() => vi.advanceTimersByTime(1200));
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+      expect(mocks.writeText).toHaveBeenCalledTimes(2);
+
+      act(() => vi.advanceTimersByTime(401));
+      expect(copyButton).toHaveAccessibleName("Copied");
+      expect(iconSwap).toHaveAttribute("data-state", "b");
+
+      act(() => vi.advanceTimersByTime(1199));
+      expect(copyButton).toHaveAccessibleName("Copy");
+      expect(iconSwap).toHaveAttribute("data-state", "a");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("does not advertise shortcut dictation on Windows", async () => {
+  it("keeps dialog copy feedback inside a fixed button footprint", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: mocks.writeText },
+    });
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(48);
+    const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(24);
+
+    try {
+      render(<DictationHistoryView />);
+
+      const transcript = await screen.findByRole("button", { name: "Show full transcript" });
+      const row = transcript.closest("li");
+      expect(row).not.toBeNull();
+      const rowCopyButton = within(row as HTMLElement).getByRole("button", { name: "Copy" });
+      const rowIconSwap = rowCopyButton.querySelector(".t-icon-swap");
+
+      await user.click(transcript);
+      const dialog = screen.getByRole("dialog");
+      const dialogCopyButton = within(dialog).getByRole("button", { name: "Copy" });
+      const dialogIconSwap = dialogCopyButton.querySelector(".t-icon-swap");
+
+      expect(dialogCopyButton).toHaveTextContent(/^Copy$/);
+      expect(dialogIconSwap).toHaveAttribute("data-state", "a");
+      expect(dialogIconSwap?.querySelectorAll(".t-icon")).toHaveLength(2);
+      expect(dialogIconSwap?.querySelector('[data-icon="a"]')).not.toBeNull();
+      expect(dialogIconSwap?.querySelector('[data-icon="b"]')).not.toBeNull();
+
+      dialogCopyButton.focus();
+      expect(await screen.findByRole("tooltip")).toHaveTextContent("Copy");
+
+      await user.click(dialogCopyButton);
+      await waitFor(() => expect(mocks.writeText).toHaveBeenCalledWith("Send the follow up. "));
+      expect(dialogCopyButton).toHaveAccessibleName("Copied");
+      expect(dialogCopyButton).toHaveTextContent(/^Copy$/);
+      expect(dialogIconSwap).toHaveAttribute("data-state", "b");
+      expect(rowIconSwap).toHaveAttribute("data-state", "b");
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+    } finally {
+      scrollHeight.mockRestore();
+      clientHeight.mockRestore();
+    }
+  });
+
+  it("advertises shortcut dictation on Windows", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
     try {
+      mocks.dictationCapabilities.mockResolvedValue({
+        capabilities: {
+          available: true,
+          platform: "windows",
+          shortcuts: true,
+          paste: true,
+          microphoneSelection: true,
+          accessibilityPermission: false,
+          systemAudio: false,
+        },
+      });
+      mocks.dictationSettings.mockResolvedValue({
+        settings: {
+          pushToTalkShortcut: {
+            code: "KeyD",
+            label: "Ctrl+Alt+D",
+            pressCount: 1,
+            modifiers: {
+              command: false,
+              control: true,
+              option: true,
+              shift: false,
+              function: false,
+            },
+          },
+          toggleShortcut: {
+            code: "KeyT",
+            label: "Ctrl+Alt+T",
+            pressCount: 1,
+            modifiers: {
+              command: false,
+              control: true,
+              option: true,
+              shift: false,
+              function: false,
+            },
+          },
+          microphone: {},
+          style: "standard",
+        },
+      });
       mocks.listDictationHistory.mockResolvedValue({
         retentionDays: 7,
         items: [],
@@ -134,12 +268,14 @@ describe("DictationHistoryView", () => {
 
       render(<DictationHistoryView />);
 
-      expect(await screen.findByText("Dictation is only supported on macOS")).toBeInTheDocument();
+      expect(await screen.findByText("Start dictating anywhere")).toBeInTheDocument();
       expect(
-        screen.getByText("Meeting notes still work with microphone recording on this device."),
+        screen.getByText(
+          "Place your cursor in any app, hold the shortcut, and speak. Your words are transcribed and pasted right where you're typing.",
+        ),
       ).toBeInTheDocument();
-      expect(screen.queryByLabelText("Dictation shortcuts")).toBeNull();
-      expect(screen.queryByText("Start dictating anywhere")).toBeNull();
+      expect(screen.getByLabelText("Shortcut Ctrl+Alt+D")).toBeInTheDocument();
+      expect(screen.getByLabelText("Shortcut Ctrl+Alt+T")).toBeInTheDocument();
     } finally {
       restoreNavigator();
     }

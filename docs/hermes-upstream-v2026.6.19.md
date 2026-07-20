@@ -7,6 +7,88 @@
 - Archive checksum: `7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc`
 - Upstream changelog: `https://github.com/NousResearch/hermes-agent/compare/v2026.6.5...v2026.6.19`
 
+## June compatibility patch
+
+The upstream pin remains unchanged. June applies the deterministic
+`june-approval-memory-v13` patch set before building the bundled runtime and before
+finishing a managed runtime install. See
+[ADR 0025](adr/0025-targeted-hermes-approval-protocol.md).
+
+The patch preserves MCP `RequestContext.request_id`, derives an opaque stable
+approval id, and coalesces a still-pending logical request retried after an MCP
+transport reconnect without merging separate requests on one live transport.
+It bounds queue entries, reconnect aliases, completed requests, and completed
+sessions; adds targeted `approval.respond`; and emits targeted
+`approval.expire` events on timeout and disconnect. Missing identity, malformed
+responses, notification failure, queue overflow, timeout, and disconnect fail
+closed. Existing command/code approvals derive targeted identity from their
+turn/tool-call context, so non-MCP approval behavior is preserved.
+
+The same sealed patch also passes `agent.disabled_toolsets` into the
+desktop/TUI `AIAgent` constructor and every background agent factory. The
+pinned gateway already loads the agent config but omitted it from those agent
+arguments, unlike the classic CLI and cron paths. This narrow compatibility
+patch makes June's global native-memory deny apply to interactive, background,
+and preview desktop sessions without changing the upstream pin.
+The central `AIAgent` constructor also resolves the global deny itself and uses
+Hermes' existing `skip_memory` gate, so native prompt injection and external
+memory provider prefetch/sync are disabled across every construction path.
+That resolution intentionally re-reads `config.yaml` once per construction,
+even when the caller already supplies `disabled_toolsets`: constructor
+arguments or an in-process cache can predate a Memory toggle, while the file is
+the cross-process authority updated by June. Do not cache this read without a
+new invalidation contract that also covers the gateway-only runtime.
+
+The patch also lets `image.attach_bytes` persist and queue image bytes against
+the lightweight runtime session returned by `session.create`. Byte persistence
+does not wait for full Hermes initialization, so the first image in a new
+session cannot hit the initialization timeout before `prompt.submit` starts the
+agent run. `prompt.submit` atomically detaches the submitted image batch under
+the session lock. If Hermes initialization later fails, that batch is restored
+ahead of concurrent image attachments so retry preserves the client-visible
+attachment state and original order. Each accepted prompt owns a generation that
+prevents stale callbacks from restoring pre-reset images or clearing newer prompt
+state. Lazy Hermes builds use a separate reset epoch, so ordinary prompt acceptance
+does not suppress the only build. Slow construction stays outside the image queue
+lock. A separate publication lock serializes the Hermes instance and slash worker
+swap with reset, and the image queue lock is released before session-map setup to
+preserve teardown lock order. Reset invalidates pre-reset builds, and a failed reset
+restores both ownership values so the waiting prompt can recover. A successful reset
+clears any obsolete lazy-build error, and a successful prompt consumes its detached
+batch exactly once.
+
+The patch also coordinates Hermes' central atomic YAML writer with June's Rust
+config writer through an OS advisory lock. Before any stale Hermes snapshot is
+saved, it re-reads the current file and carries forward the current membership
+of `memory` in `agent.disabled_toolsets`. This preserves both the latest Memory
+policy and the unrelated fields in the writer's pending update across process
+boundaries. The Telegram DM-topic persistence path is also transformed to call
+that central writer instead of replacing `config.yaml` independently, as is
+the desktop/TUI JSON-RPC config writer.
+
+The patcher in `src-tauri/src/hermes/apply_june_patches.py` accepts only these
+exact source states:
+
+| File | Upstream SHA-256 | Patched SHA-256 |
+| --- | --- | --- |
+| `agent/agent_init.py` | `7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b` | `58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e` |
+| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d` |
+| `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `f375627e61af5e61434592d4d17d39c20e7ba1a7e1280715b0e5a7387a0f26a1` |
+| `cron/scheduler.py` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` |
+| `model_tools.py` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` |
+| `utils.py` | `572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c` | `08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5` |
+| `gateway/platforms/telegram.py` | `3943dc748827f81bf4e40a2a6711e4dfb6f65304bff552474ffbc23fd91e23a6` | `fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318` |
+
+Both macOS and Windows bundlers apply the same patch, write `PATCHSET`, verify
+the patched hashes after relocation, and run
+`scripts/hermes-approval-patch-smoke.py`. Managed installs record the upstream
+commit and patch set separately in `runtime.json`; the bridge verifies the
+patched source hashes before launch.
+The scheduler and model-tool files are unchanged, but their exact hashes are
+sealed too because their deny-over-allow precedence is part of the policy
+contract.
+
 ## Compatibility checked
 
 June still starts Hermes through:
@@ -101,15 +183,23 @@ Two phases, gated independently:
   (4009 busy is retried, but only acceptance passes), `session.interrupt`. A local
   `/v1/models` stub validates a switch from the configured model to an alternate
   listed model; no model tokens are spent.
+- Compatibility patch smoke (during macOS and Windows bundle self-test):
+  deterministic source-state verification, Memory deny propagation and writer
+  coordination, duplicate delivery, distinct concurrent requests, targeted
+  approval and denial, replay, timeout, malformed identity, bounded overflow,
+  disconnect drain, and immediate image-byte attachment to a new runtime
+  session.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.
 
 Environment variables:
 
-- `JUNE_HERMES_COMMAND`: absolute path to a `hermes` binary. Highest priority
-  (mirrors the Rust override). When unset, the script probes the same
-  user-local venv locations the bridge falls back to.
+- `JUNE_HERMES_COMMAND`: explicit development override for an absolute path to
+  a `hermes` binary. Production resolution otherwise accepts only a verified
+  June-bundled or June-managed runtime and fails closed instead of using an
+  unpatched user-local or `PATH` fallback. The standalone smoke still probes
+  common developer-local installs when the override is unset.
 - `HERMES_SMOKE_MODEL=1`: also run the model-costing `prompt.submit` phase.
 - `HERMES_SMOKE_TIMEOUT_MS`: per-step RPC timeout (default 120000).
 - `HERMES_SMOKE_READY_MS`: readiness-wait budget (default 45000, matches the

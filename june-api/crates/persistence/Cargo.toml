@@ -1,0 +1,18 @@
+[package]
+name = "june-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+june-domain = { workspace = true }
+
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

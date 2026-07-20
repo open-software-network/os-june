@@ -20,6 +20,15 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+// Stand in for the real brand-mark SVGs with a provider-tagged marker so a
+// test can assert which provider mark rendered without depending on the
+// central-icons SVG internals.
+vi.mock("../components/connectors/ConnectorProviderIcon", () => ({
+  ConnectorProviderIcon: ({ provider }: { provider: string }) => (
+    <span data-testid={`provider-icon-${provider}`} />
+  ),
+}));
+
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
 
 function approval(overrides: Record<string, unknown> = {}) {
@@ -60,6 +69,26 @@ describe("ConnectorApprovalsTray", () => {
     expect(screen.getByText(/Send email/)).toBeInTheDocument();
     expect(screen.getByText(/jo@example.com/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Approvals needed/ })).toBeInTheDocument();
+  });
+
+  it("renders a parked Linear action with its label and provider mark", async () => {
+    tauriMocks.connectorApprovalsPending.mockResolvedValue([
+      approval({
+        approvalId: "l1",
+        tool: "create_issue",
+        server: "june_linear_actions",
+        accountEmail: "acme.linear.app",
+        summary: "Create issue in ENG",
+        argsPreview: "Title: Fix onboarding redirect",
+      }),
+    ]);
+    render(<ConnectorApprovalsTray />);
+    expect(await screen.findByText("Create issue in ENG")).toBeInTheDocument();
+    expect(screen.getByText(/Create issues/)).toBeInTheDocument();
+    expect(screen.getByText(/acme\.linear\.app/)).toBeInTheDocument();
+    // One mark in the header's provider stack, one on the row itself.
+    expect(screen.getAllByTestId("provider-icon-linear").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("provider-icon-google")).toBeNull();
   });
 
   it("collapses to a header line with the count and re-expands", async () => {

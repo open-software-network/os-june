@@ -125,6 +125,7 @@ jobs:
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          PRODUCTION_LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
         run: |
           $missing = 0
           $required = @(
@@ -138,7 +139,8 @@ jobs:
             "PRODUCTION_OS_ACCOUNTS_CLIENT_ID",
             "PRODUCTION_GOOGLE_OAUTH_CLIENT_ID",
             "PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET",
-            "PRODUCTION_JUNE_API_URL"
+            "PRODUCTION_JUNE_API_URL",
+            "PRODUCTION_LINEAR_OAUTH_CLIENT_ID"
           )
 
           foreach ($name in $required) {
@@ -228,6 +230,7 @@ jobs:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
           # Match macOS: new installs start in Auto at Higher Quality.
           OS_JUNE_AUTO_MODE_DEFAULT: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -275,9 +278,9 @@ jobs:
               throw "NSIS installer payload does not include $expected."
             }
           }
-          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml")) {
+          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml", "native/bin/june-dictation-helper.exe")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
-              throw "NSIS installer payload does not include bundled Hermes file $expected."
+              throw "NSIS installer payload does not include bundled file $expected."
             }
           }
 

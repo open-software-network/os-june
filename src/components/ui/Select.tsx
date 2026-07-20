@@ -287,14 +287,14 @@ export function Select({
                     aria-hidden
                   />
                 ) : null}
-                <span className="select-label">
-                  {option.label}
+                <span className="select-label">{option.label}</span>
+                <span className="select-trailing">
+                  <span className="select-check" aria-hidden>
+                    {isSelected ? <IconCheckmark2Small size={14} /> : null}
+                  </span>
                   {typeof option.count === "number" ? (
                     <span className="status-pill select-count">{option.count}</span>
                   ) : null}
-                </span>
-                <span className="select-check" aria-hidden>
-                  {isSelected ? <IconCheckmark2Small size={14} /> : null}
                 </span>
               </button>
             </li>

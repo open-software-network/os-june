@@ -113,6 +113,7 @@ jobs:
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          PRODUCTION_LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
         run: |
           set -euo pipefail
           missing=0
@@ -131,7 +132,8 @@ jobs:
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
             PRODUCTION_GOOGLE_OAUTH_CLIENT_ID \
             PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET \
-            PRODUCTION_JUNE_API_URL
+            PRODUCTION_JUNE_API_URL \
+            PRODUCTION_LINEAR_OAUTH_CLIENT_ID
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required for an rc auto-update release."
@@ -199,10 +201,18 @@ jobs:
           dir="$RUNNER_TEMP/rc-guard"
           rm -rf "$dir"
           mkdir -p "$dir"
-          if gh release view rc --repo open-software-network/os-june-releases >/dev/null 2>&1; then
+          lookup_error=""
+          if lookup_error=$(gh api --silent \
+            repos/open-software-network/os-june-releases/releases/tags/rc 2>&1); then
             gh release download rc \
               --repo open-software-network/os-june-releases \
               --pattern "rc-build.json" --dir "$dir"
+          elif grep -q 'HTTP 404' <<< "$lookup_error"; then
+            echo "No existing rc release was found."
+          else
+            echo "::error::Could not determine the current rc release; refusing to publish without the forward-only guard."
+            printf '%s\n' "$lookup_error" >&2
+            exit 1
           fi
           RC_GUARD_DIR="$dir" node --input-type=module <<'NODE'
           import { existsSync, readFileSync } from "node:fs";
@@ -289,12 +299,16 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .tauri-hermes/hermes
-          key: hermes-bundle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'src-tauri/src/hermes_bridge.rs') }}
+          # v2 is the dual-runtime layout. Never restore a host-only v1 cache.
+          key: hermes-bundle-macos-universal-v2-${{ runner.os }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'scripts/audit-hermes-runtime.sh', 'scripts/hermes-native-import-smoke.py', 'src-tauri/src/hermes_bridge.rs', 'src-tauri/src/hermes/apply_june_patches.py', 'src-tauri/src/hermes/sitecustomize.py') }}
 
       - name: Bundle Hermes runtime into app resources
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: ./scripts/bundle-hermes-runtime.sh
+
+      - name: Prepare universal Computer use helper
+        run: pnpm computer-use:prepare -- --release --target universal-apple-darwin
 
       - name: Build and sign rc app artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
@@ -311,6 +325,7 @@ jobs:
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
           # New installs start in Auto at its default Higher Quality preference.
           OS_JUNE_AUTO_MODE_DEFAULT: "true"
         with:
@@ -343,6 +358,19 @@ jobs:
             exit 1
           fi
 
+          apps=(
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/macos/*.app
+          )
+          if [ "${#apps[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one rc app bundle, found ${#apps[@]}"
+            exit 1
+          fi
+          app="${apps[0]}"
+          ./scripts/audit-hermes-runtime.sh \
+            "$app/Contents/Resources/native/hermes" --require-signed
+          codesign --verify --deep --strict --verbose=2 "$app"
+
           dmg="${dmgs[0]}"
           xcrun notarytool submit "$dmg" \
             --key "$APPLE_API_KEY_PATH" \
@@ -374,10 +402,12 @@ jobs:
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
           stable_dmg="$release_dir/June_universal.dmg"
+          versioned_dmg="$release_dir/June_v${VERSION}_universal.dmg"
           app_archive="$release_dir/June_universal.app.tar.gz"
           app_signature="$release_dir/June_universal.app.tar.gz.sig"
           latest_rc_json="$release_dir/latest-rc.json"
           cp "$dmg" "$stable_dmg"
+          cp "$dmg" "$versioned_dmg"
           cp "${app_archives[0]}" "$app_archive"
           cp "${app_signatures[0]}" "$app_signature"
 
@@ -433,6 +463,12 @@ jobs:
               --target main
           fi
 
+          # The candidate-specific DMG is append-only: an existing name means
+          # this version was already attempted and must never be replaced.
+          gh release upload rc "$versioned_dmg" \
+            --repo open-software-network/os-june-releases
+
+          # Fixed RC release channel assets intentionally follow the newest candidate.
           gh release upload rc \
             "$stable_dmg" \
             "$app_archive" \
@@ -441,6 +477,97 @@ jobs:
             "$rc_build_json" \
             --repo open-software-network/os-june-releases \
             --clobber
+
+      - name: Notify Slack about rc build
+        if: ${{ success() }}
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL secret is not configured; skipping Slack notification."
+            echo "- Slack notification: skipped (SLACK_WEBHOOK_URL is not configured)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          payload_file="$RUNNER_TEMP/rc-slack-payload.json"
+          SLACK_PAYLOAD_PATH="$payload_file" node <<'NODE'
+          const fs = require("node:fs");
+
+          const version = process.env.VERSION;
+          const commit = process.env.BUILD_COMMIT;
+          const shortCommit = commit.slice(0, 7);
+          const releaseUrl =
+            "https://github.com/open-software-network/os-june-releases/releases/tag/rc";
+          const downloadUrl =
+            `https://github.com/open-software-network/os-june-releases/releases/download/rc/June_v${version}_universal.dmg`;
+          const commitUrl = `https://github.com/open-software-network/os-june/commit/${commit}`;
+
+          const payload = {
+            text: `June v${version} release candidate is ready for testing`,
+            blocks: [
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `:test_tube: *June v${version} release candidate is ready for testing*`,
+                },
+              },
+              {
+                type: "section",
+                fields: [
+                  {
+                    type: "mrkdwn",
+                    text: `*Version:*\nv${version}`,
+                  },
+                  {
+                    type: "mrkdwn",
+                    text: `*Source:*\n<${commitUrl}|${shortCommit}>`,
+                  },
+                ],
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Download:*\n<${downloadUrl}|macOS DMG (Apple Silicon and Intel)>`,
+                },
+              },
+              {
+                type: "actions",
+                elements: [
+                  {
+                    type: "button",
+                    text: {
+                      type: "plain_text",
+                      text: "View release candidate",
+                    },
+                    url: releaseUrl,
+                  },
+                ],
+              },
+            ],
+          };
+
+          fs.writeFileSync(
+            process.env.SLACK_PAYLOAD_PATH,
+            `${JSON.stringify(payload)}\n`,
+          );
+          NODE
+
+          response=$(curl -sS -f -X POST \
+            --connect-timeout 5 \
+            --max-time 20 \
+            -H "Content-Type: application/json" \
+            --data-binary "@$payload_file" \
+            "$SLACK_WEBHOOK_URL" 2>&1) || {
+            echo "::warning::Slack notification failed or delivery could not be confirmed: $response"
+            echo "- Slack notification: delivery unconfirmed (check Slack before posting manually)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          echo "Slack notification sent successfully."
+          echo "- Slack notification: sent for v$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Summary
         run: |

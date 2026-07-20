@@ -1,6 +1,6 @@
-import type { LiveTranscriptEventDto } from "./tauri";
+import type { LiveTranscriptEventDto, TranscriptDto } from "./tauri";
 
-const LIVE_TRANSCRIPT_EVENT_LIMIT = 32;
+const LIVE_TRANSCRIPT_COHERENCE_GAP_MS = 500;
 
 export function upsertLiveTranscriptEvent(
   current: LiveTranscriptEventDto[],
@@ -10,20 +10,113 @@ export function upsertLiveTranscriptEvent(
     .filter((event) => !isSameLiveSegment(event, next))
     .concat(next)
     .sort(compareLiveTranscriptEvents);
-  return coalesceAdjacentLiveTranscriptEvents(events).slice(-LIVE_TRANSCRIPT_EVENT_LIMIT);
+  return events;
 }
 
-function coalesceAdjacentLiveTranscriptEvents(events: LiveTranscriptEventDto[]) {
+/**
+ * Coalescing is presentation-only. The stored preview events retain their
+ * segment ids so persisted transcript spans can replace exactly the preview
+ * time range they supersede.
+ */
+export function coalesceLiveTranscriptEventsForDisplay(events: LiveTranscriptEventDto[]) {
   const coalesced: LiveTranscriptEventDto[] = [];
-  for (const event of events) {
+  for (const event of [...events].sort(compareLiveTranscriptEvents)) {
     const previous = coalesced.at(-1);
-    if (previous && isSameLiveTurn(previous, event)) {
+    if (
+      previous &&
+      isSameLiveTurn(previous, event) &&
+      event.startMs - previous.endMs <= LIVE_TRANSCRIPT_COHERENCE_GAP_MS
+    ) {
       coalesced[coalesced.length - 1] = mergeLiveTranscriptEvents(previous, event);
     } else {
       coalesced.push(event);
     }
   }
   return coalesced;
+}
+
+/**
+ * Saved-audio transcript rows are authoritative. A row may only supersede a
+ * live preview from the same recording session, Source, and time span;
+ * legacy rows without a recording session id deliberately reconcile nothing.
+ */
+export function reconcileLiveTranscriptEvents(
+  events: LiveTranscriptEventDto[],
+  persisted: TranscriptDto[],
+) {
+  return preserveReferenceWhenUnchanged(
+    events,
+    events.filter((event) => !hasAuthoritativeOverlap(event, persisted)),
+  );
+}
+
+/**
+ * Drop only previews that authoritative saved-audio rows replaced. A terminal
+ * batch failure must not erase an unmatched live span: it may be the only text
+ * the user can still see while the saved WAV remains retryable.
+ */
+export function clearTerminalLiveTranscriptEvents(
+  events: LiveTranscriptEventDto[],
+  noteId: string,
+  persisted: TranscriptDto[],
+  protectedSessionIds: readonly string[] = [],
+) {
+  const protectedSessions = new Set(protectedSessionIds);
+  return preserveReferenceWhenUnchanged(
+    events,
+    events.filter(
+      (event) =>
+        event.noteId !== noteId ||
+        protectedSessions.has(event.sessionId) ||
+        !hasAuthoritativeOverlap(event, persisted),
+    ),
+  );
+}
+
+/**
+ * Stable dependency key for the persisted coverage that can replace live
+ * preview events. Polling rebuilds TranscriptDto arrays even when their
+ * coverage is unchanged, so depending on the array reference would rerun the
+ * cleanup effect on every response.
+ */
+export function authoritativeTranscriptCoverageKey(persisted: TranscriptDto[]) {
+  const spans = persisted
+    .filter((turn) => turn.status === "succeeded" && turn.text.trim().length > 0)
+    .map((turn) => [
+      turn.recordingSessionId ?? null,
+      turn.source ?? null,
+      turn.startMs ?? null,
+      turn.endMs ?? null,
+    ])
+    .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return JSON.stringify(spans);
+}
+
+function preserveReferenceWhenUnchanged(
+  current: LiveTranscriptEventDto[],
+  filtered: LiveTranscriptEventDto[],
+) {
+  return filtered.length === current.length ? current : filtered;
+}
+
+function hasAuthoritativeOverlap(event: LiveTranscriptEventDto, persisted: TranscriptDto[]) {
+  return persisted.some(
+    (turn) =>
+      turn.status === "succeeded" &&
+      turn.text.trim().length > 0 &&
+      turn.recordingSessionId === event.sessionId &&
+      turn.source === event.source &&
+      rangesOverlap(event.startMs, event.endMs, turn.startMs, turn.endMs),
+  );
+}
+
+function rangesOverlap(leftStart: number, leftEnd: number, rightStart?: number, rightEnd?: number) {
+  return (
+    rightStart !== undefined &&
+    rightEnd !== undefined &&
+    leftStart < rightEnd &&
+    rightStart < leftEnd
+  );
 }
 
 function isSameLiveSegment(left: LiveTranscriptEventDto, right: LiveTranscriptEventDto) {

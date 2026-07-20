@@ -17,6 +17,10 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const T0 = 1_700_000_000_000;
 
+function storageSpyTarget(): Storage {
+  return window.localStorage instanceof Storage ? Storage.prototype : window.localStorage;
+}
+
 let announced: string[] = [];
 const onNudge = (event: Event) => {
   announced.push((event as CustomEvent<{ moment: string }>).detail.moment);
@@ -121,7 +125,7 @@ describe("referral nudge frequency caps", () => {
   });
 
   it("fails closed when storage writes fail (never shows what it cannot record)", () => {
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    const setItem = vi.spyOn(storageSpyTarget(), "setItem").mockImplementation(() => {
       throw new DOMException("QuotaExceededError");
     });
     try {
@@ -139,7 +143,7 @@ describe("referral nudge frequency caps", () => {
 
   it("latches the session closed when a post-show write fails", () => {
     expect(recordAgentTaskCompleted(T0)).toBe("agent");
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    const setItem = vi.spyOn(storageSpyTarget(), "setItem").mockImplementation(() => {
       throw new DOMException("QuotaExceededError");
     });
     try {
@@ -155,7 +159,7 @@ describe("referral nudge frequency caps", () => {
   });
 
   it("latches the session closed when the click-through opt-out cannot be saved", () => {
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    const setItem = vi.spyOn(storageSpyTarget(), "setItem").mockImplementation(() => {
       throw new DOMException("QuotaExceededError");
     });
     try {

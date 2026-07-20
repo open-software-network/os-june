@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,17 @@ const rawUserArgs = process.argv.slice(2);
 const userArgs = rawUserArgs[0] === "--" ? rawUserArgs.slice(1) : rawUserArgs;
 const target = optionValue(userArgs, "--target");
 const buildPlatform = platformForTarget(target) ?? process.platform;
+if (buildPlatform === "darwin") {
+  const prepareArgs = [
+    resolve(dirname(fileURLToPath(import.meta.url)), "prepare-cua-driver.mjs"),
+    "--release",
+  ];
+  if (target) prepareArgs.push("--target", target);
+  const prepare = spawnSync(process.execPath, prepareArgs, {
+    stdio: "inherit",
+  });
+  if (prepare.status !== 0) process.exit(prepare.status ?? 1);
+}
 const bundles = platformBundles[buildPlatform];
 const config = platformConfigs[buildPlatform];
 const hasBundleOverride = userArgs.some(
@@ -42,8 +53,9 @@ if (!userArgs.includes("--")) {
 }
 args.push("--locked");
 
-const child = spawn(tauriCommand(), args, {
-  shell: process.platform === "win32",
+const tauri = tauriInvocation();
+const child = spawn(tauri.command, [...tauri.args, ...args], {
+  shell: false,
   stdio: "inherit",
 });
 
@@ -82,9 +94,18 @@ function platformForTarget(targetTriple) {
   return undefined;
 }
 
-function tauriCommand() {
+function tauriInvocation() {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
-  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", binary);
-  return existsSync(localBinary) ? localBinary : "tauri";
+  if (process.platform === "win32") {
+    const localScript = resolve(scriptDir, "..", "node_modules", "@tauri-apps", "cli", "tauri.js");
+    if (!existsSync(localScript)) {
+      throw new Error(
+        `Tauri CLI entry point not found at "${localScript}". Run pnpm install first.`,
+      );
+    }
+    return { command: process.execPath, args: [localScript] };
+  }
+
+  const localBinary = resolve(scriptDir, "..", "node_modules", ".bin", "tauri");
+  return { command: existsSync(localBinary) ? localBinary : "tauri", args: [] };
 }

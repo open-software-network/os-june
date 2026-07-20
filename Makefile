@@ -24,8 +24,8 @@ install:  ## Install frontend deps (Rust builds via cargo)
 	pnpm install --frozen-lockfile
 
 # --- Run (local dev) ---
-# `pnpm tauri:dev` (via scripts/tauri-before-dev.mjs) already boots june-api on
-# :8080 and Vite alongside the native app, and tears them all down on exit. The
+# `pnpm tauri:dev` selects free worktree-local ports, boots june-api and Vite
+# alongside the native app, and tears them all down on exit. The
 # desktop app reads JUNE_API_URL from .env and june-api reads its keys from
 # june-api/.env (both auto-load their .env), so this is the whole local stack in
 # one command.
@@ -86,6 +86,10 @@ tauri-lint:  ## clippy (warnings = errors)
 
 tauri-test:  ## cargo test
 	cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+.PHONY: benchmark-note-transcription-latency
+benchmark-note-transcription-latency:
+	cargo test --manifest-path src-tauri/Cargo.toml --locked --release commands::note_transcription_benchmark::benchmark_post_finalization_note_transcription_latency -- --ignored --exact --nocapture --test-threads=1
 
 # --- June API backend (june-api/) ---
 june-api-fmt:  ## rustfmt (write)

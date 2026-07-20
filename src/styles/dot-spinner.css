@@ -1,61 +1,205 @@
-/* The dot spinner: a perfectly square 2×2 grid of tiny real
- * circles with a dim spot rolling clockwise. Drawn, not typeset, so the
- * dots are crisp (à la Conductor's timer dots). The mark is one fixed size
- * everywhere by design. Wrappers set only color (currentColor), there is
- * no size knob. Dot and gap MUST stay integer px: fractional sizes put the
- * second column on a different subpixel phase and its circles rasterize
- * ovular. Shared by every page entry that shows agent activity. */
+/* The dot spinner: a full square grid of circles with a brightness highlight
+ * that sweeps diagonally from the bottom-left. Field dots stay at full size;
+ * as the highlight passes, every dot brightens while mark dots quickly
+ * reveal up to their designed size, then recede. They never grow beyond scale
+ * 1. A bright band glides along June's stepped mark; field dots ripple faintly
+ * without changing size. The grid and each cell's sweep order live in
+ * lib/june-spinner-grid (shared with the agent HUD page entry, which has no
+ * React tree). The default neutral becomes darker in the light theme and lighter
+ * in the dark theme; contexts can override --spinner-color for local contrast.
+ *
+ * Three optical variants: "sm" (3×3) for compact inline use, "md" (3×3) for a
+ * slightly larger inline mark, and "lg" (5×5) for standalone loading moments.
+ * The column count comes from --june-cols, set per instance. */
 .dot-spinner {
+  /* Tonal hierarchy — the mark must always outrank the field so June's shape
+   * reads at every frame, not just at rest. Mark dots sit at --june-off and
+   * brighten to full (1) as the highlight passes; field dots sit dimmer at
+   * --june-field-off and ripple only up to --june-field-peak, which MUST stay
+   * below --june-off. If the field peak ever exceeds the mark's rest, the sweep
+   * paints a diagonal band that hides the logo. All tones are opacity on
+   * currentColor (var(--spinner-neutral) by default), so they track themes. */
+  --june-off: 0.44;
+  --june-field-off: 0.14;
+  --june-field-peak: 0.26;
+  /* Only mark dots scale. They start below their designed diameter and reveal
+   * to exactly 1, matching the reference's fast arrival without overshoot. */
+  --june-rest-scale: 0.8;
+  /* Every dot gets the same 500ms brightening and each completed pass gets a
+   * 100ms reset. The compact grid takes a deliberate 130ms diagonal step; the
+   * denser large grid overrides that with an 80ms step so its crest stays
+   * continuous. */
+  --june-frame: calc((var(--t-fast) + var(--t-med)) / 2);
+  --june-pulse: calc(var(--t-fast) + var(--t-med) + var(--t-slow));
+  --june-pause: var(--t-fast);
+  /* The highest sweep order juneSpinnerGrid() emits for this grid, which paces
+   * the full cycle. For the bottom-left diagonal traversal it is (cols - 1) × 2,
+   * so the 3×3 sm/md grid tops out at 4. Keep this in lockstep with
+   * JUNE_SPINNER_COLS in lib/june-spinner-grid.ts if the grid is ever resized. */
+  --june-max-order: 4;
+  --june-dur: calc(
+    var(--june-frame) *
+    var(--june-max-order) +
+    var(--june-pulse) +
+    var(--june-pause)
+  );
+  /* Integer px so every column shares one subpixel phase. The gap is set roughly
+   * as wide as the dot so the circles read as discrete points, not a blur. */
+  --june-dot: 2px;
+  --june-gap: 2px;
+  --june-cols: 3;
+
   display: inline-grid;
-  grid-template-columns: repeat(2, auto);
-  gap: 2px;
+  grid-template-columns: repeat(var(--june-cols), var(--june-dot));
+  gap: var(--june-gap);
+  color: var(--spinner-color, var(--spinner-neutral));
   line-height: 1;
 }
 
+.dot-spinner[data-size="md"] {
+  /* Shares the base tonal hierarchy; only the dot size grows for a slightly
+   * larger inline mark. */
+  --june-dot: 3px;
+  --june-gap: 2px;
+}
+
+.dot-spinner[data-size="lg"] {
+  --june-off: 0.4;
+  --june-field-off: 0.15;
+  --june-field-peak: 0.24;
+  --june-frame: calc(var(--t-med) / 2);
+  /* Same (cols - 1) × 2 derivation as the base block, for the 5×5 lg grid: it
+   * tops out at 8. Kept in lockstep with JUNE_SPINNER_COLS / juneSpinnerGrid in
+   * lib/june-spinner-grid.ts. */
+  --june-max-order: 8;
+  --june-dot: 3px;
+  --june-gap: 3px;
+}
+
+/* Every cell runs the brightness envelope, shifted by its diagonal order. Mark
+ * cells add the synchronized reveal; field cells stay at scale 1, so they do not
+ * pay for a no-op transform animation or compositor hint. */
 .dot-spinner > span {
-  width: 2px;
-  height: 2px;
+  --june-cell-opacity: var(--june-field-off);
+  --june-cell-peak-opacity: var(--june-field-peak);
+
+  box-sizing: border-box;
+  width: var(--june-dot);
+  height: var(--june-dot);
+  aspect-ratio: 1 / 1;
   border-radius: 50%;
   background: currentColor;
-  animation: dot-spinner-roll 800ms linear infinite;
+  opacity: var(--june-cell-opacity);
+  transform: scale(1);
+  animation: june-sweep-sm var(--june-dur) var(--ease-in-out) infinite;
+  animation-delay: calc(var(--june-order) * var(--june-frame) - var(--june-dur));
+  will-change: opacity;
 }
 
-/* Stagger the dim spot clockwise: TL → TR → BR → BL (grid DOM order is
- * TL TR / BL BR, hence 3 and 4 swapped). Negative delays so the loop is
- * already rolling on first paint. */
-.dot-spinner > span:nth-child(1) {
-  animation-delay: -800ms;
+.dot-spinner > span[data-mark] {
+  --june-cell-opacity: var(--june-off);
+  --june-cell-peak-opacity: 1;
+  --june-cell-rest-scale: var(--june-rest-scale);
+
+  animation-name: june-sweep-sm, june-scale-sm;
+  animation-timing-function: var(--ease-in-out), linear;
+  /* GPU-composite the visible reveal as well as the fade. */
+  will-change: opacity, transform;
 }
 
-.dot-spinner > span:nth-child(2) {
-  animation-delay: -600ms;
+.dot-spinner[data-size="lg"] > span {
+  animation-name: june-sweep-lg;
 }
 
-.dot-spinner > span:nth-child(4) {
-  animation-delay: -400ms;
+.dot-spinner[data-size="lg"] > span[data-mark] {
+  animation-name: june-sweep-lg, june-scale-lg;
 }
 
-.dot-spinner > span:nth-child(3) {
-  animation-delay: -200ms;
-}
-
-/* Each dot dips once per revolution; the 25% phase offsets above turn the
- * dips into one gap travelling around the square. */
-@keyframes dot-spinner-roll {
+/* sm/md: 1.12s cycle. Each dot eases from rest up to its peak at the midpoint of
+ * the 500ms window and straight back — a single smooth bell, never a plateau, so
+ * the dot is always in motion and the staggered crest glides instead of stepping.
+ * The 100ms all-rest tail is the settle before the sweep begins again. */
+@keyframes june-sweep-sm {
   0%,
+  44.643%,
   100% {
-    opacity: 0.25;
+    opacity: var(--june-cell-opacity);
   }
 
-  35%,
-  65% {
-    opacity: 1;
+  22.321% {
+    opacity: var(--june-cell-peak-opacity);
+  }
+}
+
+/* lg: the same 500ms bell inside a 1.24s cycle, with closer diagonals. */
+@keyframes june-sweep-lg {
+  0%,
+  40.323%,
+  100% {
+    opacity: var(--june-cell-opacity);
+  }
+
+  20.161% {
+    opacity: var(--june-cell-peak-opacity);
+  }
+}
+
+/* Scale is a reveal capped at the base dot. The strong ease-out
+ * reaches scale 1 at 100ms, matching the reference's measured fast arrival,
+ * holds through the crest, then the in-out curve returns it to the smaller rest
+ * state by 500ms. Chromium and WebKit ignore var() timing functions inside
+ * keyframes, so the token curves are repeated verbatim here. */
+@keyframes june-scale-sm {
+  0% {
+    transform: scale(var(--june-cell-rest-scale));
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  8.929% {
+    transform: scale(1);
+  }
+
+  33.929% {
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  44.643%,
+  100% {
+    transform: scale(var(--june-cell-rest-scale));
+  }
+}
+
+@keyframes june-scale-lg {
+  0% {
+    transform: scale(var(--june-cell-rest-scale));
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  8.065% {
+    transform: scale(1);
+  }
+
+  30.645% {
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+
+  40.323%,
+  100% {
+    transform: scale(var(--june-cell-rest-scale));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* The spinner rests as a steady square of dots. */
+  /* The spinner rests as the mark: the strokes bright, the field dim. */
   .dot-spinner > span {
     animation: none;
+    opacity: var(--june-field-off);
+  }
+
+  .dot-spinner > span[data-mark] {
+    opacity: 1;
+    transform: scale(1);
   }
 }

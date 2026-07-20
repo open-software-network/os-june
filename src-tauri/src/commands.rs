@@ -17,7 +17,8 @@ use crate::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
         processing::{
-            manual_notes_for_generation, process_saved_audio, process_saved_source_audio,
+            add_latency_checkpoint, manual_notes_for_generation, process_saved_source_audio,
+            ProcessingTiming,
         },
         processing_queue,
         types::{
@@ -29,13 +30,17 @@ use crate::{
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
             DeleteNotesRequest, DictionaryEntryDto, ExplainAgentApprovalRequest,
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse,
-            NoteDto, OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto,
-            RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            GetNoteRequest, ListNotesRequest, ListNotesResponse, MemoryDto, MemorySettingsDto,
+            MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest, ProcessingStatus,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
+            SessionRequest, ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto,
+            ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
+            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
+            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
+            ShareSummaryDto, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
             SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
@@ -46,20 +51,36 @@ use serde::{Deserialize, Serialize};
 use sqlx::query::query;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePool;
-use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::collections::HashSet;
+use std::fs;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::{sync::OnceCell, time::sleep};
+
+const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
+const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
+static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+// React StrictMode and renderer reloads may call `bootstrap_app` more than once
+// while native processing tasks keep running. Startup repair must run exactly
+// once per native process or a second bootstrap could reset a genuinely live
+// job from running back to pending.
+static TRANSCRIPTION_STARTUP_REPAIR: OnceCell<()> = OnceCell::const_new();
 
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
+    TRANSCRIPTION_STARTUP_REPAIR
+        .get_or_try_init(|| async {
+            repos.release_interrupted_note_transcription_jobs().await?;
+            Ok::<(), sqlx::Error>(())
+        })
+        .await?;
     // Complete stale tasks that already received their assistant reply
     // before pausing the rest: the repair only considers queued/running
     // tasks, so it must run before they are flipped to paused.
@@ -133,10 +154,45 @@ pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<N
         .await?)
 }
 
+/// Revoke the remote share for an item and drop its local keys, if the item is
+/// shared. Called before deleting a shared item so its server-side ciphertext
+/// and invite ACL don't outlive it: once the source note/session is gone the
+/// owner has no Share dialog left to revoke from, and existing recipient links
+/// would keep opening forever. Fail closed - if the revoke can't be confirmed
+/// the caller keeps the item rather than orphaning a live share.
+async fn revoke_item_share(
+    repos: &Repositories,
+    item_kind: &str,
+    item_id: &str,
+) -> Result<(), AppError> {
+    if let Some(record) = repos.share_key_for_item(item_kind, item_id).await? {
+        delete_remote_share_or_accept_missing(&record.share_id).await?;
+        repos.delete_share_keys(&record.share_id).await?;
+    }
+    Ok(())
+}
+
+async fn delete_remote_share_or_accept_missing(share_id: &str) -> Result<(), AppError> {
+    match crate::june_api::share_delete(share_id).await {
+        Ok(()) => Ok(()),
+        // `share_not_found` is deliberately ambiguous for non-enumeration. For
+        // deletion, either meaning is terminal for this local profile: the
+        // remote share is already absent or cannot be managed by this account,
+        // so retaining the stale key would permanently block item deletion.
+        Err(error) if is_share_not_found(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_share_not_found(error: &AppError) -> bool {
+    error.code == "june_request_failed" && error.message == "share_not_found"
+}
+
 #[tauri::command]
 pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    revoke_item_share(&repos, "note", &request.note_id).await?;
     let audio_paths = repos
         .audio_artifact_paths_for_note(&request.note_id)
         .await?;
@@ -170,6 +226,9 @@ pub async fn delete_notes(app: AppHandle, request: DeleteNotesRequest) -> Result
 
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    for note_id in &note_ids {
+        revoke_item_share(&repos, "note", note_id).await?;
+    }
     let audio_paths = repos.audio_artifact_paths_for_notes(&note_ids).await?;
     repos.delete_notes(&note_ids).await?;
     for path in audio_paths {
@@ -289,6 +348,250 @@ pub async fn remove_session_from_folder(
 #[tauri::command]
 pub async fn list_dictionary_entries(app: AppHandle) -> Result<Vec<DictionaryEntryDto>, AppError> {
     Ok(repositories(&app).await?.list_dictionary_entries().await?)
+}
+
+#[tauri::command]
+pub async fn list_memories(
+    app: AppHandle,
+    folder_id: Option<String>,
+    include_global: bool,
+) -> Result<Vec<MemoryDto>, AppError> {
+    Ok(repositories(&app)
+        .await?
+        .list_memories(folder_id.as_deref(), include_global)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn create_memory(
+    app: AppHandle,
+    folder_id: Option<String>,
+    content: String,
+    source: String,
+) -> Result<MemoryDto, AppError> {
+    let repos = repositories(&app).await?;
+    let settings_path = memory_settings_path(&app)?;
+    create_memory_with_settings(
+        &repos,
+        &settings_path,
+        folder_id.as_deref(),
+        &content,
+        &source,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn update_memory(
+    app: AppHandle,
+    id: String,
+    content: String,
+) -> Result<MemoryDto, AppError> {
+    let repos = repositories(&app).await?;
+    let settings_path = memory_settings_path(&app)?;
+    update_memory_with_settings(&repos, &settings_path, &id, &content).await
+}
+
+#[tauri::command]
+pub async fn delete_memory(app: AppHandle, id: String) -> Result<(), AppError> {
+    repositories(&app).await?.delete_memory(&id).await
+}
+
+#[tauri::command]
+pub async fn set_folder_instructions(
+    app: AppHandle,
+    folder_id: String,
+    instructions: Option<String>,
+) -> Result<crate::domain::types::FolderDto, AppError> {
+    let instructions = validated_folder_instructions(instructions.as_deref())?;
+    repositories(&app)
+        .await?
+        .set_folder_instructions(&folder_id, instructions)
+        .await
+}
+
+#[tauri::command]
+pub async fn set_folder_memory_disabled(
+    app: AppHandle,
+    folder_id: String,
+    disabled: bool,
+) -> Result<crate::domain::types::FolderDto, AppError> {
+    repositories(&app)
+        .await?
+        .set_folder_memory_disabled(&folder_id, disabled)
+        .await
+}
+
+#[tauri::command]
+pub async fn memory_settings(app: AppHandle) -> Result<MemorySettingsDto, AppError> {
+    let path = memory_settings_path(&app)?;
+    let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+    Ok(load_memory_settings(&path))
+}
+
+#[tauri::command]
+pub async fn set_memory_enabled(
+    app: AppHandle,
+    bridge: tauri::State<'_, crate::hermes_bridge::HermesBridge>,
+    enabled: bool,
+) -> Result<MemorySettingsDto, AppError> {
+    // Keep the transaction lock through persistence, direct policy mutation,
+    // live-runtime convergence, and the authoritative response read. Otherwise
+    // two commands can persist in order but finish out of order, allowing an
+    // older response to overwrite the UI after a newer choice has landed.
+    let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+    let settings = MemorySettingsDto { enabled };
+    let path = memory_settings_path(&app)?;
+    persist_memory_settings(&path, &settings)?;
+    // The persisted file is authoritative for June's own memory write gate and
+    // every future Hermes config render. Apply the native global toolset policy
+    // directly before relying on live runtime state: the launchd routine
+    // gateway can outlive every bridge connection, and cron reloads config.yaml
+    // for each run. Do not roll the persisted choice back if either enforcement
+    // step fails, but do return the failure so the UI never reports that native
+    // runtime enforcement succeeded when it did not.
+    let direct_error = crate::hermes_bridge::apply_memory_runtime_policy(&app, &bridge)
+        .await
+        .err();
+    if let Some(error) = direct_error.as_ref() {
+        tracing::warn!(
+            ?error,
+            "memory setting saved but the direct Hermes config policy update failed",
+        );
+    }
+    let reapply_error = crate::hermes_bridge::reapply_hermes_runtime(&app, &bridge)
+        .await
+        .err();
+    if let Some(error) = reapply_error.as_ref() {
+        tracing::warn!(
+            ?error,
+            "memory setting saved but live runtime reapply failed; it will take effect on the next spawn",
+        );
+    }
+    if let Some(error) = direct_error {
+        return Err(error);
+    }
+    if let Some(error) = reapply_error {
+        return Err(error);
+    }
+    Ok(load_memory_settings(&path))
+}
+
+pub(crate) async fn create_memory_with_settings(
+    repos: &Repositories,
+    settings_path: &Path,
+    folder_id: Option<&str>,
+    content: &str,
+    source: &str,
+) -> Result<MemoryDto, AppError> {
+    // Every write path (Tauri command AND the loopback proxy) takes the
+    // settings lock across the enabled check and the insert, so a save that
+    // read "enabled" can never commit after a concurrent toggle-off persists.
+    let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+    ensure_memory_enabled(settings_path)?;
+    let content = validated_memory_content(content)?;
+    let source = source.trim();
+    if !matches!(source, "agent" | "user") {
+        return Err(AppError::new(
+            "memory_source_invalid",
+            "Memory source must be agent or user.",
+        ));
+    }
+    repos.create_memory(folder_id, content, source).await
+}
+
+async fn update_memory_with_settings(
+    repos: &Repositories,
+    settings_path: &Path,
+    id: &str,
+    content: &str,
+) -> Result<MemoryDto, AppError> {
+    // Same lock discipline as create: check + write under the settings lock.
+    let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+    ensure_memory_enabled(settings_path)?;
+    let content = validated_memory_content(content)?;
+    repos.update_memory(id, content).await
+}
+
+fn ensure_memory_enabled(settings_path: &Path) -> Result<(), AppError> {
+    if load_memory_settings(settings_path).enabled {
+        Ok(())
+    } else {
+        Err(memory_disabled_error())
+    }
+}
+
+fn persist_memory_settings(path: &Path, settings: &MemorySettingsDto) -> Result<(), AppError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
+    }
+    let serialized = serde_json::to_string_pretty(&settings)
+        .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
+    let temporary_path = path.with_extension("json.tmp");
+    fs::write(&temporary_path, serialized)
+        .map_err(|error| AppError::new("memory_settings_save_failed", error.to_string()))?;
+    // `fs::rename` does not replace an existing destination on Windows;
+    // `replace_file` is the repo's platform-aware wrapper (POSIX rename, or
+    // ReplaceFileW/MoveFileExW on Windows) so a second toggle can't fail and an
+    // existing destination keeps its security metadata.
+    crate::hermes_bridge::replace_file(&temporary_path, path).map_err(|error| {
+        let _ = fs::remove_file(&temporary_path);
+        AppError::new("memory_settings_save_failed", error.to_string())
+    })
+}
+
+fn validated_memory_content(content: &str) -> Result<&str, AppError> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err(AppError::new(
+            "memory_content_required",
+            "Memory content is required.",
+        ));
+    }
+    if content.chars().count() > MEMORY_CONTENT_MAX_CHARS {
+        return Err(AppError::new(
+            "memory_content_too_long",
+            format!("Memory content cannot exceed {MEMORY_CONTENT_MAX_CHARS} characters."),
+        ));
+    }
+    Ok(content)
+}
+
+fn validated_folder_instructions(instructions: Option<&str>) -> Result<Option<&str>, AppError> {
+    let instructions = instructions
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if instructions.is_some_and(|value| value.chars().count() > FOLDER_INSTRUCTIONS_MAX_CHARS) {
+        return Err(AppError::new(
+            "folder_instructions_too_long",
+            format!(
+                "Folder instructions cannot exceed {FOLDER_INSTRUCTIONS_MAX_CHARS} characters."
+            ),
+        ));
+    }
+    Ok(instructions)
+}
+
+pub(crate) fn memory_settings_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path()
+        .app_config_dir()
+        .map(|directory| directory.join("memory-settings.json"))
+        .map_err(|error| AppError::new("memory_settings_unavailable", error.to_string()))
+}
+
+fn load_memory_settings(path: &Path) -> MemorySettingsDto {
+    match fs::read_to_string(path) {
+        Ok(settings) => {
+            serde_json::from_str(&settings).unwrap_or(MemorySettingsDto { enabled: false })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => MemorySettingsDto::default(),
+        Err(_) => MemorySettingsDto { enabled: false },
+    }
+}
+
+fn memory_disabled_error() -> AppError {
+    AppError::new("memory_disabled", "Memory is disabled for this scope.")
 }
 
 #[tauri::command]
@@ -815,7 +1118,7 @@ pub async fn open_privacy_settings(request: OpenPrivacySettingsRequest) -> Resul
             "accessibility" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
             }
-            "systemAudio" => {
+            "screenRecording" | "systemAudio" => {
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
             }
             _ => "x-apple.systempreferences:com.apple.preference.security",
@@ -1228,10 +1531,13 @@ pub async fn finish_recording(
     app: AppHandle,
     request: SessionRequest,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let timing = ProcessingTiming::from_done(Instant::now());
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
-    let response = finish_recording_session(&repos, finished, finalization_started).await?;
+    let response =
+        finish_recording_session_with_timing(&repos, finished, finalization_started, timing)
+            .await?;
     if response.processing_started {
         crate::p3a::record_question_best_effort(
             app,
@@ -1253,6 +1559,21 @@ async fn finish_recording_session(
     repos: &Repositories,
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
+) -> Result<FinishRecordingResponse, AppError> {
+    finish_recording_session_with_timing(
+        repos,
+        finished,
+        finalization_started,
+        ProcessingTiming::untracked(),
+    )
+    .await
+}
+
+async fn finish_recording_session_with_timing(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+    timing: ProcessingTiming,
 ) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
@@ -1511,6 +1832,18 @@ async fn finish_recording_session(
         )
         .await?;
 
+    add_latency_checkpoint(
+        repos,
+        &finished.session_id,
+        "audio_validation",
+        timing.checkpoint_details(serde_json::json!({
+            "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+            "validSourceCount": valid_sources.len(),
+            "sourceCount": finished.sources.len(),
+        })),
+    )
+    .await;
+
     if valid_sources.is_empty() {
         repos
             .set_note_status(
@@ -1527,27 +1860,6 @@ async fn finish_recording_session(
             processing_started: false,
             warnings,
         });
-    }
-
-    if let Err(error) = repos
-        .add_checkpoint(
-            &finished.session_id,
-            "audio_validation",
-            Some(
-                serde_json::json!({
-                    "durationMs": validation_started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-                    "validSourceCount": valid_sources.len(),
-                    "sourceCount": finished.sources.len(),
-                })
-                .to_string(),
-            ),
-        )
-        .await
-    {
-        eprintln!(
-            "failed to persist audio_validation checkpoint for {}: {}",
-            finished.session_id, error
-        );
     }
 
     // Capture is single-instance, but processing runs asynchronously — so the
@@ -1578,6 +1890,15 @@ async fn finish_recording_session(
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        #[cfg(test)]
+        note_transcription_benchmark::record_processing_dequeued(&task_session_id);
+        add_latency_checkpoint(
+            &task_repos,
+            &task_session_id,
+            "processing_dequeued",
+            timing.checkpoint_details(serde_json::json!({})),
+        )
+        .await;
         // Now that earlier jobs on this note are done, read the latest note so
         // generation has the freshest existing content as context.
         let note = match task_repos.get_note(&task_note_id).await {
@@ -1590,38 +1911,18 @@ async fn finish_recording_session(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if valid_sources.len() == 1
-            && task_source_mode == RecordingSourceMode::MicrophoneOnly
-        {
-            let (artifact_id, _source, path, recorded_silence) = valid_sources
-                .into_iter()
-                .next()
-                .expect("valid source was checked before starting processing");
-            process_saved_audio(
-                &task_repos,
-                &task_note_id,
-                &task_session_id,
-                &artifact_id,
-                path,
-                title,
-                existing_generated_note,
-                manual_notes,
-                recorded_silence,
-            )
-            .await
-        } else {
-            process_saved_source_audio(
-                &task_repos,
-                &task_note_id,
-                &task_session_id,
-                task_source_mode,
-                valid_sources,
-                title,
-                existing_generated_note,
-                manual_notes,
-            )
-            .await
-        };
+        let result = process_saved_source_audio(
+            &task_repos,
+            &task_note_id,
+            &task_session_id,
+            task_source_mode,
+            valid_sources,
+            title,
+            existing_generated_note,
+            manual_notes,
+            timing,
+        )
+        .await;
         if let Err(error) = result {
             let _ = task_repos
                 .set_note_status(
@@ -1791,7 +2092,13 @@ pub async fn retry_processing(
 ) -> Result<NoteDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
-    let sources = retry_audio_sources(&repos, &paths, &request.note_id).await?;
+    let sources = retry_audio_sources(
+        &repos,
+        &paths,
+        &request.note_id,
+        request.recording_session_id.as_deref(),
+    )
+    .await?;
     let (ticket, depth) = processing_queue::enqueue(&request.note_id);
     if depth <= 1 {
         repos
@@ -1804,9 +2111,29 @@ pub async fn retry_processing(
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
+    let task_recording_session_id = sources
+        .first()
+        .map(
+            |(_id, _source, _path, recording_session_id, _recorded_silence)| {
+                recording_session_id.clone()
+            },
+        )
+        .unwrap_or_default();
+    let task_source_mode = repos
+        .recording_session_source_mode(&task_recording_session_id)
+        .await?
+        .unwrap_or(RecordingSourceMode::MicrophoneOnly);
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
+        let timing = ProcessingTiming::untracked();
+        add_latency_checkpoint(
+            &task_repos,
+            &task_recording_session_id,
+            "processing_dequeued",
+            timing.checkpoint_details(serde_json::json!({})),
+        )
+        .await;
         let note = match task_repos.get_note(&task_note_id).await {
             Ok(note) => note,
             Err(_) => {
@@ -1817,45 +2144,23 @@ pub async fn retry_processing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = if sources.len() == 1 {
-            let (audio_artifact_id, _source, audio_path, session_id, recorded_silence) = sources
+        let result = process_saved_source_audio(
+            &task_repos,
+            &task_note_id,
+            &task_recording_session_id,
+            task_source_mode,
+            sources
                 .into_iter()
-                .next()
-                .expect("retry sources were checked before starting processing");
-            process_saved_audio(
-                &task_repos,
-                &task_note_id,
-                &session_id,
-                &audio_artifact_id,
-                audio_path,
-                title,
-                existing_generated_note,
-                manual_notes,
-                recorded_silence,
-            )
-            .await
-        } else {
-            let session_id = sources
-                .first()
-                .map(|(_id, _source, _path, session_id, _recorded_silence)| session_id.clone())
-                .unwrap_or_default();
-            process_saved_source_audio(
-                &task_repos,
-                &task_note_id,
-                &session_id,
-                RecordingSourceMode::MicrophonePlusSystem,
-                sources
-                    .into_iter()
-                    .map(|(id, source, path, _session_id, recorded_silence)| {
-                        (id, source, path, recorded_silence)
-                    })
-                    .collect(),
-                title,
-                existing_generated_note,
-                manual_notes,
-            )
-            .await
-        };
+                .map(|(id, source, path, _session_id, recorded_silence)| {
+                    (id, source, path, recorded_silence)
+                })
+                .collect(),
+            title,
+            existing_generated_note,
+            manual_notes,
+            timing,
+        )
+        .await;
         if let Err(error) = result {
             let _ = task_repos
                 .set_note_status(&task_note_id, ProcessingStatus::Failed, Some(error.message))
@@ -1870,18 +2175,28 @@ async fn retry_audio_sources(
     repos: &Repositories,
     paths: &AppPaths,
     note_id: &str,
+    recording_session_id: Option<&str>,
 ) -> Result<Vec<(String, String, PathBuf, String, bool)>, AppError> {
-    let sources = repos
-        .latest_valid_audio_artifact_paths(note_id)
-        .await?
-        .into_iter()
-        .filter_map(|(id, source, path, session_id, recorded_silence)| {
-            paths
-                .contained_recording_file(path)
-                .ok()
-                .map(|path| (id, source, path, session_id, recorded_silence))
-        })
-        .collect::<Vec<_>>();
+    let source_rows = match recording_session_id {
+        Some(session_id) => {
+            repos
+                .valid_audio_artifact_paths_for_session(note_id, session_id)
+                .await?
+        }
+        None => repos.latest_valid_audio_artifact_paths(note_id).await?,
+    };
+    let mut sources = Vec::with_capacity(source_rows.len());
+    for (id, source, path, session_id, recorded_silence) in source_rows {
+        let path = paths.contained_recording_file(path).map_err(|_| {
+            AppError::new(
+                "audio_artifact_missing",
+                format!(
+                    "The saved {source} audio for this recording is unavailable. No transcript was changed."
+                ),
+            )
+        })?;
+        sources.push((id, source, path, session_id, recorded_silence));
+    }
     if sources.is_empty() {
         return Err(AppError::new(
             "audio_artifact_missing",
@@ -1990,21 +2305,15 @@ pub async fn recover_recording(
                 .await?;
             return Ok(repos.get_note(&info.note_id).await?);
         }
-        let note = repos.get_note(&info.note_id).await?;
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
         repos
             .mark_recording_recovery_valid(&info.session_id)
             .await?;
-        return process_saved_source_audio(
+        return process_recovered_source_audio(
             &repos,
             &info.note_id,
             &info.session_id,
             info.source_mode,
             valid_sources,
-            note.title,
-            existing_generated_note,
-            manual_notes,
         )
         .await;
     }
@@ -2065,21 +2374,52 @@ pub async fn recover_recording(
             &checksum,
         )
         .await?;
-    let note = repos.get_note(&info.note_id).await?;
-    let existing_generated_note = note.generated_content.clone();
-    let manual_notes = manual_notes_for_generation(&note);
-    process_saved_audio(
+    process_recovered_source_audio(
         &repos,
         &info.note_id,
         &info.session_id,
-        &artifact.id,
-        path,
-        note.title,
-        existing_generated_note,
-        manual_notes,
-        validation.recorded_silence,
+        RecordingSourceMode::MicrophoneOnly,
+        vec![(
+            artifact.id,
+            RecordingSource::Microphone.as_db().to_string(),
+            path,
+            validation.recorded_silence,
+        )],
     )
     .await
+}
+
+async fn process_recovered_source_audio(
+    repos: &Repositories,
+    note_id: &str,
+    session_id: &str,
+    source_mode: RecordingSourceMode,
+    sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
+) -> Result<NoteDto, AppError> {
+    let (ticket, _depth) = processing_queue::enqueue(note_id);
+    let queue_lock = ticket.lock();
+    let _guard = queue_lock.lock().await;
+    let note = match repos.get_note(note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            ticket.finish();
+            return Err(error.into());
+        }
+    };
+    let result = process_saved_source_audio(
+        repos,
+        note_id,
+        session_id,
+        source_mode,
+        sources,
+        note.title.clone(),
+        note.generated_content.clone(),
+        manual_notes_for_generation(&note),
+        ProcessingTiming::untracked(),
+    )
+    .await;
+    ticket.finish();
+    result
 }
 
 fn recovery_audio_path(
@@ -2394,6 +2734,134 @@ fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+// ---- Private sharing (JUN-308) -----------------------------------------
+// Thin proxies to the june-api /v1/shares endpoints plus the local key
+// store. All crypto happens in the webview; these commands only move
+// ciphertext, envelopes, metadata, and locally persisted key bytes.
+
+#[tauri::command]
+pub async fn share_create(request: ShareCreateRequest) -> Result<ShareCreatedDto, AppError> {
+    crate::june_api::share_create(&request).await
+}
+
+#[tauri::command]
+pub async fn share_list() -> Result<Vec<ShareSummaryDto>, AppError> {
+    crate::june_api::share_list().await
+}
+
+#[tauri::command]
+pub async fn share_get(request: ShareGetRequest) -> Result<ShareDto, AppError> {
+    crate::june_api::share_get(&request.share_id).await
+}
+
+#[tauri::command]
+pub async fn share_add_invites(
+    request: ShareAddInvitesRequest,
+) -> Result<ShareInvitesAddedDto, AppError> {
+    crate::june_api::share_add_invites(&request.share_id, &request.invites).await
+}
+
+#[tauri::command]
+pub async fn share_revoke_invite(request: ShareRevokeInviteRequest) -> Result<(), AppError> {
+    crate::june_api::share_revoke_invite(&request.share_id, &request.invite_id).await
+}
+
+#[tauri::command]
+pub async fn share_delete(app: AppHandle, request: ShareDeleteRequest) -> Result<(), AppError> {
+    delete_remote_share_or_accept_missing(&request.share_id).await?;
+    // The share is gone server-side; its locally retained keys are useless
+    // and should not outlive it.
+    repositories(&app)
+        .await?
+        .delete_share_keys(&request.share_id)
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn share_key_save(app: AppHandle, request: ShareKeySaveRequest) -> Result<(), AppError> {
+    let content_key = decode_share_key_b64(&request.content_key_b64)?;
+    repositories(&app)
+        .await?
+        .save_share_key(&crate::db::repositories::ShareKeyRecord {
+            share_id: request.share_id,
+            item_kind: request.item_kind,
+            item_id: request.item_id,
+            content_key,
+        })
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn share_key_get(
+    app: AppHandle,
+    request: ShareKeyGetRequest,
+) -> Result<Option<ShareKeyDto>, AppError> {
+    let record = repositories(&app)
+        .await?
+        .share_key_for_item(&request.item_kind, &request.item_id)
+        .await?;
+    Ok(record.map(|record| ShareKeyDto {
+        share_id: record.share_id,
+        content_key_b64: encode_share_key_b64(&record.content_key),
+    }))
+}
+
+#[tauri::command]
+pub async fn share_invite_key_save(
+    app: AppHandle,
+    request: ShareInviteKeySaveRequest,
+) -> Result<(), AppError> {
+    let invite_key = decode_share_key_b64(&request.invite_key_b64)?;
+    repositories(&app)
+        .await?
+        .save_share_invite_key(&crate::db::repositories::ShareInviteKeyRecord {
+            invite_id: request.invite_id,
+            share_id: request.share_id,
+            invite_key,
+        })
+        .await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn share_invite_keys_get(
+    app: AppHandle,
+    request: ShareInviteKeysGetRequest,
+) -> Result<Vec<ShareInviteKeyDto>, AppError> {
+    let records = repositories(&app)
+        .await?
+        .share_invite_keys(&request.share_id)
+        .await?;
+    Ok(records
+        .into_iter()
+        .map(|record| ShareInviteKeyDto {
+            invite_id: record.invite_id,
+            invite_key_b64: encode_share_key_b64(&record.invite_key),
+        })
+        .collect())
+}
+
+/// Origin share links point at; the webview assembles the full link
+/// (including the key-carrying fragment, which must never reach Rust logs).
+#[tauri::command]
+pub fn get_share_base_url() -> Result<String, AppError> {
+    Ok(crate::june_api::share_base_url())
+}
+
+fn decode_share_key_b64(value: &str) -> Result<Vec<u8>, AppError> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value.trim())
+        .map_err(|_| AppError::new("share_key_invalid", "Share key is not valid base64url."))
+}
+
+fn encode_share_key_b64(value: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value)
+}
+
 /// Cached app repositories pool. The database path is derived from the app
 /// data dir and never changes within a process, so the pool (and its
 /// migrations) are initialized once instead of on every Tauri command.
@@ -2408,7 +2876,11 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
                 paths.database_path.display()
             ))
             .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
-            .create_if_missing(true);
+            .create_if_missing(true)
+            // Recording finalization, transcript persistence, and UI polling
+            // legitimately overlap. WAL lets readers observe progress without
+            // blocking the durable job transaction (or vice versa).
+            .journal_mode(SqliteJournalMode::Wal);
             let pool = SqlitePoolOptions::new()
                 .max_connections(5)
                 .connect_with(options)
@@ -2431,17 +2903,123 @@ fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
 }
 
 #[cfg(test)]
+mod note_transcription_benchmark;
+
+#[cfg(test)]
+mod retry_audio_source_tests {
+    use super::retry_audio_sources;
+    use crate::{
+        app_paths::AppPaths,
+        db::{migrations::run_migrations, repositories::Repositories},
+        domain::types::RecordingSourceMode,
+    };
+
+    #[tokio::test]
+    async fn retry_aborts_when_any_selected_valid_source_file_is_missing() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
+        let note = repos.create_note(None).await.expect("note");
+        let session_id = "retry-missing-source";
+        let session_dir = paths
+            .recording_session_dir(&note.id, session_id)
+            .expect("session path");
+        std::fs::create_dir_all(&session_dir).expect("session directory");
+        let microphone_path = session_dir.join("microphone.wav");
+        let system_path = session_dir.join("system.wav");
+        std::fs::write(&microphone_path, b"saved microphone bytes").expect("microphone file");
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                &session_dir.join("microphone.partial.wav").to_string_lossy(),
+                &microphone_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        for (source, path) in [
+            ("microphone", microphone_path.as_path()),
+            ("system", system_path.as_path()),
+        ] {
+            let artifact = repos
+                .create_pending_source_artifact(
+                    &note.id,
+                    session_id,
+                    source,
+                    &session_dir
+                        .join(format!("{source}.partial.wav"))
+                        .to_string_lossy(),
+                    &path.to_string_lossy(),
+                )
+                .await
+                .expect("source artifact");
+            repos
+                .finalize_source_artifact(
+                    &artifact.id,
+                    &path.to_string_lossy(),
+                    "valid",
+                    30_000,
+                    1,
+                    &format!("{source}-checksum"),
+                    30_000,
+                    None,
+                    None,
+                )
+                .await
+                .expect("finalize source");
+        }
+
+        let error = retry_audio_sources(&repos, &paths, &note.id, Some(session_id))
+            .await
+            .expect_err("missing System WAV must abort the whole retry");
+        assert_eq!(error.code, "audio_artifact_missing");
+        assert!(error.message.contains("system"));
+        assert!(error.message.contains("No transcript was changed"));
+    }
+}
+
+#[cfg(test)]
+mod note_transcription_timing_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
-        capture_start_timeout_error, recovery_validation_expected_duration_ms,
+        capture_start_timeout_error, create_memory_with_settings, is_share_not_found,
+        load_memory_settings, persist_memory_settings, recovery_validation_expected_duration_ms,
         should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
+        update_memory_with_settings, validated_folder_instructions, MEMORY_SETTINGS_LOCK,
     };
+
+    #[test]
+    fn recognizes_only_the_ambiguous_share_not_found_error() {
+        assert!(is_share_not_found(&AppError::new(
+            "june_request_failed",
+            "share_not_found"
+        )));
+        assert!(!is_share_not_found(&AppError::new(
+            "june_request_failed",
+            "network error"
+        )));
+        assert!(!is_share_not_found(&AppError::new(
+            "storage_unavailable",
+            "share_not_found"
+        )));
+    }
     use crate::{
         audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
+        db::repositories::Repositories,
         domain::types::{
-            AppError, AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState,
-            RecordingStatusDto, SourceReadinessDto,
+            AppError, AudioLevelDto, MemorySettingsDto, RecordingSource, RecordingSourceMode,
+            RecordingState, RecordingStatusDto, SourceReadinessDto,
         },
     };
     use std::{
@@ -2452,6 +3030,209 @@ mod tests {
         },
         time::Duration,
     };
+
+    async fn test_repositories() -> Repositories {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        Repositories::new(pool)
+    }
+
+    #[test]
+    fn memory_settings_loader_defaults_enabled_only_when_file_is_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("memory-settings.json");
+
+        assert!(load_memory_settings(&path).enabled);
+
+        std::fs::write(&path, r#"{"enabled":false}"#).expect("write valid settings");
+        assert!(!load_memory_settings(&path).enabled);
+
+        std::fs::write(&path, b"not json").expect("write corrupt settings");
+        assert!(!load_memory_settings(&path).enabled);
+    }
+
+    #[test]
+    fn memory_settings_persistence_replaces_atomically_and_preserves_previous_file_on_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("memory-settings.json");
+        let temporary_path = path.with_extension("json.tmp");
+
+        persist_memory_settings(&path, &MemorySettingsDto { enabled: false })
+            .expect("persist settings");
+        assert!(!load_memory_settings(&path).enabled);
+        assert!(!temporary_path.exists());
+
+        // A second toggle must replace the now-existing file (regression: a
+        // bare `fs::rename` does not overwrite on Windows, which stranded the
+        // toggle after its first write — persist_memory_settings goes through
+        // the platform-aware replace_file wrapper instead).
+        persist_memory_settings(&path, &MemorySettingsDto { enabled: true })
+            .expect("persist over existing file");
+        assert!(load_memory_settings(&path).enabled);
+        assert!(!temporary_path.exists());
+
+        std::fs::write(&path, r#"{"enabled":true}"#).expect("restore previous settings");
+        std::fs::create_dir(&temporary_path).expect("block temporary file creation");
+        let error = persist_memory_settings(&path, &MemorySettingsDto { enabled: false })
+            .expect_err("temporary write must fail");
+
+        assert_eq!(error.code, "memory_settings_save_failed");
+        assert!(load_memory_settings(&path).enabled);
+    }
+
+    #[tokio::test]
+    async fn memory_settings_transaction_lock_serializes_awaiting_callers() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let mut callers = Vec::new();
+        for _ in 0..6 {
+            let active = Arc::clone(&active);
+            let max_seen = Arc::clone(&max_seen);
+            callers.push(tokio::spawn(async move {
+                let _guard = MEMORY_SETTINGS_LOCK.lock().await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                // The production command holds this same guard across its
+                // enforcement awaits; force scheduling here to catch a lock
+                // that no longer protects the full asynchronous transaction.
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for caller in callers {
+            caller.await.expect("memory settings caller");
+        }
+
+        assert_eq!(max_seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn create_memory_enforces_global_and_folder_disable_matrix() {
+        for global_enabled in [false, true] {
+            for folder_disabled in [false, true] {
+                for folder_scoped in [false, true] {
+                    let repos = test_repositories().await;
+                    let folder = repos
+                        .create_folder("Project", None)
+                        .await
+                        .expect("create folder");
+                    repos
+                        .set_folder_memory_disabled(&folder.id, folder_disabled)
+                        .await
+                        .expect("set folder memory state");
+                    let dir = tempfile::tempdir().expect("tempdir");
+                    let settings_path = dir.path().join("memory-settings.json");
+                    std::fs::write(
+                        &settings_path,
+                        serde_json::json!({ "enabled": global_enabled }).to_string(),
+                    )
+                    .expect("write settings");
+
+                    let result = create_memory_with_settings(
+                        &repos,
+                        &settings_path,
+                        folder_scoped.then_some(folder.id.as_str()),
+                        "Remember this",
+                        "user",
+                    )
+                    .await;
+                    let should_reject = !global_enabled || (folder_scoped && folder_disabled);
+
+                    if should_reject {
+                        assert_eq!(
+                            result.expect_err("create must be rejected").code,
+                            "memory_disabled"
+                        );
+                    } else {
+                        let created = result.expect("create must succeed");
+                        assert_eq!(
+                            created.folder_id.as_deref(),
+                            folder_scoped.then_some(folder.id.as_str())
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn update_memory_rejects_content_in_a_disabled_folder() {
+        let repos = test_repositories().await;
+        let folder = repos
+            .create_folder("Project", None)
+            .await
+            .expect("create folder");
+        let memory = repos
+            .create_memory(Some(&folder.id), "Original", "user")
+            .await
+            .expect("create memory");
+        repos
+            .set_folder_memory_disabled(&folder.id, true)
+            .await
+            .expect("disable folder memory");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = dir.path().join("memory-settings.json");
+
+        let error = update_memory_with_settings(&repos, &settings_path, &memory.id, "Replacement")
+            .await
+            .expect_err("update must be rejected");
+
+        assert_eq!(error.code, "memory_disabled");
+        let unchanged = repos
+            .list_memories(Some(&folder.id), false)
+            .await
+            .expect("list memory");
+        assert_eq!(unchanged[0].content, "Original");
+    }
+
+    #[tokio::test]
+    async fn update_memory_rejects_all_content_when_memory_is_globally_disabled() {
+        let repos = test_repositories().await;
+        let memory = repos
+            .create_memory(None, "Original", "user")
+            .await
+            .expect("create memory");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings_path = dir.path().join("memory-settings.json");
+        std::fs::write(&settings_path, r#"{"enabled":false}"#).expect("disable memory");
+
+        let error = update_memory_with_settings(&repos, &settings_path, &memory.id, "Replacement")
+            .await
+            .expect_err("update must be rejected");
+
+        assert_eq!(error.code, "memory_disabled");
+        let unchanged = repos
+            .list_memories(None, false)
+            .await
+            .expect("list global memory");
+        assert_eq!(unchanged[0].content, "Original");
+    }
+
+    #[test]
+    fn folder_instructions_enforce_character_limit_after_trimming() {
+        let boundary = format!("  {}  ", "x".repeat(4_000));
+        assert_eq!(
+            validated_folder_instructions(Some(&boundary))
+                .expect("4,000 characters must be accepted")
+                .expect("instructions"),
+            "x".repeat(4_000)
+        );
+
+        let error = validated_folder_instructions(Some(&"x".repeat(4_001)))
+            .expect_err("4,001 characters must be rejected");
+        assert_eq!(error.code, "folder_instructions_too_long");
+    }
 
     #[test]
     fn skips_system_audio_permission_probe_while_capture_is_active() {

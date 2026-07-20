@@ -4,6 +4,7 @@ use hermes_manifest::parse_provides_tools;
 
 const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
+const EXPECTED_MACOS_ARCHITECTURES: &str = "arm64 x86_64";
 const JUNE_GITHUB_PLUGIN_MANIFEST: &str = "resources/hermes-plugins/june_github/plugin.yaml";
 const JUNE_GITHUB_PLUGIN_SOURCE: &str = "resources/hermes-plugins/june_github/__init__.py";
 const JUNE_GITHUB_TOOLS: [&str; 16] = [
@@ -50,6 +51,8 @@ fn main() {
     validate_june_github_plugin_manifest();
     build_system_audio_helper();
     build_dictation_helper();
+    prepare_computer_use_driver();
+    build_windows_dictation_helper();
     ensure_bundled_hermes_dir();
     tauri_build::build();
 }
@@ -76,6 +79,205 @@ fn validate_june_github_plugin_manifest() {
     }
 }
 
+/// Keep the Tauri resource source present for ordinary `cargo test` and
+/// rust-analyzer runs. Packaging entry points run
+/// `scripts/prepare-cua-driver.mjs` first and replace this placeholder with the
+/// authenticated narrow helper built from the locked upstream source commit.
+/// A real bundle is re-signed here so its nested signature matches June's
+/// build identity.
+fn prepare_computer_use_driver() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("cua-driver-pin.json").display()
+    );
+    for source in ["src/computer_use_driver.rs", "Cargo.toml", "Cargo.lock"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir.join(source).display()
+        );
+    }
+    let app_dir = manifest_dir
+        .parent()
+        .expect("src-tauri should have a repository parent")
+        .join(".tauri-helper")
+        .join("June Computer Use Driver.app");
+    let executable = app_dir
+        .join("Contents")
+        .join("MacOS")
+        .join("june-computer-use-driver");
+    let stamp = app_dir
+        .join("Contents")
+        .join("Resources")
+        .join("june-cua-driver-pin.json");
+    println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
+    println!("cargo:rerun-if-changed={}", executable.display());
+    println!("cargo:rerun-if-changed={}", stamp.display());
+    if !executable.exists() {
+        let placeholder = app_dir
+            .join("Contents")
+            .join("Resources")
+            .join("PLACEHOLDER.md");
+        if let Some(parent) = placeholder.parent() {
+            std::fs::create_dir_all(parent)
+                .expect("computer use driver placeholder directory should be created");
+        }
+        std::fs::write(
+            placeholder,
+            "No cua-driver in this non-packaging build. Run pnpm computer-use:prepare on macOS.\n",
+        )
+        .expect("computer use driver placeholder should be written");
+        return;
+    }
+    verify_computer_use_driver_source(
+        &manifest_dir,
+        &manifest_dir.join("cua-driver-pin.json"),
+        &stamp,
+        &executable,
+    );
+    sign_computer_use_driver(&app_dir);
+}
+
+fn verify_computer_use_driver_source(
+    manifest_dir: &std::path::Path,
+    pin_path: &std::path::Path,
+    stamp_path: &std::path::Path,
+    executable: &std::path::Path,
+) {
+    use sha2::{Digest, Sha256};
+
+    let pin: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(pin_path).expect("computer use driver pin should be readable"),
+    )
+    .expect("computer use driver pin should be valid JSON");
+    let expected_version = pin
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .expect("computer use driver pin should include version");
+    let expected_commit = pin
+        .get("sourceCommit")
+        .and_then(serde_json::Value::as_str)
+        .expect("computer use driver pin should include sourceCommit");
+    let output = std::process::Command::new(executable)
+        .arg("--version")
+        .output()
+        .expect("computer use driver version probe should run");
+    assert!(
+        output.status.success(),
+        "computer use driver version probe failed"
+    );
+    let raw = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fields: Vec<&str> = raw.split_whitespace().collect();
+    assert_eq!(
+        fields.as_slice(),
+        [
+            "june-computer-use-driver",
+            expected_version,
+            expected_commit
+        ],
+        "computer use helper does not match the pinned upstream source"
+    );
+
+    let stamp: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(stamp_path).expect("computer use driver stamp should be readable"),
+    )
+    .expect("computer use driver stamp should be valid JSON");
+    let mut source_hash = Sha256::new();
+    for (relative, source) in [
+        (
+            "src-tauri/src/computer_use_driver.rs",
+            manifest_dir.join("src/computer_use_driver.rs"),
+        ),
+        ("src-tauri/Cargo.toml", manifest_dir.join("Cargo.toml")),
+        ("src-tauri/Cargo.lock", manifest_dir.join("Cargo.lock")),
+    ] {
+        source_hash.update(relative.as_bytes());
+        source_hash.update(b"\0");
+        source_hash
+            .update(std::fs::read(source).expect("computer use helper source should be readable"));
+        source_hash.update(b"\0");
+    }
+    let expected_source_hash = format!("{:x}", source_hash.finalize());
+    assert_eq!(
+        stamp
+            .pointer("/juneBuild/sourceSha256")
+            .and_then(serde_json::Value::as_str),
+        Some(expected_source_hash.as_str()),
+        "computer use helper stamp does not match June's helper source"
+    );
+}
+
+fn sign_computer_use_driver(app_dir: &std::path::Path) {
+    let identity = std::env::var("APPLE_SIGNING_IDENTITY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "-".to_string());
+    if computer_use_signature_matches(app_dir, &identity) {
+        return;
+    }
+    let mut command = std::process::Command::new("codesign");
+    command
+        .arg("--force")
+        .arg("--deep")
+        .arg("--sign")
+        .arg(&identity);
+    if identity != "-" {
+        command.arg("--timestamp").arg("--options").arg("runtime");
+    }
+    let status = command.arg(app_dir).status();
+    if !matches!(status, Ok(status) if status.success()) {
+        panic!(
+            "computer use driver could not be signed: {}",
+            app_dir.display()
+        );
+    }
+}
+
+fn computer_use_signature_matches(app_dir: &std::path::Path, identity: &str) -> bool {
+    let verified = std::process::Command::new("/usr/bin/codesign")
+        .arg("--verify")
+        .arg("--deep")
+        .arg("--strict")
+        .arg(app_dir)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !verified {
+        return false;
+    }
+    let Ok(details) = std::process::Command::new("/usr/bin/codesign")
+        .arg("-dv")
+        .arg("--verbose=4")
+        .arg(app_dir)
+        .output()
+    else {
+        return false;
+    };
+    if !details.status.success() {
+        return false;
+    }
+    let details = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&details.stdout),
+        String::from_utf8_lossy(&details.stderr)
+    );
+    if identity == "-" {
+        details.contains("Signature=adhoc")
+    } else {
+        details
+            .lines()
+            .any(|line| line.trim() == format!("Authority={identity}"))
+    }
+}
+
 /// `tauri_build::build()` validates every `bundle.resources` source path at
 /// compile time, so the `../.tauri-hermes/hermes` mapping must exist for ANY
 /// cargo invocation (`cargo test`, rust-analyzer, dev builds) — not just for
@@ -85,13 +287,15 @@ fn validate_june_github_plugin_manifest() {
 /// placeholder keeps the build green and the app falls back to the managed
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
 ///
-/// A populated bundle carries a PIN stamp (the hermes-agent commit it was
-/// built from). When that stamp no longer matches the pin in
-/// src/hermes_bridge.rs — a developer bumped the pin after bundling — the
-/// stale bundle is evicted and replaced with the placeholder rather than
-/// silently shipping outdated runtime code.
+/// A populated bundle carries PIN and PATCHSET stamps (the hermes-agent commit
+/// and June compatibility patch it was built from). The macOS bundle also
+/// carries an ARCHITECTURES stamp. When a required stamp no longer matches,
+/// the stale bundle is evicted and replaced with the placeholder rather than
+/// silently shipping outdated or host-only runtime code.
 fn ensure_bundled_hermes_dir() {
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PATCHSET");
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/ARCHITECTURES");
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
@@ -102,9 +306,9 @@ fn ensure_bundled_hermes_dir() {
         return;
     };
     if hermes_dir.exists() {
-        if !hermes_dir.join("bin").join("hermes").exists()
-            && !hermes_dir.join("bin").join("hermes.exe").exists()
-        {
+        let mac_launcher = hermes_dir.join("bin").join("hermes");
+        let windows_launcher = hermes_dir.join("bin").join("hermes.exe");
+        if !mac_launcher.exists() && !windows_launcher.exists() {
             // Placeholder (or partial) dir: nothing to validate.
             return;
         }
@@ -112,12 +316,33 @@ fn ensure_bundled_hermes_dir() {
             .map(|raw| raw.trim().to_string())
             .unwrap_or_default();
         let pinned = hermes_agent_pinned_commit(&manifest_dir);
-        if !stamped.is_empty() && stamped == pinned {
+        let stamped_patch_set = std::fs::read_to_string(hermes_dir.join("PATCHSET"))
+            .map(|raw| raw.trim().to_string())
+            .unwrap_or_default();
+        let pinned_patch_set = hermes_runtime_patch_set(&manifest_dir);
+        let stamped_architectures = std::fs::read_to_string(hermes_dir.join("ARCHITECTURES"))
+            .map(|raw| raw.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        // Windows keeps its existing single-platform bundle. A populated
+        // macOS bundle is reusable only when the architecture stamp proves it
+        // uses the universal dual-runtime layout; this evicts old host-only
+        // bundles even when their source and patch pins still match.
+        let architecture_layout_current =
+            !mac_launcher.exists() || stamped_architectures == EXPECTED_MACOS_ARCHITECTURES;
+        if !stamped.is_empty()
+            && stamped == pinned
+            && !stamped_patch_set.is_empty()
+            && stamped_patch_set == pinned_patch_set
+            && architecture_layout_current
+        {
             return;
         }
         println!(
-            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?}, pin is \
-             {pinned:?}); evicting it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
+            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?} with patch \
+             {stamped_patch_set:?} for architectures {stamped_architectures:?}, expected \
+             {pinned:?} with patch {pinned_patch_set:?} and macOS architectures \
+             \"arm64 x86_64\"); evicting \
+             it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
         );
         if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {
             println!(
@@ -146,11 +371,19 @@ ship the runtime inside the app.\n";
 /// script cannot import crate constants, so this parses the declaration the
 /// same way scripts/bundle-hermes-runtime.sh does — one source of truth.
 fn hermes_agent_pinned_commit(manifest_dir: &std::path::Path) -> String {
+    hermes_bridge_constant(manifest_dir, "HERMES_AGENT_INSTALL_COMMIT")
+}
+
+fn hermes_runtime_patch_set(manifest_dir: &std::path::Path) -> String {
+    hermes_bridge_constant(manifest_dir, "HERMES_RUNTIME_PATCH_SET")
+}
+
+fn hermes_bridge_constant(manifest_dir: &std::path::Path, name: &str) -> String {
     let source = std::fs::read_to_string(manifest_dir.join("src").join("hermes_bridge.rs"))
         .unwrap_or_default();
     source
         .lines()
-        .find(|line| line.contains("const HERMES_AGENT_INSTALL_COMMIT"))
+        .find(|line| line.contains(&format!("const {name}")))
         .and_then(|line| {
             let start = line.find('"')? + 1;
             let end = line[start..].find('"')? + start;
@@ -278,6 +511,150 @@ fn build_system_audio_helper() {
     }
 }
 
+fn build_windows_dictation_helper() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("windows") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let helper_manifest = manifest_dir
+        .join("native")
+        .join("windows-dictation-helper")
+        .join("Cargo.toml");
+    if !helper_manifest.exists() {
+        panic!(
+            "Windows dictation helper manifest is missing at {}",
+            helper_manifest.display()
+        );
+    }
+    println!("cargo:rerun-if-changed={}", helper_manifest.display());
+    for source in [
+        "main.rs",
+        "protocol.rs",
+        "hotkeys.rs",
+        "audio.rs",
+        "clipboard.rs",
+        "focus.rs",
+        "permissions.rs",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir
+                .join("native")
+                .join("windows-dictation-helper")
+                .join("src")
+                .join(source)
+                .display()
+        );
+    }
+
+    let target = std::env::var("TARGET").ok();
+    let target_dir = manifest_dir.join("target").join("windows-dictation-helper");
+    let mut command = std::process::Command::new("cargo");
+    command
+        .arg("build")
+        .arg("--release")
+        .arg("--locked")
+        .arg("--manifest-path")
+        .arg(&helper_manifest)
+        .arg("--target-dir")
+        .arg(&target_dir);
+    if let Some(target) = target.as_deref() {
+        command.arg("--target").arg(target);
+    }
+    let status = command.status().unwrap_or_else(|error| {
+        panic!(
+            "Windows dictation helper build command could not start for {}: {error}",
+            helper_manifest.display()
+        )
+    });
+    if !status.success() {
+        panic!(
+            "Windows dictation helper build failed for {} with status {status}",
+            helper_manifest.display()
+        );
+    }
+
+    let mut built = target_dir.join("release").join("june-dictation-helper.exe");
+    if let Some(target) = target.as_deref() {
+        built = target_dir
+            .join(target)
+            .join("release")
+            .join("june-dictation-helper.exe");
+    }
+    let destination = manifest_dir
+        .join("native")
+        .join("bin")
+        .join("june-dictation-helper.exe");
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)
+            .expect("Windows dictation helper destination should be created");
+    }
+    let should_copy = match (std::fs::read(&built), std::fs::read(&destination)) {
+        (Ok(built_contents), Ok(current_contents)) => built_contents != current_contents,
+        (Ok(_), Err(_)) => true,
+        (Err(error), _) => {
+            panic!(
+                "Windows dictation helper {} should be readable before copying to {}: {error}",
+                built.display(),
+                destination.display()
+            )
+        }
+    };
+    if should_copy {
+        std::fs::copy(&built, &destination).unwrap_or_else(|error| {
+            panic!(
+                "Windows dictation helper {} should copy to {}: {error}",
+                built.display(),
+                destination.display()
+            )
+        });
+    }
+    sign_windows_helper_if_configured(&manifest_dir, &destination);
+}
+
+fn sign_windows_helper_if_configured(manifest_dir: &std::path::Path, helper: &std::path::Path) {
+    if std::env::var("WINDOWS_CERTIFICATE_PASSWORD")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return;
+    }
+    let Some(repo_dir) = manifest_dir.parent() else {
+        return;
+    };
+    let script = repo_dir.join("scripts").join("windows-sign.ps1");
+    if !script.exists() {
+        panic!(
+            "Windows signing requested but {} is missing",
+            script.display()
+        );
+    }
+    let status = std::process::Command::new("powershell.exe")
+        .arg("-NoLogo")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&script)
+        .arg(helper)
+        .status()
+        .unwrap_or_else(|error| {
+            panic!(
+                "Windows dictation helper signing command could not start for {}: {error}",
+                helper.display()
+            )
+        });
+    if !status.success() {
+        panic!(
+            "Windows dictation helper {} signing failed with status {status}",
+            helper.display()
+        );
+    }
+}
+
 fn read_system_audio_min_macos_version(manifest_dir: &std::path::Path) -> Option<String> {
     let version_file = manifest_dir.join(SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE);
     println!("cargo:rerun-if-changed={}", version_file.display());
@@ -334,6 +711,7 @@ fn build_dictation_helper() {
                 "Carbon",
                 "CoreMedia",
                 "CoreGraphics",
+                "SoundAnalysis",
             ],
         );
         if !built {

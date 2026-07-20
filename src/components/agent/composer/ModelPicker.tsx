@@ -19,6 +19,7 @@ import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../../ui/useMo
 import { HoverTip } from "../../ui/HoverTip";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../../ui/ModelPrivacyChip";
 import { Switch } from "../../ui/Switch";
+import { AUTO_MODEL_ID } from "../../settings/ModelPickerDialog";
 import { ModelPickerCardContent } from "../../settings/ModelPickerPopover";
 
 /** The composer's model picker: the trigger pill and its two-layer popover
@@ -102,6 +103,7 @@ export function ComposerModelPopover({
   search,
   popoverRef,
   searchRef,
+  veniceApiKeyConfigured = false,
   onFlyoutChange,
   onSearchChange,
   onSelect,
@@ -113,6 +115,12 @@ export function ComposerModelPopover({
   search: string;
   popoverRef: RefObject<HTMLDivElement>;
   searchRef: RefObject<HTMLInputElement>;
+  /** With a Venice API key saved and Auto as the active selection, the
+   * popover leads with the billing note from the settings picker: Auto is a
+   * June-managed route, so it meters June credits and never uses the key.
+   * This popover has no Auto section, so the note is the only billing signal
+   * on this surface (JUN-329). */
+  veniceApiKeyConfigured?: boolean;
   onFlyoutChange: (flyout: ComposerModelFlyout) => void;
   onSearchChange: (value: string) => void;
   onSelect: (modelId: string, costQuality?: number) => void;
@@ -401,6 +409,11 @@ export function ComposerModelPopover({
       }}
     >
       <p className="agent-composer-model-title">Suggested</p>
+      {veniceApiKeyConfigured && model.id === AUTO_MODEL_ID ? (
+        <p className="agent-composer-model-auto-note">
+          Auto is billed to June credits and does not use your Venice API key.
+        </p>
+      ) : null}
       <div className="agent-composer-model-menu" role="listbox" aria-label="Suggested text models">
         {suggested.length ? (
           suggested.map(({ key, model: option, costQuality: presetCostQuality }) => (

@@ -4,7 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
-import { AGENT_NEW_SESSION_EVENT, AGENT_SESSIONS_CHANGED_EVENT } from "../lib/agent-events";
+import {
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_OPEN_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+} from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type {
   AccountStatus,
@@ -76,6 +80,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogout: vi.fn(),
   osAccountsUpgrade: vi.fn(),
   agentHudShow: vi.fn(),
+  agentOpenReady: vi.fn().mockResolvedValue(null),
   agentHudHide: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
@@ -90,6 +95,7 @@ const mocks = vi.hoisted(() => ({
   p3aSettings: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
+  preloadAgentSounds: vi.fn(),
   providerModelSettings: vi.fn(),
   setP3aEnabled: vi.fn(),
   videoGenerate: vi.fn(),
@@ -112,6 +118,10 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
+}));
+
+vi.mock("../lib/agent-sounds", () => ({
+  preloadAgentSounds: mocks.preloadAgentSounds,
 }));
 
 vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
@@ -145,7 +155,21 @@ vi.mock("../app/update-decision", async () => {
 });
 
 vi.mock("../lib/tauri", () => ({
+  dictationCapabilities: vi.fn().mockResolvedValue({
+    capabilities: {
+      available: true,
+      platform: "macos",
+      shortcuts: true,
+      paste: true,
+      microphoneSelection: true,
+      accessibilityPermission: true,
+      systemAudio: true,
+    },
+  }),
   primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
+  computerUseBeginRun: vi.fn().mockResolvedValue(undefined),
+  computerUseEndRun: vi.fn().mockResolvedValue(undefined),
+  computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps
@@ -160,6 +184,14 @@ vi.mock("../lib/tauri", () => ({
   listSessionFolders: vi.fn(async () => []),
   assignSessionToFolder: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
+  listMemories: vi.fn(async () => []),
+  memorySettings: vi.fn(async () => ({ enabled: true })),
+  createMemory: vi.fn(),
+  updateMemory: vi.fn(),
+  deleteMemory: vi.fn(),
+  setMemoryEnabled: vi.fn(),
+  setFolderInstructions: vi.fn(),
+  setFolderMemoryDisabled: vi.fn(),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
   getNote: mocks.getNote,
@@ -183,6 +215,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogout: mocks.osAccountsLogout,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
   agentHudShow: mocks.agentHudShow,
+  agentOpenReady: mocks.agentOpenReady,
   agentHudHide: mocks.agentHudHide,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
@@ -343,6 +376,7 @@ describe("App shortcuts", () => {
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: false,
     });
+    mocks.agentOpenReady.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.listHermesSessions.mockResolvedValue([]);
@@ -1049,6 +1083,35 @@ describe("App shortcuts", () => {
     expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("accessibility");
   });
 
+  it("opens Accessibility settings when the dictation helper is unavailable", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.dictationHelperCommand.mockImplementation(async (command: { type: string }) => {
+      if (command.type === "request_accessibility_permission") {
+        throw new Error("helper unavailable");
+      }
+      return undefined;
+    });
+    mocks.openPrivacySettings.mockClear();
+
+    await act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Grant access" }));
+
+    await waitFor(() => expect(mocks.openPrivacySettings).toHaveBeenCalledWith("accessibility"));
+  });
+
   it("keeps refreshing Accessibility while access is missing", async () => {
     render(<App />);
 
@@ -1420,7 +1483,7 @@ describe("App shortcuts", () => {
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
-  it("uses Windows sign-in copy and opens meeting notes after sign-in", async () => {
+  it("uses Windows dictation sign-in copy and opens meeting notes after sign-in", async () => {
     const user = userEvent.setup();
     const restoreNavigator = stubNavigatorPlatform(
       "Win32",
@@ -1436,10 +1499,9 @@ describe("App shortcuts", () => {
 
       expect(
         await screen.findByText(
-          "Record conversations and turn them into notes with your OpenSoftware account.",
+          "Record conversations, turn them into notes, and dictate with your OpenSoftware account.",
         ),
       ).toBeInTheDocument();
-      expect(screen.queryByText(/dictate with/)).not.toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
@@ -1484,4 +1546,81 @@ describe("App shortcuts", () => {
     expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
   });
+
+  it("opens the chat for a notification click carrying a session id", async () => {
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-9",
+        title: "Notified session",
+        preview: "Notified session preview",
+        last_active: now,
+      },
+    ]);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_OPEN_EVENT, { detail: { sessionId: "session-9" } }),
+      );
+    });
+
+    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
+  });
+
+  it("falls back to the agent view when the notified chat is missing", async () => {
+    mocks.listHermesSessions.mockResolvedValue([]);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_OPEN_EVENT, { detail: { sessionId: "session-gone" } }),
+      );
+    });
+
+    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+  });
+
+  it("navigates to the chat of a notification clicked before the webview was ready", async () => {
+    mocks.agentOpenReady.mockResolvedValue("session-9");
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-9",
+        title: "Notified session",
+        preview: "Notified session preview",
+        last_active: now,
+      },
+    ]);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+  });
+
+  it("retries the notified-chat lookup while the Hermes bridge is still starting", async () => {
+    mocks.agentOpenReady.mockResolvedValue("session-9");
+    let sessionListCalls = 0;
+    mocks.listHermesSessions.mockImplementation(async () => {
+      sessionListCalls += 1;
+      if (sessionListCalls <= 2) throw new Error("hermes_bridge_not_running");
+      return [
+        {
+          id: "session-9",
+          title: "Notified session",
+          preview: "Notified session preview",
+          last_active: now,
+        },
+      ];
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("button", { name: "Send message" }, { timeout: 8_000 }),
+    ).toBeInTheDocument();
+  }, 15_000);
 });

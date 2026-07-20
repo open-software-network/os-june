@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub(crate) mod computer_use;
 pub(crate) mod dictate;
 pub(crate) mod health;
 pub(crate) mod image;
@@ -6,6 +7,8 @@ pub(crate) mod issues;
 pub(crate) mod models;
 pub(crate) mod notes;
 pub(crate) mod p3a;
+pub(crate) mod share;
+pub(crate) mod share_viewer;
 pub(crate) mod verify;
 pub(crate) mod video;
 pub(crate) mod web;
