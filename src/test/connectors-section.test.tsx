@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   connectorsApplyRuntime: vi.fn(),
   connectorsLinearTeams: vi.fn(),
   connectorsSetSelectedTeams: vi.fn(),
+  obsidianStatus: vi.fn(),
+  obsidianConfigure: vi.fn(),
+  obsidianDisconnect: vi.fn(),
+  openFileDialog: vi.fn(),
   notionConnectorConnect: vi.fn(),
   notionConnectorDisconnect: vi.fn(),
   listen: vi.fn(),
@@ -28,8 +32,15 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsApplyRuntime: mocks.connectorsApplyRuntime,
   connectorsLinearTeams: mocks.connectorsLinearTeams,
   connectorsSetSelectedTeams: mocks.connectorsSetSelectedTeams,
+  obsidianStatus: mocks.obsidianStatus,
+  obsidianConfigure: mocks.obsidianConfigure,
+  obsidianDisconnect: mocks.obsidianDisconnect,
   notionConnectorConnect: mocks.notionConnectorConnect,
   notionConnectorDisconnect: mocks.notionConnectorDisconnect,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: mocks.openFileDialog,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -92,6 +103,14 @@ beforeEach(() => {
     truncated: false,
   });
   mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
+  mocks.obsidianStatus.mockResolvedValue({ connected: false });
+  mocks.obsidianConfigure.mockResolvedValue({
+    connected: true,
+    vaultPath: "/vaults/work",
+    vaultName: "work",
+  });
+  mocks.obsidianDisconnect.mockResolvedValue({ connected: false });
+  mocks.openFileDialog.mockResolvedValue(null);
   mocks.listen.mockImplementation(async (_event: string, handler: () => void) => {
     connectorsChangedListener = handler;
     return () => {};
@@ -113,6 +132,95 @@ async function findEnabledConnect(name: string) {
 }
 
 describe("ConnectorsSection", () => {
+  it("uses plugin terminology for Obsidian status errors", async () => {
+    mocks.obsidianStatus.mockRejectedValue(new Error("Could not read the saved vault"));
+
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByLabelText("Obsidian plugin error")).toHaveTextContent(
+      "Could not read the saved vault",
+    );
+  });
+
+  it("blocks duplicate Obsidian picker opens and clears busy state after cancellation", async () => {
+    let resolvePicker: (selection: string | null) => void = () => {};
+    mocks.openFileDialog.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePicker = resolve;
+      }),
+    );
+
+    render(<ConnectorsSection />);
+    const connect = await findEnabledConnect("Connect Obsidian");
+
+    await userEvent.click(connect);
+    expect(connect).toBeDisabled();
+    await userEvent.click(connect);
+    expect(mocks.openFileDialog).toHaveBeenCalledTimes(1);
+
+    resolvePicker(null);
+    await waitFor(() => expect(connect).toBeEnabled());
+    expect(mocks.obsidianConfigure).not.toHaveBeenCalled();
+  });
+
+  it("connects an Obsidian vault without restarting Hermes", async () => {
+    mocks.openFileDialog.mockResolvedValue("/vaults/work");
+    mocks.obsidianStatus.mockResolvedValueOnce({ connected: false }).mockResolvedValue({
+      connected: true,
+      available: true,
+      vaultPath: "/vaults/work",
+      vaultName: "work",
+    });
+
+    render(<ConnectorsSection />);
+    await userEvent.click(await findEnabledConnect("Connect Obsidian"));
+
+    await waitFor(() => expect(mocks.obsidianConfigure).toHaveBeenCalledWith("/vaults/work"));
+    expect(await screen.findByRole("button", { name: "Change Obsidian vault" })).toBeEnabled();
+  });
+
+  it("keeps a configured unavailable Obsidian vault visible and disconnectable", async () => {
+    mocks.obsidianStatus.mockResolvedValue({
+      connected: true,
+      available: false,
+      vaultPath: "/Volumes/External/Work",
+      vaultName: "Work",
+    });
+
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText("Vault unavailable")).toBeInTheDocument();
+    expect(screen.getByText(/vault unavailable at \/Volumes\/External\/Work/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change Obsidian vault" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Disconnect Obsidian" })).toBeEnabled();
+  });
+
+  it("shows immediate progress while disconnecting Obsidian", async () => {
+    let finishDisconnect: () => void = () => {};
+    mocks.obsidianStatus.mockResolvedValue({
+      connected: true,
+      available: true,
+      vaultPath: "/vaults/work",
+      vaultName: "work",
+    });
+    mocks.obsidianDisconnect.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishDisconnect = resolve;
+      }),
+    );
+
+    render(<ConnectorsSection />);
+    await userEvent.click(await screen.findByRole("button", { name: "Disconnect Obsidian" }));
+
+    const disconnecting = await screen.findByRole("button", { name: "Disconnect Obsidian" });
+    expect(disconnecting).toBeDisabled();
+    expect(disconnecting).toHaveTextContent("Disconnecting…");
+    expect(disconnecting).toHaveAttribute("aria-busy", "true");
+
+    finishDisconnect();
+    await waitFor(() => expect(mocks.obsidianDisconnect).toHaveBeenCalledTimes(1));
+  });
+
   it("lists Google with a capability blurb", async () => {
     render(<ConnectorsSection />);
     await findEnabledConnect("Connect Google");

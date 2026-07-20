@@ -1,6 +1,7 @@
 [package]
 name = "os-june"
 version = "0.0.34"
+default-run = "os-june"
 description = "June"
 authors = ["Open Software Network"]
 license = "MIT"

@@ -2419,6 +2419,29 @@ export async function connectorsSetSelectedTeams(input: {
  * providers: Google registers its four servers, and Linear registers
  * june_linear plus june_linear_actions once the workspace has selected
  * teams. */
+export type ObsidianStatus = {
+  connected: boolean;
+  /** False when a saved vault is currently missing or cannot be validated.
+   * Optional so older desktop responses remain compatible. */
+  available?: boolean;
+  vaultPath?: string;
+  vaultName?: string;
+};
+
+export async function obsidianStatus() {
+  return invoke<ObsidianStatus>("obsidian_status");
+}
+
+export async function obsidianConfigure(vaultPath: string) {
+  return invoke<ObsidianStatus>("obsidian_configure", {
+    request: { vaultPath },
+  });
+}
+
+export async function obsidianDisconnect() {
+  return invoke<ObsidianStatus>("obsidian_disconnect");
+}
+
 export async function connectorsApplyRuntime() {
   return invoke<void>("connectors_apply_runtime");
 }

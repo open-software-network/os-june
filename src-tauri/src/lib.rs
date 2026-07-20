@@ -18,6 +18,7 @@ pub mod meeting_hud;
 pub mod menu_bar;
 mod note_audio_export;
 pub mod notifications;
+pub mod obsidian;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
@@ -337,6 +338,9 @@ pub fn run() {
             connectors::commands::connectors_disconnect,
             connectors::commands::connectors_linear_teams,
             connectors::commands::connectors_selected_teams_set,
+            obsidian::obsidian_status,
+            obsidian::obsidian_configure,
+            obsidian::obsidian_disconnect,
             connectors::commands::notion_connector_status,
             connectors::commands::notion_connector_connect,
             connectors::commands::notion_connector_cancel_connect,
