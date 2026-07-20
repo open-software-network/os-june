@@ -4704,7 +4704,12 @@ async fn shutdown_hermes_gateway(
                 .ok()
                 .and_then(|connections| connections.into_iter().next())
         });
-    match gateway_launch_agent_targets_loaded().await {
+    // Remove persistence before the bounded async unload work. Even if the
+    // aggregate shutdown deadline expires, a later login cannot reload the
+    // stale service definition while June's provider proxy is absent.
+    #[cfg(target_os = "macos")]
+    let remove_result = remove_gateway_launch_agent_plist(app);
+    let stop_result = match gateway_launch_agent_targets_loaded().await {
         Ok(targets) if targets.is_empty() => {
             if gateway_connection.is_some() {
                 tracing::warn!(
@@ -4727,7 +4732,11 @@ async fn shutdown_hermes_gateway(
             );
             stop_loaded_hermes_gateway(app, gateway_connection.as_ref(), None).await
         }
-    }
+    };
+    #[cfg(target_os = "macos")]
+    return stop_result.and(remove_result);
+    #[cfg(not(target_os = "macos"))]
+    stop_result
 }
 
 /// How long `shutdown` waits for in-flight starts to register/reap their spawned
@@ -4751,7 +4760,8 @@ const GATEWAY_SHUTDOWN_TOTAL_TIMEOUT: Duration = Duration::from_secs(6);
 #[cfg(not(target_os = "macos"))]
 const GATEWAY_SHUTDOWN_CLI_TIMEOUT: Duration = Duration::from_secs(4);
 /// Keep the status check inside the lifecycle critical section short. A failed
-/// or slow local probe falls back to the idempotent lifecycle start command.
+/// or slow local probe falls back to restart during fresh-app reconciliation,
+/// and to the idempotent lifecycle start command for interactive ensures.
 const GATEWAY_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// `launchctl bootout` only unloads the launchd job; unlike the Hermes stop CLI
 /// it does not wait through the Gateway's ten-second graceful/forced exit loop.
@@ -6773,14 +6783,30 @@ async fn start_hermes_gateway_if_needed(
 ) -> Result<bool, AppError> {
     let _gateway_guard = lock_gateway_lifecycle_if_active(bridge).await?;
     retain_routine_gateway_connection(bridge, connection)?;
-    let running = matches!(
-        tokio::time::timeout(
-            GATEWAY_STATUS_PROBE_TIMEOUT,
-            hermes_gateway_running(connection)
-        )
-        .await,
-        Ok(Ok(true))
-    );
+    let running = match tokio::time::timeout(
+        GATEWAY_STATUS_PROBE_TIMEOUT,
+        hermes_gateway_running(connection),
+    )
+    .await
+    {
+        Ok(Ok(running)) => Some(running),
+        Ok(Err(error)) => {
+            tracing::warn!(
+                ?error,
+                restart_inherited,
+                "failed to inspect Hermes routine gateway before lifecycle action"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = GATEWAY_STATUS_PROBE_TIMEOUT.as_millis(),
+                restart_inherited,
+                "timed out inspecting Hermes routine gateway before lifecycle action"
+            );
+            None
+        }
+    };
     match gateway_start_action(running, restart_inherited) {
         GatewayStartAction::KeepRunning => return Ok(false),
         GatewayStartAction::Restart => {
@@ -6804,11 +6830,11 @@ enum GatewayStartAction {
     Restart,
 }
 
-fn gateway_start_action(running: bool, restart_inherited: bool) -> GatewayStartAction {
+fn gateway_start_action(running: Option<bool>, restart_inherited: bool) -> GatewayStartAction {
     match (running, restart_inherited) {
-        (true, true) => GatewayStartAction::Restart,
-        (true, false) => GatewayStartAction::KeepRunning,
-        (false, _) => GatewayStartAction::Start,
+        (Some(true), true) | (None, true) => GatewayStartAction::Restart,
+        (Some(true), false) => GatewayStartAction::KeepRunning,
+        (Some(false), _) | (None, false) => GatewayStartAction::Start,
     }
 }
 
@@ -7005,6 +7031,40 @@ fn gateway_launch_agent_targets() -> [String; 2] {
         format!("gui/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"),
         format!("user/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"),
     ]
+}
+
+#[cfg(target_os = "macos")]
+fn gateway_launch_agent_plist_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("LaunchAgents")
+        .join(format!("{HERMES_GATEWAY_LAUNCHD_LABEL}.plist"))
+}
+
+/// A booted-out LaunchAgent is loaded again at the next login when its plist
+/// remains in `~/Library/LaunchAgents`. Remove June's pinned service definition
+/// on explicit quit so launchd cannot resurrect the Gateway before June has
+/// recreated its process-local provider proxy. The next app start is safe: the
+/// pinned Hermes `gateway start` path recreates a missing plist before bootstrap.
+#[cfg(target_os = "macos")]
+fn remove_gateway_launch_agent_plist(app: &AppHandle) -> Result<(), AppError> {
+    let home = app.path().home_dir().map_err(|error| {
+        AppError::new(
+            "hermes_gateway_stop_failed",
+            format!("Could not locate the home directory for routine gateway cleanup: {error}."),
+        )
+    })?;
+    let path = gateway_launch_agent_plist_path(&home);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new(
+            "hermes_gateway_stop_failed",
+            format!(
+                "Could not remove the routine gateway service definition at {}: {error}.",
+                path.display()
+            ),
+        )),
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -21196,14 +21256,22 @@ mcp_servers:
     #[test]
     fn app_start_reconciles_only_an_inherited_running_gateway() {
         assert_eq!(
-            gateway_start_action(true, true),
+            gateway_start_action(Some(true), true),
             GatewayStartAction::Restart
         );
         assert_eq!(
-            gateway_start_action(true, false),
+            gateway_start_action(None, true),
+            GatewayStartAction::Restart
+        );
+        assert_eq!(
+            gateway_start_action(Some(true), false),
             GatewayStartAction::KeepRunning
         );
-        assert_eq!(gateway_start_action(false, true), GatewayStartAction::Start);
+        assert_eq!(
+            gateway_start_action(Some(false), true),
+            GatewayStartAction::Start
+        );
+        assert_eq!(gateway_start_action(None, false), GatewayStartAction::Start);
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -21331,6 +21399,11 @@ mcp_servers:
         assert!(args[1].ends_with(&format!("/{HERMES_GATEWAY_LAUNCHD_LABEL}")));
         assert!(targets[1].starts_with("user/"));
         assert!(targets[1].ends_with(&format!("/{HERMES_GATEWAY_LAUNCHD_LABEL}")));
+
+        assert_eq!(
+            gateway_launch_agent_plist_path(Path::new("/Users/tester")),
+            PathBuf::from("/Users/tester/Library/LaunchAgents/ai.hermes.gateway.plist")
+        );
     }
 
     #[test]
