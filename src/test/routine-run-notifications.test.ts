@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   loadRoutineRunWatchState,
+  markRunsNotified,
   routineRunWatchStep,
   saveRoutineRunWatchState,
   type RoutineRunWatchState,
@@ -15,6 +16,7 @@ function run(id: string, overrides: Partial<HermesSessionInfo> = {}): HermesSess
     source: "cron",
     title: "Morning brief",
     preview: "Here is your brief.",
+    message_count: 4,
     ended_at: "2026-07-20T11:55:00Z",
     last_active: "2026-07-20T11:55:00Z",
     ...overrides,
@@ -35,7 +37,7 @@ describe("routineRunWatchStep", () => {
     expect(next.seen.has("cron_job1_20260720_115000")).toBe(true);
   });
 
-  it("notifies once for a freshly ended run and never again", () => {
+  it("notifies once for a freshly ended run and never again after delivery", () => {
     const first = routineRunWatchStep(PRIMED, [run("cron_job1_20260720_115000")], NOW);
     expect(first.notices).toHaveLength(1);
     expect(first.notices[0]).toMatchObject({
@@ -45,8 +47,18 @@ describe("routineRunWatchStep", () => {
       body: "Here is your brief.",
     });
 
-    const second = routineRunWatchStep(first.next, [run("cron_job1_20260720_115000")], NOW);
+    const afterDelivery = markRunsNotified(first.next, ["cron_job1_20260720_115000"]);
+    const second = routineRunWatchStep(afterDelivery, [run("cron_job1_20260720_115000")], NOW);
     expect(second.notices).toEqual([]);
+  });
+
+  it("retries a run whose notification delivery failed", () => {
+    const first = routineRunWatchStep(PRIMED, [run("cron_job1_20260720_115000")], NOW);
+    expect(first.notices).toHaveLength(1);
+
+    // Delivery failed: the id was never marked, so the next tick re-notices.
+    const second = routineRunWatchStep(first.next, [run("cron_job1_20260720_115000")], NOW);
+    expect(second.notices).toHaveLength(1);
   });
 
   it("stays quiet for a run that is still going", () => {
@@ -65,6 +77,23 @@ describe("routineRunWatchStep", () => {
         run("cron_job1_20260719_080000", {
           ended_at: "2026-07-19T08:05:00Z",
           last_active: "2026-07-19T08:05:00Z",
+        }),
+      ],
+      NOW,
+    );
+    expect(notices).toEqual([]);
+  });
+
+  it("does not treat a stuck zero-message session as finished", () => {
+    // Cron sessions persist before their first message; an inactive
+    // zero-message row with no end marker is stuck, not done.
+    const { notices } = routineRunWatchStep(
+      PRIMED,
+      [
+        run("cron_job1_20260720_115000", {
+          message_count: 0,
+          ended_at: null,
+          end_reason: null,
         }),
       ],
       NOW,
@@ -94,7 +123,8 @@ describe("routineRunWatchStep", () => {
       seen: new Set(["cron_gone_20260101_000000"]),
       primed: true,
     };
-    const { next } = routineRunWatchStep(state, [run("cron_job1_20260720_115000")], NOW);
+    const stepped = routineRunWatchStep(state, [run("cron_job1_20260720_115000")], NOW);
+    const next = markRunsNotified(stepped.next, ["cron_job1_20260720_115000"]);
     expect(next.seen.has("cron_gone_20260101_000000")).toBe(false);
     expect(next.seen.has("cron_job1_20260720_115000")).toBe(true);
   });

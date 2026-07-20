@@ -149,6 +149,7 @@ import {
 } from "../lib/hermes-adapter";
 import {
   loadRoutineRunWatchState,
+  markRunsNotified,
   routineRunWatchStep,
   saveRoutineRunWatchState,
 } from "../lib/routine-run-notifications";
@@ -2079,16 +2080,25 @@ export function App() {
       if (cancelled) return;
       const { next, notices } = routineRunWatchStep(state, sessions, Date.now());
       state = next;
+      // Mark a run seen only after its notification actually went out, so a
+      // transient delivery failure retries on the next tick instead of going
+      // silent forever.
+      const delivered: string[] = [];
+      await Promise.all(
+        notices.map((notice) =>
+          sendAppNotification({
+            title: notice.title,
+            body: notice.body,
+            sound: "Ping",
+            group: notice.jobId ? `june-routine-${notice.jobId}` : "june-routine",
+            sessionId: notice.sessionId,
+          })
+            .then(() => delivered.push(notice.sessionId))
+            .catch(() => {}),
+        ),
+      );
+      state = markRunsNotified(state, delivered);
       saveRoutineRunWatchState(state);
-      for (const notice of notices) {
-        void sendAppNotification({
-          title: notice.title,
-          body: notice.body,
-          sound: "Ping",
-          group: notice.jobId ? `june-routine-${notice.jobId}` : "june-routine",
-          sessionId: notice.sessionId,
-        }).catch(() => {});
-      }
     }
 
     void poll();

@@ -70,7 +70,11 @@ export function saveRoutineRunWatchState(state: RoutineRunWatchState) {
 function hasEnded(session: HermesSessionInfo) {
   const ended = session.ended_at ?? session.endedAt ?? session.end_reason ?? undefined;
   if (typeof ended === "string" && ended.trim()) return true;
-  return session.active !== true && session.is_active !== true;
+  // Inactivity alone is not proof of completion: cron sessions are persisted
+  // before their first message lands, so a stuck run can sit inactive with
+  // zero messages and no end marker. Only an inactive run that produced
+  // messages reads as finished.
+  return session.active !== true && session.is_active !== true && (session.message_count ?? 0) > 0;
 }
 
 function runIsFresh(session: HermesSessionInfo, now: number) {
@@ -94,6 +98,12 @@ function noticeFor(session: HermesSessionInfo): RoutineRunNotice {
  * Pure transition step: given the previous watch state and a fresh session
  * snapshot, returns the notices to post and the next state. The first call
  * on an unprimed state baselines silently.
+ *
+ * Notice ids are NOT folded into the returned state: delivery can fail
+ * (bridge hiccup, notification permission revoked), and marking before a
+ * successful send would make that failure silent and permanent. Callers
+ * confirm delivery with {@link markRunsNotified}; an unconfirmed run is
+ * retried on the next step until the freshness window closes over it.
  */
 export function routineRunWatchStep(
   state: RoutineRunWatchState,
@@ -114,18 +124,28 @@ export function routineRunWatchStep(
     .filter((run) => !state.seen.has(run.id) && runIsFresh(run, now))
     .map(noticeFor);
 
-  // Prune: keep only ids still visible in the fetch window (plus the new
-  // ones), so the set cannot grow without bound.
+  // Prune: keep only ids still visible in the fetch window, so the set
+  // cannot grow without bound. Newly noticed ids join through
+  // markRunsNotified once their notification actually went out.
   const visible = new Set(endedRuns.map((run) => run.id));
   const kept = [...state.seen].filter((id) => visible.has(id));
-  for (const run of endedRuns) {
-    if (!state.seen.has(run.id) && (visible.has(run.id) || runIsFresh(run, now))) {
-      kept.push(run.id);
-    }
-  }
   const next: RoutineRunWatchState = {
     seen: new Set(kept.slice(-MAX_TRACKED_RUNS)),
     primed: true,
   };
   return { next, notices };
+}
+
+/** Folds successfully delivered run ids into the watch state. */
+export function markRunsNotified(
+  state: RoutineRunWatchState,
+  runIds: readonly string[],
+): RoutineRunWatchState {
+  if (runIds.length === 0) return state;
+  const seen = new Set(state.seen);
+  for (const id of runIds) seen.add(id);
+  return {
+    seen: new Set([...seen].slice(-MAX_TRACKED_RUNS)),
+    primed: state.primed,
+  };
 }
