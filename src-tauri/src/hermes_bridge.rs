@@ -4643,9 +4643,25 @@ pub async fn shutdown(app: &tauri::AppHandle) {
                 .ok()
                 .and_then(|connections| connections.into_iter().next())
         });
-    let stop_result = match gateway_connection {
-        Some(connection) => stop_hermes_gateway(&connection).await,
-        None => stop_persisted_hermes_gateway(app).await,
+    let stop_result = match gateway_launch_agent_loaded().await {
+        Ok(false) => Ok(()),
+        Ok(true) => match gateway_connection {
+            Some(connection) => stop_hermes_gateway(&connection).await,
+            None => stop_persisted_hermes_gateway(app).await,
+        },
+        // A failed probe must not strand an inherited Gateway. Preserve the
+        // fail-safe stop and surface its result instead of treating uncertain
+        // launchd state as "not loaded".
+        Err(error) => {
+            eprintln!(
+                "failed to check Hermes routine gateway during app shutdown: {}; attempting stop",
+                error.message
+            );
+            match gateway_connection {
+                Some(connection) => stop_hermes_gateway(&connection).await,
+                None => stop_persisted_hermes_gateway(app).await,
+            }
+        }
     };
     if let Err(error) = stop_result {
         eprintln!(
@@ -6771,6 +6787,57 @@ async fn stop_persisted_hermes_gateway(app: &AppHandle) -> Result<(), AppError> 
         build_hermes_gateway_lifecycle_command_from_parts(&command, &hermes_home, "", "stop");
     attach_gateway_lifecycle_log(&mut cmd, &hermes_home);
     run_hermes_gateway_lifecycle_command(cmd, "stop", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT)).await
+}
+
+/// Checks the launchd job directly rather than starting the comparatively
+/// expensive Hermes CLI on every app quit. A loaded KeepAlive job needs a
+/// supervised `gateway stop` even when its process is temporarily between
+/// restarts; a missing job is already in the desired shutdown state.
+#[cfg(target_os = "macos")]
+async fn gateway_launch_agent_loaded() -> Result<bool, AppError> {
+    let mut cmd = Command::new("/bin/launchctl");
+    // SAFETY: `getuid` reads the calling process's immutable real-user id.
+    let uid = unsafe { libc::getuid() };
+    cmd.arg("print")
+        .arg(format!("gui/{uid}/ai.hermes.gateway"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    run_gateway_loaded_probe(cmd).await
+}
+
+/// Hermes' non-macOS lifecycle backends do not have a launchd job to inspect.
+/// Keep the existing fail-safe stop there until those backends expose an
+/// equally authoritative loaded-state probe.
+#[cfg(not(target_os = "macos"))]
+async fn gateway_launch_agent_loaded() -> Result<bool, AppError> {
+    Ok(true)
+}
+
+async fn run_gateway_loaded_probe(cmd: Command) -> Result<bool, AppError> {
+    let mut cmd = tokio::process::Command::from(cmd);
+    cmd.kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|error| {
+        AppError::new(
+            "hermes_gateway_status_failed",
+            format!("Could not inspect the routine gateway service. {error}"),
+        )
+    })?;
+    match tokio::time::timeout(GATEWAY_STATUS_PROBE_TIMEOUT, child.wait()).await {
+        Ok(Ok(status)) => Ok(status.success()),
+        Ok(Err(error)) => Err(AppError::new(
+            "hermes_gateway_status_failed",
+            format!("Could not wait for the routine gateway service check. {error}"),
+        )),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_millis(250), child.wait()).await;
+            Err(AppError::new(
+                "hermes_gateway_status_failed",
+                "Routine gateway service check timed out.",
+            ))
+        }
+    }
 }
 
 fn existing_hermes_command_for_gateway_stop(app: &AppHandle) -> Result<String, AppError> {
@@ -20902,6 +20969,28 @@ mcp_servers:
         assert_eq!(error.code, "hermes_gateway_start_failed");
         assert!(error.message.contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn gateway_loaded_probe_distinguishes_absent_and_loaded_services() {
+        let mut absent = Command::new("/usr/bin/false");
+        absent
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert!(!run_gateway_loaded_probe(absent)
+            .await
+            .expect("absent probe"));
+
+        let mut loaded = Command::new("/usr/bin/true");
+        loaded
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert!(run_gateway_loaded_probe(loaded)
+            .await
+            .expect("loaded probe"));
     }
 
     #[test]
