@@ -269,7 +269,7 @@ For inline review threads, use GraphQL through `gh api graphql` when `gh pr view
 - Codex review author: `chatgpt-codex-connector`
 - Codex review trigger comment: `@codex review`
 
-If a long review loop lets `origin/main` move under the branch (the mergeability check fails, or a reviewer flags drift), rebase onto freshly fetched `origin/main`, re-run the gate for the touched surfaces, and `git push --force-with-lease` before requesting the final review — a stale base can turn a green PR red after merge.
+If a long review loop lets `origin/main` move under the branch (the mergeability check fails, or a reviewer flags drift), rebase onto freshly fetched `origin/main`, re-run the gate for the touched surfaces, and `git push --force-with-lease` before requesting the final review — a stale base can turn a green PR red after merge. Two lessons from PR #744's integration merges: when both sides added interleaved blocks to one file (test suites especially), resolve by structural reconstruction — take the superset side whole and transplant the other side's disjoint blocks by name — rather than stitching conflict hunks, and compile-check with the test targets included (`cargo clippy --all-targets`, not `cargo check --lib`) since union merges surface missing struct fields and argument-count fallout only there. And a red gate right after merging main may be main's own post-merge breakage — see TROUBLESHOOTING.md before diagnosing your branch.
 
 Classify every bot comment before acting:
 

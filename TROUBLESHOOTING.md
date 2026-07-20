@@ -76,6 +76,44 @@ sandbox they fail for environmental reasons. `TMPDIR=/private/tmp` helps; if
 they still fail, re-run them outside the restricted runner rather than
 weakening the test.
 
+### Swift link failure: `__swift_FORCE_LOAD_$_swiftCompatibility*` undefined
+
+Crates that bridge Swift (e.g. `apple-metal` behind the computer-use driver)
+derive their Swift library search path from `xcode-select -p` assuming full
+Xcode's `Toolchains/XcodeDefault.xctoolchain` layout. When `xcode-select`
+points at CommandLineTools that path does not exist, the Swift compatibility
+archives never link, and `make tauri-test` / `make signoff-rust-macos` die at
+link time. Fix per invocation, never by reconfiguring `xcode-select`:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer make signoff-rust-macos
+```
+
+### Clippy fails on code you did not touch after merging main
+
+Before diagnosing your branch, check whether main itself is red: the macOS
+clippy/tests job runs **post-merge** on main, so a PR that passed its gates
+can still land dead code or lint failures that every branch inherits at the
+next merge.
+
+```bash
+gh run list --branch main --workflow desktop.yml --limit 3
+```
+
+If main is red with the same error, fix it forward in your branch (your merge
+then heals main) and say so in the PR; PR #744 inherited exactly this from a
+gateway-lifecycle refactor's dead code.
+
+### Release build fails at `beforeBundleCommand`, or bundles a stale helper
+
+`--target universal-apple-darwin` is a pseudo-triple: cargo compiles each real
+triple separately and **never** populates `target/universal-apple-darwin/`
+with `[[bin]]` outputs (only the lipo'd main binary lands there). A bundle
+hook that copies a helper binary must lipo the two real-triple outputs itself
+and assert both architectures - falling through to bare `target/release/`
+silently bundles a stale single-arch binary on runners with persistent target
+dirs. `scripts/bundle-nm-shim.sh` is the reference implementation.
+
 ## pnpm
 
 ### pnpm refuses to run: "modules purge" / non-TTY
@@ -117,3 +155,17 @@ Never reconfigure global git or ssh to work around it.
 
 The review harnesses read the tree read-only. If you commit while one is
 running, it aborts. Let reviews finish before mutating the worktree.
+
+## Shell wrappers
+
+### A background gate "completed" but actually failed
+
+Two wrapper shapes silently discard a command's exit code: piping the output
+(`long-gate.sh | tail -5` reports the pipe's status) and following with any
+command (`long-gate.sh; echo "exit: $?"` makes the wrapper itself exit 0).
+Both burned a cycle each on PR #744 by reporting a failed signoff gate as
+complete. Make the notification text the verdict instead:
+
+```bash
+long-gate.sh > gate.log 2>&1 && echo GATE_OK || echo GATE_FAILED
+```

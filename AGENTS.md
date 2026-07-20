@@ -63,7 +63,10 @@ os-june/
   the area you are touching before proposing structural change; **do not
   re-litigate accepted decisions.** Append-only: supersede with a new ADR (or a
   dated addendum), never rewrite the decision. Numbering: scan `docs/adr/` for
-  the highest `NNNN-*.md` and increment.
+  the highest `NNNN-*.md` and increment. On a long-lived branch, re-scan at
+  every merge of main: a number claimed weeks ago may have been taken on main
+  since, and the collision is yours to renumber (with its references) before
+  merging.
 - **[specs/003-conversation-turns/plan.md](specs/003-conversation-turns/plan.md)**
   — the current feature spec; its plan doubles as the tech-stack and
   shell-command reference for new agents.
