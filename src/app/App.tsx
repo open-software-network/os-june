@@ -2814,7 +2814,8 @@ export function App() {
     // A local toggle outranks the initial load's pre-toggle snapshot for this id,
     // and supersedes any earlier failure-recovery reload still in flight.
     sessionCompletionTouchedRef.current.add(sessionId);
-    const seq = (sessionCompletionSeqRef.current += 1);
+    sessionCompletionSeqRef.current += 1;
+    const seq = sessionCompletionSeqRef.current;
     setCompletedSessions((prev) => {
       const next = { ...prev };
       if (completed) next[sessionId] = new Date().toISOString();
