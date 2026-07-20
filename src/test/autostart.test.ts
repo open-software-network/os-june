@@ -8,11 +8,7 @@ const pluginMocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/plugin-autostart", () => pluginMocks);
 
-import {
-  applyAutostartDefaultOnce,
-  autostartEnabled,
-  setAutostartEnabled,
-} from "../lib/autostart";
+import { applyAutostartDefaultOnce, autostartEnabled, setAutostartEnabled } from "../lib/autostart";
 
 const DEFAULT_APPLIED_KEY = "june.autostart.defaultApplied";
 
