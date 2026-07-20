@@ -1159,7 +1159,7 @@ impl McpHttpClient {
             }))
             .await?;
         self.capture_session_id(&response);
-        let value = read_mcp_json(response).await?;
+        let value = read_mcp_json(response, 1).await?;
         ensure_jsonrpc_ok(&value, "notion_mcp_initialize_failed")?;
         self.post_json(serde_json::json!({
             "jsonrpc": "2.0",
@@ -1252,7 +1252,7 @@ impl McpHttpClient {
             }))
             .await?;
         self.capture_session_id(&response);
-        read_mcp_json(response).await
+        read_mcp_json(response, id).await
     }
 
     async fn post_json(&self, body: serde_json::Value) -> Result<reqwest::Response, AppError> {
@@ -1306,7 +1306,10 @@ impl McpHttpClient {
     }
 }
 
-async fn read_mcp_json(response: reqwest::Response) -> Result<serde_json::Value, AppError> {
+async fn read_mcp_json(
+    response: reqwest::Response,
+    expected_id: u64,
+) -> Result<serde_json::Value, AppError> {
     let bytes = response.bytes().await.map_err(|_| {
         AppError::new(
             "notion_mcp_response_failed",
@@ -1325,7 +1328,7 @@ async fn read_mcp_json(response: reqwest::Response) -> Result<serde_json::Value,
             "Notion hosted MCP returned an unreadable response.",
         )
     })?;
-    parse_json_or_sse_json(raw).ok_or_else(|| {
+    parse_json_or_sse_json(raw, expected_id).ok_or_else(|| {
         AppError::new(
             "notion_mcp_response_failed",
             "Notion hosted MCP returned an unexpected response.",
@@ -1333,14 +1336,42 @@ async fn read_mcp_json(response: reqwest::Response) -> Result<serde_json::Value,
     })
 }
 
-fn parse_json_or_sse_json(raw: &str) -> Option<serde_json::Value> {
-    serde_json::from_str(raw).ok().or_else(|| {
-        raw.lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && *line != "[DONE]")
-            .find_map(|line| serde_json::from_str(line).ok())
-    })
+fn parse_json_or_sse_json(raw: &str, expected_id: u64) -> Option<serde_json::Value> {
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+    if let Ok(value) = serde_json::from_str(raw) {
+        return jsonrpc_response_matches_id(&value, expected_id).then_some(value);
+    }
+
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let mut data = Vec::new();
+    for line in normalized.lines() {
+        if line.is_empty() {
+            if !data.is_empty() {
+                let event = data.join("\n");
+                data.clear();
+                if event.trim() != "[DONE]" {
+                    if let Ok(value) = serde_json::from_str(&event) {
+                        if jsonrpc_response_matches_id(&value, expected_id) {
+                            return Some(value);
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("data:") {
+            data.push(value.trim_start());
+        }
+    }
+    None
+}
+
+fn jsonrpc_response_matches_id(value: &serde_json::Value, expected_id: u64) -> bool {
+    value.get("method").is_none()
+        && value
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|id| id == expected_id)
 }
 
 fn ensure_jsonrpc_ok(value: &serde_json::Value, code: &'static str) -> Result<(), AppError> {
@@ -2264,6 +2295,64 @@ mod tests {
     fn callback_path_rejects_prefix_matches() {
         assert!(is_loopback_callback_path("/callback?code=x&state=y"));
         assert!(!is_loopback_callback_path("/callback-extra?code=x&state=y"));
+    }
+
+    #[test]
+    fn sse_parser_skips_messages_until_the_matching_response() {
+        let raw = concat!(
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"sampling/createMessage\",\"params\":{}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"wrong\":true}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\n",
+            "data: \"id\":3,\n",
+            "data: \"result\":{\"ok\":true}}\n\n",
+        );
+
+        let value = parse_json_or_sse_json(raw, 3).unwrap();
+        assert_eq!(value["result"]["ok"], true);
+    }
+
+    #[test]
+    fn response_parser_preserves_matching_jsonrpc_errors() {
+        let raw = concat!(
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n",
+            "data: {\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32603}}\n\n",
+        );
+
+        let value = parse_json_or_sse_json(raw, 3).unwrap();
+        assert_eq!(value["error"]["code"], -32603);
+    }
+
+    #[test]
+    fn response_parser_rejects_missing_or_mismatched_response_ids() {
+        assert!(parse_json_or_sse_json(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#, 3).is_none());
+        assert!(parse_json_or_sse_json(
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n",
+            3
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn sse_parser_accepts_bom_crlf_and_bare_cr_framing() {
+        let response = r#"{"jsonrpc":"2.0","id":3,"result":{"ok":true}}"#;
+        for raw in [
+            format!("\u{feff}data: {response}\r\n\r\n"),
+            format!("data: {response}\r\r"),
+        ] {
+            assert_eq!(
+                parse_json_or_sse_json(&raw, 3).unwrap()["result"]["ok"],
+                true
+            );
+        }
+    }
+
+    #[test]
+    fn sse_parser_discards_an_unterminated_final_event() {
+        assert!(
+            parse_json_or_sse_json("data: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}\n", 3)
+                .is_none()
+        );
     }
 
     #[tokio::test]
