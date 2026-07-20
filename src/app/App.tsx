@@ -113,6 +113,7 @@ import {
   agentHudHide,
   agentHudShow,
   agentOpenReady,
+  sendAppNotification,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
@@ -141,7 +142,16 @@ import { getAgentSoundsEnabled } from "../lib/agent-sound-settings";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
-import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import {
+  listHermesSessions,
+  listScheduledRunSessions,
+  titleFromPrompt,
+} from "../lib/hermes-adapter";
+import {
+  loadRoutineRunWatchState,
+  routineRunWatchStep,
+  saveRoutineRunWatchState,
+} from "../lib/routine-run-notifications";
 import {
   getActiveHermesProfileName,
   PROFILE_DATA_CHANGED_EVENT,
@@ -280,6 +290,9 @@ const CHECK_FOR_UPDATES_EVENT = "june://check-for-updates";
 const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_MENU_BAR_SESSION_LIMIT = 6;
 const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
+// Matches the Routines view's run-history cadence; a routine notification a
+// few seconds late is fine, hammering the bridge is not.
+const ROUTINE_RUN_NOTIFY_POLL_MS = 15000;
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
@@ -2043,6 +2056,48 @@ export function App() {
       }
     };
   }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionProfiles]);
+
+  // Routine runs finish on the launchd-managed gateway with no webview
+  // involvement, so nothing event-driven announces them. Poll the session
+  // store (the same feed the Routines view reads) and post one native,
+  // click-through notification per newly finished run. State persists so
+  // reloads and restarts never renotify, and the first poll of an install
+  // baselines silently instead of backfilling history.
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let cancelled = false;
+    let state = loadRoutineRunWatchState();
+
+    async function poll() {
+      let sessions;
+      try {
+        sessions = await listScheduledRunSessions({ includeActive: true });
+      } catch {
+        // Bridge down (asleep, restarting): try again next tick.
+        return;
+      }
+      if (cancelled) return;
+      const { next, notices } = routineRunWatchStep(state, sessions, Date.now());
+      state = next;
+      saveRoutineRunWatchState(state);
+      for (const notice of notices) {
+        void sendAppNotification({
+          title: notice.title,
+          body: notice.body,
+          sound: "Ping",
+          group: notice.jobId ? `june-routine-${notice.jobId}` : "june-routine",
+          sessionId: notice.sessionId,
+        }).catch(() => {});
+      }
+    }
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), ROUTINE_RUN_NOTIFY_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [appBlocked, bootstrapped]);
 
   // Project assignments for agent sessions, loaded once storage is up.
   useEffect(() => {
