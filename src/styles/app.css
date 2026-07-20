@@ -10520,7 +10520,8 @@ input:focus-visible,
   font-size: var(--fs-sm);
 }
 
-.note-title {
+.note-title,
+.note-title-print {
   width: 100%;
   border: 0;
   background: transparent;
@@ -10530,6 +10531,14 @@ input:focus-visible,
   font-weight: 400;
   letter-spacing: 0;
   line-height: 1.15;
+}
+
+.note-title-print {
+  display: none;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .note-title::placeholder {
@@ -27321,6 +27330,11 @@ button.connector-approvals-info {
   }
 
   .note-title {
+    display: none;
+  }
+
+  .note-title-print {
+    display: block;
     color: black !important;
     -webkit-text-fill-color: black !important;
   }

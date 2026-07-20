@@ -99,6 +99,24 @@ describe("NoteEditor", () => {
     expect(screen.getByText("First point")).toBeInTheDocument();
   });
 
+  it("renders the note title as multiline print content", () => {
+    const title = "Retour d'expérience Mago vs. pipeline interne, approche et conclusions";
+    const { container } = render(<NoteEditor {...props} note={note({ title })} />);
+
+    expect(screen.getByLabelText("Note title")).toHaveValue(title);
+    const printTitle = container.querySelector(".note-title-print");
+    expect(printTitle?.tagName).toBe("DIV");
+    expect(printTitle).toHaveTextContent(title);
+    expect(printTitle).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("uses the note placeholder for an empty print title", () => {
+    const { container } = render(<NoteEditor {...props} note={note({ title: "" })} />);
+
+    expect(screen.getByLabelText("Note title")).toHaveAttribute("placeholder", "New note");
+    expect(container.querySelector(".note-title-print")).toHaveTextContent("New note");
+  });
+
   it("shows raw transcript in transcription tab", () => {
     render(
       <NoteEditor
