@@ -629,7 +629,11 @@ pub async fn mcp_tool_list(app: &AppHandle) -> Result<NotionMcpToolList, AppErro
 }
 
 pub async fn mcp_action_tool_list(app: &AppHandle) -> Result<NotionMcpToolList, AppError> {
-    filtered_mcp_tool_list(app, action_tool_allowed_for_hermes).await
+    let mut list = filtered_mcp_tool_list(app, action_tool_allowed_for_hermes).await?;
+    for tool in &mut list.tools {
+        apply_action_tool_contract(tool);
+    }
+    Ok(list)
 }
 
 async fn filtered_mcp_tool_list(
@@ -1652,6 +1656,123 @@ fn filter_allowed_tools(
         filtered.push(tool);
     }
     filtered
+}
+
+fn apply_action_tool_contract(tool: &mut NotionMcpTool) {
+    let (description, schema) = match tool.name.as_str() {
+        "notion-create-pages" => (
+            "Create exactly one Notion page with an explicit parent, title, and previewable content. June rejects batching, async execution, icons, covers, and templates.",
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["pages"],
+                "properties": {
+                    "parent": notion_parent_schema(),
+                    "pages": {
+                        "type": "array",
+                        "description": "Exactly one page. Put parent here only when the top-level parent is omitted.",
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "parent": notion_parent_schema(),
+                                "title": { "type": "string", "minLength": 1 },
+                                "name": { "type": "string", "minLength": 1 },
+                                "properties": { "type": "object", "minProperties": 1 },
+                                "content": previewable_content_schema(),
+                                "children": { "type": "array", "minItems": 1 },
+                                "body": { "type": "string", "minLength": 1 },
+                                "markdown": { "type": "string", "minLength": 1 }
+                            }
+                        }
+                    }
+                }
+            }),
+        ),
+        "notion-update-page" => (
+            "Update one explicit Notion page using June's previewable, approval-gated subset. Archiving, trashing, async execution, icons, covers, templates, and child deletion are unavailable.",
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["page_id"],
+                "properties": {
+                    "page_id": { "type": "string", "minLength": 1 },
+                    "command": {
+                        "type": "string",
+                        "enum": [
+                            "update_properties",
+                            "replace_content",
+                            "replace_content_range",
+                            "insert_content",
+                            "update_content"
+                        ]
+                    },
+                    "selection_with_ellipsis": { "type": "string", "minLength": 1 },
+                    "new_str": { "type": "string" },
+                    "properties": { "type": "object", "minProperties": 1 },
+                    "content": previewable_content_schema(),
+                    "content_updates": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": ["old_str", "new_str"],
+                            "properties": {
+                                "old_str": { "type": "string", "minLength": 1 },
+                                "new_str": { "type": "string" }
+                            }
+                        }
+                    },
+                    "position": { "type": "object", "minProperties": 1 },
+                    "children": { "type": "array", "minItems": 1 },
+                    "body": { "type": "string", "minLength": 1 },
+                    "markdown": { "type": "string", "minLength": 1 },
+                    "title": { "type": "string", "minLength": 1 },
+                    "name": { "type": "string", "minLength": 1 }
+                }
+            }),
+        ),
+        _ => return,
+    };
+    tool.description = Some(description.to_string());
+    tool.input_schema = schema
+        .as_object()
+        .cloned()
+        .expect("action contract schema must be an object");
+}
+
+fn notion_parent_schema() -> serde_json::Value {
+    serde_json::json!({
+        "oneOf": [
+            { "type": "string", "minLength": 1 },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "minProperties": 1,
+                "maxProperties": 1,
+                "properties": {
+                    "page_id": { "type": "string", "minLength": 1 },
+                    "database_id": { "type": "string", "minLength": 1 },
+                    "data_source_id": { "type": "string", "minLength": 1 },
+                    "url": { "type": "string", "minLength": 1 },
+                    "id": { "type": "string", "minLength": 1 }
+                }
+            }
+        ]
+    })
+}
+
+fn previewable_content_schema() -> serde_json::Value {
+    serde_json::json!({
+        "oneOf": [
+            { "type": "string", "minLength": 1 },
+            { "type": "array", "minItems": 1 },
+            { "type": "object", "minProperties": 1 }
+        ]
+    })
 }
 
 fn canonical_allowed_tool_name(name: &str, allowlist: &[&'static str]) -> Option<&'static str> {
@@ -3738,6 +3859,65 @@ mod tests {
         let filtered = filter_allowed_tools(tools, action_tool_allowed_for_hermes);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "notion-update-page");
+    }
+
+    #[test]
+    fn action_contracts_replace_broader_provider_schemas() {
+        let provider_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "allow_async": { "type": "boolean" },
+                "icon": { "type": "object" },
+                "template": { "type": "object" }
+            }
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        let mut create = NotionMcpTool {
+            name: "notion-create-pages".to_string(),
+            description: Some("Provider create contract".to_string()),
+            input_schema: provider_schema.clone(),
+        };
+        apply_action_tool_contract(&mut create);
+        let create_schema = serde_json::Value::Object(create.input_schema);
+        assert_eq!(create_schema["properties"]["pages"]["maxItems"], 1);
+        assert_eq!(create_schema["properties"]["pages"]["minItems"], 1);
+        assert!(create_schema["properties"].get("allow_async").is_none());
+        assert!(create_schema["properties"]["pages"]["items"]["properties"]
+            .get("icon")
+            .is_none());
+        assert!(create
+            .description
+            .as_deref()
+            .is_some_and(|value| value.contains("exactly one Notion page")));
+
+        let mut update = NotionMcpTool {
+            name: "notion-update-page".to_string(),
+            description: Some("Provider update contract".to_string()),
+            input_schema: provider_schema,
+        };
+        apply_action_tool_contract(&mut update);
+        let update_schema = serde_json::Value::Object(update.input_schema);
+        let update_properties = update_schema["properties"].as_object().unwrap();
+        for unsupported in [
+            "allow_async",
+            "allow_deleting_content",
+            "erase_content",
+            "in_trash",
+            "is_archived",
+            "icon",
+            "cover",
+            "template",
+        ] {
+            assert!(update_properties.get(unsupported).is_none());
+        }
+        assert_eq!(update_schema["additionalProperties"], false);
+        assert!(update
+            .description
+            .as_deref()
+            .is_some_and(|value| value.contains("approval-gated subset")));
     }
 
     fn object_schema() -> serde_json::Map<String, serde_json::Value> {
