@@ -205,11 +205,15 @@ let lastHoldAt = 0; // performance.now() of the previous peak-hold update
 
 type HudTransition = {
   changed: boolean;
+  id: number;
   previous?: string;
 };
 
+let hudTransitionId = 0;
+
 function setHud(state: string, status: string): HudTransition {
-  if (!hud || !statusText) return { changed: false };
+  const id = ++hudTransitionId;
+  if (!hud || !statusText) return { changed: false, id };
   const previous = hud.dataset.state;
   hud.dataset.state = state;
   statusText.textContent = status;
@@ -251,7 +255,7 @@ function setHud(state: string, status: string): HudTransition {
     }
     if (state === "meeting") clearStopHover();
   }
-  return { changed: state !== previous, previous };
+  return { changed: state !== previous, id, previous };
 }
 
 async function updateErrorPlacement() {
@@ -909,8 +913,12 @@ async function handleDictationEventPayload(payload: unknown) {
     // Stop with nothing running (a stop racing a session that already
     // ended, or the demo pill's stop button hitting the real helper): the
     // desired end state — not listening — is already true, so there is
-    // nothing to tell the user. Take the quiet exit.
+    // nothing to tell the user. If key-down already produced a useful error
+    // (for example, missing microphone permission), preserve that error until
+    // its normal timeout instead of letting the secondary key-up failure hide
+    // it immediately.
     if (dictationEvent.payload?.code === "not_listening") {
+      if (hud?.dataset.state === "error") return;
       void hideHud();
       return;
     }
@@ -928,13 +936,18 @@ async function handleDictationEventPayload(payload: unknown) {
       return;
     }
     const message = String(dictationEvent.payload?.message ?? "Dictation failed.").trim();
-    await updateErrorPlacement();
     const transition = setHud("error", message || "Dictation failed.");
+    // Latch the error state before awaiting native placement. A key-up event
+    // can arrive during that IPC call, and its secondary not_listening error
+    // must not dismiss the actionable start failure.
+    await updateErrorPlacement();
+    if (transition.id !== hudTransitionId) return;
     // Render the pill with the message layer drawn in, snap the window to
     // the full (layer-included) size with no native motion, then draw the
     // layer out in CSS — the pill never moves and nothing clips.
     hud?.classList.add("hud-reveal-collapsed");
     await showHud({ fresh: pillIsBlank(transition.previous) });
+    if (transition.id !== hudTransitionId) return;
     playErrorReveal();
     triggerShake();
     // Hold long enough for the shake to finish and the message to read.

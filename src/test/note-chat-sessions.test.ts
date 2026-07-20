@@ -450,6 +450,75 @@ describe("note chat session map", () => {
     ).toBeInTheDocument();
   });
 
+  it("unblocks existing-note text after selecting a concrete Venice model", async () => {
+    const reason = "Add credits to send messages or generate images and videos.";
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        generationProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: autoModel.id,
+        remoteGenerationModel: autoModel.id,
+        costQuality: 100,
+        imageModel: "venice-sd35",
+        videoModel: "wan-2.2-a14b-text-to-video",
+        veniceApiKeyConfigured: true,
+        localGeneration: { baseUrl: "", modelId: "", apiKey: "" },
+        imageSafeMode: true,
+        imageSafeModePromptDismissed: false,
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: autoModel.id,
+      models: [autoModel, currentModel],
+    });
+    const submit = vi.fn(async () => true);
+    const chat = noteChat({
+      storedSessionId: "stored-note-chat",
+      modelSelection: { modelId: autoModel.id, costQuality: 100 },
+      submit,
+    });
+
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat,
+        creditActionsDisabledReason: reason,
+        renderFundingNotice: (context) =>
+          createElement(
+            "button",
+            { type: "button", onClick: context.onSelectVeniceModel },
+            "Select a Venice model",
+          ),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "What changed?");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Select a Venice model" }));
+    const picker = screen.getByRole("dialog", { name: "Choose text model" });
+    await user.click(within(picker).getByRole("button", { name: "All models" }));
+    await user.click(
+      within(screen.getByRole("group", { name: "All text models" })).getByRole("option", {
+        name: /GLM 5\.2/,
+      }),
+    );
+
+    expect(chat.setSessionModel).toHaveBeenCalledWith({ modelId: currentModel.id });
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(submit).toHaveBeenCalledWith("What changed?", []);
+  });
+
   it("keeps a first-run picker change session-local while session creation is pending", async () => {
     const user = userEvent.setup();
     const chat = noteChat({

@@ -168,13 +168,13 @@ describe("ComputerUseControl", () => {
     expect(screen.queryByText("Bundled driver unavailable")).not.toBeInTheDocument();
   });
 
-  it("exposes Computer use from the Plugins settings page", async () => {
+  it("exposes Computer use as a plugins subsection of the Connectors settings page", async () => {
     render(<PluginsView onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
     expect(screen.getByRole("heading", { name: "Plugins" })).toBeInTheDocument();
     expect(await screen.findByRole("switch", { name: "Enable Computer use" })).toBeInTheDocument();
-    expect(SETTINGS_TABS).toContainEqual({ id: "plugins", label: "Plugins" });
-    expect(SETTINGS_TABS.some((tab) => tab.label === "Connectors")).toBe(false);
+    expect(SETTINGS_TABS).toContainEqual({ id: "connectors", label: "Connectors" });
+    expect(SETTINGS_TABS.some((tab) => tab.label === "Plugins")).toBe(false);
     expect(
       screen.queryByRole("button", { name: "Open Computer use settings" }),
     ).not.toBeInTheDocument();
