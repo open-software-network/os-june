@@ -4760,8 +4760,8 @@ const GATEWAY_SHUTDOWN_TOTAL_TIMEOUT: Duration = Duration::from_secs(6);
 #[cfg(not(target_os = "macos"))]
 const GATEWAY_SHUTDOWN_CLI_TIMEOUT: Duration = Duration::from_secs(4);
 /// Keep the status check inside the lifecycle critical section short. A failed
-/// or slow local probe falls back to restart during fresh-app reconciliation,
-/// and to the idempotent lifecycle start command for interactive ensures.
+/// or slow local probe falls back to start-then-restart during fresh-app
+/// reconciliation, and to an idempotent start for interactive ensures.
 const GATEWAY_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// `launchctl bootout` only unloads the launchd job; unlike the Hermes stop CLI
 /// it does not wait through the Gateway's ten-second graceful/forced exit loop.
@@ -6809,6 +6809,20 @@ async fn start_hermes_gateway_if_needed(
     };
     match gateway_start_action(running, restart_inherited) {
         GatewayStartAction::KeepRunning => return Ok(false),
+        GatewayStartAction::StartThenRestart => {
+            // An inconclusive fresh-app probe is ambiguous: `start` recreates
+            // the plist removed by a clean shutdown, while `restart` is what
+            // rebinds a live inherited Gateway to this process's proxy. Run
+            // both idempotent lifecycle operations so either state converges.
+            if let Err(error) = run_hermes_gateway_start(bridge, connection).await {
+                tracing::warn!(
+                    ?error,
+                    "failed to prime Hermes routine gateway before reconciliation restart"
+                );
+            }
+            restart_hermes_gateway(bridge, connection).await?;
+            return Ok(true);
+        }
         GatewayStartAction::Restart => {
             // This path runs only for a fresh June app process. A Gateway that
             // is already alive survived an ungraceful prior exit and still has
@@ -6827,12 +6841,14 @@ async fn start_hermes_gateway_if_needed(
 enum GatewayStartAction {
     KeepRunning,
     Start,
+    StartThenRestart,
     Restart,
 }
 
 fn gateway_start_action(running: Option<bool>, restart_inherited: bool) -> GatewayStartAction {
     match (running, restart_inherited) {
-        (Some(true), true) | (None, true) => GatewayStartAction::Restart,
+        (Some(true), true) => GatewayStartAction::Restart,
+        (None, true) => GatewayStartAction::StartThenRestart,
         (Some(true), false) => GatewayStartAction::KeepRunning,
         (Some(false), _) | (None, false) => GatewayStartAction::Start,
     }
@@ -21261,7 +21277,7 @@ mcp_servers:
         );
         assert_eq!(
             gateway_start_action(None, true),
-            GatewayStartAction::Restart
+            GatewayStartAction::StartThenRestart
         );
         assert_eq!(
             gateway_start_action(Some(true), false),
