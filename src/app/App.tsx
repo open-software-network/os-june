@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { AccountGate, JuneMark } from "../components/account/AccountGate";
+import { AccountGate, AccountStatusFailure, JuneMark } from "../components/account/AccountGate";
 import { FundingChip, FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
@@ -3922,7 +3922,24 @@ export function App() {
           data-tauri-drag-region
           onPointerDown={handleTitlebarPointerDown}
         />
-        <div className="welcome-screen welcome-screen-loading" aria-label="Loading account" />
+        <div className="welcome-screen welcome-screen-loading">
+          <Spinner size="lg" aria-label="Starting June" />
+          <p>Starting June...</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (accountError && !account.signedIn && !devAccountsUnconfigured) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <AccountStatusFailure message={accountError} onRetry={refreshAccount} />
       </main>
     );
   }
