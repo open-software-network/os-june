@@ -52,6 +52,21 @@ describe("autostart", () => {
     expect(pluginMocks.disable).toHaveBeenCalledTimes(1);
   });
 
+  it("never re-enrolls after an explicit disable, even with a pending retry", async () => {
+    // Fresh install whose automatic enable failed leaves retry eligibility
+    // behind. The user then enables and disables by hand; a later replay
+    // must respect the disable rather than resume the retry.
+    pluginMocks.enable.mockRejectedValueOnce(new Error("no launch agent dir"));
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
+
+    await setAutostartEnabled(true);
+    await setAutostartEnabled(false);
+    pluginMocks.enable.mockClear();
+
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: false });
+    expect(pluginMocks.enable).not.toHaveBeenCalled();
+  });
+
   it("applies the launch-at-login default exactly once", async () => {
     await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
     expect(pluginMocks.enable).toHaveBeenCalledTimes(1);

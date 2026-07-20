@@ -39,6 +39,15 @@ export async function setAutostartEnabled(enabled: boolean): Promise<void> {
   const plugin = await import("@tauri-apps/plugin-autostart");
   if (enabled) await plugin.enable();
   else await plugin.disable();
+  // Any explicit user choice settles the first-run default: mark it applied
+  // and drop retry eligibility so no later onboarding replay can override
+  // what the user just decided (in particular, re-enroll after a disable).
+  try {
+    window.localStorage.setItem(DEFAULT_APPLIED_KEY, "1");
+    window.localStorage.removeItem(DEFAULT_ELIGIBLE_KEY);
+  } catch {
+    // Storage unavailable; the OS login item still reflects the choice.
+  }
 }
 
 /** Applies the launch-at-login default exactly once per machine, and only
