@@ -2190,6 +2190,26 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn set_note_transcription_warning(
+        &self,
+        note_id: &str,
+        warning: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE notes
+             SET last_error = ?, updated_at = ?
+             WHERE id = ?
+               AND processing_status = 'transcribing'
+               AND last_error IS NULL",
+        )
+        .bind(warning)
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn set_generated_note(
         &self,
         note_id: &str,
