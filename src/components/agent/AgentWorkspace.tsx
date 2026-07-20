@@ -250,7 +250,7 @@ import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawe
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
-import { MarkdownContent, highlightText } from "./MarkdownContent";
+import { MarkdownContent, highlightText, type HighlightCursor } from "./MarkdownContent";
 import { SmoothedStreamingMarkdown } from "./SmoothedStreamingMarkdown";
 import {
   ComposerModelPicker,
@@ -15999,6 +15999,8 @@ function AgentArtifactPanel({
   const [showSource, setShowSource] = useState(false);
   const [query, setQuery] = useState("");
   const [filterOpen, setFilterOpen] = useState(false);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const [matchCount, setMatchCount] = useState(0);
   // The slide-in entrance must run once per mount and never again. WebKit
   // replays CSS animations whenever it recreates the renderer (it does this
   // during the sidebar drag's per-frame relayout), which flashed the panel
@@ -16103,6 +16105,35 @@ function AgentArtifactPanel({
   // what tells you content has scrolled up behind it.
   const bodyRef = useRef<HTMLDivElement>(null);
   const fade = useScrollFade(bodyRef);
+
+  // Count the marks that the active view actually rendered. Markdown syntax
+  // can hide source-only text (for example, a link destination), so counting
+  // the raw file would make the ordinal disagree with the navigable matches in
+  // Preview. A changed query, artifact, or Preview/Source mode starts again at
+  // the first visible match.
+  useLayoutEffect(() => {
+    const matches = docHighlight
+      ? bodyRef.current?.querySelectorAll<HTMLElement>("mark[data-search-match-index]")
+      : undefined;
+    setMatchCount(matches?.length ?? 0);
+    setActiveMatchIndex(0);
+  }, [artifactPath, debouncedQuery, docHighlight, preview, showSource]);
+
+  useEffect(() => {
+    if (matchCount === 0) return;
+    const activeMatch = bodyRef.current?.querySelector<HTMLElement>(
+      `mark[data-search-match-index="${activeMatchIndex}"]`,
+    );
+    activeMatch?.scrollIntoView?.({ block: "center", inline: "nearest" });
+  }, [activeMatchIndex, matchCount]);
+
+  const navigateMatches = useCallback(
+    (direction: -1 | 1) => {
+      if (matchCount === 0) return;
+      setActiveMatchIndex((current) => (current + direction + matchCount) % matchCount);
+    },
+    [matchCount],
+  );
   // Re-measure when the panel swaps between the artifact preview and the list,
   // or when the preview content changes (the hook re-wires its observers on the
   // element swap; this catches same-element content changes).
@@ -16154,11 +16185,21 @@ function AgentArtifactPanel({
                 placeholder={filterLabel}
                 aria-label={filterLabel}
                 autoFocus
-                onChange={(event) => setQuery(event.currentTarget.value)}
+                onChange={(event) => {
+                  setQuery(event.currentTarget.value);
+                  setMatchCount(0);
+                  setActiveMatchIndex(0);
+                }}
                 onBlur={() => {
                   if (!query.trim()) setFilterOpen(false);
                 }}
                 onKeyDown={(event) => {
+                  if (artifact && event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    navigateMatches(event.shiftKey ? -1 : 1);
+                    return;
+                  }
                   if (event.key !== "Escape") return;
                   // Esc walks back one step at a time — clear the query,
                   // collapse the filter — before a final Esc (bubbling to
@@ -16168,6 +16209,33 @@ function AgentArtifactPanel({
                   else setFilterOpen(false);
                 }}
               />
+              {artifact && query.trim() ? (
+                <span className="agent-artifact-match-navigation">
+                  <output className="agent-artifact-match-status" aria-live="polite">
+                    {matchCount > 0 ? activeMatchIndex + 1 : 0} of {matchCount}
+                  </output>
+                  <button
+                    type="button"
+                    className="icon-button agent-artifact-match-button"
+                    aria-label="Previous match"
+                    disabled={matchCount === 0}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => navigateMatches(-1)}
+                  >
+                    <IconArrowUp size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button agent-artifact-match-button"
+                    aria-label="Next match"
+                    disabled={matchCount === 0}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => navigateMatches(1)}
+                  >
+                    <IconArrowDown size={12} />
+                  </button>
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="agent-artifact-filter-clear"
@@ -16250,10 +16318,19 @@ function AgentArtifactPanel({
                 alt={artifact.name}
               />
             ) : preview.kind === "text" && markdown && !showSource ? (
-              <MarkdownContent markdown={preview.text} highlight={docHighlight} />
+              <MarkdownContent
+                markdown={preview.text}
+                highlight={docHighlight}
+                activeHighlightIndex={activeMatchIndex}
+              />
             ) : preview.kind === "text" ? (
               <pre className="agent-artifact-source">
-                {docHighlight ? highlightText(preview.text, docHighlight, "source") : preview.text}
+                {docHighlight
+                  ? highlightText(preview.text, docHighlight, "source", {
+                      activeIndex: activeMatchIndex,
+                      nextIndex: 0,
+                    } satisfies HighlightCursor)
+                  : preview.text}
               </pre>
             ) : (
               <div className="agent-artifact-panel-empty">

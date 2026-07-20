@@ -10117,7 +10117,9 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-04T18:39:00Z",
       },
     ]);
-    mocks.hermesBridgeFileText.mockResolvedValue("# Quarterly summary\n\nRevenue grew.");
+    mocks.hermesBridgeFileText.mockResolvedValue(
+      "# Quarterly revenue\n\nRevenue grew. **Revenue** stayed strong.",
+    );
 
     render(<AgentWorkspace />);
 
@@ -10126,23 +10128,58 @@ describe("AgentWorkspace", () => {
     const panel = await screen.findByRole("complementary", { name: "Files" });
     expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath);
     expect(
-      await within(panel).findByRole("heading", { name: "Quarterly summary" }),
+      await within(panel).findByRole("heading", { name: "Quarterly revenue" }),
     ).toBeInTheDocument();
-    expect(within(panel).getByText("Revenue grew.")).toBeInTheDocument();
+    expect(within(panel).getByText(/Revenue grew/)).toBeInTheDocument();
 
     // Find-in-file highlights matches inside the rendered document.
     await user.click(within(panel).getByRole("button", { name: "Find in file" }));
-    await user.type(within(panel).getByLabelText("Find in file"), "revenue");
+    const findInput = within(panel).getByLabelText("Find in file");
+    await user.type(findInput, "revenue");
     // Highlighting trails typing by a short debounce.
-    await waitFor(() => expect(panel.querySelectorAll("mark").length).toBeGreaterThan(0));
-    expect(panel.querySelectorAll("mark")[0]).toHaveTextContent(/revenue/i);
+    await waitFor(() => expect(panel.querySelectorAll("mark")).toHaveLength(3));
+    const marks = panel.querySelectorAll("mark");
+    expect(Array.from(marks, (mark) => mark.dataset.searchMatchIndex)).toEqual(["0", "1", "2"]);
+    expect(marks[0]).toHaveTextContent(/revenue/i);
+    expect(marks[0]).toHaveClass("agent-search-match-active");
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+
+    // A whitespace-only query edit preserves the trimmed match set, but still
+    // recounts after the debounce instead of leaving navigation at 0 of 0.
+    await user.type(findInput, " ");
+    expect(within(panel).getByText("0 of 0")).toBeInTheDocument();
+    await waitFor(() => expect(within(panel).getByText("1 of 3")).toBeInTheDocument());
+    expect(panel.querySelectorAll("mark")).toHaveLength(3);
+
+    // Enter commits an IME candidate before it becomes match navigation.
+    expect(fireEvent.keyDown(findInput, { key: "Enter", isComposing: true })).toBe(true);
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+
+    // Enter/Shift+Enter and the buttons wrap through matches while the input
+    // keeps focus. The active class follows the stable document-wide ordinal.
+    await user.keyboard("{Enter}");
+    expect(within(panel).getByText("2 of 3")).toBeInTheDocument();
+    expect(marks[1]).toHaveClass("agent-search-match-active");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Previous match" }));
+    expect(within(panel).getByText("3 of 3")).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Next match" }));
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+
+    // Switching between rendered markdown and source resets to the first match
+    // and preserves matching ordinals in the newly rendered view.
+    await user.click(within(panel).getByRole("button", { name: "Source" }));
+    await waitFor(() => expect(within(panel).getByText("1 of 3")).toBeInTheDocument());
+    expect(panel.querySelectorAll("mark")[0]).toHaveClass("agent-search-match-active");
+
+    await user.click(findInput);
     await user.keyboard("{Escape}"); // clear
     await user.keyboard("{Escape}"); // collapse
     expect(panel.querySelectorAll("mark")).toHaveLength(0);
 
     // The source toggle swaps the rendered document for the raw markdown.
-    await user.click(within(panel).getByRole("button", { name: "Source" }));
-    expect(within(panel).getByText(/# Quarterly summary/)).toBeInTheDocument();
+    expect(within(panel).getByText(/# Quarterly revenue/)).toBeInTheDocument();
 
     await user.click(within(panel).getByRole("button", { name: "Close files" }));
     expect(screen.queryByRole("complementary", { name: "Files" })).not.toBeInTheDocument();
