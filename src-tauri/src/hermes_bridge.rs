@@ -96,12 +96,12 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =
-    "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
+    "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
     "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
 const MANAGED_UV_VERSION: &str = "0.11.15";
 const MANAGED_UV_RELEASE_BASE_URL: &str =
-    "https://github.com/astral-sh/uv/releases/download/0.11.15";
+    "https://releases.astral.sh/github/uv/releases/download/0.11.15";
 const MANAGED_UV_ARCHIVE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const MANAGED_NODE_VERSION: &str = "24.18.0";
 const MANAGED_NODE_RELEASE_BASE_URL: &str = "https://nodejs.org/download/release/v24.18.0";
@@ -9245,6 +9245,20 @@ fn managed_runtime_cheaply_available_at(runtime_dir: &Path, integrity_path: &Pat
 }
 
 #[cfg(not(target_os = "windows"))]
+fn require_managed_archive_success(status: reqwest::StatusCode) -> Result<(), AppError> {
+    if status.is_success() {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "hermes_runtime_install_failed",
+        format!(
+            "Managed runtime archive request returned HTTP {}.",
+            status.as_u16()
+        ),
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
 async fn download_verified_managed_archive(
     url: &str,
     expected_sha256: &str,
@@ -9261,8 +9275,8 @@ async fn download_verified_managed_archive(
         .get(url)
         .send()
         .await
-        .and_then(reqwest::Response::error_for_status)
         .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
+    require_managed_archive_success(response.status())?;
     if response
         .content_length()
         .is_some_and(|length| length > max_bytes)
@@ -18294,6 +18308,45 @@ esac
                     .expect("authenticated bytes extract");
             assert!(extracted.join("trusted").is_file());
             assert!(!extracted.join("poison").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_archive_urls_are_fixed_direct_https_endpoints() {
+            assert_eq!(
+                HERMES_SOURCE_TARBALL_URL,
+                "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
+            );
+            assert_eq!(
+                MANAGED_UV_RELEASE_BASE_URL,
+                "https://releases.astral.sh/github/uv/releases/download/0.11.15"
+            );
+            assert!(HERMES_SOURCE_TARBALL_URL.starts_with("https://"));
+            assert!(MANAGED_UV_RELEASE_BASE_URL.starts_with("https://"));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_archive_status_requires_explicit_success() {
+            for status in [
+                reqwest::StatusCode::OK,
+                reqwest::StatusCode::PARTIAL_CONTENT,
+            ] {
+                require_managed_archive_success(status).expect("2xx archive response");
+            }
+
+            for status in [
+                reqwest::StatusCode::FOUND,
+                reqwest::StatusCode::TEMPORARY_REDIRECT,
+                reqwest::StatusCode::BAD_REQUEST,
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            ] {
+                let error = require_managed_archive_success(status)
+                    .expect_err("non-success archive response");
+                assert_eq!(error.code, "hermes_runtime_install_failed");
+                assert!(error.message.contains(&status.as_u16().to_string()));
+                assert!(!error.message.contains("body"));
+            }
         }
 
         #[cfg(unix)]
