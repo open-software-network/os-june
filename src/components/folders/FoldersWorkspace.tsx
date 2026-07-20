@@ -1,6 +1,7 @@
 import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleAnnotation3 } from "central-icons/IconBubbleAnnotation3";
+import { IconCodeAssistant } from "central-icons/IconCodeAssistant";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
@@ -39,6 +40,7 @@ import { AddSessionsToProjectDialog } from "./AddSessionsToProjectDialog";
 import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+import { ImportClaudeProjectsDialog } from "./ImportClaudeProjectsDialog";
 
 const NO_FOLDERS: FolderDto[] = [];
 
@@ -56,6 +58,7 @@ type FoldersWorkspaceProps = {
   };
   onSelectFolder: (folderId?: string) => void;
   onCreateFolder: (name: string, description?: string) => Promise<FolderDto | undefined> | void;
+  onFoldersImported?: (folders: FolderDto[]) => void;
   onRenameFolder: (folderId: string, name: string, description?: string) => Promise<unknown> | void;
   onFolderUpdated: (folder: FolderDto) => void;
   onDeleteFolder: (folderId: string, deleteNotes: boolean) => Promise<unknown> | void;
@@ -106,6 +109,7 @@ function FolderList({
   sessionFolderIds,
   onSelectFolder,
   onCreateFolder,
+  onFoldersImported,
   onRenameFolder,
   onDeleteFolder,
   onAssignNoteToFolder,
@@ -114,6 +118,7 @@ function FolderList({
   // install would see it, real data untouched underneath.
   const folders = useForcedEmptyStates() ? NO_FOLDERS : allFolders;
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("updated");
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -206,14 +211,20 @@ function FolderList({
         title="Give your work a home"
         description="A project collects the meeting notes and agent sessions for one effort, so everything about it lives in one place."
         action={
-          <button
-            type="button"
-            className="primary-action primary-solid"
-            onClick={() => setCreateOpen(true)}
-          >
-            <IconFolderAddRight size={14} />
-            Create your first project
-          </button>
+          <div className="folders-empty-actions">
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={() => setImportOpen(true)}
+            >
+              <IconCodeAssistant size={14} />
+              Add Claude Code projects
+            </button>
+            <button type="button" className="primary-action" onClick={() => setCreateOpen(true)}>
+              <IconFolderAddRight size={14} />
+              Create a new project
+            </button>
+          </div>
         }
       />
     ) : (
@@ -231,14 +242,20 @@ function FolderList({
             Group meeting notes and agent sessions around the work they belong to.
           </p>
         </div>
-        <button
-          type="button"
-          className="primary-action primary-solid folders-create"
-          onClick={() => setCreateOpen(true)}
-        >
-          <IconFolderAddRight size={14} />
-          New project
-        </button>
+        <div className="folders-header-actions">
+          <button type="button" className="primary-action" onClick={() => setImportOpen(true)}>
+            <IconCodeAssistant size={14} />
+            Add existing
+          </button>
+          <button
+            type="button"
+            className="primary-action primary-solid folders-create"
+            onClick={() => setCreateOpen(true)}
+          >
+            <IconFolderAddRight size={14} />
+            New project
+          </button>
+        </div>
       </header>
 
       <div className="folders-controls">
@@ -296,6 +313,11 @@ function FolderList({
         onCreate={async (name, description) => {
           await onCreateFolder(name, description);
         }}
+      />
+      <ImportClaudeProjectsDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={onFoldersImported ?? (() => {})}
       />
       {editFolderTarget ? (
         <EditFolderDialog
@@ -459,6 +481,11 @@ function FolderCard({
         <div className="folder-card-text">
           <h3 className="folder-card-title">{folder.name}</h3>
           {folder.description ? <p className="folder-card-meta">{folder.description}</p> : null}
+          {folder.localPath ? (
+            <p className="folder-card-path" title={folder.localPath}>
+              {folder.localPath}
+            </p>
+          ) : null}
         </div>
         <p className="folder-card-footer">
           <span className="folder-card-footer-item">
@@ -744,6 +771,12 @@ function FolderDetail({
           )}
           {folder.description ? (
             <p className="folder-detail-description">{folder.description}</p>
+          ) : null}
+          {folder.localPath ? (
+            <p className="folder-detail-path" title={folder.localPath}>
+              <IconFolder1 size={12} aria-hidden />
+              <span>{folder.localPath}</span>
+            </p>
           ) : null}
           <p className="folder-detail-meta">
             <span className="folder-detail-meta-pill" aria-hidden>

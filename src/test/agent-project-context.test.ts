@@ -82,6 +82,18 @@ describe("agent project context", () => {
     expect(changed.text).toContain("instructions:\nUse primary sources.");
   });
 
+  it("adds a linked local folder to the hidden project context", () => {
+    const linked = prepareProjectPrompt(
+      "Inspect the repository",
+      { ...project, localPath: "/Users/alex/code/launch" },
+      undefined,
+    );
+
+    expect(linked.text).toContain("Linked local folder: /Users/alex/code/launch");
+    expect(linked.text).toContain("Use this as the primary working folder for this project.");
+    expect(stripProjectContext(linked.text)).toBe("Inspect the repository");
+  });
+
   it("does not inject for a session outside a project", () => {
     expect(prepareProjectPrompt("Global question", undefined, undefined)).toEqual({
       text: "Global question",

@@ -1164,7 +1164,7 @@ impl Repositories {
 
     pub async fn list_folders(&self, profile: &str) -> Result<Vec<FolderDto>, sqlx::error::Error> {
         let rows = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE profile = ? AND deleted_at IS NULL
              ORDER BY lower(name) ASC",
@@ -1192,6 +1192,7 @@ impl Repositories {
             description: description.clone(),
             instructions: None,
             memory_disabled: false,
+            local_path: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -1209,6 +1210,53 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
 
+        Ok(folder)
+    }
+
+    pub async fn create_linked_folder(
+        &self,
+        profile: &str,
+        name: &str,
+        local_path: &str,
+    ) -> Result<FolderDto, sqlx::error::Error> {
+        if let Some(row) = query(
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
+             FROM folders
+             WHERE profile = ? AND local_path = ? AND deleted_at IS NULL",
+        )
+        .bind(profile)
+        .bind(local_path)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Ok(folder_from_row(row));
+        }
+
+        let now = timestamp();
+        let folder = FolderDto {
+            id: Uuid::new_v4().to_string(),
+            name: name.trim().to_string(),
+            description: None,
+            instructions: None,
+            memory_disabled: false,
+            local_path: Some(local_path.to_string()),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        query(
+            "INSERT INTO folders
+             (id, name, description, profile, local_path, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&folder.id)
+        .bind(&folder.name)
+        .bind(&folder.description)
+        .bind(profile)
+        .bind(&folder.local_path)
+        .bind(&folder.created_at)
+        .bind(&folder.updated_at)
+        .execute(&self.pool)
+        .await?;
         Ok(folder)
     }
 
@@ -1240,7 +1288,7 @@ impl Repositories {
         }
 
         let row = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -1312,7 +1360,7 @@ impl Repositories {
 
     async fn get_folder(&self, folder_id: &str) -> Result<FolderDto, AppError> {
         let row = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -5698,6 +5746,17 @@ fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {
                 }
             }),
         memory_disabled: row.try_get::<i64, _>("memory_disabled").unwrap_or_default() != 0,
+        local_path: row
+            .try_get::<Option<String>, _>("local_path")
+            .unwrap_or(None)
+            .and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }

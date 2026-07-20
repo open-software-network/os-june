@@ -26,8 +26,16 @@ export type FolderDto = {
   description?: string;
   instructions?: string;
   memoryDisabled: boolean;
+  localPath?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ClaudeProjectCandidate = {
+  name: string;
+  path: string;
+  lastUsedAt?: string;
+  alreadyAdded: boolean;
 };
 
 export type MemoryDto = {
@@ -848,6 +856,14 @@ export async function renameFolder(folderId: string, name: string, description?:
 
 export async function listFolders() {
   return invoke<FolderDto[]>("list_folders");
+}
+
+export async function discoverClaudeProjects() {
+  return invoke<ClaudeProjectCandidate[]>("discover_claude_projects");
+}
+
+export async function importClaudeProjects(paths: string[]) {
+  return invoke<FolderDto[]>("import_claude_projects", { request: { paths } });
 }
 
 export async function assignNoteToFolder(noteId: string, folderId: string) {

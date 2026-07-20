@@ -3,6 +3,7 @@ pub mod app_paths;
 pub mod audio;
 pub mod browser;
 mod browser_broker;
+pub mod claude_projects;
 pub mod commands;
 pub mod computer_use;
 mod computer_use_permission_drag;
@@ -159,6 +160,8 @@ pub fn run() {
             commands::delete_note,
             commands::delete_notes,
             commands::create_folder,
+            commands::discover_claude_projects,
+            commands::import_claude_projects,
             commands::list_folders,
             commands::delete_folder,
             commands::rename_folder,

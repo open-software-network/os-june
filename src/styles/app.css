@@ -19899,6 +19899,152 @@ button.memory-project:hover {
   flex-shrink: 0;
 }
 
+.folders-header-actions,
+.folders-empty-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.folders-header-actions {
+  flex-shrink: 0;
+}
+
+.folders-empty-actions {
+  flex-wrap: wrap;
+}
+
+.claude-projects-body {
+  gap: var(--sp-3);
+}
+
+.claude-projects-status,
+.claude-projects-error p,
+.claude-projects-empty p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.claude-projects-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-md);
+  background: var(--destructive-soft);
+}
+
+.claude-projects-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  color: var(--muted-foreground);
+}
+
+.claude-projects-empty strong {
+  display: block;
+  margin-bottom: var(--sp-1);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.claude-projects-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.claude-projects-selection-bar button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+.claude-projects-list {
+  max-height: min(430px, 52vh);
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  list-style: none;
+}
+
+.claude-project-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.claude-project-row:last-child {
+  border-bottom: 0;
+}
+
+.claude-project-row:hover {
+  background: color-mix(in oklch, var(--muted) 38%, transparent);
+}
+
+.claude-project-row input {
+  width: var(--sp-4);
+  height: var(--sp-4);
+  margin: 0;
+  accent-color: var(--primary);
+}
+
+.claude-project-row-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 54%, transparent);
+  color: var(--muted-foreground);
+}
+
+.claude-project-row-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.claude-project-row-copy strong,
+.claude-project-row-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-project-row-copy strong {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.claude-project-row-copy span,
+.claude-project-row time {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.claude-project-row time {
+  white-space: nowrap;
+}
+
 /* Folders controls row — short search left, sort right ---------- */
 
 .folders-controls {
@@ -20477,6 +20623,16 @@ button.memory-project:hover {
   overflow: hidden;
 }
 
+.folder-card-path {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Card footer — pinned to the bottom of the card via the body's
  * space-between flex. Subtle file icon + count + updated date. */
 .folder-card-footer {
@@ -20665,6 +20821,23 @@ button.memory-project:hover {
   margin: 0;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+}
+
+.folder-detail-path {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  max-width: min(100%, 680px);
+  margin: 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.folder-detail-path span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Quiet meta row — folder icon in a soft pill, then count, then date. */
