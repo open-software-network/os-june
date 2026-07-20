@@ -34,6 +34,7 @@ import {
   setVeniceModel,
 } from "../../lib/tauri";
 import { LANGUAGE_OPTIONS, languageLabel } from "../../lib/dictation-languages";
+import { autostartEnabled, autostartSupported, setAutostartEnabled } from "../../lib/autostart";
 import { replayOnboarding } from "../../lib/onboarding";
 import type {
   AccountStatus,
@@ -1700,6 +1701,8 @@ export function AppSettings({
               onEnableSystemAudio={onEnableSystemAudio}
             />
 
+            <StartupSettingsSection />
+
             <PrivacySettingsSection />
           </>
         ) : null}
@@ -2721,6 +2724,79 @@ type PermissionStatusView = {
   label: string;
   tone: PermissionStatusTone;
 };
+
+/** Launch-at-login toggle. Reads and writes the OS login item directly (the
+ * LaunchAgent is the single source of truth), so state here can never drift
+ * from what System Settings shows. Hidden in browser previews, where no
+ * autostart backend exists. */
+function StartupSettingsSection() {
+  const [enabled, setEnabled] = useState<boolean>();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!autostartSupported()) return;
+    let cancelled = false;
+    autostartEnabled()
+      .then((value) => {
+        if (!cancelled) setEnabled(value);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Could not read the login item state.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function toggle(next: boolean) {
+    setSaving(true);
+    setError(undefined);
+    try {
+      await setAutostartEnabled(next);
+      setEnabled(next);
+    } catch {
+      setError("Could not update the login item. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!autostartSupported() || (enabled === undefined && !error)) return null;
+
+  return (
+    <section className="settings-group" aria-labelledby="startup-heading">
+      <h2 id="startup-heading" className="settings-group-heading">
+        Startup
+      </h2>
+      <p className="settings-group-description">
+        Dictation shortcuts, meeting detection, and scheduled routines only work while June is
+        running.
+      </p>
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Open June at login</h3>
+              <p className="settings-row-description">
+                Start June automatically when you sign in to your computer.
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={enabled === true}
+                disabled={saving || enabled === undefined}
+                aria-label="Open June at login"
+                onCheckedChange={(next) => void toggle(next)}
+              />
+            </div>
+          </div>
+          {error ? <p className="settings-row-description">{error}</p> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
 
 function PermissionsSettingsSection({
   microphonePermissionStatus,

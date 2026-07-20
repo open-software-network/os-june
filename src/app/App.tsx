@@ -210,6 +210,7 @@ import type {
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
+import { applyAutostartDefaultOnce } from "../lib/autostart";
 import {
   applyOnboardingReplayFlag,
   isOnboardingComplete,
@@ -4056,6 +4057,10 @@ export function App() {
           onAccountChanged={handleAccountChanged}
           onComplete={() => {
             markOnboardingComplete();
+            // A background assistant only works while it runs; make sure a
+            // fresh install starts at login. One-shot: a user who later
+            // turns the login item off stays off.
+            void applyAutostartDefaultOnce();
             setOnboardingDone(true);
           }}
         />

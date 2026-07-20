@@ -129,6 +129,15 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Launch-at-login. LaunchAgent (not AppleScript) so the entry
+        // survives macOS upgrades and shows up under System Settings ->
+        // General -> Login Items. Enabling/disabling stays a user action in
+        // Settings and onboarding; registering the plugin alone changes
+        // nothing.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());

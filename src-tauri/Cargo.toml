@@ -78,6 +78,7 @@ urlencoding = "2"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
 zip = { version = "=4.2.0", default-features = false }
+tauri-plugin-autostart = "2.5.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
