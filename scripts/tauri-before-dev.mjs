@@ -76,7 +76,10 @@ if (skipLocalApi) {
   }
 
   if (await portIsOpen(apiPort)) {
-    console.error(`June API port ${apiPort} is already in use. Reusing it for Tauri dev.`);
+    console.error(
+      `June API port ${apiPort} became occupied before startup. Restart make dev to select another port.`,
+    );
+    process.exit(1);
   } else {
     apiChild = spawnManaged("june-api", "cargo", ["run", "-p", "june", "--", "serve"], apiDir);
     apiChild.on("exit", (code, signal) => {
@@ -88,7 +91,10 @@ if (skipLocalApi) {
 }
 
 if (await portIsOpen(frontendPort)) {
-  console.error(`Vite port ${frontendPort} is already in use. Reusing it for Tauri dev.`);
+  console.error(
+    `Vite port ${frontendPort} became occupied before startup. Restart make dev to select another port.`,
+  );
+  process.exit(1);
 } else {
   frontendChild = spawnManaged("Vite", "pnpm", ["run", "dev"], rootDir);
   frontendChild.on("exit", exitFromChild);

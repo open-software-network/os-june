@@ -1,5 +1,6 @@
 const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
+const EXPECTED_MACOS_ARCHITECTURES: &str = "arm64 x86_64";
 
 fn main() {
     println!("cargo:rerun-if-changed=tauri.conf.json");
@@ -21,10 +22,210 @@ fn main() {
     clean_legacy_helper_bundles();
     build_system_audio_helper();
     build_dictation_helper();
+    prepare_computer_use_driver();
     build_windows_dictation_helper();
     ensure_bundled_hermes_dir();
     ensure_nm_shim_placeholder();
     tauri_build::build();
+}
+
+/// Keep the Tauri resource source present for ordinary `cargo test` and
+/// rust-analyzer runs. Packaging entry points run
+/// `scripts/prepare-cua-driver.mjs` first and replace this placeholder with the
+/// authenticated narrow helper built from the locked upstream source commit.
+/// A real bundle is re-signed here so its nested signature matches June's
+/// build identity.
+fn prepare_computer_use_driver() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("cua-driver-pin.json").display()
+    );
+    for source in ["src/computer_use_driver.rs", "Cargo.toml", "Cargo.lock"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir.join(source).display()
+        );
+    }
+    let app_dir = manifest_dir
+        .parent()
+        .expect("src-tauri should have a repository parent")
+        .join(".tauri-helper")
+        .join("June Computer Use Driver.app");
+    let executable = app_dir
+        .join("Contents")
+        .join("MacOS")
+        .join("june-computer-use-driver");
+    let stamp = app_dir
+        .join("Contents")
+        .join("Resources")
+        .join("june-cua-driver-pin.json");
+    println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
+    println!("cargo:rerun-if-changed={}", executable.display());
+    println!("cargo:rerun-if-changed={}", stamp.display());
+    if !executable.exists() {
+        let placeholder = app_dir
+            .join("Contents")
+            .join("Resources")
+            .join("PLACEHOLDER.md");
+        if let Some(parent) = placeholder.parent() {
+            std::fs::create_dir_all(parent)
+                .expect("computer use driver placeholder directory should be created");
+        }
+        std::fs::write(
+            placeholder,
+            "No cua-driver in this non-packaging build. Run pnpm computer-use:prepare on macOS.\n",
+        )
+        .expect("computer use driver placeholder should be written");
+        return;
+    }
+    verify_computer_use_driver_source(
+        &manifest_dir,
+        &manifest_dir.join("cua-driver-pin.json"),
+        &stamp,
+        &executable,
+    );
+    sign_computer_use_driver(&app_dir);
+}
+
+fn verify_computer_use_driver_source(
+    manifest_dir: &std::path::Path,
+    pin_path: &std::path::Path,
+    stamp_path: &std::path::Path,
+    executable: &std::path::Path,
+) {
+    use sha2::{Digest, Sha256};
+
+    let pin: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(pin_path).expect("computer use driver pin should be readable"),
+    )
+    .expect("computer use driver pin should be valid JSON");
+    let expected_version = pin
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .expect("computer use driver pin should include version");
+    let expected_commit = pin
+        .get("sourceCommit")
+        .and_then(serde_json::Value::as_str)
+        .expect("computer use driver pin should include sourceCommit");
+    let output = std::process::Command::new(executable)
+        .arg("--version")
+        .output()
+        .expect("computer use driver version probe should run");
+    assert!(
+        output.status.success(),
+        "computer use driver version probe failed"
+    );
+    let raw = format!(
+        "{} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fields: Vec<&str> = raw.split_whitespace().collect();
+    assert_eq!(
+        fields.as_slice(),
+        [
+            "june-computer-use-driver",
+            expected_version,
+            expected_commit
+        ],
+        "computer use helper does not match the pinned upstream source"
+    );
+
+    let stamp: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(stamp_path).expect("computer use driver stamp should be readable"),
+    )
+    .expect("computer use driver stamp should be valid JSON");
+    let mut source_hash = Sha256::new();
+    for (relative, source) in [
+        (
+            "src-tauri/src/computer_use_driver.rs",
+            manifest_dir.join("src/computer_use_driver.rs"),
+        ),
+        ("src-tauri/Cargo.toml", manifest_dir.join("Cargo.toml")),
+        ("src-tauri/Cargo.lock", manifest_dir.join("Cargo.lock")),
+    ] {
+        source_hash.update(relative.as_bytes());
+        source_hash.update(b"\0");
+        source_hash
+            .update(std::fs::read(source).expect("computer use helper source should be readable"));
+        source_hash.update(b"\0");
+    }
+    let expected_source_hash = format!("{:x}", source_hash.finalize());
+    assert_eq!(
+        stamp
+            .pointer("/juneBuild/sourceSha256")
+            .and_then(serde_json::Value::as_str),
+        Some(expected_source_hash.as_str()),
+        "computer use helper stamp does not match June's helper source"
+    );
+}
+
+fn sign_computer_use_driver(app_dir: &std::path::Path) {
+    let identity = std::env::var("APPLE_SIGNING_IDENTITY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "-".to_string());
+    if computer_use_signature_matches(app_dir, &identity) {
+        return;
+    }
+    let mut command = std::process::Command::new("codesign");
+    command
+        .arg("--force")
+        .arg("--deep")
+        .arg("--sign")
+        .arg(&identity);
+    if identity != "-" {
+        command.arg("--timestamp").arg("--options").arg("runtime");
+    }
+    let status = command.arg(app_dir).status();
+    if !matches!(status, Ok(status) if status.success()) {
+        panic!(
+            "computer use driver could not be signed: {}",
+            app_dir.display()
+        );
+    }
+}
+
+fn computer_use_signature_matches(app_dir: &std::path::Path, identity: &str) -> bool {
+    let verified = std::process::Command::new("/usr/bin/codesign")
+        .arg("--verify")
+        .arg("--deep")
+        .arg("--strict")
+        .arg(app_dir)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !verified {
+        return false;
+    }
+    let Ok(details) = std::process::Command::new("/usr/bin/codesign")
+        .arg("-dv")
+        .arg("--verbose=4")
+        .arg(app_dir)
+        .output()
+    else {
+        return false;
+    };
+    if !details.status.success() {
+        return false;
+    }
+    let details = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&details.stdout),
+        String::from_utf8_lossy(&details.stderr)
+    );
+    if identity == "-" {
+        details.contains("Signature=adhoc")
+    } else {
+        details
+            .lines()
+            .any(|line| line.trim() == format!("Authority={identity}"))
+    }
 }
 
 /// `tauri_build::build()` validates every `bundle.resources` source path at
@@ -70,13 +271,14 @@ fn ensure_nm_shim_placeholder() {
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
 ///
 /// A populated bundle carries PIN and PATCHSET stamps (the hermes-agent commit
-/// and June compatibility patch it was built from). When either stamp no
-/// longer matches src/hermes_bridge.rs, the stale bundle is evicted and
-/// replaced with the placeholder rather than silently shipping outdated
-/// runtime code.
+/// and June compatibility patch it was built from). The macOS bundle also
+/// carries an ARCHITECTURES stamp. When a required stamp no longer matches,
+/// the stale bundle is evicted and replaced with the placeholder rather than
+/// silently shipping outdated or host-only runtime code.
 fn ensure_bundled_hermes_dir() {
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
     println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PATCHSET");
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/ARCHITECTURES");
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
@@ -87,9 +289,9 @@ fn ensure_bundled_hermes_dir() {
         return;
     };
     if hermes_dir.exists() {
-        if !hermes_dir.join("bin").join("hermes").exists()
-            && !hermes_dir.join("bin").join("hermes.exe").exists()
-        {
+        let mac_launcher = hermes_dir.join("bin").join("hermes");
+        let windows_launcher = hermes_dir.join("bin").join("hermes.exe");
+        if !mac_launcher.exists() && !windows_launcher.exists() {
             // Placeholder (or partial) dir: nothing to validate.
             return;
         }
@@ -101,16 +303,28 @@ fn ensure_bundled_hermes_dir() {
             .map(|raw| raw.trim().to_string())
             .unwrap_or_default();
         let pinned_patch_set = hermes_runtime_patch_set(&manifest_dir);
+        let stamped_architectures = std::fs::read_to_string(hermes_dir.join("ARCHITECTURES"))
+            .map(|raw| raw.split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        // Windows keeps its existing single-platform bundle. A populated
+        // macOS bundle is reusable only when the architecture stamp proves it
+        // uses the universal dual-runtime layout; this evicts old host-only
+        // bundles even when their source and patch pins still match.
+        let architecture_layout_current =
+            !mac_launcher.exists() || stamped_architectures == EXPECTED_MACOS_ARCHITECTURES;
         if !stamped.is_empty()
             && stamped == pinned
             && !stamped_patch_set.is_empty()
             && stamped_patch_set == pinned_patch_set
+            && architecture_layout_current
         {
             return;
         }
         println!(
             "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?} with patch \
-             {stamped_patch_set:?}, expected {pinned:?} with patch {pinned_patch_set:?}); evicting \
+             {stamped_patch_set:?} for architectures {stamped_architectures:?}, expected \
+             {pinned:?} with patch {pinned_patch_set:?} and macOS architectures \
+             \"arm64 x86_64\"); evicting \
              it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
         );
         if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {

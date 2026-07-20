@@ -31,6 +31,7 @@ pub use envelope::{
 };
 pub use error::ApiError;
 pub use handlers::browser_transport_policy::BrowserTransportPolicyDto;
+pub use handlers::computer_use::ComputerUseRolloutDto;
 pub use handlers::dictate::{
     DictateCleanupRequest, DictateCleanupResponse, DictateTranscribeResponse,
 };
@@ -50,6 +51,7 @@ pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, ShareViewe
 /// Old stable builds keep calling production long after main moves on; this
 /// header is how logs and metrics tell them apart (ADR 0021).
 pub const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
+pub const JUNE_MACOS_VERSION_HEADER: &str = "x-june-macos-version";
 
 // The route table: one line per endpoint, so it grows with each capability
 // (private sharing is the latest). Splitting it would scatter the surface.
@@ -90,6 +92,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/browser-transport-policy",
             get(handlers::browser_transport_policy::get),
+        )
+        .route(
+            "/v1/computer-use/rollout",
+            get(handlers::computer_use::rollout),
         )
         .route(
             "/v1/notes/generate",

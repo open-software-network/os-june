@@ -31,6 +31,7 @@ export const INTERNAL_MCP_SERVER_NAMES = [
   "june_video",
   "june_recorder",
   "june_browser",
+  "june_computer_use",
   "june_gmail",
   "june_gmail_actions",
   "june_gcal",

@@ -98,3 +98,58 @@ Hermes-level global toolset denylist) is a tracked follow-up.
   the local trust domain the tokens separate route classes, not adversarial
   processes; changing that delivery model is a cross-cutting decision for all
   proxy tokens, out of this ADR's scope.
+
+## Addendum: 2026-07-17 - global native-memory denial
+
+JUN-337 closes the three honest-runtime residuals left by the original
+decision. When Memory is off, June writes `memory` into Hermes'
+`agent.disabled_toolsets`; when Memory is on, June removes only that entry and
+preserves every other disabled toolset. The pinned scheduler layers the global
+disabled list over every cron job's stored `enabled_toolsets`, and the model
+tool resolver subtracts disabled toolsets after resolving enabled toolsets.
+The deny therefore wins over a pre-existing routine override without rewriting
+each stored job.
+
+The pinned desktop/TUI gateway loaded `agent` config but did not pass
+`disabled_toolsets` into its main or background `AIAgent` construction. June's
+sealed compatibility patch now passes it through both paths (preview agents
+inherit the background arguments), so interactive and background desktop
+sessions enforce the same global deny as cron and the classic CLI.
+The patch also resolves that deny inside the central `AIAgent` constructor and
+turns on its existing `skip_memory` lifecycle gate. Memory off therefore blocks
+native `MEMORY.md` and `USER.md` prompt injection as well as external provider
+initialization, prefetch, and turn sync for every current and future agent
+construction path, not only calls to the native memory tools.
+
+Finally, the Memory toggle mutates the shared Hermes `config.yaml` directly and
+atomically before attempting live-runtime restart. Cron reloads that file for
+each run, so the policy takes effect even when no bridge connection exists and
+only the launchd routine gateway remains. Missing config is created with the
+deny; corrupt config is preserved beside the replacement for diagnosis and is
+replaced with a valid fail-closed policy. Normal spawn-time config rendering
+reapplies the persisted setting, so later spawns self-heal the policy.
+
+`config.yaml` remains jointly owned with the pinned Hermes runtime. June and
+Hermes therefore coordinate every atomic YAML replacement with the same
+cross-process advisory lock. Hermes' central writer re-reads the current file
+under that lock and makes the current `memory` deny membership win over a stale
+in-memory snapshot before saving, while retaining the writer's unrelated
+changes. This closes the last-writer-wins window without moving ownership of
+the rest of the config into June. The pinned Telegram gateway's separate
+DM-topic persistence path is routed through the same central writer so it
+cannot bypass the protocol during gateway startup.
+
+Atomic replacement follows an existing `config.yaml` symlink to its canonical
+target. Both the Rust and patched Python writers preserve the target's
+permissions, including macOS ACLs and Windows security metadata. Newly created
+configs and corrupt backups are owner-only on Unix because they can contain
+provider, on-device provider proxy, and connector credentials. On macOS, the
+Seatbelt profile grants a symlink's resolved target and atomic-temp prefix
+without widening the target directory.
+
+The earlier cron default allowlist filter, routine composition filter,
+June-owned memory-store write gate, and SOUL guidance remain in place as
+defense in depth. This addendum closes the native and external Hermes memory
+lifecycle in the honest runtime; it does not change the original consequence
+that an unrestricted agent can read files available to the user's process
+directly.

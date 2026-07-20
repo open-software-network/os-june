@@ -124,6 +124,7 @@ pub struct ApiState {
 
 struct ApiStateInner {
     pricing: Arc<PricingTable>,
+    computer_use: june_config::ComputerUseConfig,
     local_dev_enabled: bool,
     token_verifier: Arc<dyn TokenVerifier>,
     note_transcribe: Arc<NoteTranscribeService>,
@@ -232,6 +233,7 @@ impl ShareRateLimiter {
 
 pub struct ApiStateParams {
     pub pricing: Arc<PricingTable>,
+    pub computer_use: june_config::ComputerUseConfig,
     pub local_dev_enabled: bool,
     pub token_verifier: Arc<dyn TokenVerifier>,
     pub note_transcribe: Arc<NoteTranscribeService>,
@@ -255,6 +257,7 @@ impl ApiState {
         Self {
             inner: Arc::new(ApiStateInner {
                 pricing: params.pricing,
+                computer_use: params.computer_use,
                 local_dev_enabled: params.local_dev_enabled,
                 token_verifier: params.token_verifier,
                 note_transcribe: params.note_transcribe,
@@ -308,6 +311,10 @@ impl ApiState {
 
     pub(crate) fn pricing(&self) -> &PricingTable {
         &self.inner.pricing
+    }
+
+    pub(crate) fn computer_use(&self) -> &june_config::ComputerUseConfig {
+        &self.inner.computer_use
     }
 
     pub(crate) fn local_dev_enabled(&self) -> bool {

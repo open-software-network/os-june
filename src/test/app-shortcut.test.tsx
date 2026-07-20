@@ -168,6 +168,9 @@ vi.mock("../lib/tauri", () => ({
     },
   }),
   primeGeneratedVideoDir: vi.fn().mockResolvedValue(undefined),
+  computerUseBeginRun: vi.fn().mockResolvedValue(undefined),
+  computerUseEndRun: vi.fn().mockResolvedValue(undefined),
+  computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps

@@ -50,6 +50,9 @@ const HERO_GREETING = new RegExp(
 const mocks = vi.hoisted(() => ({
   cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
+  computerUseBeginRun: vi.fn().mockResolvedValue(undefined),
+  computerUseEndRun: vi.fn().mockResolvedValue(undefined),
+  computerUseStop: vi.fn().mockResolvedValue(undefined),
   createAgentTask: vi.fn(),
   editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
@@ -143,6 +146,9 @@ vi.mock("../lib/tauri", () => ({
   // `invoke`. A quiet stub keeps these workspace tests off that path.
   invoke: vi.fn(async () => []),
   cancelAgentTask: mocks.cancelAgentTask,
+  computerUseBeginRun: mocks.computerUseBeginRun,
+  computerUseEndRun: mocks.computerUseEndRun,
+  computerUseStop: mocks.computerUseStop,
   createAgentTask: mocks.createAgentTask,
   editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
@@ -7596,6 +7602,9 @@ describe("AgentWorkspace", () => {
         text: "summarize the current page",
       }),
     );
+    expect(mocks.computerUseBeginRun).toHaveBeenCalledOnce();
+    expect(mocks.computerUseBeginRun).toHaveBeenCalledWith(expect.stringMatching(/^session-2:/));
+    expect(mocks.computerUseStop).not.toHaveBeenCalled();
 
     // The session is now working, so the composer offers a stop control.
     const stop = await screen.findByRole("button", { name: "Stop June" });
@@ -7606,6 +7615,14 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
         session_id: "runtime-session-2",
       }),
+    );
+    expect(mocks.computerUseStop).toHaveBeenCalledOnce();
+    const interruptCallIndex = mocks.gatewayRequest.mock.calls.findIndex(
+      ([method]) => method === "session.interrupt",
+    );
+    expect(interruptCallIndex).toBeGreaterThanOrEqual(0);
+    expect(mocks.computerUseStop.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.gatewayRequest.mock.invocationCallOrder[interruptCallIndex] ?? Number.POSITIVE_INFINITY,
     );
     // The working flag clears even before any gateway event arrives, so the
     // stop control goes away and the session no longer reads as thinking.
@@ -8972,6 +8989,8 @@ describe("AgentWorkspace", () => {
         text: "run the build",
       }),
     );
+    const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+    expect(computerUseRunLeaseId).toMatch(/^session-2:/);
     expect(mocks.gatewayEventHandlers.size).toBe(1);
 
     act(() => {
@@ -8992,6 +9011,9 @@ describe("AgentWorkspace", () => {
           summary: "June finished.",
         }),
       ),
+    );
+    await waitFor(() =>
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId),
     );
     expect(mocks.gatewayEventHandlers.size).toBe(0);
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
@@ -9466,6 +9488,7 @@ describe("AgentWorkspace", () => {
     try {
       render(<AgentWorkspace />);
       await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+      expect(mocks.computerUseBeginRun).not.toHaveBeenCalled();
 
       // Two reconcile polls: the first miss is tolerated (a fresh submit can
       // race the runtime registering), the second clears the activity.

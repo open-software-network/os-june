@@ -25,7 +25,13 @@ path = "src/main.rs"
 name = "june-nm-shim"
 path = "src/bin/june_nm_shim.rs"
 
+[[bin]]
+name = "june-computer-use-driver"
+path = "src/computer_use_driver.rs"
+
 [build-dependencies]
+serde_json = "1.0"
+sha2 = "0.10"
 tauri-build = { version = "2.4.0", features = [] }
 
 [dependencies]
@@ -63,7 +69,7 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2.10.1"
 thiserror = "2.0"
-tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 # Untrusted URL parsing for the managed browser's public-web policy.
 url = "2"
@@ -71,29 +77,49 @@ urlencoding = "2"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
+# screencapturekit supports >=0.6,<0.9, but apple-metal 0.6.1+ references
+# macOS 26 SDK symbols that do not compile on June's macOS 15/Xcode 16 lane.
+apple-metal = { version = "=0.6.0", default-features = false }
 keyring = { version = "3", features = ["apple-native"] }
 block2 = "0.6"
+cua-driver-core = { git = "https://github.com/trycua/cua", rev = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1" }
+libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "NSApplication",
+    "NSDragging",
+    "NSDraggingItem",
+    "NSDraggingSession",
+    "NSEvent",
     "NSImage",
     "NSMenu",
     "NSMenuItem",
+    "NSPasteboard",
     "NSResponder",
     "NSRunningApplication",
+    "NSView",
+    "NSWindow",
     "NSWorkspace",
+    "libc",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std",
+    "NSArray",
+    "NSObject",
     "NSString",
+    "NSURL",
     "NSValue",
     "NSData",
     "NSGeometry",
     "objc2-core-foundation",
 ] }
 window-vibrancy = "0.6"
+platform-macos = { git = "https://github.com/trycua/cua", rev = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
@@ -103,8 +129,10 @@ windows = { version = "0.61", features = [
     "Win32_Media_Audio_Endpoints",
     "Win32_Media_KernelStreaming",
     "Win32_Media_Multimedia",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_IO",
     "Win32_System_Threading",
 ] }
 

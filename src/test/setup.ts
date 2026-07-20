@@ -42,24 +42,58 @@ if (!window.matchMedia) {
   }));
 }
 
+// Web Storage polyfill for Nodes where jsdom's localStorage never reaches the
+// test global. Node 24+ ships its own `localStorage` global that is present
+// but unavailable without `--localstorage-file` (the getter returns undefined
+// and emits an ExperimentalWarning). Vitest's populateGlobal skips window keys
+// that already exist on the Node global, so jsdom's real Storage is shadowed
+// and unrecoverable there; this shim is the only storage the suite gets. It
+// must therefore be spec-faithful: an internal Map is the source of truth,
+// and stored keys are mirrored as own enumerable properties (so
+// `Object.keys(localStorage)` returns stored keys, like a real Storage) -
+// except keys that collide with an interface member (e.g. "getItem"), which
+// per WebIDL named-property semantics never shadow the method and stay hidden
+// from enumeration while remaining retrievable via getItem.
+// Note it is still not `instanceof Storage`; tests that spy on storage keep
+// the `instanceof Storage ? Storage.prototype : window.localStorage` branch.
 if (
   !("localStorage" in globalThis) ||
   !globalThis.localStorage ||
   typeof globalThis.localStorage.clear !== "function"
 ) {
   const values = new Map<string, string>();
+  const storageProto = {
+    clear(this: Record<string, string>) {
+      values.clear();
+      for (const key of Object.keys(this)) {
+        delete this[key];
+      }
+    },
+    getItem(key: string) {
+      return values.get(String(key)) ?? null;
+    },
+    key(index: number) {
+      return Array.from(values.keys())[index] ?? null;
+    },
+    get length() {
+      return values.size;
+    },
+    removeItem(this: Record<string, string>, key: string) {
+      values.delete(String(key));
+      if (!(key in storageProto)) {
+        delete this[key];
+      }
+    },
+    setItem(this: Record<string, string>, key: string, value: string) {
+      values.set(String(key), String(value));
+      if (!(key in storageProto)) {
+        this[key] = String(value);
+      }
+    },
+  };
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
-    value: {
-      clear: () => values.clear(),
-      getItem: (key: string) => values.get(key) ?? null,
-      key: (index: number) => Array.from(values.keys())[index] ?? null,
-      get length() {
-        return values.size;
-      },
-      removeItem: (key: string) => values.delete(key),
-      setItem: (key: string, value: string) => values.set(key, String(value)),
-    },
+    value: Object.create(storageProto),
   });
 }
 

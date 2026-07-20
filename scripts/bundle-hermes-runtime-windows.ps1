@@ -269,10 +269,19 @@ if (!(Test-Path -LiteralPath $py -PathType Leaf)) {
   Fail "bundled python missing at $py."
 }
 
+$upstreamSmoke = Join-Path $work "hermes-agent-upstream-smoke"
+Copy-Item -Recurse -Path $agentDir -Destination $upstreamSmoke
 Invoke-Native $py @(
   (Join-Path $root "src-tauri\src\hermes\apply_june_patches.py"),
   $agentDir
 )
+Invoke-Native $py @(
+  (Join-Path $root "scripts\hermes-approval-patch-smoke.py"),
+  $agentDir,
+  "--upstream-root",
+  $upstreamSmoke
+)
+Remove-Item -Recurse -Force -LiteralPath $upstreamSmoke
 
 Log "installing python deps"
 $venvDir = Join-Path $agentDir "venv"

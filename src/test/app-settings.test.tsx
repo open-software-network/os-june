@@ -154,6 +154,20 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
 }));
 
+// Enumerate storage the spec way (length + key(i)) rather than relying on
+// stored keys being own enumerable properties: portable across jsdom's
+// Storage, the setup.ts shim, and real browsers (see JUN-355).
+function storageKeys(): string[] {
+  const keys: string[] = [];
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (key !== null) {
+      keys.push(key);
+    }
+  }
+  return keys;
+}
+
 const baseSettings: DictationSettingsDto = {
   pushToTalkShortcut: {
     keyCode: 0x02,
@@ -712,7 +726,7 @@ describe("AppSettings", () => {
 
     const refreshedStyle = avatar?.getAttribute("style");
     expect(refreshedStyle).not.toBe(initialStyle);
-    const pendingStorageKey = Object.keys(localStorage).find((key) =>
+    const pendingStorageKey = storageKeys().find((key) =>
       key.startsWith("june:account-avatar-pending:"),
     );
     expect(pendingStorageKey).toBeDefined();
@@ -735,9 +749,9 @@ describe("AppSettings", () => {
       refreshedStyle,
     );
     await waitFor(() =>
-      expect(
-        Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
-      ).toBe(false),
+      expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(
+        false,
+      ),
     );
     unmountSynced();
 
@@ -813,9 +827,7 @@ describe("AppSettings", () => {
     );
     expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
     expect(screen.queryByText(/account permissions/)).not.toBeInTheDocument();
-    expect(
-      Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
-    ).toBe(true);
+    expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(true);
     const localStyle = avatar?.getAttribute("style");
     expect(localStyle).not.toBe(remoteStyle);
     unmount();
@@ -879,9 +891,7 @@ describe("AppSettings", () => {
     const { rerender } = render(settings(signedInAccount));
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
-    expect(
-      Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
-    ).toBe(true);
+    expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(true);
 
     rerender(
       settings({
@@ -895,9 +905,9 @@ describe("AppSettings", () => {
       expect(avatar?.style.getPropertyValue(property)).toBe(value);
     }
     await waitFor(() =>
-      expect(
-        Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
-      ).toBe(false),
+      expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(
+        false,
+      ),
     );
     expect(
       screen.queryByText("This pattern is saved only on this device."),
@@ -936,9 +946,7 @@ describe("AppSettings", () => {
     const { rerender } = render(settings(accountWithRemoteSeed));
 
     await user.click(screen.getByRole("button", { name: "Refresh" }));
-    expect(
-      Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
-    ).toBe(true);
+    expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(true);
     expect(screen.getByText("This pattern is saved only on this device.")).toBeInTheDocument();
 
     const newerRemote = {
@@ -957,9 +965,9 @@ describe("AppSettings", () => {
       expect(avatar?.style.getPropertyValue(property)).toBe(value);
     }
     await waitFor(() =>
-      expect(
-        Object.keys(localStorage).some((key) => key.startsWith("june:account-avatar-pending:")),
-      ).toBe(false),
+      expect(storageKeys().some((key) => key.startsWith("june:account-avatar-pending:"))).toBe(
+        false,
+      ),
     );
     expect(
       screen.queryByText("This pattern is saved only on this device."),

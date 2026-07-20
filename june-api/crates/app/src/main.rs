@@ -371,6 +371,7 @@ fn build_router(
 
     let state = ApiState::new(ApiStateParams {
         pricing,
+        computer_use: config.computer_use.clone(),
         local_dev_enabled: config.local_dev.enabled,
         token_verifier,
         note_transcribe,

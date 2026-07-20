@@ -274,8 +274,8 @@ const SETTINGS_SIDEBAR_GROUPS: {
         icon: <IconBrainSideview size={16} />,
       },
       {
-        id: "connectors",
-        label: "Connectors",
+        id: "plugins",
+        label: "Plugins",
         icon: <IconPlugin1 size={16} />,
       },
       {
@@ -681,6 +681,16 @@ export function Sidebar({
         icon: <IconZap size={15} />,
         searchText: normalizeCommandQuery("routines go to"),
         action: () => onChangeView("routines"),
+      },
+      {
+        id: "quick:plugins",
+        label: "Go to plugins",
+        icon: <IconPlugin1 size={15} />,
+        searchText: normalizeCommandQuery("plugins computer use go to"),
+        action: () => {
+          onSettingsTabChange?.("plugins");
+          onChangeView("settings");
+        },
       },
       {
         id: "quick:settings",

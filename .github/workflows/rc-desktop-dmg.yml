@@ -110,7 +110,6 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_URL }}
           PRODUCTION_OS_ACCOUNTS_API_URL: ${{ secrets.PRODUCTION_OS_ACCOUNTS_API_URL }}
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
-          PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY: ${{ secrets.PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
           PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
@@ -141,10 +140,6 @@ jobs:
               missing=1
             fi
           done
-          if [ "${PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY:-}" != "true" ]; then
-            echo "::error::Set PRODUCTION_OS_ACCOUNTS_PROFILE_WRITE_READY=true only after the June OAuth client allows profile:write and a fresh production sign-in succeeds."
-            missing=1
-          fi
           exit "$missing"
 
       - name: Validate and compose rc version
@@ -309,12 +304,16 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: .tauri-hermes/hermes
-          key: hermes-bundle-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'src-tauri/src/hermes_bridge.rs') }}
+          # v2 is the dual-runtime layout. Never restore a host-only v1 cache.
+          key: hermes-bundle-macos-universal-v2-${{ runner.os }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'scripts/audit-hermes-runtime.sh', 'scripts/hermes-native-import-smoke.py', 'src-tauri/src/hermes_bridge.rs', 'src-tauri/src/hermes/apply_june_patches.py', 'src-tauri/src/hermes/sitecustomize.py') }}
 
       - name: Bundle Hermes runtime into app resources
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: ./scripts/bundle-hermes-runtime.sh
+
+      - name: Prepare universal Computer use helper
+        run: pnpm computer-use:prepare -- --release --target universal-apple-darwin
 
       - name: Build and sign rc app artifacts
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
@@ -363,6 +362,19 @@ jobs:
             fi
             exit 1
           fi
+
+          apps=(
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/macos/*.app
+          )
+          if [ "${#apps[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one rc app bundle, found ${#apps[@]}"
+            exit 1
+          fi
+          app="${apps[0]}"
+          ./scripts/audit-hermes-runtime.sh \
+            "$app/Contents/Resources/native/hermes" --require-signed
+          codesign --verify --deep --strict --verbose=2 "$app"
 
           dmg="${dmgs[0]}"
           xcrun notarytool submit "$dmg" \

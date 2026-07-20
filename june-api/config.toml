@@ -54,6 +54,13 @@ diagnosis_model = "zai-org-glm-5-2"
 diagnosis_timeout_secs = 10
 diagnosis_max_per_user_per_hour = 6
 
+[computer_use]
+# Emergency rollout switch. Version entries accept exact values or a trailing
+# wildcard such as "0.0.*" / "15.4.*".
+enabled = true
+disabled_june_versions = []
+disabled_macos_versions = []
+
 [os_accounts]
 # api_url has no default — must come from JUNE__OS_ACCOUNTS__API_URL
 # per environment so a missing override fails loud against the dev

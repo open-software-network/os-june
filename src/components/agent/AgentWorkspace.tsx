@@ -88,6 +88,9 @@ import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
   cancelAgentTask,
+  computerUseBeginRun,
+  computerUseEndRun,
+  computerUseStop,
   dictationHelperCommand,
   explainAgentApproval,
   finalizeHermesBridgeBranch,
@@ -2681,6 +2684,7 @@ export function AgentWorkspace({
     Record<string, Map<number, PendingAttachmentPreparation>>
   >({});
   const completedAgentRunAwaitingAttachmentPreparationRef = useRef(new Set<string>());
+  const computerUseRunLeasesRef = useRef(new Map<string, Set<string>>());
   const [upNextDemoFollowUpsBySessionId, setUpNextDemoFollowUpsBySessionId] = useState<
     Record<string, QueuedAttachmentFollowUp[]>
   >({});
@@ -3094,6 +3098,14 @@ export function AgentWorkspace({
     runtimeSessionIdsRef.current = runtimeSessionIds;
   }, [runtimeSessionIds]);
 
+  useEffect(
+    () => () => {
+      computerUseRunLeasesRef.current.clear();
+      void computerUseStop().catch(() => undefined);
+    },
+    [],
+  );
+
   useEffect(() => {
     const restoredSessionIds = Array.from(workingSessionIdsRef.current);
     if (!restoredSessionIds.length) return;
@@ -3108,6 +3120,9 @@ export function AgentWorkspace({
           if (cancelled || !workingSessionIdsRef.current.has(sessionId)) {
             continue;
           }
+          // Reconnect only to observe the existing run. A process restored
+          // after an app relaunch did not cross this mount's visible Send
+          // boundary, so it must not receive a fresh Computer use lease.
           attachHermesSessionEventListener({
             gateway,
             runtimeSessionId,
@@ -6816,16 +6831,37 @@ export function AgentWorkspace({
     }
   }
 
+  function rememberComputerUseRun(sessionId: string, runLeaseId: string) {
+    const leases = computerUseRunLeasesRef.current.get(sessionId) ?? new Set<string>();
+    leases.add(runLeaseId);
+    computerUseRunLeasesRef.current.set(sessionId, leases);
+  }
+
+  async function releaseComputerUseRun(sessionId: string, runLeaseId: string) {
+    const leases = computerUseRunLeasesRef.current.get(sessionId);
+    leases?.delete(runLeaseId);
+    if (leases?.size === 0) computerUseRunLeasesRef.current.delete(sessionId);
+    await computerUseEndRun(runLeaseId).catch(() => undefined);
+  }
+
+  async function releaseAllComputerUseRuns(sessionId: string) {
+    const leases = [...(computerUseRunLeasesRef.current.get(sessionId) ?? [])];
+    computerUseRunLeasesRef.current.delete(sessionId);
+    await Promise.all(leases.map((lease) => computerUseEndRun(lease).catch(() => undefined)));
+  }
+
   function attachHermesSessionEventListener({
     gateway,
     runtimeSessionId,
     sessionDisplayTitle,
     storedSessionId,
+    computerUseRunLeaseId,
   }: {
     gateway: HermesGatewayClient;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
+    computerUseRunLeaseId?: string;
   }) {
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
@@ -6944,6 +6980,11 @@ export function AgentWorkspace({
         });
       }
       if (isTerminalHermesEvent(classified)) {
+        if (computerUseRunLeaseId) {
+          void releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
+        } else {
+          void releaseAllComputerUseRuns(storedSessionId);
+        }
         unlisten();
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
@@ -7459,12 +7500,8 @@ export function AgentWorkspace({
         status: "running",
         summary: "June is working.",
       });
-      attachHermesSessionEventListener({
-        gateway,
-        runtimeSessionId,
-        sessionDisplayTitle,
-        storedSessionId,
-      });
+      const computerUseRunLeaseId = `${storedSessionId}:${crypto.randomUUID()}`;
+      let computerUseRunStarted = false;
       try {
         const targetProjectContext = explicitSession
           ? resolveSessionProjectContext?.(storedSessionId)
@@ -7474,6 +7511,16 @@ export function AgentWorkspace({
           targetProjectContext,
           projectContextSignaturesBySessionId.get(storedSessionId),
         );
+        await computerUseBeginRun(computerUseRunLeaseId);
+        computerUseRunStarted = true;
+        rememberComputerUseRun(storedSessionId, computerUseRunLeaseId);
+        attachHermesSessionEventListener({
+          gateway,
+          runtimeSessionId,
+          sessionDisplayTitle,
+          storedSessionId,
+          computerUseRunLeaseId,
+        });
         // Feature 15: record the outbound prompt.submit in the trace buffer. Its
         // params are sanitized before storage (the text is the user's own prompt,
         // kept; any secret-like value would be masked). This is the primary
@@ -7515,6 +7562,9 @@ export function AgentWorkspace({
           suppressStartupRequestError: !hermesSessionsHydratedRef.current,
         });
       } catch (err) {
+        if (computerUseRunStarted) {
+          await releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
+        }
         // Record the rejection so the trace panel shows failed outbound calls
         // alongside the inbound stream. messageFromError yields a user-safe string.
         hermesTraceBuffer.recordError({
@@ -7988,6 +8038,7 @@ export function AgentWorkspace({
         );
         const activityCounts = clearSessionActivity(sessionId);
         if (wasActive) {
+          void releaseAllComputerUseRuns(sessionId);
           markAgentRunSucceeded(sessionId);
           dispatchAgentSessionStatus({
             sessionId,
@@ -9370,6 +9421,11 @@ export function AgentWorkspace({
   // the RPC fails (gateway drop, runtime session already gone).
   async function stopHermesSession(sessionId: string) {
     if (stoppingSessionIds.has(sessionId)) return;
+    // Revoke the native broker before waiting for the Hermes interrupt. This
+    // cancels pending approvals, kills the helper, clears captures, and makes
+    // Stop sticky until a later visible chat turn opens a fresh lease.
+    const computerUseStopRequest = computerUseStop().catch(() => undefined);
+    computerUseRunLeasesRef.current.clear();
     cancelAgentRunSettlement(sessionId);
     setStoppingSessionIds((current) => new Set(current).add(sessionId));
 
@@ -9398,6 +9454,7 @@ export function AgentWorkspace({
     });
 
     try {
+      await computerUseStopRequest;
       const runtimeSessionId = runtimeSessionIds[sessionId];
       if (runtimeSessionId) {
         const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));

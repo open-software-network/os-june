@@ -94,3 +94,17 @@ pinned Hermes source before building or installing the runtime.
   this fix and no verified upstream release was shown to provide the required
   protocol. The sealed patch keeps the current audited pin and is removed when
   an upstream implementation passes the full upgrade checklist.
+
+## Addendum: 2026-07-17 - patch-set provenance rotation
+
+JUN-337 adds a second compatibility transformation to the same sealed pinned
+source: the desktop/TUI gateway now passes the already-loaded
+`agent.disabled_toolsets` value into main, background, and preview `AIAgent`
+construction. A second central-constructor transformation makes a global
+`memory` deny suppress native prompt memory and external memory providers via
+Hermes' existing lifecycle gate. The approval transformations above are
+unchanged. Because `tui_gateway/server.py`, `agent/agent_init.py`, and the
+central atomic YAML writer are now transformed, the patch-set identity advances
+from `june-approval-v1` to `june-approval-memory-v2`, with new exact patched
+hashes. Bundled and managed runtimes stamped with the former identity are stale
+and must be rebuilt or repatched before launch.

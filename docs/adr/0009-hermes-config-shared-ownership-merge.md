@@ -68,3 +68,31 @@ and assert it survives a respawn while the proxy token refreshes.
 - **June re-applies its keys through `PUT /api/config` after spawn.** Rejected:
   the proxy credentials must be in place *before* the gateway starts (the model
   block is read at process start), and the API is not up yet at that point.
+
+## Addendum: cross-process Memory policy coordination (2026-07-17)
+
+JUN-337 introduces a June-owned policy inside the otherwise shared `agent`
+mapping: membership of `memory` in `agent.disabled_toolsets`. The desktop must
+be able to change that policy even when no bridge process is live, while a
+Hermes dashboard or CLI process may later save an older in-memory config
+snapshot.
+
+June and the pinned Hermes runtime now take the same OS advisory lock around
+each atomic `config.yaml` replacement. While holding that lock, Hermes' sealed
+central YAML writer re-reads the file and copies only the current Memory deny
+membership into its pending snapshot before saving. The pending writer's other
+changes survive, and June's direct mutation preserves every unrelated YAML
+field. The lock is released by the OS if either process exits unexpectedly.
+
+This protocol does not transfer ownership of the rest of `config.yaml` to June
+or generally merge arbitrary stale dashboard snapshots. It is deliberately
+narrow: it serializes replacements and makes June's current Memory deny policy
+win across the process boundary. The pinned Telegram gateway's DM-topic writer,
+which previously replaced the file independently, is transformed to use the
+same central YAML writer. The desktop/TUI JSON-RPC `config.set` writer is routed
+through it as well and refreshes its cache from the reconciled file.
+
+Both writers resolve a symlinked config to its canonical target and create the
+replacement beside that target. June's Rust writer and Hermes' patched Python
+writer preserve POSIX modes and macOS ACLs; on Windows they use `ReplaceFileW`
+so the destination security descriptor survives the replacement.

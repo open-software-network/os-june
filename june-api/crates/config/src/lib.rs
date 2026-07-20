@@ -157,6 +157,11 @@ pub struct AppConfig {
     pub attestation: AttestationConfig,
     #[serde(default)]
     pub issue_reports: IssueReportsConfig,
+    /// Emergency rollout control for the local Computer use driver. The
+    /// desktop fetches this before exposing the capability, allowing an OS or
+    /// app-version regression to be disabled without a desktop update.
+    #[serde(default)]
+    pub computer_use: ComputerUseConfig,
     /// Private sharing (JUN-308). Sharing endpoints return 501
     /// `sharing_unavailable` until `database_url` is configured, so the
     /// feature cannot regress deployments that predate it.
@@ -225,6 +230,7 @@ impl Debug for AppConfig {
             .field("upstreams", &self.upstreams)
             .field("attestation", &self.attestation)
             .field("issue_reports", &self.issue_reports)
+            .field("computer_use", &self.computer_use)
             .field("share", &RedactedShare(&self.share))
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
@@ -261,6 +267,35 @@ impl Default for BrowserTransportsConfig {
         Self {
             attended_enabled: true,
             managed_enabled: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseConfig {
+    /// Global emergency switch. Defaults on so existing deployments remain
+    /// backward compatible when the new config section is absent.
+    #[serde(default = "default_computer_use_enabled")]
+    pub enabled: bool,
+    /// Exact June versions or `major.minor.*` prefixes to disable.
+    #[serde(default)]
+    pub disabled_june_versions: Vec<String>,
+    /// Exact macOS versions or `major.minor.*` prefixes to disable.
+    #[serde(default)]
+    pub disabled_macos_versions: Vec<String>,
+}
+
+fn default_computer_use_enabled() -> bool {
+    true
+}
+
+impl Default for ComputerUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_computer_use_enabled(),
+            disabled_june_versions: Vec::new(),
+            disabled_macos_versions: Vec::new(),
         }
     }
 }
@@ -1102,6 +1137,7 @@ impl Default for AppConfig {
                         .to_string(),
             },
             issue_reports: IssueReportsConfig::default(),
+            computer_use: ComputerUseConfig::default(),
             share: ShareConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
