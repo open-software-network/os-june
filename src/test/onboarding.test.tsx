@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsCancelLogin: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   listen: vi.fn(),
+  createRoutine: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -64,6 +65,10 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("../lib/hermes-routines", () => ({
+  createRoutine: mocks.createRoutine,
 }));
 
 const account: AccountStatus = {
@@ -257,13 +262,57 @@ describe("OnboardingFlow", () => {
     const input = await screen.findByPlaceholderText(/Tell June what to do/i);
     await user.type(input, "hello there");
     await screen.findByRole("status", { name: "Dictation is working" });
-    await user.click(screen.getByRole("button", { name: "Start using June" }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
 
-    expect(onComplete).toHaveBeenCalledOnce();
+    // Final screen: the one-click morning brief opt-in. Enabling creates the
+    // starter routine and completes onboarding.
+    await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
+    mocks.createRoutine.mockResolvedValue({ job_id: "job-1" });
+    await user.click(screen.getByRole("button", { name: "Enable morning brief" }));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(mocks.createRoutine).toHaveBeenCalledWith({
+      name: "Morning brief",
+      prompt: expect.stringContaining("morning brief"),
+      schedule: "0 8 * * 1-5",
+    });
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.morning-brief.enabled");
+
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
     // Completion is the caller's job (App marks it), not the flow's.
     expect(isOnboardingComplete()).toBe(false);
+  });
+
+  it("completes without a routine when the morning brief is declined", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    setOnboardingResumeStep("morning-brief");
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(mocks.createRoutine).not.toHaveBeenCalled();
+  });
+
+  it("keeps the user on the brief step when routine creation fails", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    setOnboardingResumeStep("morning-brief");
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
+    mocks.createRoutine.mockRejectedValue(new Error("gateway down"));
+    await user.click(screen.getByRole("button", { name: "Enable morning brief" }));
+
+    await screen.findByText(/Could not set it up right now/);
+    expect(onComplete).not.toHaveBeenCalled();
+
+    // The quiet path still works after a failure.
+    await user.click(screen.getByRole("button", { name: "Not now" }));
+    expect(onComplete).toHaveBeenCalledOnce();
   });
 
   it("keeps anonymous usage statistics off by default", async () => {
@@ -361,9 +410,7 @@ describe("OnboardingFlow", () => {
     await renderFlow();
     await walkToPractice(user);
 
-    const startButton = screen.getByRole("button", {
-      name: "Start using June",
-    });
+    const startButton = screen.getByRole("button", { name: "Continue" });
     expect(startButton).toBeDisabled();
 
     await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "h");
@@ -600,7 +647,7 @@ describe("OnboardingFlow", () => {
     expect(screen.queryByRole("option")).toBeNull();
 
     await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "hello there");
-    await user.click(screen.getByRole("button", { name: "Start using June" }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
   });
 
   it("resets only onboarding progress when replaying the wizard", () => {

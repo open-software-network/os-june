@@ -6,12 +6,19 @@ import { dictationSettings, p3aRecord, setDictationShortcut } from "../../lib/ta
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { PermissionsStep } from "./steps/PermissionSteps";
 import { DictationPracticeStep } from "./steps/PracticeStep";
+import { MorningBriefStep } from "./steps/MorningBriefStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TelemetryConsentStep } from "./steps/TelemetryConsentStep";
 import { UsageIntentStep } from "./steps/UsageIntentStep";
 import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
-type StepId = "sign-in" | "telemetry" | "usage-intent" | "permissions" | "dictation-practice";
+type StepId =
+  | "sign-in"
+  | "telemetry"
+  | "usage-intent"
+  | "permissions"
+  | "dictation-practice"
+  | "morning-brief";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -47,6 +54,7 @@ const MAC_STEPS: StepId[] = [
   "usage-intent",
   "permissions",
   "dictation-practice",
+  "morning-brief",
 ];
 const WINDOWS_STEPS: StepId[] = [
   "sign-in",
@@ -54,8 +62,15 @@ const WINDOWS_STEPS: StepId[] = [
   "usage-intent",
   "permissions",
   "dictation-practice",
+  "morning-brief",
 ];
-const NON_DICTATION_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
+const NON_DICTATION_STEPS: StepId[] = [
+  "sign-in",
+  "telemetry",
+  "usage-intent",
+  "permissions",
+  "morning-brief",
+];
 
 type Props = {
   account: AccountStatus;
@@ -82,7 +97,8 @@ function browserOnboardingDemoStep(): StepId | null {
     step === "telemetry" ||
     step === "usage-intent" ||
     step === "permissions" ||
-    step === "dictation-practice"
+    step === "dictation-practice" ||
+    step === "morning-brief"
     ? step
     : null;
 }
@@ -234,8 +250,10 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
           <DictationPracticeStep
             shortcutLabel={shortcutLabel}
             onShortcutLabelChange={setShortcutLabel}
-            onContinue={completeOnboarding}
+            onContinue={goNext}
           />
+        ) : stepId === "morning-brief" ? (
+          <MorningBriefStep onContinue={completeOnboarding} />
         ) : null}
       </div>
     </div>
