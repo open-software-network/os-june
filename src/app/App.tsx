@@ -2069,7 +2069,7 @@ export function App() {
     let state = loadRoutineRunWatchState();
 
     async function poll() {
-      let sessions;
+      let sessions: HermesSessionInfo[];
       try {
         sessions = await listScheduledRunSessions({ includeActive: true });
       } catch {

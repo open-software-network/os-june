@@ -21,11 +21,7 @@
  *   inside the session-store fetch window plus a small tail.
  */
 
-import {
-  isScheduledRunSession,
-  scheduledRunJobId,
-  sessionTimestamp,
-} from "./hermes-adapter";
+import { isScheduledRunSession, scheduledRunJobId, sessionTimestamp } from "./hermes-adapter";
 import type { HermesSessionInfo } from "./tauri";
 
 const STORAGE_KEY = "june.routineRuns.notified";
@@ -72,8 +68,7 @@ export function saveRoutineRunWatchState(state: RoutineRunWatchState) {
 }
 
 function hasEnded(session: HermesSessionInfo) {
-  const ended =
-    session.ended_at ?? session.endedAt ?? session.end_reason ?? undefined;
+  const ended = session.ended_at ?? session.endedAt ?? session.end_reason ?? undefined;
   if (typeof ended === "string" && ended.trim()) return true;
   return session.active !== true && session.is_active !== true;
 }

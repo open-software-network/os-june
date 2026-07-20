@@ -9,10 +9,7 @@ import type { HermesSessionInfo } from "../lib/tauri";
 
 const NOW = Date.parse("2026-07-20T12:00:00Z");
 
-function run(
-  id: string,
-  overrides: Partial<HermesSessionInfo> = {},
-): HermesSessionInfo {
+function run(id: string, overrides: Partial<HermesSessionInfo> = {}): HermesSessionInfo {
   return {
     id,
     source: "cron",
@@ -76,11 +73,7 @@ describe("routineRunWatchStep", () => {
   });
 
   it("ignores non-cron sessions entirely", () => {
-    const { notices } = routineRunWatchStep(
-      PRIMED,
-      [run("user-session", { source: "user" })],
-      NOW,
-    );
+    const { notices } = routineRunWatchStep(PRIMED, [run("user-session", { source: "user" })], NOW);
     expect(notices).toEqual([]);
   });
 
