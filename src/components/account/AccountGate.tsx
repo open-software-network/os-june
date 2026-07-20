@@ -11,6 +11,41 @@ type Props = {
   onAccountChanged: (next: AccountStatus) => void;
 };
 
+type AccountStatusFailureProps = {
+  message: string;
+  onRetry: () => Promise<unknown>;
+};
+
+export function AccountStatusFailure({ message, onRetry }: AccountStatusFailureProps) {
+  const [retrying, setRetrying] = useState(false);
+
+  async function handleRetry() {
+    setRetrying(true);
+    try {
+      await onRetry();
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  return (
+    <div className="welcome-screen">
+      <div className="welcome-card">
+        <span className="welcome-mark-glass" aria-hidden>
+          <JuneGlassMark />
+        </span>
+        <h1 className="welcome-title">June could not finish starting</h1>
+        <p className="welcome-subtitle">{message}</p>
+        <div className="welcome-providers">
+          <BrandPrimaryButton disabled={retrying} onClick={() => void handleRetry()}>
+            {retrying ? "Trying again..." : "Try again"}
+          </BrandPrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AccountGate({ account, loading, onAccountChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
