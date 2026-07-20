@@ -735,8 +735,9 @@ pub struct HermesBridge {
     /// Started lazily on the first spawn, lives until app shutdown.
     provider_proxy: Mutex<Option<SharedProviderProxy>>,
     /// Last connection June used to supervise the launchd routine Gateway.
-    /// The gateway may outlive both interactive bridge modes, but its
-    /// lifecycle CLI still needs the isolated Hermes home and command.
+    /// The gateway may outlive both interactive bridge modes, but app shutdown
+    /// stops it before the app-owned provider proxy goes away. Its lifecycle
+    /// CLI still needs the isolated Hermes home and command.
     routine_gateway_connection: Mutex<Option<HermesBridgeConnection>>,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
     /// Recently delivered recorder request ids (see
@@ -4613,7 +4614,7 @@ fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
     image_mime_type(path).or_else(|| video_mime_type(path))
 }
 
-pub fn shutdown(app: &tauri::AppHandle) {
+pub async fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
     // Latch teardown *before* draining so an in-flight `start_hermes_bridge_inner`
     // cannot register a runtime after the drain and re-orphan the tree we are
@@ -4625,6 +4626,28 @@ pub fn shutdown(app: &tauri::AppHandle) {
     // spawned but not-yet-registered would be missed by the drain and orphaned
     // when `relaunch_for_update` restarts the app moments later.
     await_starts_quiesced(&bridge, SHUTDOWN_START_QUIESCE_TIMEOUT);
+
+    // Routines run in a launchd-managed Gateway, but every model request goes
+    // through the provider proxy owned by this app process. Stop the Gateway
+    // while that proxy is still alive: leaving launchd running after June quits
+    // makes the next scheduled routine retry a dead loopback URL and persist a
+    // misleading generic "Connection error" (JUN-367). Closing the window still
+    // hides June and keeps routines running; only an explicit app quit reaches
+    // this teardown. App startup re-enables the service before future runs.
+    let gateway_connection = bridge
+        .routine_gateway_connection
+        .lock()
+        .ok()
+        .and_then(|connection| connection.clone());
+    if let Some(connection) = gateway_connection {
+        if let Err(error) = stop_hermes_gateway(&connection).await {
+            eprintln!(
+                "failed to stop Hermes routine gateway during app shutdown: {}",
+                error.message
+            );
+        }
+    }
+
     bridge.browser_broker.terminate_sessions();
     let _ = stop_hermes_bridge_inner(&bridge);
     let proxy = bridge
@@ -4645,7 +4668,7 @@ pub fn shutdown(app: &tauri::AppHandle) {
 const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Blocks until no start is between spawning a child and registering/reaping it,
-/// or the timeout elapses. Sync (called from the sync teardown path) and cheap:
+/// or the timeout elapses. Synchronous inside the async teardown path and cheap:
 /// the guarded window is milliseconds and at most one start runs at a time (the
 /// `start_lock` serializes them).
 fn await_starts_quiesced(bridge: &HermesBridge, timeout: Duration) {
@@ -6675,6 +6698,14 @@ async fn restart_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(
     run_hermes_gateway_lifecycle_command(cmd, "restart").await
 }
 
+/// Stops the launchd routine Gateway before the app-owned provider proxy is
+/// torn down. The service definition remains installed; the normal app-start
+/// path bootstraps it again when June next launches.
+async fn stop_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+    let cmd = hermes_gateway_lifecycle_command(connection, "stop");
+    run_hermes_gateway_lifecycle_command(cmd, "stop").await
+}
+
 async fn hermes_gateway_running(connection: &HermesBridgeConnection) -> Result<bool, AppError> {
     let status =
         hermes_connection_json(connection, reqwest::Method::GET, "/api/status", None).await?;
@@ -6709,9 +6740,11 @@ async fn wait_for_hermes_gateway(connection: &HermesBridgeConnection) -> Result<
 /// and launchd refuses service-management requests from any sandboxed process:
 /// `launchctl bootstrap` fails with exit 5 (EIO) and `kickstart` with 113, so a
 /// jailed bridge can never (re)register the gateway's LaunchAgent — routines
-/// silently stop running after the job is unloaded. The gateway is meant to
-/// outlive the app (cron routines, Slack), which is exactly why it is
-/// launchd-managed and must be started from outside the jail. The plist
+/// silently stop running after the job is unloaded. The gateway can outlive
+/// either dashboard bridge mode, but not the app-owned provider proxy; app
+/// shutdown unloads it before tearing that proxy down. It is launchd-managed
+/// so it survives dashboard restarts while June remains running and must be
+/// started from outside the jail. The plist
 /// rewrite `hermes gateway start` performs also needs `~/Library/LaunchAgents`,
 /// which sits outside the jail's write roots.
 ///
@@ -20646,6 +20679,26 @@ mcp_servers:
 
         assert_eq!(cmd.get_program(), "/opt/hermes/bin/hermes");
         assert_eq!(args, ["gateway", "restart"]);
+        assert_eq!(
+            cmd.get_envs()
+                .find(|(key, _)| key.to_string_lossy() == "HERMES_NONINTERACTIVE")
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_stop_uses_the_same_june_supervised_lifecycle_command() {
+        let connection = test_gateway_connection();
+        let cmd = hermes_gateway_lifecycle_command(&connection, "stop");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(cmd.get_program(), "/opt/hermes/bin/hermes");
+        assert_eq!(args, ["gateway", "stop"]);
         assert_eq!(
             cmd.get_envs()
                 .find(|(key, _)| key.to_string_lossy() == "HERMES_NONINTERACTIVE")
