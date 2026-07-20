@@ -4669,8 +4669,8 @@ pub async fn shutdown(app: &tauri::AppHandle) {
                 .ok()
                 .and_then(|connections| connections.into_iter().next())
         });
-    let stop_result = match gateway_launch_agent_target().await {
-        Ok(None) => {
+    let stop_result = match gateway_launch_agent_targets_loaded().await {
+        Ok(targets) if targets.is_empty() => {
             if gateway_connection.is_some() {
                 tracing::warn!(
                     label = HERMES_GATEWAY_LAUNCHD_LABEL,
@@ -4679,8 +4679,8 @@ pub async fn shutdown(app: &tauri::AppHandle) {
             }
             Ok(())
         }
-        Ok(Some(target)) => {
-            stop_loaded_hermes_gateway(app, gateway_connection.as_ref(), Some(&target)).await
+        Ok(targets) => {
+            stop_loaded_hermes_gateway(app, gateway_connection.as_ref(), Some(&targets)).await
         }
         // A failed probe must not strand an inherited Gateway. Preserve the
         // fail-safe stop and surface its result instead of treating uncertain
@@ -4725,7 +4725,7 @@ const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 const GATEWAY_LIFECYCLE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 /// A shutdown notification cancels the lifecycle command that owns the lock;
 /// this is only the safety bound for a task that fails to observe cancellation.
-const GATEWAY_SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
+const GATEWAY_SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 /// Keep the status check inside the lifecycle critical section short. A failed
 /// or slow local probe falls back to the idempotent lifecycle start command.
 const GATEWAY_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -6846,16 +6846,16 @@ async fn stop_persisted_hermes_gateway(app: &AppHandle) -> Result<(), AppError> 
 async fn stop_loaded_hermes_gateway(
     app: &AppHandle,
     connection: Option<&HermesBridgeConnection>,
-    launchd_target: Option<&str>,
+    launchd_targets: Option<&[String]>,
 ) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
     {
         let _ = (app, connection);
-        unload_gateway_launch_agent(launchd_target).await
+        unload_gateway_launch_agents(launchd_targets).await
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = launchd_target;
+        let _ = launchd_targets;
         match connection {
             Some(connection) => stop_hermes_gateway(connection).await,
             None => stop_persisted_hermes_gateway(app).await,
@@ -6868,13 +6868,14 @@ async fn stop_loaded_hermes_gateway(
 /// direct unload even when its process is temporarily between restarts; a
 /// missing job is already in the desired shutdown state.
 #[cfg(target_os = "macos")]
-async fn gateway_launch_agent_target() -> Result<Option<String>, AppError> {
+async fn gateway_launch_agent_targets_loaded() -> Result<Vec<String>, AppError> {
+    let mut loaded = Vec::new();
     for target in gateway_launch_agent_targets() {
         if gateway_launch_agent_loaded_at(&target).await? {
-            return Ok(Some(target));
+            loaded.push(target);
         }
     }
-    Ok(None)
+    Ok(loaded)
 }
 
 #[cfg(target_os = "macos")]
@@ -6904,20 +6905,19 @@ fn gateway_launch_agent_loaded_from_status(status: ExitStatus) -> Result<bool, A
 /// against June's soon-to-disappear provider proxy. The app does not need to
 /// wait for the already-signalled Gateway process to finish its full exit loop.
 #[cfg(target_os = "macos")]
-async fn unload_gateway_launch_agent(target: Option<&str>) -> Result<(), AppError> {
-    if let Some(target) = target {
-        return unload_gateway_launch_agent_at(target).await;
-    }
-
+async fn unload_gateway_launch_agents(targets: Option<&[String]>) -> Result<(), AppError> {
+    let probe_before_unload = targets.is_none();
+    let targets = targets
+        .map(<[String]>::to_vec)
+        .unwrap_or_else(|| gateway_launch_agent_targets().into_iter().collect());
     let mut last_error = None;
-    for target in gateway_launch_agent_targets() {
-        match gateway_launch_agent_loaded_at(&target).await {
-            Ok(false) => continue,
-            Ok(true) | Err(_) => {
-                if let Err(error) = unload_gateway_launch_agent_at(&target).await {
-                    last_error = Some(error);
-                }
-            }
+    for target in targets {
+        if probe_before_unload && matches!(gateway_launch_agent_loaded_at(&target).await, Ok(false))
+        {
+            continue;
+        }
+        if let Err(error) = unload_gateway_launch_agent_at(&target).await {
+            last_error = Some(error);
         }
     }
     match last_error {
@@ -7007,8 +7007,8 @@ async fn run_gateway_loaded_probe(mut cmd: Command) -> Result<bool, AppError> {
 /// Keep the existing fail-safe stop there until those backends expose an
 /// equally authoritative loaded-state probe.
 #[cfg(not(target_os = "macos"))]
-async fn gateway_launch_agent_target() -> Result<Option<String>, AppError> {
-    Ok(Some(String::new()))
+async fn gateway_launch_agent_targets_loaded() -> Result<Vec<String>, AppError> {
+    Ok(vec![String::new()])
 }
 
 #[cfg(not(target_os = "macos"))]
