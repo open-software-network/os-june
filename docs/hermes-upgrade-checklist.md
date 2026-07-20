@@ -201,6 +201,12 @@ smoke test" section for the full environment and skip behavior.
 Record the outcome here: protocol phase pass, and model phase pass if it was
 run.
 
+On macOS the smoke also asserts that `hermes gateway status` reports the
+`ai.hermes.gateway` LaunchAgent plist used by June's bounded shutdown
+`launchctl bootout`. A renamed label is a release-gate failure: update
+`HERMES_GATEWAY_LAUNCHD_LABEL` in `src-tauri/src/hermes_bridge.rs` and re-run
+the smoke before accepting the new pin.
+
 ## Security notes (secrets/auth/sandbox)
 
 Re-check the security posture against the new build:

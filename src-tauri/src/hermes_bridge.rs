@@ -53,6 +53,10 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
+/// Pinned Hermes v2026.6.19 installs this macOS LaunchAgent label. The
+/// release-gate smoke test asserts `hermes gateway status` still reports it so
+/// a runtime pin bump cannot silently strand a renamed Gateway on app quit.
+const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
 const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v13";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
@@ -4644,7 +4648,15 @@ pub async fn shutdown(app: &tauri::AppHandle) {
                 .and_then(|connections| connections.into_iter().next())
         });
     let stop_result = match gateway_launch_agent_loaded().await {
-        Ok(false) => Ok(()),
+        Ok(false) => {
+            if gateway_connection.is_some() {
+                tracing::warn!(
+                    label = HERMES_GATEWAY_LAUNCHD_LABEL,
+                    "expected Hermes routine gateway launchd job was absent during app shutdown"
+                );
+            }
+            Ok(())
+        }
         Ok(true) => stop_loaded_hermes_gateway(app, gateway_connection.as_ref()).await,
         // A failed probe must not strand an inherited Gateway. Preserve the
         // fail-safe stop and surface its result instead of treating uncertain
@@ -6844,27 +6856,10 @@ fn gateway_launch_agent_loaded_from_status(status: ExitStatus) -> Result<bool, A
 /// wait for the already-signalled Gateway process to finish its full exit loop.
 #[cfg(target_os = "macos")]
 async fn unload_gateway_launch_agent() -> Result<(), AppError> {
-    let first_error = match unload_gateway_launch_agent_once().await {
-        Ok(()) => return Ok(()),
-        Err(error) => error,
-    };
-    if matches!(gateway_launch_agent_loaded().await, Ok(false)) {
-        return Ok(());
-    }
-    tracing::warn!(
-        ?first_error,
-        "retrying Hermes routine gateway launchd unload during app shutdown"
-    );
     match unload_gateway_launch_agent_once().await {
         Ok(()) => Ok(()),
-        Err(_second_error) if matches!(gateway_launch_agent_loaded().await, Ok(false)) => Ok(()),
-        Err(second_error) => Err(AppError::new(
-            "hermes_gateway_stop_failed",
-            format!(
-                "Could not unload the routine gateway service after retry. {}",
-                second_error.message
-            ),
-        )),
+        Err(_error) if matches!(gateway_launch_agent_loaded().await, Ok(false)) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -6889,7 +6884,8 @@ fn gateway_launch_agent_command(action: &'static str) -> Command {
     let mut cmd = Command::new("/bin/launchctl");
     // SAFETY: `getuid` reads the calling process's immutable real-user id.
     let uid = unsafe { libc::getuid() };
-    cmd.arg(action).arg(format!("gui/{uid}/ai.hermes.gateway"));
+    cmd.arg(action)
+        .arg(format!("gui/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"));
     cmd
 }
 
@@ -21115,7 +21111,7 @@ mcp_servers:
         assert_eq!(args.len(), 2);
         assert_eq!(args[0], "bootout");
         assert!(args[1].starts_with("gui/"));
-        assert!(args[1].ends_with("/ai.hermes.gateway"));
+        assert!(args[1].ends_with(&format!("/{HERMES_GATEWAY_LAUNCHD_LABEL}")));
     }
 
     #[test]
