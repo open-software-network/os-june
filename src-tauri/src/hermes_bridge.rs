@@ -747,6 +747,11 @@ pub struct HermesBridge {
     /// stops it before the app-owned provider proxy goes away. Its lifecycle
     /// CLI still needs the isolated Hermes home and command.
     routine_gateway_connection: Mutex<Option<HermesBridgeConnection>>,
+    /// True only after this app process has successfully started or restarted
+    /// the routine Gateway against its own provider-proxy coordinates. Failed
+    /// app-start cleanup checks this under `gateway_lifecycle_lock` so it never
+    /// tears down a Gateway concurrently claimed by a manual recovery.
+    gateway_reconciled: AtomicBool,
     /// Serializes routine Gateway lifecycle commands against app shutdown.
     /// The shutdown latch is rechecked only after acquiring this async lock,
     /// so an app-start or config-reapply task that was already waiting cannot
@@ -1443,7 +1448,7 @@ pub fn start_on_app_start(app: &tauri::App) {
             return;
         };
         if let Some(connection) = status.connection.as_ref() {
-            if let Err(error) = start_hermes_gateway_if_needed(&bridge, connection, true).await {
+            if let Err(error) = start_hermes_gateway_if_needed(&bridge, connection).await {
                 eprintln!(
                     "failed to start Hermes messaging gateway during app startup: {}",
                     error.message
@@ -1462,12 +1467,38 @@ async fn disable_inherited_gateway_after_failed_app_start(
     bridge: &HermesBridge,
     reason: &'static str,
 ) {
-    match tokio::time::timeout(
-        GATEWAY_SHUTDOWN_TOTAL_TIMEOUT,
-        shutdown_hermes_gateway(app, bridge),
-    )
-    .await
-    {
+    let cleanup = async {
+        // Manual recovery uses the same lock and marks the Gateway reconciled
+        // before releasing it. Waiting here makes the decision atomic: either
+        // cleanup wins first and manual ensure recreates the service afterward,
+        // or manual recovery wins and cleanup leaves its healthy service alone.
+        let _gateway_guard = bridge.gateway_lifecycle_lock.lock().await;
+        if bridge.gateway_reconciled.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        if let Ok(mut connection) = bridge.routine_gateway_connection.lock() {
+            connection.take();
+        }
+        #[cfg(target_os = "macos")]
+        let remove_result = remove_gateway_launch_agent_plist(app);
+        let stop_result = match gateway_launch_agent_targets_loaded().await {
+            Ok(targets) if targets.is_empty() => Ok(()),
+            Ok(targets) => stop_loaded_hermes_gateway(app, None, Some(&targets)).await,
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    reason,
+                    "failed to inspect inherited routine gateway after app-start failure; attempting stop"
+                );
+                stop_loaded_hermes_gateway(app, None, None).await
+            }
+        };
+        #[cfg(target_os = "macos")]
+        return stop_result.and(remove_result);
+        #[cfg(not(target_os = "macos"))]
+        stop_result
+    };
+    match tokio::time::timeout(GATEWAY_SHUTDOWN_TOTAL_TIMEOUT, cleanup).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => tracing::warn!(
             ?error,
@@ -2501,12 +2532,15 @@ pub(crate) async fn reapply_hermes_runtime(
     if let Some(connection) = gateway_connection {
         let _gateway_guard = bridge.gateway_lifecycle_lock.lock().await;
         if !bridge.shutting_down.load(Ordering::SeqCst) {
+            bridge.gateway_reconciled.store(false, Ordering::SeqCst);
             if let Err(error) = restart_hermes_gateway(bridge, &connection).await {
                 tracing::warn!(
                     ?error,
                     "reapply: restarting the routine gateway failed after config changed"
                 );
                 first_error.get_or_insert(error);
+            } else {
+                bridge.gateway_reconciled.store(true, Ordering::SeqCst);
             }
         }
     }
@@ -6825,9 +6859,9 @@ fn open_url_in_browser(url: &str) {
 async fn start_hermes_gateway_if_needed(
     bridge: &HermesBridge,
     connection: &HermesBridgeConnection,
-    restart_inherited: bool,
 ) -> Result<bool, AppError> {
     let _gateway_guard = lock_gateway_lifecycle_if_active(bridge).await?;
+    let restart_inherited = !bridge.gateway_reconciled.load(Ordering::SeqCst);
     retain_routine_gateway_connection(bridge, connection)?;
     let status_probe = tokio::time::timeout(
         GATEWAY_STATUS_PROBE_TIMEOUT,
@@ -6889,6 +6923,7 @@ async fn start_hermes_gateway_if_needed(
                 Ok(()) => {}
             }
             restart_hermes_gateway(bridge, connection).await?;
+            bridge.gateway_reconciled.store(true, Ordering::SeqCst);
             return Ok(true);
         }
         GatewayStartAction::Restart => {
@@ -6897,11 +6932,13 @@ async fn start_hermes_gateway_if_needed(
             // that process's ephemeral provider-proxy coordinates; reconcile
             // it to the newly rendered config before any routine can run.
             restart_hermes_gateway(bridge, connection).await?;
+            bridge.gateway_reconciled.store(true, Ordering::SeqCst);
             return Ok(true);
         }
         GatewayStartAction::Start => {}
     }
     run_hermes_gateway_start(bridge, connection).await?;
+    bridge.gateway_reconciled.store(true, Ordering::SeqCst);
     Ok(true)
 }
 
@@ -6926,7 +6963,7 @@ async fn ensure_hermes_gateway_running(
     bridge: &HermesBridge,
     connection: &HermesBridgeConnection,
 ) -> Result<(), AppError> {
-    if !start_hermes_gateway_if_needed(bridge, connection, false).await? {
+    if !start_hermes_gateway_if_needed(bridge, connection).await? {
         return Ok(());
     }
     wait_for_hermes_gateway(connection).await
@@ -21344,7 +21381,7 @@ mcp_servers:
         let connection = test_gateway_connection();
         bridge.gateway_shutdown_notify.notify_one();
 
-        let error = start_hermes_gateway_if_needed(&bridge, &connection, true)
+        let error = start_hermes_gateway_if_needed(&bridge, &connection)
             .await
             .expect_err("shutdown notification must cancel the pre-lifecycle status probe");
 
@@ -21379,9 +21416,10 @@ mcp_servers:
         let mut connection = test_gateway_connection();
         connection.command = "/usr/bin/false".to_string();
 
-        start_hermes_gateway_if_needed(&bridge, &connection, false)
+        start_hermes_gateway_if_needed(&bridge, &connection)
             .await
             .expect_err("nonzero gateway start exits fail");
+        assert!(!bridge.gateway_reconciled.load(Ordering::SeqCst));
 
         let retained = bridge
             .routine_gateway_connection
@@ -21391,6 +21429,20 @@ mcp_servers:
             .expect("connection retained");
         assert_eq!(retained.command, connection.command);
         assert_eq!(retained.hermes_home, connection.hermes_home);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn successful_gateway_lifecycle_claims_current_process_reconciliation() {
+        let bridge = HermesBridge::default();
+        let mut connection = test_gateway_connection();
+        connection.command = "/usr/bin/true".to_string();
+
+        start_hermes_gateway_if_needed(&bridge, &connection)
+            .await
+            .expect("successful first lifecycle");
+
+        assert!(bridge.gateway_reconciled.load(Ordering::SeqCst));
     }
 
     #[cfg(not(target_os = "windows"))]
