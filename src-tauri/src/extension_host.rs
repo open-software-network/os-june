@@ -613,6 +613,13 @@ fn emit_pairing_changed(app: &AppHandle, host: &ExtensionHost) {
 // --- listener ---------------------------------------------------------------
 
 pub fn setup(app: &mut tauri::App) {
+    // While Browser use is feature-flagged off the extension surface must not
+    // exist at all: no loopback listener, no descriptor file, nothing for a
+    // side-loaded extension to probe or pair with. The pairing commands then
+    // refuse cleanly (no listener, and an explicit flag check below).
+    if !crate::feature_flags::BROWSER_USE_ENABLED {
+        return;
+    }
     let handle = app.handle().clone();
     tauri::async_runtime::spawn(async move {
         if let Err(error) = start_listener(handle).await {
@@ -874,6 +881,15 @@ pub fn register_browser_extension_host(
     app: AppHandle,
     state: tauri::State<'_, ExtensionHost>,
 ) -> Result<RegisterExtensionHostResult, AppError> {
+    // Registering the native-messaging host manifest is what lets an installed
+    // extension pair; while the feature flag is off that surface must not be
+    // creatable at all.
+    if !crate::feature_flags::BROWSER_USE_ENABLED {
+        return Err(AppError::new(
+            "browser_use_disabled",
+            "Browser use is not available in this build.",
+        ));
+    }
     // Registration succeeding while the listener is down would tell the user
     // "Chrome is set up" and then never pair (the shim gets app_unreachable
     // on every connect). Refuse instead of lying.
