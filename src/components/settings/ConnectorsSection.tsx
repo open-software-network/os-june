@@ -60,10 +60,11 @@ const PROVIDER_BLURBS = {
 const NOTION_CONNECTOR_BLURB =
   "Pages and workspace content for briefs, search, and approved updates.";
 
-const NOTION_CONNECTED_BLURB =
-  "Pages, search, and approved updates. Access may extend beyond selected pages.";
+const NOTION_CONNECTED_BLURB = "Pages, search, and approved updates.";
 
 const NOTION_RECONNECT_BLURB = "Reconnect Notion to restore pages, search, and approved updates.";
+
+const NOTION_SCOPE_DISCLOSURE = "Access may extend beyond selected pages.";
 
 const NOTION_SEARCH_DISCLOSURE = "Search may include Notion-connected sources.";
 
@@ -185,6 +186,7 @@ function NotionConnectorRow({
         <p className="connector-subtitle" title={subtitle}>
           {subtitle}
         </p>
+        <p className="connector-disclosure">{NOTION_SCOPE_DISCLOSURE}</p>
         <p className="connector-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
       </div>
       <div className="connector-actions">

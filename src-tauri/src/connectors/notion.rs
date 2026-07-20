@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     future::Future,
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::AppHandle;
@@ -101,9 +104,33 @@ const NOTION_ACTIONS_SERVER_NAME: &str = "june_notion_actions";
 
 static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 static CREDENTIAL_LIFECYCLE_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+static CONNECT_FLOW_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+static CONNECTION_REVISION: AtomicU64 = AtomicU64::new(0);
 
 fn credential_lifecycle_lock() -> &'static AsyncMutex<()> {
     CREDENTIAL_LIFECYCLE_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+fn connect_flow_lock() -> &'static AsyncMutex<()> {
+    CONNECT_FLOW_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+fn connection_revision() -> u64 {
+    CONNECTION_REVISION.load(Ordering::SeqCst)
+}
+
+fn advance_connection_revision() {
+    CONNECTION_REVISION.fetch_add(1, Ordering::SeqCst);
+}
+
+fn ensure_connection_revision(expected: u64) -> Result<(), AppError> {
+    if connection_revision() != expected {
+        return Err(AppError::new(
+            "notion_connection_changed",
+            "The Notion connection changed while June was waiting. Please try again.",
+        ));
+    }
+    Ok(())
 }
 
 fn http_client() -> Result<&'static reqwest::Client, AppError> {
@@ -402,6 +429,13 @@ pub async fn connect(
     app: &AppHandle,
     flow: &NotionConnectFlow,
 ) -> Result<NotionConnection, AppError> {
+    let _connect_guard = connect_flow_lock().try_lock().map_err(|_| {
+        AppError::new(
+            "notion_connect_in_progress",
+            "A Notion connection is already waiting for the browser.",
+        )
+    })?;
+    let expected_revision = connection_revision();
     let (resource, auth_server) = discover_and_validate().await?;
     let (verifier, challenge) = pkce();
     let csrf = random_b64url(24);
@@ -468,7 +502,9 @@ pub async fn connect(
     verify_hosted_mcp_discovery(&stored.access_token).await?;
     {
         let _guard = credential_lifecycle_lock().lock().await;
+        ensure_connection_revision(expected_revision)?;
         store::store(&stored).await?;
+        advance_connection_revision();
         record_connected(app).await?;
     }
     Ok(connection())
@@ -476,6 +512,7 @@ pub async fn connect(
 
 pub async fn disconnect(app: &AppHandle) -> Result<(), AppError> {
     let _guard = credential_lifecycle_lock().lock().await;
+    advance_connection_revision();
     store::delete().await?;
     let repos = crate::commands::repositories(app).await?;
     repos.delete_connector_account(NOTION_ACCOUNT_ID).await?;
@@ -634,6 +671,7 @@ pub async fn call_hosted_action_tool(
         ));
     };
     preflight_action_arguments(tool_name, &request.arguments)?;
+    let expected_revision = capture_connected_revision(app).await?;
     let summary = summarize_action(tool_name, &request.arguments);
     let args_preview = preview_action(tool_name, &request.arguments);
     let approval = crate::connectors::approvals::ActionRequest {
@@ -650,14 +688,68 @@ pub async fn call_hosted_action_tool(
         return Err(AppError::new("connector_action_denied", reason));
     }
     let timeout = action_request_timeout(request.deadline_unix_ms)?;
-    tokio::time::timeout(timeout, call_hosted_tool_unchecked(app, tool_name, request.arguments))
-        .await
-        .map_err(|_| {
-            AppError::new(
-                "notion_mcp_action_timeout",
-                "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
-            )
-        })?
+    tokio::time::timeout(
+        timeout,
+        call_hosted_action_for_revision(
+            app,
+            expected_revision,
+            tool_name,
+            request.arguments,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "notion_mcp_action_timeout",
+            "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
+        )
+    })?
+}
+
+async fn capture_connected_revision(app: &AppHandle) -> Result<u64, AppError> {
+    load_connected_with_fresh_token(app).await?;
+    let _guard = credential_lifecycle_lock().lock().await;
+    load_connected().await?;
+    Ok(connection_revision())
+}
+
+async fn call_hosted_action_for_revision(
+    app: &AppHandle,
+    expected_revision: u64,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<NotionHostedToolCallResult, AppError> {
+    refresh_connected_token_for_revision(app, expected_revision, false).await?;
+    let first = call_hosted_action_once(app, expected_revision, tool_name, arguments.clone()).await;
+    if first
+        .as_ref()
+        .is_err_and(|error| error.code == "notion_mcp_unauthorized")
+    {
+        refresh_connected_token_for_revision(app, expected_revision, true).await?;
+        return call_hosted_action_once(app, expected_revision, tool_name, arguments).await;
+    }
+    first
+}
+
+async fn call_hosted_action_once(
+    app: &AppHandle,
+    expected_revision: u64,
+    tool_name: &str,
+    arguments: serde_json::Value,
+) -> Result<NotionHostedToolCallResult, AppError> {
+    let _guard = credential_lifecycle_lock().lock().await;
+    ensure_connection_revision(expected_revision)?;
+    if notion_health(app).await? == ConnectorAccountStatus::ReconnectRequired {
+        return Err(reconnect_required());
+    }
+    let stored = load_connected().await?;
+    let client = McpHttpClient::new(stored.access_token.clone());
+    client.initialize().await?;
+    let result = client.call_tool(tool_name, arguments).await?;
+    Ok(NotionHostedToolCallResult {
+        tool_name: tool_name.to_string(),
+        result,
+    })
 }
 
 fn action_request_timeout(deadline_unix_ms: Option<i64>) -> Result<Duration, AppError> {
@@ -734,7 +826,7 @@ async fn refresh_connected_token(
     // persistence after Notion has retired the submitted token. The action
     // future remains cancellable and cannot continue after its timeout.
     let app = app.clone();
-    tokio::spawn(async move { refresh_connected_token_inner(&app, force).await })
+    tokio::spawn(async move { refresh_connected_token_inner(&app, force, None).await })
         .await
         .map_err(|error| {
             tracing::error!(error = %error, "Notion token refresh task failed");
@@ -745,11 +837,37 @@ async fn refresh_connected_token(
         })?
 }
 
+async fn refresh_connected_token_for_revision(
+    app: &AppHandle,
+    expected_revision: u64,
+    force: bool,
+) -> Result<StoredNotionConnection, AppError> {
+    let app = app.clone();
+    tokio::spawn(async move {
+        refresh_connected_token_inner(&app, force, Some(expected_revision)).await
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(error = %error, "Notion token refresh task failed");
+        AppError::new(
+            "notion_token_refresh_failed",
+            "Could not refresh the Notion connection. Try again in a moment.",
+        )
+    })?
+}
+
 async fn refresh_connected_token_inner(
     app: &AppHandle,
     force: bool,
+    expected_revision: Option<u64>,
 ) -> Result<StoredNotionConnection, AppError> {
     let _guard = credential_lifecycle_lock().lock().await;
+    if let Some(expected_revision) = expected_revision {
+        ensure_connection_revision(expected_revision)?;
+        if notion_health(app).await? == ConnectorAccountStatus::ReconnectRequired {
+            return Err(reconnect_required());
+        }
+    }
     let stored = load_connected().await?;
     if !force && !notion_token_expired_at(&stored, now_unix()) {
         return Ok(stored);
@@ -1375,20 +1493,23 @@ impl McpHttpClient {
 }
 
 async fn read_mcp_json(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
     expected_id: u64,
 ) -> Result<serde_json::Value, AppError> {
-    let bytes = response.bytes().await.map_err(|_| {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| {
         AppError::new(
             "notion_mcp_response_failed",
             "Could not read Notion hosted MCP's response.",
         )
-    })?;
-    if bytes.len() > MCP_RESPONSE_MAX_BYTES {
-        return Err(AppError::new(
-            "notion_mcp_response_too_large",
-            "Notion hosted MCP returned more metadata than June will accept.",
-        ));
+    })? {
+        if bytes.len().saturating_add(chunk.len()) > MCP_RESPONSE_MAX_BYTES {
+            return Err(AppError::new(
+                "notion_mcp_response_too_large",
+                "Notion hosted MCP returned more metadata than June will accept.",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     let raw = std::str::from_utf8(&bytes).map_err(|_| {
         AppError::new(
@@ -1414,16 +1535,8 @@ fn parse_json_or_sse_json(raw: &str, expected_id: u64) -> Option<serde_json::Val
     let mut data = Vec::new();
     for line in normalized.lines() {
         if line.is_empty() {
-            if !data.is_empty() {
-                let event = data.join("\n");
-                data.clear();
-                if event.trim() != "[DONE]" {
-                    if let Ok(value) = serde_json::from_str(&event) {
-                        if jsonrpc_response_matches_id(&value, expected_id) {
-                            return Some(value);
-                        }
-                    }
-                }
+            if let Some(value) = parse_sse_data_event(&mut data, expected_id) {
+                return Some(value);
             }
             continue;
         }
@@ -1431,7 +1544,21 @@ fn parse_json_or_sse_json(raw: &str, expected_id: u64) -> Option<serde_json::Val
             data.push(value.trim_start());
         }
     }
-    None
+    parse_sse_data_event(&mut data, expected_id)
+}
+
+fn parse_sse_data_event(data: &mut Vec<&str>, expected_id: u64) -> Option<serde_json::Value> {
+    if data.is_empty() {
+        return None;
+    }
+    let event = data.join("\n");
+    data.clear();
+    if event.trim() == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str(&event)
+        .ok()
+        .filter(|value| jsonrpc_response_matches_id(value, expected_id))
 }
 
 fn jsonrpc_response_matches_id(value: &serde_json::Value, expected_id: u64) -> bool {
@@ -1637,7 +1764,44 @@ fn preflight_create_pages_arguments(arguments: &serde_json::Value) -> Result<(),
             "That Notion page creation field is not supported in this preview.",
         ));
     }
+    if create_pages_parent(arguments).is_none() {
+        return Err(AppError::new(
+            "notion_create_pages_missing_parent",
+            "Notion page creation requires an exact parent for approval.",
+        ));
+    }
+    if create_page_title(page).is_none() {
+        return Err(AppError::new(
+            "notion_create_pages_missing_title",
+            "Notion page creation requires a title for approval.",
+        ));
+    }
+    if create_page_title_count(page) != 1 {
+        return Err(AppError::new(
+            "notion_create_pages_ambiguous_title",
+            "Specify the Notion page title in exactly one location.",
+        ));
+    }
+    if !has_previewable_create_content(page) {
+        return Err(AppError::new(
+            "notion_create_pages_missing_content",
+            "Notion page creation requires content June can preview for approval.",
+        ));
+    }
     Ok(())
+}
+
+fn has_previewable_create_content(page: &serde_json::Map<String, serde_json::Value>) -> bool {
+    ["properties", "content", "children", "body", "markdown"]
+        .iter()
+        .filter_map(|key| page.get(*key))
+        .any(|value| match value {
+            serde_json::Value::Null => false,
+            serde_json::Value::String(text) => !text.trim().is_empty(),
+            serde_json::Value::Array(items) => !items.is_empty(),
+            serde_json::Value::Object(fields) => !fields.is_empty(),
+            serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
+        })
 }
 
 fn reject_async_action(arguments: &serde_json::Value) -> Result<(), AppError> {
@@ -1696,14 +1860,147 @@ fn preflight_update_page_arguments(arguments: &serde_json::Value) -> Result<(), 
             "That Notion update field is not supported in this preview.",
         ));
     }
-    let has_change = object
-        .iter()
-        .any(|(key, value)| key.as_str() != "page_id" && !value.is_null());
+    validate_update_page_change(object)?;
+    let has_change = object.iter().any(|(key, value)| {
+        matches!(
+            key.as_str(),
+            "new_str"
+                | "properties"
+                | "content"
+                | "content_updates"
+                | "children"
+                | "body"
+                | "markdown"
+                | "title"
+                | "name"
+        ) && !value.is_null()
+    });
     if !has_change {
         return Err(AppError::new(
             "notion_update_page_empty",
             "Notion page updates require a change payload.",
         ));
+    }
+    Ok(())
+}
+
+fn validate_update_page_change(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), AppError> {
+    let invalid = || {
+        AppError::new(
+            "notion_update_page_invalid_change",
+            "Notion page updates require a complete, previewable change payload.",
+        )
+    };
+    if object
+        .get("properties")
+        .is_some_and(|value| !value.as_object().is_some_and(|value| !value.is_empty()))
+        || object
+            .get("children")
+            .is_some_and(|value| !value.as_array().is_some_and(|value| !value.is_empty()))
+        || object.get("content").is_some_and(|value| match value {
+            serde_json::Value::String(value) => value.trim().is_empty(),
+            serde_json::Value::Array(value) => value.is_empty(),
+            serde_json::Value::Object(value) => value.is_empty(),
+            _ => true,
+        })
+        || ["body", "markdown", "title", "name"]
+            .iter()
+            .filter_map(|key| object.get(*key))
+            .any(|value| !value.as_str().is_some_and(|value| !value.trim().is_empty()))
+        || object
+            .get("position")
+            .is_some_and(|value| !value.as_object().is_some_and(|value| !value.is_empty()))
+        || object
+            .get("selection_with_ellipsis")
+            .is_some_and(|value| !value.as_str().is_some_and(|value| !value.trim().is_empty()))
+    {
+        return Err(invalid());
+    }
+
+    let content_updates_valid = object.get("content_updates").map_or(true, |value| {
+        value.as_array().is_some_and(|updates| {
+            !updates.is_empty()
+                && updates.iter().all(|update| {
+                    update.as_object().is_some_and(|update| {
+                        update.len() == 2
+                            && update
+                                .get("old_str")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|value| !value.trim().is_empty())
+                            && update
+                                .get("new_str")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some()
+                    })
+                })
+        })
+    });
+    if !content_updates_valid {
+        return Err(invalid());
+    }
+
+    let command = object.get("command").map(|value| {
+        value
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(&invalid)
+    });
+    let command = command.transpose()?;
+    let new_str = object.get("new_str");
+    if new_str.is_some_and(|value| !value.is_string())
+        || (new_str.is_some()
+            && !matches!(command, Some("replace_content" | "replace_content_range")))
+    {
+        return Err(invalid());
+    }
+    match command {
+        None => {
+            if object.contains_key("selection_with_ellipsis")
+                || object.contains_key("position")
+                || object.contains_key("content_updates")
+            {
+                return Err(invalid());
+            }
+        }
+        Some("update_properties") if object.get("properties").is_none() => return Err(invalid()),
+        Some("replace_content") if new_str.is_none() => return Err(invalid()),
+        Some("replace_content_range")
+            if new_str.is_none() || object.get("selection_with_ellipsis").is_none() =>
+        {
+            return Err(invalid());
+        }
+        Some("insert_content") if object.get("content").is_none() => return Err(invalid()),
+        Some("update_content") if object.get("content_updates").is_none() => {
+            return Err(invalid());
+        }
+        Some(
+            "update_properties"
+            | "replace_content"
+            | "replace_content_range"
+            | "insert_content"
+            | "update_content",
+        ) => {}
+        Some(_) => return Err(invalid()),
+    }
+    if let Some(command) = command {
+        let allowed_for_command: &[&str] = match command {
+            "update_properties" => &["properties"],
+            "replace_content" => &["new_str"],
+            "replace_content_range" => &["selection_with_ellipsis", "new_str"],
+            "insert_content" => &["content", "position"],
+            "update_content" => &["content_updates"],
+            _ => return Err(invalid()),
+        };
+        if object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "page_id" | "command" | "allow_async" | "allow_deleting_content"
+            ) && !allowed_for_command.contains(&key.as_str())
+        }) {
+            return Err(invalid());
+        }
     }
     Ok(())
 }
@@ -1714,7 +2011,12 @@ fn summarize_create_pages_action(arguments: &serde_json::Value) -> String {
 }
 
 fn preview_create_pages_action(arguments: &serde_json::Value) -> String {
-    let title = find_first_string_by_key(arguments, &["title", "name"])
+    let title = arguments
+        .get("pages")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|pages| pages.first())
+        .and_then(serde_json::Value::as_object)
+        .and_then(create_page_title)
         .unwrap_or_else(|| "(title not specified)".to_string());
     let parent = create_pages_parent(arguments).unwrap_or_else(|| "Not specified".to_string());
     let payload = summarize_create_payload(arguments);
@@ -1945,69 +2247,87 @@ fn update_page_title(arguments: &serde_json::Value) -> Option<String> {
 }
 
 fn create_pages_parent(arguments: &serde_json::Value) -> Option<String> {
-    top_level_string(arguments, &["parent", "parent_id", "parentId"])
-        .or_else(|| nested_parent_string(arguments))
-        .or_else(|| {
-            arguments
-                .get("pages")
-                .and_then(serde_json::Value::as_array)
-                .and_then(|pages| pages.first())
-                .and_then(|page| {
-                    top_level_string(page, &["parent", "parent_id", "parentId"])
-                        .or_else(|| nested_parent_string(page))
-                })
-        })
+    let top_level = arguments.get("parent").and_then(exact_parent_string);
+    let page_level = arguments
+        .get("pages")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|pages| pages.first())
+        .and_then(|page| page.get("parent"))
+        .and_then(exact_parent_string);
+    match (top_level, page_level) {
+        (Some(parent), None) | (None, Some(parent)) => Some(parent),
+        _ => None,
+    }
 }
 
-fn top_level_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    let object = value.as_object()?;
-    keys.iter().find_map(|key| {
-        object
-            .get(*key)
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToOwned::to_owned)
-    })
-}
-
-fn nested_parent_string(value: &serde_json::Value) -> Option<String> {
-    let parent = value.as_object()?.get("parent")?.as_object()?;
-    ["page_id", "database_id", "url", "id"]
+fn exact_parent_string(parent: &serde_json::Value) -> Option<String> {
+    if let Some(parent) = parent
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(parent.to_string());
+    }
+    let parent = parent.as_object().filter(|parent| parent.len() == 1)?;
+    ["page_id", "database_id", "data_source_id", "url", "id"]
         .iter()
         .find_map(|key| {
             parent
                 .get(*key)
                 .and_then(serde_json::Value::as_str)
                 .map(str::trim)
-                .filter(|text| !text.is_empty())
+                .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned)
         })
 }
 
-fn find_first_string_by_key(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
-    match value {
-        serde_json::Value::Object(map) => {
-            for (key, child) in map {
-                if keys
-                    .iter()
-                    .any(|candidate| key.eq_ignore_ascii_case(candidate))
-                {
-                    if let Some(text) = child.as_str().filter(|text| !text.trim().is_empty()) {
-                        return Some(text.trim().to_string());
-                    }
-                }
-                if let Some(found) = find_first_string_by_key(child, keys) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        serde_json::Value::Array(items) => items
-            .iter()
-            .find_map(|item| find_first_string_by_key(item, keys)),
-        _ => None,
-    }
+fn create_page_title(page: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    ["title", "name"]
+        .iter()
+        .find_map(|key| {
+            page.get(*key)
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+        })
+        .or_else(|| {
+            let properties = page.get("properties")?.as_object()?;
+            ["title", "name"].iter().find_map(|expected| {
+                properties.iter().find_map(|(key, value)| {
+                    key.eq_ignore_ascii_case(expected)
+                        .then(|| value.as_str().map(str::trim))
+                        .flatten()
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+            })
+        })
+}
+
+fn create_page_title_count(page: &serde_json::Map<String, serde_json::Value>) -> usize {
+    let direct = ["title", "name"]
+        .iter()
+        .filter(|key| {
+            page.get(**key)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+        .count();
+    let properties = page
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .map(|properties| {
+            properties
+                .iter()
+                .filter(|(key, value)| {
+                    matches!(key.to_ascii_lowercase().as_str(), "title" | "name")
+                        && value.as_str().is_some_and(|value| !value.trim().is_empty())
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    direct + properties
 }
 
 fn truncate_approval_value(value: &str) -> String {
@@ -2416,10 +2736,10 @@ mod tests {
     }
 
     #[test]
-    fn sse_parser_discards_an_unterminated_final_event() {
+    fn sse_parser_accepts_an_eof_terminated_final_event() {
         assert!(
             parse_json_or_sse_json("data: {\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}\n", 3)
-                .is_none()
+                .is_some()
         );
     }
 
@@ -2768,16 +3088,89 @@ mod tests {
 
     #[test]
     fn update_page_preflight_rejects_empty_changes() {
-        let arguments = serde_json::json!({
-            "page_id": "page-123"
-        });
+        for arguments in [
+            serde_json::json!({ "page_id": "page-123" }),
+            serde_json::json!({ "page_id": "page-123", "allow_async": false }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "allow_deleting_content": false
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "allow_async": false,
+                "allow_deleting_content": false
+            }),
+        ] {
+            assert_eq!(
+                preflight_update_page_arguments(&arguments)
+                    .unwrap_err()
+                    .code,
+                "notion_update_page_empty"
+            );
+        }
+    }
 
-        assert_eq!(
-            preflight_update_page_arguments(&arguments)
-                .unwrap_err()
-                .code,
-            "notion_update_page_empty"
-        );
+    #[test]
+    fn update_page_preflight_rejects_malformed_or_incomplete_changes() {
+        for arguments in [
+            serde_json::json!({ "page_id": "page-123", "properties": false }),
+            serde_json::json!({ "page_id": "page-123", "content": [] }),
+            serde_json::json!({ "page_id": "page-123", "new_str": "  " }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "replace_content"
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "selection_with_ellipsis": "old...text"
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "position": { "type": "end" }
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "replace_content_range",
+                "new_str": "Replacement"
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "insert_content",
+                "content": ""
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "update_content",
+                "content_updates": []
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "unknown",
+                "title": "Updated"
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "replace_content",
+                "new_str": "Replacement",
+                "properties": { "Status": "Done" }
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "command": "update_content",
+                "content_updates": [{
+                    "old_str": "Old",
+                    "new_str": "New",
+                    "unpreviewed": true
+                }]
+            }),
+        ] {
+            assert_eq!(
+                preflight_update_page_arguments(&arguments)
+                    .unwrap_err()
+                    .code,
+                "notion_update_page_invalid_change"
+            );
+        }
     }
 
     #[test]
@@ -2803,9 +3196,109 @@ mod tests {
             "notion_create_pages_batching_unsupported"
         );
         assert!(preflight_create_pages_arguments(&serde_json::json!({
-            "pages": [{ "title": "One" }]
+            "pages": [{
+                "title": "One",
+                "parent": { "page_id": "page-123" },
+                "content": "Body"
+            }]
         }))
         .is_ok());
+    }
+
+    #[test]
+    fn create_pages_preflight_requires_previewable_destination_title_and_content() {
+        for (arguments, expected_code) in [
+            (
+                serde_json::json!({
+                    "pages": [{ "title": "One", "content": "Body" }]
+                }),
+                "notion_create_pages_missing_parent",
+            ),
+            (
+                serde_json::json!({
+                    "pages": [{
+                        "parent": { "page_id": "page-123" },
+                        "content": "Body"
+                    }]
+                }),
+                "notion_create_pages_missing_title",
+            ),
+            (
+                serde_json::json!({
+                    "pages": [{
+                        "title": "One",
+                        "parent": { "page_id": "page-123" }
+                    }]
+                }),
+                "notion_create_pages_missing_content",
+            ),
+        ] {
+            assert_eq!(
+                preflight_create_pages_arguments(&arguments)
+                    .unwrap_err()
+                    .code,
+                expected_code
+            );
+        }
+    }
+
+    #[test]
+    fn create_pages_preflight_rejects_ambiguous_parent_and_unrelated_title() {
+        for arguments in [
+            serde_json::json!({
+                "parent": { "page_id": "page-123", "data_source_id": "source-123" },
+                "pages": [{ "title": "One", "content": "Body" }]
+            }),
+            serde_json::json!({
+                "parent": { "page_id": "page-123", "unexpected": "value" },
+                "pages": [{ "title": "One", "content": "Body" }]
+            }),
+        ] {
+            assert_eq!(
+                preflight_create_pages_arguments(&arguments)
+                    .unwrap_err()
+                    .code,
+                "notion_create_pages_missing_parent"
+            );
+        }
+
+        let unrelated_title = serde_json::json!({
+            "parent": { "page_id": "page-123" },
+            "pages": [{
+                "properties": { "Status": { "name": "Draft" } },
+                "content": "Body"
+            }]
+        });
+        assert_eq!(
+            preflight_create_pages_arguments(&unrelated_title)
+                .unwrap_err()
+                .code,
+            "notion_create_pages_missing_title"
+        );
+
+        assert!(preflight_create_pages_arguments(&serde_json::json!({
+            "parent": { "data_source_id": "source-123" },
+            "pages": [{
+                "properties": { "Title": "One", "Status": "Draft" },
+                "content": "Body"
+            }]
+        }))
+        .is_ok());
+
+        let ambiguous_title = serde_json::json!({
+            "parent": { "page_id": "page-123" },
+            "pages": [{
+                "title": "One",
+                "properties": { "Title": "Two" },
+                "content": "Body"
+            }]
+        });
+        assert_eq!(
+            preflight_create_pages_arguments(&ambiguous_title)
+                .unwrap_err()
+                .code,
+            "notion_create_pages_ambiguous_title"
+        );
     }
 
     #[test]
@@ -3024,12 +3517,14 @@ mod tests {
                 "Blank replacement deletes the selected content",
             ),
         ] {
-            let arguments = serde_json::json!({
+            let mut arguments = serde_json::json!({
                 "page_id": "page-123",
                 "command": command,
-                "selection_with_ellipsis": "Old intro...old ending",
                 "new_str": "  "
             });
+            if command == "replace_content_range" {
+                arguments["selection_with_ellipsis"] = serde_json::json!("Old intro...old ending");
+            }
             assert!(preflight_update_page_arguments(&arguments).is_ok());
             let preview = preview_update_page_action(&arguments);
             assert!(preview.contains(expected));

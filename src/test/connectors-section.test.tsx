@@ -150,6 +150,7 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText(/Pages and workspace content for briefs, search, and approved updates/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
     expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
 
     await userEvent.click(connect);
@@ -204,6 +205,7 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText(/Reconnect Notion to restore pages, search, and approved updates/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
     expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
@@ -228,6 +230,7 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText("June could not confirm the Notion connection. Try again in a moment."),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect Notion" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect Notion" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
