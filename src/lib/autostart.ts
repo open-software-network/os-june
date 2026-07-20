@@ -11,6 +11,12 @@
  */
 
 const DEFAULT_APPLIED_KEY = "june.autostart.defaultApplied";
+/** Set on a first-ever onboarding completion, cleared once the default
+ * lands. Keeps a failed enable retryable across replays: completion is
+ * marked before this helper runs, so without this marker a retry could
+ * never distinguish "fresh install whose enable failed" from "existing
+ * user who must not be enrolled". */
+const DEFAULT_ELIGIBLE_KEY = "june.autostart.defaultEligible";
 
 function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -46,21 +52,27 @@ export async function applyAutostartDefaultOnce(options: {
   firstOnboardingCompletion: boolean;
 }): Promise<void> {
   if (!inTauri()) return;
-  if (!options.firstOnboardingCompletion) return;
   try {
     if (window.localStorage.getItem(DEFAULT_APPLIED_KEY) !== null) return;
+    if (options.firstOnboardingCompletion) {
+      window.localStorage.setItem(DEFAULT_ELIGIBLE_KEY, "1");
+    } else if (window.localStorage.getItem(DEFAULT_ELIGIBLE_KEY) === null) {
+      // Wizard replay for an existing user: never enroll.
+      return;
+    }
   } catch {
     return;
   }
   try {
     await setAutostartEnabled(true);
   } catch {
-    // Leave the marker unset so a transient failure retries on the next
-    // completion (onboarding re-runs after version bumps).
+    // Leave the applied marker unset (and eligibility in place) so a
+    // transient failure retries on the next completion.
     return;
   }
   try {
     window.localStorage.setItem(DEFAULT_APPLIED_KEY, "1");
+    window.localStorage.removeItem(DEFAULT_ELIGIBLE_KEY);
   } catch {
     // Storage write failed; the worst case is a redundant enable() later.
   }

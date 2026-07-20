@@ -71,6 +71,18 @@ describe("autostart", () => {
     expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBeNull();
   });
 
+  it("retries a fresh install's failed enable on a later replay", async () => {
+    // First completion fails to enable; completion is already marked by the
+    // caller, so the retry arrives as a replay. Eligibility must survive.
+    pluginMocks.enable.mockRejectedValueOnce(new Error("no launch agent dir"));
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
+    expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBeNull();
+
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: false });
+    expect(pluginMocks.enable).toHaveBeenCalledTimes(2);
+    expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBe("1");
+  });
+
   it("retries the default on the next run after a failed enable", async () => {
     pluginMocks.enable.mockRejectedValueOnce(new Error("no launch agent dir"));
     await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
