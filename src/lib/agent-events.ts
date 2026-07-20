@@ -36,6 +36,7 @@ export type AgentRunSettledDetail = {
   sessionId: string;
   title: string;
   summary: string;
+  activeCount: number;
 };
 
 export type AgentSessionsChangedDetail = {

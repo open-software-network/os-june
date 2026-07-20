@@ -181,6 +181,23 @@ describe("agent run monitor", () => {
       sessionId: "stored-1",
       title: "Prepare launch notes",
       summary: "June finished.",
+      activeCount: 0,
+    });
+  });
+
+  it("reports other monitored runs when one run settles", async () => {
+    startRun();
+    startRun({ storedSessionId: "stored-2", runtimeSessionId: "runtime-2" });
+    await flush();
+
+    expect(markAgentRunSucceeded("stored-1")).toBe(true);
+    await observeTwoIdleSnapshots();
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      summary: "June finished.",
+      activeCount: 1,
     });
   });
 
@@ -344,6 +361,7 @@ describe("agent run monitor", () => {
       sessionId: "stored-1",
       title: "New run",
       summary: "June finished.",
+      activeCount: 0,
     });
   });
 

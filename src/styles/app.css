@@ -3579,7 +3579,7 @@ input:focus-visible,
  * (Scoped under the panel so it outranks .folders-search's fixed width.) */
 .agent-artifact-panel .agent-artifact-filter {
   flex: 1;
-  grid-template-columns: 14px minmax(0, 1fr) auto;
+  grid-template-columns: 14px minmax(0, 1fr) auto auto;
   width: auto;
   max-width: none;
   height: var(--control-md);
@@ -3612,8 +3612,42 @@ input:focus-visible,
 
 .agent-artifact-panel-body mark {
   border-radius: var(--sp-px);
-  background: var(--warm-soft);
+  background: var(--search-match);
   color: inherit;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.agent-artifact-panel-body mark.agent-search-match-active {
+  background: var(--search-match-active);
+  box-shadow: inset 0 0 0 var(--border-width) var(--search-match-active-ring);
+}
+
+.agent-artifact-match-navigation {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--sp-px);
+}
+
+.agent-artifact-match-status {
+  min-width: var(--sp-12);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.agent-artifact-match-button.icon-button {
+  width: var(--control-xs);
+  height: var(--control-xs);
+}
+
+.agent-artifact-match-button:disabled {
+  background: transparent;
+  color: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
 }
 
 /* Lives on the gray pill, so contrast comes from the glyph (foreground-

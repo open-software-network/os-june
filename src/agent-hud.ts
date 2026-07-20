@@ -8,8 +8,10 @@ import { createElement, type ComponentType, type SVGProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   AGENT_OPEN_EVENT,
+  AGENT_RUN_SETTLED_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
+  type AgentRunSettledDetail,
   type AgentSessionStatusDetail,
   type AgentSessionStatusKind,
   type AgentSessionsChangedDetail,
@@ -198,6 +200,14 @@ function applyStatus(detail?: AgentSessionStatusDetail) {
   }
   pruneOldStatuses();
   render();
+}
+
+function applyRunSettled(detail?: AgentRunSettledDetail) {
+  if (!detail) return;
+  applyStatus({
+    ...detail,
+    status: "completed",
+  });
 }
 
 function applyVisibility(enabled: boolean) {
@@ -663,19 +673,19 @@ function replacePendingWithTerminalStatus(record: StatusRecord) {
     replaced = true;
     return terminalRecord(record, item);
   });
-  if (replaced) return true;
   if (record.activeCount === 0) {
     const activePending = state.pendingStatuses.filter((item) => isActiveStatus(item.status));
-    // No subject matched, but the status stream says no active work remains.
-    // Mark all anonymous pending rows terminal as a best-effort cleanup; each
-    // row keeps its own title, while the terminal summary comes from this
+    // The status stream says no active work remains. Mark every still-active
+    // anonymous row terminal even when one row already matched by subject;
+    // each row keeps its own title, while the terminal summary comes from this
     // final record and may describe only the last session that reported.
     state.pendingStatuses = [
       ...activePending.map((item) => terminalRecord(record, item)),
       ...state.pendingStatuses.filter((item) => !isActiveStatus(item.status)),
     ].slice(0, MAX_VISIBLE_ROWS);
-    return activePending.length > 0;
+    return replaced || activePending.length > 0;
   }
+  if (replaced) return true;
   const activePending = state.pendingStatuses.filter((item) => isActiveStatus(item.status));
   if (activePending.length === 1) {
     state.pendingStatuses = state.pendingStatuses.map((item) =>
@@ -1055,6 +1065,10 @@ window.addEventListener(AGENT_SESSION_STATUS_EVENT, (event) => {
   applyStatus((event as CustomEvent<AgentSessionStatusDetail>).detail);
 });
 
+window.addEventListener(AGENT_RUN_SETTLED_EVENT, (event) => {
+  applyRunSettled((event as CustomEvent<AgentRunSettledDetail>).detail);
+});
+
 window.addEventListener("storage", (event) => {
   if (event.key === AGENT_HUD_ENABLED_KEY) {
     applyVisibility(event.newValue !== "false");
@@ -1067,6 +1081,10 @@ void listen<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, (event) =>
 
 void listen<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, (event) =>
   applyStatus(event.payload),
+).catch(() => {});
+
+void listen<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, (event) =>
+  applyRunSettled(event.payload),
 ).catch(() => {});
 
 void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
