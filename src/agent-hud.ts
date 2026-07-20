@@ -811,7 +811,16 @@ function visibleHudBounds(): { width?: number; height?: number } {
   // exposes the final row height even while offsetHeight is still mid-
   // transition, so the native window grows before the reveal can be clipped.
   const surfaceHeight = Math.max(surface.offsetHeight, expandedSurfaceHeight);
-  const width = Math.max(surface.offsetWidth, state.menuOpen && menu ? menu.offsetWidth : 0);
+  // FLIP writes the final expanded width inline before the transition starts.
+  // offsetWidth reports an in-flight value during that transition, so prefer
+  // the known target to keep the native window from clipping the reveal.
+  const animatedExpandedWidth =
+    hud?.dataset.expanded === "true" ? Number.parseFloat(surface.style.width) : 0;
+  const surfaceWidth = Math.max(
+    surface.offsetWidth,
+    Number.isFinite(animatedExpandedWidth) ? animatedExpandedWidth : 0,
+  );
+  const width = Math.max(surfaceWidth, state.menuOpen && menu ? menu.offsetWidth : 0);
   const height = Math.max(
     surface.offsetTop + surfaceHeight,
     state.menuOpen && menu ? menu.offsetTop + menu.offsetHeight : 0,

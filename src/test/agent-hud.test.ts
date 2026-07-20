@@ -133,6 +133,35 @@ describe("agent HUD", () => {
     });
   });
 
+  it("sizes the native window to the final expanded width during the reveal", async () => {
+    const surface = surfaceElement();
+    const rectWithWidth = (width: number) => ({ width }) as DOMRect;
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    vi.spyOn(surface, "getBoundingClientRect").mockImplementation(() => {
+      const inlineWidth = Number.parseFloat(surface.style.width);
+      if (Number.isFinite(inlineWidth)) return rectWithWidth(inlineWidth);
+      return rectWithWidth(hudElement().dataset.expanded === "true" ? 248 : 112);
+    });
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    mocks.invoke.mockClear();
+
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: true, cardCount: 1, width: 248, height: 32 },
+    });
+  });
+
   it("uses the context-menu fallback until the menu has measurable bounds", async () => {
     const surface = surfaceElement();
     vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
