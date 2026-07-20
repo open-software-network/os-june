@@ -541,7 +541,7 @@ function profileDataSummaryText(
 ) {
   return `This profile has ${countLabel(summary.notes, "note")}, ${countLabel(
     summary.sessions,
-    "chat",
+    "session",
   )}, ${countLabel(summary.dictation, "dictation")}, ${countLabel(
     summary.folders,
     "project",

@@ -171,7 +171,7 @@ describe("profiles settings surface", () => {
     const dialog = await screen.findByRole("dialog", { name: 'Delete "writing"?' });
     expect(
       within(dialog).getByText(
-        "This profile has 2 notes, 1 chat, 3 dictations, 4 projects, 5 memories.",
+        "This profile has 2 notes, 1 session, 3 dictations, 4 projects, 5 memories.",
       ),
     ).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Move to default" })).toBeInTheDocument();
