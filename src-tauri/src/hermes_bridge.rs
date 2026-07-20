@@ -4749,7 +4749,10 @@ const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 /// pinned CLI's own service-management bookkeeping while remaining bounded.
 const GATEWAY_LIFECYCLE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 /// A shutdown notification cancels the lifecycle command that owns the lock;
-/// this is only the safety bound for a task that fails to observe cancellation.
+/// the pre-command status probe and the handoff between sequential reconciliation
+/// commands observe the same signal/latch. This is only the safety bound for a
+/// task that fails to observe cancellation; process-group reaping is capped at
+/// 250 ms before the holder releases the lock.
 const GATEWAY_SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 /// One aggregate deadline prevents individually bounded launchctl/CLI steps
 /// from stacking into an unacceptably long main-thread quit or update relaunch.
@@ -6783,12 +6786,22 @@ async fn start_hermes_gateway_if_needed(
 ) -> Result<bool, AppError> {
     let _gateway_guard = lock_gateway_lifecycle_if_active(bridge).await?;
     retain_routine_gateway_connection(bridge, connection)?;
-    let running = match tokio::time::timeout(
+    let status_probe = tokio::time::timeout(
         GATEWAY_STATUS_PROBE_TIMEOUT,
         hermes_gateway_running(connection),
-    )
-    .await
-    {
+    );
+    tokio::pin!(status_probe);
+    let status_result = tokio::select! {
+        biased;
+        _ = bridge.gateway_shutdown_notify.notified() => {
+            return Err(AppError::new(
+                "hermes_bridge_shutting_down",
+                "June is shutting down; routine service status check cancelled.",
+            ));
+        }
+        result = status_probe.as_mut() => result,
+    };
+    let running = match status_result {
         Ok(Ok(running)) => Some(running),
         Ok(Err(error)) => {
             tracing::warn!(
@@ -6814,11 +6827,23 @@ async fn start_hermes_gateway_if_needed(
             // the plist removed by a clean shutdown, while `restart` is what
             // rebinds a live inherited Gateway to this process's proxy. Run
             // both idempotent lifecycle operations so either state converges.
-            if let Err(error) = run_hermes_gateway_start(bridge, connection).await {
-                tracing::warn!(
-                    ?error,
-                    "failed to prime Hermes routine gateway before reconciliation restart"
-                );
+            let start_result = run_hermes_gateway_start(bridge, connection).await;
+            let shutting_down = bridge.shutting_down.load(Ordering::SeqCst);
+            match start_result {
+                Err(error) if shutting_down => return Err(error),
+                Ok(()) if shutting_down => {
+                    return Err(AppError::new(
+                        "hermes_bridge_shutting_down",
+                        "June is shutting down; routine service reconciliation cancelled.",
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "failed to prime Hermes routine gateway before reconciliation restart"
+                    );
+                }
+                Ok(()) => {}
             }
             restart_hermes_gateway(bridge, connection).await?;
             return Ok(true);
@@ -21267,6 +21292,20 @@ mcp_servers:
             waiter.await.expect("waiter joined"),
             "hermes_bridge_shutting_down"
         );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn gateway_status_probe_observes_shutdown_cancellation() {
+        let bridge = HermesBridge::default();
+        let connection = test_gateway_connection();
+        bridge.gateway_shutdown_notify.notify_one();
+
+        let error = start_hermes_gateway_if_needed(&bridge, &connection, true)
+            .await
+            .expect_err("shutdown notification must cancel the pre-lifecycle status probe");
+
+        assert_eq!(error.code, "hermes_bridge_shutting_down");
     }
 
     #[test]
