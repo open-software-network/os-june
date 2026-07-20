@@ -62,6 +62,12 @@ const NOTION_READ_TOOL_ALLOWLIST: &[&str] = &[
     "notion-get-view-configuration-dsl",
 ];
 const NOTION_ACTION_TOOL_ALLOWLIST: &[&str] = &["notion-create-pages", "notion-update-page"];
+const NOTION_REQUIRED_TOOL_NAMES: &[&str] = &[
+    "notion-search",
+    "notion-fetch",
+    "notion-create-pages",
+    "notion-update-page",
+];
 const NOTION_CREATE_PAGES_ALLOWED_FIELDS: &[&str] = &["allow_async", "pages", "parent"];
 const NOTION_CREATE_PAGE_ALLOWED_FIELDS: &[&str] = &[
     "body",
@@ -480,10 +486,17 @@ async fn verify_hosted_mcp_discovery(access_token: &str) -> Result<(), AppError>
     let client = McpHttpClient::new(access_token.to_string());
     client.initialize().await?;
     let tools = client.hosted_tools_list().await?;
-    if tools.is_empty() {
+    verify_required_hosted_tools(&tools)
+}
+
+fn verify_required_hosted_tools(tools: &[NotionMcpTool]) -> Result<(), AppError> {
+    if NOTION_REQUIRED_TOOL_NAMES
+        .iter()
+        .any(|required| !tools.iter().any(|tool| tool.name == *required))
+    {
         return Err(AppError::new(
-            "notion_mcp_tools_list_failed",
-            "Notion hosted MCP returned no tools.",
+            "notion_mcp_required_tools_missing",
+            "Notion hosted MCP is missing tools June requires.",
         ));
     }
     Ok(())
@@ -645,6 +658,26 @@ async fn load_connected_with_fresh_token(
 }
 
 async fn refresh_connected_token(
+    app: &AppHandle,
+    force: bool,
+) -> Result<StoredNotionConnection, AppError> {
+    // The token endpoint rotates refresh tokens. Own the refresh and Keychain
+    // write in a spawned task so cancellation of a caller deadline cannot drop
+    // persistence after Notion has retired the submitted token. The action
+    // future remains cancellable and cannot continue after its timeout.
+    let app = app.clone();
+    tokio::spawn(async move { refresh_connected_token_inner(&app, force).await })
+        .await
+        .map_err(|error| {
+            tracing::error!(error = %error, "Notion token refresh task failed");
+            AppError::new(
+                "notion_token_refresh_failed",
+                "Could not refresh the Notion connection. Try again in a moment.",
+            )
+        })?
+}
+
+async fn refresh_connected_token_inner(
     app: &AppHandle,
     force: bool,
 ) -> Result<StoredNotionConnection, AppError> {
@@ -2239,6 +2272,33 @@ mod tests {
         assert_eq!(tool_allowed_for_hermes("notion-update-page"), None);
         assert_eq!(tool_allowed_for_hermes("notion-get-users"), None);
         assert_eq!(tool_allowed_for_hermes("notion-get-teams"), None);
+    }
+
+    #[test]
+    fn discovery_requires_the_promised_notion_tool_core() {
+        let tool = |name: &str| NotionMcpTool {
+            name: name.to_string(),
+            description: None,
+            input_schema: object_schema(),
+        };
+        let required = NOTION_REQUIRED_TOOL_NAMES
+            .iter()
+            .map(|name| tool(name))
+            .collect::<Vec<_>>();
+        assert!(verify_required_hosted_tools(&required).is_ok());
+
+        for missing in NOTION_REQUIRED_TOOL_NAMES {
+            let incomplete = NOTION_REQUIRED_TOOL_NAMES
+                .iter()
+                .filter(|name| *name != missing)
+                .map(|name| tool(name))
+                .chain(std::iter::once(tool("notion-get-users")))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                verify_required_hosted_tools(&incomplete).unwrap_err().code,
+                "notion_mcp_required_tools_missing"
+            );
+        }
     }
 
     #[test]
