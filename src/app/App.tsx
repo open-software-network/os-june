@@ -213,6 +213,7 @@ import { useAccountStatus } from "../lib/account-status";
 import { applyAutostartDefaultOnce } from "../lib/autostart";
 import {
   applyOnboardingReplayFlag,
+  hasCompletedAnyOnboardingVersion,
   isOnboardingComplete,
   markOnboardingComplete,
   shouldReplayOnboarding,
@@ -4056,11 +4057,15 @@ export function App() {
           account={account}
           onAccountChanged={handleAccountChanged}
           onComplete={() => {
+            // Read before marking complete: marking writes the completion
+            // key that distinguishes a fresh install from a wizard replay.
+            const firstOnboardingCompletion = !hasCompletedAnyOnboardingVersion();
             markOnboardingComplete();
             // A background assistant only works while it runs; make sure a
-            // fresh install starts at login. One-shot: a user who later
-            // turns the login item off stays off.
-            void applyAutostartDefaultOnce();
+            // fresh install starts at login. One-shot and first-run only: a
+            // user who later turns the login item off stays off, and wizard
+            // replays never re-enroll existing users.
+            void applyAutostartDefaultOnce({ firstOnboardingCompletion });
             setOnboardingDone(true);
           }}
         />

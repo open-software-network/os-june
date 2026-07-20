@@ -53,29 +53,37 @@ describe("autostart", () => {
   });
 
   it("applies the launch-at-login default exactly once", async () => {
-    await applyAutostartDefaultOnce();
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
     expect(pluginMocks.enable).toHaveBeenCalledTimes(1);
     expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBe("1");
 
     // Second completion (onboarding version bump): no re-enable, so a user
     // who turned the login item off is not opted back in.
-    await applyAutostartDefaultOnce();
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
     expect(pluginMocks.enable).toHaveBeenCalledTimes(1);
+  });
+
+  it("never enrolls existing users on a wizard replay", async () => {
+    // An ONBOARDING_VERSION bump replays the wizard for users who already
+    // completed onboarding before this feature shipped (no marker set).
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: false });
+    expect(pluginMocks.enable).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBeNull();
   });
 
   it("retries the default on the next run after a failed enable", async () => {
     pluginMocks.enable.mockRejectedValueOnce(new Error("no launch agent dir"));
-    await applyAutostartDefaultOnce();
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
     expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBeNull();
 
-    await applyAutostartDefaultOnce();
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
     expect(pluginMocks.enable).toHaveBeenCalledTimes(2);
     expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBe("1");
   });
 
   it("does nothing outside Tauri", async () => {
     unmarkTauri();
-    await applyAutostartDefaultOnce();
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
     expect(pluginMocks.enable).not.toHaveBeenCalled();
   });
 });

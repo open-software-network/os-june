@@ -35,12 +35,18 @@ export async function setAutostartEnabled(enabled: boolean): Promise<void> {
   else await plugin.disable();
 }
 
-/** Applies the launch-at-login default exactly once per machine. Called when
- * onboarding completes; safe to call again (it no-ops after the first run).
+/** Applies the launch-at-login default exactly once per machine, and only
+ * for a first-ever onboarding completion. Wizard replays (ONBOARDING_VERSION
+ * bumps re-run onboarding for existing users) must not silently enroll
+ * people who may have deliberately turned the login item off, so callers
+ * pass whether this machine had completed onboarding before this run.
  * Failures are swallowed: a login item is a convenience, never worth
  * blocking the end of onboarding over. */
-export async function applyAutostartDefaultOnce(): Promise<void> {
+export async function applyAutostartDefaultOnce(options: {
+  firstOnboardingCompletion: boolean;
+}): Promise<void> {
   if (!inTauri()) return;
+  if (!options.firstOnboardingCompletion) return;
   try {
     if (window.localStorage.getItem(DEFAULT_APPLIED_KEY) !== null) return;
   } catch {
