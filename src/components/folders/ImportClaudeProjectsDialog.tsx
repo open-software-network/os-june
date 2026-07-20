@@ -1,8 +1,9 @@
 import { IconCheckmark2 } from "central-icons-filled/IconCheckmark2";
 import { IconCodeAssistant } from "central-icons/IconCodeAssistant";
 import { IconFolder1 } from "central-icons/IconFolder1";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { messageFromError } from "../../lib/errors";
+import { useScrollFade } from "../../lib/use-scroll-fade";
 import {
   discoverClaudeProjects,
   importClaudeProjects,
@@ -24,6 +25,8 @@ export function ImportClaudeProjectsDialog({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string>();
   const [importing, setImporting] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
+  const listFade = useScrollFade(listRef);
 
   useEffect(() => {
     if (!open) return;
@@ -169,7 +172,11 @@ export function ImportClaudeProjectsDialog({
                 {selected.size === available.length ? "Clear selection" : "Select all"}
               </button>
             </div>
-            <ul className="claude-projects-list">
+            <ul
+              ref={listRef}
+              className="claude-projects-list scroll-fade-mask"
+              {...listFade.props}
+            >
               {available.map((candidate) => (
                 <li key={candidate.path}>
                   <label className="claude-project-row">
