@@ -98,7 +98,10 @@ export function notesReducer(state: NotesState, action: NotesAction): NotesState
     case "folderCreated":
       return {
         ...state,
-        folders: sortFolders([...state.folders, action.folder]),
+        folders: sortFolders([
+          ...state.folders.filter((folder) => folder.id !== action.folder.id),
+          action.folder,
+        ]),
       };
     case "folderRenamed":
     case "folderUpdated":

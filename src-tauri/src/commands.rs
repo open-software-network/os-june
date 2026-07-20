@@ -27,13 +27,14 @@ use crate::{
             AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
             AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
             AssignNoteToFolderRequest, AssignSessionToFolderRequest, AssignSessionToProfileRequest,
-            BootstrapResponse, CheckRecordingSourceReadinessRequest, CompletedSessionDto,
-            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
-            CreateNoteRequest, DeleteDictionaryEntryRequest, DeleteFolderRequest,
-            DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
-            DownloadNoteAudioResponse, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
-            FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
-            ListNotesResponse, MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
+            BootstrapResponse, CheckRecordingSourceReadinessRequest, ClaudeProjectCandidateDto,
+            CompletedSessionDto, CreateAgentTaskRequest, CreateDictionaryEntryRequest,
+            CreateFolderRequest, CreateNoteRequest, DeleteDictionaryEntryRequest,
+            DeleteFolderRequest, DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto,
+            DownloadNoteAudioRequest, DownloadNoteAudioResponse, ExplainAgentApprovalRequest,
+            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
+            GetNoteRequest, ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse,
+            MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
             OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto,
             RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
             RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
@@ -322,6 +323,73 @@ pub async fn list_folders(
 ) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
     let profile = active_profile(&app);
     Ok(repositories(&app).await?.list_folders(&profile).await?)
+}
+
+#[tauri::command]
+pub async fn discover_claude_projects(
+    app: AppHandle,
+) -> Result<Vec<ClaudeProjectCandidateDto>, AppError> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| AppError::new("claude_projects_unavailable", error.to_string()))?;
+    let profile = active_profile(&app);
+    let folders = repositories(&app).await?.list_folders(&profile).await?;
+    let already_added = folders
+        .into_iter()
+        .filter_map(|folder| folder.local_path)
+        .filter_map(|path| PathBuf::from(path).canonicalize().ok())
+        .collect::<HashSet<_>>();
+    Ok(crate::claude_projects::discover(&home, &already_added))
+}
+
+#[tauri::command]
+pub async fn import_claude_projects(
+    app: AppHandle,
+    request: ImportClaudeProjectsRequest,
+) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
+    if request.paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if request.paths.len() > 500 {
+        return Err(AppError::new(
+            "claude_projects_too_many",
+            "Choose 500 project folders or fewer at a time.",
+        ));
+    }
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| AppError::new("claude_projects_unavailable", error.to_string()))?;
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for path in request.paths {
+        let Some(canonical) = crate::claude_projects::validate_import_path(&home, &path) else {
+            return Err(AppError::new(
+                "claude_project_invalid",
+                "One of the selected project folders is no longer available.",
+            ));
+        };
+        if seen.insert(canonical.clone()) {
+            paths.push(canonical);
+        }
+    }
+
+    let mut projects = Vec::with_capacity(paths.len());
+    for path in paths {
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            return Err(AppError::new(
+                "claude_project_invalid",
+                "One of the selected project folders has no usable name.",
+            ));
+        };
+        projects.push((name.to_string(), path.to_string_lossy().into_owned()));
+    }
+    let profile = active_profile(&app);
+    Ok(repositories(&app)
+        .await?
+        .create_linked_folders(&profile, &projects)
+        .await?)
 }
 
 /// The sticky active profile, read straight from the Hermes home file. Gives

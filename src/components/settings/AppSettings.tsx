@@ -420,6 +420,7 @@ export function SettingsPageHeader({
 
 type AppSettingsProps = {
   folders?: FolderDto[];
+  onFoldersImported?: (folders: FolderDto[]) => void;
   /** When Memory is opened from a project, the manager pre-filters to it. */
   memoryFolderFilter?: string;
   /** Drill from a memory's project tag into that project. */
@@ -467,6 +468,7 @@ type AppSettingsProps = {
 
 export function AppSettings({
   folders = [],
+  onFoldersImported,
   memoryFolderFilter,
   onOpenProject,
   account,
@@ -2484,6 +2486,8 @@ export function AppSettings({
             selectedPlatformId={agentPlatformId}
             onSelectPlatform={setAgentPlatformId}
             onBackFromPlatform={() => setAgentPlatformId(undefined)}
+            folders={folders}
+            onFoldersImported={onFoldersImported}
           />
         ) : null}
 

@@ -2,6 +2,7 @@ export type AgentProjectContext = {
   id: string;
   name: string;
   instructions?: string;
+  localPath?: string;
 };
 
 export type PreparedProjectPrompt = {
@@ -56,11 +57,23 @@ function sanitizeContextPayload(value: string): string {
 }
 
 function projectContextSignature(project: AgentProjectContext): string {
-  return JSON.stringify([project.id, project.name, project.instructions ?? ""]);
+  return JSON.stringify([
+    project.id,
+    project.name,
+    project.instructions ?? "",
+    project.localPath ?? "",
+  ]);
 }
 
 function renderProjectContext(project: AgentProjectContext): string {
-  const instructions = sanitizeContextPayload(project.instructions?.trim() ?? "") || "(none)";
+  const localPath = sanitizeContextPayload(project.localPath?.trim() ?? "").replace(/\n/g, " ");
+  const linkedFolderContext = localPath
+    ? `Linked local folder: ${localPath}\nUse this as the primary working folder for this project. Respect the session's current file access mode.`
+    : "";
+  const instructions =
+    sanitizeContextPayload(
+      [linkedFolderContext, project.instructions?.trim() ?? ""].filter(Boolean).join("\n\n"),
+    ) || "(none)";
   const name = sanitizeContextPayload(project.name).replace(/\n/g, " ");
   return [
     CONTEXT_OPEN_MARKER,
@@ -103,7 +116,11 @@ export function prepareProjectPrompt(
         contextSignature: CLEARED_CONTEXT_SIGNATURE,
       };
     }
-    return { text: prompt, injected: false, contextSignature: previousContextSignature ?? null };
+    return {
+      text: prompt,
+      injected: false,
+      contextSignature: previousContextSignature ?? null,
+    };
   }
 
   const contextSignature = projectContextSignature(project);

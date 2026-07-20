@@ -3024,6 +3024,13 @@ export function App() {
     }
   }
 
+  function handleFoldersImported(folders: FolderDto[]) {
+    for (const folder of folders) {
+      dispatch({ type: "folderCreated", folder });
+    }
+    toast.success(`${folders.length} ${folders.length === 1 ? "project" : "projects"} added`);
+  }
+
   async function handleRenameFolder(folderId: string, name: string, description?: string) {
     try {
       const folder = await renameFolder(folderId, name, description);
@@ -4325,6 +4332,7 @@ export function App() {
                   onEnableAccessibility={handleEnableAccessibility}
                   onEnableSystemAudio={handleEnableSystemAudio}
                   folders={state.folders}
+                  onFoldersImported={handleFoldersImported}
                   memoryFolderFilter={memoryFolderFilter}
                   onOpenProject={(folderId) => {
                     handleSelectFolder(folderId);
@@ -4417,6 +4425,7 @@ export function App() {
                           id: folder.id,
                           name: folder.name,
                           instructions: folder.instructions,
+                          localPath: folder.localPath,
                         }
                       : undefined;
                   }}
@@ -4426,6 +4435,7 @@ export function App() {
                           id: agentProjectContextFolder.id,
                           name: agentProjectContextFolder.name,
                           instructions: agentProjectContextFolder.instructions,
+                          localPath: agentProjectContextFolder.localPath,
                         }
                       : undefined
                   }
@@ -4560,6 +4570,7 @@ export function App() {
                   }
                   onSelectFolder={(folderId) => handleSelectFolder(folderId)}
                   onCreateFolder={(name, description) => handleCreateFolder(name, description)}
+                  onFoldersImported={handleFoldersImported}
                   onRenameFolder={(folderId, name, description) =>
                     handleRenameFolder(folderId, name, description)
                   }

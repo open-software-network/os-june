@@ -1164,7 +1164,7 @@ impl Repositories {
 
     pub async fn list_folders(&self, profile: &str) -> Result<Vec<FolderDto>, sqlx::error::Error> {
         let rows = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE profile = ? AND deleted_at IS NULL
              ORDER BY lower(name) ASC",
@@ -1192,6 +1192,7 @@ impl Repositories {
             description: description.clone(),
             instructions: None,
             memory_disabled: false,
+            local_path: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -1210,6 +1211,59 @@ impl Repositories {
         .await?;
 
         Ok(folder)
+    }
+
+    pub async fn create_linked_folders(
+        &self,
+        profile: &str,
+        projects: &[(String, String)],
+    ) -> Result<Vec<FolderDto>, sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        let mut folders = Vec::with_capacity(projects.len());
+        for (name, local_path) in projects {
+            if let Some(row) = query(
+                "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
+                 FROM folders
+                 WHERE profile = ? AND local_path = ? AND deleted_at IS NULL",
+            )
+            .bind(profile)
+            .bind(local_path)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                folders.push(folder_from_row(row));
+                continue;
+            }
+
+            let now = timestamp();
+            let folder = FolderDto {
+                id: Uuid::new_v4().to_string(),
+                name: name.trim().to_string(),
+                description: None,
+                instructions: None,
+                memory_disabled: false,
+                local_path: Some(local_path.to_string()),
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            query(
+                "INSERT INTO folders
+                 (id, name, description, profile, local_path, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&folder.id)
+            .bind(&folder.name)
+            .bind(&folder.description)
+            .bind(profile)
+            .bind(&folder.local_path)
+            .bind(&folder.created_at)
+            .bind(&folder.updated_at)
+            .execute(&mut *tx)
+            .await?;
+            folders.push(folder);
+        }
+        tx.commit().await?;
+        Ok(folders)
     }
 
     pub async fn rename_folder(
@@ -1240,7 +1294,7 @@ impl Repositories {
         }
 
         let row = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -1312,7 +1366,7 @@ impl Repositories {
 
     async fn get_folder(&self, folder_id: &str) -> Result<FolderDto, AppError> {
         let row = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -1947,6 +2001,57 @@ impl Repositories {
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
+        let duplicate_linked_folders = query(
+            "SELECT source.id AS source_id, target.id AS target_id
+             FROM folders source
+             INNER JOIN folders target
+               ON target.profile = 'default'
+              AND target.local_path = source.local_path
+              AND target.deleted_at IS NULL
+             WHERE source.profile = ?
+               AND source.local_path IS NOT NULL
+               AND source.deleted_at IS NULL",
+        )
+        .bind(profile)
+        .fetch_all(&mut *transaction)
+        .await?;
+        for row in duplicate_linked_folders {
+            let source_id = row.get::<String, _>("source_id");
+            let target_id = row.get::<String, _>("target_id");
+            query(
+                "INSERT OR IGNORE INTO note_folders (note_id, folder_id, assigned_at)
+                 SELECT note_id, ?, assigned_at FROM note_folders WHERE folder_id = ?",
+            )
+            .bind(&target_id)
+            .bind(&source_id)
+            .execute(&mut *transaction)
+            .await?;
+            query("DELETE FROM note_folders WHERE folder_id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query(
+                "INSERT OR IGNORE INTO session_folders (session_id, folder_id, assigned_at)
+                 SELECT session_id, ?, assigned_at FROM session_folders WHERE folder_id = ?",
+            )
+            .bind(&target_id)
+            .bind(&source_id)
+            .execute(&mut *transaction)
+            .await?;
+            query("DELETE FROM session_folders WHERE folder_id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query("UPDATE memories SET folder_id = ? WHERE folder_id = ?")
+                .bind(&target_id)
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query("DELETE FROM folders WHERE id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         query("UPDATE folders SET profile = 'default' WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
@@ -5698,6 +5803,17 @@ fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {
                 }
             }),
         memory_disabled: row.try_get::<i64, _>("memory_disabled").unwrap_or_default() != 0,
+        local_path: row
+            .try_get::<Option<String>, _>("local_path")
+            .unwrap_or(None)
+            .and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -5917,6 +6033,90 @@ mod tests {
             .await
             .expect("finalize audio artifact");
         (note.id, artifact.id)
+    }
+
+    #[tokio::test]
+    async fn linked_folder_batch_rolls_back_when_any_insert_fails() {
+        let repos = test_repositories().await;
+        query(
+            "CREATE TRIGGER reject_linked_folder
+             BEFORE INSERT ON folders
+             WHEN NEW.local_path = '/tmp/reject'
+             BEGIN SELECT RAISE(ABORT, 'rejected for test'); END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("create rejection trigger");
+
+        let projects = vec![
+            ("Accepted".to_string(), "/tmp/accepted".to_string()),
+            ("Rejected".to_string(), "/tmp/reject".to_string()),
+        ];
+        assert!(repos
+            .create_linked_folders("default", &projects)
+            .await
+            .is_err());
+        assert!(repos
+            .list_folders("default")
+            .await
+            .expect("list folders after rollback")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn moving_profile_merges_duplicate_linked_folders() {
+        let repos = test_repositories().await;
+        let default_folder = repos
+            .create_linked_folders(
+                "default",
+                &[("Default project".to_string(), "/tmp/shared".to_string())],
+            )
+            .await
+            .expect("create default folder")
+            .remove(0);
+        let source_folder = repos
+            .create_linked_folders(
+                "work",
+                &[("Work project".to_string(), "/tmp/shared".to_string())],
+            )
+            .await
+            .expect("create source folder")
+            .remove(0);
+        let note = repos
+            .create_note("work", Some(source_folder.id.clone()))
+            .await
+            .expect("create source note");
+        let memory = repos
+            .create_memory("work", Some(&source_folder.id), "Remember this", "user")
+            .await
+            .expect("create source memory");
+
+        repos
+            .move_profile_data_to_default("work")
+            .await
+            .expect("move profile data");
+
+        let folders = repos
+            .list_folders("default")
+            .await
+            .expect("list default folders");
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, default_folder.id);
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("moved note")
+                .folder_ids,
+            vec![default_folder.id.clone()]
+        );
+        let memory_row = query("SELECT profile, folder_id FROM memories WHERE id = ?")
+            .bind(&memory.id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("moved memory");
+        assert_eq!(memory_row.get::<String, _>("profile"), "default");
+        assert_eq!(memory_row.get::<String, _>("folder_id"), default_folder.id);
     }
 
     fn transcription_plan(
