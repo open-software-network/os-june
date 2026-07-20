@@ -20,6 +20,7 @@ import { AdminNotifications } from "./AdminNotifications";
 import { Dialog, DialogField } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SettingsPageHeader } from "./AppSettings";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type ExternalDirsSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the
@@ -40,9 +41,39 @@ type ExternalDirsSectionProps = {
  * + the local add-form input state.
  */
 export function ExternalDirsSection({ mode = "sandboxed" }: ExternalDirsSectionProps) {
-  const state = useExternalDirs(mode);
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return <ExternalDirsView state={PENDING_EXTERNAL_DIRS_STATE} mode={mode} />;
+  }
+  return <ExternalDirsSectionReady mode={mode} profile={activeProfile.name} />;
+}
+
+function ExternalDirsSectionReady({
+  mode,
+  profile,
+}: ExternalDirsSectionProps & { mode: HermesAdminMode; profile: string }) {
+  const state = useExternalDirs(mode, profile);
   return <ExternalDirsView state={state} mode={mode} />;
 }
+
+const PENDING_EXTERNAL_DIRS_STATE: ExternalDirsState = {
+  status: "loading",
+  rows: [],
+  rawDirs: [],
+  busy: false,
+  retryable: false,
+  lifecycle: {
+    state: "clean",
+    label: "Up to date",
+    detail: "No pending changes.",
+    canRestart: false,
+  },
+  notifications: [],
+  refresh: () => {},
+  add: async () => undefined,
+  remove: () => {},
+  dismissNotification: () => {},
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

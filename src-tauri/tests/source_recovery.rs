@@ -20,7 +20,7 @@ async fn repos() -> Repositories {
 async fn scan_surfaces_recoverable_sources() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .create_recording_session(
             &note.id,
@@ -73,7 +73,7 @@ async fn scan_surfaces_recoverable_sources() {
 async fn scan_ignores_recovery_after_session_is_marked_valid() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .create_recording_session(
             &note.id,
@@ -117,7 +117,7 @@ async fn scan_ignores_recovery_after_session_is_marked_valid() {
 async fn recovered_partial_source_path_remains_retryable_after_session_is_marked_valid() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let mic_partial = dir.path().join("microphone.partial.wav");
     let mic_final = dir.path().join("microphone.wav");
     let mic_partial_str = mic_partial.to_string_lossy().into_owned();

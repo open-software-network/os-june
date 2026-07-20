@@ -1,3 +1,5 @@
+use crate::hermes_bridge::resolve_june_hermes_home;
+use crate::providers::active_profile_for_hermes_home;
 use crate::{
     app_paths::AppPaths,
     audio::{
@@ -24,25 +26,25 @@ use crate::{
         types::{
             AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
             AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
-            AssignNoteToFolderRequest, AssignSessionToFolderRequest, BootstrapResponse,
-            CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
-            CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
-            DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
+            AssignNoteToFolderRequest, AssignSessionToFolderRequest, AssignSessionToProfileRequest,
+            BootstrapResponse, CheckRecordingSourceReadinessRequest, CompletedSessionDto,
+            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
+            CreateNoteRequest, DeleteDictionaryEntryRequest, DeleteFolderRequest,
+            DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
             DownloadNoteAudioResponse, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
             FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
             ListNotesResponse, MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
-            OpenPrivacySettingsRequest, ProcessingStatus, RecordingSessionDto, RecordingSource,
-            RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
-            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
-            RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionRequest, ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto,
-            ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
-            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
-            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
-            ShareSummaryDto, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SessionProfileDto, SessionRequest, SetSessionCompletedRequest, ShareAddInvitesRequest,
+            ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest,
+            ShareInviteKeyDto, ShareInviteKeySaveRequest, ShareInviteKeysGetRequest,
+            ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest,
+            ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto, StartRecordingRequest,
+            SubmitIssueReportRequest, SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
@@ -76,6 +78,7 @@ static TRANSCRIPTION_STARTUP_REPAIR: OnceCell<()> = OnceCell::const_new();
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
+    let profile = active_profile(&app);
     TRANSCRIPTION_STARTUP_REPAIR
         .get_or_try_init(|| async {
             repos.release_interrupted_note_transcription_jobs().await?;
@@ -96,11 +99,11 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
             .await?;
     }
     let folders = repos
-        .list_folders()
+        .list_folders(&profile)
         .await
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
     let notes = repos
-        .list_notes(None, 100, None)
+        .list_notes(&profile, None, 100, None)
         .await
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
         .items;
@@ -114,9 +117,10 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
 
 #[tauri::command]
 pub async fn create_note(app: AppHandle, request: CreateNoteRequest) -> Result<NoteDto, AppError> {
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
-        .create_note(request.folder_id)
+        .create_note(&profile, request.folder_id)
         .await?)
 }
 
@@ -125,9 +129,11 @@ pub async fn list_notes(
     app: AppHandle,
     request: ListNotesRequest,
 ) -> Result<ListNotesResponse, AppError> {
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
         .list_notes(
+            &profile,
             request.folder_id,
             request.limit.unwrap_or(100),
             request.cursor,
@@ -212,6 +218,29 @@ fn is_share_not_found(error: &AppError) -> bool {
     error.code == "june_request_failed" && error.message == "share_not_found"
 }
 
+async fn delete_profile_records_with_share_revoker<F, Fut>(
+    repos: &Repositories,
+    profile: &str,
+    mut revoke_share: F,
+) -> Result<Vec<String>, AppError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<(), AppError>>,
+{
+    if profile == "default" {
+        return Ok(Vec::new());
+    }
+
+    for record in repos.share_keys_for_profile_notes(profile).await? {
+        revoke_share(record.share_id.clone()).await?;
+        repos.delete_share_keys(&record.share_id).await?;
+    }
+
+    let audio_paths = repos.audio_artifact_paths_for_profile(profile).await?;
+    repos.delete_profile_data(profile).await?;
+    Ok(audio_paths)
+}
+
 #[tauri::command]
 pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
     let paths = app_paths(&app)?;
@@ -280,9 +309,10 @@ pub async fn create_folder(
             "Folder name is required.",
         ));
     }
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
-        .create_folder(name, request.description.as_deref())
+        .create_folder(&profile, name, request.description.as_deref())
         .await?)
 }
 
@@ -290,7 +320,16 @@ pub async fn create_folder(
 pub async fn list_folders(
     app: AppHandle,
 ) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
-    Ok(repositories(&app).await?.list_folders().await?)
+    let profile = active_profile(&app);
+    Ok(repositories(&app).await?.list_folders(&profile).await?)
+}
+
+/// The sticky active profile, read straight from the Hermes home file. Gives
+/// the frontend a resolution path that works before the Hermes web server is
+/// up (cold start), matching what every profile-scoped Rust read uses.
+#[tauri::command]
+pub fn sticky_active_profile(app: AppHandle) -> String {
+    active_profile(&app)
 }
 
 #[tauri::command]
@@ -325,10 +364,11 @@ pub async fn assign_note_to_folder(
     app: AppHandle,
     request: AssignNoteToFolderRequest,
 ) -> Result<NoteDto, AppError> {
-    Ok(repositories(&app)
+    let profile = active_profile(&app);
+    repositories(&app)
         .await?
-        .assign_note_to_folder(&request.note_id, &request.folder_id)
-        .await?)
+        .assign_note_to_folder(&profile, &request.note_id, &request.folder_id)
+        .await
 }
 
 #[tauri::command]
@@ -352,10 +392,71 @@ pub async fn assign_session_to_folder(
     app: AppHandle,
     request: AssignSessionToFolderRequest,
 ) -> Result<(), AppError> {
+    let profile = active_profile(&app);
+    repositories(&app)
+        .await?
+        .assign_session_to_folder(&profile, &request.session_id, &request.folder_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn list_session_profiles(app: AppHandle) -> Result<Vec<SessionProfileDto>, AppError> {
+    Ok(repositories(&app).await?.list_session_profiles().await?)
+}
+
+#[tauri::command]
+pub async fn assign_session_to_profile(
+    app: AppHandle,
+    request: AssignSessionToProfileRequest,
+) -> Result<(), AppError> {
     Ok(repositories(&app)
         .await?
-        .assign_session_to_folder(&request.session_id, &request.folder_id)
+        .assign_session_to_profile(&request.session_id, &request.profile)
         .await?)
+}
+
+#[tauri::command]
+pub async fn profile_data_summary(
+    app: AppHandle,
+    profile: String,
+) -> Result<ProfileDataSummaryDto, AppError> {
+    Ok(repositories(&app)
+        .await?
+        .profile_data_summary(&profile)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn move_profile_data_to_default(app: AppHandle, profile: String) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .move_profile_data_to_default(&profile)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn delete_profile_data(app: AppHandle, profile: String) -> Result<(), AppError> {
+    // "Delete permanently" is a privacy promise: remote note shares are
+    // revoked before their source rows disappear, and recordings on disk go
+    // with those rows, mirroring delete_note / delete_notes.
+    let paths = app_paths(&app)?;
+    let repos = repositories(&app).await?;
+    let audio_paths =
+        delete_profile_records_with_share_revoker(&repos, &profile, |share_id| async move {
+            delete_remote_share_or_accept_missing(&share_id).await
+        })
+        .await?;
+    for path in audio_paths {
+        if path.trim().is_empty() {
+            continue;
+        }
+        if let Err(error) = paths.remove_recording_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("failed to remove deleted profile audio {path}: {error}");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -370,6 +471,22 @@ pub async fn remove_session_from_folder(
 }
 
 #[tauri::command]
+pub async fn list_completed_sessions(app: AppHandle) -> Result<Vec<CompletedSessionDto>, AppError> {
+    Ok(repositories(&app).await?.list_completed_sessions().await?)
+}
+
+#[tauri::command]
+pub async fn set_session_completed(
+    app: AppHandle,
+    request: SetSessionCompletedRequest,
+) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .set_session_completed(&request.session_id, request.completed)
+        .await?)
+}
+
+#[tauri::command]
 pub async fn list_dictionary_entries(app: AppHandle) -> Result<Vec<DictionaryEntryDto>, AppError> {
     Ok(repositories(&app).await?.list_dictionary_entries().await?)
 }
@@ -380,9 +497,10 @@ pub async fn list_memories(
     folder_id: Option<String>,
     include_global: bool,
 ) -> Result<Vec<MemoryDto>, AppError> {
+    let profile = active_profile(&app);
     Ok(repositories(&app)
         .await?
-        .list_memories(folder_id.as_deref(), include_global)
+        .list_memories(&profile, folder_id.as_deref(), include_global)
         .await?)
 }
 
@@ -393,11 +511,13 @@ pub async fn create_memory(
     content: String,
     source: String,
 ) -> Result<MemoryDto, AppError> {
+    let profile = active_profile(&app);
     let repos = repositories(&app).await?;
     let settings_path = memory_settings_path(&app)?;
     create_memory_with_settings(
         &repos,
         &settings_path,
+        &profile,
         folder_id.as_deref(),
         &content,
         &source,
@@ -411,14 +531,16 @@ pub async fn update_memory(
     id: String,
     content: String,
 ) -> Result<MemoryDto, AppError> {
+    let profile = active_profile(&app);
     let repos = repositories(&app).await?;
     let settings_path = memory_settings_path(&app)?;
-    update_memory_with_settings(&repos, &settings_path, &id, &content).await
+    update_memory_with_settings(&repos, &settings_path, &profile, &id, &content).await
 }
 
 #[tauri::command]
 pub async fn delete_memory(app: AppHandle, id: String) -> Result<(), AppError> {
-    repositories(&app).await?.delete_memory(&id).await
+    let profile = active_profile(&app);
+    repositories(&app).await?.delete_memory(&profile, &id).await
 }
 
 #[tauri::command]
@@ -504,6 +626,7 @@ pub async fn set_memory_enabled(
 pub(crate) async fn create_memory_with_settings(
     repos: &Repositories,
     settings_path: &Path,
+    profile: &str,
     folder_id: Option<&str>,
     content: &str,
     source: &str,
@@ -521,12 +644,15 @@ pub(crate) async fn create_memory_with_settings(
             "Memory source must be agent or user.",
         ));
     }
-    repos.create_memory(folder_id, content, source).await
+    repos
+        .create_memory(profile, folder_id, content, source)
+        .await
 }
 
 async fn update_memory_with_settings(
     repos: &Repositories,
     settings_path: &Path,
+    profile: &str,
     id: &str,
     content: &str,
 ) -> Result<MemoryDto, AppError> {
@@ -534,7 +660,7 @@ async fn update_memory_with_settings(
     let _guard = MEMORY_SETTINGS_LOCK.lock().await;
     ensure_memory_enabled(settings_path)?;
     let content = validated_memory_content(content)?;
-    repos.update_memory(id, content).await
+    repos.update_memory(profile, id, content).await
 }
 
 fn ensure_memory_enabled(settings_path: &Path) -> Result<(), AppError> {
@@ -2919,6 +3045,12 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
         .cloned()
 }
 
+pub(crate) fn active_profile(app: &AppHandle) -> String {
+    resolve_june_hermes_home(app)
+        .map(|hermes_home| active_profile_for_hermes_home(&hermes_home))
+        .unwrap_or_else(|_| "default".to_string())
+}
+
 fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
@@ -2949,7 +3081,7 @@ mod retry_audio_source_tests {
         let repos = Repositories::new(pool);
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
-        let note = repos.create_note(None).await.expect("note");
+        let note = repos.create_note("default", None).await.expect("note");
         let session_id = "retry-missing-source";
         let session_dir = paths
             .recording_session_dir(&note.id, session_id)
@@ -3017,8 +3149,9 @@ mod note_transcription_timing_tests;
 mod tests {
     use super::{
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
-        capture_start_timeout_error, create_memory_with_settings, is_share_not_found,
-        load_memory_settings, persist_memory_settings, recovery_validation_expected_duration_ms,
+        capture_start_timeout_error, create_memory_with_settings,
+        delete_profile_records_with_share_revoker, is_share_not_found, load_memory_settings,
+        persist_memory_settings, recovery_validation_expected_duration_ms,
         should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
         update_memory_with_settings, validated_folder_instructions, MEMORY_SETTINGS_LOCK,
     };
@@ -3040,7 +3173,7 @@ mod tests {
     }
     use crate::{
         audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
-        db::repositories::Repositories,
+        db::repositories::{Repositories, ShareKeyRecord},
         domain::types::{
             AppError, AudioLevelDto, MemorySettingsDto, RecordingSource, RecordingSourceMode,
             RecordingState, RecordingStatusDto, SourceReadinessDto,
@@ -3065,6 +3198,113 @@ mod tests {
             .await
             .expect("migrations");
         Repositories::new(pool)
+    }
+
+    #[tokio::test]
+    async fn profile_record_deletion_revokes_note_shares_before_removing_rows() {
+        let repos = test_repositories().await;
+        let profile_note = repos
+            .create_note("research", None)
+            .await
+            .expect("create profile note");
+        let default_note = repos
+            .create_note("default", None)
+            .await
+            .expect("create default note");
+        let profile_share = ShareKeyRecord {
+            share_id: "share-research".to_string(),
+            item_kind: "note".to_string(),
+            item_id: profile_note.id.clone(),
+            content_key: vec![1; 32],
+        };
+        let default_share = ShareKeyRecord {
+            share_id: "share-default".to_string(),
+            item_kind: "note".to_string(),
+            item_id: default_note.id.clone(),
+            content_key: vec![2; 32],
+        };
+        repos
+            .save_share_key(&profile_share)
+            .await
+            .expect("save profile share");
+        repos
+            .save_share_key(&default_share)
+            .await
+            .expect("save default share");
+        let revoked = Arc::new(Mutex::new(Vec::new()));
+        let revoked_for_call = Arc::clone(&revoked);
+
+        let audio_paths =
+            delete_profile_records_with_share_revoker(&repos, "research", move |share_id| {
+                let revoked = Arc::clone(&revoked_for_call);
+                async move {
+                    revoked.lock().expect("revoked lock").push(share_id);
+                    Ok(())
+                }
+            })
+            .await
+            .expect("delete profile records");
+
+        assert!(audio_paths.is_empty());
+        assert_eq!(
+            *revoked.lock().expect("revoked lock"),
+            vec!["share-research".to_string()]
+        );
+        assert!(repos.get_note(&profile_note.id).await.is_err());
+        assert!(repos
+            .share_key_for_item("note", &profile_note.id)
+            .await
+            .expect("profile share lookup")
+            .is_none());
+        assert_eq!(
+            repos
+                .share_key_for_item("note", &default_note.id)
+                .await
+                .expect("default share lookup"),
+            Some(default_share)
+        );
+        repos
+            .get_note(&default_note.id)
+            .await
+            .expect("default note remains");
+    }
+
+    #[tokio::test]
+    async fn profile_record_deletion_keeps_rows_and_keys_when_share_revocation_fails() {
+        let repos = test_repositories().await;
+        let note = repos
+            .create_note("research", None)
+            .await
+            .expect("create profile note");
+        let share = ShareKeyRecord {
+            share_id: "share-research".to_string(),
+            item_kind: "note".to_string(),
+            item_id: note.id.clone(),
+            content_key: vec![1; 32],
+        };
+        repos
+            .save_share_key(&share)
+            .await
+            .expect("save profile share");
+
+        let error = delete_profile_records_with_share_revoker(&repos, "research", |_| async {
+            Err(AppError::new("june_request_failed", "network error"))
+        })
+        .await
+        .expect_err("failed revocation must keep local data");
+
+        assert_eq!(error.code, "june_request_failed");
+        repos
+            .get_note(&note.id)
+            .await
+            .expect("profile note remains");
+        assert_eq!(
+            repos
+                .share_key_for_item("note", &note.id)
+                .await
+                .expect("profile share lookup"),
+            Some(share)
+        );
     }
 
     #[test]
@@ -3148,7 +3388,7 @@ mod tests {
                 for folder_scoped in [false, true] {
                     let repos = test_repositories().await;
                     let folder = repos
-                        .create_folder("Project", None)
+                        .create_folder("default", "Project", None)
                         .await
                         .expect("create folder");
                     repos
@@ -3166,6 +3406,7 @@ mod tests {
                     let result = create_memory_with_settings(
                         &repos,
                         &settings_path,
+                        "default",
                         folder_scoped.then_some(folder.id.as_str()),
                         "Remember this",
                         "user",
@@ -3194,11 +3435,11 @@ mod tests {
     async fn update_memory_rejects_content_in_a_disabled_folder() {
         let repos = test_repositories().await;
         let folder = repos
-            .create_folder("Project", None)
+            .create_folder("default", "Project", None)
             .await
             .expect("create folder");
         let memory = repos
-            .create_memory(Some(&folder.id), "Original", "user")
+            .create_memory("default", Some(&folder.id), "Original", "user")
             .await
             .expect("create memory");
         repos
@@ -3208,13 +3449,19 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join("memory-settings.json");
 
-        let error = update_memory_with_settings(&repos, &settings_path, &memory.id, "Replacement")
-            .await
-            .expect_err("update must be rejected");
+        let error = update_memory_with_settings(
+            &repos,
+            &settings_path,
+            "default",
+            &memory.id,
+            "Replacement",
+        )
+        .await
+        .expect_err("update must be rejected");
 
         assert_eq!(error.code, "memory_disabled");
         let unchanged = repos
-            .list_memories(Some(&folder.id), false)
+            .list_memories("default", Some(&folder.id), false)
             .await
             .expect("list memory");
         assert_eq!(unchanged[0].content, "Original");
@@ -3224,20 +3471,26 @@ mod tests {
     async fn update_memory_rejects_all_content_when_memory_is_globally_disabled() {
         let repos = test_repositories().await;
         let memory = repos
-            .create_memory(None, "Original", "user")
+            .create_memory("default", None, "Original", "user")
             .await
             .expect("create memory");
         let dir = tempfile::tempdir().expect("tempdir");
         let settings_path = dir.path().join("memory-settings.json");
         std::fs::write(&settings_path, r#"{"enabled":false}"#).expect("disable memory");
 
-        let error = update_memory_with_settings(&repos, &settings_path, &memory.id, "Replacement")
-            .await
-            .expect_err("update must be rejected");
+        let error = update_memory_with_settings(
+            &repos,
+            &settings_path,
+            "default",
+            &memory.id,
+            "Replacement",
+        )
+        .await
+        .expect_err("update must be rejected");
 
         assert_eq!(error.code, "memory_disabled");
         let unchanged = repos
-            .list_memories(None, false)
+            .list_memories("default", None, false)
             .await
             .expect("list global memory");
         assert_eq!(unchanged[0].content, "Original");

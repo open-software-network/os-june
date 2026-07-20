@@ -92,7 +92,10 @@ fn timing_finished_recording(
 async fn assert_done_origin_checkpoints_are_monotonic_and_single_shot() {
     let dir = tempfile::tempdir().expect("timing tempdir");
     let repos = benchmark_repositories(&dir).await;
-    let note = repos.create_note(None).await.expect("timing note");
+    let note = repos
+        .create_note("default", None)
+        .await
+        .expect("timing note");
     let recording_session_id = format!("timing-{}", uuid::Uuid::new_v4());
     let audio_path = dir.path().join("timing-microphone.wav");
     write_one_second_timing_wav(&audio_path);

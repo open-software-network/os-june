@@ -23,7 +23,7 @@ async fn scan_surfaces_interrupted_recording_with_audio_bytes() {
     let dir = tempdir().expect("tempdir");
     let partial = dir.path().join("session.partial.wav");
     std::fs::write(&partial, b"partial audio").expect("partial bytes");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .create_recording_session(
             &note.id,
@@ -51,7 +51,7 @@ async fn scan_surfaces_interrupted_recording_with_audio_bytes() {
 async fn recovery_snapshot_persists_elapsed_time_for_session_and_sources() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .create_recording_session(
             &note.id,
@@ -106,7 +106,7 @@ async fn boot_recovery_marks_note_recoverable_when_audio_survived() {
     let dir = tempdir().expect("tempdir");
     let partial = dir.path().join("session.partial.wav");
     std::fs::write(&partial, b"partial audio").expect("partial bytes");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .create_recording_session(
             &note.id,
@@ -148,7 +148,7 @@ async fn boot_recovery_marks_note_recoverable_when_audio_survived() {
 async fn scan_ignores_missing_audio_bytes() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .create_recording_session(
             &note.id,
