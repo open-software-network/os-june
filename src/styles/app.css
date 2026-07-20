@@ -10369,7 +10369,7 @@ input:focus-visible,
 
 .note-calendar-source {
   color: var(--foreground);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .note-calendar-account {
