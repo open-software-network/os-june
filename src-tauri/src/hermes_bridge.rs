@@ -1629,7 +1629,9 @@ async fn start_hermes_bridge_inner(
         &hermes_home,
         sandbox_available,
         agent_cli_access,
-        browser_access,
+        // None (feature-flagged out) renders no browser SOUL section at all;
+        // the grant only matters once the feature exists in this build.
+        crate::feature_flags::BROWSER_USE_ENABLED.then_some(browser_access),
         june_memory_enabled(&june_context_mcp.memory_settings_path),
         video_generation_enabled,
         connectors_registered,
@@ -10701,11 +10703,15 @@ fn write_june_character(hermes_home: &Path, character: &str) -> Result<(), AppEr
 /// this machine actually engage the jail (it's omitted when sandbox-exec is
 /// missing or the escape-hatch env var disabled it, so the agent never
 /// claims a protection that isn't enforced).
+/// `browser_access`: `None` means Browser use is feature-flagged out of this
+/// build - neither browser SOUL section renders (the blocked variant would
+/// teach the agent to request a setting the UI does not show). `Some(grant)`
+/// picks the enabled or blocked section from the stored grant.
 fn sync_june_soul(
     hermes_home: &std::path::Path,
     sandbox_available: bool,
     agent_cli_access: bool,
-    browser_access: bool,
+    browser_access: Option<bool>,
     memory_enabled: bool,
     video_generation_enabled: bool,
     connectors_registered: bool,
@@ -10731,16 +10737,12 @@ fn sync_june_soul(
     };
     // The Browser access grant is independent of the sandbox: the broker
     // enforces it for every mode, so browser guidance rides along in both
-    // states — request-the-grant when off, use-the-tools when on. While the
-    // feature flag hides Browser use entirely, neither section is rendered:
-    // the blocked variant would teach the agent to raise a request card for
-    // a setting the UI does not show.
-    let browser_section = if !crate::feature_flags::BROWSER_USE_ENABLED {
-        ""
-    } else if browser_access {
-        JUNE_SOUL_BROWSER_ENABLED_MD
-    } else {
-        JUNE_SOUL_BROWSER_BLOCKED_MD
+    // states — request-the-grant when off, use-the-tools when on. `None`
+    // (feature-flagged out) renders neither section.
+    let browser_section = match browser_access {
+        None => "",
+        Some(true) => JUNE_SOUL_BROWSER_ENABLED_MD,
+        Some(false) => JUNE_SOUL_BROWSER_BLOCKED_MD,
     };
     let soul = if sandbox_available {
         let cli_section = if agent_cli_access {
@@ -20495,7 +20497,8 @@ mcp_servers:
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path(), true, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -20518,7 +20521,8 @@ mcp_servers:
     fn june_soul_includes_memory_guidance_only_while_globally_enabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, false, false).expect("enabled soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("enabled soul");
         let enabled = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(enabled.contains("June memory tools"));
         assert!(enabled.contains("save_memory"));
@@ -20526,7 +20530,7 @@ mcp_servers:
         assert!(enabled.contains("forget_memory"));
         assert!(enabled.contains("Never save secrets, credentials"));
 
-        sync_june_soul(home.path(), false, false, false, false, false, false)
+        sync_june_soul(home.path(), false, false, Some(false), false, false, false)
             .expect("disabled soul");
         let disabled = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!disabled.contains("June memory tools"));
@@ -20549,7 +20553,8 @@ mcp_servers:
     fn sandboxed_soul_describes_the_write_jail() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Seatbelt"));
@@ -20574,7 +20579,8 @@ mcp_servers:
     fn june_soul_describes_local_context_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_context"));
@@ -20590,7 +20596,8 @@ mcp_servers:
     fn june_soul_asks_for_clarification_before_costly_ambiguous_work() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("Clarifying questions"));
@@ -20604,7 +20611,8 @@ mcp_servers:
     fn june_soul_describes_web_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_web"));
@@ -20617,7 +20625,8 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
 
         // Not registered: no connector stanza.
-        sync_june_soul(home.path(), false, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(!soul.contains("june_gmail"));
         assert!(!soul.contains("june_gcal"));
@@ -20625,7 +20634,8 @@ mcp_servers:
 
         // Registered: gmail/gcal/linear toolsets, the untrusted-input warning,
         // and the approval note appear.
-        sync_june_soul(home.path(), false, false, false, true, true, true).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, true)
+            .expect("sync soul");
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_gmail"));
         assert!(soul.contains("june_gcal"));
@@ -20940,7 +20950,8 @@ mcp_servers:
     fn june_soul_uses_image_settings_instead_of_pre_refusing() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_image"));
@@ -20966,7 +20977,8 @@ mcp_servers:
     fn june_soul_describes_recorder_tools() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_recorder"));
@@ -20980,7 +20992,7 @@ mcp_servers:
     fn sandboxed_soul_with_cli_access_describes_the_grant() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, true, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, true, Some(false), true, true, false).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("the user enabled Agent CLI access"));
@@ -21004,7 +21016,7 @@ mcp_servers:
                 home.path(),
                 sandbox_available,
                 false,
-                false,
+                Some(false),
                 true,
                 true,
                 false,
@@ -21027,7 +21039,7 @@ mcp_servers:
     fn soul_with_browser_access_omits_the_request_and_conditions_routine_use() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), true, false, true, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, Some(true), true, true, false).expect("sync soul");
 
         // Grant on: nothing to request and no stale "disabled" claim. The
         // attended guidance must stay positively affirmative - without it the
@@ -21045,10 +21057,26 @@ mcp_servers:
     }
 
     #[test]
+    fn soul_with_browser_use_feature_flagged_out_renders_neither_browser_section() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        // None = the feature flag hides Browser use from this build. Neither
+        // the request token (a card the UI would not show) nor the enabled
+        // guidance may render.
+        sync_june_soul(home.path(), true, false, None, true, true, false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(!soul.contains("[REQUEST:BROWSER_ACCESS]"));
+        assert!(!soul.contains("june_browser tools"));
+        assert!(!soul.contains("the user enabled Browser use"));
+    }
+
+    #[test]
     fn unsandboxed_soul_makes_no_sandbox_claims() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -21060,7 +21088,8 @@ mcp_servers:
     fn june_soul_omits_video_tools_when_disabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
@@ -21074,7 +21103,8 @@ mcp_servers:
     fn sync_june_soul_seeds_character_file_and_uses_default() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are helpful, knowledgeable, and direct"));
@@ -21093,7 +21123,8 @@ mcp_servers:
         )
         .expect("seed character");
 
-        sync_june_soul(home.path(), true, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), true, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("cheerful pirate"));
@@ -21115,7 +21146,8 @@ mcp_servers:
         let home = tempfile::tempdir().expect("tempdir");
         std::fs::write(home.path().join("CHARACTER.md"), "   \n\n").expect("seed blank");
 
-        sync_june_soul(home.path(), false, false, false, true, false, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are helpful, knowledgeable, and direct"));
@@ -21154,7 +21186,8 @@ mcp_servers:
     fn june_soul_includes_video_tools_when_enabled() {
         let home = tempfile::tempdir().expect("tempdir");
 
-        sync_june_soul(home.path(), false, false, false, true, true, false).expect("sync soul");
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("june_video"));
