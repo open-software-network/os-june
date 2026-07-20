@@ -31,6 +31,7 @@ fn dev_plaintext_token_file(provider: ConnectorProvider) -> &'static str {
     match provider {
         ConnectorProvider::Google => "dev-google-connector-tokens.json",
         ConnectorProvider::Linear => "dev-linear-connector-tokens.json",
+        ConnectorProvider::Notion => "dev-notion-connector-tokens.json",
     }
 }
 

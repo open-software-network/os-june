@@ -3,7 +3,7 @@ status: accepted
 date: 2026-07-21
 ---
 
-# ADR 0033: Obsidian vault discovery uses a June-owned MCP server
+# ADR 0034: Obsidian vault discovery uses a June-owned MCP server
 
 ## Context
 

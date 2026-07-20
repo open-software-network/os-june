@@ -32,7 +32,8 @@ content to Notion.
 
 ## V1 experience
 
-- Connect from Plugins and use Notion's page picker to select accessible roots.
+- Discover Notion from Plugins, then connect through the Connectors account
+  surface and use Notion's page picker to select accessible roots.
 - Search selected pages/data sources and read a page on demand.
 - Link a June note to a Notion page without copying the entire note.
 - Draft a decision record, project update, or action database entry from a
@@ -74,14 +75,24 @@ content to Notion.
 
 ## Privacy and trust
 
-Notion public connections use OAuth and a client secret for token exchange. The
-implementation must resolve whether a public desktop distribution can keep the
-user token on-device without embedding a reusable secret. Until then, the PRD
-does not make the Google local-mode credential claim.
+Notion public connections use OAuth and a client secret for token exchange. A
+hosted MCP prototype proved device-token custody and tool discovery through
+Notion's hosted MCP endpoint, but selected-resource scoping is still unproven.
+Until live probes show that search, fetch, and data-source reads cannot see
+unselected pages, the PRD must not claim selected-page-only access in shipped UI.
 
 Notion content is untrusted input. The user-selected page set and provider
-permissions form a hard boundary. All creates and updates require approval in
-v1, with exact destination and diff visible.
+permissions form a hard boundary only after the provider or a Rust-enforced
+authorized-root graph proves that boundary for every read path. All creates and
+updates require approval in v1, with exact destination and diff visible.
+
+Preview note, 2026-07-16: the hosted MCP preview may expose search, approved
+page creation, and narrowly targeted page updates before selected-resource
+scoping is proven. Hosted Notion search may include sources connected to the
+user's Notion workspace when that workspace enables them. This does not change
+the product promise above: shipped UI must keep the preview caveat visible,
+disclose the hosted-search scope, and the connector must not claim
+selected-page-only access until the boundary is proven or enforced in Rust.
 
 ## Business model
 

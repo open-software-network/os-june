@@ -2162,9 +2162,9 @@ export type ConnectorScopeBundle =
   | "linear_read"
   | "linear_write";
 
-export type ConnectorAccountStatus = "connected" | "reconnect_required";
+export type ConnectorAccountStatus = "connected" | "reconnect_required" | "unavailable";
 
-export type ConnectorProvider = "google" | "linear";
+export type ConnectorProvider = "google" | "linear" | "notion";
 
 /** One Linear team: the granularity June's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once
@@ -2177,7 +2177,7 @@ export type LinearTeam = {
 
 /** One connected connector account, as the connectors module reports it.
  * Carries only metadata (identity, granted scopes, health) — never a token.
- * Google rows leave `workspaceName`/`workspaceUrlKey` null and
+ * Google and Notion rows leave `workspaceName`/`workspaceUrlKey` null and
  * `selectedTeams` empty. A Linear row's `accountId` is the Linear workspace
  * id (an opaque UUID, not an email); `email` is the signed-in Linear user's
  * email and may be empty. */
@@ -2186,7 +2186,7 @@ export type ConnectorAccount = {
   provider: ConnectorProvider;
   email: string;
   /** Granted scope identifiers: Google's full auth URLs, Linear's short
-   * scope names ("read", "write") — not bundle names. */
+   * scope names ("read", "write") — not bundle names. Empty for Notion preview. */
   scopes: string[];
   status: ConnectorAccountStatus;
   /** Linear workspace display name; null for Google rows. */
@@ -2320,6 +2320,60 @@ export async function connectorsConnect(input: {
 
 export async function connectorsCancelConnect() {
   return invoke<void>("connectors_cancel_connect");
+}
+
+export type NotionConnectionStatus = {
+  connected: boolean;
+  accountId: string;
+  endpoint: string;
+  preview: boolean;
+  selectedResourceScopingVerified: boolean;
+  accessTokenPresent: boolean;
+  refreshTokenPresent: boolean;
+  clientIdPresent: boolean;
+  keychainOnly: boolean;
+};
+
+export type NotionConnection = {
+  accountId: string;
+  endpoint: string;
+  preview: boolean;
+  selectedResourceScopingVerified: boolean;
+};
+
+export type NotionToolSummary = {
+  name: string;
+  description?: string;
+  writeClass: string;
+};
+
+export type NotionToolInventory = {
+  endpoint: string;
+  protocolVersion: string;
+  toolCount: number;
+  tools: NotionToolSummary[];
+  sessionEstablished: boolean;
+  inventoryBytes: number;
+};
+
+export async function notionConnectorStatus() {
+  return invoke<NotionConnectionStatus>("notion_connector_status");
+}
+
+export async function notionConnectorConnect() {
+  return invoke<NotionConnection>("notion_connector_connect");
+}
+
+export async function notionConnectorCancelConnect() {
+  return invoke<void>("notion_connector_cancel_connect");
+}
+
+export async function notionConnectorDisconnect() {
+  return invoke<void>("notion_connector_disconnect");
+}
+
+export async function notionConnectorListTools() {
+  return invoke<NotionToolInventory>("notion_connector_list_tools");
 }
 
 /** Removes a connected account. With `revoke`, also revokes June's grant with

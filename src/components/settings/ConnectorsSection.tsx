@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import {
   BUNDLE_META,
@@ -19,6 +19,8 @@ import {
   connectorsDisconnect,
   connectorsLinearTeams,
   connectorsList,
+  notionConnectorConnect,
+  notionConnectorDisconnect,
   connectorsSetSelectedTeams,
   obsidianConfigure,
   obsidianDisconnect,
@@ -38,16 +40,19 @@ import { SettingsPageHeader } from "./AppSettings";
 // Read-only by default: Google gets mail read and calendar read, Linear gets
 // workspace read. Write scopes are opt-in checkboxes, so a fresh connect
 // never grants mutation authority the user did not ask for.
+type OAuthConnectorProvider = Extract<ConnectorProvider, "google" | "linear">;
+
 const DEFAULT_CONNECT_BUNDLES = {
   google: ["gmail_read", "calendar_read"],
   linear: ["linear_read"],
-} satisfies Record<ConnectorProvider, readonly ConnectorScopeBundle[]>;
+} satisfies Record<OAuthConnectorProvider, readonly ConnectorScopeBundle[]>;
 
 const PROVIDER_ORDER = ["google", "linear"] as const;
 
 const PROVIDER_NAMES = {
   google: "Google",
   linear: "Linear",
+  notion: "Notion",
 } satisfies Record<ConnectorProvider, string>;
 
 /** One-line capability blurb shown while a provider is not connected: what
@@ -55,12 +60,163 @@ const PROVIDER_NAMES = {
 const PROVIDER_BLURBS = {
   google: "Mail and calendar for briefings, triage, and meeting prep.",
   linear: "Projects, cycles, and issues for planning briefs and status updates.",
-} satisfies Record<ConnectorProvider, string>;
+} satisfies Record<OAuthConnectorProvider, string>;
+
+const NOTION_CONNECTOR_BLURB =
+  "Pages and workspace content for briefs, search, and approved updates.";
+
+const NOTION_CONNECTED_BLURB = "Pages, search, and approved updates.";
+
+const NOTION_RECONNECT_BLURB = "Reconnect Notion to restore pages, search, and approved updates.";
+
+const NOTION_SCOPE_DISCLOSURE = "Access may extend beyond selected pages.";
+
+const NOTION_SEARCH_DISCLOSURE = "Search may include Notion-connected sources.";
+
+type NotionConnectorRowProps = {
+  account: ConnectorAccount | null;
+  connecting: boolean;
+  disconnecting: boolean;
+  onConnect: () => void;
+  onReconnect: () => void;
+  onDisconnect: () => void;
+};
+
+type NotionConnectorState = "disconnected" | "connected" | "reconnect_required" | "unavailable";
+
+type NotionConnectorActionsProps = Pick<
+  NotionConnectorRowProps,
+  "connecting" | "disconnecting" | "onConnect" | "onReconnect" | "onDisconnect"
+> & {
+  state: NotionConnectorState;
+};
+
+function notionConnectorState(account: ConnectorAccount | null): NotionConnectorState {
+  if (account?.status === "unavailable") return "unavailable";
+  if (account?.status === "reconnect_required") return "reconnect_required";
+  if (account?.status === "connected") return "connected";
+  return "disconnected";
+}
+
+function NotionConnectorActions({
+  state,
+  connecting,
+  disconnecting,
+  onConnect,
+  onReconnect,
+  onDisconnect,
+}: NotionConnectorActionsProps) {
+  const busy = connecting || disconnecting;
+  const disconnectButton = (
+    <button
+      type="button"
+      className="btn btn-ghost"
+      aria-label="Disconnect Notion"
+      disabled={busy}
+      aria-busy={disconnecting || undefined}
+      onClick={onDisconnect}
+    >
+      {disconnecting ? "Disconnecting…" : "Disconnect"}
+    </button>
+  );
+
+  if (state === "connected" || state === "unavailable") return disconnectButton;
+  if (state === "reconnect_required") {
+    return (
+      <>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          aria-label="Reconnect Notion"
+          disabled={busy}
+          aria-busy={connecting || undefined}
+          onClick={onReconnect}
+        >
+          {connecting ? "Waiting for browser…" : "Reconnect"}
+        </button>
+        {disconnectButton}
+      </>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className="btn btn-secondary"
+      aria-label="Connect Notion"
+      disabled={busy}
+      aria-busy={connecting || undefined}
+      onClick={onConnect}
+    >
+      {connecting ? "Waiting for browser…" : "Connect"}
+    </button>
+  );
+}
+
+function NotionConnectorRow({
+  account,
+  connecting,
+  disconnecting,
+  onConnect,
+  onReconnect,
+  onDisconnect,
+}: NotionConnectorRowProps) {
+  const state = notionConnectorState(account);
+  const details = {
+    disconnected: {
+      subtitle: NOTION_CONNECTOR_BLURB,
+      statusLabel: null,
+      statusTone: "warning",
+    },
+    connected: { subtitle: NOTION_CONNECTED_BLURB, statusLabel: "Connected", statusTone: "ok" },
+    reconnect_required: {
+      subtitle: NOTION_RECONNECT_BLURB,
+      statusLabel: "Reconnect needed",
+      statusTone: "warning",
+    },
+    unavailable: {
+      subtitle: "June could not confirm the Notion connection. Try again in a moment.",
+      statusLabel: "Status unavailable",
+      statusTone: "warning",
+    },
+  } as const;
+  const { subtitle, statusLabel, statusTone } = details[state];
+
+  return (
+    <li key="notion" className="connector-row">
+      <span className="connector-logo" aria-hidden>
+        <ConnectorProviderIcon provider="notion" />
+      </span>
+      <div className="connector-main">
+        <span className="connector-name">Notion</span>
+        <p className="connector-subtitle" title={subtitle}>
+          {subtitle}
+        </p>
+        <p className="connector-disclosure">{NOTION_SCOPE_DISCLOSURE}</p>
+        <p className="connector-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
+      </div>
+      <div className="connector-actions">
+        {statusLabel ? (
+          <span className="status-pill" data-tone={statusTone}>
+            {statusLabel}
+          </span>
+        ) : null}
+        <NotionConnectorActions
+          state={state}
+          connecting={connecting}
+          disconnecting={disconnecting}
+          onConnect={onConnect}
+          onReconnect={onReconnect}
+          onDisconnect={onDisconnect}
+        />
+      </div>
+    </li>
+  );
+}
 
 const CONNECT_TITLES = {
   google: { connect: "Connect Google account", add: "Add Google access" },
   linear: { connect: "Connect Linear workspace", add: "Add Linear access" },
-} satisfies Record<ConnectorProvider, { connect: string; add: string }>;
+} satisfies Record<OAuthConnectorProvider, { connect: string; add: string }>;
 
 const CONNECT_TOASTS = {
   google: {
@@ -73,11 +229,12 @@ const CONNECT_TOASTS = {
     add: "Linear access updated",
     reconnect: "Linear reconnected",
   },
-} satisfies Record<ConnectorProvider, { connect: string; add: string; reconnect: string }>;
+} satisfies Record<OAuthConnectorProvider, { connect: string; add: string; reconnect: string }>;
 
-/** True once an account holds every feature bundle its provider offers —
+/** True once an account holds every feature bundle its provider offers -
  * nothing left to add. */
 function allBundlesGranted(account: ConnectorAccount): boolean {
+  if (account.provider === "notion") return true;
   return (
     bundlesFromScopes(account.scopes, account.provider).length >=
     bundlesForProvider(account.provider).length
@@ -91,6 +248,7 @@ function accountDisplayName(account: ConnectorAccount): string {
   if (account.provider === "linear") {
     return account.workspaceName || account.email || "Linear workspace";
   }
+  if (account.provider === "notion") return "Notion";
   return account.email;
 }
 
@@ -137,7 +295,10 @@ function accountSubtitle(account: ConnectorAccount): string {
  * for a first connect ("this account"/"this workspace") or for adding scope
  * to an already-connected one. The sign-in surface and the kind of content
  * named swap per provider so the promise reads correctly for either. */
-function connectDescription(provider: ConnectorProvider, target: ConnectorAccount | null): string {
+function connectDescription(
+  provider: OAuthConnectorProvider,
+  target: ConnectorAccount | null,
+): string {
   const isGoogle = provider === "google";
   const lead = target
     ? `Add to what June may do with ${accountDisplayName(target)}.`
@@ -161,7 +322,7 @@ export function ConnectorsSection() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<ConnectorProvider | null>(null);
 
-  const [connectProvider, setConnectProvider] = useState<ConnectorProvider>("google");
+  const [connectProvider, setConnectProvider] = useState<OAuthConnectorProvider>("google");
   const [connectOpen, setConnectOpen] = useState(false);
   const [bundles, setBundles] = useState<ConnectorScopeBundle[]>([
     ...DEFAULT_CONNECT_BUNDLES.google,
@@ -185,7 +346,9 @@ export function ConnectorsSection() {
   const [obsidianError, setObsidianError] = useState<string | null>(null);
   const [obsidianBusy, setObsidianBusy] = useState(false);
   const [obsidianDisconnecting, setObsidianDisconnecting] = useState(false);
-
+  const [notionConnecting, setNotionConnecting] = useState(false);
+  const [notionDisconnecting, setNotionDisconnecting] = useState(false);
+  const notionOperationIdRef = useRef(0);
   // Linear team-selection dialog: the account id it's open for (null =
   // closed). Kept separate from the fetched team list/selection so a fetch
   // failure can be retried without losing the open state.
@@ -278,7 +441,7 @@ export function ConnectorsSection() {
   }, [teamsAccountId, loadTeams]);
 
   async function runConnect(input: {
-    provider: ConnectorProvider;
+    provider: OAuthConnectorProvider;
     scopes: ConnectorScopeBundle[];
     loginHint?: string;
   }) {
@@ -305,7 +468,7 @@ export function ConnectorsSection() {
   // Open the connect dialog for a brand-new account of the given provider
   // (only offered when none is connected), or to add scope to the one
   // existing account.
-  function openConnectNew(provider: ConnectorProvider) {
+  function openConnectNew(provider: OAuthConnectorProvider) {
     setConnectProvider(provider);
     setBundles([...DEFAULT_CONNECT_BUNDLES[provider]]);
     setConnectTarget(null);
@@ -313,6 +476,7 @@ export function ConnectorsSection() {
   }
 
   function openAddAccess(account: ConnectorAccount) {
+    if (account.provider === "notion") return;
     // Preselect what the account already holds so the dialog reads as "add to
     // these"; the checkboxes the user adds are the new scopes.
     setConnectProvider(account.provider);
@@ -355,6 +519,44 @@ export function ConnectorsSection() {
     }
   }
 
+  async function connectNotion() {
+    if (notionConnecting || notionDisconnecting) return;
+    const operationId = notionOperationIdRef.current + 1;
+    notionOperationIdRef.current = operationId;
+    setNotionConnecting(true);
+    try {
+      await notionConnectorConnect();
+      await connectorsApplyRuntime();
+      await refresh();
+      if (operationId === notionOperationIdRef.current) toast.success("Notion connected");
+    } catch (err) {
+      if (operationId === notionOperationIdRef.current) toast.error(messageFromError(err));
+    } finally {
+      if (operationId === notionOperationIdRef.current) setNotionConnecting(false);
+    }
+  }
+
+  async function reconnectNotion() {
+    await connectNotion();
+  }
+
+  async function disconnectNotion() {
+    if (notionDisconnecting || notionConnecting) return;
+    const operationId = notionOperationIdRef.current + 1;
+    notionOperationIdRef.current = operationId;
+    setNotionDisconnecting(true);
+    try {
+      await notionConnectorDisconnect();
+      await connectorsApplyRuntime();
+      await refresh();
+      if (operationId === notionOperationIdRef.current) toast.success("Notion disconnected");
+    } catch (err) {
+      if (operationId === notionOperationIdRef.current) toast.error(messageFromError(err));
+    } finally {
+      if (operationId === notionOperationIdRef.current) setNotionDisconnecting(false);
+    }
+  }
+
   // Dismiss the connect dialog. While a connect is in flight ("Waiting for
   // browser…") this also aborts the backend's loopback wait, so Cancel and
   // the close button work during that window instead of being stuck until
@@ -365,6 +567,7 @@ export function ConnectorsSection() {
   }
 
   async function reconnect(account: ConnectorAccount) {
+    if (account.provider === "notion") return;
     setNotConfigured(null);
     setReconnectingId(account.accountId);
     try {
@@ -511,7 +714,7 @@ export function ConnectorsSection() {
       <SettingsPageHeader
         id="connectors-heading"
         title="Connectors"
-        blurb="Connect Google and Linear in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses connector content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
+        blurb="Connect your accounts in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses connector content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
       />
 
       {notConfigured ? (
@@ -675,6 +878,14 @@ export function ConnectorsSection() {
               </li>
             );
           })}
+          <NotionConnectorRow
+            account={accounts?.find((entry) => entry.provider === "notion") ?? null}
+            connecting={accounts === null || notionConnecting}
+            disconnecting={notionDisconnecting}
+            onConnect={() => void connectNotion()}
+            onReconnect={() => void reconnectNotion()}
+            onDisconnect={() => void disconnectNotion()}
+          />
         </ul>
       </div>
 

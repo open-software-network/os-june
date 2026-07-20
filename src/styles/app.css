@@ -26720,6 +26720,16 @@ button.memory-project:hover {
   white-space: nowrap;
 }
 
+.connector-disclosure {
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .connector-actions {
   display: inline-flex;
   align-items: center;

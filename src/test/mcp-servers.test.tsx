@@ -155,6 +155,12 @@ describe("mcp servers — view logic", () => {
         }),
       ),
       serverFromWire({
+        name: "june_notion_auto_ab12cd34",
+        enabled: true,
+        transport: "stdio",
+        command: "june_notion_actions_mcp.py",
+      }),
+      serverFromWire({
         name: "linear",
         enabled: true,
         transport: "http",

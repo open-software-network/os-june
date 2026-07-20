@@ -52,10 +52,9 @@ export function reorderTabs(tabs: Tab[], orderedVisibleIds: string[]): Tab[] {
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
   const ordered = [...new Set(orderedVisibleIds)].filter((id) => byId.has(id));
   const orderedSet = new Set(ordered);
-  const orderedTabs = ordered.flatMap((id) => {
-    const tab = byId.get(id);
-    return tab ? [tab] : [];
-  });
+  const orderedTabs = ordered
+    .map((id) => byId.get(id))
+    .filter((tab): tab is Tab => tab !== undefined);
   const next = [...orderedTabs, ...tabs.filter((tab) => !orderedSet.has(tab.id))];
   if (next.every((tab, index) => tab === tabs[index])) return tabs;
   return next;

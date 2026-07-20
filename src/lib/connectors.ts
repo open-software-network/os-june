@@ -191,6 +191,7 @@ const STATUS_LABELS: Readonly<
 > = Object.freeze({
   connected: { label: "Connected", tone: "ok" },
   reconnect_required: { label: "Reconnect needed", tone: "attention" },
+  unavailable: { label: "Status unavailable", tone: "attention" },
 });
 
 /** Connected blurb is shared across providers; reconnect names the provider
@@ -201,15 +202,22 @@ const CONNECTED_BLURB = "This account is ready. Tokens stay in your Mac's Keycha
 const RECONNECT_BLURB: Readonly<Record<ConnectorProvider, string>> = Object.freeze({
   google: "Google needs you to sign in again before June can use this account.",
   linear: "Linear needs you to sign in again before June can use this workspace.",
+  notion: "Notion needs you to connect again before June can use its hosted MCP tools.",
 });
+const UNAVAILABLE_BLURB = "June could not confirm the Notion connection. Try again in a moment.";
+
+function accountStatusBlurb(status: ConnectorAccountStatus, provider: ConnectorProvider): string {
+  if (status === "reconnect_required") return RECONNECT_BLURB[provider];
+  if (status === "unavailable") return UNAVAILABLE_BLURB;
+  return CONNECTED_BLURB;
+}
 
 export function accountStatusMeta(
   status: ConnectorAccountStatus,
   provider: ConnectorProvider,
 ): ConnectorStatusMeta {
   const { label, tone } = STATUS_LABELS[status];
-  const blurb = status === "reconnect_required" ? RECONNECT_BLURB[provider] : CONNECTED_BLURB;
-  return { label, tone, blurb };
+  return { label, tone, blurb: accountStatusBlurb(status, provider) };
 }
 
 /** True for the Rust "connector_not_configured" error: this build ships no
@@ -321,7 +329,7 @@ export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
  * grant on every team-scoped route), so `june_linear` is safe to grant
  * ambiently just like the Google read servers rather than gating it behind
  * trust mode. */
-export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear"];
+export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear", "june_notion"];
 
 /** Action connector MCP servers: every mutating call parks for approval in
  * the Rust proxy. Linear has no autonomous mode in v1 (see `grantable` on
@@ -331,6 +339,7 @@ export const CONNECTOR_ACTION_TOOLSETS = [
   "june_gmail_actions",
   "june_gcal_actions",
   "june_linear_actions",
+  "june_notion_actions",
 ];
 
 /** One connector action tool, for the approvals-surface label lookup
@@ -382,6 +391,18 @@ export const CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.fre
     label: "Post project updates",
     grantable: false,
   },
+  {
+    id: "notion-create-pages",
+    server: "june_notion_actions",
+    label: "Create Notion pages",
+    grantable: false,
+  },
+  {
+    id: "notion-update-page",
+    server: "june_notion_actions",
+    label: "Update Notion pages",
+    grantable: false,
+  },
 ]);
 
 /** The connector action tools eligible for the earned-autonomy grant
@@ -422,9 +443,10 @@ export function actionToolLabel(tool: string): string {
 
 /** The provider behind a connector MCP server name, for provider marks on the
  * approvals surface. Null for non-connector servers. */
-export function providerFromServer(server: string): "google" | "linear" | null {
+export function providerFromServer(server: string): "google" | "linear" | "notion" | null {
   if (server.startsWith("june_gmail") || server.startsWith("june_gcal")) return "google";
   if (server.startsWith("june_linear")) return "linear";
+  if (server.startsWith("june_notion")) return "notion";
   return null;
 }
 

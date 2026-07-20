@@ -336,7 +336,9 @@ is UI; the reference is the token).
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
 `june_web`, `june_image`, `june_recorder`, `june_video`, and the connector
-servers `june_gmail`/`june_gcal` plus their `*_actions` counterparts).
+servers `june_gmail`, `june_gcal`, `june_linear`, and `june_notion`, plus their
+`*_actions` counterparts). `june_notion` is the hosted Notion MCP read toolset;
+`june_notion_actions` is the separately approval-gated create/update toolset.
 _Avoid_: using "tool" for all three.
 
 **Obsidian plugin**:
@@ -362,13 +364,15 @@ integration (too broad), plugin for a Tauri framework package.
 
 **Connector**:
 A private-by-architecture integration between June and a third-party account
-(shipped: Google Gmail + Calendar; in progress: Linear). The user authorizes
-the provider on their Mac; the grant lives in the Keychain and every provider
-API call originates on-device. June ships each connector as a read MCP server
-(`june_gmail`, `june_gcal`) plus a mutating actions server
-(`june_gmail_actions`, `june_gcal_actions`); neither holds the token, which
-stays in Rust behind the on-device provider proxy (see
-[ADR-0016](docs/adr/0016-private-connectors-local-mode.md)).
+(shipped: Google Gmail + Calendar and the Notion hosted MCP preview; Linear is
+currently in progress). The user authorizes the provider on their Mac; local
+connector credentials remain in OS credential storage, and Rust owns direct
+provider or hosted MCP calls. MCP servers never hold the credentials. Google
+ships `june_gmail` and `june_gcal` read servers plus their `*_actions`
+counterparts. Notion preview ships `june_notion` for hosted MCP reads and
+`june_notion_actions` for approval-gated page creation and updates. See
+[ADR-0016](docs/adr/0016-private-connectors-local-mode.md) and
+[ADR-0033](docs/adr/0033-notion-hosted-mcp-connect-preview.md).
 _Avoid_: integration (unqualified), plugin, the Google API.
 
 **Selected teams** (Linear):

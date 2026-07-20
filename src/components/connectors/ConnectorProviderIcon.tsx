@@ -1,5 +1,12 @@
 import { IconGoogle } from "central-icons/IconGoogle";
 import { IconLinear } from "central-icons/IconLinear";
+import { IconNotion } from "central-icons/IconNotion";
+
+const PROVIDER_ICONS = {
+  google: IconGoogle,
+  linear: IconLinear,
+  notion: IconNotion,
+} as const;
 
 /** Brand mark for a connector provider. Central-icons supplies available
  * marks; Obsidian's official favicon geometry is inlined because central-icons
@@ -9,7 +16,7 @@ export function ConnectorProviderIcon({
   provider,
   size = 18,
 }: {
-  provider: "google" | "linear" | "obsidian";
+  provider: keyof typeof PROVIDER_ICONS | "obsidian";
   size?: number;
 }) {
   if (provider === "obsidian") {
@@ -29,8 +36,6 @@ export function ConnectorProviderIcon({
       </svg>
     );
   }
-  if (provider === "linear") {
-    return <IconLinear size={size} aria-hidden />;
-  }
-  return <IconGoogle size={size} aria-hidden />;
+  const Icon = PROVIDER_ICONS[provider];
+  return <Icon size={size} aria-hidden />;
 }
