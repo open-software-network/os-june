@@ -485,6 +485,25 @@ describe("notes recording reliability", () => {
     await userEvent.click(screen.getByRole("button", { name: "Meeting notes" }));
     expect(await screen.findByText("Work profile note")).toBeInTheDocument();
     expect(screen.queryByText("First note")).toBeNull();
+
+    await act(async () => {
+      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+        payload: {
+          ...first,
+          title: "Old profile calendar note",
+          calendarEvent: {
+            eventId: "event-old-profile",
+            title: "Old profile calendar note",
+            startAt: "2026-07-20T14:00:00Z",
+            endAt: "2026-07-20T14:30:00Z",
+            accountEmail: "personal@example.com",
+          },
+        },
+      });
+    });
+
+    expect(screen.queryByText("Old profile calendar note")).toBeNull();
+    expect(screen.queryByText("First note")).toBeNull();
   });
 
   it("hides audio download when the selected note has no finalized audio", async () => {

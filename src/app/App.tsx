@@ -610,6 +610,10 @@ export function App() {
   // switches profiles. Remember that exception so stopping the take can remove
   // the old-profile note and its tab snapshots immediately.
   const crossProfileRecordingNoteIdRef = useRef<string | undefined>(undefined);
+  // Calendar matching finishes in the background and emits a global event.
+  // Remember which profile started each lookup so a late result cannot upsert
+  // an old-profile note into whichever profile is visible when it arrives.
+  const calendarContextNoteProfilesRef = useRef(new Map<string, string>());
   // Reactive mirror of recordingNoteIdRef. The ref serves the async finish/HUD
   // paths that need the latest value synchronously; this state drives render
   // decisions — which note shows the in-note RecorderBar, and whether the
@@ -1508,6 +1512,9 @@ export function App() {
     let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
+      const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
+      calendarContextNoteProfilesRef.current.delete(event.payload.id);
+      if (noteProfile && noteProfile !== getActiveHermesProfileName()) return;
       dispatch({ type: "noteUpdated", note: event.payload });
     }).then((cleanup) => {
       if (aborted) cleanup();
@@ -3374,6 +3381,7 @@ export function App() {
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
+      const recordingProfile = getActiveHermesProfileName();
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -3405,6 +3413,7 @@ export function App() {
             ? "microphoneOnly"
             : requestedSourceMode;
 
+        calendarContextNoteProfilesRef.current.set(noteId, recordingProfile);
         const recording = await startRecording(noteId, effectiveMode);
         setRecordingNote(noteId);
         const status = recordingToStatus(recording);
@@ -3416,6 +3425,7 @@ export function App() {
         playRecordingSound("start");
         return true;
       } catch (err) {
+        calendarContextNoteProfilesRef.current.delete(noteId);
         // The ref was set optimistically above; a failed start must not leave
         // the meeting HUD's reopen path pointing at a note with no recording.
         setRecordingNote(undefined);
