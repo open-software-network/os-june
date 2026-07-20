@@ -3925,10 +3925,16 @@ export function App() {
                   creditActionsDisabledReason={
                     fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
                   }
-                  fundingNotice={
-                    fundingRequired ? (
-                      <FundingNotice account={fundingAccount} onRefresh={refreshFundingAccount} />
-                    ) : undefined
+                  renderFundingNotice={
+                    fundingRequired
+                      ? (textFundingContext) => (
+                          <FundingNotice
+                            account={fundingAccount}
+                            onRefresh={refreshFundingAccount}
+                            textFundingContext={textFundingContext}
+                          />
+                        )
+                      : undefined
                   }
                   fundingTier={fundingTierOf(fundingAccount)}
                   topUpLabel={topUpLabel}
@@ -4380,10 +4386,16 @@ export function App() {
             creditActionsDisabledReason={
               fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
             }
-            fundingNotice={
-              fundingRequired ? (
-                <FundingNotice account={fundingAccount} onRefresh={refreshFundingAccount} />
-              ) : undefined
+            renderFundingNotice={
+              fundingRequired
+                ? (textFundingContext) => (
+                    <FundingNotice
+                      account={fundingAccount}
+                      onRefresh={refreshFundingAccount}
+                      textFundingContext={textFundingContext}
+                    />
+                  )
+                : undefined
             }
             onClose={() => setNoteChatOpen(false)}
             onOpenInAgent={(sessionId) => {

@@ -79,6 +79,64 @@ describe("FundingNotice", () => {
     await screen.findByText("Waiting for your upgrade");
   });
 
+  it("explains Auto funding and offers the model picker beside the plan action", async () => {
+    const user = userEvent.setup();
+    const onSelectVeniceModel = vi.fn();
+    render(
+      <FundingNotice
+        account={baseAccount}
+        onRefresh={vi.fn(async () => baseAccount)}
+        textFundingContext={{
+          activeModelId: "open-software/auto",
+          activeModel: {
+            id: "open-software/auto",
+            provider: "open-software",
+            capabilities: ["supportsFunctionCalling"],
+          },
+          veniceApiKeyConfigured: true,
+          onSelectVeniceModel,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        "Auto can route beyond Venice, so it uses June credits. Your Venice API key applies only when you select a Venice model.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Or go Max" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Select a Venice model" }));
+    expect(onSelectVeniceModel).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
+    expect(mocks.osAccountsUpgrade).toHaveBeenCalledWith("pro");
+  });
+
+  it("keeps the generic funding notice when no Venice key is configured", () => {
+    render(
+      <FundingNotice
+        account={baseAccount}
+        onRefresh={vi.fn(async () => baseAccount)}
+        textFundingContext={{
+          activeModelId: "open-software/auto",
+          activeModel: {
+            id: "open-software/auto",
+            provider: "open-software",
+            capabilities: ["supportsFunctionCalling"],
+          },
+          veniceApiKeyConfigured: false,
+          onSelectVeniceModel: vi.fn(),
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByText("Your starter credits are used up. Upgrade to keep using June."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Select a Venice model" })).toBeNull();
+  });
+
   it("offers Max checkout for those who want to go beyond Pro", async () => {
     const user = userEvent.setup();
     renderFundingNotice();
