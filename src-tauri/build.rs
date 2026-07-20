@@ -643,6 +643,8 @@ fn build_dictation_helper() {
     std::fs::create_dir_all(&resources_dir)
         .expect("dictation helper resources dir should be created");
     let executable = macos_dir.join("june-dictation-helper");
+    let icon_source = manifest_dir.join("icons").join("icon.icns");
+    let icon_destination = resources_dir.join("June.icns");
 
     let executable_current = swift_helper_executable_current(&source, &executable);
     let mut should_sign = false;
@@ -684,6 +686,8 @@ fn build_dictation_helper() {
   <string>june-dictation-helper</string>
   <key>CFBundleIdentifier</key>
   <string>co.opensoftware.june.dictation-helper</string>
+  <key>CFBundleIconFile</key>
+  <string>June.icns</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -709,6 +713,23 @@ fn build_dictation_helper() {
     if !plist_current {
         std::fs::write(plist, &plist_contents)
             .expect("dictation helper Info.plist should be written");
+        should_sign = true;
+    }
+
+    let icon_bytes = std::fs::read(&icon_source).unwrap_or_else(|error| {
+        panic!(
+            "June app icon {} should be readable: {error}",
+            icon_source.display()
+        )
+    });
+    let icon_current = std::fs::read(&icon_destination).is_ok_and(|current| current == icon_bytes);
+    if !icon_current {
+        std::fs::write(&icon_destination, icon_bytes).unwrap_or_else(|error| {
+            panic!(
+                "June app icon should be copied to dictation helper resources at {}: {error}",
+                icon_destination.display()
+            )
+        });
         should_sign = true;
     }
 
