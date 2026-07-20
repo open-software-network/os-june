@@ -976,15 +976,21 @@ describe("notes recording reliability", () => {
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2" ? second : warningNote,
     );
-    const pendingFinish = deferred<never>();
-    mocks.finishRecording.mockReturnValue(pendingFinish.promise);
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...warningNote, queuedRecordings: 1 },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+    });
 
     await startRecordingDirectlyOnFirstNote();
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
-    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
-      "The service is busy right now. Wait a minute, then retry.",
+    await waitFor(() =>
+      expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+        "The service is busy right now. Wait a minute, then retry.",
+      ),
     );
   });
 
