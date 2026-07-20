@@ -4696,6 +4696,11 @@ const GATEWAY_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 /// on the main event-loop thread.
 #[cfg(target_os = "macos")]
 const GATEWAY_LAUNCHD_UNLOAD_TIMEOUT: Duration = Duration::from_secs(2);
+/// `launchctl print` uses this status only when the requested job is not
+/// present in the target domain. Other nonzero statuses are probe failures and
+/// must fail safe into the shutdown unload path.
+#[cfg(any(target_os = "macos", test))]
+const LAUNCHCTL_SERVICE_NOT_FOUND_EXIT_CODE: i32 = 113;
 
 /// Blocks until no start is between spawning a child and registering/reaping it,
 /// or the timeout elapses. Synchronous inside the async teardown path and cheap:
@@ -6817,11 +6822,20 @@ async fn gateway_launch_agent_loaded() -> Result<bool, AppError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    Ok(
-        run_gateway_service_command(cmd, "inspect", GATEWAY_STATUS_PROBE_TIMEOUT)
-            .await?
-            .success(),
-    )
+    let status = run_gateway_service_command(cmd, "inspect", GATEWAY_STATUS_PROBE_TIMEOUT).await?;
+    gateway_launch_agent_loaded_from_status(status)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn gateway_launch_agent_loaded_from_status(status: ExitStatus) -> Result<bool, AppError> {
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(LAUNCHCTL_SERVICE_NOT_FOUND_EXIT_CODE) => Ok(false),
+        _ => Err(AppError::new(
+            "hermes_gateway_status_failed",
+            format!("Could not inspect the routine gateway service ({status})."),
+        )),
+    }
 }
 
 /// Unloads KeepAlive ownership directly. This is the critical shutdown action:
@@ -6914,11 +6928,8 @@ async fn run_gateway_loaded_probe(mut cmd: Command) -> Result<bool, AppError> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    Ok(
-        run_gateway_service_command(cmd, "inspect", GATEWAY_STATUS_PROBE_TIMEOUT)
-            .await?
-            .success(),
-    )
+    let status = run_gateway_service_command(cmd, "inspect", GATEWAY_STATUS_PROBE_TIMEOUT).await?;
+    gateway_launch_agent_loaded_from_status(status)
 }
 
 /// Hermes' non-macOS lifecycle backends do not have a launchd job to inspect.
@@ -21063,9 +21074,17 @@ mcp_servers:
 
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
-    async fn gateway_loaded_probe_distinguishes_absent_and_loaded_services() {
-        let mut absent = Command::new("/usr/bin/false");
+    async fn gateway_loaded_probe_distinguishes_absence_failures_and_loaded_services() {
+        let mut failed = Command::new("/usr/bin/false");
+        failed
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        assert!(run_gateway_loaded_probe(failed).await.is_err());
+
+        let mut absent = Command::new("/bin/sh");
         absent
+            .args(["-c", "exit 113"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
