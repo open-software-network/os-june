@@ -4666,6 +4666,9 @@ pub async fn shutdown(app: &tauri::AppHandle) {
 /// child before draining. The window it guards (spawn -> register) is short, so
 /// this is only a safety bound; teardown proceeds regardless once it elapses.
 const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+/// The routine Gateway stop is best-effort during app teardown. Bound the CLI
+/// wait so a stuck launchd interaction cannot prevent June from quitting.
+const SHUTDOWN_GATEWAY_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Blocks until no start is between spawning a child and registering/reaping it,
 /// or the timeout elapses. Synchronous inside the async teardown path and cheap:
@@ -6695,7 +6698,7 @@ async fn ensure_hermes_gateway_running(
 /// dashboard connection by the time the routine service is restarted.
 async fn restart_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(), AppError> {
     let cmd = hermes_gateway_lifecycle_command(connection, "restart");
-    run_hermes_gateway_lifecycle_command(cmd, "restart").await
+    run_hermes_gateway_lifecycle_command(cmd, "restart", None).await
 }
 
 /// Stops the launchd routine Gateway before the app-owned provider proxy is
@@ -6703,7 +6706,7 @@ async fn restart_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(
 /// path bootstraps it again when June next launches.
 async fn stop_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(), AppError> {
     let cmd = hermes_gateway_lifecycle_command(connection, "stop");
-    run_hermes_gateway_lifecycle_command(cmd, "stop").await
+    run_hermes_gateway_lifecycle_command(cmd, "stop", Some(SHUTDOWN_GATEWAY_STOP_TIMEOUT)).await
 }
 
 async fn hermes_gateway_running(connection: &HermesBridgeConnection) -> Result<bool, AppError> {
@@ -6775,27 +6778,51 @@ fn spawn_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(),
 
 async fn run_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(), AppError> {
     let cmd = hermes_gateway_start_command(connection);
-    run_hermes_gateway_lifecycle_command(cmd, "start").await
+    run_hermes_gateway_lifecycle_command(cmd, "start", None).await
 }
 
 async fn run_hermes_gateway_lifecycle_command(
-    mut cmd: Command,
+    cmd: Command,
     action: &'static str,
+    timeout: Option<Duration>,
 ) -> Result<(), AppError> {
-    let status = tauri::async_runtime::spawn_blocking(move || cmd.status())
-        .await
-        .map_err(|error| {
-            AppError::new(
-                "hermes_gateway_start_failed",
-                format!("Could not wait for `hermes gateway {action}`. {error}"),
-            )
-        })?
-        .map_err(|error| {
-            AppError::new(
-                "hermes_gateway_start_failed",
-                format!("Could not run `hermes gateway {action}`. {error}"),
-            )
-        })?;
+    let mut cmd = tokio::process::Command::from(cmd);
+    #[cfg(unix)]
+    if timeout.is_some() {
+        cmd.process_group(0);
+    }
+    cmd.kill_on_drop(timeout.is_some());
+
+    let mut child = cmd.spawn().map_err(|error| {
+        AppError::new(
+            "hermes_gateway_start_failed",
+            format!("Could not run `hermes gateway {action}`. {error}"),
+        )
+    })?;
+    let wait_error = |error| {
+        AppError::new(
+            "hermes_gateway_start_failed",
+            format!("Could not wait for `hermes gateway {action}`. {error}"),
+        )
+    };
+    let status = match timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(result) => result.map_err(wait_error)?,
+            Err(_) => {
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    kill_process_group(pid);
+                }
+                let _ = child.start_kill();
+                let _ = tokio::time::timeout(Duration::from_millis(250), child.wait()).await;
+                return Err(AppError::new(
+                    "hermes_gateway_start_failed",
+                    format!("`hermes gateway {action}` timed out; continuing app shutdown."),
+                ));
+            }
+        },
+        None => child.wait().await.map_err(wait_error)?,
+    };
     if !status.success() {
         return Err(AppError::new(
             "hermes_gateway_start_failed",
@@ -20732,6 +20759,26 @@ mcp_servers:
 
         assert_eq!(error.code, "hermes_gateway_start_failed");
         assert!(error.message.contains("exited"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn gateway_stop_timeout_bounds_a_stalled_lifecycle_command() {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let started = Instant::now();
+        let error =
+            run_hermes_gateway_lifecycle_command(cmd, "stop", Some(Duration::from_millis(50)))
+                .await
+                .expect_err("stalled gateway stop must time out");
+
+        assert_eq!(error.code, "hermes_gateway_start_failed");
+        assert!(error.message.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
