@@ -27,7 +27,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    sync::oneshot,
+    sync::{oneshot, Notify},
 };
 
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
@@ -54,8 +54,8 @@ const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
 /// Pinned Hermes v2026.6.19 installs this macOS LaunchAgent label. The
-/// release-gate smoke test asserts `hermes gateway status` still reports it so
-/// a runtime pin bump cannot silently strand a renamed Gateway on app quit.
+/// audited `hermes_cli/gateway.py` source hash pins its Label/domain behavior;
+/// the live smoke also corroborates the CLI's reported plist basename.
 const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
 const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v13";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
@@ -86,6 +86,10 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "utils.py",
         "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
+    ),
+    (
+        "hermes_cli/gateway.py",
+        "263ad798dd67ddc175ab7e7172a3a54e379aeb4bdbcad014aa0ccdea7dc07abd",
     ),
     (
         "gateway/platforms/telegram.py",
@@ -748,6 +752,10 @@ pub struct HermesBridge {
     /// so an app-start or config-reapply task that was already waiting cannot
     /// start/restart the service after teardown has stopped it.
     gateway_lifecycle_lock: tokio::sync::Mutex<()>,
+    /// Cancels the one lifecycle CLI that may already hold the lock when the
+    /// permanent shutdown latch flips. `notify_one` stores a permit across the
+    /// small race between the latch check and command wait registration.
+    gateway_shutdown_notify: Notify,
     recorder_requests: Arc<Mutex<HashMap<String, oneshot::Sender<AgentRecorderResolution>>>>,
     /// Recently delivered recorder request ids (see
     /// `recorder_request_recently_completed`).
@@ -2450,7 +2458,7 @@ pub(crate) async fn reapply_hermes_runtime(
     if let Some(connection) = gateway_connection {
         let _gateway_guard = bridge.gateway_lifecycle_lock.lock().await;
         if !bridge.shutting_down.load(Ordering::SeqCst) {
-            if let Err(error) = restart_hermes_gateway(&connection).await {
+            if let Err(error) = restart_hermes_gateway(bridge, &connection).await {
                 tracing::warn!(
                     ?error,
                     "reapply: restarting the routine gateway failed after config changed"
@@ -4623,6 +4631,7 @@ pub async fn shutdown(app: &tauri::AppHandle) {
     // about to reap (JUN-338). The flag is permanent: nothing restarts the
     // bridge after shutdown. See the registration handshake in that function.
     bridge.shutting_down.store(true, Ordering::SeqCst);
+    bridge.gateway_shutdown_notify.notify_one();
     // Then wait for any start that already spawned a child to finish registering
     // it (so the drain reaps it) or reaping it itself. Without this, a child
     // spawned but not-yet-registered would be missed by the drain and orphaned
@@ -4636,7 +4645,20 @@ pub async fn shutdown(app: &tauri::AppHandle) {
     // misleading generic "Connection error" (JUN-367). Closing the window still
     // hides June and keeps routines running; only an explicit app quit reaches
     // this teardown. App startup re-enables the service before future runs.
-    let _gateway_guard = bridge.gateway_lifecycle_lock.lock().await;
+    let _gateway_guard = match tokio::time::timeout(
+        GATEWAY_SHUTDOWN_LOCK_TIMEOUT,
+        bridge.gateway_lifecycle_lock.lock(),
+    )
+    .await
+    {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            tracing::warn!(
+                "timed out waiting for Hermes routine gateway lifecycle cancellation during app shutdown"
+            );
+            None
+        }
+    };
     let gateway_connection = bridge
         .routine_gateway_connection
         .lock()
@@ -4647,8 +4669,8 @@ pub async fn shutdown(app: &tauri::AppHandle) {
                 .ok()
                 .and_then(|connections| connections.into_iter().next())
         });
-    let stop_result = match gateway_launch_agent_loaded().await {
-        Ok(false) => {
+    let stop_result = match gateway_launch_agent_target().await {
+        Ok(None) => {
             if gateway_connection.is_some() {
                 tracing::warn!(
                     label = HERMES_GATEWAY_LAUNCHD_LABEL,
@@ -4657,7 +4679,9 @@ pub async fn shutdown(app: &tauri::AppHandle) {
             }
             Ok(())
         }
-        Ok(true) => stop_loaded_hermes_gateway(app, gateway_connection.as_ref()).await,
+        Ok(Some(target)) => {
+            stop_loaded_hermes_gateway(app, gateway_connection.as_ref(), Some(&target)).await
+        }
         // A failed probe must not strand an inherited Gateway. Preserve the
         // fail-safe stop and surface its result instead of treating uncertain
         // launchd state as "not loaded".
@@ -4666,7 +4690,7 @@ pub async fn shutdown(app: &tauri::AppHandle) {
                 ?error,
                 "failed to check Hermes routine gateway during app shutdown; attempting stop"
             );
-            stop_loaded_hermes_gateway(app, gateway_connection.as_ref()).await
+            stop_loaded_hermes_gateway(app, gateway_connection.as_ref(), None).await
         }
     };
     if let Err(error) = stop_result {
@@ -4699,6 +4723,9 @@ const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 /// on the lifecycle lock indefinitely. Fifteen seconds leaves room for the
 /// pinned CLI's own service-management bookkeeping while remaining bounded.
 const GATEWAY_LIFECYCLE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+/// A shutdown notification cancels the lifecycle command that owns the lock;
+/// this is only the safety bound for a task that fails to observe cancellation.
+const GATEWAY_SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 /// Keep the status check inside the lifecycle critical section short. A failed
 /// or slow local probe falls back to the idempotent lifecycle start command.
 const GATEWAY_STATUS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -6731,7 +6758,7 @@ async fn start_hermes_gateway_if_needed(
     ) {
         return Ok(false);
     }
-    run_hermes_gateway_start(connection).await?;
+    run_hermes_gateway_start(bridge, connection).await?;
     Ok(true)
 }
 
@@ -6777,10 +6804,18 @@ fn retain_routine_gateway_connection(
 /// invocation is supervised by June and preserves launchd ownership. Its
 /// command must not query the dashboard: reapply has already replaced that
 /// dashboard connection by the time the routine service is restarted.
-async fn restart_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+async fn restart_hermes_gateway(
+    bridge: &HermesBridge,
+    connection: &HermesBridgeConnection,
+) -> Result<(), AppError> {
     let cmd = hermes_gateway_lifecycle_command(connection, "restart");
-    run_hermes_gateway_lifecycle_command(cmd, "restart", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT))
-        .await
+    run_hermes_gateway_lifecycle_command(
+        cmd,
+        "restart",
+        Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT),
+        Some(&bridge.gateway_shutdown_notify),
+    )
+    .await
 }
 
 /// Stops a non-macOS routine Gateway before the app-owned provider proxy is
@@ -6789,7 +6824,8 @@ async fn restart_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(
 #[cfg(not(target_os = "macos"))]
 async fn stop_hermes_gateway(connection: &HermesBridgeConnection) -> Result<(), AppError> {
     let cmd = hermes_gateway_lifecycle_command(connection, "stop");
-    run_hermes_gateway_lifecycle_command(cmd, "stop", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT)).await
+    run_hermes_gateway_lifecycle_command(cmd, "stop", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT), None)
+        .await
 }
 
 /// Stops a Gateway service that may have survived an earlier app process even
@@ -6803,20 +6839,23 @@ async fn stop_persisted_hermes_gateway(app: &AppHandle) -> Result<(), AppError> 
     let mut cmd =
         build_hermes_gateway_lifecycle_command_from_parts(&command, &hermes_home, "", "stop");
     attach_gateway_lifecycle_log(&mut cmd, &hermes_home);
-    run_hermes_gateway_lifecycle_command(cmd, "stop", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT)).await
+    run_hermes_gateway_lifecycle_command(cmd, "stop", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT), None)
+        .await
 }
 
 async fn stop_loaded_hermes_gateway(
     app: &AppHandle,
     connection: Option<&HermesBridgeConnection>,
+    launchd_target: Option<&str>,
 ) -> Result<(), AppError> {
     #[cfg(target_os = "macos")]
     {
         let _ = (app, connection);
-        unload_gateway_launch_agent().await
+        unload_gateway_launch_agent(launchd_target).await
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = launchd_target;
         match connection {
             Some(connection) => stop_hermes_gateway(connection).await,
             None => stop_persisted_hermes_gateway(app).await,
@@ -6829,8 +6868,18 @@ async fn stop_loaded_hermes_gateway(
 /// direct unload even when its process is temporarily between restarts; a
 /// missing job is already in the desired shutdown state.
 #[cfg(target_os = "macos")]
-async fn gateway_launch_agent_loaded() -> Result<bool, AppError> {
-    let mut cmd = gateway_launch_agent_command("print");
+async fn gateway_launch_agent_target() -> Result<Option<String>, AppError> {
+    for target in gateway_launch_agent_targets() {
+        if gateway_launch_agent_loaded_at(&target).await? {
+            return Ok(Some(target));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(target_os = "macos")]
+async fn gateway_launch_agent_loaded_at(target: &str) -> Result<bool, AppError> {
+    let mut cmd = gateway_launch_agent_command("print", target);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -6855,17 +6904,31 @@ fn gateway_launch_agent_loaded_from_status(status: ExitStatus) -> Result<bool, A
 /// against June's soon-to-disappear provider proxy. The app does not need to
 /// wait for the already-signalled Gateway process to finish its full exit loop.
 #[cfg(target_os = "macos")]
-async fn unload_gateway_launch_agent() -> Result<(), AppError> {
-    match unload_gateway_launch_agent_once().await {
-        Ok(()) => Ok(()),
-        Err(_error) if matches!(gateway_launch_agent_loaded().await, Ok(false)) => Ok(()),
-        Err(error) => Err(error),
+async fn unload_gateway_launch_agent(target: Option<&str>) -> Result<(), AppError> {
+    if let Some(target) = target {
+        return unload_gateway_launch_agent_at(target).await;
+    }
+
+    let mut last_error = None;
+    for target in gateway_launch_agent_targets() {
+        match gateway_launch_agent_loaded_at(&target).await {
+            Ok(false) => continue,
+            Ok(true) | Err(_) => {
+                if let Err(error) = unload_gateway_launch_agent_at(&target).await {
+                    last_error = Some(error);
+                }
+            }
+        }
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
 #[cfg(target_os = "macos")]
-async fn unload_gateway_launch_agent_once() -> Result<(), AppError> {
-    let mut cmd = gateway_launch_agent_command("bootout");
+async fn unload_gateway_launch_agent_at(target: &str) -> Result<(), AppError> {
+    let mut cmd = gateway_launch_agent_command("bootout", target);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -6873,19 +6936,31 @@ async fn unload_gateway_launch_agent_once() -> Result<(), AppError> {
     if status.success() {
         return Ok(());
     }
-    Err(AppError::new(
+    let error = AppError::new(
         "hermes_gateway_stop_failed",
         format!("Could not unload the routine gateway service ({status})."),
-    ))
+    );
+    if matches!(gateway_launch_agent_loaded_at(target).await, Ok(false)) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 #[cfg(target_os = "macos")]
-fn gateway_launch_agent_command(action: &'static str) -> Command {
-    let mut cmd = Command::new("/bin/launchctl");
+fn gateway_launch_agent_targets() -> [String; 2] {
     // SAFETY: `getuid` reads the calling process's immutable real-user id.
     let uid = unsafe { libc::getuid() };
-    cmd.arg(action)
-        .arg(format!("gui/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"));
+    [
+        format!("gui/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"),
+        format!("user/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn gateway_launch_agent_command(action: &'static str, target: &str) -> Command {
+    let mut cmd = Command::new("/bin/launchctl");
+    cmd.arg(action).arg(target);
     cmd
 }
 
@@ -6932,8 +7007,8 @@ async fn run_gateway_loaded_probe(mut cmd: Command) -> Result<bool, AppError> {
 /// Keep the existing fail-safe stop there until those backends expose an
 /// equally authoritative loaded-state probe.
 #[cfg(not(target_os = "macos"))]
-async fn gateway_launch_agent_loaded() -> Result<bool, AppError> {
-    Ok(true)
+async fn gateway_launch_agent_target() -> Result<Option<String>, AppError> {
+    Ok(Some(String::new()))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -7000,16 +7075,25 @@ async fn wait_for_hermes_gateway(connection: &HermesBridgeConnection) -> Result<
 /// rewrite `hermes gateway start` performs also needs `~/Library/LaunchAgents`,
 /// which sits outside the jail's write roots.
 ///
-async fn run_hermes_gateway_start(connection: &HermesBridgeConnection) -> Result<(), AppError> {
+async fn run_hermes_gateway_start(
+    bridge: &HermesBridge,
+    connection: &HermesBridgeConnection,
+) -> Result<(), AppError> {
     let cmd = hermes_gateway_start_command(connection);
-    run_hermes_gateway_lifecycle_command(cmd, "start", Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT))
-        .await
+    run_hermes_gateway_lifecycle_command(
+        cmd,
+        "start",
+        Some(GATEWAY_LIFECYCLE_COMMAND_TIMEOUT),
+        Some(&bridge.gateway_shutdown_notify),
+    )
+    .await
 }
 
 async fn run_hermes_gateway_lifecycle_command(
     cmd: Command,
     action: &'static str,
     timeout: Option<Duration>,
+    shutdown_notify: Option<&Notify>,
 ) -> Result<(), AppError> {
     let mut cmd = tokio::process::Command::from(cmd);
     #[cfg(unix)]
@@ -7031,21 +7115,43 @@ async fn run_hermes_gateway_lifecycle_command(
         )
     };
     let status = match timeout {
-        Some(timeout) => match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(result) => result.map_err(wait_error)?,
-            Err(_) => {
-                #[cfg(unix)]
-                if let Some(pid) = child.id() {
-                    kill_process_group(pid);
+        Some(timeout) => {
+            // Scope the wait future so its mutable borrow of `child` is
+            // released before the cancellation/timeout path kills the child.
+            let wait_result = {
+                let wait = tokio::time::timeout(timeout, child.wait());
+                tokio::pin!(wait);
+                match shutdown_notify {
+                    Some(notify) => {
+                        tokio::select! {
+                            biased;
+                            result = wait.as_mut() => Some(result),
+                            _ = notify.notified() => None,
+                        }
+                    }
+                    None => Some(wait.as_mut().await),
                 }
-                let _ = child.start_kill();
-                let _ = tokio::time::timeout(Duration::from_millis(250), child.wait()).await;
-                return Err(AppError::new(
-                    "hermes_gateway_start_failed",
-                    format!("`hermes gateway {action}` timed out; continuing app shutdown."),
-                ));
+            };
+            match wait_result {
+                Some(Ok(result)) => result.map_err(wait_error)?,
+                Some(Err(_)) => {
+                    terminate_gateway_lifecycle_child(&mut child).await;
+                    return Err(AppError::new(
+                        "hermes_gateway_start_failed",
+                        format!("`hermes gateway {action}` timed out; continuing app shutdown."),
+                    ));
+                }
+                None => {
+                    terminate_gateway_lifecycle_child(&mut child).await;
+                    return Err(AppError::new(
+                        "hermes_bridge_shutting_down",
+                        format!(
+                            "`hermes gateway {action}` cancelled because June is shutting down."
+                        ),
+                    ));
+                }
             }
-        },
+        }
         None => child.wait().await.map_err(wait_error)?,
     };
     if !status.success() {
@@ -7055,6 +7161,15 @@ async fn run_hermes_gateway_lifecycle_command(
         ));
     }
     Ok(())
+}
+
+async fn terminate_gateway_lifecycle_child(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        kill_process_group(pid);
+    }
+    let _ = child.start_kill();
+    let _ = tokio::time::timeout(Duration::from_millis(250), child.wait()).await;
 }
 
 fn hermes_gateway_start_command(connection: &HermesBridgeConnection) -> Command {
@@ -20978,6 +21093,7 @@ mcp_servers:
     #[tokio::test]
     async fn gateway_start_reports_nonzero_exit() {
         let home = tempfile::tempdir().expect("tempdir");
+        let bridge = HermesBridge::default();
         let connection = HermesBridgeConnection {
             base_url: "http://127.0.0.1:1".to_string(),
             ws_url: "ws://127.0.0.1:1/api/ws".to_string(),
@@ -20992,7 +21108,7 @@ mcp_servers:
             full_mode: false,
         };
 
-        let error = run_hermes_gateway_start(&connection)
+        let error = run_hermes_gateway_start(&bridge, &connection)
             .await
             .expect_err("nonzero gateway start exits fail");
 
@@ -21058,13 +21174,50 @@ mcp_servers:
             .stderr(Stdio::null());
 
         let started = Instant::now();
-        let error =
-            run_hermes_gateway_lifecycle_command(cmd, "stop", Some(Duration::from_millis(50)))
-                .await
-                .expect_err("stalled gateway stop must time out");
+        let error = run_hermes_gateway_lifecycle_command(
+            cmd,
+            "stop",
+            Some(Duration::from_millis(50)),
+            None,
+        )
+        .await
+        .expect_err("stalled gateway stop must time out");
 
         assert_eq!(error.code, "hermes_gateway_start_failed");
         assert!(error.message.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn gateway_lifecycle_command_cancels_for_app_shutdown() {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let notify = Arc::new(Notify::new());
+        let task = {
+            let notify = Arc::clone(&notify);
+            tokio::spawn(async move {
+                run_hermes_gateway_lifecycle_command(
+                    cmd,
+                    "restart",
+                    Some(Duration::from_secs(60)),
+                    Some(notify.as_ref()),
+                )
+                .await
+            })
+        };
+
+        notify.notify_one();
+        let started = Instant::now();
+        let error = task
+            .await
+            .expect("lifecycle task joined")
+            .expect_err("shutdown must cancel the lifecycle child");
+
+        assert_eq!(error.code, "hermes_bridge_shutting_down");
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
@@ -21100,8 +21253,9 @@ mcp_servers:
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn gateway_shutdown_uses_direct_launchd_bootout() {
-        let cmd = gateway_launch_agent_command("bootout");
+    fn gateway_shutdown_uses_direct_launchd_bootout_in_both_user_domains() {
+        let targets = gateway_launch_agent_targets();
+        let cmd = gateway_launch_agent_command("bootout", &targets[0]);
         let args: Vec<String> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -21112,6 +21266,8 @@ mcp_servers:
         assert_eq!(args[0], "bootout");
         assert!(args[1].starts_with("gui/"));
         assert!(args[1].ends_with(&format!("/{HERMES_GATEWAY_LAUNCHD_LABEL}")));
+        assert!(targets[1].starts_with("user/"));
+        assert!(targets[1].ends_with(&format!("/{HERMES_GATEWAY_LAUNCHD_LABEL}")));
     }
 
     #[test]
