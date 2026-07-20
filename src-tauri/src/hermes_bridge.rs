@@ -15454,7 +15454,8 @@ assert capped["has_more"] is True, capped
                     "provider-tok",
                     "memory-tok",
                     "recorder-tok",
-                    "connector-tok"
+                    "connector-tok",
+                    "computer-use-tok"
                 ),
                 "connector-tok"
             );
