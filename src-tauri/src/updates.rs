@@ -273,9 +273,9 @@ pub async fn install_update(
 /// Tearing down explicitly here guarantees the helper (and the Hermes runtime)
 /// are gone before the new instance starts.
 #[tauri::command]
-pub fn relaunch_for_update(app: AppHandle) {
+pub async fn relaunch_for_update(app: AppHandle) {
     crate::dictation::stop_helper(&app);
-    crate::hermes_bridge::shutdown(&app);
+    crate::hermes_bridge::shutdown(&app).await;
     app.restart();
 }
 
