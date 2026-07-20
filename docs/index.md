@@ -41,7 +41,8 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0029](adr/0029-dual-architecture-hermes-runtime.md) - the universal macOS app carries complete arm64 and x86_64 Hermes runtime trees and executes both before release
 - [adr/0030](adr/0030-explicit-per-session-profile-targeting.md) — profile switching writes the sticky active profile AND threads it explicitly on session.create; no per-profile Hermes process
 - [adr/0031](adr/0031-per-profile-data-isolation.md) — profiles isolate user data (notes/dictation/projects via a `profile` column, chat sessions via a `session_profiles` map); profile is the first data-partition key; delete prompts move-to-default vs delete
-- [adr/0032](adr/0032-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
+- [adr/0032](adr/0032-session-completion-june-owned-local-state.md) — marking a session complete is June-owned local SQLite state keyed by the stored Hermes session id, orthogonal to Hermes' archive flag; mirrors the `session_folders` stack
+- [adr/0033](adr/0033-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
 
 ## Enforceable rules (spec/)
 

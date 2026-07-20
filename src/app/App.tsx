@@ -90,6 +90,7 @@ import {
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
+  listCompletedSessions,
   listFolders,
   listNotes,
   listSessionFolders,
@@ -106,6 +107,7 @@ import {
   resolveAgentRecorderRequest,
   resumeRecording,
   retryProcessing,
+  setSessionCompleted,
   startRecording,
   updateNote,
   agentHudHide,
@@ -468,6 +470,19 @@ export function App() {
   // sessionId -> project (folder) ids. Sessions live in Hermes, so their
   // project assignments are tracked separately from the notes state.
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
+  // stored Hermes session id -> completed_at ISO. June-owned; see JUN-203.
+  const [completedSessions, setCompletedSessions] = useState<Record<string, string>>({});
+  // In-flight completion writes per stored session id, so rapid toggles for one
+  // session persist in the order the user made them (see
+  // handleToggleSessionCompleted).
+  const sessionCompletionWritesRef = useRef(new Map<string, Promise<unknown>>());
+  // Stored session ids the user has toggled locally. The initial load is a
+  // snapshot of the pre-toggle database, so those ids must survive it, while
+  // every other row it carries still applies (see the boot effect).
+  const sessionCompletionTouchedRef = useRef(new Set<string>());
+  // Mirrors `completedSessions` for the menu-bar publisher, which is a stable
+  // callback and so cannot close over the state directly.
+  const completedSessionsRef = useRef<Record<string, string>>({});
   // `null` means the mapping has never loaded. An empty object is meaningful:
   // it confirms every unmapped Hermes session belongs to Default. Keeping
   // those states distinct lets failed reads retain a known-good map while the
@@ -1048,7 +1063,12 @@ export function App() {
   const publishAgentMenuBarState = useCallback(() => {
     void emitAgentMenuBarState(
       buildAgentMenuBarState({
-        sessions: agentMenuBarSessionsRef.current,
+        // Completed sessions are filed away in the app, so they must not stay
+        // openable from the native menu bar's recent-session shortcuts
+        // (JUN-203 review).
+        sessions: agentMenuBarSessionsRef.current.filter(
+          (session) => !completedSessionsRef.current[session.id],
+        ),
         workingSessionIds: agentMenuBarWorkingSessionIdsRef.current,
         waitingSessionIds: agentMenuBarWaitingSessionIdsRef.current,
         lastStatus: agentMenuBarLastStatusRef.current,
@@ -1057,6 +1077,13 @@ export function App() {
       }),
     );
   }, []);
+  // Keep the menu bar in step with completion changes: marking a session
+  // complete (or active again) must add/remove it from the native shortcuts,
+  // not just the in-app lists.
+  useEffect(() => {
+    completedSessionsRef.current = completedSessions;
+    publishAgentMenuBarState();
+  }, [completedSessions, publishAgentMenuBarState]);
   const profileScopedAgentSessions = useCallback(
     (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
       if (profiles === null) return [];
@@ -2033,6 +2060,33 @@ export function App() {
       .catch((err: unknown) => {
         if (!cancelled) setError(messageFromError(err));
       });
+    void listCompletedSessions()
+      .then((rows) => {
+        if (cancelled) return;
+        // The session list can be interactive before this settles on a cold
+        // launch. Merge rather than replace: this snapshot predates any toggle
+        // the user already made, so locally toggled ids keep their local value
+        // (applying the snapshot over them would show a completed session as
+        // active while the database has it completed, until restart). Every
+        // other row still applies, so the rest of the persisted completed
+        // sessions are not lost (JUN-203 review).
+        setCompletedSessions((prev) => {
+          const next: Record<string, string> = {};
+          for (const row of rows) next[row.sessionId] = row.completedAt;
+          for (const touchedId of sessionCompletionTouchedRef.current) {
+            const local = prev[touchedId];
+            if (local === undefined) delete next[touchedId];
+            else next[touchedId] = local;
+          }
+          return next;
+        });
+      })
+      .catch((err: unknown) => {
+        // Surface it like the sibling loads: a silent failure would present
+        // previously completed sessions as active with no indication their
+        // persisted state was unavailable (JUN-203 review).
+        if (!cancelled) setError(messageFromError(err));
+      });
     return () => {
       cancelled = true;
     };
@@ -2973,6 +3027,60 @@ export function App() {
     } catch (err) {
       setError(messageFromError(err));
       if (options?.rethrow) throw err;
+    }
+  }
+
+  async function handleToggleSessionCompleted(sessionId: string, completed: boolean) {
+    // A local toggle outranks the initial load's pre-toggle snapshot for this id.
+    sessionCompletionTouchedRef.current.add(sessionId);
+    // The exact prior value for this one session, so a failed write can be rolled
+    // back precisely (restoring the original completed_at on a failed unmark)
+    // without touching any other session's optimistic state.
+    const priorValue = completedSessions[sessionId];
+    setCompletedSessions((prev) => {
+      const next = { ...prev };
+      if (completed) next[sessionId] = new Date().toISOString();
+      else delete next[sessionId];
+      return next;
+    });
+    // Serialize writes per session. Toggling complete -> active faster than the
+    // first write resolves would otherwise let two commands reach the SQLite
+    // pool concurrently and land out of order (the DELETE before the INSERT),
+    // leaving the row completed while the UI shows active. Chaining keeps the
+    // persisted state matching the last user action (JUN-203 review).
+    const pending = sessionCompletionWritesRef.current;
+    const write = (pending.get(sessionId) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => setSessionCompleted(sessionId, completed));
+    const chained = write.catch(() => {});
+    pending.set(sessionId, chained);
+    try {
+      await write;
+    } catch (err: unknown) {
+      // Roll back only this session to its captured prior value, and only if no
+      // newer toggle for it has queued behind us (that newer write now owns the
+      // session). Reverting just this id leaves every other session's optimistic
+      // and in-flight state intact, and surfacing the error keeps a failed
+      // context-menu action from looking like it silently did nothing.
+      if (pending.get(sessionId) === chained) {
+        // Un-track only when the rollback leaves the session with no local
+        // completion: then a still-in-flight boot snapshot restoring its true
+        // state is exactly what we want. If the rollback restores an earlier
+        // successful completion, keep it tracked — a pre-toggle snapshot that
+        // predates that completion would otherwise wipe the row from the UI
+        // while SQLite still has it completed.
+        if (priorValue === undefined) sessionCompletionTouchedRef.current.delete(sessionId);
+        setCompletedSessions((prev) => {
+          const next = { ...prev };
+          if (priorValue === undefined) delete next[sessionId];
+          else next[sessionId] = priorValue;
+          return next;
+        });
+      }
+      setError(messageFromError(err));
+    } finally {
+      // Drop the chain only when no newer toggle queued behind this one.
+      if (pending.get(sessionId) === chained) pending.delete(sessionId);
     }
   }
 
@@ -3978,6 +4086,8 @@ export function App() {
           setActiveView("agent");
         }}
         sessionFolderIds={sessionFolders}
+        completedSessionIds={completedSessions}
+        onToggleSessionCompleted={handleToggleSessionCompleted}
         onOpenSessionMoveDialog={(sessionId) => setMoveDialogSessionIds([sessionId])}
         onRemoveSessionFromFolder={(sessionId, folderId) =>
           void handleRemoveSessionFromFolder(sessionId, folderId)
@@ -4281,6 +4391,8 @@ export function App() {
                   sessions={agentSessions}
                   folders={state.folders}
                   sessionFolderIds={sessionFolders}
+                  completedSessionIds={completedSessions}
+                  onToggleCompleted={handleToggleSessionCompleted}
                   workingSessionIds={agentWorkingSessionIds}
                   waitingSessionIds={agentWaitingSessionIds}
                   onSelectSession={(session) => {

@@ -27,10 +27,10 @@ use crate::{
             AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
             AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
             AssignNoteToFolderRequest, AssignSessionToFolderRequest, AssignSessionToProfileRequest,
-            BootstrapResponse, CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
-            CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
-            DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
+            BootstrapResponse, CheckRecordingSourceReadinessRequest, CompletedSessionDto,
+            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
+            CreateNoteRequest, DeleteDictionaryEntryRequest, DeleteFolderRequest,
+            DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
             DownloadNoteAudioResponse, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
             FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
             ListNotesResponse, MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
@@ -39,12 +39,12 @@ use crate::{
             RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
             RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
             SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionProfileDto, SessionRequest, ShareAddInvitesRequest, ShareCreateRequest,
-            ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
-            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
-            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
-            ShareSummaryDto, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SessionProfileDto, SessionRequest, SetSessionCompletedRequest, ShareAddInvitesRequest,
+            ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest,
+            ShareInviteKeyDto, ShareInviteKeySaveRequest, ShareInviteKeysGetRequest,
+            ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest,
+            ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto, StartRecordingRequest,
+            SubmitIssueReportRequest, SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
@@ -467,6 +467,22 @@ pub async fn remove_session_from_folder(
     Ok(repositories(&app)
         .await?
         .remove_session_from_folder(&request.session_id, &request.folder_id)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn list_completed_sessions(app: AppHandle) -> Result<Vec<CompletedSessionDto>, AppError> {
+    Ok(repositories(&app).await?.list_completed_sessions().await?)
+}
+
+#[tauri::command]
+pub async fn set_session_completed(
+    app: AppHandle,
+    request: SetSessionCompletedRequest,
+) -> Result<(), AppError> {
+    Ok(repositories(&app)
+        .await?
+        .set_session_completed(&request.session_id, request.completed)
         .await?)
 }
 

@@ -252,13 +252,19 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
-    for statement in include_str!("../../migrations/018_routine_browser_grants.sql").split(';') {
+    for statement in include_str!("../../migrations/020_completed_sessions.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;
         }
     }
-    for statement in include_str!("../../migrations/019_browser_outcome_ledger.sql").split(';') {
+    for statement in include_str!("../../migrations/021_routine_browser_grants.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/022_browser_outcome_ledger.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;

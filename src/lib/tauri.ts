@@ -50,6 +50,11 @@ export type SessionFolderDto = {
   folderId: string;
 };
 
+export type CompletedSessionDto = {
+  sessionId: string;
+  completedAt: string;
+};
+
 /** Which Hermes profile an agent session was created under. Sessions live in
  * Hermes, so only the assignment is stored locally. */
 export type SessionProfileDto = {
@@ -888,6 +893,16 @@ export async function deleteProfileData(profile: string) {
 export async function removeSessionFromFolder(sessionId: string, folderId: string) {
   return invoke<void>("remove_session_from_folder", {
     request: { sessionId, folderId },
+  });
+}
+
+export async function listCompletedSessions() {
+  return invoke<CompletedSessionDto[]>("list_completed_sessions");
+}
+
+export async function setSessionCompleted(sessionId: string, completed: boolean) {
+  return invoke<void>("set_session_completed", {
+    request: { sessionId, completed },
   });
 }
 

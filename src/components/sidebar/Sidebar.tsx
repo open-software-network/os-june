@@ -27,6 +27,8 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
+import { IconCircleCheck } from "central-icons/IconCircleCheck";
+import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
@@ -163,6 +165,10 @@ type SidebarProps = {
   /** Project membership per stored session id; drives the session menu's
    * project items (optional so tests can skip the plumbing). */
   sessionFolderIds?: Record<string, string[]>;
+  /** stored session id -> completed_at ISO. Completed sessions are filed under
+   * a collapsible Completed section instead of the active list. */
+  completedSessionIds?: Record<string, string>;
+  onToggleSessionCompleted?: (sessionId: string, completed: boolean) => void;
   onOpenSessionMoveDialog?: (sessionId: string) => void;
   onRemoveSessionFromFolder?: (sessionId: string, folderId: string) => void;
   recoverableNoteIds?: ReadonlySet<string>;
@@ -408,6 +414,8 @@ export function Sidebar({
   onRenameAgentSession,
   onSelectAgentSession,
   sessionFolderIds,
+  completedSessionIds = {},
+  onToggleSessionCompleted,
   onOpenSessionMoveDialog,
   onRemoveSessionFromFolder,
   recoverableNoteIds,
@@ -460,6 +468,7 @@ export function Sidebar({
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
+  const [completedCollapsed, setCompletedCollapsed] = useState(true);
   const [selectedAgentSessionId, setSelectedAgentSessionId] = useState<string>();
   const [agentSessionToDelete, setAgentSessionToDelete] = useState<HermesSessionInfo | null>(null);
   const [agentSessionDeleteError, setAgentSessionDeleteError] = useState<string | null>(null);
@@ -540,20 +549,33 @@ export function Sidebar({
   const pinnedAgentSessions = useMemo(
     () =>
       filteredAgentSessions
-        .filter((session) => pinnedAgentSessionIds.has(session.id))
+        .filter(
+          (session) => pinnedAgentSessionIds.has(session.id) && !completedSessionIds[session.id],
+        )
         .sort(
           (a, b) =>
             pinnedSessionOrder(pinnedAgentSessionOrder, a.id) -
             pinnedSessionOrder(pinnedAgentSessionOrder, b.id),
         ),
-    [filteredAgentSessions, pinnedAgentSessionIds, pinnedAgentSessionOrder],
+    [filteredAgentSessions, pinnedAgentSessionIds, pinnedAgentSessionOrder, completedSessionIds],
   );
   const visibleAgentSessions = useMemo(
     () =>
       filteredAgentSessions
-        .filter((session) => !pinnedAgentSessionIds.has(session.id))
+        .filter(
+          (session) => !pinnedAgentSessionIds.has(session.id) && !completedSessionIds[session.id],
+        )
         .slice(0, AGENT_SIDEBAR_SESSION_LIMIT),
-    [filteredAgentSessions, pinnedAgentSessionIds],
+    [filteredAgentSessions, pinnedAgentSessionIds, completedSessionIds],
+  );
+  const completedAgentSessions = useMemo(
+    () =>
+      filteredAgentSessions
+        .filter((session) => Boolean(completedSessionIds[session.id]))
+        .sort((a, b) =>
+          (completedSessionIds[b.id] ?? "").localeCompare(completedSessionIds[a.id] ?? ""),
+        ),
+    [filteredAgentSessions, completedSessionIds],
   );
 
   async function loadReferralSummary() {
@@ -1372,6 +1394,50 @@ export function Sidebar({
               </div>
             </div>
           </section>
+
+          {completedAgentSessions.length > 0 ? (
+            <section
+              className="sidebar-section sidebar-completed-section"
+              aria-label="Completed agent sessions"
+            >
+              <div className="section-title section-title-with-action">
+                <button
+                  type="button"
+                  className="section-title-label section-title-open"
+                  aria-expanded={!completedCollapsed}
+                  onClick={() => setCompletedCollapsed((v) => !v)}
+                >
+                  Completed
+                </button>
+                <span className="folders-count">{completedAgentSessions.length}</span>
+              </div>
+              {completedCollapsed ? null : (
+                <div className="notes-nav sidebar-completed-list">
+                  {completedAgentSessions.map((session) => (
+                    <AgentSessionRow
+                      key={session.id}
+                      session={session}
+                      selected={activeView === "agent" && selectedAgentSessionId === session.id}
+                      working={workingAgentSessionIds.has(session.id)}
+                      waiting={waitingAgentSessionIds.has(session.id)}
+                      unread={unreadAgentSessionIds.has(session.id)}
+                      deleting={deletingAgentSessionIds.has(session.id)}
+                      renaming={renamingAgentSessionId === session.id}
+                      dateFormat={dateFormat}
+                      menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
+                      onSelect={() => {
+                        setSelectedAgentSessionId(session.id);
+                        onSelectAgentSession(session);
+                      }}
+                      onRename={(title) => onRenameAgentSession(session.id, title)}
+                      onRenameEnd={() => setRenamingAgentSessionId(null)}
+                      onOpenMenu={(anchor) => openMenuForAgentSession(session.id, anchor)}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : null}
         </>
       )}
 
@@ -1441,11 +1507,21 @@ export function Sidebar({
       {menu?.kind === "agent-session" && menuAgentSession ? (
         <AgentSessionContextMenu
           pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
+          completed={Boolean(completedSessionIds[menuAgentSession.id])}
           deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
           right={menu.right}
           top={menu.top}
           folderId={sessionFolderIds?.[menuAgentSession.id]?.[0]}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
+          onToggleCompleted={
+            onToggleSessionCompleted
+              ? () =>
+                  onToggleSessionCompleted(
+                    menuAgentSession.id,
+                    !completedSessionIds[menuAgentSession.id],
+                  )
+              : undefined
+          }
           onRename={() => setRenamingAgentSessionId(menuAgentSession.id)}
           onMoveToProject={
             onOpenSessionMoveDialog ? () => onOpenSessionMoveDialog(menuAgentSession.id) : undefined
@@ -2274,11 +2350,13 @@ function AgentSessionRow({
 
 function AgentSessionContextMenu({
   pinned,
+  completed,
   deleting,
   right,
   top,
   folderId,
   onTogglePinned,
+  onToggleCompleted,
   onRename,
   onMoveToProject,
   onRemoveFromProject,
@@ -2286,11 +2364,13 @@ function AgentSessionContextMenu({
   onClose,
 }: {
   pinned: boolean;
+  completed: boolean;
   deleting: boolean;
   right: number;
   top: number;
   folderId?: string;
   onTogglePinned: () => void;
+  onToggleCompleted?: () => void;
   onRename: () => void;
   onMoveToProject?: () => void;
   onRemoveFromProject?: (folderId: string) => void;
@@ -2315,6 +2395,19 @@ function AgentSessionContextMenu({
         {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
         {pinned ? "Unpin session" : "Pin session"}
       </button>
+      {onToggleCompleted ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onToggleCompleted();
+            onClose();
+          }}
+        >
+          {completed ? <IconArrowUndoUp size={14} /> : <IconCircleCheck size={14} />}
+          {completed ? "Mark as active" : "Mark as complete"}
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
