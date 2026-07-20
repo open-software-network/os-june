@@ -153,6 +153,11 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     .await?;
     ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
     ensure_column(_pool, "notes", "profile", "TEXT NOT NULL DEFAULT 'default'").await?;
+    ensure_column(_pool, "notes", "calendar_event_id", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_event_title", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_event_start_at", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_event_end_at", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_account_email", "TEXT").await?;
     ensure_column(
         _pool,
         "dictation_history",

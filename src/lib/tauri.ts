@@ -429,6 +429,7 @@ export type DownloadNoteAudioResponse = {
 };
 
 export type NoteDto = NoteListItemDto & {
+  calendarEvent?: NoteCalendarEventDto;
   generatedContent?: string;
   editedContent?: string;
   transcript?: TranscriptDto;
@@ -443,6 +444,14 @@ export type NoteDto = NoteListItemDto & {
   retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
+};
+
+export type NoteCalendarEventDto = {
+  eventId: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  accountEmail: string;
 };
 
 export type TranscriptCoverageDto = {

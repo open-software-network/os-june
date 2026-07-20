@@ -2,8 +2,8 @@ use crate::domain::types::{
     AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto, DictionaryEntryDto,
-    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteDto,
-    NoteListItemDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteCalendarEventDto,
+    NoteDto, NoteListItemDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
     NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
     ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
     SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
@@ -1327,7 +1327,10 @@ impl Repositories {
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
         let row = query(
-            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error FROM notes WHERE id = ?",
+            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error,
+                    calendar_event_id, calendar_event_title, calendar_event_start_at,
+                    calendar_event_end_at, calendar_account_email
+             FROM notes WHERE id = ?",
         )
         .bind(note_id)
         .fetch_one(&self.pool)
@@ -1364,6 +1367,7 @@ impl Repositories {
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             duration_ms: None,
+            calendar_event: note_calendar_event_from_row(&row),
             generated_content: row.get("generated_content"),
             edited_content: row.get("edited_content"),
             transcript: self.latest_transcript(note_id).await?,
@@ -1377,6 +1381,38 @@ impl Repositories {
             queued_recordings: 0,
             retry_recording_session_id,
         })
+    }
+
+    /// Persist the event provenance even when the user has already supplied a
+    /// title. The calendar title only fills an untouched note title, so a
+    /// background match can never clobber text typed while the request ran.
+    pub async fn associate_note_with_calendar_event(
+        &self,
+        note_id: &str,
+        expected_title: &str,
+        event: &NoteCalendarEventDto,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE notes
+             SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
+                 calendar_event_id = ?, calendar_event_title = ?,
+                 calendar_event_start_at = ?, calendar_event_end_at = ?,
+                 calendar_account_email = ?, updated_at = ?
+             WHERE id = ? AND calendar_event_id IS NULL",
+        )
+        .bind(i64::from(expected_title.trim().is_empty()))
+        .bind(expected_title)
+        .bind(&event.title)
+        .bind(&event.event_id)
+        .bind(&event.title)
+        .bind(&event.start_at)
+        .bind(&event.end_at)
+        .bind(&event.account_email)
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn list_notes(
@@ -5250,6 +5286,31 @@ fn connector_account_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorAccountRe
     }
 }
 
+fn note_calendar_event_from_row(row: &sqlx_sqlite::SqliteRow) -> Option<NoteCalendarEventDto> {
+    Some(NoteCalendarEventDto {
+        event_id: row
+            .try_get::<Option<String>, _>("calendar_event_id")
+            .ok()
+            .flatten()?,
+        title: row
+            .try_get::<Option<String>, _>("calendar_event_title")
+            .ok()
+            .flatten()?,
+        start_at: row
+            .try_get::<Option<String>, _>("calendar_event_start_at")
+            .ok()
+            .flatten()?,
+        end_at: row
+            .try_get::<Option<String>, _>("calendar_event_end_at")
+            .ok()
+            .flatten()?,
+        account_email: row
+            .try_get::<Option<String>, _>("calendar_account_email")
+            .ok()
+            .flatten()?,
+    })
+}
+
 fn selected_team_from_row(row: sqlx_sqlite::SqliteRow) -> SelectedTeamRecord {
     SelectedTeamRecord {
         team_id: row.get("team_id"),
@@ -5443,8 +5504,8 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 mod tests {
     use super::Repositories;
     use crate::domain::types::{
-        NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobStatus,
-        ProcessingStatus, RecordingSourceMode,
+        NoteCalendarEventDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+        NoteTranscriptionJobStatus, ProcessingStatus, RecordingSourceMode,
     };
     use sqlx::query::query;
     use sqlx::row::Row;
@@ -5463,6 +5524,44 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn calendar_event_titles_only_untouched_notes_and_hydrates_context() {
+        let repos = test_repositories().await;
+        let untouched = repos.create_note("default", None).await.expect("note");
+        let named = repos
+            .create_note("default", None)
+            .await
+            .expect("named note");
+        query("UPDATE notes SET title = 'My own title' WHERE id = ?")
+            .bind(&named.id)
+            .execute(&repos.pool)
+            .await
+            .expect("name note");
+        let event = NoteCalendarEventDto {
+            event_id: "event-1".to_string(),
+            title: "Product review".to_string(),
+            start_at: "2026-07-20T14:00:00Z".to_string(),
+            end_at: "2026-07-20T14:30:00Z".to_string(),
+            account_email: "june@example.com".to_string(),
+        };
+
+        repos
+            .associate_note_with_calendar_event(&untouched.id, "", &event)
+            .await
+            .expect("associate untouched note");
+        repos
+            .associate_note_with_calendar_event(&named.id, "My own title", &event)
+            .await
+            .expect("associate named note");
+
+        let untouched = repos.get_note(&untouched.id).await.expect("untouched");
+        let named = repos.get_note(&named.id).await.expect("named");
+        assert_eq!(untouched.title, "Product review");
+        assert_eq!(untouched.calendar_event, Some(event.clone()));
+        assert_eq!(named.title, "My own title");
+        assert_eq!(named.calendar_event, Some(event));
     }
 
     async fn recording_fixture(

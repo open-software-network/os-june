@@ -15,6 +15,7 @@ fn note(overrides: impl FnOnce(&mut NoteDto)) -> NoteDto {
         created_at: NOW.to_string(),
         updated_at: NOW.to_string(),
         duration_ms: None,
+        calendar_event: None,
         generated_content: None,
         edited_content: None,
         transcript: None,

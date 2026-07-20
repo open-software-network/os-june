@@ -117,6 +117,30 @@ describe("NoteEditor", () => {
     expect(container.querySelector(".note-title-print")).toHaveTextContent("New note");
   });
 
+  it("shows the Google Calendar event matched to the recording", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          title: "Product review",
+          calendarEvent: {
+            eventId: "event-1",
+            title: "Product review",
+            startAt: "2026-05-19T14:00:00Z",
+            endAt: "2026-05-19T14:30:00Z",
+            accountEmail: "june@example.com",
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Google Calendar")).toBeInTheDocument();
+    expect(screen.getByText("june@example.com")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Matched to Product review in Google Calendar"),
+    ).toBeInTheDocument();
+  });
+
   it("shows raw transcript in transcription tab", () => {
     render(
       <NoteEditor

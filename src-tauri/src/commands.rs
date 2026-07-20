@@ -1423,6 +1423,7 @@ pub async fn start_recording(
     finish_active_capture_before_start(&repos).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
+    let calendar_app = app.clone();
     let started = start_capture_with_timeout(move |abandoned| {
         start_capture_with_cancel(app, &capture_paths, capture_note_id, source_mode, abandoned)
     })
@@ -1437,6 +1438,26 @@ pub async fn start_recording(
             started.device_label.clone(),
         )
         .await?;
+    let calendar_repos = repos.clone();
+    let calendar_note_id = note.id.clone();
+    let expected_title = note.title.clone();
+    let recording_started_at = Utc::now();
+    tokio::spawn(async move {
+        if let Err(error) = crate::meeting_calendar_context::enrich_note_for_recording(
+            calendar_app,
+            calendar_repos,
+            calendar_note_id,
+            expected_title,
+            recording_started_at,
+        )
+        .await
+        {
+            eprintln!(
+                "calendar context lookup failed without interrupting recording: {}: {}",
+                error.code, error.message
+            );
+        }
+    });
     if let Err(error) = repos
         .add_checkpoint(
             &started.session_id,

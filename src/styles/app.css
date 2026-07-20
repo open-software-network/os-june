@@ -10349,6 +10349,35 @@ input:focus-visible,
   opacity: 0.45;
 }
 
+.note-calendar-context {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-sm);
+}
+
+.note-calendar-context > svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-right: var(--sp-2);
+  color: var(--foreground);
+}
+
+.note-calendar-source {
+  color: var(--foreground);
+  font-weight: 500;
+}
+
+.note-calendar-account {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .folder-chip-wrap {
   position: relative;
   display: inline-flex;

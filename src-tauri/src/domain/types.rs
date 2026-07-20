@@ -110,6 +110,8 @@ pub struct NoteDto {
     pub created_at: String,
     pub updated_at: String,
     pub duration_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar_event: Option<NoteCalendarEventDto>,
     pub generated_content: Option<String>,
     pub edited_content: Option<String>,
     pub transcript: Option<TranscriptDto>,
@@ -131,6 +133,16 @@ pub struct NoteDto {
     /// Exact recording session selected by the durable retry policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_recording_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCalendarEventDto {
+    pub event_id: String,
+    pub title: String,
+    pub start_at: String,
+    pub end_at: String,
+    pub account_email: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

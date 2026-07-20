@@ -13,6 +13,7 @@ pub mod hermes_bridge;
 pub mod image_safety;
 pub mod june_api;
 pub mod macos_menu_icons;
+pub mod meeting_calendar_context;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;

@@ -5,6 +5,7 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
+import { IconCalendar3 } from "central-icons/IconCalendar3";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
@@ -134,6 +135,18 @@ function formatTurnTime(startMs?: number, endMs?: number) {
     return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
   };
   return `${format(startMs)}-${format(endMs)}`;
+}
+
+function formatCalendarEventTime(startAt: string, endAt: string) {
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  const day = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(start);
+  const time = new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${day}, ${time.format(start)} to ${time.format(end)}`;
 }
 
 export function NoteEditor({
@@ -342,6 +355,9 @@ export function NoteEditor({
   const queuedRecordings = note.queuedRecordings ?? 0;
   const queuedTooltipId = useId();
   const updatedAtLabel = formatFullDate(note.updatedAt);
+  const calendarEventTime = note.calendarEvent
+    ? formatCalendarEventTime(note.calendarEvent.startAt, note.calendarEvent.endAt)
+    : null;
 
   return (
     <article className="note-editor">
@@ -372,6 +388,24 @@ export function NoteEditor({
             />
           </div>
         </div>
+        {note.calendarEvent ? (
+          <div
+            className="note-calendar-context"
+            aria-label={`Matched to ${note.calendarEvent.title} in Google Calendar`}
+            title={`Matched from ${note.calendarEvent.accountEmail}`}
+          >
+            <IconCalendar3 aria-hidden="true" />
+            <span className="note-calendar-source">Google Calendar</span>
+            {calendarEventTime ? (
+              <>
+                <span className="note-overline-dot" aria-hidden="true" />
+                <span>{calendarEventTime}</span>
+              </>
+            ) : null}
+            <span className="note-overline-dot" aria-hidden="true" />
+            <span className="note-calendar-account">{note.calendarEvent.accountEmail}</span>
+          </div>
+        ) : null}
         <SegmentedControl
           aria-label="Note views"
           value={activeTab}
