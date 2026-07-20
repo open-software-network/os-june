@@ -162,6 +162,7 @@ function validateBundle() {
   for (const [key, expected] of [
     ["CFBundleIdentifier", expectedBundleIdentifier],
     ["CFBundleDisplayName", "June Computer Use Driver"],
+    ["CFBundleIconFile", "June.icns"],
     ["CFBundleName", "June Computer Use Driver"],
     ["LSMinimumSystemVersion", pin.minimumMacOSVersion],
   ]) {
@@ -169,6 +170,14 @@ function validateBundle() {
     if (actual !== expected) {
       throw new Error(`Computer use helper ${key} is ${actual}; expected ${expected}.`);
     }
+  }
+  const bundledIcon = path.join(bundleDir, "Contents", "Resources", "June.icns");
+  if (
+    readFileSync(bundledIcon).compare(
+      readFileSync(path.join(rootDir, "src-tauri", "icons", "icon.icns")),
+    ) !== 0
+  ) {
+    throw new Error("Computer use helper icon does not match June's app icon.");
   }
   const screenReason = run("/usr/bin/plutil", [
     "-extract",
