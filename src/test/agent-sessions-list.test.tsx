@@ -91,6 +91,88 @@ describe("AgentSessionsList", () => {
     ).toEqual(["Waiting session", "Running session", "Idle session"]);
   });
 
+  it("moves completed sessions out of the active list into the Completed group", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        completedSessionIds={{ "idle-session": "2026-06-05T10:00:00Z" }}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    const activeList = screen.getByRole("list");
+    expect(activeList).not.toHaveTextContent("Idle session");
+
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+
+    const lists = screen.getAllByRole("list");
+    expect(lists).toHaveLength(2);
+    expect(lists[1]).toHaveTextContent("Idle session");
+    expect(lists[0]).not.toHaveTextContent("Idle session");
+  });
+
+  it("does not expose selection for completed session rows", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        completedSessionIds={{ "idle-session": "2026-06-05T10:00:00Z" }}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    // Active rows are selectable...
+    expect(screen.getByLabelText("Select Running session")).toBeInTheDocument();
+    // ...but a completed row exposes no selection checkbox, so it can never
+    // enter the bulk selection.
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+    expect(screen.queryByLabelText("Select Idle session")).not.toBeInTheDocument();
+  });
+
+  it("marks active and completed sessions from their row menus", async () => {
+    const user = userEvent.setup();
+    const onToggleCompleted = vi.fn();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        completedSessionIds={{ "idle-session": "2026-06-05T10:00:00Z" }}
+        onToggleCompleted={onToggleCompleted}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Actions for Running session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Mark as complete" }));
+    expect(onToggleCompleted).toHaveBeenCalledWith("running-session", true);
+
+    await user.click(screen.getByRole("button", { name: /Completed/ }));
+    await user.click(screen.getByRole("button", { name: "Actions for Idle session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Mark as active" }));
+    expect(onToggleCompleted).toHaveBeenCalledWith("idle-session", false);
+  });
+
   it("selects agent sessions and moves them in list order", async () => {
     const user = userEvent.setup();
     const onOpenMoveSessions = vi.fn();
@@ -178,6 +260,71 @@ describe("AgentSessionsList", () => {
     expect(hermesMocks.deleteHermesSession).toHaveBeenCalledTimes(2);
     expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(1, "waiting-session");
     expect(hermesMocks.deleteHermesSession).toHaveBeenNthCalledWith(2, "running-session");
+  });
+
+  it("drops a session from the bulk selection when it is marked complete", async () => {
+    const user = userEvent.setup();
+    const props = {
+      sessions,
+      folders: [] as FolderDto[],
+      sessionFolderIds: {},
+      workingSessionIds: new Set(["running-session"]),
+      waitingSessionIds: new Set(["waiting-session"]),
+      onSelectSession: vi.fn(),
+      onNewSession: vi.fn(),
+      onRenameSession: vi.fn(),
+      onOpenMoveDialog: vi.fn(),
+      onOpenMoveSessions: vi.fn(),
+      onRemoveFromProject: vi.fn(),
+    };
+    const { rerender } = render(<AgentSessionsList {...props} />);
+
+    await user.click(screen.getByLabelText("Select Waiting session"));
+    await user.click(screen.getByLabelText("Select Running session"));
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
+
+    // Waiting session becomes complete: it must leave the selection so a bulk
+    // delete can no longer wipe it along with the still-active selection.
+    rerender(
+      <AgentSessionsList
+        {...props}
+        completedSessionIds={{ "waiting-session": "2026-06-05T10:00:00Z" }}
+      />,
+    );
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("1 selected");
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete session" }));
+
+    expect(hermesMocks.deleteHermesSession).toHaveBeenCalledTimes(1);
+    expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("running-session");
+  });
+
+  it("keeps the bulk selection when a search hides a selected session", async () => {
+    const user = userEvent.setup();
+    render(
+      <AgentSessionsList
+        sessions={sessions}
+        folders={[]}
+        sessionFolderIds={{}}
+        onSelectSession={vi.fn()}
+        onNewSession={vi.fn()}
+        onRenameSession={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onOpenMoveSessions={vi.fn()}
+        onRemoveFromProject={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByLabelText("Select Waiting session"));
+    await user.click(screen.getByLabelText("Select Running session"));
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
+
+    // A search that hides "Waiting session" must not drop it from the selection;
+    // the query only affects what's visible, not what's selected.
+    await user.type(screen.getByPlaceholderText("Search"), "Running");
+    expect(screen.queryByText("Waiting session")).not.toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "Selection" })).toHaveTextContent("2 selected");
   });
 
   it("renames a session row from the action menu", async () => {

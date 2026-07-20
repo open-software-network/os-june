@@ -1,5 +1,6 @@
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconArrowShareRight } from "central-icons/IconArrowShareRight";
+import { IconAudio } from "central-icons/IconAudio";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFilePdf } from "central-icons/IconFilePdf";
 import { IconReference } from "central-icons/IconReference";
@@ -21,6 +22,7 @@ export function NoteHeaderActions({
   onAskJune,
   onShare,
   onExportPdf,
+  onDownloadAudio,
   onDelete,
 }: {
   noteId: string;
@@ -35,6 +37,8 @@ export function NoteHeaderActions({
   onShare?: () => void;
   /** Opens the system print sheet with a PDF-ready version of the note. */
   onExportPdf?: () => void;
+  /** Downloads the note's finalized audio artifacts. */
+  onDownloadAudio?: () => void;
   /** Opens the delete-note confirmation. */
   onDelete?: () => void;
 }) {
@@ -67,6 +71,7 @@ export function NoteHeaderActions({
         noteId={noteId}
         noteTitle={noteTitle}
         onExportPdf={onExportPdf}
+        onDownloadAudio={onDownloadAudio}
         onDelete={onDelete}
       />
     </div>
@@ -77,11 +82,13 @@ function NoteOverflowMenu({
   noteId,
   noteTitle,
   onExportPdf,
+  onDownloadAudio,
   onDelete,
 }: {
   noteId: string;
   noteTitle: string;
   onExportPdf?: () => void;
+  onDownloadAudio?: () => void;
   onDelete?: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -149,6 +156,19 @@ function NoteOverflowMenu({
             >
               <IconFilePdf size={14} />
               Export as PDF
+            </button>
+          ) : null}
+          {onDownloadAudio ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onDownloadAudio();
+              }}
+            >
+              <IconAudio size={14} />
+              Download audio
             </button>
           ) : null}
           {onDelete ? (

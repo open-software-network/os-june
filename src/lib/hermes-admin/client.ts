@@ -25,6 +25,7 @@ import { HermesAdminError } from "./errors";
 import {
   parseActionHandle,
   parseActionStatus,
+  parseActiveProfile,
   parseConfigResult,
   parseConfigWriteResult,
   parseEnvListing,
@@ -36,14 +37,17 @@ import {
   parseMcpServer,
   parseMcpServerList,
   parseMcpTestResult,
+  parseProfileActivateResult,
   parseProfileCreateResult,
   parseProfileList,
+  parseProfileRemoveResult,
   parseProfileSessionList,
   parseSkillContent,
   parseSkillList,
   parseSkillScan,
   parseToggleResult,
   parseToolsetList,
+  type HermesActiveProfile,
   type HermesActionState,
   type HermesActionStatus,
   type HermesConfigResult,
@@ -57,6 +61,7 @@ import {
   type HermesMcpServerInfo,
   type HermesMcpTestResult,
   type HermesProfileCreateResult,
+  type HermesProfileActivateResult,
   type HermesProfileSession,
   type HermesProfileSummary,
   type HermesSkillContent,
@@ -139,13 +144,14 @@ export type HermesInstallCatalogPayload = {
 } & Record<string, unknown>;
 
 /** Payload for `POST /api/profiles`, matching the dashboard's `ProfileCreate`
- * schema (v2026.6.19). `name` is the only required field. `clone_from_default`
- * seeds the new profile from June's default (so it inherits June's identity and
- * bundled skills unless `no_skills` is set); `keep_skills` narrows which bundled
+ * schema (v2026.6.19). `name` is the only required field.
+ * `clone_from_default` seeds the new profile from June's default SOUL and
+ * bundled skills unless `no_skills` is set; `keep_skills` narrows which bundled
  * skills survive; `hub_skills` installs optional hub skills at create time;
  * `mcp_servers` attaches MCP servers. `provider`/`model` set the generation
- * model. The SOUL/instructions are NOT part of this body — they are written
- * after create via `PUT /api/profiles/{name}/soul`. */
+ * model. The SOUL/instructions are NOT part of this body. Custom instructions
+ * are written after create via `PUT /api/profiles/{name}/soul` after the caller
+ * composes them with June's default SOUL. */
 export type HermesCreateProfilePayload = {
   name: string;
   description?: string;
@@ -230,6 +236,16 @@ export type HermesAdminClient = {
      * dedupe the new profile's name/slug against existing ones and to offer a
      * clone source. NOT profile-scoped — it lists ALL profiles. */
     list(): Promise<HermesProfileSummary[]>;
+    /** Reads the sticky active profile. `GET /api/profiles/active`. NOT
+     * profile-scoped — the active pointer is global for the Hermes runtime. */
+    active(): Promise<HermesActiveProfile>;
+    /** Sets the sticky active profile. `POST /api/profiles/active` with
+     * `{ name }`. NOT profile-scoped, because the active pointer chooses the
+     * profile future sessions use. */
+    activate(name: string): Promise<void>;
+    /** Deletes a profile. `DELETE /api/profiles/{name}`. NOT profile-scoped;
+     * the server refuses `default` and missing profiles. */
+    remove(name: string): Promise<void>;
     /** Creates a profile. `POST /api/profiles` with `ProfileCreate`. NOT
      * profile-scoped (it creates a new profile; the active-profile query would
      * be meaningless). Applies next session — the new profile is available to
@@ -237,17 +253,13 @@ export type HermesAdminClient = {
     create(
       payload: HermesCreateProfilePayload,
     ): Promise<MutationOutcome<HermesProfileCreateResult>>;
-    /** Writes a profile's SOUL/instructions. `PUT /api/profiles/{name}/soul`
-     * with `ProfileSoulUpdate` (`{ content }`). Called after create when the
-     * builder collected a custom SOUL. */
+    /** Writes a profile's full SOUL. `PUT /api/profiles/{name}/soul` with
+     * `ProfileSoulUpdate` (`{ content }`). The endpoint replaces the file, so
+     * callers that collect custom instructions compose them with June's default
+     * SOUL before calling this method. */
     setSoul(name: string, content: string): Promise<MutationOutcome<{ ok: boolean }>>;
-    /** Lists live/recent profile sessions. `GET /api/profiles/sessions`. The
-     * builder polls this to confirm a started test session is running. */
+    /** Lists live/recent profile sessions. `GET /api/profiles/sessions`. */
     sessions(): Promise<HermesProfileSession[]>;
-    /** Starts a test session for a profile by making it active and opening a
-     * terminal. `POST /api/profiles/active` then
-     * `POST /api/profiles/{name}/open-terminal`. */
-    startTestSession(name: string): Promise<MutationOutcome<{ ok: boolean }>>;
   };
 
   readonly gateway: {
@@ -565,6 +577,32 @@ function makeMcp(send: AdminTransport): HermesAdminClient["mcp"] {
 }
 
 function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
+  const activateProfile = (name: string): Promise<HermesProfileActivateResult> =>
+    send(
+      {
+        method: "POST",
+        path: "/api/profiles/active",
+        body: { name },
+        scopeToProfile: false,
+      },
+      parseProfileActivateResult,
+    );
+
+  /** Case-insensitive name equality for activation confirmation. */
+  const sameProfileName = (a: string, b: string): boolean =>
+    a.trim().toLowerCase() === b.trim().toLowerCase();
+
+  /** Fast path: the response body itself confirms the requested profile is the
+   * sticky active value (the pinned Hermes always echoes
+   * `{ok: true, active: <normalized name>}`). When the body is bodyless or
+   * ambiguous, the caller reconciles against the authoritative
+   * `GET /api/profiles/active` instead of failing - a bare 2xx is a legitimate
+   * success elsewhere in this client, and throwing after a server-side write
+   * would leave June's store pointing at the OLD profile while the on-disk
+   * pointer (which Rust-side model overrides resolve against) already moved. */
+  const activationEchoConfirms = (name: string, result: HermesProfileActivateResult): boolean =>
+    result.ok && result.active !== undefined && sameProfileName(result.active, name);
+
   return {
     list() {
       // Lists ALL profiles — not scoped to the active one.
@@ -572,6 +610,58 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
         { method: "GET", path: "/api/profiles", scopeToProfile: false },
         parseProfileList,
       );
+    },
+    active() {
+      return send(
+        { method: "GET", path: "/api/profiles/active", scopeToProfile: false },
+        parseActiveProfile,
+      );
+    },
+    async activate(name) {
+      const result = await activateProfile(name);
+      if (result.ok === false) {
+        throw new HermesAdminError({
+          endpoint: "POST /api/profiles/active",
+          kind: "parse",
+          safeMessage: "June could not activate that profile.",
+          retryable: false,
+        });
+      }
+      if (activationEchoConfirms(name, result)) return;
+      // No usable echo (bodyless 2xx, unexpected shape, or a mismatched name):
+      // reconcile against the authoritative sticky read rather than trusting
+      // the request. This never trusts the requested name, and it never fails
+      // a switch that actually landed just because the body was quiet.
+      const authoritative = await send(
+        { method: "GET", path: "/api/profiles/active", scopeToProfile: false },
+        parseActiveProfile,
+      );
+      if (!sameProfileName(authoritative.active, name)) {
+        throw new HermesAdminError({
+          endpoint: "POST /api/profiles/active",
+          kind: "parse",
+          safeMessage: `"${authoritative.active}" is still the active profile.`,
+          retryable: false,
+        });
+      }
+    },
+    async remove(name) {
+      const result = await send(
+        {
+          method: "DELETE",
+          path: `/api/profiles/${encodeURIComponent(name)}`,
+          scopeToProfile: false,
+        },
+        parseProfileRemoveResult,
+      );
+      if (!result.ok) {
+        throw new HermesAdminError({
+          endpoint: `DELETE /api/profiles/${name}`,
+          kind: "parse",
+          safeMessage: "June could not delete that profile.",
+          retryable: false,
+        });
+      }
     },
     async create(payload) {
       // Create is global (it makes a new profile); the active-profile query is
@@ -610,37 +700,6 @@ function makeProfiles(send: AdminTransport): HermesAdminClient["profiles"] {
         },
         parseProfileSessionList,
       );
-    },
-    async startTestSession(name) {
-      // Make the new profile active, then open a terminal session under it. Both
-      // are global profile operations, so neither is profile-query-scoped.
-      const activated = await send(
-        {
-          method: "POST",
-          path: "/api/profiles/active",
-          body: { name },
-          scopeToProfile: false,
-        },
-        (raw) => ({ ok: okFrom(raw) }),
-      );
-      // Stop if the switch failed (a body-level { ok: false } on a 2xx):
-      // opening a terminal would run under the wrong profile and falsely report
-      // success. Surface the failure through the same outcome, matching create.
-      if (!activated.ok) {
-        return outcome("profile.create", activated);
-      }
-      const result = await send(
-        {
-          method: "POST",
-          path: `/api/profiles/${encodeURIComponent(name)}/open-terminal`,
-          scopeToProfile: false,
-        },
-        (raw) => ({ ok: okFrom(raw) }),
-      );
-      // Reuse the create timing/notification surface — starting a session is the
-      // immediate consequence of a create, so the caller treats it as part of
-      // the create flow rather than a distinct durable mutation.
-      return outcome("profile.create", result);
     },
   };
 }

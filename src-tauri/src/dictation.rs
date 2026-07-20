@@ -899,9 +899,10 @@ pub fn dictation_settings(
 pub async fn list_dictation_history(
     app: AppHandle,
 ) -> Result<ListDictationHistoryResponse, AppError> {
+    let profile = crate::commands::active_profile(&app);
     crate::commands::repositories(&app)
         .await?
-        .list_dictation_history(200)
+        .list_dictation_history(&profile, 200)
         .await
         .map_err(AppError::from)
 }
@@ -3340,6 +3341,10 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         .as_deref()
         .map(|bundle_id| is_email_app_bundle(bundle_id).then(|| APP_CONTEXT_EMAIL.to_string()))
         .unwrap_or_else(frontmost_app_context);
+    // Pin the owning profile now, like the paste target above: dictation
+    // processing can take seconds, and a profile switch mid-flight must not
+    // relabel this dictation's history row to the new profile.
+    let history_profile = crate::commands::active_profile(&app);
     let low_speech_evidence = recording_has_low_speech_evidence(&recording);
     if low_speech_evidence {
         tracing::info!(
@@ -3437,7 +3442,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             .as_ref()
             .or(outcome.quarantine_transcript.as_ref());
         if let Some(transcript) = recovery_transcript {
-            match persist_dictation_history_item(&app, transcript).await {
+            match persist_dictation_history_item(&app, transcript, &history_profile).await {
                 Ok(()) => true,
                 Err(error) => {
                     retain_low_speech_evidence_recording(&app, &audio_path, transcript, &error);
@@ -3451,7 +3456,13 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         false
     };
     let outcome = quarantine_low_speech_evidence_outcome(outcome, low_speech_evidence);
-    deliver_dictation_outcome(&app, &audio_path, outcome, history_already_persisted);
+    deliver_dictation_outcome(
+        &app,
+        &audio_path,
+        outcome,
+        history_already_persisted,
+        &history_profile,
+    );
 }
 
 fn deliver_dictation_outcome(
@@ -3459,6 +3470,7 @@ fn deliver_dictation_outcome(
     audio_path: &std::path::Path,
     outcome: DictationTranscriptionOutcome,
     history_already_persisted: bool,
+    history_profile: &str,
 ) {
     // Low-evidence transcripts reach this point only after a successful,
     // awaited history write. Normal transcripts keep the existing best-effort
@@ -3469,7 +3481,11 @@ fn deliver_dictation_outcome(
             crate::p3a::questions::Question::DictationSessions,
         );
         if !history_already_persisted {
-            spawn_dictation_history_write(app.clone(), transcript.clone());
+            spawn_dictation_history_write(
+                app.clone(),
+                transcript.clone(),
+                history_profile.to_string(),
+            );
         }
     }
     let state = app.state::<HelperState>();
@@ -3479,6 +3495,12 @@ fn deliver_dictation_outcome(
         let _ = std::fs::remove_file(audio_path);
         return;
     }
+    // The terminal command and any shortcut command written after it are
+    // consumed by the helper in order. Re-arm as soon as that handoff
+    // succeeds instead of waiting for the helper to echo a terminal event:
+    // discard outcomes used to emit no echo once recording had finalized,
+    // leaving Fn suppressed until the 30-second safety timeout expired.
+    update_shortcut_helper_finalizing(app, false);
     if let Some(event) = outcome.event {
         emit_dictation_event_value(app, event);
     }
@@ -4287,9 +4309,13 @@ fn looks_like_report_summary_response(normalized: &str) -> bool {
                 || normalized.contains("transcription pipeline")))
 }
 
-fn spawn_dictation_history_write(app: AppHandle, transcript: TranscriptionProviderResult) {
+fn spawn_dictation_history_write(
+    app: AppHandle,
+    transcript: TranscriptionProviderResult,
+    profile: String,
+) {
     tauri::async_runtime::spawn(async move {
-        store_dictation_history_item(&app, &transcript).await;
+        store_dictation_history_item(&app, &transcript, &profile).await;
     });
 }
 
@@ -4882,8 +4908,12 @@ fn skip_word_separators(value: &str) -> &str {
     value.trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch.is_ascii_punctuation())
 }
 
-async fn store_dictation_history_item(app: &AppHandle, transcript: &TranscriptionProviderResult) {
-    if let Err(error) = persist_dictation_history_item(app, transcript).await {
+async fn store_dictation_history_item(
+    app: &AppHandle,
+    transcript: &TranscriptionProviderResult,
+    profile: &str,
+) {
+    if let Err(error) = persist_dictation_history_item(app, transcript, profile).await {
         tracing::error!(
             code = %error.code,
             "dictation history save failed after transcript delivery"
@@ -4894,6 +4924,7 @@ async fn store_dictation_history_item(app: &AppHandle, transcript: &Transcriptio
 async fn persist_dictation_history_item(
     app: &AppHandle,
     transcript: &TranscriptionProviderResult,
+    profile: &str,
 ) -> Result<(), AppError> {
     let repos = crate::commands::repositories(app).await.map_err(|error| {
         tracing::error!(code = %error.code, "dictation history repository unavailable");
@@ -4904,6 +4935,7 @@ async fn persist_dictation_history_item(
     })?;
     repos
         .create_dictation_history_item(
+            profile,
             &transcript.text,
             transcript.language.clone(),
             &transcript.provider,
@@ -6548,6 +6580,32 @@ mod tests {
                 ShortcutKeyEdge::Down,
                 DictationShortcutKind::PushToTalk,
                 now + FINALIZING_SUPPRESSION_EXPIRY
+            ),
+            Some(DictationCommand::StartListening)
+        );
+    }
+
+    #[test]
+    fn completed_outcome_immediately_rearms_push_to_talk() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        controller.mark_helper_finalizing();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            None
+        );
+
+        controller.clear_helper_finalizing();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + Duration::from_millis(1)
             ),
             Some(DictationCommand::StartListening)
         );

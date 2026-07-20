@@ -8,6 +8,7 @@ import { repairContractionSpacing } from "../../lib/agent-chat-runtime";
 export function MarkdownContent({
   markdown,
   highlight,
+  activeHighlightIndex,
   // Repairs the gateway's dropped-space-after-contraction artifact ("it'snot"
   // -> "it's not"). Only set for assistant prose: it must never touch code or
   // a user's own text. See repairContractionSpacing.
@@ -15,12 +16,24 @@ export function MarkdownContent({
 }: {
   markdown: string;
   highlight?: string;
+  activeHighlightIndex?: number;
   repairProse?: boolean;
 }) {
+  const highlightCursor: HighlightCursor = {
+    activeIndex: activeHighlightIndex,
+    nextIndex: 0,
+  };
   return (
-    <div className="agent-markdown">{renderMarkdownBlocks(markdown, highlight, repairProse)}</div>
+    <div className="agent-markdown">
+      {renderMarkdownBlocks(markdown, highlight, repairProse, highlightCursor)}
+    </div>
   );
 }
+
+export type HighlightCursor = {
+  activeIndex?: number;
+  nextIndex: number;
+};
 
 /** Wraps case-insensitive matches of `highlight` in <mark>, leaving the text
  * untouched when there's nothing to find. Every text emission point in the
@@ -30,25 +43,43 @@ export function highlightText(
   text: string,
   highlight: string | undefined,
   keySeed: string,
+  highlightCursor?: HighlightCursor,
 ): ReactNode[] {
   const needle = highlight?.toLowerCase();
   if (!needle) return [text];
   const lower = text.toLowerCase();
   const nodes: ReactNode[] = [];
-  let cursor = 0;
+  let textCursor = 0;
   let count = 0;
   for (;;) {
-    const at = lower.indexOf(needle, cursor);
+    const at = lower.indexOf(needle, textCursor);
     if (at < 0) break;
-    if (at > cursor) nodes.push(text.slice(cursor, at));
-    nodes.push(<mark key={`hl-${keySeed}-${count++}`}>{text.slice(at, at + needle.length)}</mark>);
-    cursor = at + needle.length;
+    if (at > textCursor) nodes.push(text.slice(textCursor, at));
+    const matchIndex = highlightCursor?.nextIndex ?? count;
+    if (highlightCursor) highlightCursor.nextIndex += 1;
+    nodes.push(
+      <mark
+        key={`hl-${keySeed}-${count++}`}
+        className={
+          matchIndex === highlightCursor?.activeIndex ? "agent-search-match-active" : undefined
+        }
+        data-search-match-index={matchIndex}
+      >
+        {text.slice(at, at + needle.length)}
+      </mark>,
+    );
+    textCursor = at + needle.length;
   }
-  if (cursor < text.length) nodes.push(text.slice(cursor));
+  if (textCursor < text.length) nodes.push(text.slice(textCursor));
   return nodes;
 }
 
-function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse = false) {
+function renderMarkdownBlocks(
+  markdown: string,
+  highlight?: string,
+  repairProse = false,
+  highlightCursor?: HighlightCursor,
+) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let paragraph: string[] = [];
@@ -59,7 +90,9 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
     paragraph = [];
     if (!text) return;
     blocks.push(
-      <p key={`p-${key++}`}>{renderInlineMarkdown(text, key, highlight, repairProse)}</p>,
+      <p key={`p-${key++}`}>
+        {renderInlineMarkdown(text, key, highlight, repairProse, highlightCursor)}
+      </p>,
     );
   };
 
@@ -85,7 +118,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
       if (body.trim()) {
         blocks.push(
           <pre key={`code-${key++}`}>
-            <code>{highlightText(body, highlight, `code-${key}`)}</code>
+            <code>{highlightText(body, highlight, `code-${key}`, highlightCursor)}</code>
           </pre>,
         );
       }
@@ -111,7 +144,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
       index -= 1;
       blocks.push(
         <blockquote key={`quote-${key++}`}>
-          {renderMarkdownBlocks(quoted.join("\n"), highlight, repairProse)}
+          {renderMarkdownBlocks(quoted.join("\n"), highlight, repairProse, highlightCursor)}
         </blockquote>,
       );
       continue;
@@ -145,7 +178,9 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
             <thead>
               <tr>
                 {header.map((cell, cellIndex) => (
-                  <th key={cellIndex}>{renderInlineMarkdown(cell, key, highlight, repairProse)}</th>
+                  <th key={cellIndex}>
+                    {renderInlineMarkdown(cell, key, highlight, repairProse, highlightCursor)}
+                  </th>
                 ))}
               </tr>
             </thead>
@@ -154,7 +189,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex}>
-                      {renderInlineMarkdown(cell, key, highlight, repairProse)}
+                      {renderInlineMarkdown(cell, key, highlight, repairProse, highlightCursor)}
                     </td>
                   ))}
                 </tr>
@@ -170,7 +205,13 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
     if (heading) {
       flushParagraph();
       const level = Math.min(heading[1].length, 3);
-      const content = renderInlineMarkdown(heading[2], key, highlight, repairProse);
+      const content = renderInlineMarkdown(
+        heading[2],
+        key,
+        highlight,
+        repairProse,
+        highlightCursor,
+      );
       blocks.push(
         level === 1 ? <h2 key={`h-${key++}`}>{content}</h2> : <h3 key={`h-${key++}`}>{content}</h3>,
       );
@@ -195,7 +236,7 @@ function renderMarkdownBlocks(markdown: string, highlight?: string, repairProse 
       index -= 1;
       const listItems = items.map((item, itemIndex) => (
         <li key={`li-${key}-${itemIndex}`}>
-          {renderInlineMarkdown(item, key + itemIndex, highlight, repairProse)}
+          {renderInlineMarkdown(item, key + itemIndex, highlight, repairProse, highlightCursor)}
         </li>
       ));
       blocks.push(
@@ -220,10 +261,11 @@ function renderInlineMarkdown(
   keySeed: number,
   highlight?: string,
   repairProse = false,
+  highlightCursor?: HighlightCursor,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   const mark = (value: string, slot: string) =>
-    highlightText(value, highlight, `${keySeed}-${slot}`);
+    highlightText(value, highlight, `${keySeed}-${slot}`, highlightCursor);
   // Prose runs (plain text, emphasis, link text) get the contraction-spacing
   // repair; code spans and URLs go through `mark` untouched.
   const markProse = (value: string, slot: string) =>

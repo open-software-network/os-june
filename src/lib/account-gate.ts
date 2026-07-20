@@ -1,4 +1,6 @@
-import type { AccountStatus } from "./tauri";
+import { AUTO_MODEL_ID } from "./hermes-session-model-selection";
+import { modelAvailableForMode } from "./model-privacy";
+import type { AccountStatus, VeniceModelDto } from "./tauri";
 
 // Single source of truth for whether an action that depends on OS Accounts
 // should be blocked behind the sign-in prompt. Keep this pure — it's called
@@ -82,4 +84,33 @@ export function shouldBlockOnFunding(account: AccountStatus): boolean {
 
   const credits = account.balance?.credits;
   return typeof credits === "number" && credits <= 0;
+}
+
+/** The active text route as known by a composer. `activeModel` must be the
+ * exact live-catalog entry for `activeModelId`; callers leave it undefined
+ * when the selection is unknown so the funding decision fails closed instead
+ * of trusting a synthetic picker stub or an id convention. */
+export type TextFundingModelContext = {
+  activeModelId?: string;
+  activeModel?: Pick<VeniceModelDto, "id" | "provider" | "capabilities">;
+  veniceApiKeyConfigured: boolean;
+};
+
+/** Split text generation from the general June-credit gate. Explicit Venice
+ * BYOK text can continue while June funding is unavailable, but only when the
+ * configured key and the active concrete catalog entry prove that route. */
+export function shouldBlockTextOnFunding(
+  fundingRequired: boolean,
+  context: TextFundingModelContext,
+): boolean {
+  if (!fundingRequired) return false;
+  const model = context.activeModel;
+  return !(
+    context.veniceApiKeyConfigured &&
+    context.activeModelId &&
+    context.activeModelId !== AUTO_MODEL_ID &&
+    model?.id === context.activeModelId &&
+    model.provider === "venice" &&
+    modelAvailableForMode("generation", model)
+  );
 }

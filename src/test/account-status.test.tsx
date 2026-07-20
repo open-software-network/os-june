@@ -1,6 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { useAccountStatus } from "../lib/account-status";
+import {
+  ACCOUNT_STATUS_TIMEOUT_MS,
+  LOCAL_ACCOUNT_STATUS_TIMEOUT_MS,
+  useAccountStatus,
+} from "../lib/account-status";
 import type { AccountStatus } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
@@ -27,11 +31,12 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 function StatusProbe({ forceLogoutOnMount = false }: { forceLogoutOnMount?: boolean }) {
-  const { account, loading } = useAccountStatus({ forceLogoutOnMount });
+  const { account, error, loading } = useAccountStatus({ forceLogoutOnMount });
   return (
     <div>
       <div>{account.signedIn ? "Signed in" : "Signed out"}</div>
       <div>{loading ? "Loading" : "Ready"}</div>
+      {error ? <div>{error}</div> : null}
     </div>
   );
 }
@@ -70,5 +75,37 @@ describe("useAccountStatus", () => {
 
     await screen.findByText("Signed in");
     await waitFor(() => expect(screen.getByText("Ready")).toBeInTheDocument());
+  });
+
+  it("falls through to the full status when the local keychain lookup stalls", async () => {
+    vi.useFakeTimers();
+    const signedIn: AccountStatus = { signedIn: true, configured: true };
+    mocks.osAccountsStatusLocal.mockImplementation(() => new Promise<AccountStatus>(() => {}));
+    mocks.osAccountsStatus.mockResolvedValue(signedIn);
+
+    render(<StatusProbe />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LOCAL_ACCOUNT_STATUS_TIMEOUT_MS);
+    });
+
+    expect(screen.getByText("Signed in")).toBeInTheDocument();
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("leaves the loading gate with a retryable error when account lookups stall", async () => {
+    vi.useFakeTimers();
+    mocks.osAccountsStatusLocal.mockImplementation(() => new Promise<AccountStatus>(() => {}));
+    mocks.osAccountsStatus.mockImplementation(() => new Promise<AccountStatus>(() => {}));
+
+    render(<StatusProbe />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LOCAL_ACCOUNT_STATUS_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(ACCOUNT_STATUS_TIMEOUT_MS);
+    });
+
+    expect(screen.getByText("Ready")).toBeInTheDocument();
+    expect(screen.getByText("Account status took too long. Please try again.")).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });

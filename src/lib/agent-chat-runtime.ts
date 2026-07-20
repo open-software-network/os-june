@@ -16,6 +16,42 @@ import type { JuneHermesEvent } from "./hermes-control-plane";
 import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
 import { stripProjectContext } from "./agent-project-context";
 
+const HERMES_LIVE_EVENT_LIMIT = 200;
+
+/**
+ * Adds an event to the bounded transcript-rendering tail. Consecutive message
+ * deltas are one logical append-only value, so compact them before enforcing
+ * the event-count limit. Otherwise a long response evicts its own opening
+ * chunks and the missing prefix only returns with `message.complete`.
+ */
+export function appendHermesLiveEvent(
+  events: JuneHermesEvent[],
+  event: JuneHermesEvent,
+): JuneHermesEvent[] {
+  const previous = events.at(-1);
+  if (
+    previous?.kind === "transcript" &&
+    event.kind === "transcript" &&
+    !previous.complete &&
+    !event.complete &&
+    previous.delta !== undefined &&
+    event.delta !== undefined &&
+    previous.sessionId === event.sessionId &&
+    previous.messageId === event.messageId &&
+    previous.role === event.role
+  ) {
+    return [
+      ...events.slice(0, -1),
+      {
+        ...previous,
+        delta: previous.delta + event.delta,
+      },
+    ];
+  }
+
+  return [...events, event].slice(-HERMES_LIVE_EVENT_LIMIT);
+}
+
 export type AgentChatTextPart = {
   type: "text";
   text: string;

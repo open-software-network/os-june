@@ -75,7 +75,7 @@ import {
 } from "react";
 import { BackButton } from "../ui/BackButton";
 import { TierMiniCard } from "../account/FundingNotice";
-import type { FundingTier } from "../account/FundingNotice";
+import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { Dialog } from "../ui/Dialog";
@@ -87,6 +87,8 @@ import { toast } from "../ui/Toaster";
 import { Spinner } from "../ui/Spinner";
 import { Switch } from "../ui/Switch";
 import {
+  assignSessionToProfile,
+  listSessionProfiles,
   cancelAgentTask,
   computerUseBeginRun,
   computerUseEndRun,
@@ -160,6 +162,16 @@ import {
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
 import {
+  getActiveHermesProfileName,
+  refreshActiveHermesProfile,
+  useActiveHermesProfile,
+} from "../../lib/active-hermes-profile";
+import {
+  filterAgentSessionsForProfile,
+  sessionMatchesProfile,
+  sessionProfileMap,
+} from "../../lib/session-profile-filter";
+import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_GALLERY_EVENT,
   AGENT_NEW_SESSION_EVENT,
@@ -222,6 +234,7 @@ import { ShareLinkCopyAction } from "../share/ShareLinkCopyAction";
 import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
+import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesActivityStore, type AgentActivityRecord } from "../../lib/hermes-activity-store";
 import {
@@ -237,7 +250,7 @@ import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawe
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
-import { MarkdownContent, highlightText } from "./MarkdownContent";
+import { MarkdownContent, highlightText, type HighlightCursor } from "./MarkdownContent";
 import { SmoothedStreamingMarkdown } from "./SmoothedStreamingMarkdown";
 import {
   ComposerModelPicker,
@@ -361,6 +374,7 @@ import {
   stripAgentCliAccessRequest,
 } from "../../lib/agent-cli-access";
 import {
+  appendHermesLiveEvent,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
@@ -1797,10 +1811,10 @@ type AgentWorkspaceProps = {
    * stored session id. */
   onMoveSessionToProject?: (sessionId: string) => void;
   creditActionsDisabledReason?: string;
-  /** The persistent out-of-credits notice, pre-wired by App. When present it
-   * replaces the plain composer-notice paragraph; the disabled reason keeps
-   * gating actions and tooltips. */
-  fundingNotice?: ReactNode;
+  /** App owns the account and billing action; the composer owns the active
+   * session model and picker. This typed boundary joins them without guessing
+   * from the app-wide setting. */
+  renderFundingNotice?: (context: TextFundingNoticeContext) => ReactNode;
   /** The user's current plan; the in-transcript stopped-turn credits card
    * leads with its tier card. */
   fundingTier?: FundingTier;
@@ -2357,11 +2371,12 @@ export function AgentWorkspace({
   resolveSessionProjectContext,
   onMoveSessionToProject,
   creditActionsDisabledReason,
-  fundingNotice,
+  renderFundingNotice,
   fundingTier,
   testOnlySlashCommandEntriesRef,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
+  const activeHermesProfile = useActiveHermesProfile();
   // Read once per mount (lazy initializer): the continuity snapshot the
   // previous mount captured on unmount, if any session was still mid-run.
   const [continuity] = useState(() => sessionContinuity);
@@ -2444,6 +2459,11 @@ export function AgentWorkspace({
     return [initialSession, ...restored.filter((session) => session.id !== initialSession.id)];
   });
   const hermesSessionItemsRef = useRef(hermesSessionItems);
+  const profileOwnedSessionIdsRef = useRef<Set<string>>(
+    new Set(
+      initialSessionId && getActiveHermesProfileName() !== "default" ? [initialSessionId] : [],
+    ),
+  );
   // False until the first listHermesSessions fetch lands. Until then the
   // items above only hold the mount seed (the clicked session, or nothing),
   // and broadcasting that would wipe the sidebar's already-loaded list.
@@ -2459,8 +2479,15 @@ export function AgentWorkspace({
   const [startInNewSessionMode] = useState(
     () => !initialSessionId && shouldOpenNewSessionOnMount(),
   );
+  // A last-open id is only a restore candidate until the first profile-scoped
+  // session load proves that it belongs to the active profile. Keeping it out
+  // of selected state prevents the message loader from reading another
+  // profile's conversation during that validation window.
+  const restoredHermesSessionIdRef = useRef<string | undefined>(
+    initialSessionId || startInNewSessionMode ? undefined : readLastOpenSessionId(),
+  );
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<string | undefined>(
-    () => initialSessionId ?? (startInNewSessionMode ? undefined : readLastOpenSessionId()),
+    initialSessionId,
   );
   const selectedHermesSessionIdRef = useRef<string | undefined>(selectedHermesSessionId);
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
@@ -2690,6 +2717,7 @@ export function AgentWorkspace({
   // section can show its billing note (Auto meters June credits, never the
   // key). Refreshed with every provider-settings read.
   const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
+  const veniceApiKeyConfiguredRef = useRef(false);
   // Preference saves from the picker's drill-in: writes are chained so they
   // persist in click order, and versioned so only the newest call's outcome
   // touches the UI (mirrors Settings' saveCostQuality discipline). Rollback
@@ -3268,6 +3296,17 @@ export function AgentWorkspace({
   const resolvedGenerationModel = activeGenerationModelId
     ? generationModels.find((model) => model.id === activeGenerationModelId)
     : undefined;
+  const textFundingContext: TextFundingModelContext = {
+    activeModelId: activeGenerationModelId || undefined,
+    activeModel: resolvedGenerationModel,
+    veniceApiKeyConfigured,
+  };
+  const textActionsDisabledReason = shouldBlockTextOnFunding(
+    Boolean(creditActionsDisabledReason),
+    textFundingContext,
+  )
+    ? creditActionsDisabledReason
+    : undefined;
   const composerHasPendingImage =
     pendingImageAttachments(attachments.map((attachment) => attachment.attach)).length > 0;
   const parsedComposerSlashCommand = useMemo(
@@ -3765,43 +3804,79 @@ export function AgentWorkspace({
     async (
       options: { suppressStartupRequestError?: boolean; suppressSessionGoneError?: boolean } = {},
     ) => {
-      if (!bridge.running) return "skipped";
+      if (!bridge.running || !activeHermesProfile.confirmed) return "skipped";
       let keepLoading = false;
       setHermesSessionsLoading(true);
       try {
-        const sessions = applySessionTitleOverrides(await listHermesSessions());
+        const [listedSessions, assignments] = await Promise.all([
+          listHermesSessions(),
+          listSessionProfiles(),
+        ]);
+        const profiles = sessionProfileMap(assignments);
+        const activeProfile = activeHermesProfile.name;
+        const sessions = applySessionTitleOverrides(
+          filterAgentSessionsForProfile(listedSessions, profiles, activeProfile),
+        );
+        profileOwnedSessionIdsRef.current = new Set(
+          activeProfile === "default"
+            ? []
+            : assignments
+                .filter((assignment) => assignment.profile === activeProfile)
+                .map((assignment) => assignment.sessionId),
+        );
         hermesSessionsHydratedRef.current = true;
         setHermesSessionsHydrated(true);
         const pendingMessages = pendingHermesMessagesRef.current;
         const selectedSessionId = selectedHermesSessionIdRef.current;
+        const selectedProfileSessionId =
+          selectedSessionId &&
+          sessionMatchesProfile({ id: selectedSessionId }, profiles, activeProfile)
+            ? selectedSessionId
+            : undefined;
         const workingSessions = workingSessionIdsRef.current;
         const waitingSessions = waitingSessionIdsRef.current;
-        setHermesSessionItems((current) =>
-          mergeActiveHermesSessions(sessions, current, {
-            selectedSessionId,
-            workingSessionIds: workingSessions,
-            waitingSessionIds: waitingSessions,
-            pendingMessages,
-            defaultModelId: defaultGenerationModelIdRef.current,
-          }),
+        const currentProfileSessionIds = new Set(
+          hermesSessionItemsRef.current
+            .filter((session) => sessionMatchesProfile(session, profiles, activeProfile))
+            .map((session) => session.id),
         );
+        setHermesSessionItems((current) =>
+          mergeActiveHermesSessions(
+            sessions,
+            current.filter((session) => sessionMatchesProfile(session, profiles, activeProfile)),
+            {
+              selectedSessionId: selectedProfileSessionId,
+              workingSessionIds: workingSessions,
+              waitingSessionIds: waitingSessions,
+              pendingMessages,
+              defaultModelId: defaultGenerationModelIdRef.current,
+            },
+          ),
+        );
+        const restoredSessionId = restoredHermesSessionIdRef.current;
+        restoredHermesSessionIdRef.current = undefined;
         setSelectedHermesSessionId((current) => {
           if (newSessionModeRef.current) {
             selectedHermesSessionIdRef.current = undefined;
             return undefined;
           }
+          let candidate = current ?? restoredSessionId;
+          const candidateIsCurrent = candidate !== undefined && candidate === current;
+          if (candidate && !sessionMatchesProfile({ id: candidate }, profiles, activeProfile)) {
+            forgetLastOpenSessionId(candidate);
+            candidate = undefined;
+          }
           if (
-            current &&
-            (sessions.some((session) => session.id === current) ||
-              shouldRetainHermesSessionId(current, {
-                selectedSessionId: current,
-                workingSessionIds: workingSessions,
-                waitingSessionIds: waitingSessions,
-                pendingMessages,
-              }))
+            candidate &&
+            (sessions.some((session) => session.id === candidate) ||
+              candidateIsCurrent ||
+              currentProfileSessionIds.has(candidate))
           ) {
-            selectedHermesSessionIdRef.current = current;
-            return current;
+            selectedHermesSessionIdRef.current = candidate;
+            return candidate;
+          }
+          if (restoredSessionId && candidate === restoredSessionId) {
+            forgetLastOpenSessionId(restoredSessionId);
           }
           const taskSession = selectedTask?.hermesSessionId;
           if (taskSession && sessions.some((session) => session.id === taskSession)) {
@@ -3837,7 +3912,12 @@ export function AgentWorkspace({
         }
       }
     },
-    [bridge.running, selectedTask?.hermesSessionId],
+    [
+      activeHermesProfile.confirmed,
+      activeHermesProfile.name,
+      bridge.running,
+      selectedTask?.hermesSessionId,
+    ],
   );
 
   useEffect(() => {
@@ -3863,6 +3943,7 @@ export function AgentWorkspace({
       confirmedCostQualityRef.current = settings.costQuality;
       generationCostQualityRef.current = settings.costQuality;
       setGenerationCostQuality(settings.costQuality);
+      veniceApiKeyConfiguredRef.current = settings.veniceApiKeyConfigured;
       setVeniceApiKeyConfigured(settings.veniceApiKeyConfigured);
       return selectedModelId;
     },
@@ -3883,6 +3964,7 @@ export function AgentWorkspace({
       modelsPromise.catch(() => {});
       const settingsResponse = await settingsPromise;
       if (requestId === generationModelRequestSequence.current) {
+        veniceApiKeyConfiguredRef.current = settingsResponse.settings.veniceApiKeyConfigured;
         setVeniceApiKeyConfigured(settingsResponse.settings.veniceApiKeyConfigured);
       }
       const modelsResponse = await modelsPromise;
@@ -3978,6 +4060,11 @@ export function AgentWorkspace({
     const entry = targetStoredSessionId
       ? sessionModelSelectionsRef.current[targetStoredSessionId]
       : undefined;
+    const inheritsProfileModel = Boolean(
+      targetStoredSessionId &&
+        profileOwnedSessionIdsRef.current.has(targetStoredSessionId) &&
+        !entry,
+    );
     let persistedSelection = existingHermesModelId
       ? decodeHermesModelSelection(existingHermesModelId)
       : undefined;
@@ -3994,7 +4081,7 @@ export function AgentWorkspace({
       persistedSelection = { modelId: localGenerationOptionId(configuredLocalModelId) };
     }
     const fallbackModelId = targetStoredSessionId
-      ? existingHermesModelId || defaultGenerationModelIdRef.current
+      ? existingHermesModelId || (inheritsProfileModel ? "" : defaultGenerationModelIdRef.current)
       : defaultGenerationModelIdRef.current;
     const baseSelection: SessionModelSelection = entry?.selection ??
       persistedSelection ?? { modelId: fallbackModelId };
@@ -4373,7 +4460,7 @@ export function AgentWorkspace({
   }, []);
 
   useEffect(() => {
-    if (!bridge.running || !selectedHermesSessionId) return;
+    if (!bridge.running || !hermesSessionsHydrated || !selectedHermesSessionId) return;
     if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     let cancelled = false;
     listSessionMessagesOrdered(selectedHermesSessionId)
@@ -4458,13 +4545,18 @@ export function AgentWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [bridge.running, selectedHermesSessionId]);
+  }, [bridge.running, hermesSessionsHydrated, selectedHermesSessionId]);
 
   useEffect(() => {
-    if (!bridge.running || !selectedHermesSessionId) return;
+    if (!bridge.running || !hermesSessionsHydrated || !selectedHermesSessionId) return;
     if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     void loadFilesystemSnapshot();
-  }, [bridge.running, selectedHermesSessionId, selectedHermesMessages.length]);
+  }, [
+    bridge.running,
+    hermesSessionsHydrated,
+    selectedHermesSessionId,
+    selectedHermesMessages.length,
+  ]);
 
   useEffect(() => {
     if (!selectedTaskId) return;
@@ -4506,6 +4598,9 @@ export function AgentWorkspace({
         }
         if (cancelled) return;
         setBridge(status);
+        if (status.running) {
+          void refreshActiveHermesProfile({ status });
+        }
       } catch (err) {
         if (!cancelled) setError(describeHermesError(err), reportableAgentErrorOptions(err));
       }
@@ -5001,7 +5096,8 @@ export function AgentWorkspace({
     try {
       const settingsResponse = await providerModelSettings();
       settings = settingsResponse.settings;
-      pinnedModel = settings.imageModel || undefined;
+      pinnedModel =
+        settingsResponse.effectiveSettings?.imageModel || settings.imageModel || undefined;
       pinnedSafeMode = settings.imageSafeMode;
     } catch {
       // Non-fatal: generation proceeds with server-resolved settings.
@@ -5452,7 +5548,8 @@ export function AgentWorkspace({
     try {
       const settingsResponse = await providerModelSettings();
       settings = settingsResponse.settings;
-      pinnedModel = settings.videoModel || undefined;
+      pinnedModel =
+        settingsResponse.effectiveSettings?.videoModel || settings.videoModel || undefined;
     } catch {
       // Non-fatal: generation proceeds with server-resolved settings.
     }
@@ -5740,7 +5837,7 @@ export function AgentWorkspace({
       (!message && !attachments.length) ||
       submitting ||
       importingFiles ||
-      creditActionsDisabledReason ||
+      textActionsDisabledReason ||
       selectedHermesSessionIsProvisional ||
       imageSlashBlockedByModel
     )
@@ -6618,6 +6715,7 @@ export function AgentWorkspace({
   }
 
   function migrateOptimisticHermesSession({
+    clearModel,
     createdAt,
     displayContent,
     fromSessionId,
@@ -6625,6 +6723,7 @@ export function AgentWorkspace({
     title,
     toSessionId,
   }: {
+    clearModel?: boolean;
     createdAt: string;
     displayContent: string;
     fromSessionId: string;
@@ -6643,7 +6742,7 @@ export function AgentWorkspace({
         started_at: createdAt,
         last_active: createdAt,
         message_count: 1,
-        ...(model ? { model } : {}),
+        ...(clearModel ? { model: undefined } : model ? { model } : {}),
       };
       let replaced = false;
       const next = current.flatMap((session) => {
@@ -6852,10 +6951,10 @@ export function AgentWorkspace({
       // unconditional call is safe for every kind. Mode rides along so each
       // artifact can show its blast radius (sandboxed copy vs unrestricted path).
       hermesArtifactStore.record(storedClassified, hermesModeFor(storedSessionId));
-      const nextSessionEvents = [
-        ...(liveEventsRef.current[storedSessionId] ?? []),
+      const nextSessionEvents = appendHermesLiveEvent(
+        liveEventsRef.current[storedSessionId] ?? [],
         classified,
-      ].slice(-200);
+      );
       liveEventsRef.current = {
         ...liveEventsRef.current,
         [storedSessionId]: nextSessionEvents,
@@ -6978,7 +7077,20 @@ export function AgentWorkspace({
       skipPrompt?: boolean;
     },
   ): Promise<string | undefined> {
-    if (creditActionsDisabledReason && !options?.skipPrompt) {
+    const modelTarget = options?.modelTarget ?? captureSessionModelTarget(explicitSession);
+    const targetCatalogModel = generationModelsRef.current.find(
+      (model) => model.id === modelTarget.selection.modelId,
+    );
+    const targetTextFundingContext: TextFundingModelContext = {
+      activeModelId: modelTarget.selection.modelId || undefined,
+      activeModel: targetCatalogModel,
+      veniceApiKeyConfigured: veniceApiKeyConfiguredRef.current,
+    };
+    if (
+      creditActionsDisabledReason &&
+      !options?.skipPrompt &&
+      shouldBlockTextOnFunding(true, targetTextFundingContext)
+    ) {
       throw new Error(creditActionsDisabledReason);
     }
     const displayContent = options?.displayContent ?? content;
@@ -7008,7 +7120,6 @@ export function AgentWorkspace({
         .replace(/[–—]/g, "-")
         .replace(/^([a-z])/, (match) => match.toUpperCase());
     }
-    const modelTarget = options?.modelTarget ?? captureSessionModelTarget(explicitSession);
     const targetStoredSessionId = modelTarget.targetStoredSessionId ?? undefined;
     let dispatchReservation =
       options?.dispatchReservation ??
@@ -7112,35 +7223,65 @@ export function AgentWorkspace({
     // the mode its session was created with. Without this, one Unrestricted
     // session would leave the runtime unsandboxed under every other
     // session's follow-ups.
-    const { created, gateway, sessionTitle, storedSessionId } = await (async () => {
-      const [nextGateway, nextSessionTitle] = await Promise.all([
-        ensureHermesGateway(
+    const { created, createdUnderProfile, gateway, sessionTitle, storedSessionId } =
+      await (async () => {
+        const [nextGateway, nextSessionTitle] = await Promise.all([
+          ensureHermesGateway(
+            targetStoredSessionId
+              ? sessionUnrestricted(targetStoredSessionId)
+              : fullModeDraftRef.current,
+          ),
+          titlePromise ?? Promise.resolve(undefined),
+          // Re-read the sticky active profile for every brand-new session so an
+          // out-of-band switch (Hermes CLI, upstream dashboard) is honored
+          // without a workspace remount. Runs in parallel with gateway setup
+          // (no added wall-clock) and never throws; the store keeps the
+          // last-known value on failure. Both runtimes share one Hermes home,
+          // so the value is mode-independent.
           targetStoredSessionId
-            ? sessionUnrestricted(targetStoredSessionId)
-            : fullModeDraftRef.current,
-        ),
-        titlePromise ?? Promise.resolve(undefined),
-      ]);
-      const nextCreated = targetStoredSessionId
-        ? undefined
-        : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
-            title: nextSessionTitle ?? fallbackSessionTitle,
-            cols: 96,
-            ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
-          });
-      const nextStoredSessionId =
-        targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
-      if (!nextStoredSessionId) {
-        throw new Error("Hermes did not create a session.");
-      }
-      return {
-        created: nextCreated,
-        gateway: nextGateway,
-        sessionTitle: nextSessionTitle,
-        storedSessionId: nextStoredSessionId,
-      };
-    })().catch(rollbackOptimisticBeforePrompt);
+            ? Promise.resolve()
+            : refreshActiveHermesProfile({
+                mode: fullModeDraftRef.current ? "unrestricted" : "sandboxed",
+              }),
+        ]);
+        const nextUnderProfileName = targetStoredSessionId
+          ? undefined
+          : getActiveHermesProfileName();
+        const underProfile =
+          nextUnderProfileName !== undefined && nextUnderProfileName !== "default";
+        const nextCreated = targetStoredSessionId
+          ? undefined
+          : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
+              title: nextSessionTitle ?? fallbackSessionTitle,
+              cols: 96,
+              // session.create treats `model` as a per-session override.
+              // Under a named profile the override would silently bypass the
+              // profile's own configured text model - the point of profiles -
+              // so it is omitted and the profile's model applies.
+              ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
+              ...(underProfile ? { profile: nextUnderProfileName } : {}),
+            });
+        const nextStoredSessionId =
+          targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
+        if (!nextStoredSessionId) {
+          throw new Error("Hermes did not create a session.");
+        }
+        return {
+          created: nextCreated,
+          createdUnderProfile: underProfile ? nextUnderProfileName : undefined,
+          gateway: nextGateway,
+          sessionTitle: nextSessionTitle,
+          storedSessionId: nextStoredSessionId,
+        };
+      })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
+    if (createdUnderProfile) {
+      await assignSessionToProfile(storedSessionId, createdUnderProfile).catch(
+        rollbackOptimisticBeforePrompt,
+      );
+      profileOwnedSessionIdsRef.current.add(storedSessionId);
+    }
+    const createdSessionModelId = createdUnderProfile ? undefined : targetSessionModelId;
     const activeDispatchReservation =
       dispatchReservation ?? reserveHermesSessionDispatch(storedSessionId);
     dispatchReservation = activeDispatchReservation;
@@ -7174,20 +7315,21 @@ export function AgentWorkspace({
       ensureHermesBridgeSession({
         sessionId: storedSessionId,
         ...(!targetStoredSessionId ? { title: sessionDisplayTitle } : {}),
-        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
       });
     if (optimisticSession) {
       await ensureStoredHermesSession().catch(rollbackOptimisticBeforePrompt);
       migrateOptimisticHermesSession({
+        clearModel: Boolean(createdUnderProfile),
         createdAt: optimisticSession.createdAt,
         displayContent,
         fromSessionId: optimisticSession.id,
-        ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+        ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
         title: sessionDisplayTitle,
         toSessionId: storedSessionId,
       });
     }
-    if (!targetStoredSessionId && !options?.skipPrompt) {
+    if (!targetStoredSessionId && !options?.skipPrompt && !createdUnderProfile) {
       const latestDefaultSelection: SessionModelSelection = {
         modelId: defaultGenerationModelIdRef.current,
         ...(defaultGenerationModelIdRef.current === AUTO_MODEL_ID &&
@@ -7367,7 +7509,7 @@ export function AgentWorkspace({
           started_at: createdAt,
           last_active: createdAt,
           message_count: 1,
-          ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
+          ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
         };
         setHermesSessionItems((current) => {
           const existingSession = current.find((session) => session.id === storedSessionId);
@@ -7778,6 +7920,7 @@ export function AgentWorkspace({
     try {
       const status = await startHermesBridge(undefined, fullMode);
       setBridge(status);
+      await refreshActiveHermesProfile({ status, mode: fullMode ? "unrestricted" : "sandboxed" });
       return status;
     } catch (err) {
       const message = messageFromError(err);
@@ -8404,6 +8547,22 @@ export function AgentWorkspace({
         keepMessageCount: branchSeedMessages.length,
         ...(branchRequestMessageId ? { throughMessageId: branchRequestMessageId } : {}),
       });
+      // A branch belongs with its source conversation: copy the source's
+      // profile mapping so the fork doesn't fall to default in the
+      // profile-scoped chat list (ADR 0031). Best-effort — a missed stamp
+      // surfaces the branch under default, it never loses the conversation.
+      try {
+        const assignments = await listSessionProfiles();
+        const sourceProfile = assignments.find(
+          (assignment) => assignment.sessionId === sessionId,
+        )?.profile;
+        if (sourceProfile && sourceProfile !== "default") {
+          await assignSessionToProfile(result.sessionId, sourceProfile);
+          profileOwnedSessionIdsRef.current.add(result.sessionId);
+        }
+      } catch {
+        // Unmapped branches still appear under default; nothing is lost.
+      }
       try {
         const resumedBranch = await gateway.request<HermesRuntimeSessionResponse>(
           "session.resume",
@@ -8510,7 +8669,7 @@ export function AgentWorkspace({
   }
 
   function pushLiveEvent(key: string, event: JuneHermesEvent) {
-    const nextEvents = [...(liveEventsRef.current[key] ?? []), event].slice(-200);
+    const nextEvents = appendHermesLiveEvent(liveEventsRef.current[key] ?? [], event);
     liveEventsRef.current = {
       ...liveEventsRef.current,
       [key]: nextEvents,
@@ -10467,12 +10626,16 @@ export function AgentWorkspace({
         {heroMode ? null : (
           <AgentScrollToLatestButton scrollRef={agentScrollRef} onJump={scrollTranscriptToLatest} />
         )}
-        {fundingNotice ??
-          (creditActionsDisabledReason ? (
-            <p className="agent-composer-notice" role="status">
-              {creditActionsDisabledReason}
-            </p>
-          ) : null)}
+        {textActionsDisabledReason
+          ? (renderFundingNotice?.({
+              ...textFundingContext,
+              onSelectVeniceModel: openComposerModelPicker,
+            }) ?? (
+              <p className="agent-composer-notice" role="status">
+                {textActionsDisabledReason}
+              </p>
+            ))
+          : null}
         <AnimatePresence>
           {galleryErrors ? (
             // Dev gallery only: the busy nudge is a toast in real use (see
@@ -10843,7 +11006,7 @@ export function AgentWorkspace({
                   disabled={
                     submitting ||
                     importingFiles ||
-                    Boolean(creditActionsDisabledReason) ||
+                    Boolean(textActionsDisabledReason) ||
                     selectedHermesSessionIsProvisional ||
                     imageSlashBlockedByModel ||
                     (!draft.trim() && !attachments.length)
@@ -15837,6 +16000,8 @@ function AgentArtifactPanel({
   const [showSource, setShowSource] = useState(false);
   const [query, setQuery] = useState("");
   const [filterOpen, setFilterOpen] = useState(false);
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const [matchCount, setMatchCount] = useState(0);
   // The slide-in entrance must run once per mount and never again. WebKit
   // replays CSS animations whenever it recreates the renderer (it does this
   // during the sidebar drag's per-frame relayout), which flashed the panel
@@ -15941,6 +16106,35 @@ function AgentArtifactPanel({
   // what tells you content has scrolled up behind it.
   const bodyRef = useRef<HTMLDivElement>(null);
   const fade = useScrollFade(bodyRef);
+
+  // Count the marks that the active view actually rendered. Markdown syntax
+  // can hide source-only text (for example, a link destination), so counting
+  // the raw file would make the ordinal disagree with the navigable matches in
+  // Preview. A changed query, artifact, or Preview/Source mode starts again at
+  // the first visible match.
+  useLayoutEffect(() => {
+    const matches = docHighlight
+      ? bodyRef.current?.querySelectorAll<HTMLElement>("mark[data-search-match-index]")
+      : undefined;
+    setMatchCount(matches?.length ?? 0);
+    setActiveMatchIndex(0);
+  }, [artifactPath, debouncedQuery, docHighlight, preview, showSource]);
+
+  useEffect(() => {
+    if (matchCount === 0) return;
+    const activeMatch = bodyRef.current?.querySelector<HTMLElement>(
+      `mark[data-search-match-index="${activeMatchIndex}"]`,
+    );
+    activeMatch?.scrollIntoView?.({ block: "center", inline: "nearest" });
+  }, [activeMatchIndex, matchCount]);
+
+  const navigateMatches = useCallback(
+    (direction: -1 | 1) => {
+      if (matchCount === 0) return;
+      setActiveMatchIndex((current) => (current + direction + matchCount) % matchCount);
+    },
+    [matchCount],
+  );
   // Re-measure when the panel swaps between the artifact preview and the list,
   // or when the preview content changes (the hook re-wires its observers on the
   // element swap; this catches same-element content changes).
@@ -15992,11 +16186,21 @@ function AgentArtifactPanel({
                 placeholder={filterLabel}
                 aria-label={filterLabel}
                 autoFocus
-                onChange={(event) => setQuery(event.currentTarget.value)}
+                onChange={(event) => {
+                  setQuery(event.currentTarget.value);
+                  setMatchCount(0);
+                  setActiveMatchIndex(0);
+                }}
                 onBlur={() => {
                   if (!query.trim()) setFilterOpen(false);
                 }}
                 onKeyDown={(event) => {
+                  if (artifact && event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    navigateMatches(event.shiftKey ? -1 : 1);
+                    return;
+                  }
                   if (event.key !== "Escape") return;
                   // Esc walks back one step at a time — clear the query,
                   // collapse the filter — before a final Esc (bubbling to
@@ -16006,6 +16210,33 @@ function AgentArtifactPanel({
                   else setFilterOpen(false);
                 }}
               />
+              {artifact && query.trim() ? (
+                <span className="agent-artifact-match-navigation">
+                  <output className="agent-artifact-match-status" aria-live="polite">
+                    {matchCount > 0 ? activeMatchIndex + 1 : 0} of {matchCount}
+                  </output>
+                  <button
+                    type="button"
+                    className="icon-button agent-artifact-match-button"
+                    aria-label="Previous match"
+                    disabled={matchCount === 0}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => navigateMatches(-1)}
+                  >
+                    <IconArrowUp size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-button agent-artifact-match-button"
+                    aria-label="Next match"
+                    disabled={matchCount === 0}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => navigateMatches(1)}
+                  >
+                    <IconArrowDown size={12} />
+                  </button>
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="agent-artifact-filter-clear"
@@ -16088,10 +16319,19 @@ function AgentArtifactPanel({
                 alt={artifact.name}
               />
             ) : preview.kind === "text" && markdown && !showSource ? (
-              <MarkdownContent markdown={preview.text} highlight={docHighlight} />
+              <MarkdownContent
+                markdown={preview.text}
+                highlight={docHighlight}
+                activeHighlightIndex={activeMatchIndex}
+              />
             ) : preview.kind === "text" ? (
               <pre className="agent-artifact-source">
-                {docHighlight ? highlightText(preview.text, docHighlight, "source") : preview.text}
+                {docHighlight
+                  ? highlightText(preview.text, docHighlight, "source", {
+                      activeIndex: activeMatchIndex,
+                      nextIndex: 0,
+                    } satisfies HighlightCursor)
+                  : preview.text}
               </pre>
             ) : (
               <div className="agent-artifact-panel-empty">
