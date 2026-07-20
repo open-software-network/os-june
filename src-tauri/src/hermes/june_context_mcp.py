@@ -270,21 +270,24 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def main() -> None:
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 5:
         raise SystemExit(
             "Usage: june_context_mcp.py <notes.sqlite3> <memory-settings.json> "
-            "<proxy_base_url>"
+            "<active-profile> <proxy_base_url>"
         )
 
     db_path = Path(sys.argv[1]).expanduser()
     settings_path = Path(sys.argv[2]).expanduser()
-    base_url = sys.argv[3].rstrip("/")
+    active_profile_path = Path(sys.argv[3]).expanduser()
+    base_url = sys.argv[4].rstrip("/")
     token = os.environ.get(TOKEN_ENV_VAR, "")
     while True:
         message = read_message()
         if message is None:
             return
-        response = handle_message(db_path, settings_path, base_url, token, message)
+        response = handle_message(
+            db_path, settings_path, active_profile_path, base_url, token, message
+        )
         if response is not None:
             write_message(response)
 
@@ -328,6 +331,7 @@ def write_message(payload: dict[str, Any]) -> None:
 def handle_message(
     db_path: Path,
     settings_path: Path,
+    active_profile_path: Path,
     base_url: str,
     token: str,
     message: dict[str, Any],
@@ -354,6 +358,7 @@ def handle_message(
         return call_tool(
             db_path,
             settings_path,
+            active_profile_path,
             base_url,
             token,
             request_id,
@@ -368,6 +373,7 @@ def handle_message(
 def call_tool(
     db_path: Path,
     settings_path: Path,
+    active_profile_path: Path,
     base_url: str,
     token: str,
     request_id: Any,
@@ -375,17 +381,18 @@ def call_tool(
 ) -> dict[str, Any]:
     name = params.get("name")
     arguments = params.get("arguments") or {}
+    profile = active_profile(active_profile_path)
     try:
         if name == "search_meeting_notes":
-            result = search_meeting_notes(db_path, arguments)
+            result = search_meeting_notes(db_path, profile, arguments)
         elif name == "search_dictation_history":
-            result = search_dictation_history(db_path, arguments)
+            result = search_dictation_history(db_path, profile, arguments)
         elif name == "get_meeting_note":
-            result = get_meeting_note(db_path, arguments)
+            result = get_meeting_note(db_path, profile, arguments)
         elif name == "save_memory":
             result = proxy_json(base_url, token, "/memory/save", arguments)
         elif name == "list_memories":
-            result = list_memories(db_path, settings_path, arguments)
+            result = list_memories(db_path, settings_path, profile, arguments)
         elif name == "forget_memory":
             result = proxy_json(base_url, token, "/memory/forget", arguments)
         else:
@@ -420,6 +427,14 @@ def call_tool(
     )
 
 
+def active_profile(path: Path) -> str:
+    try:
+        profile = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return "default"
+    return profile or "default"
+
+
 def response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
@@ -428,7 +443,9 @@ def error_response(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
-def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+def search_meeting_notes(
+    db_path: Path, profile: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     query = str(arguments.get("query") or "").strip()
     limit = bounded_limit(arguments.get("limit"))
 
@@ -436,7 +453,7 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
         return {"query": query, "items": [], "message": "June notes database does not exist yet."}
 
     where = ""
-    params: list[Any] = []
+    params: list[Any] = [profile]
     if query:
         needle = f"%{query.lower()}%"
         where = """
@@ -471,6 +488,7 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
                 n.updated_at,
                 {TRANSCRIPT_TEXT_SUBQUERIES}
             FROM notes n
+            WHERE n.profile = ?
         )
         {where}
         ORDER BY updated_at DESC, created_at DESC, note_rowid DESC
@@ -502,7 +520,9 @@ def search_meeting_notes(db_path: Path, arguments: dict[str, Any]) -> dict[str, 
     return {"query": query, "count": len(items), "items": items}
 
 
-def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+def get_meeting_note(
+    db_path: Path, profile: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     note_id = str(arguments.get("note_id") or "").strip()
     if not note_id:
         return {"noteId": note_id, "found": False, "message": "note_id is required."}
@@ -524,13 +544,13 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
             n.updated_at,
             {TRANSCRIPT_TEXT_SUBQUERIES}
         FROM notes n
-        WHERE n.id = ?
+        WHERE n.id = ? AND n.profile = ?
         LIMIT 1
     """
 
     turn_rows: list[sqlite3.Row] = []
     with connect_readonly(db_path) as conn:
-        row = conn.execute(sql, [note_id]).fetchone()
+        row = conn.execute(sql, [note_id, profile]).fetchone()
         if row is not None and row["visible_turn_rows"]:
             turn_rows = conn.execute(LABELED_TURN_TEXT_SQL, [note_id]).fetchall()
 
@@ -566,7 +586,9 @@ def get_meeting_note(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[str, Any]:
+def search_dictation_history(
+    db_path: Path, profile: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     query = str(arguments.get("query") or "").strip()
     limit = bounded_limit(arguments.get("limit"))
 
@@ -580,8 +602,8 @@ def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[s
     # Honor the same 7-day retention window the app enforces when listing
     # dictation history (db/repositories.rs:list_dictation_history), so stale
     # rows that have not been pruned yet are never surfaced back to the agent.
-    clauses = ["created_at >= ?"]
-    params: list[Any] = [dictation_history_cutoff_timestamp()]
+    clauses = ["profile = ?", "created_at >= ?"]
+    params: list[Any] = [profile, dictation_history_cutoff_timestamp()]
     if query:
         clauses.append("lower(coalesce(text, '')) LIKE ?")
         params.append(f"%{query.lower()}%")
@@ -613,7 +635,10 @@ def search_dictation_history(db_path: Path, arguments: dict[str, Any]) -> dict[s
 
 
 def list_memories(
-    db_path: Path, settings_path: Path, arguments: dict[str, Any]
+    db_path: Path,
+    settings_path: Path,
+    profile: str,
+    arguments: dict[str, Any],
 ) -> dict[str, Any]:
     disabled = memory_disabled_result(settings_path)
     if disabled:
@@ -635,7 +660,7 @@ def list_memories(
     with connect_readonly(db_path) as conn:
         conn.execute("BEGIN")
         if project_id is not None:
-            scope_error = memory_scope_error(conn, project_id)
+            scope_error = memory_scope_error(conn, profile, project_id)
             if scope_error:
                 conn.rollback()
                 return scope_error
@@ -643,33 +668,32 @@ def list_memories(
             rows = conn.execute(
                 """SELECT id, folder_id, content, created_at
                    FROM memories
-                   WHERE folder_id IS NULL
+                   WHERE profile = ? AND folder_id IS NULL
                    ORDER BY created_at DESC, rowid DESC
                    LIMIT ? OFFSET ?""",
-                [limit + 1, offset],
+                [profile, limit + 1, offset],
             ).fetchall()
         elif include_global:
             rows = conn.execute(
                 """SELECT id, folder_id, content, created_at
                    FROM memories
-                   WHERE folder_id = ? OR folder_id IS NULL
+                   WHERE profile = ? AND (folder_id = ? OR folder_id IS NULL)
                    ORDER BY created_at DESC, rowid DESC
                    LIMIT ? OFFSET ?""",
-                [project_id, limit + 1, offset],
+                [profile, project_id, limit + 1, offset],
             ).fetchall()
         else:
             rows = conn.execute(
                 """SELECT id, folder_id, content, created_at
                    FROM memories
-                   WHERE folder_id = ?
+                   WHERE profile = ? AND folder_id = ?
                    ORDER BY created_at DESC, rowid DESC
                    LIMIT ? OFFSET ?""",
-                [project_id, limit + 1, offset],
+                [profile, project_id, limit + 1, offset],
             ).fetchall()
         conn.commit()
 
     return memory_page(rows, limit, offset)
-
 
 def memory_page(
     rows: list[sqlite3.Row], limit: int, offset: int
@@ -703,13 +727,14 @@ def memory_project_id(
 
 
 def memory_scope_error(
-    conn: sqlite3.Connection, project_id: str | None
+    conn: sqlite3.Connection, profile: str, project_id: str | None
 ) -> dict[str, Any] | None:
     if project_id is None:
         return None
     row = conn.execute(
-        "SELECT memory_disabled FROM folders WHERE id = ? AND deleted_at IS NULL",
-        [project_id],
+        """SELECT memory_disabled FROM folders
+           WHERE id = ? AND profile = ? AND deleted_at IS NULL""",
+        [project_id, profile],
     ).fetchone()
     if row is None:
         return memory_error(

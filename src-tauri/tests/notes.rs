@@ -17,7 +17,7 @@ async fn repos() -> Repositories {
 #[tokio::test]
 async fn updates_title_body_and_active_tab() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
 
     let updated = repos
         .update_note(
@@ -37,19 +37,25 @@ async fn updates_title_body_and_active_tab() {
 #[tokio::test]
 async fn deleting_note_removes_it_from_all_note_lists() {
     let repos = repos().await;
-    let folder = repos.create_folder("Work", None).await.expect("folder");
+    let folder = repos
+        .create_folder("default", "Work", None)
+        .await
+        .expect("folder");
     let note = repos
-        .create_note(Some(folder.id.clone()))
+        .create_note("default", Some(folder.id.clone()))
         .await
         .expect("note");
 
     repos.delete_note(&note.id).await.expect("delete note");
 
-    let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
+    let all_notes = repos
+        .list_notes("default", None, 50, None)
+        .await
+        .expect("all notes");
     assert!(all_notes.items.is_empty());
 
     let folder_notes = repos
-        .list_notes(Some(folder.id), 50, None)
+        .list_notes("default", Some(folder.id), 50, None)
         .await
         .expect("folder notes");
     assert!(folder_notes.items.is_empty());
@@ -58,17 +64,20 @@ async fn deleting_note_removes_it_from_all_note_lists() {
 #[tokio::test]
 async fn deleting_notes_removes_multiple_notes_from_all_note_lists() {
     let repos = repos().await;
-    let folder = repos.create_folder("Work", None).await.expect("folder");
+    let folder = repos
+        .create_folder("default", "Work", None)
+        .await
+        .expect("folder");
     let first = repos
-        .create_note(Some(folder.id.clone()))
+        .create_note("default", Some(folder.id.clone()))
         .await
         .expect("first note");
     let second = repos
-        .create_note(Some(folder.id.clone()))
+        .create_note("default", Some(folder.id.clone()))
         .await
         .expect("second note");
     let retained = repos
-        .create_note(Some(folder.id.clone()))
+        .create_note("default", Some(folder.id.clone()))
         .await
         .expect("retained note");
 
@@ -77,12 +86,15 @@ async fn deleting_notes_removes_multiple_notes_from_all_note_lists() {
         .await
         .expect("delete notes");
 
-    let all_notes = repos.list_notes(None, 50, None).await.expect("all notes");
+    let all_notes = repos
+        .list_notes("default", None, 50, None)
+        .await
+        .expect("all notes");
     assert_eq!(all_notes.items.len(), 1);
     assert_eq!(all_notes.items[0].id, retained.id);
 
     let folder_notes = repos
-        .list_notes(Some(folder.id), 50, None)
+        .list_notes("default", Some(folder.id), 50, None)
         .await
         .expect("folder notes");
     assert_eq!(folder_notes.items.len(), 1);
@@ -92,7 +104,7 @@ async fn deleting_notes_removes_multiple_notes_from_all_note_lists() {
 #[tokio::test]
 async fn generated_note_returns_to_notes_tab() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .update_note(&note.id, None, None, Some("transcription".to_string()))
         .await
@@ -117,7 +129,7 @@ async fn generated_note_returns_to_notes_tab() {
 #[tokio::test]
 async fn generated_note_derives_title_when_provider_returns_placeholder() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
 
     let generated = repos
         .set_generated_note(
@@ -138,7 +150,7 @@ async fn generated_note_derives_title_when_provider_returns_placeholder() {
 #[tokio::test]
 async fn generated_note_derives_title_from_all_section_headings() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
 
     let generated = repos
         .set_generated_note(
@@ -159,7 +171,7 @@ async fn generated_note_derives_title_from_all_section_headings() {
 #[tokio::test]
 async fn generated_note_appends_to_existing_generated_content() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -184,7 +196,7 @@ async fn generated_note_appends_to_existing_generated_content() {
 #[tokio::test]
 async fn generated_note_does_not_duplicate_full_regenerated_content() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -212,7 +224,7 @@ async fn generated_note_does_not_duplicate_full_regenerated_content() {
 #[tokio::test]
 async fn generated_note_strips_placeholder_heading_when_appending() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -236,7 +248,7 @@ async fn generated_note_strips_placeholder_heading_when_appending() {
 #[tokio::test]
 async fn generated_note_strips_existing_note_prefix_when_appending() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -264,7 +276,7 @@ async fn generated_note_strips_existing_note_prefix_when_appending() {
 #[tokio::test]
 async fn generated_note_strips_manual_note_echo_when_appending() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -306,7 +318,7 @@ async fn generated_note_strips_manual_note_echo_when_appending() {
 #[tokio::test]
 async fn generated_note_replaces_existing_session_block() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
 
     repos
         .set_generated_note_for_session(
@@ -339,7 +351,7 @@ async fn generated_note_replaces_existing_session_block() {
 #[tokio::test]
 async fn generated_note_composes_distinct_session_blocks_in_order() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
 
     repos
         .set_generated_note_for_session(
@@ -372,7 +384,7 @@ async fn generated_note_composes_distinct_session_blocks_in_order() {
 #[tokio::test]
 async fn generated_session_block_strips_manual_note_echo_before_composing() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note_for_session(
             &note.id,
@@ -424,7 +436,7 @@ async fn generated_session_block_strips_manual_note_echo_before_composing() {
 #[tokio::test]
 async fn first_generated_session_block_strips_initial_manual_note_echo() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .update_note(
             &note.id,
@@ -459,7 +471,7 @@ async fn first_generated_session_block_strips_initial_manual_note_echo() {
 #[tokio::test]
 async fn generated_session_block_strips_generic_note_heading_after_manual_echo() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note_for_session(
             &note.id,
@@ -502,7 +514,7 @@ async fn generated_session_block_strips_generic_note_heading_after_manual_echo()
 #[tokio::test]
 async fn generated_note_appends_to_existing_edited_content() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -539,7 +551,7 @@ async fn generated_note_appends_to_existing_edited_content() {
 #[tokio::test]
 async fn generated_note_does_not_duplicate_full_regenerated_edited_content() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     repos
         .set_generated_note(
             &note.id,
@@ -580,7 +592,7 @@ async fn generated_note_does_not_duplicate_full_regenerated_edited_content() {
 #[tokio::test]
 async fn get_note_returns_transcript_and_audio_metadata() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let session_id = "session-1";
     repos
         .create_recording_session(
@@ -621,7 +633,7 @@ async fn get_note_returns_transcript_and_audio_metadata() {
 #[tokio::test]
 async fn discarded_recording_no_longer_exposes_retryable_audio() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let session_id = "session-1";
     repos
         .create_recording_session(
@@ -653,7 +665,7 @@ async fn discarded_recording_no_longer_exposes_retryable_audio() {
 #[tokio::test]
 async fn get_note_returns_only_timed_source_transcript_rows() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let session_id = "session-1";
     repos
         .create_recording_session(
@@ -713,7 +725,7 @@ async fn get_note_returns_only_timed_source_transcript_rows() {
 #[tokio::test]
 async fn get_note_returns_failed_source_transcript_reason() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let session_id = "session-1";
     repos
         .create_recording_session(
@@ -764,7 +776,7 @@ async fn get_note_returns_failed_source_transcript_reason() {
 #[tokio::test]
 async fn get_note_orders_source_transcripts_by_session_then_turn() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let first_audio_id = create_session_audio(&repos, &note.id, "session-1").await;
     let second_audio_id = create_session_audio(&repos, &note.id, "session-2").await;
 
@@ -836,7 +848,7 @@ async fn get_note_orders_source_transcripts_by_session_then_turn() {
 #[tokio::test]
 async fn successful_source_turns_for_session_exclude_failed_and_empty_rows() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let audio_id = create_session_audio(&repos, &note.id, "session-1").await;
 
     repos
@@ -900,7 +912,7 @@ async fn successful_source_turns_for_session_exclude_failed_and_empty_rows() {
 #[tokio::test]
 async fn source_turn_upsert_replaces_failed_retry_with_success() {
     let repos = repos().await;
-    let note = repos.create_note(None).await.expect("note");
+    let note = repos.create_note("default", None).await.expect("note");
     let audio_id = create_session_audio(&repos, &note.id, "session-1").await;
 
     let failed = repos

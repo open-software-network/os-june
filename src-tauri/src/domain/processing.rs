@@ -3861,7 +3861,7 @@ mod tests {
             .await
             .expect("migrations");
         let repos = Repositories::new(pool);
-        let note = repos.create_note(None).await.expect("note");
+        let note = repos.create_note("default", None).await.expect("note");
         let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
@@ -3888,7 +3888,7 @@ mod tests {
             .await
             .expect("migrations");
         let repos = Repositories::new(pool);
-        let note = repos.create_note(None).await.expect("note");
+        let note = repos.create_note("default", None).await.expect("note");
         let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
@@ -3988,7 +3988,7 @@ mod tests {
             .await
             .expect("migrations");
         let repos = Repositories::new(pool);
-        let note = repos.create_note(None).await.expect("note");
+        let note = repos.create_note("default", None).await.expect("note");
         let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
@@ -4156,7 +4156,7 @@ mod tests {
             .await
             .expect("migrations");
         let repos = Repositories::new(pool);
-        let note = repos.create_note(None).await.expect("note");
+        let note = repos.create_note("default", None).await.expect("note");
         let recording_session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(
@@ -5502,7 +5502,7 @@ mod tests {
             .await
             .expect("migrations");
         let repos = Repositories::new(pool);
-        let note = repos.create_note(None).await.expect("note");
+        let note = repos.create_note("default", None).await.expect("note");
         let session_id = format!("session-{}", uuid::Uuid::new_v4());
         repos
             .create_recording_session(

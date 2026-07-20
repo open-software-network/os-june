@@ -27,6 +27,7 @@ import {
 
 const FOCUSED_ELSEWHERE: AgentAttentionContext = {
   away: false,
+  agentHudEnabled: false,
   viewingSession: false,
   captureActive: false,
   soundsEnabled: true,
@@ -53,6 +54,13 @@ describe("agent notifications", () => {
         away: true,
       }),
     ).toEqual({ cue: "needsInput", showNative: true });
+    expect(
+      agentAttentionDecision("needsInput", {
+        ...FOCUSED_ELSEWHERE,
+        away: true,
+        agentHudEnabled: true,
+      }),
+    ).toEqual({ cue: "needsInput", showNative: false });
     expect(
       agentAttentionDecision("ready", {
         ...FOCUSED_ELSEWHERE,
@@ -165,6 +173,46 @@ describe("agent notifications", () => {
       sessionId: "session-3",
     });
     expect(tauriMocks.sendAppNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
+    expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it("lets an enabled agent HUD own the settled visual while keeping the local cue", async () => {
+    await expect(
+      notifyAgentRunSettled(
+        {
+          sessionId: "session-hud-ready",
+          title: "Make a PDF",
+          summary: "June finished.",
+        },
+        { ...FOCUSED_ELSEWHERE, away: true, agentHudEnabled: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(notificationMocks.playAgentSound).toHaveBeenCalledWith("ready");
+    expect(notificationMocks.isPermissionGranted).not.toHaveBeenCalled();
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
+    expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "waitingForUser",
+    "failed",
+  ] as const)("lets an enabled agent HUD own the %s visual while keeping the local cue", async (status) => {
+    await expect(
+      notifyAgentSessionStatus(
+        {
+          sessionId: `session-hud-${status}`,
+          status,
+          title: "Make a PDF",
+          summary: "June needs attention.",
+        },
+        { ...FOCUSED_ELSEWHERE, away: true, agentHudEnabled: true },
+      ),
+    ).resolves.toBe(true);
+
+    expect(notificationMocks.playAgentSound).toHaveBeenCalledWith("needsInput");
+    expect(notificationMocks.isPermissionGranted).not.toHaveBeenCalled();
+    expect(tauriMocks.sendAppNotification).not.toHaveBeenCalled();
     expect(notificationMocks.sendNotification).not.toHaveBeenCalled();
   });
 

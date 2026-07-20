@@ -18,6 +18,7 @@ import {
   type AgentChatPart,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
+import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
 import { messageFromError } from "../../lib/errors";
 import { attachmentStateFrom } from "../../lib/hermes-image-attach";
 import {
@@ -54,6 +55,7 @@ import {
 } from "../agent/composer/ModelPicker";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
+import type { TextFundingNoticeContext } from "../account/FundingNotice";
 import type { NoteChat, NoteChatAttachment } from "./useNoteChat";
 
 /** Note-tailored presets, shown as the main session view's preset chips (icon
@@ -201,7 +203,7 @@ export function NoteChatPanel({
   chat,
   recordingActive,
   creditActionsDisabledReason,
-  fundingNotice,
+  renderFundingNotice,
   onClose,
   onOpenInAgent,
 }: {
@@ -214,10 +216,9 @@ export function NoteChatPanel({
    * never lands in the note); this only tunes the tooltip to say so. */
   recordingActive?: boolean;
   creditActionsDisabledReason?: string;
-  /** The persistent out-of-credits notice, pre-wired by App. When present it
-   * replaces the plain composer-notice paragraph; the disabled reason keeps
-   * gating actions and tooltips. */
-  fundingNotice?: ReactNode;
+  /** App owns the account and billing action; the composer owns the active
+   * session model and picker. */
+  renderFundingNotice?: (context: TextFundingNoticeContext) => ReactNode;
   onClose: () => void;
   onOpenInAgent: (sessionId: string | undefined) => void;
 }) {
@@ -389,6 +390,18 @@ export function NoteChatPanel({
       ? selectedModel(models, modelId)
       : (unavailableLocalGenerationOption(modelId) ?? selectedModel(models, modelId))
     : undefined;
+  const resolvedTextModel = models.find((candidate) => candidate.id === modelId);
+  const textFundingContext: TextFundingModelContext = {
+    activeModelId: modelId || undefined,
+    activeModel: resolvedTextModel,
+    veniceApiKeyConfigured,
+  };
+  const textActionsDisabledReason = shouldBlockTextOnFunding(
+    Boolean(creditActionsDisabledReason),
+    textFundingContext,
+  )
+    ? creditActionsDisabledReason
+    : undefined;
 
   function saveGenerationSelection(write: () => Promise<unknown>): Promise<void> {
     const save = generationSelectionSaveChainRef.current.then(async () => {
@@ -555,7 +568,7 @@ export function NoteChatPanel({
   }, [turns.length, lastTurnSize, working, fade.update]);
 
   async function handleSend(text: string) {
-    if (working || importing || creditActionsDisabledReason) return;
+    if (working || importing || textActionsDisabledReason) return;
     setComposerError(null);
     const accepted = await submit(text, attachments);
     if (accepted) {
@@ -679,12 +692,20 @@ export function NoteChatPanel({
           ) : null}
         </div>
         <footer className="note-chat-composer">
-          {fundingNotice ??
-            (creditActionsDisabledReason ? (
-              <p className="agent-composer-notice" role="status">
-                {creditActionsDisabledReason}
-              </p>
-            ) : null)}
+          {textActionsDisabledReason
+            ? (renderFundingNotice?.({
+                ...textFundingContext,
+                onSelectVeniceModel: () => {
+                  setModelFlyout(null);
+                  setModelSearch("");
+                  setModelOpen(true);
+                },
+              }) ?? (
+                <p className="agent-composer-notice" role="status">
+                  {textActionsDisabledReason}
+                </p>
+              ))
+            : null}
           {/* The actual chatbox: the agent composer's box/attach/toolbar/model/
            * send classes, wired to the panel's session. */}
           <div className="agent-composer-box">
@@ -782,7 +803,7 @@ export function NoteChatPanel({
                     className="agent-composer-send"
                     aria-label="Send message"
                     disabled={
-                      Boolean(creditActionsDisabledReason) ||
+                      Boolean(textActionsDisabledReason) ||
                       importing ||
                       (draftEmpty && !attachments.length)
                     }

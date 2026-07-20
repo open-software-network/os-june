@@ -27,6 +27,8 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
+import { IconCircleCheck } from "central-icons/IconCircleCheck";
+import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { IconGithub } from "central-icons/IconGithub";
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
@@ -89,7 +91,13 @@ import type {
   RecordingStatusDto,
   ReferralSummary,
 } from "../../lib/tauri";
-import { osAccountsReferralSummary } from "../../lib/tauri";
+import { listSessionProfiles, osAccountsReferralSummary } from "../../lib/tauri";
+import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
+import {
+  sessionMatchesProfile,
+  sessionProfileMap,
+  type SessionProfileMap,
+} from "../../lib/session-profile-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
@@ -109,6 +117,17 @@ import {
 } from "../../lib/date-format";
 
 const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
+
+/** Full session→profile map from the local store; null when unavailable
+ * (outside the Tauri shell, or a transient read failure) so callers keep the
+ * last-known map instead of clearing it. */
+async function fetchSessionProfileMap(): Promise<SessionProfileMap | null> {
+  try {
+    return sessionProfileMap(await listSessionProfiles());
+  } catch {
+    return null;
+  }
+}
 
 export type SidebarView =
   | "notes"
@@ -146,6 +165,10 @@ type SidebarProps = {
   /** Project membership per stored session id; drives the session menu's
    * project items (optional so tests can skip the plumbing). */
   sessionFolderIds?: Record<string, string[]>;
+  /** stored session id -> completed_at ISO. Completed sessions are filed under
+   * a collapsible Completed section instead of the active list. */
+  completedSessionIds?: Record<string, string>;
+  onToggleSessionCompleted?: (sessionId: string, completed: boolean) => void;
   onOpenSessionMoveDialog?: (sessionId: string) => void;
   onRemoveSessionFromFolder?: (sessionId: string, folderId: string) => void;
   recoverableNoteIds?: ReadonlySet<string>;
@@ -335,7 +358,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       {
         id: "profile-builder",
-        label: "Profile builder",
+        label: "Profiles",
         icon: <IconMagicWand size={16} />,
       },
       {
@@ -369,7 +392,6 @@ export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<SettingsTa
   "taps",
   "toolsets",
   "bundles",
-  "profile-builder",
   "integrations-health",
   "import-export",
 ]);
@@ -392,6 +414,8 @@ export function Sidebar({
   onRenameAgentSession,
   onSelectAgentSession,
   sessionFolderIds,
+  completedSessionIds = {},
+  onToggleSessionCompleted,
   onOpenSessionMoveDialog,
   onRemoveSessionFromFolder,
   recoverableNoteIds,
@@ -424,12 +448,27 @@ export function Sidebar({
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  // Chats belong to the profile they were created under (ADR 0031): the
+  // sidebar filters its list through the session→profile map and re-filters
+  // live when the active profile switches, without waiting for a re-fetch.
+  const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap | null>(null);
+  const activeHermesProfileName = useActiveHermesProfileName();
+  const profileAgentSessions = useMemo(
+    () =>
+      sessionProfiles === null
+        ? []
+        : allAgentSessions.filter((session) =>
+            sessionMatchesProfile(session, sessionProfiles, activeHermesProfileName),
+          ),
+    [allAgentSessions, sessionProfiles, activeHermesProfileName],
+  );
   // __emptyStates() preview (dev console): the agent section renders its
   // "No sessions yet" line as a fresh install would, real data untouched.
-  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : allAgentSessions;
+  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : profileAgentSessions;
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
+  const [completedCollapsed, setCompletedCollapsed] = useState(true);
   const [selectedAgentSessionId, setSelectedAgentSessionId] = useState<string>();
   const [agentSessionToDelete, setAgentSessionToDelete] = useState<HermesSessionInfo | null>(null);
   const [agentSessionDeleteError, setAgentSessionDeleteError] = useState<string | null>(null);
@@ -510,20 +549,33 @@ export function Sidebar({
   const pinnedAgentSessions = useMemo(
     () =>
       filteredAgentSessions
-        .filter((session) => pinnedAgentSessionIds.has(session.id))
+        .filter(
+          (session) => pinnedAgentSessionIds.has(session.id) && !completedSessionIds[session.id],
+        )
         .sort(
           (a, b) =>
             pinnedSessionOrder(pinnedAgentSessionOrder, a.id) -
             pinnedSessionOrder(pinnedAgentSessionOrder, b.id),
         ),
-    [filteredAgentSessions, pinnedAgentSessionIds, pinnedAgentSessionOrder],
+    [filteredAgentSessions, pinnedAgentSessionIds, pinnedAgentSessionOrder, completedSessionIds],
   );
   const visibleAgentSessions = useMemo(
     () =>
       filteredAgentSessions
-        .filter((session) => !pinnedAgentSessionIds.has(session.id))
+        .filter(
+          (session) => !pinnedAgentSessionIds.has(session.id) && !completedSessionIds[session.id],
+        )
         .slice(0, AGENT_SIDEBAR_SESSION_LIMIT),
-    [filteredAgentSessions, pinnedAgentSessionIds],
+    [filteredAgentSessions, pinnedAgentSessionIds, completedSessionIds],
+  );
+  const completedAgentSessions = useMemo(
+    () =>
+      filteredAgentSessions
+        .filter((session) => Boolean(completedSessionIds[session.id]))
+        .sort((a, b) =>
+          (completedSessionIds[b.id] ?? "").localeCompare(completedSessionIds[a.id] ?? ""),
+        ),
+    [filteredAgentSessions, completedSessionIds],
   );
 
   async function loadReferralSummary() {
@@ -822,14 +874,14 @@ export function Sidebar({
 
       if (
         sidebarDevStateSnapshotRef.current &&
-        agentSessions[0]?.id === SIDEBAR_DEV_SESSION_IDS.selected
+        allAgentSessions[0]?.id === SIDEBAR_DEV_SESSION_IDS.selected
       ) {
         return;
       }
 
       if (!sidebarDevStateSnapshotRef.current) {
         sidebarDevStateSnapshotRef.current = {
-          sessions: agentSessions,
+          sessions: allAgentSessions,
           selectedSessionId: selectedAgentSessionId,
           workingSessionIds: new Set(workingAgentSessionIds),
           waitingSessionIds: new Set(waitingAgentSessionIds),
@@ -864,7 +916,7 @@ export function Sidebar({
     window.addEventListener(SIDEBAR_DEV_STATES_EVENT, onDevStates);
     return () => window.removeEventListener(SIDEBAR_DEV_STATES_EVENT, onDevStates);
   }, [
-    agentSessions,
+    allAgentSessions,
     deletingAgentSessionIds,
     onChangeView,
     query,
@@ -942,9 +994,13 @@ export function Sidebar({
     let retryTimeout: number | undefined;
 
     function loadAgentSessions(attempt: number) {
-      listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT })
-        .then((sessions) => {
+      Promise.all([
+        listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT }),
+        fetchSessionProfileMap(),
+      ])
+        .then(([sessions, profiles]) => {
           if (!cancelled) {
+            if (profiles) setSessionProfiles(profiles);
             setAgentSessions((current) => (current.length > 0 ? current : sessions));
             if (sessions.length > 0) {
               emitAgentSessionsChanged({
@@ -980,7 +1036,13 @@ export function Sidebar({
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT));
+      // Refresh the session→profile map before applying the list so a session
+      // just stamped to a named profile doesn't flash out of the filtered
+      // list; a failed refresh keeps the last-known map.
+      void fetchSessionProfileMap().then((profiles) => {
+        if (profiles) setSessionProfiles(profiles);
+        setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT));
+      });
       setSelectedAgentSessionId(detail.selectedSessionId);
       const nextWorking = new Set(detail.workingSessionIds);
       const nextWaiting = new Set(detail.waitingSessionIds ?? []);
@@ -1332,6 +1394,50 @@ export function Sidebar({
               </div>
             </div>
           </section>
+
+          {completedAgentSessions.length > 0 ? (
+            <section
+              className="sidebar-section sidebar-completed-section"
+              aria-label="Completed agent sessions"
+            >
+              <div className="section-title section-title-with-action">
+                <button
+                  type="button"
+                  className="section-title-label section-title-open"
+                  aria-expanded={!completedCollapsed}
+                  onClick={() => setCompletedCollapsed((v) => !v)}
+                >
+                  Completed
+                </button>
+                <span className="folders-count">{completedAgentSessions.length}</span>
+              </div>
+              {completedCollapsed ? null : (
+                <div className="notes-nav sidebar-completed-list">
+                  {completedAgentSessions.map((session) => (
+                    <AgentSessionRow
+                      key={session.id}
+                      session={session}
+                      selected={activeView === "agent" && selectedAgentSessionId === session.id}
+                      working={workingAgentSessionIds.has(session.id)}
+                      waiting={waitingAgentSessionIds.has(session.id)}
+                      unread={unreadAgentSessionIds.has(session.id)}
+                      deleting={deletingAgentSessionIds.has(session.id)}
+                      renaming={renamingAgentSessionId === session.id}
+                      dateFormat={dateFormat}
+                      menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
+                      onSelect={() => {
+                        setSelectedAgentSessionId(session.id);
+                        onSelectAgentSession(session);
+                      }}
+                      onRename={(title) => onRenameAgentSession(session.id, title)}
+                      onRenameEnd={() => setRenamingAgentSessionId(null)}
+                      onOpenMenu={(anchor) => openMenuForAgentSession(session.id, anchor)}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ) : null}
         </>
       )}
 
@@ -1401,11 +1507,21 @@ export function Sidebar({
       {menu?.kind === "agent-session" && menuAgentSession ? (
         <AgentSessionContextMenu
           pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
+          completed={Boolean(completedSessionIds[menuAgentSession.id])}
           deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
           right={menu.right}
           top={menu.top}
           folderId={sessionFolderIds?.[menuAgentSession.id]?.[0]}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
+          onToggleCompleted={
+            onToggleSessionCompleted
+              ? () =>
+                  onToggleSessionCompleted(
+                    menuAgentSession.id,
+                    !completedSessionIds[menuAgentSession.id],
+                  )
+              : undefined
+          }
           onRename={() => setRenamingAgentSessionId(menuAgentSession.id)}
           onMoveToProject={
             onOpenSessionMoveDialog ? () => onOpenSessionMoveDialog(menuAgentSession.id) : undefined
@@ -2234,11 +2350,13 @@ function AgentSessionRow({
 
 function AgentSessionContextMenu({
   pinned,
+  completed,
   deleting,
   right,
   top,
   folderId,
   onTogglePinned,
+  onToggleCompleted,
   onRename,
   onMoveToProject,
   onRemoveFromProject,
@@ -2246,11 +2364,13 @@ function AgentSessionContextMenu({
   onClose,
 }: {
   pinned: boolean;
+  completed: boolean;
   deleting: boolean;
   right: number;
   top: number;
   folderId?: string;
   onTogglePinned: () => void;
+  onToggleCompleted?: () => void;
   onRename: () => void;
   onMoveToProject?: () => void;
   onRemoveFromProject?: (folderId: string) => void;
@@ -2275,6 +2395,19 @@ function AgentSessionContextMenu({
         {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
         {pinned ? "Unpin session" : "Pin session"}
       </button>
+      {onToggleCompleted ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onToggleCompleted();
+            onClose();
+          }}
+        >
+          {completed ? <IconArrowUndoUp size={14} /> : <IconCircleCheck size={14} />}
+          {completed ? "Mark as active" : "Mark as complete"}
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"

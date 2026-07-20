@@ -358,6 +358,10 @@ function startSettlementIfReady(run: AgentRunMonitor) {
         title: run.title,
         runMonitorGeneration: run.generation,
         summary: "June finished.",
+        // Exclude the run that is about to be retired below. The HUD uses the
+        // global count to sweep anonymous pending rows only when no other
+        // monitored run can still own one of them.
+        activeCount: Math.max(0, runs.size - 1),
       });
       finishRun(run);
     },

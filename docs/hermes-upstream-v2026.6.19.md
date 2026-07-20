@@ -16,7 +16,7 @@ finishing a managed runtime install. See
 [ADR 0009](adr/0009-hermes-config-shared-ownership-merge.md),
 [ADR 0025](adr/0025-targeted-hermes-approval-protocol.md),
 [ADR 0027](adr/0027-june-owned-project-memory-store.md), and
-[ADR 0030](adr/0030-approval-safe-hermes-transport-handoff.md).
+[ADR 0033](adr/0033-approval-safe-hermes-transport-handoff.md).
 
 The patch preserves MCP `RequestContext.request_id`, derives an opaque stable
 approval id, and coalesces a still-pending logical request retried after an MCP
@@ -193,7 +193,7 @@ No required app code migration was found for the existing June agent, skills, me
 - Expose Automation Blueprints by deciding how they fit with June's Routines editor instead of routing users to raw cron fields.
 - Expose image editing by wiring existing file/image attachments into the upstream `image_generate` edit inputs.
 - Expose background subagent watch handles by adding UI for pending work, completion events, and reopened sessions.
-- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces.
+- Decide whether upstream dashboard profile builder and Skills Hub browsing should remain hidden behind June-native settings or become first-class June surfaces. (Resolved for profiles in JUN-145/JUN-210: profiles are a first-class June-native settings surface — list, switch, delete, create — with new sessions following the active profile; see ADR 0030. Skills Hub browsing remains open.)
 
 ## Compatibility matrix
 

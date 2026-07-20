@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   checkRecordingSourceReadiness,
+  downloadNoteAudio,
   ensureHermesBridgeGateway,
   finishRecording,
   getNote,
@@ -44,6 +45,20 @@ describe("Tauri command contracts", () => {
         editedContent: "Manual notes",
         activeTab: "transcription",
       },
+    });
+  });
+
+  it("downloads note audio through a note-scoped request", async () => {
+    const response = {
+      path: "/tmp/First note audio.wav",
+      fileName: "First note audio.wav",
+      sourceCount: 1,
+    };
+    mocks.invoke.mockResolvedValue(response);
+
+    await expect(downloadNoteAudio("note-1")).resolves.toEqual(response);
+    expect(mocks.invoke).toHaveBeenCalledWith("download_note_audio", {
+      request: { noteId: "note-1" },
     });
   });
 

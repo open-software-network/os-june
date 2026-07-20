@@ -338,6 +338,12 @@
    * red stays --record on purpose. */
   --warm-soft: color-mix(in oklch, var(--brand) 16%, var(--card));
   --warm-strong: color-mix(in oklch, var(--brand) 88%, black);
+  /* In-document search needs two visible emphasis levels without changing the
+   * text color. Passive matches stay quiet enough to scan as a set; the active
+   * match gets a stronger fill and inset edge for keyboard navigation. */
+  --search-match: color-mix(in oklch, var(--brand) 28%, var(--card));
+  --search-match-active: color-mix(in oklch, var(--brand) 48%, var(--card));
+  --search-match-active-ring: color-mix(in oklch, var(--brand) 70%, var(--foreground));
   /* New-session hero wash — the warm gradient pooling at the bottom of the
    * intro screen, with a 1px inset rim that keeps its edge crisp against the
    * shell. The brand tint works over both cards (a subtle glow in dark), but
@@ -496,6 +502,9 @@
    * foreground. Both still derive from --brand so theming cascades. */
   --warm-soft: color-mix(in oklch, var(--brand) 30%, var(--card));
   --warm-strong: color-mix(in oklch, var(--brand) 55%, white);
+  --search-match: color-mix(in oklch, var(--brand) 42%, var(--card));
+  --search-match-active: color-mix(in oklch, var(--brand) 62%, var(--card));
+  --search-match-active-ring: color-mix(in oklch, var(--brand) 70%, white);
   /* See the light-theme note: the wash tint carries over, the rim becomes a
    * faint white inner highlight (kin to this theme's --shadow-inset). */
   --hero-wash-rim: oklch(100% 0 none / 8%);

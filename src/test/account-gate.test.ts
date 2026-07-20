@@ -6,6 +6,7 @@ import {
   shouldOpenPortalForDepletedBalance,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
+  shouldBlockTextOnFunding,
 } from "../lib/account-gate";
 import type { AccountStatus } from "../lib/tauri";
 
@@ -159,6 +160,96 @@ describe("shouldBlockOnFunding", () => {
   it("allows unknown credit snapshots and lets metered actions decide", () => {
     expect(shouldBlockOnFunding(signedIn({ balance: { usdMillis: 0 } }))).toBe(false);
     expect(shouldBlockOnFunding(signedIn())).toBe(false);
+  });
+});
+
+describe("shouldBlockTextOnFunding", () => {
+  const veniceModel = {
+    id: "zai-org-glm-5-2",
+    provider: "venice",
+    capabilities: ["supportsFunctionCalling"],
+  };
+
+  it("allows an exact concrete Venice catalog model when a Venice key is configured", () => {
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: veniceModel.id,
+        activeModel: veniceModel,
+        veniceApiKeyConfigured: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps Auto on June credits even if its catalog provider were mislabeled", () => {
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: "open-software/auto",
+        activeModel: {
+          id: "open-software/auto",
+          provider: "venice",
+          capabilities: ["supportsFunctionCalling"],
+        },
+        veniceApiKeyConfigured: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("fails closed without a key or an exact matching Venice catalog entry", () => {
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: veniceModel.id,
+        activeModel: veniceModel,
+        veniceApiKeyConfigured: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: "venice/looks-valid-but-is-unknown",
+        veniceApiKeyConfigured: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: veniceModel.id,
+        activeModel: {
+          id: "another-model",
+          provider: "venice",
+          capabilities: ["supportsFunctionCalling"],
+        },
+        veniceApiKeyConfigured: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: "phala-model",
+        activeModel: {
+          id: "phala-model",
+          provider: "phala",
+          capabilities: ["supportsFunctionCalling"],
+        },
+        veniceApiKeyConfigured: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldBlockTextOnFunding(true, {
+        activeModelId: "venice-without-tools",
+        activeModel: {
+          id: "venice-without-tools",
+          provider: "venice",
+          capabilities: [],
+        },
+        veniceApiKeyConfigured: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not invent a text block when the general funding gate is open", () => {
+    expect(
+      shouldBlockTextOnFunding(false, {
+        activeModelId: "unknown",
+        veniceApiKeyConfigured: false,
+      }),
+    ).toBe(false);
   });
 });
 

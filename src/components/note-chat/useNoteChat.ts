@@ -10,6 +10,10 @@ import {
 } from "../../lib/agent-chat-runtime";
 import { withTimeout } from "../../lib/async-timeout";
 import { releaseComputerUseRunsForSession } from "../../lib/computer-use-run-leases";
+import {
+  getActiveHermesProfileName,
+  refreshActiveHermesProfile,
+} from "../../lib/active-hermes-profile";
 import { messageFromError } from "../../lib/errors";
 import {
   listHermesSessions,
@@ -88,6 +92,7 @@ import {
   type HermesAttachmentState,
 } from "../../lib/hermes-image-attach";
 import {
+  assignSessionToProfile,
   hermesBridgeImageDataUrl,
   hermesBridgeSessionMessages,
   hermesBridgeStatus,
@@ -2315,6 +2320,7 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
       status = await startHermesBridge(undefined, false);
       connection = hermesConnectionForMode(status, false);
     }
+    await refreshActiveHermesProfile({ status, mode: "sandboxed" });
     const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
     if (!sharedGateway) {
@@ -3352,7 +3358,19 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         const gateway = await connectGateway(true);
         throwIfSubmissionCancelled();
         if (!gateway) throw new Error("Hermes gateway is not connected.");
-        if (!capturedModelSelection && defaultModelSelectionSnapshot) {
+        // Read after connectGateway so its refreshActiveHermesProfile has
+        // reconciled the sticky pointer.
+        const activeProfile = getActiveHermesProfileName();
+        // The global default is June's model selection, not a per-chat pick.
+        // Under a named profile it must not ride session.create as a
+        // per-session override - that would silently bypass the profile's own
+        // text model. An explicit note-chat pick still applies: the user chose
+        // it for this chat.
+        if (
+          !capturedModelSelection &&
+          defaultModelSelectionSnapshot &&
+          activeProfile === "default"
+        ) {
           capturedModelSelection = await defaultModelSelectionSnapshot;
           throwIfSubmissionCancelled();
           capturedHermesModelId = hermesModelIdForSelection(capturedModelSelection);
@@ -3378,6 +3396,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             title: noteTitle.trim() || "Note chat",
             cols: 96,
             ...(capturedHermesModelId ? { model: capturedHermesModelId } : {}),
+            ...(activeProfile !== "default" ? { profile: activeProfile } : {}),
           });
           throwIfSubmissionCancelled();
           activeStoredSessionId = created.stored_session_id ?? created.session_id;
@@ -3416,6 +3435,11 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             setStoredSessionId(activeStoredSessionId);
           }
           rememberNoteChatSession(noteId, activeStoredSessionId);
+          if (activeProfile !== "default") {
+            // The chat list scopes by the session→profile map (ADR 0031): an
+            // unstamped named-profile chat would surface under default.
+            await assignSessionToProfile(activeStoredSessionId, activeProfile);
+          }
           notifyNoteChatContinuity({
             noteId,
             storedSessionId: activeStoredSessionId,

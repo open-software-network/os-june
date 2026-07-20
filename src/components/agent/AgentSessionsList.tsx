@@ -1,6 +1,8 @@
 import { IconCheckmark2Medium } from "central-icons-filled/IconCheckmark2Medium";
+import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
@@ -40,6 +42,10 @@ type AgentSessionsListProps = {
   sessionFolderIds: Record<string, string[]>;
   workingSessionIds?: ReadonlySet<string>;
   waitingSessionIds?: ReadonlySet<string>;
+  /** stored session id -> completed_at ISO. Completed sessions move to a
+   * collapsible Completed group instead of the active list. */
+  completedSessionIds?: Record<string, string>;
+  onToggleCompleted?: (sessionId: string, completed: boolean) => void;
   onSelectSession: (session: HermesSessionInfo) => void;
   onNewSession: () => void;
   /** stored session id (not the runtime session id). */
@@ -55,6 +61,7 @@ export type AgentSessionsListHandle = {
 
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
 const NO_SESSIONS: HermesSessionInfo[] = [];
+const EMPTY_COMPLETED: Record<string, string> = {};
 
 export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessionsListProps>(
   function AgentSessionsList(
@@ -64,6 +71,8 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
       sessionFolderIds,
       workingSessionIds = EMPTY_SESSION_IDS,
       waitingSessionIds = EMPTY_SESSION_IDS,
+      completedSessionIds = EMPTY_COMPLETED,
+      onToggleCompleted,
       onSelectSession,
       onNewSession,
       onRenameSession,
@@ -81,6 +90,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
     const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+    const [completedCollapsed, setCompletedCollapsed] = useState(true);
     const [exit, setExit] = useState<null | "slide" | "fade">(null);
     const exitCauseRef = useRef<"slide" | "fade">("fade");
 
@@ -106,19 +116,38 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
           .includes(normalized),
       );
     }, [sortedSessions, query, waitingSessionIds, workingSessionIds]);
+    const activeSessions = useMemo(
+      () => filteredSessions.filter((session) => !completedSessionIds[session.id]),
+      [filteredSessions, completedSessionIds],
+    );
+    const completedSessions = useMemo(
+      () =>
+        filteredSessions
+          .filter((session) => Boolean(completedSessionIds[session.id]))
+          .sort((a, b) =>
+            (completedSessionIds[b.id] ?? "").localeCompare(completedSessionIds[a.id] ?? ""),
+          ),
+      [filteredSessions, completedSessionIds],
+    );
+    // Bulk selection acts on the UNFILTERED set of non-completed sessions: a
+    // completed session is never counted/moved/deleted (JUN-203 review), but a
+    // selection must survive a search that hides it — like NotesList, the search
+    // query only affects what's visible, not what's selected. Completed sessions
+    // are excluded here (not just from the visible list) so a session marked
+    // complete while selected leaves the selection.
     const selectedSessionIds = useMemo(
       () =>
         sortedSessions
-          .filter((session) => selectedIds.has(session.id))
+          .filter((session) => selectedIds.has(session.id) && !completedSessionIds[session.id])
           .map((session) => session.id),
-      [sortedSessions, selectedIds],
+      [sortedSessions, selectedIds, completedSessionIds],
     );
-    const visibleSelectedCount = filteredSessions.filter((session) =>
+    const visibleSelectedCount = activeSessions.filter((session) =>
       selectedIds.has(session.id),
     ).length;
     const selectedCount = selectedSessionIds.length;
     const hasUnselectedVisibleSessions =
-      filteredSessions.length > 0 && visibleSelectedCount < filteredSessions.length;
+      activeSessions.length > 0 && visibleSelectedCount < activeSessions.length;
 
     const lastCountRef = useRef(selectedCount);
     if (selectedCount > 0) lastCountRef.current = selectedCount;
@@ -141,17 +170,23 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     const barMounted = selectedCount > 0 || exit !== null;
     const isExiting = selectedCount === 0 && exit !== null;
 
+    // Prune the selection against the UNFILTERED session set: drop ids that were
+    // deleted or marked complete (completing a selected session must not leave it
+    // in the bulk selection), but never drop a session merely because the current
+    // search hides it — the selection persists across searches.
     useEffect(() => {
-      const sessionIds = new Set(sessions.map((session) => session.id));
+      const keepIds = new Set(
+        sessions.filter((session) => !completedSessionIds[session.id]).map((session) => session.id),
+      );
       setSelectedIds((previous) => {
-        const next = new Set([...previous].filter((id) => sessionIds.has(id)));
+        const next = new Set([...previous].filter((id) => keepIds.has(id)));
         return next.size === previous.size ? previous : next;
       });
       if (sessions.length === 0) {
         setConfirmBulkDelete(false);
         setBulkDeleteError(null);
       }
-    }, [sessions]);
+    }, [sessions, completedSessionIds]);
 
     function toggleSelected(sessionId: string) {
       setSelectedIds((previous) => {
@@ -174,7 +209,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     function selectAllVisibleSessions() {
       setSelectedIds((previous) => {
         const next = new Set(previous);
-        for (const session of filteredSessions) {
+        for (const session of activeSessions) {
           next.add(session.id);
         }
         return next;
@@ -184,7 +219,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     function deselectAllVisibleSessions() {
       setSelectedIds((previous) => {
         const next = new Set(previous);
-        for (const session of filteredSessions) {
+        for (const session of activeSessions) {
           next.delete(session.id);
         }
         return next;
@@ -271,32 +306,79 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
               </button>
             }
           />
-        ) : filteredSessions.length === 0 ? (
+        ) : activeSessions.length === 0 && completedSessions.length === 0 ? (
           <div className="folders-empty">
             <p>No sessions match “{query.trim()}”.</p>
           </div>
         ) : (
-          <ul
-            className="folder-notes all-notes-list"
-            role="list"
-            data-selecting={selectedCount > 0}
-          >
-            {filteredSessions.map((session) => (
-              <AgentSessionListRow
-                key={session.id}
-                session={session}
-                projectName={projectNameFor(session.id, sessionFolderIds, folders)}
-                currentFolderId={sessionFolderIds[session.id]?.[0]}
-                status={sessionStatus(session.id, workingSessionIds, waitingSessionIds)}
-                checked={selectedIds.has(session.id)}
-                onToggleSelected={() => toggleSelected(session.id)}
-                onSelect={() => onSelectSession(session)}
-                onRename={(title) => onRenameSession(session.id, title)}
-                onOpenMove={() => onOpenMoveDialog(session.id)}
-                onRemoveFromProject={(folderId) => onRemoveFromProject(session.id, folderId)}
-              />
-            ))}
-          </ul>
+          <>
+            {activeSessions.length > 0 ? (
+              <ul
+                className="folder-notes all-notes-list"
+                role="list"
+                data-selecting={selectedCount > 0}
+              >
+                {activeSessions.map((session) => (
+                  <AgentSessionListRow
+                    key={session.id}
+                    session={session}
+                    projectName={projectNameFor(session.id, sessionFolderIds, folders)}
+                    currentFolderId={sessionFolderIds[session.id]?.[0]}
+                    status={sessionStatus(session.id, workingSessionIds, waitingSessionIds)}
+                    checked={selectedIds.has(session.id)}
+                    completed={false}
+                    onToggleCompleted={
+                      onToggleCompleted ? () => onToggleCompleted(session.id, true) : undefined
+                    }
+                    onToggleSelected={() => toggleSelected(session.id)}
+                    onSelect={() => onSelectSession(session)}
+                    onRename={(title) => onRenameSession(session.id, title)}
+                    onOpenMove={() => onOpenMoveDialog(session.id)}
+                    onRemoveFromProject={(folderId) => onRemoveFromProject(session.id, folderId)}
+                  />
+                ))}
+              </ul>
+            ) : null}
+
+            {completedSessions.length > 0 ? (
+              <section className="agent-sessions-completed" aria-label="Completed sessions">
+                <button
+                  type="button"
+                  className="agent-sessions-completed-toggle"
+                  aria-expanded={!completedCollapsed}
+                  onClick={() => setCompletedCollapsed((v) => !v)}
+                >
+                  Completed
+                  <span className="folders-count">{completedSessions.length}</span>
+                </button>
+                {completedCollapsed ? null : (
+                  <ul className="folder-notes all-notes-list" role="list">
+                    {completedSessions.map((session) => (
+                      <AgentSessionListRow
+                        key={session.id}
+                        session={session}
+                        projectName={projectNameFor(session.id, sessionFolderIds, folders)}
+                        currentFolderId={sessionFolderIds[session.id]?.[0]}
+                        status={sessionStatus(session.id, workingSessionIds, waitingSessionIds)}
+                        checked={selectedIds.has(session.id)}
+                        completed
+                        onToggleCompleted={
+                          onToggleCompleted ? () => onToggleCompleted(session.id, false) : undefined
+                        }
+                        onToggleSelected={() => toggleSelected(session.id)}
+                        onSelect={() => onSelectSession(session)}
+                        onRename={(title) => onRenameSession(session.id, title)}
+                        onOpenMove={() => onOpenMoveDialog(session.id)}
+                        onRemoveFromProject={(folderId) =>
+                          onRemoveFromProject(session.id, folderId)
+                        }
+                      />
+                    ))}
+                  </ul>
+                )}
+              </section>
+            ) : null}
+          </>
         )}
 
         {barMounted ? (
@@ -423,6 +505,8 @@ function AgentSessionListRow({
   currentFolderId,
   status,
   checked,
+  completed,
+  onToggleCompleted,
   onToggleSelected,
   onSelect,
   onRename,
@@ -434,6 +518,8 @@ function AgentSessionListRow({
   currentFolderId?: string;
   status?: AgentSessionListStatus;
   checked: boolean;
+  completed?: boolean;
+  onToggleCompleted?: () => void;
   onToggleSelected: () => void;
   onSelect: () => void;
   onRename: (title: string) => void;
@@ -508,22 +594,27 @@ function AgentSessionListRow({
     <li>
       <div
         className="folder-note-row all-notes-row agent-session-row"
-        data-selected={checked}
+        data-selected={!completed && checked}
         data-has-actions="true"
         data-menu-open={menu !== null}
         data-status={status}
       >
-        <label className="folder-note-checkbox">
-          <input
-            type="checkbox"
-            checked={checked}
-            aria-label={`Select ${title}`}
-            onChange={onToggleSelected}
-          />
-          <span className="folder-note-select-box" aria-hidden>
-            {checked ? <IconCheckmark2Medium size={10} /> : null}
-          </span>
-        </label>
+        {/* Completed sessions are excluded from bulk selection entirely, so they
+         * render no checkbox (a completed row can't be selected, moved, or
+         * bulk-deleted — JUN-203 review). */}
+        {completed ? null : (
+          <label className="folder-note-checkbox">
+            <input
+              type="checkbox"
+              checked={checked}
+              aria-label={`Select ${title}`}
+              onChange={onToggleSelected}
+            />
+            <span className="folder-note-select-box" aria-hidden>
+              {checked ? <IconCheckmark2Medium size={10} /> : null}
+            </span>
+          </label>
+        )}
         <button type="button" className="folder-note-main" onClick={onSelect}>
           {rowMain}
         </button>
@@ -582,6 +673,19 @@ function AgentSessionListRow({
               <IconPencil size={14} />
               Rename
             </button>
+            {onToggleCompleted ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenu(null);
+                  onToggleCompleted();
+                }}
+              >
+                {completed ? <IconArrowUndoUp size={14} /> : <IconCircleCheck size={14} />}
+                {completed ? "Mark as active" : "Mark as complete"}
+              </button>
+            ) : null}
             <button
               type="button"
               role="menuitem"

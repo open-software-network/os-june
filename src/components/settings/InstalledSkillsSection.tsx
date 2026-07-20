@@ -14,6 +14,7 @@ import {
   platformRestrictions,
   skillActivation,
   skillCategory,
+  skillLifecyclePolicy,
   skillPath,
   sourceMeta,
   useInstalledSkills,
@@ -35,6 +36,7 @@ import { SettingsPageHeader } from "./AppSettings";
 import { SkillDetailSection } from "./SkillDetailSection";
 import { SkillLifecycleActions } from "./SkillLifecycleActions";
 import { SetupStatusBadge, SkillSetupSection } from "./SkillSetupSection";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 /** Sentinel for the "all categories" filter chip. */
 const ALL_CATEGORIES = "__all__";
@@ -67,12 +69,38 @@ export function InstalledSkillsSection({
   mode = "sandboxed",
   onOpenSkill,
 }: InstalledSkillsSectionProps) {
-  const state = useInstalledSkills(mode);
-  const setup = useSkillsSetupOverview(mode);
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return (
+      <InstalledSkillsView
+        state={PENDING_INSTALLED_SKILLS_STATE}
+        mode={mode}
+        onOpenSkill={onOpenSkill}
+        setup={PENDING_SKILLS_SETUP_OVERVIEW}
+        lifecycle={PENDING_SKILL_LIFECYCLE}
+      />
+    );
+  }
+  return (
+    <InstalledSkillsSectionReady
+      mode={mode}
+      profile={activeProfile.name}
+      onOpenSkill={onOpenSkill}
+    />
+  );
+}
+
+function InstalledSkillsSectionReady({
+  mode,
+  profile,
+  onOpenSkill,
+}: InstalledSkillsSectionProps & { mode: HermesAdminMode; profile: string }) {
+  const state = useInstalledSkills(mode, profile);
+  const setup = useSkillsSetupOverview(mode, profile);
   // Lifecycle actions (update / audit / uninstall / reset) run on their own
   // engine; on a successful mutation they refresh the inventory through this
   // callback so the list + toolsets reflect the change.
-  const lifecycle = useSkillLifecycle(mode, undefined, state.refresh);
+  const lifecycle = useSkillLifecycle(mode, profile, state.refresh);
   // The detail surface is a sub-view OFF this section (matching how the setup
   // panel and hub drawer are surfaced), not a top-level tab. When the host
   // supplies its own `onOpenSkill`, we defer to it; otherwise we open the
@@ -102,6 +130,43 @@ export function InstalledSkillsSection({
     />
   );
 }
+
+const CLEAN_LIFECYCLE = {
+  state: "clean",
+  label: "Up to date",
+  detail: "No pending changes.",
+  canRestart: false,
+} as const;
+
+const PENDING_INSTALLED_SKILLS_STATE: InstalledSkillsState = {
+  status: "loading",
+  skills: [],
+  pending: new Set<string>(),
+  retryable: false,
+  lifecycle: CLEAN_LIFECYCLE,
+  notifications: [],
+  refresh: () => {},
+  toggle: () => {},
+  dismissNotification: () => {},
+};
+
+const PENDING_SKILLS_SETUP_OVERVIEW: SkillsSetupOverview = {
+  loaded: false,
+  badgeFor: () => undefined,
+  refresh: () => {},
+};
+
+const PENDING_SKILL_LIFECYCLE: SkillLifecycleState = {
+  mode: "sandboxed",
+  profile: "default",
+  actions: new Map(),
+  sweeping: false,
+  policyFor: skillLifecyclePolicy,
+  run: () => {},
+  checkForUpdates: () => {},
+  updateAll: () => {},
+  clearAction: () => {},
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed

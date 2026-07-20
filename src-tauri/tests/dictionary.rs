@@ -29,7 +29,12 @@ async fn dictation_history_keeps_recent_items_and_prunes_old_items() {
     .expect("insert old history item");
 
     let created = repos
-        .create_dictation_history_item("  Recent dictation.  ", Some("en".to_string()), "openai")
+        .create_dictation_history_item(
+            "default",
+            "  Recent dictation.  ",
+            Some("en".to_string()),
+            "openai",
+        )
         .await
         .expect("create history item")
         .expect("non-empty dictation should be stored");
@@ -37,7 +42,7 @@ async fn dictation_history_keeps_recent_items_and_prunes_old_items() {
     assert_eq!(created.text, "Recent dictation.");
 
     let history = repos
-        .list_dictation_history(50)
+        .list_dictation_history("default", 50)
         .await
         .expect("list history");
     assert_eq!(history.retention_days, 7);
@@ -50,12 +55,12 @@ async fn dictation_history_keeps_recent_items_and_prunes_old_items() {
 async fn deletes_a_dictation_history_item() {
     let repos = repos().await;
     let keep = repos
-        .create_dictation_history_item("Keep this one.", None, "openai")
+        .create_dictation_history_item("default", "Keep this one.", None, "openai")
         .await
         .expect("create keep item")
         .expect("non-empty dictation should be stored");
     let remove = repos
-        .create_dictation_history_item("Remove this one.", None, "openai")
+        .create_dictation_history_item("default", "Remove this one.", None, "openai")
         .await
         .expect("create remove item")
         .expect("non-empty dictation should be stored");
@@ -66,7 +71,7 @@ async fn deletes_a_dictation_history_item() {
         .expect("delete history item");
 
     let history = repos
-        .list_dictation_history(50)
+        .list_dictation_history("default", 50)
         .await
         .expect("list history after delete");
     assert_eq!(history.items.len(), 1);

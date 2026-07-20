@@ -57,11 +57,13 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2.10.1"
 thiserror = "2.0"
+tempfile = "3.14"
 tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 urlencoding = "2"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
+zip = { version = "=4.2.0", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -121,6 +123,3 @@ windows = { version = "0.61", features = [
     "Win32_System_IO",
     "Win32_System_Threading",
 ] }
-
-[dev-dependencies]
-tempfile = "3.14"

@@ -240,6 +240,24 @@ describe("agent run monitor", () => {
       title: "Prepare launch notes",
       runMonitorGeneration: 1,
       summary: "June finished.",
+      activeCount: 0,
+    });
+  });
+
+  it("reports other monitored runs when one run settles", async () => {
+    const firstGeneration = startRun();
+    startRun({ storedSessionId: "stored-2", runtimeSessionId: "runtime-2" });
+    await flush();
+
+    expect(markAgentRunSucceeded("stored-1", firstGeneration)).toBe(true);
+    await observeTwoIdleSnapshots();
+
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledWith({
+      sessionId: "stored-1",
+      title: "Prepare launch notes",
+      runMonitorGeneration: firstGeneration,
+      summary: "June finished.",
+      activeCount: 1,
     });
   });
 
@@ -277,6 +295,7 @@ describe("agent run monitor", () => {
       title: "Prepare launch notes",
       runMonitorGeneration: 1,
       summary: "June finished.",
+      activeCount: 0,
     });
   });
 
@@ -300,6 +319,7 @@ describe("agent run monitor", () => {
       title: "Prepare launch notes",
       runMonitorGeneration: replacementGeneration,
       summary: "June finished.",
+      activeCount: 0,
     });
   });
 
@@ -863,6 +883,7 @@ describe("agent run monitor", () => {
       title: "New run",
       runMonitorGeneration: newGeneration,
       summary: "June finished.",
+      activeCount: 0,
     });
   });
 

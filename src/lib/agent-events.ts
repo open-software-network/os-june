@@ -43,6 +43,7 @@ export type AgentRunSettledDetail = {
   /** App-lifetime monitor generation that owns this completion. */
   runMonitorGeneration: number;
   summary: string;
+  activeCount: number;
 };
 
 export type AgentRunStartedDetail = {
