@@ -324,6 +324,24 @@ describe("OnboardingFlow", () => {
     expect(mocks.createRoutine).not.toHaveBeenCalled();
   });
 
+  it("prefers an already scheduled copy over resuming a dormant duplicate", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    setOnboardingResumeStep("morning-brief");
+    mocks.listRoutines.mockResolvedValue([
+      { job_id: "job-old", name: "Morning brief", state: "paused" },
+      { job_id: "job-live", name: "Morning brief", state: "scheduled" },
+    ]);
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
+    await user.click(screen.getByRole("button", { name: "Enable morning brief" }));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(mocks.resumeRoutine).not.toHaveBeenCalled();
+    expect(mocks.createRoutine).not.toHaveBeenCalled();
+  });
+
   it("completes without a routine when the morning brief is declined", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn();

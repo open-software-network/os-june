@@ -44,12 +44,17 @@ export function MorningBriefStep({ onContinue }: { onContinue: () => void }) {
       // proceeds (a duplicate is recoverable under Routines, a hard block
       // here is not).
       const existing = await listRoutines().catch(() => []);
-      const match = existing.find((routine) => routine.name === template.name);
-      if (match && match.state !== "scheduled") {
+      const matches = existing.filter((routine) => routine.name === template.name);
+      const scheduled = matches.find((routine) => routine.state === "scheduled");
+      const dormant = matches.find((routine) => routine.state !== "scheduled");
+      if (scheduled) {
+        // Already running: nothing to do (and never resume a dormant
+        // duplicate next to an active copy).
+      } else if (dormant) {
         // The user paused (or a run exhausted) an earlier copy; clicking
         // Enable means "make it run again", not "leave it dormant".
-        await resumeRoutine(match.job_id);
-      } else if (!match) {
+        await resumeRoutine(dormant.job_id);
+      } else {
         await createRoutine({
           prompt: template.prompt,
           schedule: template.schedule,
