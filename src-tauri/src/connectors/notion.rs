@@ -287,6 +287,7 @@ struct TokenErrorBody {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RefreshFailureKind {
     ReconnectRequired,
+    ReconnectRequiredWithFreshRegistration,
     Retryable,
 }
 
@@ -641,6 +642,9 @@ async fn refresh_connected_token(
     let refreshed = match refresh_stored_connection(&stored).await {
         Ok(refreshed) => refreshed,
         Err(error) if error.code == "notion_reconnect_required" => {
+            if reconnect_requires_fresh_registration(&error) {
+                store::store(&clear_dynamic_registration(stored)).await?;
+            }
             record_reconnect_required(app).await;
             return Err(error);
         }
@@ -715,9 +719,10 @@ async fn refresh_token_request(
 
 fn classify_refresh_failure(status: u16, error_code: Option<&str>) -> RefreshFailureKind {
     match error_code {
-        Some("invalid_grant" | "invalid_client" | "unauthorized_client") => {
-            RefreshFailureKind::ReconnectRequired
+        Some("invalid_client" | "unauthorized_client") => {
+            RefreshFailureKind::ReconnectRequiredWithFreshRegistration
         }
+        Some("invalid_grant") => RefreshFailureKind::ReconnectRequired,
         _ if status >= 500 => RefreshFailureKind::Retryable,
         _ => RefreshFailureKind::Retryable,
     }
@@ -750,9 +755,41 @@ fn reconnect_required() -> AppError {
     )
 }
 
+fn reconnect_required_with_fresh_registration() -> AppError {
+    let mut error = reconnect_required();
+    error.details = Some(serde_json::json!({
+        "freshRegistrationRequired": true,
+    }));
+    error
+}
+
+fn reconnect_requires_fresh_registration(error: &AppError) -> bool {
+    error
+        .details
+        .as_ref()
+        .and_then(|details| details.get("freshRegistrationRequired"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn clear_dynamic_registration(stored: StoredNotionConnection) -> StoredNotionConnection {
+    StoredNotionConnection {
+        access_token: stored.access_token.clone(),
+        refresh_token: stored.refresh_token.clone(),
+        expires_at_unix: stored.expires_at_unix,
+        client_id: String::new(),
+        client_secret: None,
+        endpoint: stored.endpoint.clone(),
+        registration_redirect_uri: None,
+    }
+}
+
 fn refresh_failed(kind: RefreshFailureKind, error_code: Option<String>) -> AppError {
     match kind {
         RefreshFailureKind::ReconnectRequired => reconnect_required(),
+        RefreshFailureKind::ReconnectRequiredWithFreshRegistration => {
+            reconnect_required_with_fresh_registration()
+        }
         RefreshFailureKind::Retryable => {
             let message = match error_code {
                 Some(code) => format!("Could not refresh the Notion connection ({code})."),
@@ -2169,12 +2206,41 @@ mod tests {
 
     #[test]
     fn classify_refresh_failure_reconnects_for_definitive_oauth_auth_errors() {
-        for code in ["invalid_grant", "invalid_client", "unauthorized_client"] {
+        assert_eq!(
+            classify_refresh_failure(400, Some("invalid_grant")),
+            RefreshFailureKind::ReconnectRequired
+        );
+        for code in ["invalid_client", "unauthorized_client"] {
             assert_eq!(
                 classify_refresh_failure(400, Some(code)),
-                RefreshFailureKind::ReconnectRequired
+                RefreshFailureKind::ReconnectRequiredWithFreshRegistration
             );
         }
+    }
+
+    #[test]
+    fn client_auth_refresh_failures_request_fresh_registration() {
+        let error = refresh_failed(
+            RefreshFailureKind::ReconnectRequiredWithFreshRegistration,
+            Some("invalid_client".to_string()),
+        );
+
+        assert_eq!(error.code, "notion_reconnect_required");
+        assert!(reconnect_requires_fresh_registration(&error));
+        assert!(!reconnect_requires_fresh_registration(&reconnect_required()));
+    }
+
+    #[test]
+    fn clear_dynamic_registration_preserves_tokens_only() {
+        let cleared = clear_dynamic_registration(stored_connection());
+
+        assert_eq!(cleared.access_token, "access");
+        assert_eq!(cleared.refresh_token.as_deref(), Some("refresh"));
+        assert_eq!(cleared.expires_at_unix, Some(900));
+        assert_eq!(cleared.endpoint, MCP_ENDPOINT);
+        assert!(cleared.client_id.is_empty());
+        assert!(cleared.client_secret.is_none());
+        assert!(cleared.registration_redirect_uri.is_none());
     }
 
     #[test]
