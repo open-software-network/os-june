@@ -770,7 +770,8 @@ function statusSubject(record: StatusRecord) {
 async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {
   const menuOpen = state.menuOpen;
   const visible = state.enabled && hasEntries;
-  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}`;
+  const bounds = visibleHudBounds();
+  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}:${bounds.width ?? 0}:${bounds.height ?? 0}`;
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
   if (!visible) {
@@ -780,17 +781,20 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   }
   cancelWindowHide();
   cancelPendingResize();
-  const height = nativeWindowHeight(expanded, rowCount, menuOpen);
+  const height = bounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
   const apply = async () => {
+    const latestBounds = visibleHudBounds();
     await agentHudSetLayout({
       expanded,
       cardCount: rowCount,
       ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
+      ...latestBounds,
     }).catch(() => {});
     if (!windowShown) {
       await agentHudShow().catch(() => {});
       windowShown = true;
     }
+    lastWindowHeight = latestBounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
   };
   // Growing: the window must be at full size before the CSS reveal plays.
   // Shrinking: the reveal collapses first, then the window snaps down under
@@ -804,7 +808,35 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   } else {
     await apply();
   }
-  lastWindowHeight = height;
+}
+
+function visibleHudBounds(): { width?: number; height?: number } {
+  if (!surface) return {};
+  if (state.menuOpen && (!menu || menu.offsetWidth <= 0 || menu.offsetHeight <= 0)) return {};
+  const expandedSurfaceHeight =
+    hud?.dataset.expanded === "true" && pill && stack
+      ? pill.offsetHeight + stack.scrollHeight
+      : surface.offsetHeight;
+  // grid-template-rows animates the reveal from 0fr to 1fr. scrollHeight
+  // exposes the final row height even while offsetHeight is still mid-
+  // transition, so the native window grows before the reveal can be clipped.
+  const surfaceHeight = Math.max(surface.offsetHeight, expandedSurfaceHeight);
+  // FLIP writes the final expanded width inline before the transition starts.
+  // offsetWidth reports an in-flight value during that transition, so prefer
+  // the known target to keep the native window from clipping the reveal.
+  const animatedExpandedWidth =
+    hud?.dataset.expanded === "true" ? Number.parseFloat(surface.style.width) : 0;
+  const surfaceWidth = Math.max(
+    surface.offsetWidth,
+    Number.isFinite(animatedExpandedWidth) ? animatedExpandedWidth : 0,
+  );
+  const width = Math.max(surfaceWidth, state.menuOpen && menu ? menu.offsetWidth : 0);
+  const height = Math.max(
+    surface.offsetTop + surfaceHeight,
+    state.menuOpen && menu ? menu.offsetTop + menu.offsetHeight : 0,
+  );
+  if (width <= 0 || height <= 0) return {};
+  return { width: Math.ceil(width), height: Math.ceil(height) };
 }
 
 /* Mirrors agent_hud_window_size in agent_hud.rs, only to tell growth from

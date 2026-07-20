@@ -999,6 +999,8 @@ export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   contextMenuOpen?: boolean;
+  width?: number;
+  height?: number;
 }) {
   return invoke<void>("agent_hud_set_layout", { request: input });
 }

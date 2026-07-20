@@ -25,6 +25,8 @@ pub struct AgentHudLayoutRequest {
     expanded: bool,
     card_count: Option<u32>,
     context_menu_open: Option<bool>,
+    width: Option<f64>,
+    height: Option<f64>,
 }
 
 pub fn setup(app: &mut tauri::App) {
@@ -40,7 +42,9 @@ pub fn agent_hud_show(app: AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window(AGENT_HUD_WINDOW_LABEL) else {
         return Ok(());
     };
-    position_agent_hud_window(&window)?;
+    // agent_hud_set_layout sizes and positions the panel before every show.
+    // Re-reading outer_size() here can briefly return the previous width on
+    // macOS and undo that right-edge anchoring.
     #[cfg(target_os = "macos")]
     {
         // The HUD is a passive status surface. Tauri's show() does
@@ -94,14 +98,19 @@ pub fn agent_hud_set_layout(app: AppHandle, request: AgentHudLayoutRequest) -> R
         request.expanded,
         request.card_count.unwrap_or(0),
         request.context_menu_open.unwrap_or(false),
+        request.width,
+        request.height,
     );
-    // The HUD is top-right anchored with a fixed native width, so resizing
-    // only changes height and does not need an immediate reposition. If the
-    // width becomes dynamic, reposition with the requested size here instead
-    // of reading outer_size(), which can lag behind set_size() on macOS.
+    let logical_size = LogicalSize::new(width, height);
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let physical_size: PhysicalSize<u32> = logical_size.to_physical(scale);
     window
-        .set_size(Size::Logical(LogicalSize::new(width, height)))
-        .map_err(|error| error.to_string())
+        .set_size(Size::Logical(logical_size))
+        .map_err(|error| error.to_string())?;
+    // Width now follows the rendered surface so the transparent part of the
+    // native panel cannot cover nearby controls. Re-anchor from the requested
+    // size instead of outer_size(), which can lag behind set_size() on macOS.
+    position_agent_hud_window_with_size(&window, physical_size, scale)
 }
 
 #[tauri::command]
@@ -117,11 +126,16 @@ pub fn agent_hud_open_agent(
         .map_err(|error| error.to_string())
 }
 
-/// Mirrors the CSS in agent-hud.css: 248px surface width plus transparent
-/// gutter for the top-right offset and shadow. Keep the native width constant
-/// so layout changes grow downward like a notification instead of resizing and
-/// re-anchoring horizontally.
-fn agent_hud_window_size(expanded: bool, card_count: u32, context_menu_open: bool) -> (f64, f64) {
+/// The webview reports the rendered interactive bounds so the native panel can
+/// match them exactly. The calculated dimensions are retained as a startup and
+/// compatibility fallback while the page is loading.
+fn agent_hud_window_size(
+    expanded: bool,
+    card_count: u32,
+    context_menu_open: bool,
+    requested_width: Option<f64>,
+    requested_height: Option<f64>,
+) -> (f64, f64) {
     let height: f64 = if !expanded || card_count == 0 {
         AGENT_HUD_COLLAPSED_WINDOW_HEIGHT
     } else {
@@ -130,11 +144,19 @@ fn agent_hud_window_size(expanded: bool, card_count: u32, context_menu_open: boo
         8.0 + surface_height + 14.0
     };
 
-    if context_menu_open {
-        (AGENT_HUD_WINDOW_WIDTH, height.max(104.0))
+    let fallback_height = if context_menu_open {
+        height.max(104.0)
     } else {
-        (AGENT_HUD_WINDOW_WIDTH, height)
-    }
+        height
+    };
+    (
+        valid_hud_dimension(requested_width).unwrap_or(AGENT_HUD_WINDOW_WIDTH),
+        valid_hud_dimension(requested_height).unwrap_or(fallback_height),
+    )
+}
+
+fn valid_hud_dimension(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && *value > 0.0 && *value <= 2048.0)
 }
 
 fn configure_agent_hud_window(app: &AppHandle) -> Result<(), String> {
@@ -155,7 +177,9 @@ fn configure_agent_hud_window(app: &AppHandle) -> Result<(), String> {
         .set_skip_taskbar(true)
         .map_err(|error| error.to_string())?;
     window
-        .set_shadow(false)
+        // A native shadow sits outside the hit-tested window bounds. CSS
+        // shadow gutters would make transparent pixels intercept clicks.
+        .set_shadow(true)
         .map_err(|error| error.to_string())?;
 
     #[cfg(target_os = "macos")]
@@ -166,17 +190,20 @@ fn configure_agent_hud_window(app: &AppHandle) -> Result<(), String> {
 
 fn position_agent_hud_window(window: &WebviewWindow) -> Result<(), String> {
     let size = window.outer_size().map_err(|error| error.to_string())?;
-    position_agent_hud_window_with_size(window, size)
+    let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    position_agent_hud_window_with_size(window, size, scale)
 }
 
 fn position_agent_hud_window_with_size(
     window: &WebviewWindow,
     size: PhysicalSize<u32>,
+    scale: f64,
 ) -> Result<(), String> {
-    const MARGIN_X: f64 = 16.0;
-    const MARGIN_Y: f64 = 12.0;
+    // Keep the visible surface at its previous screen position. The old
+    // oversized webview placed it 10px from the right and 8px from the top.
+    const MARGIN_X: f64 = 26.0;
+    const MARGIN_Y: f64 = 20.0;
 
-    let scale = window.scale_factor().map_err(|error| error.to_string())?;
     // Pin the HUD to the primary monitor; picking the monitor from the
     // cursor made it hop between displays whenever a layout change fired
     // while the mouse was on another screen.
@@ -318,20 +345,32 @@ mod tests {
 
     #[test]
     fn agent_hud_layout_keeps_width_stable_across_states() {
-        assert_eq!(agent_hud_window_size(false, 0, false).0, 304.0);
-        assert_eq!(agent_hud_window_size(true, 1, false).0, 304.0);
-        assert_eq!(agent_hud_window_size(true, 3, false).0, 304.0);
-        assert_eq!(agent_hud_window_size(false, 0, true).0, 304.0);
+        assert_eq!(agent_hud_window_size(false, 0, false, None, None).0, 304.0);
+        assert_eq!(agent_hud_window_size(true, 1, false, None, None).0, 304.0);
+        assert_eq!(agent_hud_window_size(true, 3, false, None, None).0, 304.0);
+        assert_eq!(agent_hud_window_size(false, 0, true, None, None).0, 304.0);
     }
 
     #[test]
     fn agent_hud_layout_grows_downward_for_expanded_content() {
-        let collapsed = agent_hud_window_size(false, 0, false);
-        let expanded = agent_hud_window_size(true, 1, false);
-        let expanded_more = agent_hud_window_size(true, 3, false);
+        let collapsed = agent_hud_window_size(false, 0, false, None, None);
+        let expanded = agent_hud_window_size(true, 1, false, None, None);
+        let expanded_more = agent_hud_window_size(true, 3, false, None, None);
 
         assert_eq!(collapsed.1, AGENT_HUD_COLLAPSED_WINDOW_HEIGHT);
         assert!(expanded.1 > collapsed.1);
         assert!(expanded_more.1 > expanded.1);
+    }
+
+    #[test]
+    fn agent_hud_layout_uses_rendered_interactive_bounds() {
+        assert_eq!(
+            agent_hud_window_size(false, 0, false, Some(112.0), Some(32.0)),
+            (112.0, 32.0)
+        );
+        assert_eq!(
+            agent_hud_window_size(false, 0, false, Some(0.0), Some(f64::INFINITY)),
+            (AGENT_HUD_WINDOW_WIDTH, AGENT_HUD_COLLAPSED_WINDOW_HEIGHT)
+        );
     }
 }
