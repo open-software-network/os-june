@@ -23693,7 +23693,7 @@ button.memory-project:hover {
 .onboarding-brief-name {
   color: var(--foreground);
   font-size: var(--fs-md);
-  font-weight: 500;
+  font-weight: var(--fw-medium);
 }
 
 .onboarding-brief-meta {

@@ -253,7 +253,7 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
             onContinue={goNext}
           />
         ) : stepId === "morning-brief" ? (
-          <MorningBriefStep onContinue={completeOnboarding} />
+          <MorningBriefStep onContinue={goNext} />
         ) : null}
       </div>
     </div>

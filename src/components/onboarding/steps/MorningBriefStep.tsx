@@ -1,6 +1,6 @@
 import { IconCloudySun } from "central-icons/IconCloudySun";
 import { useEffect, useState } from "react";
-import { createRoutine } from "../../../lib/hermes-routines";
+import { createRoutine, listRoutines } from "../../../lib/hermes-routines";
 import { humanizeSchedule } from "../../../lib/routine-schedule";
 import { ROUTINE_TEMPLATES } from "../../routines/routine-templates";
 import { p3aRecord } from "../../../lib/tauri";
@@ -38,11 +38,20 @@ export function MorningBriefStep({ onContinue }: { onContinue: () => void }) {
     setCreating(true);
     setError(undefined);
     try {
-      await createRoutine({
-        prompt: template.prompt,
-        schedule: template.schedule,
-        name: template.name,
-      });
+      // Wizard replays (ONBOARDING_VERSION bumps) walk existing users
+      // through this step again; enabling must not stack a second copy of
+      // the routine. Best-effort: if the lookup itself fails, creation
+      // proceeds (a duplicate is recoverable under Routines, a hard block
+      // here is not).
+      const existing = await listRoutines().catch(() => []);
+      const alreadySetUp = existing.some((routine) => routine.name === template.name);
+      if (!alreadySetUp) {
+        await createRoutine({
+          prompt: template.prompt,
+          schedule: template.schedule,
+          name: template.name,
+        });
+      }
       setCreated(true);
       void p3aRecord("onboarding.morning-brief.enabled");
       onContinue();

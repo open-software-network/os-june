@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsOpenPortal: vi.fn(),
   listen: vi.fn(),
   createRoutine: vi.fn(),
+  listRoutines: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -69,6 +70,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("../lib/hermes-routines", () => ({
   createRoutine: mocks.createRoutine,
+  listRoutines: mocks.listRoutines,
 }));
 
 const account: AccountStatus = {
@@ -177,6 +179,7 @@ describe("OnboardingFlow", () => {
       }),
     );
     mocks.p3aRecord.mockResolvedValue(undefined);
+    mocks.listRoutines.mockResolvedValue([]);
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: shortcut("fn"),
@@ -282,6 +285,20 @@ describe("OnboardingFlow", () => {
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
     // Completion is the caller's job (App marks it), not the flow's.
     expect(isOnboardingComplete()).toBe(false);
+  });
+
+  it("does not create a duplicate routine on a wizard replay", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    setOnboardingResumeStep("morning-brief");
+    mocks.listRoutines.mockResolvedValue([{ job_id: "job-1", name: "Morning brief" }]);
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
+    await user.click(screen.getByRole("button", { name: "Enable morning brief" }));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(mocks.createRoutine).not.toHaveBeenCalled();
   });
 
   it("completes without a routine when the morning brief is declined", async () => {
