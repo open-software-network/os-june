@@ -10,9 +10,9 @@ export function PluginsView({
   return (
     <section className="settings-group" aria-labelledby="plugins-view-heading">
       <header className="settings-page-header">
-        <h2 id="plugins-view-heading" className="settings-page-title">
+        <h3 id="plugins-view-heading" className="settings-row-title">
           Plugins
-        </h2>
+        </h3>
         <p className="settings-page-blurb">
           Give June carefully scoped ways to work in other apps and services.
         </p>

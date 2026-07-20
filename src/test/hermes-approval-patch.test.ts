@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
+import gatewayGotchas from "../../docs/hermes-gateway-gotchas.md?raw";
+import pinNote from "../../docs/hermes-upstream-v2026.6.19.md?raw";
+import upgradeChecklist from "../../docs/hermes-upgrade-checklist.md?raw";
 import macBundler from "../../scripts/bundle-hermes-runtime.sh?raw";
 import windowsBundler from "../../scripts/bundle-hermes-runtime-windows.ps1?raw";
 import commands from "../../src-tauri/src/commands.rs?raw";
 import patcher from "../../src-tauri/src/hermes/apply_june_patches.py?raw";
 import bridge from "../../src-tauri/src/hermes_bridge.rs?raw";
+import compatibilityMatrix from "../lib/hermes-control-plane/compatibility/matrix.ts?raw";
 import routines from "../lib/hermes-routines.ts?raw";
 import protocolSmoke from "../../scripts/hermes-approval-patch-smoke.py?raw";
 
@@ -25,7 +29,17 @@ describe("June Hermes compatibility patch", () => {
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(1);
       expect(bridge).toContain(`"${path}",`);
     }
-    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v3"');
+    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v14"');
+    for (const provenanceSource of [
+      bridge,
+      compatibilityMatrix,
+      gatewayGotchas,
+      pinNote,
+      upgradeChecklist,
+    ]) {
+      expect(provenanceSource).toContain("june-approval-memory-v14");
+    }
+    expect(patcher).toContain("session, err = _sess_nowait(params, rid)");
     expect(patcher).toContain('upstream_request_id = getattr(context, "request_id", None)');
     expect(patcher).toContain("request_id=request_id");
     expect(patcher).toContain("_MAX_GATEWAY_APPROVALS_PER_SESSION = 32");
@@ -79,6 +93,7 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain('user_disabled = agent_cfg.get("disabled_toolsets") or []');
     expect(patcher).toContain("tools_to_include.difference_update(resolved)");
     expect(protocolSmoke).toContain("verify_patch_state_machine");
+    expect(protocolSmoke).toContain("verify_new_session_image_attach_is_immediate");
     expect(protocolSmoke).toContain("verify_tui_memory_deny_propagation");
     expect(protocolSmoke).toContain("verify_cross_process_config_writer");
     expect(protocolSmoke).toContain("verify_model_deny_wins");
@@ -96,7 +111,7 @@ describe("June Hermes compatibility patch", () => {
   });
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
-    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v3"');
+    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14"');
     expect(bridge).not.toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v2"');
     expect(bridge).not.toContain(
       'const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v2"',
@@ -111,6 +126,8 @@ describe("June Hermes compatibility patch", () => {
       for (const [, path, hash] of hashes ?? []) {
         expect(bridge).toContain(`"${path}",`);
         expect(bridge).toContain(`"${hash}"`);
+        expect(pinNote).toContain(`| \`${path}\``);
+        expect(pinNote).toContain(`\`${hash}\``);
       }
     }
     expect(bridge).toContain("verify_hermes_runtime_source_hashes");

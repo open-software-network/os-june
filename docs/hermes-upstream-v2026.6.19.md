@@ -10,7 +10,7 @@
 ## June compatibility patch
 
 The upstream pin remains unchanged. June applies the deterministic
-`june-approval-memory-v3` patch set before building the bundled runtime and
+`june-approval-memory-v14` patch set before building the bundled runtime and
 before
 finishing a managed runtime install. See
 [ADR 0009](adr/0009-hermes-config-shared-ownership-merge.md),
@@ -89,6 +89,24 @@ arguments or an in-process cache can predate a Memory toggle, while the file is
 the cross-process authority updated by June. Do not cache this read without a
 new invalidation contract that also covers the gateway-only runtime.
 
+The patch also lets `image.attach_bytes` persist and queue image bytes against
+the lightweight runtime session returned by `session.create`. Byte persistence
+does not wait for full Hermes initialization, so the first image in a new
+session cannot hit the initialization timeout before `prompt.submit` starts the
+agent run. `prompt.submit` atomically detaches the submitted image batch under
+the session lock. If Hermes initialization later fails, that batch is restored
+ahead of concurrent image attachments so retry preserves the client-visible
+attachment state and original order. Each accepted prompt owns a generation that
+prevents stale callbacks from restoring pre-reset images or clearing newer prompt
+state. Lazy Hermes builds use a separate reset epoch, so ordinary prompt acceptance
+does not suppress the only build. Slow construction stays outside the image queue
+lock. A separate publication lock serializes the Hermes instance and slash worker
+swap with reset, and the image queue lock is released before session-map setup to
+preserve teardown lock order. Reset invalidates pre-reset builds, and a failed reset
+restores both ownership values so the waiting prompt can recover. A successful reset
+clears any obsolete lazy-build error, and a successful prompt consumes its detached
+batch exactly once.
+
 The patch also coordinates Hermes' central atomic YAML writer with June's Rust
 config writer through an OS advisory lock. Before any stale Hermes snapshot is
 saved, it re-reads the current file and carries forward the current membership
@@ -106,7 +124,7 @@ exact source states:
 | `agent/agent_init.py` | `7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b` | `58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e` |
 | `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `daaac4cbc6adfffd3a8cbd8442d3cc0c26bc499725e395cf837607dbcebc46d8` |
 | `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
-| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `df540ed75578077a76a967c4cf53dba92de2f8bd923cb485dd673761435ee5f2` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `ee9806275e5b5706cadc58151b894d54351057d57f158d36a94e66080263a742` |
 | `cron/scheduler.py` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` |
 | `model_tools.py` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` |
 | `utils.py` | `572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c` | `08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5` |
@@ -220,7 +238,8 @@ Two phases, gated independently:
   coordination, duplicate delivery, distinct concurrent requests, targeted
   approval and denial, replay, timeout, malformed identity, bounded overflow,
   disconnect drain, notifier-generation handoff with fresh-request preservation,
-  exact completion retry, and live snapshot ownership ordering.
+  exact completion retry, live snapshot ownership ordering, and immediate
+  image-byte attachment to a new runtime session.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.

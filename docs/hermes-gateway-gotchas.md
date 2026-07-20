@@ -115,7 +115,7 @@ falls back to the config's `oauth` marker and OAuth-shaped probe errors.
 ## Events
 
 **MCP approvals are identity-addressed, not FIFO.** The pinned runtime carries
-June's checksum-gated `june-approval-memory-v3` patch. MCP elicitation
+June's checksum-gated `june-approval-memory-v14` patch. MCP elicitation
 preserves the SDK request id and emits an opaque stable `request_id` on
 `approval.request`.
 While unanswered, the same logical request retried after an MCP transport

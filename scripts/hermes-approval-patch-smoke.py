@@ -5,6 +5,8 @@ import argparse
 import ast
 import concurrent.futures
 import contextvars
+import copy
+from datetime import datetime
 import hashlib
 import importlib.util
 import json
@@ -270,7 +272,9 @@ def assert_server_handoff_source(root: Path) -> None:
     goal_barrier = run_prompt.index(
         "_agent_run_continuation_waits_for_snapshot_ack(session)", goal
     )
-    nested_run = run_prompt.index("_run_prompt_submit(rid, sid, session, goal_followup)", goal)
+    nested_run = run_prompt.index(
+        "rid, sid, session, goal_followup, [], None", goal
+    )
     assert goal < goal_barrier < defer < nested_run, run_prompt[goal:nested_run]
     drain = run_prompt.index("for _evt, synth in process_registry.drain_notifications():")
     assert run_prompt.index("_message_complete_is_pending(session)", drain) > drain
@@ -388,6 +392,829 @@ def _function(tree: ast.AST, name: str) -> ast.FunctionDef:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
     raise AssertionError("missing Hermes function: %s" % name)
+
+
+def _class(tree: ast.AST, name: str) -> ast.ClassDef:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return node
+    raise AssertionError("missing Hermes class: %s" % name)
+
+
+def _rpc_method(tree: ast.AST, method_name: str) -> ast.FunctionDef:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Name)
+                and decorator.func.id == "method"
+                and len(decorator.args) == 1
+                and isinstance(decorator.args[0], ast.Constant)
+                and decorator.args[0].value == method_name
+            ):
+                return node
+    raise AssertionError("missing Hermes RPC method: %s" % method_name)
+
+
+def _session_subscript(node: ast.AST, key: str) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "session"
+        and isinstance(node.slice, ast.Constant)
+        and node.slice.value == key
+    )
+
+
+def verify_new_session_image_attach_is_immediate(root: Path) -> None:
+    tree = ast.parse(
+        (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
+    )
+    handler = _rpc_method(tree, "image.attach_bytes")
+    session_calls = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if node.func.id in {"_sess", "_sess_nowait"}
+    }
+    assert session_calls == {"_sess_nowait"}, (
+        "image.attach_bytes must persist to a newly created session without "
+        "waiting for Hermes initialization: %s" % sorted(session_calls)
+    )
+
+    # Execute the pinned handler and its real byte-decoding/write helpers in
+    # isolation. Importing all of server.py would require the complete Hermes
+    # runtime even though this smoke also runs with stock host Python.
+    helper_names = (
+        "_err",
+        "_ok",
+        "_sess_nowait",
+        "_decode_attach_base64",
+        "_sniff_image_ext",
+        "_queue_attached_image",
+    )
+    initialization_error = copy.deepcopy(
+        _class(tree, "_ImageAttachInitializationError")
+    )
+    functions = [copy.deepcopy(_function(tree, name)) for name in helper_names]
+    build_function = copy.deepcopy(_function(tree, "_start_agent_build"))
+    reset_function = copy.deepcopy(_function(tree, "_reset_session_agent"))
+    executable_handler = copy.deepcopy(handler)
+    executable_handler.name = "_image_attach_bytes"
+    executable_handler.decorator_list = []
+    source = "from __future__ import annotations\n" + "\n\n".join(
+        ast.unparse(node)
+        for node in (
+            initialization_error,
+            *functions,
+            build_function,
+            reset_function,
+            executable_handler,
+        )
+    )
+
+    fresh_session = {
+        "attached_images": [],
+        "history_lock": threading.Lock(),
+        "image_counter": 0,
+    }
+    with tempfile.TemporaryDirectory(prefix="june-image-attach-smoke-") as temp:
+        namespace = {
+            "Path": Path,
+            "datetime": datetime,
+            "threading": threading,
+            "_ATTACH_BYTES_MAX_BYTES": 25 * 1024 * 1024,
+            "_allowed_image_extensions": lambda: frozenset({".png"}),
+            "_hermes_home": Path(temp),
+            "_image_meta": lambda _path: {},
+            "_sessions": {"fresh-session": fresh_session},
+            "_sessions_lock": threading.Lock(),
+            "_set_session_context": lambda _key: None,
+            "_clear_session_context": lambda _tokens: None,
+        }
+        exec(compile(source, str(root / "tui_gateway" / "server.py"), "exec"), namespace)
+        response = namespace["_image_attach_bytes"](
+            "attach",
+            {
+                "session_id": "fresh-session",
+                "filename": "jun-362-smoke.png",
+                "content_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+            },
+        )
+        assert response.get("result", {}).get("attached") is True, response
+        assert response.get("result", {}).get("bytes") == 68, response
+        assert len(fresh_session["attached_images"]) == 1, fresh_session
+        saved_path = Path(fresh_session["attached_images"][0])
+        assert saved_path.is_file(), saved_path
+        assert len(saved_path.read_bytes()) == 68, saved_path
+        with fresh_session["history_lock"]:
+            submitted_images = list(fresh_session["attached_images"])
+            fresh_session["attached_images"] = []
+        assert submitted_images == [str(saved_path)], submitted_images
+        assert fresh_session["attached_images"] == [], fresh_session
+
+        failed_session = {
+            "agent_error": "synthetic Hermes initialization failure",
+            "attached_images": [],
+            "history_lock": threading.Lock(),
+            "image_counter": 0,
+        }
+        namespace["_sessions"]["failed-session"] = failed_session
+        failed_response = namespace["_image_attach_bytes"](
+            "failed-attach",
+            {
+                "session_id": "failed-session",
+                "filename": "jun-362-smoke.png",
+                "content_base64": (
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                    "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                ),
+            },
+        )
+        assert failed_response.get("error", {}).get("code") == 5032, failed_response
+        assert failed_session["attached_images"] == [], failed_session
+
+        # Force an attachment to cross the prompt-accept boundary. The prompt holds
+        # history_lock while detaching its empty batch; the attachment can append
+        # only after release, so it remains queued for the next prompt instead
+        # of being erased or misrouted into the accepted one.
+        concurrent_session = {
+            "attached_images": [],
+            "history_lock": threading.Lock(),
+            "image_counter": 0,
+        }
+        namespace["_sessions"]["concurrent-session"] = concurrent_session
+        attachment_started = threading.Event()
+        attachment_result = {}
+
+        def attach_after_prompt_accepts() -> None:
+            attachment_started.set()
+            attachment_result["response"] = namespace["_image_attach_bytes"](
+                "concurrent-attach",
+                {
+                    "session_id": "concurrent-session",
+                    "filename": "later.png",
+                    "content_base64": (
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                        "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                    ),
+                },
+            )
+
+        with concurrent_session["history_lock"]:
+            attachment_worker = threading.Thread(target=attach_after_prompt_accepts)
+            attachment_worker.start()
+            assert attachment_started.wait(1), "concurrent attachment did not start"
+            accepted_batch = list(concurrent_session["attached_images"])
+            concurrent_session["attached_images"] = []
+        attachment_worker.join(2)
+        assert not attachment_worker.is_alive(), "concurrent attachment did not finish"
+        assert accepted_batch == [], accepted_batch
+        assert attachment_result["response"].get("result", {}).get("attached") is True
+        assert len(concurrent_session["attached_images"]) == 1, concurrent_session
+
+        # Execute the real lazy-build worker while its slow Hermes construction
+        # is in progress. history_lock must remain immediately acquirable for
+        # attachment/reset state, and reset's separate epoch must prevent the
+        # finished stale worker from replacing the reset-owned instance.
+        stale_build_calls = []
+        stale_build_started = threading.Event()
+        stale_build_release = threading.Event()
+        stale_built_agent = object()
+
+        def make_stale_hermes_agent(*_args, **_kwargs):
+            stale_build_calls.append(True)
+            stale_build_started.set()
+            assert stale_build_release.wait(2), "stale Hermes build was not released"
+            return stale_built_agent
+
+        namespace["_make_agent"] = make_stale_hermes_agent
+        reset_owned_agent = object()
+        stale_build_session = {
+            "agent": None,
+            "agent_build_lock": threading.Lock(),
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "history_lock": threading.Lock(),
+            "prompt_generation": 11,
+            "reset_generation": 3,
+            "session_key": "stale-build-key",
+        }
+        namespace["_sessions"]["stale-build"] = stale_build_session
+        namespace["_start_agent_build"]("stale-build", stale_build_session)
+        assert stale_build_started.wait(1), "lazy Hermes build did not start"
+        assert stale_build_session["history_lock"].acquire(timeout=0.1), (
+            "slow Hermes construction must not block image attachment state"
+        )
+        stale_build_session["reset_generation"] = 4
+        stale_build_session["prompt_generation"] = 12
+        stale_build_session["agent"] = reset_owned_agent
+        stale_build_session["history_lock"].release()
+        stale_build_release.set()
+        assert stale_build_session["agent_ready"].wait(1), (
+            "stale Hermes build did not finish"
+        )
+        assert stale_build_calls == [True], stale_build_calls
+        assert stale_build_session["agent"] is reset_owned_agent
+        assert stale_build_session["agent_error"] is None
+
+        # A successful reset can finish while the obsolete lazy build is still
+        # constructing. The replacement Hermes instance must publish readiness
+        # after its slash worker swap instead of waiting for that stale build.
+        obsolete_build_started = threading.Event()
+        obsolete_build_release = threading.Event()
+        obsolete_build_closed = threading.Event()
+        reset_during_build_calls = 0
+
+        class ObsoleteHermes:
+            def close(self) -> None:
+                obsolete_build_closed.set()
+
+        replacement_hermes = types.SimpleNamespace(model="replacement-model")
+
+        def make_reset_during_obsolete_build(*_args, **_kwargs):
+            nonlocal reset_during_build_calls
+            reset_during_build_calls += 1
+            if reset_during_build_calls == 1:
+                obsolete_build_started.set()
+                assert obsolete_build_release.wait(2), (
+                    "obsolete Hermes build was not released"
+                )
+                return ObsoleteHermes()
+            return replacement_hermes
+
+        namespace.update(
+            {
+                "_make_agent": make_reset_during_obsolete_build,
+                "_config_model_target": lambda: "replacement-model",
+                "_load_show_reasoning": lambda: False,
+                "_load_tool_progress_mode": lambda: "compact",
+                "_session_info": lambda hermes, _session: {
+                    "model": hermes.model
+                },
+                "_emit": lambda *_args: None,
+                "_restart_slash_worker": lambda *_args: None,
+            }
+        )
+        reset_during_build_session = {
+            "agent": None,
+            "agent_build_lock": threading.Lock(),
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "attached_images": ["pre-reset.png"],
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 1,
+            "prompt_generation": 0,
+            "reset_generation": 0,
+            "running": False,
+            "session_key": "reset-during-build-key",
+        }
+        namespace["_sessions"]["reset-during-build"] = reset_during_build_session
+        namespace["_start_agent_build"](
+            "reset-during-build", reset_during_build_session
+        )
+        assert obsolete_build_started.wait(1), "obsolete Hermes build did not start"
+        reset_info = namespace["_reset_session_agent"](
+            "reset-during-build", reset_during_build_session
+        )
+        assert reset_info == {"model": "replacement-model"}
+        assert reset_during_build_session["agent"] is replacement_hermes
+        assert reset_during_build_session["agent_ready"].is_set(), (
+            "successful reset did not publish Hermes readiness"
+        )
+        namespace["_start_agent_build"](
+            "reset-during-build", reset_during_build_session
+        )
+        assert reset_during_build_session["agent_ready"].is_set()
+        obsolete_build_release.set()
+        assert obsolete_build_closed.wait(1), (
+            "obsolete Hermes instance was not rejected after reset"
+        )
+        assert reset_during_build_session["agent"] is replacement_hermes
+
+        # Publication releases history_lock before any setup that can acquire
+        # _sessions_lock, while the independent publication lock keeps reset
+        # from interleaving between the Hermes instance and slash worker swaps.
+        publication_attach_started = threading.Event()
+        publication_attach_release = threading.Event()
+        publication_reset_started = threading.Event()
+        published_hermes = types.SimpleNamespace(model="published-model")
+        reset_hermes = types.SimpleNamespace(model="reset-model")
+
+        class SyntheticSlashWorker:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        def attach_published_worker(_sid, session, worker) -> None:
+            assert session["history_lock"].acquire(blocking=False), (
+                "lazy-build worker setup must not hold history_lock while "
+                "acquiring session-map state"
+            )
+            session["history_lock"].release()
+            assert session["agent_publication_lock"].locked(), (
+                "reset must stay fenced through lazy-build worker publication"
+            )
+            publication_attach_started.set()
+            assert publication_attach_release.wait(2), (
+                "lazy-build publication was not released"
+            )
+            session["slash_worker"] = worker
+
+        namespace.update(
+            {
+                "_make_agent": lambda *_args, **_kwargs: published_hermes,
+                "_config_model_target": lambda: "published-model",
+                "_SlashWorker": SyntheticSlashWorker,
+                "_resolve_model": lambda: "fallback-model",
+                "_attach_worker": attach_published_worker,
+                "_wire_callbacks": lambda *_args: None,
+                "_start_notification_poller": lambda *_args: object(),
+                "_notify_session_boundary": lambda *_args: None,
+                "_session_info": lambda agent, _session: {"model": agent.model},
+                "_probe_config_health": lambda _cfg: None,
+                "_load_cfg": lambda: {},
+                "_emit": lambda *_args: None,
+                "_schedule_mcp_late_refresh": lambda *_args: None,
+                "_restart_slash_worker": lambda *_args: None,
+                "_load_show_reasoning": lambda: False,
+                "_load_tool_progress_mode": lambda: "compact",
+                "logger": types.SimpleNamespace(warning=lambda *_args: None),
+            }
+        )
+        publication_session = {
+            "agent": None,
+            "agent_build_lock": threading.Lock(),
+            "agent_error": None,
+            "agent_ready": threading.Event(),
+            "attached_images": [],
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "image_counter": 0,
+            "prompt_generation": 0,
+            "reset_generation": 0,
+            "running": False,
+            "session_key": "publication-key",
+        }
+        namespace["_sessions"]["publication"] = publication_session
+        namespace["_start_agent_build"]("publication", publication_session)
+        assert publication_attach_started.wait(1), (
+            "lazy-build worker publication did not start"
+        )
+        assert not publication_session["agent_ready"].is_set()
+        namespace["_start_agent_build"]("publication", publication_session)
+        assert not publication_session["agent_ready"].is_set(), (
+            "a duplicate build request exposed a partially published Hermes instance"
+        )
+
+        def make_publication_reset_hermes(*_args, **_kwargs):
+            publication_reset_started.set()
+            return reset_hermes
+
+        namespace["_make_agent"] = make_publication_reset_hermes
+        publication_reset_result = {}
+        publication_reset_thread = threading.Thread(
+            target=lambda: publication_reset_result.setdefault(
+                "info",
+                namespace["_reset_session_agent"](
+                    "publication", publication_session
+                ),
+            )
+        )
+        publication_reset_thread.start()
+        publication_reset_thread.join(0.1)
+        assert publication_reset_thread.is_alive(), (
+            "reset must wait for lazy-build worker publication"
+        )
+        assert not publication_reset_started.is_set(), (
+            "reset construction interleaved with lazy-build publication"
+        )
+        publication_attach_release.set()
+        assert publication_session["agent_ready"].wait(1), (
+            "lazy-build publication did not finish"
+        )
+        publication_reset_thread.join(2)
+        assert not publication_reset_thread.is_alive(), (
+            "reset did not resume after lazy-build publication"
+        )
+        assert publication_reset_started.is_set()
+        assert publication_session["agent"] is reset_hermes
+        assert publication_reset_result["info"] == {"model": "reset-model"}
+
+        # Reset must own the same lock before Hermes construction starts. An
+        # attachment arriving during a slow rebuild waits, then queues after
+        # reset instead of being acknowledged and silently cleared.
+        reset_build_started = threading.Event()
+        reset_build_release = threading.Event()
+
+        def make_hermes_agent_for_reset(*_args, **_kwargs):
+            reset_build_started.set()
+            assert reset_build_release.wait(2), "reset build was not released"
+            return object()
+
+        namespace.update(
+            {
+                "_make_agent": make_hermes_agent_for_reset,
+                "_set_session_context": lambda _key: None,
+                "_clear_session_context": lambda _tokens: None,
+                "_config_model_target": lambda: "synthetic-model",
+                "_load_show_reasoning": lambda: False,
+                "_load_tool_progress_mode": lambda: "compact",
+                "_session_info": lambda _agent, _session: {},
+                "_emit": lambda *_args: None,
+                "_restart_slash_worker": lambda *_args: None,
+            }
+        )
+        failed_reset_session = {
+            "session_key": "failed-reset-key",
+            "agent": object(),
+            "agent_error": "stale lazy Hermes build failure",
+            "attached_images": ["still-owned.png"],
+            "history_lock": threading.Lock(),
+            "prompt_generation": 19,
+            "reset_generation": 5,
+            "running": True,
+        }
+
+        def fail_reset_build(*_args, **_kwargs):
+            raise RuntimeError("synthetic reset failure")
+
+        namespace["_make_agent"] = fail_reset_build
+        try:
+            namespace["_reset_session_agent"]("failed-reset", failed_reset_session)
+        except RuntimeError as exc:
+            assert str(exc) == "synthetic reset failure"
+        else:
+            raise AssertionError("failed reset unexpectedly succeeded")
+        assert failed_reset_session["prompt_generation"] == 19, failed_reset_session
+        assert failed_reset_session["reset_generation"] == 5, failed_reset_session
+        assert failed_reset_session["running"] is True, failed_reset_session
+        assert failed_reset_session["attached_images"] == ["still-owned.png"]
+        assert failed_reset_session["agent_error"] == "stale lazy Hermes build failure"
+        namespace["_make_agent"] = make_hermes_agent_for_reset
+        reset_session = {
+            "session_key": "reset-session-key",
+            "agent": object(),
+            "agent_error": "stale lazy Hermes build failure",
+            "attached_images": ["stale-before-reset.png"],
+            "history": ["stale history"],
+            "history_lock": threading.Lock(),
+            "history_version": 3,
+            "image_counter": 1,
+            "running": False,
+            "prompt_generation": 7,
+            "reset_generation": 2,
+        }
+        namespace["_sessions"]["reset-session"] = reset_session
+        reset_result = {}
+        reset_attachment_result = {}
+
+        def reset_worker() -> None:
+            reset_result["info"] = namespace["_reset_session_agent"](
+                "reset-session", reset_session
+            )
+
+        def attach_during_reset() -> None:
+            reset_attachment_result["response"] = namespace["_image_attach_bytes"](
+                "attach-during-reset",
+                {
+                    "session_id": "reset-session",
+                    "filename": "after-reset.png",
+                    "content_base64": (
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0l"
+                        "EQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                    ),
+                },
+            )
+
+        reset_thread = threading.Thread(target=reset_worker)
+        reset_thread.start()
+        assert reset_build_started.wait(1), "reset build did not start"
+        reset_attachment_worker = threading.Thread(target=attach_during_reset)
+        reset_attachment_worker.start()
+        reset_attachment_worker.join(0.1)
+        assert reset_attachment_worker.is_alive(), (
+            "attachment must wait while reset owns history_lock"
+        )
+        reset_build_release.set()
+        reset_thread.join(2)
+        reset_attachment_worker.join(2)
+        assert not reset_thread.is_alive(), "reset did not finish"
+        assert not reset_attachment_worker.is_alive(), "attachment did not finish"
+        assert reset_result["info"] == {}
+        assert reset_attachment_result["response"].get("result", {}).get("attached") is True
+        assert len(reset_session["attached_images"]) == 1, reset_session
+        assert "stale-before-reset.png" not in reset_session["attached_images"]
+        assert reset_session["prompt_generation"] == 8, reset_session
+        assert reset_session["reset_generation"] == 3, reset_session
+
+        # A successful replacement after an earlier lazy-build error must make
+        # the session attachable and ready again instead of retaining 5032 state.
+        reset_session["agent_error"] = "stale lazy Hermes build failure"
+        namespace["_make_agent"] = lambda *_args, **_kwargs: object()
+        namespace["_reset_session_agent"]("reset-session", reset_session)
+        assert reset_session["agent_error"] is None, reset_session
+
+    # Lock the queue ownership boundary across prompt.submit. Acceptance must
+    # detach an immutable batch under the same history lock used by queue writes,
+    # then hand only that batch to the asynchronous success path. Initialization
+    # failure restores the local batch ahead of later attachments for retry.
+    # Reset and newer-prompt generations must invalidate stale callbacks.
+    prompt_submit = _rpc_method(tree, "prompt.submit")
+    ownership_blocks = [
+        node
+        for node in prompt_submit.body
+        if isinstance(node, ast.With)
+        and any(
+            isinstance(item.context_expr, ast.Name)
+            and item.context_expr.id == "_session_resume_lock"
+            for item in node.items
+        )
+    ]
+    assert len(ownership_blocks) == 1, len(ownership_blocks)
+    history_lock_blocks = [
+        node
+        for node in ast.walk(ownership_blocks[0])
+        if isinstance(node, ast.With)
+        and any(
+            _session_subscript(item.context_expr, "history_lock")
+            for item in node.items
+        )
+    ]
+    assert len(history_lock_blocks) == 1, len(history_lock_blocks)
+    prompt_lock = history_lock_blocks[0]
+    submitted_batch_assigns = [
+        node
+        for node in ast.walk(prompt_lock)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "submitted_images"
+            for target in node.targets
+        )
+    ]
+    prompt_queue_clears = [
+        node
+        for node in ast.walk(prompt_lock)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.List)
+        and not node.value.elts
+        and any(_session_subscript(target, "attached_images") for target in node.targets)
+    ]
+    assert len(submitted_batch_assigns) == len(prompt_queue_clears) == 1, (
+        len(submitted_batch_assigns),
+        len(prompt_queue_clears),
+    )
+    generation_assigns = [
+        node
+        for node in ast.walk(prompt_lock)
+        if isinstance(node, ast.Assign)
+        and any(_session_subscript(target, "prompt_generation") for target in node.targets)
+    ]
+    captured_generation_assigns = [
+        node
+        for node in ast.walk(prompt_lock)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "prompt_generation"
+            for target in node.targets
+        )
+    ]
+    assert len(generation_assigns) == len(captured_generation_assigns) == 1
+    prompt_build_calls = [
+        node
+        for node in ast.walk(prompt_submit)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_start_agent_build"
+    ]
+    assert len(prompt_build_calls) == 1, prompt_build_calls
+    assert len(prompt_build_calls[0].args) == 2, ast.dump(prompt_build_calls[0])
+    run_after_ready = next(
+        node
+        for node in ast.walk(prompt_submit)
+        if isinstance(node, ast.FunctionDef) and node.name == "run_after_agent_ready"
+    )
+    prompt_run_calls = [
+        node
+        for node in ast.walk(run_after_ready)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_prompt_submit"
+    ]
+    assert len(prompt_run_calls) == 1, len(prompt_run_calls)
+    assert len(prompt_run_calls[0].args) == 6, ast.dump(prompt_run_calls[0])
+    assert isinstance(prompt_run_calls[0].args[4], ast.Name)
+    assert prompt_run_calls[0].args[4].id == "submitted_images"
+    assert isinstance(prompt_run_calls[0].args[5], ast.Name)
+    assert prompt_run_calls[0].args[5].id == "prompt_generation"
+    failure_queue_assignments = [
+        node
+        for node in ast.walk(run_after_ready)
+        if isinstance(node, ast.Assign)
+        and any(
+            _session_subscript(target, "attached_images")
+            for target in node.targets
+        )
+    ]
+    assert len(failure_queue_assignments) == 1, (
+        "initialization failure must restore exactly one detached batch",
+        failure_queue_assignments,
+    )
+    failure_session = {
+        "attached_images": ["later-attachment.png"],
+        "history_lock": threading.Lock(),
+        "prompt_generation": 1,
+        "running": True,
+    }
+    failure_namespace = {
+        "rid": "failed-prompt",
+        "sid": "failed-session",
+        "session": failure_session,
+        "text": "retry me",
+        "submitted_images": ["submitted-attachment.png"],
+        "prompt_generation": 1,
+        "_wait_agent": lambda _session, _rid: {
+            "error": {"message": "synthetic Hermes initialization failure"}
+        },
+        "_emit": lambda *_args: None,
+        "_clear_inflight_turn": lambda _session: None,
+        "_run_prompt_submit": lambda *_args: None,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(run_after_ready),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        failure_namespace,
+    )
+    failure_namespace["run_after_agent_ready"]()
+    assert failure_session["attached_images"] == [
+        "submitted-attachment.png",
+        "later-attachment.png",
+    ], failure_session
+    assert failure_session["running"] is False
+
+    # A reset invalidates the original prompt generation. If a newer prompt is
+    # accepted before the old initialization waiter reports failure, the stale
+    # callback must not restore pre-reset images, emit an obsolete error, or
+    # clear the newer prompt's running/inflight state.
+    reset_session["prompt_generation"] += 1
+    reset_session["running"] = True
+    newer_inflight = {"user": "newer prompt", "streaming": True}
+    reset_session["inflight_turn"] = newer_inflight
+    queue_after_reset = list(reset_session["attached_images"])
+    stale_events = []
+    stale_namespace = {
+        "rid": "stale-failed-prompt",
+        "sid": "reset-session",
+        "session": reset_session,
+        "text": "stale prompt",
+        "submitted_images": ["pre-reset-attachment.png"],
+        "prompt_generation": 7,
+        "_wait_agent": lambda _session, _rid: {
+            "error": {"message": "stale Hermes initialization failure"}
+        },
+        "_emit": lambda *args: stale_events.append(args),
+        "_clear_inflight_turn": lambda target: target.__setitem__(
+            "inflight_turn", None
+        ),
+        "_run_prompt_submit": lambda *_args: None,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(run_after_ready),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        stale_namespace,
+    )
+    stale_namespace["run_after_agent_ready"]()
+    assert reset_session["attached_images"] == queue_after_reset, reset_session
+    assert reset_session["running"] is True
+    assert reset_session["inflight_turn"] is newer_inflight
+    assert stale_events == [], stale_events
+
+    run_prompt_submit = _function(tree, "_run_prompt_submit")
+    assert any(argument.arg == "images" for argument in run_prompt_submit.args.args)
+    assert any(
+        argument.arg == "prompt_generation" for argument in run_prompt_submit.args.args
+    )
+    all_prompt_run_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_run_prompt_submit"
+    ]
+    assert len(all_prompt_run_calls) == 6, len(all_prompt_run_calls)
+    assert all(len(node.args) == 6 for node in all_prompt_run_calls)
+    explicit_batches = [node.args[4] for node in all_prompt_run_calls]
+    assert sum(
+        isinstance(batch, ast.Name) and batch.id == "submitted_images"
+        for batch in explicit_batches
+    ) == 1
+    assert sum(
+        isinstance(batch, ast.List) and not batch.elts for batch in explicit_batches
+    ) == 5
+    explicit_generations = [node.args[5] for node in all_prompt_run_calls]
+    assert sum(
+        isinstance(generation, ast.Name) and generation.id == "prompt_generation"
+        for generation in explicit_generations
+    ) == 1
+    assert sum(
+        isinstance(generation, ast.Constant) and generation.value is None
+        for generation in explicit_generations
+    ) == 5
+    reset_agent = _function(tree, "_reset_session_agent")
+    reset_generation_assigns = [
+        node
+        for node in ast.walk(reset_agent)
+        if isinstance(node, ast.Assign)
+        and any(_session_subscript(target, "prompt_generation") for target in node.targets)
+    ]
+    assert len(reset_generation_assigns) == 2, reset_generation_assigns
+    reset_epoch_assigns = [
+        node
+        for node in ast.walk(reset_agent)
+        if isinstance(node, ast.Assign)
+        and any(_session_subscript(target, "reset_generation") for target in node.targets)
+    ]
+    assert len(reset_epoch_assigns) == 2, reset_epoch_assigns
+    queue_helper = _function(tree, "_queue_attached_image")
+    serialized_appends = [
+        node
+        for node in ast.walk(queue_helper)
+        if isinstance(node, ast.With)
+        and any(
+            _session_subscript(item.context_expr, "history_lock")
+            for item in node.items
+        )
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr == "append"
+            for child in ast.walk(node)
+        )
+    ]
+    assert len(serialized_appends) == 1, len(serialized_appends)
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def under_history_lock(node: ast.AST) -> bool:
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, ast.With) and any(
+                _session_subscript(item.context_expr, "history_lock")
+                for item in node.items
+            ):
+                return True
+        return False
+
+    attached_image_appends = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Attribute)
+        and node.func.value.func.attr == "setdefault"
+        and any(
+            isinstance(argument, ast.Constant) and argument.value == "attached_images"
+            for argument in node.func.value.args
+        )
+    ]
+    assert len(attached_image_appends) == 4, len(attached_image_appends)
+    assert all(under_history_lock(node) for node in attached_image_appends), (
+        "every gateway image queue append must share prompt.submit's history lock",
+        [node.lineno for node in attached_image_appends if not under_history_lock(node)],
+    )
+    queue_state_assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Assign, ast.AugAssign))
+        and any(
+            _session_subscript(target, key)
+            for target in getattr(node, "targets", [getattr(node, "target", None)])
+            for key in ("attached_images", "image_counter")
+        )
+    ]
+    assert queue_state_assignments, "expected gateway image queue state assignments"
+    assert all(under_history_lock(node) for node in queue_state_assignments), (
+        "every gateway image queue state assignment must share history_lock",
+        [node.lineno for node in queue_state_assignments if not under_history_lock(node)],
+    )
 
 
 def verify_tui_memory_deny_propagation(root: Path) -> None:
@@ -2436,6 +3263,7 @@ def main() -> int:
         root = args.root.resolve()
         upstream_root = args.upstream_root.resolve() if args.upstream_root else None
         verify_patch_state_machine(root, upstream_root)
+        verify_new_session_image_attach_is_immediate(root)
         verify_tui_memory_deny_propagation(root)
         verify_memory_lifecycle_deny(root)
         verify_cross_process_config_writer(root)

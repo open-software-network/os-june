@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v3"
+PATCH_SET = "june-approval-memory-v14"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
     "tools/approval.py": "daaac4cbc6adfffd3a8cbd8442d3cc0c26bc499725e395cf837607dbcebc46d8",
     "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "df540ed75578077a76a967c4cf53dba92de2f8bd923cb485dd673761435ee5f2",
+    "tui_gateway/server.py": "ee9806275e5b5706cadc58151b894d54351057d57f158d36a94e66080263a742",
     "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
     "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
 }
@@ -54,6 +54,17 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
     if count != 1:
         raise RuntimeError("%s: expected one match, found %d" % (label, count))
     return source.replace(old, new, 1)
+
+
+def replace_count(
+    source: str, old: str, new: str, expected: int, label: str
+) -> str:
+    count = source.count(old)
+    if count != expected:
+        raise RuntimeError(
+            "%s: expected %d matches, found %d" % (label, expected, count)
+        )
+    return source.replace(old, new)
 
 
 def replace_region(source: str, start: str, end: str, replacement: str, label: str) -> str:
@@ -641,12 +652,611 @@ def patch_mcp_tool(source: str) -> str:
 def patch_server(source: str) -> str:
     source = replace_once(
         source,
+        '''    lock = session.setdefault("agent_build_lock", threading.Lock())
+    with lock:
+        if ready.is_set() or session.get("agent_build_started"):
+            return
+        session["agent_build_started"] = True
+        # An upgrading lazy session is now genuinely mid-construction — restore
+        # its "still starting" eviction exemption.
+        session.pop("lazy", None)
+    key = session["session_key"]
+
+    def _build() -> None:
+''',
+        '''    lock = session.setdefault("agent_build_lock", threading.Lock())
+    # Reset is the only event that invalidates a lazy Hermes build. Capture its
+    # epoch while also checking whether reset already installed a replacement.
+    with session["history_lock"]:
+        if session.get("agent") is not None:
+            # A prebuilt session may synthesize readiness, but an in-progress
+            # lazy build owns its ready event until slash worker and callback
+            # publication finishes. Do not expose its early instance assignment.
+            if not session.get("agent_build_started"):
+                ready.set()
+            return
+        build_epoch = int(session.get("reset_generation", 0))
+        with lock:
+            if ready.is_set() or session.get("agent_build_started"):
+                return
+            session["agent_build_started"] = True
+            # An upgrading lazy session is now genuinely mid-construction — restore
+            # its "still starting" eviction exemption.
+            session.pop("lazy", None)
+    key = session["session_key"]
+
+    def _build() -> None:
+''',
+        "Hermes build reset epoch capture",
+    )
+    source = replace_once(
+        source,
+        '''        if current is None:
+            ready.set()
+            return
+
+        worker = None
+''',
+        '''        if current is None:
+            ready.set()
+            return
+
+        worker = None
+        publication_lock = None
+        state_lock = None
+''',
+        "Hermes build publication lock state",
+    )
+    source = replace_once(
+        source,
+        '''            finally:
+                _clear_session_context(tokens)
+
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
+            current["agent"] = agent
+            # Baseline for the per-turn config sync; the profile home
+            # override is still active here.
+            current["config_model_seen"] = _config_model_target()
+''',
+        '''            finally:
+                _clear_session_context(tokens)
+
+            # The slow Hermes construction stays outside both locks so image
+            # bytes remain attachable immediately. A dedicated publication lock
+            # serializes this completion phase with reset without participating
+            # in the _sessions_lock -> history_lock teardown order.
+            publication_lock = current.setdefault(
+                "agent_publication_lock", threading.Lock()
+            )
+            publication_lock.acquire()
+            state_lock = current["history_lock"]
+            state_lock.acquire()
+            if int(current.get("reset_generation", 0)) != build_epoch:
+                state_lock.release()
+                state_lock = None
+                try:
+                    if hasattr(agent, "close"):
+                        agent.close()
+                except Exception:
+                    pass
+                return
+
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
+            current["agent"] = agent
+            # Baseline for the per-turn config sync; the profile home
+            # override is still active here.
+            current["config_model_seen"] = _config_model_target()
+            # The remaining setup can acquire _sessions_lock. Release the state
+            # lock first so concurrent close/eviction cannot deadlock by holding
+            # _sessions_lock while waiting for history_lock. publication_lock
+            # continues to fence reset until the worker and callbacks are ready.
+            state_lock.release()
+            state_lock = None
+''',
+        "Hermes build reset epoch publication",
+    )
+    source = replace_once(
+        source,
+        '''        except Exception as e:
+            current["agent_error"] = str(e)
+            _emit("error", sid, {"message": f"agent init failed: {e}"})
+        finally:
+''',
+        '''        except Exception as e:
+            if state_lock is not None:
+                if int(current.get("reset_generation", 0)) == build_epoch:
+                    current["agent_error"] = str(e)
+                    _emit("error", sid, {"message": f"June initialization failed: {e}"})
+            else:
+                with current["history_lock"]:
+                    if int(current.get("reset_generation", 0)) == build_epoch:
+                        current["agent_error"] = str(e)
+                        _emit("error", sid, {"message": f"June initialization failed: {e}"})
+        finally:
+''',
+        "Hermes build reset epoch error fence",
+    )
+    source = replace_once(
+        source,
+        '''            ready.set()
+
+    threading.Thread(target=_build, daemon=True).start()
+''',
+        '''            if state_lock is not None:
+                state_lock.release()
+            if publication_lock is not None:
+                publication_lock.release()
+            ready.set()
+
+    threading.Thread(target=_build, daemon=True).start()
+''',
+        "Hermes build publication lock release",
+    )
+    source = replace_once(
+        source,
+        '''        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
+    """
+    session, err = _sess(params, rid)
+    if err:
+        return err
+''',
+        '''        identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
+    """
+    # Persisting attachment bytes only needs the lightweight runtime session
+    # created by session.create. Waiting for full Hermes initialization here
+    # makes the first image in a new session time out before prompt.submit can
+    # start the agent run.
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+''',
+        "image byte attach without Hermes initialization",
+    )
+    source = replace_once(
+        source,
+        '''def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
+''',
+        '''class _ImageAttachInitializationError(RuntimeError):
+    """Hermes initialization failed while atomically claiming an image queue."""
+
+
+def _queue_attached_image(
+    session: dict,
+    img_bytes: bytes,
+    ext: str,
+    *,
+    prefix: str,
+    fail_on_initialization_error: bool = False,
+) -> Path:
+''',
+        "image queue initialization error type",
+    )
+    source = replace_once(
+        source,
         '''        enabled_toolsets=_load_enabled_toolsets(),
 ''',
         '''        enabled_toolsets=_load_enabled_toolsets(),
         disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
 ''',
         "server global disabled toolsets",
+    )
+    source = replace_once(
+        source,
+        '''    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    try:
+        img_path.write_bytes(img_bytes)
+    except Exception:
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        raise
+    session.setdefault("attached_images", []).append(str(img_path))
+    return img_path
+''',
+        '''    # Queue writes share the prompt's history lock so prompt.submit can
+    # atomically detach exactly the images it owns. An attachment that arrives after
+    # that boundary stays queued for the next prompt instead of being lost or
+    # consumed by the agent run already starting.
+    with session["history_lock"]:
+        # The byte-upload path does not wait for full Hermes initialization, but
+        # it must join reset's state boundary before trusting agent_error. A
+        # successful reset clears a stale error while holding this same lock.
+        if fail_on_initialization_error and (
+            initialization_error := session.get("agent_error")
+        ):
+            raise _ImageAttachInitializationError(str(initialization_error))
+        session["image_counter"] = session.get("image_counter", 0) + 1
+        img_dir = _hermes_home / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+        try:
+            img_path.write_bytes(img_bytes)
+        except Exception:
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            raise
+        session.setdefault("attached_images", []).append(str(img_path))
+        return img_path
+''',
+        "serialized image queue append",
+    )
+    source = replace_once(
+        source,
+        '''    try:
+        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
+    except Exception as e:
+        return _err(rid, 5027, f"write failed: {e}")
+''',
+        '''    try:
+        img_path = _queue_attached_image(
+            session,
+            img_bytes,
+            ext,
+            prefix="upload",
+            fail_on_initialization_error=True,
+        )
+    except _ImageAttachInitializationError as e:
+        return _err(rid, 5032, str(e))
+    except Exception as e:
+        return _err(rid, 5027, f"write failed: {e}")
+''',
+        "image byte queue initialization error",
+    )
+    source = replace_once(
+        source,
+        '''    session["image_counter"] = session.get("image_counter", 0) + 1
+    img_dir = _hermes_home / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    img_path = (
+        img_dir
+        / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
+    )
+
+    # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
+    if not save_clipboard_image(img_path):
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        msg = (
+            "Clipboard has image but extraction failed"
+            if has_clipboard_image()
+            else "No image found in clipboard"
+        )
+        return _ok(rid, {"attached": False, "message": msg})
+
+    session.setdefault("attached_images", []).append(str(img_path))
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": len(session["attached_images"]),
+''',
+        '''    with session["history_lock"]:
+        session["image_counter"] = session.get("image_counter", 0) + 1
+        img_dir = _hermes_home / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        img_path = (
+            img_dir
+            / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
+        )
+
+        # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
+        if not save_clipboard_image(img_path):
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            msg = (
+                "Clipboard has image but extraction failed"
+                if has_clipboard_image()
+                else "No image found in clipboard"
+            )
+            return _ok(rid, {"attached": False, "message": msg})
+
+        session.setdefault("attached_images", []).append(str(img_path))
+        attached_count = len(session["attached_images"])
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": attached_count,
+''',
+        "serialized clipboard image append",
+    )
+    source = replace_once(
+        source,
+        '''        if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return _err(rid, 4016, f"unsupported image: {image_path.name}")
+        session.setdefault("attached_images", []).append(str(image_path))
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "path": str(image_path),
+                "count": len(session["attached_images"]),
+''',
+        '''        if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            return _err(rid, 4016, f"unsupported image: {image_path.name}")
+        with session["history_lock"]:
+            session.setdefault("attached_images", []).append(str(image_path))
+            attached_count = len(session["attached_images"])
+        return _ok(
+            rid,
+            {
+                "attached": True,
+                "path": str(image_path),
+                "count": attached_count,
+''',
+        "serialized local image append",
+    )
+    source = replace_once(
+        source,
+        '''    images = session.setdefault("attached_images", [])
+    before = len(images)
+    session["attached_images"] = [path for path in images if path != raw]
+    return _ok(
+        rid,
+        {
+            "detached": len(session["attached_images"]) != before,
+            "count": len(session["attached_images"]),
+        },
+    )
+''',
+        '''    with session["history_lock"]:
+        images = session.setdefault("attached_images", [])
+        before = len(images)
+        session["attached_images"] = [path for path in images if path != raw]
+        detached = len(session["attached_images"]) != before
+        attached_count = len(session["attached_images"])
+    return _ok(
+        rid,
+        {
+            "detached": detached,
+            "count": attached_count,
+        },
+    )
+''',
+        "serialized image detach",
+    )
+    source = replace_once(
+        source,
+        '''        if dropped["is_image"]:
+            session.setdefault("attached_images", []).append(str(drop_path))
+            text = remainder or f"[User attached image: {drop_path.name}]"
+            return _ok(
+                rid,
+                {
+                    "matched": True,
+                    "is_image": True,
+                    "path": str(drop_path),
+                    "count": len(session["attached_images"]),
+''',
+        '''        if dropped["is_image"]:
+            with session["history_lock"]:
+                session.setdefault("attached_images", []).append(str(drop_path))
+                attached_count = len(session["attached_images"])
+            text = remainder or f"[User attached image: {drop_path.name}]"
+            return _ok(
+                rid,
+                {
+                    "matched": True,
+                    "is_image": True,
+                    "path": str(drop_path),
+                    "count": attached_count,
+''',
+        "serialized detected image append",
+    )
+    source = replace_once(
+        source,
+        '''        _start_inflight_turn(session, text)
+
+    # Persist the DB row lazily, now that the user has actually sent a message.
+''',
+        '''        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
+        prompt_generation = session["prompt_generation"]
+        _start_inflight_turn(session, text)
+        # Detach this prompt's immutable image batch at the same boundary that
+        # marks the session running. Later attachments remain queued for the next
+        # prompt, regardless of whether Hermes initialization succeeds.
+        submitted_images = list(session.get("attached_images", []))
+        session["attached_images"] = []
+
+    # Persist the DB row lazily, now that the user has actually sent a message.
+''',
+        "prompt image batch ownership",
+    )
+    source = replace_once(
+        source,
+        '''            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+''',
+        '''            return
+        _run_prompt_submit(
+            rid, sid, session, text, submitted_images, prompt_generation
+        )
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+''',
+        "prompt image batch handoff",
+    )
+    source = replace_once(
+        source,
+        '''        if err:
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(
+            rid, sid, session, text, submitted_images, prompt_generation
+        )
+''',
+        '''        if err:
+            with session["history_lock"]:
+                # A reset or newer accepted prompt owns the session now. A stale
+                # initialization callback must not restore pre-reset images or
+                # clear the newer prompt's running and inflight state.
+                if session.get("prompt_generation") != prompt_generation:
+                    return
+                # The client already marked this batch attached. Put it back
+                # ahead of later attachments so a retry preserves both the UI
+                # contract and the original prompt's attachment order.
+                session["attached_images"] = list(submitted_images) + list(
+                    session.get("attached_images", [])
+                )
+                session["running"] = False
+                _clear_inflight_turn(session)
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "June initialization failed"
+                    )
+                },
+            )
+            return
+        _run_prompt_submit(
+            rid, sid, session, text, submitted_images, prompt_generation
+        )
+''',
+        "failed prompt image batch restoration",
+    )
+    source = replace_once(
+        source,
+        '''def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    with session["history_lock"]:
+        history = list(session["history"])
+        history_version = int(session.get("history_version", 0))
+        images = list(session.get("attached_images", []))
+        session["attached_images"] = []
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
+    agent = session["agent"]
+''',
+        '''def _run_prompt_submit(
+    rid, sid: str, session: dict, text: Any, images, prompt_generation
+) -> None:
+    with session["history_lock"]:
+        if (
+            prompt_generation is not None
+            and session.get("prompt_generation") != prompt_generation
+        ):
+            return
+        history = list(session["history"])
+        history_version = int(session.get("history_version", 0))
+        images = list(images)
+        if not isinstance(session.get("inflight_turn"), dict):
+            _start_inflight_turn(session, text)
+        agent = session["agent"]
+''',
+        "prompt image batch consumption",
+    )
+    source = replace_count(
+        source,
+        '''            _run_prompt_submit(rid, sid, session, text)
+''',
+        '''            _run_prompt_submit(rid, sid, session, text, [], None)
+''',
+        2,
+        "notification prompt image isolation",
+    )
+    source = replace_once(
+        source,
+        '''                _run_prompt_submit(rid, sid, session, goal_followup)
+''',
+        '''                _run_prompt_submit(
+                    rid, sid, session, goal_followup, [], None
+                )
+''',
+        "goal continuation image isolation",
+    )
+    source = replace_once(
+        source,
+        '''                    _run_prompt_submit(rid, sid, session, synth)
+''',
+        '''                    _run_prompt_submit(rid, sid, session, synth, [], None)
+''',
+        "completion prompt image isolation",
+    )
+    source = replace_region(
+        source,
+        "def _reset_session_agent(sid: str, session: dict) -> dict:\n",
+        "\n\ndef _schedule_mcp_late_refresh(sid: str, agent) -> None:\n",
+        '''def _reset_session_agent(sid: str, session: dict) -> dict:
+    # Serialize reset with lazy-build publication using a lock independent of
+    # both session-map and history ownership. This keeps the Hermes instance and
+    # slash worker swap atomic without a _sessions_lock/history_lock cycle.
+    publication_lock = session.setdefault("agent_publication_lock", threading.Lock())
+    with publication_lock:
+        # Own the session state before rebuilding Hermes. An attachment that
+        # arrives during the rebuild must wait and queue after reset, never receive
+        # an acknowledgement and then get erased by reset's queue clear.
+        with session["history_lock"]:
+            # Invalidate callbacks waiting on an earlier lazy Hermes build before
+            # constructing the replacement Hermes instance. They may finish only
+            # after this lock is released and must not mutate the reset session.
+            previous_prompt_generation = int(session.get("prompt_generation", 0))
+            previous_reset_generation = int(session.get("reset_generation", 0))
+            session["prompt_generation"] = previous_prompt_generation + 1
+            session["reset_generation"] = previous_reset_generation + 1
+            tokens = _set_session_context(session["session_key"])
+            try:
+                new_agent = _make_agent(
+                    sid,
+                    session["session_key"],
+                    session_id=session["session_key"],
+                    # Preserve this session's chosen model across /new so a reset
+                    # doesn't silently revert to global config (or to a model another
+                    # session set). See the cross-session-contamination note in
+                    # _apply_model_switch.
+                    model_override=session.get("model_override"),
+                )
+            except Exception:
+                # The original lazy build and prompt still own the session when a
+                # requested reset cannot construct its replacement Hermes instance.
+                session["prompt_generation"] = previous_prompt_generation
+                session["reset_generation"] = previous_reset_generation
+                raise
+            finally:
+                _clear_session_context(tokens)
+            session["agent"] = new_agent
+            # A successful replacement supersedes any failure published by the
+            # prior lazy Hermes build. Attachment and readiness checks must observe
+            # the recovered session, not reject it with the obsolete error.
+            session["agent_error"] = None
+            session["config_model_seen"] = _config_model_target()
+            session["attached_images"] = []
+            session["edit_snapshots"] = {}
+            session["image_counter"] = 0
+            session["running"] = False
+            session["show_reasoning"] = _load_show_reasoning()
+            session["tool_progress_mode"] = _load_tool_progress_mode()
+            session["tool_started_at"] = {}
+            session["history"] = []
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+            info = _session_info(new_agent, session)
+        _emit("session.info", sid, info)
+        _restart_slash_worker(sid, session)
+        # Reset has fully published its replacement Hermes instance and slash
+        # worker. It owns readiness even if an obsolete lazy build is still in
+        # slow construction and will only observe reset_generation later.
+        if ready := session.get("agent_ready"):
+            ready.set()
+    return info
+''',
+        "session reset ownership",
     )
     source = replace_once(
         source,
@@ -1177,14 +1787,28 @@ def _(rid, params: dict) -> dict:
         source,
         '''        session["running"] = True
         session["last_active"] = time.time()
+        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
+        prompt_generation = session["prompt_generation"]
         _start_inflight_turn(session, text)
+        # Detach this prompt's immutable image batch at the same boundary that
+        # marks the session running. Later attachments remain queued for the next
+        # prompt, regardless of whether Hermes initialization succeeds.
+        submitted_images = list(session.get("attached_images", []))
+        session["attached_images"] = []
 ''',
         '''        # A real user prompt wins over a deferred goal continuation,
         # matching the existing race semantics after the prior completion lands.
         session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
         session["running"] = True
         session["last_active"] = time.time()
+        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
+        prompt_generation = session["prompt_generation"]
         _start_inflight_turn(session, text)
+        # Detach this prompt's immutable image batch at the same boundary that
+        # marks the session running. Later attachments remain queued for the next
+        # prompt, regardless of whether Hermes initialization succeeds.
+        submitted_images = list(session.get("attached_images", []))
+        session["attached_images"] = []
 ''',
         "server user prompt wins deferred goal",
     )
@@ -1253,7 +1877,14 @@ def _(rid, params: dict) -> dict:
             session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
             session["running"] = True
             session["last_active"] = time.time()
+            session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
+            prompt_generation = session["prompt_generation"]
             _start_inflight_turn(session, text)
+            # Detach this prompt's immutable image batch at the same boundary that
+            # marks the session running. Later attachments remain queued for the next
+            # prompt, regardless of whether Hermes initialization succeeds.
+            submitted_images = list(session.get("attached_images", []))
+            session["attached_images"] = []
 '''
     source = replace_region(
         source,
@@ -1484,7 +2115,7 @@ def _(rid, params: dict) -> dict:
             try:
                 _emit("message.start", sid)
                 _run_prompt_submit(
-                    deferred_goal["rid"], sid, session, deferred_goal["text"]
+                    deferred_goal["rid"], sid, session, deferred_goal["text"], [], None
                 )
             except Exception as exc:
                 print(
@@ -1686,7 +2317,9 @@ def _(rid, params: dict) -> dict:
                 session["running"] = True
             try:
                 _emit("message.start", sid)
-                _run_prompt_submit(rid, sid, session, goal_followup)
+                _run_prompt_submit(
+                    rid, sid, session, goal_followup, [], None
+                )
             except Exception as _cont_exc:
                 print(
                     f"[tui_gateway] goal continuation dispatch failed: "
@@ -1714,7 +2347,9 @@ def _(rid, params: dict) -> dict:
             if dispatch_goal_followup:
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, goal_followup)
+                    _run_prompt_submit(
+                        rid, sid, session, goal_followup, [], None
+                    )
                 except Exception as _cont_exc:
                     print(
                         f"[tui_gateway] goal continuation dispatch failed: "

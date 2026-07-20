@@ -41,7 +41,7 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 // v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
 const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v3";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "agent/agent_init.py",
@@ -55,12 +55,13 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
         "tools/mcp_tool.py",
         "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
     ),
-    // Includes receive-ordered live-snapshot and prompt ownership, exact retry
-    // for a rejected ID-less message.complete, and a generation-tokened Agent
-    // run continuation acknowledgement barrier.
+    // Includes immediate image-byte attachment, receive-ordered live-snapshot
+    // and prompt ownership, exact retry for a rejected ID-less
+    // message.complete, and a generation-tokened Agent run continuation
+    // acknowledgement barrier.
     (
         "tui_gateway/server.py",
-        "df540ed75578077a76a967c4cf53dba92de2f8bd923cb485dd673761435ee5f2",
+        "ee9806275e5b5706cadc58151b894d54351057d57f158d36a94e66080263a742",
     ),
     (
         "utils.py",
@@ -17504,6 +17505,8 @@ mcp_servers:
             "june-approval-v1",
             "june-approval-v3",
             "june-approval-memory-v2",
+            "june-approval-memory-v3",
+            "june-approval-memory-v13",
         ] {
             let previous = format!(
                 r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"{previous_patch_set}"}}"#
