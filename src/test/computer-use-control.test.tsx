@@ -22,7 +22,6 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 }));
 
 import { ComputerUseControl } from "../components/plugins/ComputerUseControl";
-import { PluginsView } from "../components/plugins/PluginsView";
 import { SETTINGS_TABS } from "../components/settings/AppSettings";
 import type { ComputerUseStatusDto } from "../lib/tauri";
 
@@ -86,7 +85,12 @@ describe("ComputerUseControl", () => {
 
     expect(await screen.findByText("Accessibility")).toBeInTheDocument();
     expect(screen.getByText("Screen recording")).toBeInTheDocument();
-    expect(screen.getByText(/Captures are never analytics/)).toBeInTheDocument();
+    expect(screen.queryByText(/Captures are never analytics/)).not.toBeInTheDocument();
+
+    await userEvent.hover(
+      screen.getByRole("button", { name: "Computer use privacy and permissions" }),
+    );
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(/Captures are never analytics/);
 
     await userEvent.click(screen.getByRole("button", { name: "Continue to macOS access" }));
     expect(tauriMocks.computerUseRequestPermissions).toHaveBeenCalledTimes(1);
@@ -144,7 +148,7 @@ describe("ComputerUseControl", () => {
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={onOpenBilling} />);
 
     expect(await screen.findByRole("switch", { name: "Enable Computer use" })).toBeDisabled();
-    expect(screen.getByText(/macOS will ask for Accessibility/)).toBeInTheDocument();
+    expect(screen.queryByText(/macOS will ask for Accessibility/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "View plans" }));
     expect(onOpenBilling).toHaveBeenCalledTimes(1);
   });
@@ -168,15 +172,12 @@ describe("ComputerUseControl", () => {
     expect(screen.queryByText("Bundled driver unavailable")).not.toBeInTheDocument();
   });
 
-  it("exposes Computer use as a plugins subsection of the Connectors settings page", async () => {
-    render(<PluginsView onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+  it("renders Computer use as a plugin row without a Pro tag", async () => {
+    render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
-    expect(screen.getByRole("heading", { name: "Plugins" })).toBeInTheDocument();
     expect(await screen.findByRole("switch", { name: "Enable Computer use" })).toBeInTheDocument();
-    expect(SETTINGS_TABS).toContainEqual({ id: "connectors", label: "Connectors" });
-    expect(SETTINGS_TABS.some((tab) => tab.label === "Plugins")).toBe(false);
-    expect(
-      screen.queryByRole("button", { name: "Open Computer use settings" }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText("Computer use").closest("li")).toHaveClass("connector-row");
+    expect(screen.queryByText("Pro")).not.toBeInTheDocument();
+    expect(SETTINGS_TABS).toContainEqual({ id: "connectors", label: "Plugins" });
   });
 });

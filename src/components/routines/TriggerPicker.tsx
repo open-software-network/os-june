@@ -101,7 +101,7 @@ export function TriggerPicker({
       {trigger.source !== "schedule" && !hasAccount ? (
         <InlineNotice
           tone="warning"
-          body="Event triggers need a connected Google account. Connect one in Settings under Connectors."
+          body="Event triggers need a connected Google account. Connect one in Settings under Plugins."
           aria-label="Google account required"
         />
       ) : null}

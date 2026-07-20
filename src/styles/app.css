@@ -12740,9 +12740,13 @@ input:focus-visible,
 .settings-row-info-affordance {
   display: inline-grid;
   place-items: center;
+  padding: 0;
+  border: 0;
   border-radius: var(--r-pill);
+  background: transparent;
   color: var(--muted-foreground);
   cursor: help;
+  font: inherit;
   transition: color var(--t-fast) var(--ease-out);
 }
 
@@ -12758,63 +12762,12 @@ input:focus-visible,
   gap: var(--sp-3);
 }
 
-/* Plugins ------------------------------------------------------------ */
-
-.plugins-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--plugin-tile-min-w)), 1fr));
-  gap: var(--sp-4);
-}
-
-.plugin-tile {
-  padding: var(--sp-6);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--card);
-}
-
-.computer-use-control {
-  display: grid;
-  gap: var(--sp-5);
-}
-
-.computer-use-control-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
-  gap: var(--sp-4);
-}
-
-.computer-use-mark {
-  display: inline-grid;
-  place-items: center;
-  width: var(--control-lg);
-  height: var(--control-lg);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
-  color: var(--foreground);
-}
-
-.computer-use-control-heading {
-  display: grid;
-  gap: var(--sp-1);
-  min-width: 0;
-}
-
 .computer-use-title-line {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
 }
 
-.computer-use-title {
-  margin: 0;
-  color: var(--foreground);
-  font-size: var(--fs-xl);
-  font-weight: 400;
-}
-
-.computer-use-description,
 .computer-use-message {
   margin: 0;
   color: var(--muted-foreground);
@@ -12822,16 +12775,20 @@ input:focus-visible,
   line-height: 1.5;
 }
 
-.computer-use-switch-wrap {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
 .computer-use-state-label {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   white-space: nowrap;
+}
+
+.computer-use-details {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: var(--sp-4);
+}
+
+.computer-use-details:empty {
+  display: none;
 }
 
 .computer-use-setup {
@@ -12938,23 +12895,6 @@ input:focus-visible,
   font-size: var(--fs-xs);
 }
 
-.computer-use-education {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
-  border-radius: var(--r-md);
-  background: var(--surface-subtle);
-  color: var(--muted-foreground);
-}
-
-.computer-use-education p {
-  margin: 0;
-  font-size: var(--fs-sm);
-  line-height: 1.55;
-}
-
 .computer-use-requirements {
   display: flex;
   flex-direction: column;
@@ -13029,15 +12969,6 @@ input:focus-visible,
 }
 
 @media (max-width: 720px) {
-  .computer-use-control-header {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .computer-use-switch-wrap {
-    grid-column: 2;
-    justify-content: space-between;
-  }
-
   .computer-use-permission-assistant {
     grid-template-columns: minmax(0, 1fr);
   }

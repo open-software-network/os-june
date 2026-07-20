@@ -566,7 +566,7 @@ export function triggerScopeWarning(
   if (accountScopes == null) return null;
   if (scopesCoverBundles(accountScopes, bundles)) return null;
   const features = bundles.map((bundle) => BUNDLE_META[bundle].label.toLowerCase()).join(" and ");
-  return `This trigger needs ${features} access on your connected Google account. Add it in Settings under Connectors.`;
+  return `This trigger needs ${features} access on your connected Google account. Add it in Settings under Plugins.`;
 }
 
 /**

@@ -2,6 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
+import { ComputerUseControl } from "../plugins/ComputerUseControl";
 import {
   BUNDLE_META,
   accountStatusMeta,
@@ -321,7 +322,13 @@ function connectDescription(
  * Local mode only: tokens live in the Mac's Keychain and provider calls
  * originate on this device.
  */
-export function ConnectorsSection() {
+export function ConnectorsSection({
+  onOpenModels = () => {},
+  onOpenBilling = () => {},
+}: {
+  onOpenModels?: () => void;
+  onOpenBilling?: () => void;
+}) {
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<ConnectorProvider | null>(null);
@@ -714,22 +721,22 @@ export function ConnectorsSection() {
   }
 
   return (
-    <section className="settings-group" aria-labelledby="connectors-heading">
+    <section className="settings-group" aria-labelledby="plugins-heading">
       <SettingsPageHeader
-        id="connectors-heading"
-        title="Connectors"
-        blurb="Connect your accounts in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses connector content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
+        id="plugins-heading"
+        title="Plugins"
+        blurb="Connect apps and services in local mode. Tokens stay in your Mac's Keychain, and provider calls go straight from this device. When an AI feature uses plugin content, that content goes to your chosen model provider. Choose a local model to keep inference on this device."
       />
 
       {notConfigured ? (
         <InlineNotice
           tone="info"
-          body={`${PROVIDER_NAMES[notConfigured]} connector isn't configured in this build.`}
-          aria-label="Connector not configured"
+          body={`${PROVIDER_NAMES[notConfigured]} isn't configured in this build.`}
+          aria-label="Plugin not configured"
         />
       ) : null}
       {loadError ? (
-        <InlineNotice tone="warning" body={loadError} aria-label="Connectors load error" />
+        <InlineNotice tone="warning" body={loadError} aria-label="Plugins load error" />
       ) : null}
       {obsidianError ? (
         <InlineNotice tone="warning" body={obsidianError} aria-label="Obsidian plugin error" />
@@ -891,6 +898,7 @@ export function ConnectorsSection() {
             onReconnect={() => void reconnectNotion()}
             onDisconnect={() => void disconnectNotion()}
           />
+          <ComputerUseControl onOpenModels={onOpenModels} onOpenBilling={onOpenBilling} />
         </ul>
       </div>
 

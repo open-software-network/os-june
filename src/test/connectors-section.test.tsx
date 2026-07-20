@@ -72,6 +72,14 @@ vi.mock("../components/ui/Toaster", () => ({
   },
 }));
 
+vi.mock("../components/plugins/ComputerUseControl", () => ({
+  ComputerUseControl: () => (
+    <li className="connector-row">
+      <span>Computer use</span>
+    </li>
+  ),
+}));
+
 const GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly";
 const CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events";
 
@@ -275,6 +283,14 @@ describe("ConnectorsSection", () => {
     expect(within(row).queryByText("Finish setup")).toBeNull();
   });
 
+  it("presents connected services and Computer use together as plugins", async () => {
+    render(<ConnectorsSection />);
+
+    expect(screen.getByRole("heading", { name: "Plugins" })).toBeInTheDocument();
+    expect(screen.getByText("Computer use")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Connect Google" })).toBeEnabled();
+  });
+
   it("uses plugin terminology for Obsidian status errors", async () => {
     mocks.obsidianStatus.mockRejectedValue(new Error("Could not read the saved vault"));
 
@@ -386,9 +402,7 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
     await findEnabledConnect("Connect Google");
 
-    expect(
-      screen.getByText(/connector content.*goes to your chosen model provider/i),
-    ).toBeVisible();
+    expect(screen.getByText(/plugin content.*goes to your chosen model provider/i)).toBeVisible();
     expect(screen.queryByText(/OpenSoftware's servers cannot read your data/i)).toBeNull();
   });
 
@@ -579,7 +593,7 @@ describe("ConnectorsSection", () => {
     // connector servers, triggers, and grants all bind to that single account.
     expect(screen.queryByRole("button", { name: "Connect Google" })).toBeNull();
     expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
-    expect(screen.getByText(/Connect your accounts in local mode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Connect apps and services in local mode/i)).toBeInTheDocument();
   });
 
   it("connects an account from the feature-bundle dialog and applies the runtime", async () => {
@@ -654,9 +668,7 @@ describe("ConnectorsSection", () => {
       within(screen.getByRole("dialog")).getByRole("button", { name: "Connect" }),
     );
 
-    expect(
-      await screen.findByText("Google connector isn't configured in this build."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Google isn't configured in this build.")).toBeInTheDocument();
   });
 
   it("reconnects a lapsed account with the same bundles and a login hint", async () => {

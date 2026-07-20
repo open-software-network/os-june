@@ -346,7 +346,7 @@ describe("event triggers", () => {
   it("warns only when a connected account lacks the trigger's scope", () => {
     // A calendar-only account can't back an email_received trigger.
     expect(triggerScopeWarning({ source: "email_received" }, [CALENDAR_EVENTS])).toBe(
-      "This trigger needs read mail access on your connected Google account. Add it in Settings under Connectors.",
+      "This trigger needs read mail access on your connected Google account. Add it in Settings under Plugins.",
     );
     // Gmail read covers the new-mail trigger, so no warning.
     expect(triggerScopeWarning({ source: "email_received" }, [GMAIL_READONLY])).toBeNull();
