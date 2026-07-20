@@ -112,6 +112,16 @@ async function findEnabledConnect(name: string) {
 }
 
 describe("ConnectorsSection", () => {
+  it("uses plugin terminology for Obsidian status errors", async () => {
+    mocks.obsidianStatus.mockRejectedValue(new Error("Could not read the saved vault"));
+
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByLabelText("Obsidian plugin error")).toHaveTextContent(
+      "Could not read the saved vault",
+    );
+  });
+
   it("blocks duplicate Obsidian picker opens and clears busy state after cancellation", async () => {
     let resolvePicker: (selection: string | null) => void = () => {};
     mocks.openFileDialog.mockReturnValue(

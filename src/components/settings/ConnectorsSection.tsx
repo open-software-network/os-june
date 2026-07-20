@@ -525,7 +525,7 @@ export function ConnectorsSection() {
         <InlineNotice tone="warning" body={loadError} aria-label="Connectors load error" />
       ) : null}
       {obsidianError ? (
-        <InlineNotice tone="warning" body={obsidianError} aria-label="Obsidian connector error" />
+        <InlineNotice tone="warning" body={obsidianError} aria-label="Obsidian plugin error" />
       ) : null}
 
       <div className="settings-card connectors-card">
