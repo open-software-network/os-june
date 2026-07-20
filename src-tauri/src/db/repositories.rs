@@ -2983,6 +2983,26 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn set_note_transcription_warning(
+        &self,
+        note_id: &str,
+        warning: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE notes
+             SET last_error = ?, updated_at = ?
+             WHERE id = ?
+               AND processing_status = 'transcribing'
+               AND last_error IS NULL",
+        )
+        .bind(warning)
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn set_generated_note(
         &self,
         note_id: &str,
@@ -3250,8 +3270,19 @@ impl Repositories {
         .bind(final_path)
         .execute(&self.pool)
         .await?;
-        self.set_note_status(note_id, ProcessingStatus::Recording, None)
-            .await?;
+        // A new capture may be stacked while an earlier recording from this
+        // note is still processing. Keep that active stage and its warning;
+        // the recording session row is the source of truth for live capture.
+        query(
+            "UPDATE notes
+             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             WHERE id = ?
+               AND processing_status NOT IN ('transcribing', 'generating')",
+        )
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
         if let Err(error) = self.add_checkpoint(session_id, "start", None).await {
             eprintln!(
                 "failed to persist start checkpoint for recording session {session_id}: {error}"
@@ -6140,6 +6171,40 @@ mod tests {
             pipeline_version: "pipeline-v1".to_string(),
             configuration_fingerprint: "config-v1".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn recording_session_preserves_active_note_processing_warning() {
+        let repos = test_repositories().await;
+        let note = repos
+            .create_note("default", None)
+            .await
+            .expect("create note");
+        let warning = "The service is busy right now. Wait a minute, then retry.";
+        repos
+            .set_note_status(
+                &note.id,
+                ProcessingStatus::Transcribing,
+                Some(warning.to_string()),
+            )
+            .await
+            .expect("set active warning");
+
+        repos
+            .create_recording_session(
+                &note.id,
+                "stacked-session",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/stacked.partial.wav",
+                "/tmp/stacked.wav",
+                None,
+            )
+            .await
+            .expect("create stacked recording session");
+
+        let active = repos.get_note(&note.id).await.expect("active note");
+        assert_eq!(active.processing_status, ProcessingStatus::Transcribing);
+        assert_eq!(active.last_error.as_deref(), Some(warning));
     }
 
     async fn transcript_count(repos: &Repositories, session_id: &str) -> i64 {

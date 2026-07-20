@@ -424,6 +424,15 @@ export function NoteEditor({
             recoverBlockedReason={recoveryBlockedReason}
           />
         ) : null}
+        {note.processingStatus === "transcribing" && note.lastError ? (
+          <InlineNotice
+            className="note-transcription-warning"
+            tone="warning"
+            role="alert"
+            aria-label="Transcription warning"
+            body={userFacingFailureMessage(note.lastError)}
+          />
+        ) : null}
         {note.processingStatus === "failed" ? (
           <NoteFailureBanner
             errorMessage={note.lastError}

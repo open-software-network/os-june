@@ -1338,14 +1338,16 @@ pub(crate) async fn process_saved_source_audio(
     };
 
     let persist_repos = repos.clone();
+    let persist_note_id = note_id.to_string();
     let persist_session_id = session_id.to_string();
     let persist_timeline = timeline.clone();
     let result_sink: TurnResultSink = Arc::new(move |event| {
         let repos = persist_repos.clone();
+        let note_id = persist_note_id.clone();
         let session_id = persist_session_id.clone();
         let timeline = persist_timeline.clone();
         Box::pin(async move {
-            persist_turn_transcription_event(&repos, &session_id, event, timeline).await
+            persist_turn_transcription_event(&repos, &note_id, &session_id, event, timeline).await
         })
     });
     let claim_repos = repos.clone();
@@ -3263,6 +3265,7 @@ async fn transcribe_one_turn_job(
 
 async fn persist_turn_transcription_event(
     repos: &Repositories,
+    note_id: &str,
     session_id: &str,
     event: CompletedTurnTranscription,
     timeline: FirstEventTimeline,
@@ -3336,6 +3339,7 @@ async fn persist_turn_transcription_event(
                     "The durable transcription job was no longer running.",
                 ));
             }
+            persist_active_note_transcription_warning(repos, note_id, &failure.input).await?;
             None
         }
     };
@@ -3385,6 +3389,31 @@ async fn persist_turn_transcription_event(
         .await
     {
         tracing::warn!(%session_id, %error, "failed to persist transcript_persistence checkpoint");
+    }
+    Ok(())
+}
+
+async fn persist_active_note_transcription_warning(
+    repos: &Repositories,
+    note_id: &str,
+    failure: &SourceTranscriptInput,
+) -> Result<(), AppError> {
+    let Some(warning) = failure
+        .warning
+        .as_deref()
+        .map(str::trim)
+        .filter(|warning| !warning.is_empty())
+    else {
+        return Ok(());
+    };
+    if failure.recorded_silence || is_no_speech_message(warning) {
+        return Ok(());
+    }
+    let surfaced = repos
+        .set_note_transcription_warning(note_id, warning)
+        .await?;
+    if surfaced {
+        tracing::info!(%note_id, "surfaced live note transcription warning");
     }
     Ok(())
 }
@@ -3975,6 +4004,97 @@ mod tests {
             assert_eq!(object.len(), 1);
             assert!(object["doneToDurationMs"].as_i64().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn live_transcription_warning_persists_only_for_actionable_active_failure() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        repos
+            .set_note_status(&note.id, ProcessingStatus::Transcribing, None)
+            .await
+            .expect("start transcription");
+
+        let actionable_failure = SourceTranscriptInput {
+            source: "microphone".to_string(),
+            text: String::new(),
+            valid: false,
+            warning: Some("The service is busy right now. Wait a minute, then retry.".to_string()),
+            recorded_silence: false,
+            start_ms: Some(0),
+            end_ms: Some(1_000),
+            turn_index: Some(0),
+        };
+        persist_active_note_transcription_warning(&repos, &note.id, &actionable_failure)
+            .await
+            .expect("persist warning");
+        let warned = repos.get_note(&note.id).await.expect("warned note");
+        assert_eq!(warned.processing_status, ProcessingStatus::Transcribing);
+        assert_eq!(
+            warned.last_error.as_deref(),
+            Some("The service is busy right now. Wait a minute, then retry.")
+        );
+
+        let later_failure = SourceTranscriptInput {
+            warning: Some("The transcription provider could not process this audio.".to_string()),
+            turn_index: Some(1),
+            ..actionable_failure.clone()
+        };
+        persist_active_note_transcription_warning(&repos, &note.id, &later_failure)
+            .await
+            .expect("keep first warning");
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("first warning note")
+                .last_error
+                .as_deref(),
+            Some("The service is busy right now. Wait a minute, then retry.")
+        );
+
+        repos
+            .set_note_status(&note.id, ProcessingStatus::Transcribing, None)
+            .await
+            .expect("retry transcription");
+        let no_speech_failure = SourceTranscriptInput {
+            warning: Some(
+                "No speech detected. Try speaking louder or moving closer to the microphone."
+                    .to_string(),
+            ),
+            ..actionable_failure.clone()
+        };
+        persist_active_note_transcription_warning(&repos, &note.id, &no_speech_failure)
+            .await
+            .expect("ignore no-speech warning");
+        assert!(repos
+            .get_note(&note.id)
+            .await
+            .expect("retried note")
+            .last_error
+            .is_none());
+
+        persist_active_note_transcription_warning(&repos, &note.id, &actionable_failure)
+            .await
+            .expect("persist warning after retry");
+        repos
+            .set_note_status(&note.id, ProcessingStatus::Generating, None)
+            .await
+            .expect("advance after transcription success");
+        persist_active_note_transcription_warning(&repos, &note.id, &later_failure)
+            .await
+            .expect("ignore warning after transcription");
+        let generating = repos.get_note(&note.id).await.expect("generating note");
+        assert_eq!(generating.processing_status, ProcessingStatus::Generating);
+        assert!(generating.last_error.is_none());
     }
 
     #[tokio::test]

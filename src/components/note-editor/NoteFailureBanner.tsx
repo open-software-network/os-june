@@ -51,6 +51,8 @@ function friendlyFailureSegment(message: string) {
     friendly = "Billing is temporarily unavailable. Please try again in a moment.";
   } else if (normalized.includes("upstream_provider_failed")) {
     friendly = "The transcription provider could not process this audio.";
+  } else if (normalized.includes("authorization_denied")) {
+    friendly = "The service is busy right now. Wait a minute, then retry.";
   }
   return source ? `${source}: ${friendly}` : friendly;
 }

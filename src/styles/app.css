@@ -12313,6 +12313,10 @@ input:focus-visible,
   margin: 0 0 var(--sp-5);
 }
 
+.note-transcription-warning {
+  margin: 0 0 var(--sp-5);
+}
+
 .note-failure-banner {
   display: flex;
   align-items: center;

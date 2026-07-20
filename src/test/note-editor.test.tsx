@@ -690,6 +690,26 @@ describe("NoteEditor", () => {
     expect(screen.queryByText("No transcript is available yet.")).toBeNull();
   });
 
+  it("shows a friendly warning while note transcription is still running", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "notes",
+          processingStatus: "transcribing",
+          lastError: "authorization_denied",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+      "The service is busy right now. Wait a minute, then retry.",
+    );
+    expect(screen.getByText("Transcribing audio")).toBeInTheDocument();
+    expect(screen.queryByText("authorization_denied")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
   it("orders source transcript turns by persisted turn metadata", () => {
     const { container } = render(
       <NoteEditor

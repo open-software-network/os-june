@@ -3850,7 +3850,15 @@ export function App() {
     if (selectedNote && selectedNote.id === owningNoteId) {
       dispatch({
         type: "noteProcessingUpdated",
-        note: { ...selectedNote, processingStatus: "transcribing" },
+        note: {
+          ...selectedNote,
+          processingStatus: "transcribing",
+          lastError:
+            selectedNote.processingStatus === "failed" ||
+            selectedNote.processingStatus === "recoverable"
+              ? undefined
+              : selectedNote.lastError,
+        },
       });
     }
     try {
