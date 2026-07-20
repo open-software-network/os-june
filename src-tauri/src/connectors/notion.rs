@@ -3,7 +3,7 @@
 //! This module owns Notion's hosted MCP OAuth flow, a read-only hosted MCP
 //! bridge for the `june_notion` Hermes toolset, and a narrow approved action
 //! bridge for Notion page creation. Other write/action tools stay denied;
-//! selected-resource scoping is not verified in this preview. See ADR 0030.
+//! selected-resource scoping is not verified in this preview. See ADR 0033.
 
 use crate::{
     connectors::{ConnectorAccountStatus, ConnectorProvider},

@@ -16,6 +16,7 @@ pub mod macos_menu_icons;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
+mod note_audio_export;
 pub mod notifications;
 pub mod os_accounts;
 pub mod p3a;
@@ -148,6 +149,7 @@ pub fn run() {
             commands::create_note,
             commands::list_notes,
             commands::get_note,
+            commands::download_note_audio,
             commands::update_note,
             commands::delete_note,
             commands::delete_notes,
@@ -159,7 +161,15 @@ pub fn run() {
             commands::remove_note_from_folder,
             commands::list_session_folders,
             commands::assign_session_to_folder,
+            commands::list_session_profiles,
+            commands::assign_session_to_profile,
+            commands::sticky_active_profile,
+            commands::profile_data_summary,
+            commands::move_profile_data_to_default,
+            commands::delete_profile_data,
             commands::remove_session_from_folder,
+            commands::list_completed_sessions,
+            commands::set_session_completed,
             commands::list_dictionary_entries,
             commands::create_dictionary_entry,
             commands::update_dictionary_entry,
@@ -287,6 +297,9 @@ pub fn run() {
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,
+            providers::profile_model_overrides,
+            providers::set_profile_model_overrides,
+            providers::delete_profile_model_overrides,
             providers::list_venice_models,
             providers::set_venice_model,
             providers::set_cost_quality,

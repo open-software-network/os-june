@@ -9,9 +9,12 @@ and their logic are all intact; only the nav entries are filtered out.
 
 Visible: the pre-PR tabs (**General, Billing, Shortcuts, Dictation, Audio,
 Models, Agent, Installed skills, About**) plus **External skill directories**
-(`external-dirs` is PR-new but verified working, so it's kept on) and **MCP
+(`external-dirs` is PR-new but verified working, so it's kept on), **MCP
 servers** (`mcp` — stabilized in JUN-137: add / test / toggle / edit / delete,
-with a non-destructive connection-field edit).
+with a non-destructive connection-field edit), and **Profiles**
+(`profile-builder` — stabilized in JUN-145/JUN-210: list / switch / delete
+with browser-style instant create and copy-current-settings (no wizard); new
+sessions follow the active profile, see ADR 0030).
 
 Hidden (added by this PR, not yet stabilized):
 
@@ -25,7 +28,6 @@ Hidden (added by this PR, not yet stabilized):
 | `taps` | Team skill taps |
 | `toolsets` | Toolsets |
 | `bundles` | Bundles |
-| `profile-builder` | Profile builder |
 | `integrations-health` | Integrations health |
 | `import-export` | Import / export |
 
@@ -40,7 +42,7 @@ This list was derived by diffing the `SettingsTab` union against `main`
 export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> =
   new Set<SettingsTab>([
     "skill-review", "mcp", "mcp-catalog", "mcp-diagnostics", "mcp-security",
-    "skills-hub", "taps", "toolsets", "bundles", "profile-builder",
+    "skills-hub", "taps", "toolsets", "bundles",
     "integrations-health", "import-export",
   ]);
 ```
@@ -77,11 +79,12 @@ const groups = localDev
 | id | known status |
 |----|--------------|
 | `mcp` | shipped (JUN-137): unhidden; add / test / toggle / edit / delete verified. Edit is connection-field only (command/args/url) via a scoped, non-destructive `mcp_servers.<name>.<field>` config write; editing secrets/transport is a delete-and-re-add followup |
+| `profile-builder` | shipped (JUN-145 + JUN-210): unhidden as "Profiles"; list / switch / delete with browser-style instant create and copy-current-settings (no wizard), new sessions and profile-scoped settings surfaces follow the active profile (ADR 0030). Edit-after-create is a followup |
 | `mcp-security` | works (config-write contract fixed) |
 | `skills-hub` | search + loading fixed; install needs a GITHUB_TOKEN configured in June (Team skill taps), since the sandbox can't read the gh keyring |
 | `taps` | hosts the GITHUB_TOKEN secret setup |
 | `toolsets` | read-only inventory; works |
-| `skill-review`, `mcp-catalog`, `mcp-diagnostics`, `bundles`, `profile-builder`, `integrations-health`, `import-export` | needs review |
+| `skill-review`, `mcp-catalog`, `mcp-diagnostics`, `bundles`, `integrations-health`, `import-export` | needs review |
 
 ## Caveat
 Hidden tabs are removed from the **nav**, not made unreachable everywhere — a

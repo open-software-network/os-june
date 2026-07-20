@@ -451,7 +451,10 @@ async fn run_benchmark_iteration(
 ) -> BenchmarkSample {
     let dir = tempfile::tempdir().expect("iteration tempdir");
     let repos = benchmark_repositories(&dir).await;
-    let note = repos.create_note(None).await.expect("benchmark note");
+    let note = repos
+        .create_note("default", None)
+        .await
+        .expect("benchmark note");
     let recording_session_id = format!("jun334-{}-{iteration}", case.name);
     let primary_path = fixtures
         .iter()

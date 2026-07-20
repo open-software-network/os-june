@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
 import { accountAvatarStyle } from "../components/account/AccountAvatar";
 import { beginMaxGrantWait, clearMaxGrantWait, markMaxGrantWaitSlow } from "../lib/max-upgrade";
@@ -11,10 +11,15 @@ import { AGENT_SOUNDS_ENABLED_KEY } from "../lib/agent-sound-settings";
 import { MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS } from "../lib/hermes-messaging";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
+import {
+  resetActiveHermesProfileForTests,
+  setActiveHermesProfileName,
+} from "../lib/active-hermes-profile";
 import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
 import { setStoredFontScale } from "../lib/font-scale";
 
 const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
   dictationCapabilities: vi.fn(),
   dictationSettings: vi.fn(),
   dictationHotkeyStatus: vi.fn(),
@@ -30,6 +35,8 @@ const mocks = vi.hoisted(() => ({
   setImageSafeMode: vi.fn(),
   setCostQuality: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
+  setProfileModelOverrides: vi.fn(),
+  deleteProfileModelOverrides: vi.fn(),
   saveLocalGenerationSettings: vi.fn(),
   setLocalGenerationEnabled: vi.fn(),
   probeLocalGenerationEndpoint: vi.fn(),
@@ -44,6 +51,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsUpgrade: vi.fn(),
   osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
+  hermesBridgeStatus: vi.fn(),
   osAccountsSetAvatarSeed: vi.fn(),
   toastSuccess: vi.fn(),
   toastWarning: vi.fn(),
@@ -99,6 +107,7 @@ vi.mock("../app/build-info", () => ({
 vi.mock("../lib/tauri", () => ({
   dictationCapabilities: mocks.dictationCapabilities,
   JUNE_COMMUNITY_URL: "https://t.me/osjune",
+  invoke: mocks.invoke,
   dictationHotkeyStatus: mocks.dictationHotkeyStatus,
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
@@ -113,6 +122,8 @@ vi.mock("../lib/tauri", () => ({
   setImageSafeMode: mocks.setImageSafeMode,
   setCostQuality: mocks.setCostQuality,
   setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
+  setProfileModelOverrides: mocks.setProfileModelOverrides,
+  deleteProfileModelOverrides: mocks.deleteProfileModelOverrides,
   saveLocalGenerationSettings: mocks.saveLocalGenerationSettings,
   setLocalGenerationEnabled: mocks.setLocalGenerationEnabled,
   probeLocalGenerationEndpoint: mocks.probeLocalGenerationEndpoint,
@@ -127,6 +138,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsUpgrade: mocks.osAccountsUpgrade,
   osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
+  hermesBridgeStatus: mocks.hermesBridgeStatus,
   osAccountsSetAvatarSeed: mocks.osAccountsSetAvatarSeed,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
@@ -275,8 +287,10 @@ describe("AppSettings", () => {
     clearMaxGrantWait();
     vi.clearAllMocks();
     localStorage.clear();
+    resetActiveHermesProfileForTests();
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
+    mocks.invoke.mockResolvedValue(null);
     mocks.dictationCapabilities.mockResolvedValue({
       capabilities: {
         available: true,
@@ -294,6 +308,24 @@ describe("AppSettings", () => {
       payload: { shortcut: baseSettings.pushToTalkShortcut },
     });
     mocks.localAudioFileSrc.mockImplementation((path) => `asset://${path}`);
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connections: [
+        {
+          baseUrl: "http://127.0.0.1:54321",
+          wsUrl: "ws://127.0.0.1:54321/api/ws",
+          token: "test-token",
+          port: 54321,
+          command: "hermes",
+          hermesHome: "/tmp/hermes-home",
+          cwd: null,
+          providerProxyPort: 54322,
+          pid: 1234,
+          sandboxed: true,
+          fullMode: false,
+        },
+      ],
+    });
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
       ...baseSettings,
       language,
@@ -305,24 +337,8 @@ describe("AppSettings", () => {
     mocks.setReleaseChannel.mockResolvedValue(undefined);
     mocks.reconcileToStable.mockResolvedValue(null);
     mocks.providerModelSettings.mockResolvedValue({
-      settings: {
-        transcriptionProvider: "venice",
-        generationProvider: "venice",
-        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
-        generationModel: "zai-org-glm-5-2",
-        remoteGenerationModel: "zai-org-glm-5-2",
-        imageModel: "venice-sd35",
-        videoModel: "wan-2.2-a14b-text-to-video",
-        veniceApiKeyConfigured: false,
-        localGeneration: {
-          baseUrl: "",
-          modelId: "",
-          apiKey: "",
-        },
-        imageSafeMode: true,
-        imageSafeModePromptDismissed: false,
-        costQuality: 50,
-      },
+      settings: buildProviderSettings(),
+      effectiveSettings: buildProviderSettings(),
     });
     mocks.p3aSettings.mockResolvedValue({
       settings: { enabled: false, consentVersion: 1, consentedAtWeek: null },
@@ -606,6 +622,10 @@ describe("AppSettings", () => {
       mocks.eventHandler = handler;
       return Promise.resolve(vi.fn());
     });
+  });
+
+  afterEach(() => {
+    resetActiveHermesProfileForTests();
   });
 
   it("opens checkout from Upgrade in billing settings", async () => {
@@ -3055,6 +3075,93 @@ describe("AppSettings", () => {
     } finally {
       window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, modelChanged);
     }
+  });
+
+  it("shows active profile models as read-only when a named profile is active", async () => {
+    setActiveHermesProfileName("writing");
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        imageModel: "venice-sd35",
+        videoModel: "wan-2.2-a14b-text-to-video",
+      },
+      effectiveSettings: {
+        ...buildProviderSettings(),
+        transcriptionProvider: "openai",
+        transcriptionModel: "gpt-4o-transcribe",
+        generationModel: "zai-org-glm-5-2",
+        remoteGenerationModel: "zai-org-glm-5-2",
+        imageModel: "flux-2-pro",
+        videoModel: "grok-imagine-text-to-video-private",
+      },
+    });
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (
+        command === "hermes_admin_request" &&
+        args &&
+        typeof args === "object" &&
+        "path" in args &&
+        args.path === "/api/profiles"
+      ) {
+        return {
+          profiles: [
+            { name: "default", provider: "venice", model: "zai-org-glm-5-2" },
+            { name: "writing", provider: "venice", model: "kimi-k2-6" },
+          ],
+        };
+      }
+      return null;
+    });
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    const modelsSection = screen.getByRole("heading", { name: "AI models" }).closest("section");
+    expect(modelsSection).not.toBeNull();
+    const scopedModels = within(modelsSection as HTMLElement);
+    const mediaSection = screen
+      .getByRole("heading", { name: "Image and video" })
+      .closest("section");
+    expect(mediaSection).not.toBeNull();
+    const scopedMedia = within(mediaSection as HTMLElement);
+
+    const profileNote =
+      "Showing models for the active profile: writing. Switch to the default profile to edit global models.";
+
+    // AI models section: transcription + text follow the profile, read-only.
+    expect(await scopedModels.findByText("GPT-4o Transcribe")).toBeInTheDocument();
+    expect(await scopedModels.findByText("Kimi K2.6")).toBeInTheDocument();
+    expect(scopedModels.queryByText("Parakeet")).not.toBeInTheDocument();
+    expect(scopedModels.queryByText("GLM 5.2")).not.toBeInTheDocument();
+    expect(scopedModels.getByText(profileNote)).toBeInTheDocument();
+    expect(scopedModels.getByRole("button", { name: "Change transcription model" })).toBeDisabled();
+    expect(scopedModels.getByRole("button", { name: "Change text model" })).toBeDisabled();
+
+    // Image and video section: both media models follow the profile, read-only.
+    expect(await scopedMedia.findByText("FLUX 2 Pro")).toBeInTheDocument();
+    expect(scopedMedia.queryByText("Venice SD3.5")).not.toBeInTheDocument();
+    expect(await scopedMedia.findByText("Grok Imagine")).toBeInTheDocument();
+    expect(scopedMedia.queryByText("Wan 2.2 A14B")).not.toBeInTheDocument();
+    expect(scopedMedia.getByText(profileNote)).toBeInTheDocument();
+    expect(scopedMedia.getByRole("button", { name: "Change image model" })).toBeDisabled();
+    expect(scopedMedia.getByRole("button", { name: "Change video model" })).toBeDisabled();
+
+    expect(mocks.setVeniceModel).not.toHaveBeenCalled();
   });
 
   it("serializes rapid preset saves and keeps the latest automatic preference", async () => {

@@ -24,6 +24,11 @@ vi.mock("../lib/hermes-adapter", () => ({
     session.last_active ?? session.started_at ?? "",
 }));
 
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/tauri")>()),
+  listSessionProfiles: vi.fn(async () => []),
+}));
+
 const now = "2026-05-19T10:00:00Z";
 
 const notes: NoteListItemDto[] = [

@@ -60,6 +60,21 @@ export function reorderTabs(tabs: Tab[], orderedVisibleIds: string[]): Tab[] {
   return next;
 }
 
+// A profile switch can leave inactive tabs pointing at notes from the previous
+// profile. Replace only those snapshots with the profile-neutral notes list;
+// callers may omit an active recording note from `noteIds` until the take ends.
+export function invalidateNoteTabs(tabs: Tab[], noteIds: ReadonlySet<string>): Tab[] {
+  let changed = false;
+  const next = tabs.map<Tab>((tab) => {
+    if (tab.nav.view !== "meetings" || !tab.nav.noteId || !noteIds.has(tab.nav.noteId)) {
+      return tab;
+    }
+    changed = true;
+    return { ...tab, nav: { view: "notes" } };
+  });
+  return changed ? next : tabs;
+}
+
 function agentOriginEquals(a?: AgentOrigin, b?: AgentOrigin): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
