@@ -62,6 +62,17 @@ const NOTION_READ_TOOL_ALLOWLIST: &[&str] = &[
     "notion-get-view-configuration-dsl",
 ];
 const NOTION_ACTION_TOOL_ALLOWLIST: &[&str] = &["notion-create-pages", "notion-update-page"];
+const NOTION_CREATE_PAGES_ALLOWED_FIELDS: &[&str] = &["allow_async", "pages", "parent"];
+const NOTION_CREATE_PAGE_ALLOWED_FIELDS: &[&str] = &[
+    "body",
+    "children",
+    "content",
+    "markdown",
+    "name",
+    "parent",
+    "properties",
+    "title",
+];
 const NOTION_DESTRUCTIVE_UPDATE_FIELDS: &[&str] = &["erase_content", "in_trash", "is_archived"];
 const NOTION_UPDATE_PAGE_ALLOWED_FIELDS: &[&str] = &[
     "page_id",
@@ -1476,6 +1487,19 @@ fn preflight_create_pages_arguments(arguments: &serde_json::Value) -> Result<(),
             "Notion page creation requires a pages array containing exactly one page object.",
         ));
     }
+    if object
+        .keys()
+        .any(|key| !NOTION_CREATE_PAGES_ALLOWED_FIELDS.contains(&key.as_str()))
+        || pages[0].as_object().is_some_and(|page| {
+            page.keys()
+                .any(|key| !NOTION_CREATE_PAGE_ALLOWED_FIELDS.contains(&key.as_str()))
+        })
+    {
+        return Err(AppError::new(
+            "notion_create_pages_unsupported_fields",
+            "That Notion page creation field is not supported in this preview.",
+        ));
+    }
     Ok(())
 }
 
@@ -1526,9 +1550,10 @@ fn preflight_update_page_arguments(arguments: &serde_json::Value) -> Result<(), 
             "Notion page updates cannot delete child pages or databases in this preview.",
         ));
     }
-    if object.iter().any(|(key, value)| {
-        !NOTION_UPDATE_PAGE_ALLOWED_FIELDS.contains(&key.as_str()) && !value.is_null()
-    }) {
+    if object
+        .keys()
+        .any(|key| !NOTION_UPDATE_PAGE_ALLOWED_FIELDS.contains(&key.as_str()))
+    {
         return Err(AppError::new(
             "notion_update_page_unsupported_fields",
             "That Notion update field is not supported in this preview.",
@@ -2388,6 +2413,16 @@ mod tests {
                 "page_id": "page-123",
                 "template": "Launch template"
             }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "title": "Updated title",
+                "icon": null
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "title": "Updated title",
+                "cover": null
+            }),
         ] {
             assert_eq!(
                 preflight_update_page_arguments(&arguments)
@@ -2451,6 +2486,50 @@ mod tests {
         );
         assert!(preflight_create_pages_arguments(&serde_json::json!({
             "pages": [{ "title": "One" }]
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn create_pages_preflight_rejects_unpreviewed_fields() {
+        for arguments in [
+            serde_json::json!({
+                "pages": [{
+                    "properties": { "title": "One" },
+                    "template": { "type": "default" }
+                }]
+            }),
+            serde_json::json!({
+                "pages": [{
+                    "properties": { "title": "One" },
+                    "icon": null
+                }]
+            }),
+            serde_json::json!({
+                "pages": [{
+                    "properties": { "title": "One" },
+                    "cover": "https://example.com/cover.png"
+                }]
+            }),
+            serde_json::json!({
+                "pages": [{ "properties": { "title": "One" } }],
+                "unpreviewed": null
+            }),
+        ] {
+            assert_eq!(
+                preflight_create_pages_arguments(&arguments)
+                    .unwrap_err()
+                    .code,
+                "notion_create_pages_unsupported_fields"
+            );
+        }
+
+        assert!(preflight_create_pages_arguments(&serde_json::json!({
+            "parent": { "page_id": "page-123" },
+            "pages": [{
+                "properties": { "title": "One", "Status": "Draft" },
+                "content": "Previewed content"
+            }]
         }))
         .is_ok());
     }
