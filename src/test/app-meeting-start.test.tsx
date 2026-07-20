@@ -83,6 +83,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "note-calendar-context-updated-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
