@@ -1890,6 +1890,7 @@ export function App() {
         recordingState === "validating";
       return {
         away,
+        agentHudEnabled: agentHudEnabledRef.current,
         viewingSession:
           !away &&
           ((activeViewRef.current === "agent" &&

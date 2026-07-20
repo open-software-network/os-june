@@ -18,6 +18,7 @@ type NotificationCopy = {
 
 export type AgentAttentionContext = {
   away: boolean;
+  agentHudEnabled: boolean;
   viewingSession: boolean;
   captureActive: boolean;
   soundsEnabled: boolean;
@@ -58,7 +59,9 @@ export function agentAttentionDecision(
   if (!kind || context.viewingSession) return { showNative: false };
   return {
     ...(context.soundsEnabled && !context.captureActive ? { cue: kind } : {}),
-    showNative: context.away,
+    // The enabled Agent HUD consumes these same lifecycle events. Prefer that
+    // deterministic signal over racing the native overlay's window visibility.
+    showNative: context.away && !context.agentHudEnabled,
   };
 }
 

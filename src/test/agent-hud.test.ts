@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AGENT_SESSIONS_CHANGED_EVENT, AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
+import {
+  AGENT_RUN_SETTLED_EVENT,
+  AGENT_SESSIONS_CHANGED_EVENT,
+  AGENT_SESSION_STATUS_EVENT,
+} from "../lib/agent-events";
 import { AGENT_HUD_VISIBILITY_CHANGED_EVENT } from "../lib/agent-hud-settings";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
@@ -630,6 +634,26 @@ describe("agent HUD", () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+  });
+
+  it("shows Done when a run-settled event arrives without a session-status event", async () => {
+    await loadAgentHud();
+
+    const handleRunSettled = mocks.listeners.get(AGENT_RUN_SETTLED_EVENT);
+    expect(handleRunSettled).toBeDefined();
+    handleRunSettled?.({
+      payload: {
+        sessionId: "session-settled",
+        title: "Summarize this",
+        summary: "June finished.",
+      },
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.hasEntries).toBe("true");
+    expect(pillLabelElement()).toHaveTextContent("Done");
+    expect(markElement().dataset.status).toBe("completed");
+    expect(stackElement()).toHaveTextContent("Summarize this");
   });
 
   it("turns a pending running entry into Done when the completed session title differs", async () => {
