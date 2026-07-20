@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   createRoutine: vi.fn(),
   listRoutines: vi.fn(),
+  resumeRoutine: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -71,6 +72,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("../lib/hermes-routines", () => ({
   createRoutine: mocks.createRoutine,
   listRoutines: mocks.listRoutines,
+  resumeRoutine: mocks.resumeRoutine,
 }));
 
 const account: AccountStatus = {
@@ -291,13 +293,34 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     const onComplete = vi.fn();
     setOnboardingResumeStep("morning-brief");
-    mocks.listRoutines.mockResolvedValue([{ job_id: "job-1", name: "Morning brief" }]);
+    mocks.listRoutines.mockResolvedValue([
+      { job_id: "job-1", name: "Morning brief", state: "scheduled" },
+    ]);
     render(<OnboardingFlow {...flowProps({ onComplete })} />);
 
     await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
     await user.click(screen.getByRole("button", { name: "Enable morning brief" }));
 
     await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(mocks.createRoutine).not.toHaveBeenCalled();
+    expect(mocks.resumeRoutine).not.toHaveBeenCalled();
+  });
+
+  it("resumes a paused morning brief instead of leaving it dormant", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    setOnboardingResumeStep("morning-brief");
+    mocks.listRoutines.mockResolvedValue([
+      { job_id: "job-1", name: "Morning brief", state: "paused" },
+    ]);
+    mocks.resumeRoutine.mockResolvedValue(undefined);
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "Start tomorrow with a brief" });
+    await user.click(screen.getByRole("button", { name: "Enable morning brief" }));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(mocks.resumeRoutine).toHaveBeenCalledWith("job-1");
     expect(mocks.createRoutine).not.toHaveBeenCalled();
   });
 

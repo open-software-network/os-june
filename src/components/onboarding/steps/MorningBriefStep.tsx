@@ -1,6 +1,6 @@
 import { IconCloudySun } from "central-icons/IconCloudySun";
 import { useEffect, useState } from "react";
-import { createRoutine, listRoutines } from "../../../lib/hermes-routines";
+import { createRoutine, listRoutines, resumeRoutine } from "../../../lib/hermes-routines";
 import { humanizeSchedule } from "../../../lib/routine-schedule";
 import { ROUTINE_TEMPLATES } from "../../routines/routine-templates";
 import { p3aRecord } from "../../../lib/tauri";
@@ -44,8 +44,12 @@ export function MorningBriefStep({ onContinue }: { onContinue: () => void }) {
       // proceeds (a duplicate is recoverable under Routines, a hard block
       // here is not).
       const existing = await listRoutines().catch(() => []);
-      const alreadySetUp = existing.some((routine) => routine.name === template.name);
-      if (!alreadySetUp) {
+      const match = existing.find((routine) => routine.name === template.name);
+      if (match && match.state !== "scheduled") {
+        // The user paused (or a run exhausted) an earlier copy; clicking
+        // Enable means "make it run again", not "leave it dormant".
+        await resumeRoutine(match.job_id);
+      } else if (!match) {
         await createRoutine({
           prompt: template.prompt,
           schedule: template.schedule,
