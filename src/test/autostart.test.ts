@@ -8,7 +8,12 @@ const pluginMocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/plugin-autostart", () => pluginMocks);
 
-import { applyAutostartDefaultOnce, autostartEnabled, setAutostartEnabled } from "../lib/autostart";
+import {
+  applyAutostartDefaultOnce,
+  autostartEnabled,
+  retryPendingAutostartDefault,
+  setAutostartEnabled,
+} from "../lib/autostart";
 
 const DEFAULT_APPLIED_KEY = "june.autostart.defaultApplied";
 
@@ -96,6 +101,35 @@ describe("autostart", () => {
     await applyAutostartDefaultOnce({ firstOnboardingCompletion: false });
     expect(pluginMocks.enable).toHaveBeenCalledTimes(2);
     expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBe("1");
+  });
+
+  it("retries a pending default on a normal startup", async () => {
+    // Onboarding completion is the only first-attempt site; a failure there
+    // must not strand the default until a version bump replays the wizard.
+    pluginMocks.enable.mockRejectedValueOnce(new Error("no launch agent dir"));
+    await applyAutostartDefaultOnce({ firstOnboardingCompletion: true });
+    expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBeNull();
+
+    await retryPendingAutostartDefault();
+    expect(pluginMocks.enable).toHaveBeenCalledTimes(2);
+    expect(window.localStorage.getItem(DEFAULT_APPLIED_KEY)).toBe("1");
+
+    // Settled: later startups no-op.
+    pluginMocks.enable.mockClear();
+    await retryPendingAutostartDefault();
+    expect(pluginMocks.enable).not.toHaveBeenCalled();
+  });
+
+  it("startup retry never runs without a pending marker", async () => {
+    // Existing user, no first-run attempt ever recorded.
+    await retryPendingAutostartDefault();
+    expect(pluginMocks.enable).not.toHaveBeenCalled();
+
+    // Explicitly disabled user: settled, still no retry.
+    await setAutostartEnabled(false);
+    pluginMocks.enable.mockClear();
+    await retryPendingAutostartDefault();
+    expect(pluginMocks.enable).not.toHaveBeenCalled();
   });
 
   it("retries the default on the next run after a failed enable", async () => {

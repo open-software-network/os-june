@@ -210,7 +210,7 @@ import type {
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
-import { applyAutostartDefaultOnce } from "../lib/autostart";
+import { applyAutostartDefaultOnce, retryPendingAutostartDefault } from "../lib/autostart";
 import {
   applyOnboardingReplayFlag,
   hasCompletedAnyOnboardingVersion,
@@ -2182,6 +2182,16 @@ export function App() {
       cancelled = true;
     };
   }, [appBlocked, bootstrapped]);
+
+  // A fresh install whose automatic launch-at-login enable failed during
+  // onboarding completion gets another chance on every normal startup:
+  // completion hides the wizard, so without this the retry would wait for
+  // an onboarding version bump. No-ops once the default has been settled
+  // (applied, or overridden by an explicit Settings toggle).
+  useEffect(() => {
+    if (appBlocked) return;
+    void retryPendingAutostartDefault();
+  }, [appBlocked]);
 
   useEffect(() => {
     let cancelled = false;

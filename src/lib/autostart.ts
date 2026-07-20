@@ -86,3 +86,23 @@ export async function applyAutostartDefaultOnce(options: {
     // Storage write failed; the worst case is a redundant enable() later.
   }
 }
+
+/** Consumes a leftover eligibility marker on normal app startup. Onboarding
+ * completion is the only place the default is first attempted, and a failed
+ * enable there would otherwise wait for an ONBOARDING_VERSION bump to retry
+ * (completion hides the wizard from every later launch). No-ops unless a
+ * prior first-run attempt left the marker behind. */
+export async function retryPendingAutostartDefault(): Promise<void> {
+  if (!inTauri()) return;
+  try {
+    if (window.localStorage.getItem(DEFAULT_APPLIED_KEY) !== null) return;
+    if (window.localStorage.getItem(DEFAULT_ELIGIBLE_KEY) === null) return;
+  } catch {
+    return;
+  }
+  try {
+    await setAutostartEnabled(true);
+  } catch {
+    // Still failing; the marker stays for the next launch.
+  }
+}
