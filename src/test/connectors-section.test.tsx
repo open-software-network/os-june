@@ -138,9 +138,10 @@ describe("ConnectorsSection", () => {
     const connect = await findEnabledConnect("Connect Notion");
     expect(screen.getByText("Notion")).toBeInTheDocument();
     expect(screen.queryByText("Preview")).toBeNull();
-    expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Pages and workspace content for briefs, search, and approved updates/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
-    expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();
 
     await userEvent.click(connect);
 
@@ -164,9 +165,9 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
 
     expect(await screen.findByText("Connected")).toBeInTheDocument();
-    expect(screen.getByText(/Search and read Notion content/i)).toBeInTheDocument();
+    expect(screen.getByText(/Pages, search, and approved updates/i)).toBeInTheDocument();
+    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
     expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
-    expect(screen.getByText(/Create and update pages with approval/i)).toBeInTheDocument();
 
     mocks.connectorsList.mockResolvedValue([]);
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
@@ -192,8 +193,9 @@ describe("ConnectorsSection", () => {
 
     expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
     expect(
-      screen.getByText(/Reconnect Notion to restore search, read, and approved page actions/i),
+      screen.getByText(/Reconnect Notion to restore pages, search, and approved updates/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
   });

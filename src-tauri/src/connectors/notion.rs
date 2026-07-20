@@ -63,6 +63,20 @@ const NOTION_READ_TOOL_ALLOWLIST: &[&str] = &[
 ];
 const NOTION_ACTION_TOOL_ALLOWLIST: &[&str] = &["notion-create-pages", "notion-update-page"];
 const NOTION_DESTRUCTIVE_UPDATE_FIELDS: &[&str] = &["erase_content", "in_trash", "is_archived"];
+const NOTION_UPDATE_PAGE_ALLOWED_FIELDS: &[&str] = &[
+    "page_id",
+    "allow_async",
+    "command",
+    "selection_with_ellipsis",
+    "new_str",
+    "properties",
+    "content",
+    "children",
+    "body",
+    "markdown",
+    "title",
+    "name",
+];
 const NOTION_ACTIONS_SERVER_NAME: &str = "june_notion_actions";
 
 static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
@@ -1444,6 +1458,14 @@ fn preflight_update_page_arguments(arguments: &serde_json::Value) -> Result<(), 
             "Notion page updates cannot archive, trash, or erase content in this preview.",
         ));
     }
+    if object.iter().any(|(key, value)| {
+        !NOTION_UPDATE_PAGE_ALLOWED_FIELDS.contains(&key.as_str()) && !value.is_null()
+    }) {
+        return Err(AppError::new(
+            "notion_update_page_unsupported_fields",
+            "That Notion update field is not supported in this preview.",
+        ));
+    }
     let has_change = object
         .iter()
         .any(|(key, value)| key.as_str() != "page_id" && !value.is_null());
@@ -2219,6 +2241,60 @@ mod tests {
         assert_eq!(update_page_target(&arguments).as_deref(), Some("page-123"));
         assert!(preflight_update_page_arguments(&arguments).is_ok());
         assert!(preview_update_page_action(&arguments).contains("Target: page-123"));
+    }
+
+    #[test]
+    fn update_page_preflight_rejects_unpreviewed_fields() {
+        for arguments in [
+            serde_json::json!({
+                "page_id": "page-123",
+                "icon": { "type": "emoji", "emoji": "✅" }
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "cover": { "type": "external", "external": { "url": "https://example.com/cover.png" } }
+            }),
+            serde_json::json!({
+                "page_id": "page-123",
+                "template": "Launch template"
+            }),
+        ] {
+            assert_eq!(
+                preflight_update_page_arguments(&arguments)
+                    .unwrap_err()
+                    .code,
+                "notion_update_page_unsupported_fields"
+            );
+        }
+    }
+
+    #[test]
+    fn update_page_preflight_preserves_destructive_field_error() {
+        let arguments = serde_json::json!({
+            "page_id": "page-123",
+            "is_archived": true
+        });
+
+        assert_eq!(
+            preflight_update_page_arguments(&arguments)
+                .unwrap_err()
+                .code,
+            "notion_update_page_destructive_fields"
+        );
+    }
+
+    #[test]
+    fn update_page_preflight_rejects_empty_changes() {
+        let arguments = serde_json::json!({
+            "page_id": "page-123"
+        });
+
+        assert_eq!(
+            preflight_update_page_arguments(&arguments)
+                .unwrap_err()
+                .code,
+            "notion_update_page_empty"
+        );
     }
 
     #[test]

@@ -65,6 +65,8 @@ const NOTION_CONNECTED_BLURB =
 
 const NOTION_RECONNECT_BLURB = "Reconnect Notion to restore pages, search, and approved updates.";
 
+const NOTION_SEARCH_DISCLOSURE = "Search may include Notion-connected sources.";
+
 type NotionConnectorRowProps = {
   account: ConnectorAccount | null;
   connecting: boolean;
@@ -176,6 +178,7 @@ function NotionConnectorRow({
         <p className="connector-subtitle" title={subtitle}>
           {subtitle}
         </p>
+        <p className="connector-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
       </div>
       <div className="connector-actions">
         {statusLabel ? (
