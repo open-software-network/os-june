@@ -71,6 +71,9 @@ const NOTION_UPDATE_PAGE_ALLOWED_FIELDS: &[&str] = &[
     "new_str",
     "properties",
     "content",
+    "content_updates",
+    "position",
+    "allow_deleting_content",
     "children",
     "body",
     "markdown",
@@ -1513,6 +1516,16 @@ fn preflight_update_page_arguments(arguments: &serde_json::Value) -> Result<(), 
             "Notion page updates cannot archive, trash, or erase content in this preview.",
         ));
     }
+    if object
+        .get("allow_deleting_content")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(AppError::new(
+            "notion_update_page_deleting_content_unsupported",
+            "Notion page updates cannot delete child pages or databases in this preview.",
+        ));
+    }
     if object.iter().any(|(key, value)| {
         !NOTION_UPDATE_PAGE_ALLOWED_FIELDS.contains(&key.as_str()) && !value.is_null()
     }) {
@@ -1577,13 +1590,38 @@ fn preview_update_page_action(arguments: &serde_json::Value) -> String {
 fn blank_replacement_disclosure(arguments: &serde_json::Value) -> Option<&'static str> {
     let object = arguments.as_object()?;
     let command = object.get("command")?.as_str()?;
-    let replacement = object.get("new_str")?.as_str()?;
-    if !replacement.trim().is_empty() {
-        return None;
-    }
     match command {
-        "replace_content" => Some("Blank replacement clears all page content"),
-        "replace_content_range" => Some("Blank replacement deletes the selected content"),
+        "replace_content"
+            if object
+                .get("new_str")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|replacement| replacement.trim().is_empty()) =>
+        {
+            Some("Blank replacement clears all page content")
+        }
+        "replace_content_range"
+            if object
+                .get("new_str")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|replacement| replacement.trim().is_empty()) =>
+        {
+            Some("Blank replacement deletes the selected content")
+        }
+        "update_content"
+            if object
+                .get("content_updates")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|updates| {
+                    updates.iter().any(|update| {
+                        update
+                            .get("new_str")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|replacement| replacement.trim().is_empty())
+                    })
+                }) =>
+        {
+            Some("Blank replacements delete the matched content")
+        }
         _ => None,
     }
 }
@@ -1621,10 +1659,13 @@ fn summarize_update_values(arguments: &serde_json::Value) -> Option<String> {
         arguments,
         &[
             "command",
+            "content_updates",
             "selection_with_ellipsis",
             "new_str",
             "properties",
             "content",
+            "position",
+            "allow_deleting_content",
             "children",
             "body",
             "markdown",
@@ -2487,6 +2528,34 @@ mod tests {
     }
 
     #[test]
+    fn update_page_preflight_accepts_current_hosted_content_commands() {
+        let insert = serde_json::json!({
+            "command": "insert_content",
+            "content": "New worklog entry",
+            "page_id": "page-123",
+            "position": { "type": "end" }
+        });
+        assert!(preflight_update_page_arguments(&insert).is_ok());
+        let insert_preview = preview_update_page_action(&insert);
+        assert!(insert_preview.contains("content: New worklog entry"));
+        assert!(insert_preview.contains("position: {type: end }"));
+
+        let targeted = serde_json::json!({
+            "command": "update_content",
+            "content_updates": [{
+                "old_str": "Existing entry",
+                "new_str": "Updated entry"
+            }],
+            "page_id": "page-123"
+        });
+        assert!(preflight_update_page_arguments(&targeted).is_ok());
+        let targeted_preview = preview_update_page_action(&targeted);
+        assert!(targeted_preview.contains("content_updates:"));
+        assert!(targeted_preview.contains("Existing entry"));
+        assert!(targeted_preview.contains("Updated entry"));
+    }
+
+    #[test]
     fn update_page_preview_discloses_blank_replacement_effects() {
         for (command, expected) in [
             (
@@ -2521,6 +2590,9 @@ mod tests {
             "new_str": "new",
             "properties": { "Status": "Done" },
             "content": "content",
+            "content_updates": [{ "old_str": "old", "new_str": "new" }],
+            "position": { "type": "end" },
+            "allow_deleting_content": false,
             "children": [],
             "body": "body",
             "markdown": "markdown",
@@ -2538,6 +2610,9 @@ mod tests {
             "new_str",
             "properties",
             "content",
+            "content_updates",
+            "position",
+            "allow_deleting_content",
             "children",
             "body",
             "markdown",
@@ -2621,6 +2696,17 @@ mod tests {
                 "notion_update_page_destructive_fields"
             );
         }
+        assert_eq!(
+            preflight_update_page_arguments(&serde_json::json!({
+                "page_id": "page-123",
+                "command": "replace_content",
+                "new_str": "Replacement",
+                "allow_deleting_content": true
+            }))
+            .unwrap_err()
+            .code,
+            "notion_update_page_deleting_content_unsupported"
+        );
     }
 
     #[test]
