@@ -24,10 +24,20 @@ path = "src/main.rs"
 [[bin]]
 name = "june-nm-shim"
 path = "src/bin/june_nm_shim.rs"
+required-features = ["helper-binaries"]
 
 [[bin]]
 name = "june-computer-use-driver"
 path = "src/computer_use_driver.rs"
+required-features = ["helper-binaries"]
+
+# Tauri bundles every Cargo binary whose required features appear in its
+# explicit feature list. Keep helper binaries enabled for ordinary Cargo
+# builds and tests via the default feature, while excluding them from Tauri's
+# app executable list so the signed resource copies remain authoritative.
+[features]
+default = ["helper-binaries"]
+helper-binaries = []
 
 [build-dependencies]
 serde_json = "1.0"
