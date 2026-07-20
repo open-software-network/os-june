@@ -40,6 +40,26 @@ describe("notesReducer", () => {
     expect(state.providerConfigured).toBe(true);
   });
 
+  it("upserts a folder when a concurrent import returns an existing folder", () => {
+    const folder = {
+      id: "folder-1",
+      name: "Project",
+      memoryDisabled: false,
+      localPath: "/Users/alex/code/project",
+      createdAt: now,
+      updatedAt: now,
+    };
+    const initial = { ...createInitialState(), folders: [folder] };
+
+    const state = notesReducer(initial, {
+      type: "folderCreated",
+      folder: { ...folder, name: "Updated project" },
+    });
+
+    expect(state.folders).toHaveLength(1);
+    expect(state.folders[0].name).toBe("Updated project");
+  });
+
   it("updates the selected note after autosave", () => {
     const initial = notesReducer(createInitialState(), {
       type: "noteLoaded",

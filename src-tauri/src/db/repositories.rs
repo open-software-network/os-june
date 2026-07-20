@@ -2001,6 +2001,57 @@ impl Repositories {
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
+        let duplicate_linked_folders = query(
+            "SELECT source.id AS source_id, target.id AS target_id
+             FROM folders source
+             INNER JOIN folders target
+               ON target.profile = 'default'
+              AND target.local_path = source.local_path
+              AND target.deleted_at IS NULL
+             WHERE source.profile = ?
+               AND source.local_path IS NOT NULL
+               AND source.deleted_at IS NULL",
+        )
+        .bind(profile)
+        .fetch_all(&mut *transaction)
+        .await?;
+        for row in duplicate_linked_folders {
+            let source_id = row.get::<String, _>("source_id");
+            let target_id = row.get::<String, _>("target_id");
+            query(
+                "INSERT OR IGNORE INTO note_folders (note_id, folder_id, assigned_at)
+                 SELECT note_id, ?, assigned_at FROM note_folders WHERE folder_id = ?",
+            )
+            .bind(&target_id)
+            .bind(&source_id)
+            .execute(&mut *transaction)
+            .await?;
+            query("DELETE FROM note_folders WHERE folder_id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query(
+                "INSERT OR IGNORE INTO session_folders (session_id, folder_id, assigned_at)
+                 SELECT session_id, ?, assigned_at FROM session_folders WHERE folder_id = ?",
+            )
+            .bind(&target_id)
+            .bind(&source_id)
+            .execute(&mut *transaction)
+            .await?;
+            query("DELETE FROM session_folders WHERE folder_id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query("UPDATE memories SET folder_id = ? WHERE folder_id = ?")
+                .bind(&target_id)
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query("DELETE FROM folders WHERE id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         query("UPDATE folders SET profile = 'default' WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
@@ -6010,6 +6061,62 @@ mod tests {
             .await
             .expect("list folders after rollback")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn moving_profile_merges_duplicate_linked_folders() {
+        let repos = test_repositories().await;
+        let default_folder = repos
+            .create_linked_folders(
+                "default",
+                &[("Default project".to_string(), "/tmp/shared".to_string())],
+            )
+            .await
+            .expect("create default folder")
+            .remove(0);
+        let source_folder = repos
+            .create_linked_folders(
+                "work",
+                &[("Work project".to_string(), "/tmp/shared".to_string())],
+            )
+            .await
+            .expect("create source folder")
+            .remove(0);
+        let note = repos
+            .create_note("work", Some(source_folder.id.clone()))
+            .await
+            .expect("create source note");
+        let memory = repos
+            .create_memory("work", Some(&source_folder.id), "Remember this", "user")
+            .await
+            .expect("create source memory");
+
+        repos
+            .move_profile_data_to_default("work")
+            .await
+            .expect("move profile data");
+
+        let folders = repos
+            .list_folders("default")
+            .await
+            .expect("list default folders");
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, default_folder.id);
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("moved note")
+                .folder_ids,
+            vec![default_folder.id.clone()]
+        );
+        let memory_row = query("SELECT profile, folder_id FROM memories WHERE id = ?")
+            .bind(&memory.id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("moved memory");
+        assert_eq!(memory_row.get::<String, _>("profile"), "default");
+        assert_eq!(memory_row.get::<String, _>("folder_id"), default_folder.id);
     }
 
     fn transcription_plan(
