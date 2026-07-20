@@ -1,11 +1,12 @@
 use crate::domain::types::{
     AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
-    AudioValidationDto, DictationHistoryItemDto, DictionaryEntryDto, FolderDto,
-    ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteDto, NoteListItemDto,
-    NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobRecord,
-    NoteTranscriptionJobStatus, ProcessingStatus, ProfileDataSummaryDto, RecordingSourceMode,
-    RecordingState, SessionFolderDto, SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
+    AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto, DictionaryEntryDto,
+    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteDto,
+    NoteListItemDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+    NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
+    ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
+    SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
@@ -1694,6 +1695,50 @@ impl Repositories {
             .bind(folder_id)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn list_completed_sessions(
+        &self,
+    ) -> Result<Vec<CompletedSessionDto>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT session_id, completed_at FROM completed_sessions ORDER BY completed_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| CompletedSessionDto {
+                session_id: row.get("session_id"),
+                completed_at: row.get("completed_at"),
+            })
+            .collect())
+    }
+
+    pub async fn set_session_completed(
+        &self,
+        session_id: &str,
+        completed: bool,
+    ) -> Result<(), sqlx::error::Error> {
+        if completed {
+            // Idempotent: keep the original completion time if the session is
+            // already complete, so a redundant mark never re-sorts the Completed
+            // list. A genuine re-completion goes through unmark (row deleted)
+            // then mark, which inserts a fresh timestamp.
+            query(
+                "INSERT INTO completed_sessions (session_id, completed_at) VALUES (?, ?)
+                 ON CONFLICT(session_id) DO NOTHING",
+            )
+            .bind(session_id)
+            .bind(timestamp())
+            .execute(&self.pool)
+            .await?;
+        } else {
+            query("DELETE FROM completed_sessions WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&self.pool)
+                .await?;
+        }
         Ok(())
     }
 

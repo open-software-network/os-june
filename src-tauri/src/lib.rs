@@ -168,6 +168,8 @@ pub fn run() {
             commands::move_profile_data_to_default,
             commands::delete_profile_data,
             commands::remove_session_from_folder,
+            commands::list_completed_sessions,
+            commands::set_session_completed,
             commands::list_dictionary_entries,
             commands::create_dictionary_entry,
             commands::update_dictionary_entry,

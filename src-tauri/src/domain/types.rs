@@ -269,6 +269,22 @@ pub struct AssignSessionToFolderRequest {
     pub folder_id: String,
 }
 
+// Agent sessions are owned by Hermes; June records completion locally, keyed by
+// the stored Hermes session id. Distinct from Hermes' own archive state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedSessionDto {
+    pub session_id: String,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetSessionCompletedRequest {
+    pub session_id: String,
+    pub completed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssignSessionToProfileRequest {

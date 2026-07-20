@@ -258,6 +258,15 @@ per-resume id. `session.create` returns both; conflating them attaches
 traces/artifacts to the wrong identity.
 _Avoid_: "the session id" (always say which).
 
+**Completed session**:
+An agent session the user has marked done. Completion is **June-owned local
+state** (a `completed_sessions` row keyed by the stored session id), set only by
+June and independent of Hermes' own archive flag; completed sessions move out of
+the active sidebar list into a distinct Completed section. See
+[ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md).
+_Avoid_: conflating "completed" with Hermes "archived" (orthogonal — archive is
+Hermes-side and read-only to June; completion is June-side).
+
 **Agent run**:
 The user-initiated Hermes execution that starts with `prompt.submit` and ends
 only when the session is truly idle, including its tool loop and automatic goal
