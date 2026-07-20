@@ -221,6 +221,16 @@ write-jail, default) or `unrestricted`. Opt-in is per session; June keeps one
 gateway per mode so an unrestricted session can't un-sandbox others.
 _Avoid_: permission, profile.
 
+**Profile** (Hermes profile):
+A named Hermes configuration (its own home subtree, SOUL, model default,
+skills, MCP servers) a session runs under; `default` always exists. The
+**active profile** is the sticky default new sessions pick up — June writes
+it on switch and also threads it explicitly on `session.create` (ADR 0030).
+Managed in Settings under Profiles. A profile may specialize June, but the
+agent still presents as June.
+_Avoid_: "profile" for Runtime mode, the Seatbelt sandbox profile, or the
+Account snapshot; account profile.
+
 **Browser use**:
 The consent-gated capability (JUN-278, ADR 0017) that lets the agent operate
 a live browser. Attended sessions drive the user's own Chromium-family
@@ -247,6 +257,15 @@ The persistent id June keys all UI and history on, versus the live process's
 per-resume id. `session.create` returns both; conflating them attaches
 traces/artifacts to the wrong identity.
 _Avoid_: "the session id" (always say which).
+
+**Completed session**:
+An agent session the user has marked done. Completion is **June-owned local
+state** (a `completed_sessions` row keyed by the stored session id), set only by
+June and independent of Hermes' own archive flag; completed sessions move out of
+the active sidebar list into a distinct Completed section. See
+[ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md).
+_Avoid_: conflating "completed" with Hermes "archived" (orthogonal — archive is
+Hermes-side and read-only to June; completion is June-side).
 
 **Agent run**:
 The user-initiated Hermes execution that starts with `prompt.submit` and ends
@@ -349,7 +368,7 @@ read tools. It admits the exact June-managed Hermes dashboard process through
 kernel peer-process identity over a private Unix-domain socket, then delegates
 typed operations to the GitHub read service. The socket path is not authority;
 no GitHub bearer or provider credential enters Hermes configuration. See
-[ADR-0030](docs/adr/0030-kernel-authenticated-github-read-broker.md).
+[ADR-0033](docs/adr/0033-kernel-authenticated-github-read-broker.md).
 _Avoid_: GitHub proxy (there is no generic HTTP pass-through), GitHub MCP
 (the privileged boundary is not an MCP server), token broker.
 

@@ -26,6 +26,7 @@ import {
 } from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
+import { setActiveHermesProfileName } from "../lib/active-hermes-profile";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
 import { hermesArtifactStore } from "../lib/hermes-artifact-store";
@@ -47,6 +48,8 @@ const HERO_GREETING = new RegExp(
 );
 
 const mocks = vi.hoisted(() => ({
+  assignSessionToProfile: vi.fn(),
+  invoke: vi.fn(),
   cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
   computerUseBeginRun: vi.fn().mockResolvedValue(undefined),
@@ -102,6 +105,7 @@ const mocks = vi.hoisted(() => ({
   hermesAgentCliAccess: vi.fn(),
   setHermesAgentCliAccess: vi.fn(),
   listHermesSessions: vi.fn(),
+  listSessionProfiles: vi.fn(),
   gatewayRequest: vi.fn(),
   markAgentRunSucceeded: vi.fn(),
   releaseAgentRunSettlement: vi.fn(),
@@ -140,7 +144,8 @@ vi.mock("../lib/tauri", () => ({
   }),
   // The pending skill-writes tray loads through the Rust bridge via this named
   // `invoke`. A quiet stub keeps these workspace tests off that path.
-  invoke: vi.fn(async () => []),
+  assignSessionToProfile: mocks.assignSessionToProfile,
+  invoke: mocks.invoke,
   cancelAgentTask: mocks.cancelAgentTask,
   computerUseBeginRun: mocks.computerUseBeginRun,
   computerUseEndRun: mocks.computerUseEndRun,
@@ -168,6 +173,7 @@ vi.mock("../lib/tauri", () => ({
   importHermesBridgeFileBytes: mocks.importHermesBridgeFileBytes,
   listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
+  listSessionProfiles: mocks.listSessionProfiles,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
   providerModelSettings: mocks.providerModelSettings,
@@ -328,19 +334,33 @@ function mockImageGenerationSuccess() {
 function mockVideoSettings({
   imageSafeMode,
   imageSafeModePromptDismissed,
+  videoModel = "wan-2.2-a14b-text-to-video",
+  effectiveVideoModel,
 }: {
   imageSafeMode: boolean;
   imageSafeModePromptDismissed: boolean;
+  videoModel?: string;
+  effectiveVideoModel?: string;
 }) {
   mocks.providerModelSettings.mockResolvedValue({
     settings: {
       transcriptionProvider: "venice",
       transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: "zai-org-glm-5-2",
-      videoModel: "wan-2.2-a14b-text-to-video",
+      videoModel,
       imageSafeMode,
       imageSafeModePromptDismissed,
     },
+    effectiveSettings: effectiveVideoModel
+      ? {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel: "zai-org-glm-5-2",
+          videoModel: effectiveVideoModel,
+          imageSafeMode,
+          imageSafeModePromptDismissed,
+        }
+      : undefined,
   });
 }
 
@@ -493,6 +513,8 @@ describe("AgentWorkspace", () => {
     for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       pendingActionStore.resolveSession(id);
     }
+    setActiveHermesProfileName("default");
+    mocks.invoke.mockResolvedValue({ active: "default", current: "default" });
     window.sessionStorage.clear();
     window.localStorage.clear();
     resetAgentSessionTitleVolatileStoreForTest();
@@ -577,6 +599,7 @@ describe("AgentWorkspace", () => {
       return { running: true, connection, connections: [connection] };
     });
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
+    mocks.listSessionProfiles.mockResolvedValue([]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.hermesBridgeSkills.mockResolvedValue([]);
@@ -612,6 +635,7 @@ describe("AgentWorkspace", () => {
       previewDataUrl: null,
     }));
     mocks.downloadHermesBridgeFile.mockResolvedValue("/Users/alex/Downloads/sample.pdf");
+    mocks.assignSessionToProfile.mockResolvedValue(undefined);
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
     mocks.finalizeHermesBridgeBranch.mockResolvedValue({
       branchSessionId: "session-fork",
@@ -4513,6 +4537,33 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"));
     expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith("session-2");
     expect(screen.queryByText("Newer session")).toBeNull();
+  });
+
+  it("discards a restored session that belongs to another profile", async () => {
+    setActiveHermesProfileName("profile-b");
+    window.localStorage.setItem("june:agent:last-open-session", "session-1");
+    mocks.listHermesSessions.mockResolvedValue([
+      existingSession,
+      {
+        id: "session-2",
+        title: "Profile B session",
+        preview: "Private profile B work",
+        last_active: "2026-06-05T12:00:00Z",
+      },
+    ]);
+    mocks.listSessionProfiles.mockResolvedValue([
+      { sessionId: "session-1", profile: "profile-a" },
+      { sessionId: "session-2", profile: "profile-b" },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Profile B session")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-2"));
+    expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith("session-1");
+    await waitFor(() =>
+      expect(window.localStorage.getItem("june:agent:last-open-session")).toBe("session-2"),
+    );
   });
 
   it("starts the runtime and restores messages after a full app relaunch", async () => {
@@ -9267,6 +9318,81 @@ describe("AgentWorkspace", () => {
     });
   });
 
+  it("threads the active Hermes profile into fresh session creation", async () => {
+    const user = userEvent.setup();
+    const connection = {
+      baseUrl: "http://127.0.0.1:61234",
+      wsUrl: "ws://127.0.0.1:61234",
+      token: "token",
+      port: 61234,
+      command: "hermes",
+      hermesHome: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes",
+      providerProxyPort: 61235,
+      pid: 42,
+      sandboxed: true,
+      fullMode: false,
+    };
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection,
+      connections: [connection],
+    });
+    mocks.invoke.mockResolvedValue({ active: "research", current: "default" });
+    setActiveHermesProfileName("research");
+    mocks.listSessionProfiles.mockResolvedValue([
+      { sessionId: "session-1", profile: "research" },
+      { sessionId: "session-2", profile: "research" },
+    ]);
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    window.dispatchEvent(
+      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+        detail: { prompt: "draft a research brief" },
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+        title: "Summarize Current Page",
+        cols: 96,
+        // No `model`: the composer's model is June's GLOBAL generation
+        // selection, and sending it as the per-session override would bypass
+        // the profile's own configured text model (the point of profiles).
+        profile: "research",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.assignSessionToProfile).toHaveBeenCalledWith("session-2", "research"),
+    );
+    expect(readSessionModelSelections()["session-2"]).toBeUndefined();
+
+    mocks.gatewayRequest.mockClear();
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "lifecycle.complete",
+          session_id: "runtime-session-2",
+          payload: { status: "success" },
+        });
+      }
+    });
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "keep using the research profile model");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "keep using the research profile model",
+      }),
+    );
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("config.set", expect.anything());
+  });
+
   it("keeps an optimistic Hermes session visible while the persisted list lags", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -9991,7 +10117,9 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-04T18:39:00Z",
       },
     ]);
-    mocks.hermesBridgeFileText.mockResolvedValue("# Quarterly summary\n\nRevenue grew.");
+    mocks.hermesBridgeFileText.mockResolvedValue(
+      "# Quarterly revenue\n\nRevenue grew. **Revenue** stayed strong.",
+    );
 
     render(<AgentWorkspace />);
 
@@ -10000,23 +10128,58 @@ describe("AgentWorkspace", () => {
     const panel = await screen.findByRole("complementary", { name: "Files" });
     expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath);
     expect(
-      await within(panel).findByRole("heading", { name: "Quarterly summary" }),
+      await within(panel).findByRole("heading", { name: "Quarterly revenue" }),
     ).toBeInTheDocument();
-    expect(within(panel).getByText("Revenue grew.")).toBeInTheDocument();
+    expect(within(panel).getByText(/Revenue grew/)).toBeInTheDocument();
 
     // Find-in-file highlights matches inside the rendered document.
     await user.click(within(panel).getByRole("button", { name: "Find in file" }));
-    await user.type(within(panel).getByLabelText("Find in file"), "revenue");
+    const findInput = within(panel).getByLabelText("Find in file");
+    await user.type(findInput, "revenue");
     // Highlighting trails typing by a short debounce.
-    await waitFor(() => expect(panel.querySelectorAll("mark").length).toBeGreaterThan(0));
-    expect(panel.querySelectorAll("mark")[0]).toHaveTextContent(/revenue/i);
+    await waitFor(() => expect(panel.querySelectorAll("mark")).toHaveLength(3));
+    const marks = panel.querySelectorAll("mark");
+    expect(Array.from(marks, (mark) => mark.dataset.searchMatchIndex)).toEqual(["0", "1", "2"]);
+    expect(marks[0]).toHaveTextContent(/revenue/i);
+    expect(marks[0]).toHaveClass("agent-search-match-active");
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+
+    // A whitespace-only query edit preserves the trimmed match set, but still
+    // recounts after the debounce instead of leaving navigation at 0 of 0.
+    await user.type(findInput, " ");
+    expect(within(panel).getByText("0 of 0")).toBeInTheDocument();
+    await waitFor(() => expect(within(panel).getByText("1 of 3")).toBeInTheDocument());
+    expect(panel.querySelectorAll("mark")).toHaveLength(3);
+
+    // Enter commits an IME candidate before it becomes match navigation.
+    expect(fireEvent.keyDown(findInput, { key: "Enter", isComposing: true })).toBe(true);
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+
+    // Enter/Shift+Enter and the buttons wrap through matches while the input
+    // keeps focus. The active class follows the stable document-wide ordinal.
+    await user.keyboard("{Enter}");
+    expect(within(panel).getByText("2 of 3")).toBeInTheDocument();
+    expect(marks[1]).toHaveClass("agent-search-match-active");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Previous match" }));
+    expect(within(panel).getByText("3 of 3")).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Next match" }));
+    expect(within(panel).getByText("1 of 3")).toBeInTheDocument();
+
+    // Switching between rendered markdown and source resets to the first match
+    // and preserves matching ordinals in the newly rendered view.
+    await user.click(within(panel).getByRole("button", { name: "Source" }));
+    await waitFor(() => expect(within(panel).getByText("1 of 3")).toBeInTheDocument());
+    expect(panel.querySelectorAll("mark")[0]).toHaveClass("agent-search-match-active");
+
+    await user.click(findInput);
     await user.keyboard("{Escape}"); // clear
     await user.keyboard("{Escape}"); // collapse
     expect(panel.querySelectorAll("mark")).toHaveLength(0);
 
     // The source toggle swaps the rendered document for the raw markdown.
-    await user.click(within(panel).getByRole("button", { name: "Source" }));
-    expect(within(panel).getByText(/# Quarterly summary/)).toBeInTheDocument();
+    expect(within(panel).getByText(/# Quarterly revenue/)).toBeInTheDocument();
 
     await user.click(within(panel).getByRole("button", { name: "Close files" }));
     expect(screen.queryByRole("complementary", { name: "Files" })).not.toBeInTheDocument();
@@ -11750,6 +11913,43 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("uses the active profile image model for the /image slash command", async () => {
+    mockGlmCapabilities(["functionCalling", "supportsVision"]);
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "global-image-model",
+        imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
+      },
+      effectiveSettings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5-2",
+        imageModel: "active-profile-image-model",
+        imageSafeMode: false,
+        imageSafeModePromptDismissed: false,
+      },
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    mockImageGenerationSuccess();
+
+    await user.type(await screen.findByRole("textbox"), "/image a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("img", { name: "a red bicycle" });
+    expect(mocks.generateImage).toHaveBeenCalledWith(
+      "a red bicycle",
+      "active-profile-image-model",
+      expect.any(String),
+      false,
+    );
+  });
+
   it.each([
     {
       name: "safe mode off",
@@ -11990,6 +12190,27 @@ describe("AgentWorkspace", () => {
     expect(mocks.imagePromptMayBeExplicit).toHaveBeenCalledWith("a red bicycle");
     expect(mocks.videoGenerate).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "View files (1)" })).toBeInTheDocument();
+  });
+
+  it("pins the active profile's video model for /video generation", async () => {
+    mockGlmCapabilities(["functionCalling"]);
+    mockVideoSettings({
+      imageSafeMode: false,
+      imageSafeModePromptDismissed: false,
+      effectiveVideoModel: "grok-imagine-text-to-video-private",
+    });
+    mockVideoGenerationSuccess();
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(await screen.findByRole("textbox"), "/video a red bicycle");
+    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
+
+    await screen.findByRole("button", { name: "Download video" });
+    expect(mocks.videoGenerate).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "grok-imagine-text-to-video-private" }),
+    );
   });
 
   it("removes the persisted /video pending turn after a terminal submit failure", async () => {
@@ -14138,6 +14359,102 @@ describe("AgentWorkspace", () => {
         capabilities: ["functionCalling"],
       },
     ];
+
+    it("uses an explicit Venice model for a new chat while June-funded controls stay blocked", async () => {
+      const reason = "Add credits to send messages or generate images and videos.";
+      let generationModel = "open-software/auto";
+      window.sessionStorage.setItem(
+        AGENT_NEW_SESSION_PENDING_KEY,
+        JSON.stringify({ createdAt: Date.now() }),
+      );
+      mocks.providerModelSettings.mockImplementation(async () => ({
+        settings: {
+          transcriptionProvider: "venice",
+          transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+          generationModel,
+          remoteGenerationModel: generationModel,
+          costQuality: 100,
+          veniceApiKeyConfigured: true,
+        },
+      }));
+      mocks.setVeniceModel.mockImplementation(async (_mode: string, modelId: string) => {
+        generationModel = modelId;
+      });
+      mocks.listVeniceModels.mockResolvedValue({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "open-software/auto",
+        models: [
+          {
+            provider: "open-software",
+            id: "open-software/auto",
+            name: "Auto",
+            modelType: "text",
+            privacy: "private",
+            traits: [],
+            capabilities: ["functionCalling"],
+          },
+          ...toolCapableCatalog,
+        ],
+      });
+      const slashCommandEntriesRef: {
+        current: {
+          runImageSlashCommand: (argument: string, commandText: string) => Promise<void>;
+          runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
+        } | null;
+      } = { current: null };
+      const user = userEvent.setup();
+
+      render(
+        <AgentWorkspace
+          creditActionsDisabledReason={reason}
+          renderFundingNotice={(context) => (
+            <button type="button" onClick={context.onSelectVeniceModel}>
+              Select a Venice model
+            </button>
+          )}
+          testOnlySlashCommandEntriesRef={slashCommandEntriesRef}
+        />,
+      );
+
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await screen.findByRole("button", { name: "Model: Auto (Higher)" });
+      await user.type(composer, "Use my Venice key");
+      expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+
+      await user.click(screen.getByRole("button", { name: "Select a Venice model" }));
+      const picker = await screen.findByRole("dialog", { name: "Choose text model" });
+      await user.click(within(picker).getByRole("button", { name: "All models" }));
+      await user.click(
+        within(screen.getByRole("group", { name: "All text models" })).getByRole("option", {
+          name: /GLM 5\.2/,
+        }),
+      );
+
+      expect(await screen.findByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Start session" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute("title", reason);
+
+      const slashEntries = slashCommandEntriesRef.current;
+      if (!slashEntries) throw new Error("Agent workspace did not expose slash commands.");
+      await act(async () => {
+        await slashEntries.runImageSlashCommand("a red bicycle", "/image a red bicycle");
+      });
+      expect(mocks.generateImage).not.toHaveBeenCalled();
+
+      await user.click(screen.getByRole("button", { name: "Start session" }));
+      await waitFor(() =>
+        expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+          "session.create",
+          expect.objectContaining({ model: "__june_remote_generation__:zai-org-glm-5-2" }),
+        ),
+      );
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "Use my Venice key" }),
+      );
+    });
 
     it("keeps the open session model picker interactive", async () => {
       mocks.listVeniceModels.mockResolvedValue({

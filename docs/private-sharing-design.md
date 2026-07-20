@@ -103,10 +103,10 @@ The passcode itself is never stored. After reopening the app, June can copy the
 protected link again but cannot recover or display its passcode. Changing or
 removing a passcode requires stopping the share and creating a new link.
 
-Deleting a shared note/session revokes its remote share first and then removes
-local keys. `share_not_found` is accepted as already absent for deletion so a
-stale mapping cannot make local content permanently undeletable; other errors
-fail closed.
+Deleting a shared note/session, including deleting a note through profile
+removal, revokes its remote share first and then removes local keys.
+`share_not_found` is accepted as already absent for deletion so a stale mapping
+cannot make local content permanently undeletable; other errors fail closed.
 
 ## Viewer
 

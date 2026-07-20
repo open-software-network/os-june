@@ -2,6 +2,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
+import {
+  resetActiveHermesProfileForTests,
+  setActiveHermesProfileName,
+} from "../lib/active-hermes-profile";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   beginMaxGrantWait,
@@ -35,9 +39,13 @@ const mocks = vi.hoisted(() => ({
   assignNoteToFolder: vi.fn(),
   removeNoteFromFolder: vi.fn(),
   listNotes: vi.fn(),
+  listFolders: vi.fn(),
+  listHermesSessions: vi.fn(),
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   deleteNotes: vi.fn(),
+  downloadNoteAudio: vi.fn(),
+  revealPath: vi.fn(),
   updateNote: vi.fn(),
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
@@ -67,6 +75,13 @@ const mocks = vi.hoisted(() => ({
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
   preloadAgentSounds: vi.fn(),
+  toast: Object.assign(vi.fn(), {
+    dismiss: vi.fn(),
+    error: vi.fn(),
+    loading: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+  }),
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -84,6 +99,15 @@ vi.mock("../lib/recording-sounds", () => ({
 
 vi.mock("../lib/agent-sounds", () => ({
   preloadAgentSounds: mocks.preloadAgentSounds,
+}));
+
+vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
+  listHermesSessions: mocks.listHermesSessions,
+}));
+
+vi.mock("../components/ui/Toaster", () => ({
+  toast: mocks.toast,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -110,13 +134,20 @@ vi.mock("../lib/tauri", () => ({
   renameFolder: mocks.renameFolder,
   assignNoteToFolder: mocks.assignNoteToFolder,
   listSessionFolders: vi.fn(async () => []),
+  listCompletedSessions: vi.fn(async () => []),
+  setSessionCompleted: vi.fn(async () => undefined),
+  listSessionProfiles: vi.fn(async () => []),
   assignSessionToFolder: vi.fn(async () => undefined),
+  assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
+  listFolders: mocks.listFolders,
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   deleteNotes: mocks.deleteNotes,
+  downloadNoteAudio: mocks.downloadNoteAudio,
+  revealPath: mocks.revealPath,
   updateNote: mocks.updateNote,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
@@ -238,6 +269,9 @@ describe("notes recording reliability", () => {
     clearMaxGrantWait();
     vi.clearAllMocks();
     mocks.listeners.clear();
+    resetActiveHermesProfileForTests();
+    mocks.listFolders.mockResolvedValue([]);
+    mocks.listHermesSessions.mockResolvedValue([]);
 
     const payload: BootstrapResponse = {
       folders: [],
@@ -262,6 +296,12 @@ describe("notes recording reliability", () => {
     mocks.createNote.mockResolvedValue(first);
     mocks.deleteNote.mockResolvedValue(undefined);
     mocks.deleteNotes.mockResolvedValue(undefined);
+    mocks.downloadNoteAudio.mockResolvedValue({
+      path: "/Users/alex/Downloads/First note audio.wav",
+      fileName: "First note audio.wav",
+      sourceCount: 1,
+    });
+    mocks.revealPath.mockResolvedValue(undefined);
     mocks.listNotes.mockResolvedValue({ items: [first, second] });
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === "note-2" ? second : first,
@@ -359,7 +399,211 @@ describe("notes recording reliability", () => {
     });
   }
 
-  it("stays on meeting notes after deleting the last note", async () => {
+  it("swaps notes to the new profile's list when the active profile switches", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    const workNote = note({ id: "note-work", title: "Work profile note" });
+    mocks.listNotes.mockResolvedValue({ items: [workNote] });
+    mocks.getNote.mockResolvedValue(workNote);
+    const listCallsBefore = mocks.listNotes.mock.calls.length;
+
+    await act(async () => {
+      setActiveHermesProfileName("work");
+    });
+
+    await waitFor(() => expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBefore));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(screen.queryByText("First note")).toBeNull();
+  });
+
+  it("retires an old-profile recording note as soon as the recording stops", async () => {
+    const workNote = note({ id: "note-work", title: "Work profile note" });
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, processingStatus: "transcribing" },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+    });
+
+    await startRecordingOnFirstNote();
+
+    mocks.listNotes.mockResolvedValue({ items: [workNote] });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === workNote.id ? workNote : first,
+    );
+    const listCallsBeforeSwitch = mocks.listNotes.mock.calls.length;
+    await act(async () => {
+      setActiveHermesProfileName("work");
+    });
+
+    await waitFor(() =>
+      expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBeforeSwitch),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(first.id));
+    const listCallsBeforeFinish = mocks.listNotes.mock.calls.length;
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+    await waitFor(() =>
+      expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBeforeFinish),
+    );
+
+    const notesTab = await screen.findByRole("tab", { name: "Notes" });
+    expect(notesTab).toHaveAttribute("data-active", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Meeting notes" }));
+    expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(screen.queryByText("First note")).toBeNull();
+  });
+
+  it("hides audio download when the selected note has no finalized audio", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Note actions" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Download audio" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { format: "wav", sizeBytes: 0, label: "an empty WAV" },
+    { format: "mp3", sizeBytes: 2048, label: "a non-WAV artifact" },
+  ])("hides audio download for $label", async ({ format, sizeBytes }) => {
+    const noteWithoutDownloadableAudio = note({
+      audioSources: [
+        {
+          id: "audio-1",
+          source: "microphone",
+          format,
+          durationMs: 1000,
+          sizeBytes,
+          checksum: "abc",
+          createdAt: now,
+        },
+      ],
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [noteWithoutDownloadableAudio, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : noteWithoutDownloadableAudio,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Note actions" }));
+
+    expect(screen.queryByRole("menuitem", { name: "Download audio" })).not.toBeInTheDocument();
+  });
+
+  it("downloads selected note audio and reveals the saved file from the success toast", async () => {
+    const noteWithAudio = note({
+      audioSources: [
+        {
+          id: "audio-1",
+          source: "microphone",
+          format: "wav",
+          durationMs: 1000,
+          sizeBytes: 2048,
+          checksum: "abc",
+          createdAt: now,
+        },
+      ],
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [noteWithAudio, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : noteWithAudio,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Note actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Download audio" }));
+
+    await waitFor(() => expect(mocks.downloadNoteAudio).toHaveBeenCalledWith("note-1"));
+    expect(mocks.toast.success).toHaveBeenCalledWith("Audio downloaded", {
+      action: {
+        label: "Show file",
+        onClick: expect.any(Function),
+      },
+    });
+
+    const toastOptions = mocks.toast.success.mock.calls[0]?.[1] as {
+      action: { onClick: () => void };
+    };
+    toastOptions.action.onClick();
+
+    await waitFor(() =>
+      expect(mocks.revealPath).toHaveBeenCalledWith("/Users/alex/Downloads/First note audio.wav"),
+    );
+  });
+
+  it("shows download and reveal failures as error toasts", async () => {
+    const noteWithAudio = note({
+      audio: {
+        id: "audio-1",
+        source: "microphone",
+        format: "wav",
+        durationMs: 1000,
+        sizeBytes: 2048,
+        checksum: "abc",
+        createdAt: now,
+      },
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [noteWithAudio, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : noteWithAudio,
+    );
+    mocks.downloadNoteAudio.mockRejectedValueOnce(new Error("Audio download failed"));
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Note actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Download audio" }));
+
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("Audio download failed"));
+
+    mocks.toast.error.mockClear();
+    mocks.downloadNoteAudio.mockResolvedValueOnce({
+      path: "/Users/alex/Downloads/First note audio.wav",
+      fileName: "First note audio.wav",
+      sourceCount: 1,
+    });
+    mocks.revealPath.mockRejectedValueOnce(new Error("Could not show file"));
+    await userEvent.click(screen.getByRole("button", { name: "Note actions" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Download audio" }));
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalled());
+
+    const latestToastOptions = mocks.toast.success.mock.calls.at(-1)?.[1] as {
+      action: { onClick: () => void };
+    };
+    latestToastOptions.action.onClick();
+
+    await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith("Could not show file"));
+  });
+
+  it("stays on notes after deleting the last note", async () => {
     mocks.bootstrapApp.mockResolvedValue({
       folders: [],
       notes: [first],
@@ -383,7 +627,7 @@ describe("notes recording reliability", () => {
     expect(screen.getByRole("heading", { name: "Capture your first meeting" })).toBeInTheDocument();
   });
 
-  it("stays on meeting notes after bulk deleting every note", async () => {
+  it("stays on notes after bulk deleting every note", async () => {
     mocks.listNotes.mockResolvedValue({ items: [] });
 
     render(<App />);

@@ -138,6 +138,12 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    for statement in include_str!("../../migrations/018_session_profiles.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
     ensure_column(
         _pool,
         "p3a_counters",
@@ -146,6 +152,29 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     )
     .await?;
     ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
+    ensure_column(_pool, "notes", "profile", "TEXT NOT NULL DEFAULT 'default'").await?;
+    ensure_column(
+        _pool,
+        "dictation_history",
+        "profile",
+        "TEXT NOT NULL DEFAULT 'default'",
+    )
+    .await?;
+    ensure_column(
+        _pool,
+        "folders",
+        "profile",
+        "TEXT NOT NULL DEFAULT 'default'",
+    )
+    .await?;
+    if !index_exists(_pool, "idx_notes_profile_created_at").await? {
+        query(
+            "CREATE INDEX IF NOT EXISTS idx_notes_profile_created_at
+             ON notes (profile, created_at DESC)",
+        )
+        .execute(_pool)
+        .await?;
+    }
     for statement in include_str!("../../migrations/011_connectors.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
@@ -188,6 +217,19 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    ensure_column(
+        _pool,
+        "memories",
+        "profile",
+        "TEXT NOT NULL DEFAULT 'default'",
+    )
+    .await?;
+    for statement in include_str!("../../migrations/019_memory_profiles.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
     // Marks when a routine most recently entered approval mode; approval-run
     // crediting only counts runs that finished at or after this instant, so
     // earlier read-only runs never retroactively unlock autonomy.
@@ -210,7 +252,13 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
-    for statement in include_str!("../../migrations/018_github_connections.sql").split(';') {
+    for statement in include_str!("../../migrations/020_completed_sessions.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/021_github_connections.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;

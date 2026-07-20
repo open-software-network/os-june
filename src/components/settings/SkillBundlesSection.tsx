@@ -15,6 +15,7 @@ import {
   normalizeBundleSlug,
   parseBundleSkillsInput,
   useSkillBundles,
+  validateBundleDraft,
   type HermesAdminMode,
   type SkillBundle,
   type HermesSkillInfo,
@@ -22,6 +23,7 @@ import {
   type SkillBundlesState,
 } from "../../lib/hermes-admin";
 import { AdminNotifications } from "./AdminNotifications";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type SkillBundlesSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the
@@ -41,9 +43,47 @@ type SkillBundlesSectionProps = {
  * is presentation + the editor form's local state.
  */
 export function SkillBundlesSection({ mode = "sandboxed", onStartChat }: SkillBundlesSectionProps) {
-  const state = useSkillBundles(mode, onStartChat);
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return (
+      <SkillBundlesView
+        state={PENDING_SKILL_BUNDLES_STATE}
+        mode={mode}
+        canStartChat={!!onStartChat}
+      />
+    );
+  }
+  return (
+    <SkillBundlesSectionReady mode={mode} profile={activeProfile.name} onStartChat={onStartChat} />
+  );
+}
+
+function SkillBundlesSectionReady({
+  mode,
+  profile,
+  onStartChat,
+}: SkillBundlesSectionProps & { mode: HermesAdminMode; profile: string }) {
+  const state = useSkillBundles(mode, onStartChat, profile);
   return <SkillBundlesView state={state} mode={mode} canStartChat={!!onStartChat} />;
 }
+
+const PENDING_SKILL_BUNDLES_STATE: SkillBundlesState = {
+  status: "loading",
+  bundles: [],
+  skills: [],
+  pending: new Set<string>(),
+  retryable: false,
+  notifications: [],
+  refresh: () => {},
+  save: async () => {
+    throw new Error("The active profile is still loading.");
+  },
+  remove: async () => {},
+  duplicate: async () => {},
+  startChat: () => {},
+  validate: (draft) => validateBundleDraft(draft, { skills: [], existingSlugs: [] }),
+  dismissNotification: () => {},
+};
 
 /** The editor target: a new bundle, or an existing one being edited. */
 type EditorTarget = { kind: "create" } | { kind: "edit"; bundle: SkillBundle };

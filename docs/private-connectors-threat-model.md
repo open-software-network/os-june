@@ -157,5 +157,5 @@ of this slice. The Google analysis above remains unchanged.
   inference remains on-device.
 
 The broker decision and its fail-closed runtime boundary are recorded in
-[ADR-0030](adr/0030-kernel-authenticated-github-read-broker.md). No June API
+[ADR-0033](adr/0033-kernel-authenticated-github-read-broker.md). No June API
 change or deployment is required.

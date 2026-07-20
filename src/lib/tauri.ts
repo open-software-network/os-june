@@ -50,6 +50,26 @@ export type SessionFolderDto = {
   folderId: string;
 };
 
+export type CompletedSessionDto = {
+  sessionId: string;
+  completedAt: string;
+};
+
+/** Which Hermes profile an agent session was created under. Sessions live in
+ * Hermes, so only the assignment is stored locally. */
+export type SessionProfileDto = {
+  sessionId: string;
+  profile: string;
+};
+
+export type ProfileDataSummary = {
+  notes: number;
+  dictation: number;
+  folders: number;
+  sessions: number;
+  memories: number;
+};
+
 export type DictionaryEntryDto = {
   id: string;
   phrase: string;
@@ -229,6 +249,13 @@ export type ProviderModelSettingsDto = {
   imageSafeModePromptDismissed: boolean;
 };
 
+export type ProfileModelOverridesDto = {
+  transcriptionProvider?: string;
+  transcriptionModel?: string;
+  imageModel?: string;
+  videoModel?: string;
+};
+
 export type LocalGenerationSettingsDto = {
   baseUrl: string;
   modelId: string;
@@ -270,6 +297,7 @@ export type ImagePromptScreenResponse = {
 
 export type ProviderModelSettingsResponse = {
   settings: ProviderModelSettingsDto;
+  effectiveSettings: ProviderModelSettingsDto;
 };
 
 export type P3aSettingsDto = {
@@ -387,11 +415,17 @@ export type RecordingSessionDto = {
 export type AudioArtifactDto = {
   id: string;
   source?: RecordingSource;
-  format: "wav";
+  format: string;
   durationMs: number;
   sizeBytes: number;
   checksum: string;
   createdAt: string;
+};
+
+export type DownloadNoteAudioResponse = {
+  path: string;
+  fileName: string;
+  sourceCount: number;
 };
 
 export type NoteDto = NoteListItemDto & {
@@ -828,9 +862,47 @@ export async function assignSessionToFolder(sessionId: string, folderId: string)
   });
 }
 
+export async function listSessionProfiles() {
+  return invoke<SessionProfileDto[]>("list_session_profiles");
+}
+
+export async function assignSessionToProfile(sessionId: string, profile: string) {
+  return invoke<void>("assign_session_to_profile", {
+    request: { sessionId, profile },
+  });
+}
+
+/** The sticky active profile read straight from the Hermes home file —
+ * resolvable before the Hermes web server is up (cold start). */
+export async function stickyActiveProfile() {
+  return invoke<string>("sticky_active_profile");
+}
+
+export async function profileDataSummary(profile: string) {
+  return invoke<ProfileDataSummary>("profile_data_summary", { profile });
+}
+
+export async function moveProfileDataToDefault(profile: string) {
+  return invoke<void>("move_profile_data_to_default", { profile });
+}
+
+export async function deleteProfileData(profile: string) {
+  return invoke<void>("delete_profile_data", { profile });
+}
+
 export async function removeSessionFromFolder(sessionId: string, folderId: string) {
   return invoke<void>("remove_session_from_folder", {
     request: { sessionId, folderId },
+  });
+}
+
+export async function listCompletedSessions() {
+  return invoke<CompletedSessionDto[]>("list_completed_sessions");
+}
+
+export async function setSessionCompleted(sessionId: string, completed: boolean) {
+  return invoke<void>("set_session_completed", {
+    request: { sessionId, completed },
   });
 }
 
@@ -1579,6 +1651,12 @@ export async function getNote(noteId: string) {
   return invoke<NoteDto>("get_note", { request: { noteId } });
 }
 
+export async function downloadNoteAudio(noteId: string) {
+  return invoke<DownloadNoteAudioResponse>("download_note_audio", {
+    request: { noteId },
+  });
+}
+
 export async function deleteNote(noteId: string) {
   return invoke<void>("delete_note", { request: { noteId } });
 }
@@ -1826,6 +1904,21 @@ export async function deleteDictationHistoryItem(id: string) {
 
 export async function providerModelSettings() {
   return invoke<ProviderModelSettingsResponse>("provider_model_settings");
+}
+
+export async function profileModelOverrides(profile: string) {
+  return invoke<ProfileModelOverridesDto | null>("profile_model_overrides", { profile });
+}
+
+export async function setProfileModelOverrides(
+  profile: string,
+  overrides: ProfileModelOverridesDto,
+) {
+  return invoke<void>("set_profile_model_overrides", { profile, overrides });
+}
+
+export async function deleteProfileModelOverrides(profile: string) {
+  return invoke<void>("delete_profile_model_overrides", { profile });
 }
 
 export async function p3aSettings() {

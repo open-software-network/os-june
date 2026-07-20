@@ -37,6 +37,7 @@ import {
 import { AdminNotifications } from "./AdminNotifications";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Dialog } from "../ui/Dialog";
+import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type McpCatalogSectionProps = {
   /** The write-access mode whose runtime this page targets. Defaults to the safe
@@ -60,9 +61,38 @@ type McpCatalogSectionProps = {
  * happen (feature 17) rather than pretending install is complete.
  */
 export function McpCatalogSection({ mode = "sandboxed" }: McpCatalogSectionProps) {
-  const state = useMcpCatalog(mode);
+  const activeProfile = useConfirmedSettingsProfile(mode);
+  if (activeProfile.pending) {
+    return <McpCatalogView state={PENDING_MCP_CATALOG_STATE} mode={mode} />;
+  }
+  return <McpCatalogSectionReady mode={mode} profile={activeProfile.name} />;
+}
+
+function McpCatalogSectionReady({
+  mode,
+  profile,
+}: McpCatalogSectionProps & { mode: HermesAdminMode; profile: string }) {
+  const state = useMcpCatalog(mode, profile);
   return <McpCatalogView state={state} mode={mode} />;
 }
+
+const PENDING_MCP_CATALOG_STATE: McpCatalogState = {
+  status: "loading",
+  entries: [],
+  retryable: false,
+  installs: new Map(),
+  lifecycle: {
+    state: "clean",
+    label: "Up to date",
+    detail: "No pending changes.",
+    canRestart: false,
+  },
+  notifications: [],
+  refresh: () => {},
+  install: () => {},
+  clearInstall: () => {},
+  dismissNotification: () => {},
+};
 
 /**
  * The render-only view, split out so component tests can drive it with a stubbed
