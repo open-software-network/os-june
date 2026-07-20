@@ -762,6 +762,7 @@ describe("Agent chat runtime", () => {
           "",
           "wdyt?",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- CleanShot.png (Workspace): uploads/CleanShot.png",
           "",
@@ -777,6 +778,7 @@ describe("Agent chat runtime", () => {
         text: [
           "wdyt?",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- CleanShot.png (Workspace): uploads/CleanShot.png",
           "",
@@ -803,6 +805,7 @@ describe("Agent chat runtime", () => {
           "",
           "wdyt?",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- CleanShot.png (Workspace): uploads/CleanShot.png",
           "",
@@ -850,6 +853,7 @@ describe("Agent chat runtime", () => {
     const content = [
       "Use the attached file(s).",
       "",
+      "[June attachment manifest v1]",
       "Attached files copied into the June workspace:",
       "- brief.pdf (Workspace): uploads/brief.pdf",
       "",
@@ -872,6 +876,29 @@ describe("Agent chat runtime", () => {
       path: "uploads/brief.pdf",
       kind: "file",
     });
+  });
+
+  it("preserves user-authored text that resembles the attachment scaffold", () => {
+    const content = [
+      "Here is the literal prompt text:",
+      "",
+      "Attached files copied into the June workspace:",
+      "- example.png (Workspace): uploads/example.png",
+      "",
+      "Use these file paths when inspecting or operating on the files.",
+    ].join("\n");
+
+    expect(displayedComposerUserMessageText(content)).toBe(content);
+    expect(
+      buildHermesSessionChatTurns([
+        {
+          id: "quoted-scaffold",
+          role: "user",
+          content,
+          timestamp: "2026-07-20T19:48:57.000Z",
+        },
+      ])[0]?.parts,
+    ).toEqual([{ type: "text", text: content, status: "complete" }]);
   });
 
   it("hides injected project context from persisted user turns", () => {
@@ -905,6 +932,7 @@ describe("Agent chat runtime", () => {
     const content = [
       "wdyt?",
       "",
+      "[June attachment manifest v1]",
       "Attached files copied into the June workspace:",
       "- screenshot.png (Workspace): uploads/screenshot.png",
       "",

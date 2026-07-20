@@ -10605,6 +10605,7 @@ describe("AgentWorkspace", () => {
         content: [
           "Summarize this.",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- june-context.md (Workspace): june-context.md",
           "",

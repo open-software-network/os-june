@@ -166,6 +166,8 @@ export type AgentChatAttachmentPart = {
   kind: "image" | "file";
 };
 
+export const USER_ATTACHMENT_PROMPT_MARKER = "[June attachment manifest v1]";
+
 /** A built-in image generation result (the `/image` slash command). It lives as
  * an assistant part so the generated image renders inline in the thread — with
  * its own loader and error states — instead of being dropped into the composer
@@ -1521,25 +1523,20 @@ function stripImageAnalysisFailureNotice(content: string): string {
 }
 
 function stripAttachmentPromptBlock(content: string): string {
-  const stripped = content.replace(
-    /\n*Attached files copied into the June workspace:\n[\s\S]*?\n+Use these file paths when inspecting or operating on the files\./gi,
-    "",
-  );
+  const stripped = attachmentEnvelopeFromUserPrompt(content)?.message ?? content.trim();
   return stripped.trim() === "Use the attached file(s)." ? "" : stripped.trim();
 }
 
+const SYNTHETIC_IMAGE_ATTACHMENT_SUFFIX =
+  /\n*\[Image attached at:\s*[^\]]+\]\s*(?:\[[^\]\n]+\]\s*)*$/i;
+
 function stripSyntheticImageAttachmentMarker(content: string) {
-  return content.replace(/\n*\[Image attached at:\s*[^\]]+\]\s*(?:\[[^\]\n]+\]\s*)*$/i, "").trim();
+  return content.replace(SYNTHETIC_IMAGE_ATTACHMENT_SUFFIX, "").trim();
 }
 
 const USER_ATTACHMENT_IMAGE_EXTENSION = /\.(png|jpe?g|gif|webp|tiff?|bmp|avif)$/i;
 
-function attachmentPartsFromUserPrompt(content: string): AgentChatAttachmentPart[] {
-  const block = content.match(
-    /(?:^|\n)Attached files copied into the June workspace:\n([\s\S]*?)\n+Use these file paths when inspecting or operating on the files\./i,
-  )?.[1];
-  if (!block) return [];
-
+function attachmentPartsFromBlock(block: string): AgentChatAttachmentPart[] {
   const seenPaths = new Set<string>();
   return block.split("\n").flatMap((line) => {
     const match = /^\s*-\s+(.+?)\s+\([^\n)]+\):\s*(.+?)\s*$/.exec(line);
@@ -1556,6 +1553,36 @@ function attachmentPartsFromUserPrompt(content: string): AgentChatAttachmentPart
       },
     ];
   });
+}
+
+function attachmentEnvelopeFromUserPrompt(
+  content: string,
+): { message: string; attachments: AgentChatAttachmentPart[] } | undefined {
+  const syntheticImageSuffix = content.match(SYNTHETIC_IMAGE_ATTACHMENT_SUFFIX);
+  const prompt = syntheticImageSuffix?.index
+    ? content.slice(0, syntheticImageSuffix.index).trimEnd()
+    : content.trimEnd();
+  const marker = USER_ATTACHMENT_PROMPT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const generated = new RegExp(
+    `^([\\s\\S]*?)(?:\\n\\n)?${marker}\\nAttached files copied into the June workspace:\\n([\\s\\S]+?)\\n\\nUse these file paths when inspecting or operating on the files\\.$`,
+    "i",
+  ).exec(prompt);
+  // Older image prompts predate the manifest marker. Their native image suffix
+  // is still an unambiguous signal that the preceding block was machine-added.
+  const legacyImage = syntheticImageSuffix
+    ? /^([\s\S]*?)(?:\n\n)?Attached files copied into the June workspace:\n([\s\S]+?)\n\nUse these file paths when inspecting or operating on the files\.$/i.exec(
+        prompt,
+      )
+    : undefined;
+  const match = generated ?? legacyImage;
+  if (!match?.[2]) return undefined;
+  const attachments = attachmentPartsFromBlock(match[2]);
+  if (!attachments.length) return undefined;
+  return { message: match[1] ?? "", attachments };
+}
+
+function attachmentPartsFromUserPrompt(content: string): AgentChatAttachmentPart[] {
+  return attachmentEnvelopeFromUserPrompt(content)?.attachments ?? [];
 }
 
 function isScheduledRunMessage(message: HermesSessionMessage) {

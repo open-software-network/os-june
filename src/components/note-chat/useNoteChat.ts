@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { buildHermesSessionChatTurns, type AgentChatTurn } from "../../lib/agent-chat-runtime";
+import {
+  buildHermesSessionChatTurns,
+  USER_ATTACHMENT_PROMPT_MARKER,
+  type AgentChatTurn,
+} from "../../lib/agent-chat-runtime";
 import {
   getActiveHermesProfileName,
   refreshActiveHermesProfile,
@@ -75,6 +79,7 @@ function withAttachmentPaths(message: string, attachments: NoteChatAttachment[])
   return [
     message || "Use the attached file(s).",
     "",
+    USER_ATTACHMENT_PROMPT_MARKER,
     "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>

@@ -392,6 +392,7 @@ import {
   isGeneratedVideoFilename,
   stripRenderedMediaReferences,
   textFromHermesContent,
+  USER_ATTACHMENT_PROMPT_MARKER,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -13819,7 +13820,7 @@ function AgentUserAttachmentList({
   onOpen?: (artifact: AgentArtifact) => void;
 }) {
   return (
-    <div className="agent-user-attachments" aria-label="Attachments">
+    <div className="agent-user-attachments" role="group" aria-label="Attachments">
       {attachments.map((attachment) => (
         <AgentUserAttachment key={attachment.path} attachment={attachment} onOpen={onOpen} />
       ))}
@@ -16924,6 +16925,7 @@ function promptWithAttachments(message: string, attachments: AgentAttachment[]):
   return [
     message || "Use the attached file(s).",
     "",
+    USER_ATTACHMENT_PROMPT_MARKER,
     "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>
