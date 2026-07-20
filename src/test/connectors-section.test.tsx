@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   notionConnectorConnect: vi.fn(),
   notionConnectorDisconnect: vi.fn(),
   listen: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
@@ -32,6 +34,13 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("../components/ui/Toaster", () => ({
+  toast: {
+    success: mocks.toastSuccess,
+    error: mocks.toastError,
+  },
 }));
 
 const GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly";
@@ -222,6 +231,50 @@ describe("ConnectorsSection", () => {
       expect(screen.getByRole("button", { name: "Reconnect Notion" })).toBeDisabled(),
     );
     expect(screen.getByRole("button", { name: "Disconnect Notion" })).toBeDisabled();
+  });
+
+  it("does not start Notion disconnect while reconnect waits for the browser", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      {
+        accountId: "notion-hosted-mcp",
+        provider: "notion",
+        email: "Notion",
+        scopes: [],
+        status: "reconnect_required",
+        workspaceName: null,
+        workspaceUrlKey: null,
+        selectedTeams: [],
+      },
+    ]);
+    mocks.notionConnectorConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Reconnect Notion" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
+
+    expect(mocks.notionConnectorDisconnect).not.toHaveBeenCalled();
+  });
+
+  it("does not start Notion reconnect while disconnect waits for runtime apply", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      {
+        accountId: "notion-hosted-mcp",
+        provider: "notion",
+        email: "Notion",
+        scopes: [],
+        status: "reconnect_required",
+        workspaceName: null,
+        workspaceUrlKey: null,
+        selectedTeams: [],
+      },
+    ]);
+    mocks.notionConnectorDisconnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Disconnect Notion" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
+
+    expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
   });
 
   it("lists connected accounts with feature labels and status", async () => {

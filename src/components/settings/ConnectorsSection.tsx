@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import {
   BUNDLE_META,
@@ -99,12 +99,13 @@ function NotionConnectorActions({
   onReconnect,
   onDisconnect,
 }: NotionConnectorActionsProps) {
+  const busy = connecting || disconnecting;
   const disconnectButton = (
     <button
       type="button"
       className="btn btn-ghost"
       aria-label="Disconnect Notion"
-      disabled={connecting || disconnecting}
+      disabled={busy}
       aria-busy={disconnecting || undefined}
       onClick={onDisconnect}
     >
@@ -120,7 +121,7 @@ function NotionConnectorActions({
           type="button"
           className="btn btn-secondary"
           aria-label="Reconnect Notion"
-          disabled={connecting}
+          disabled={busy}
           aria-busy={connecting || undefined}
           onClick={onReconnect}
         >
@@ -135,7 +136,7 @@ function NotionConnectorActions({
       type="button"
       className="btn btn-secondary"
       aria-label="Connect Notion"
-      disabled={connecting}
+      disabled={busy}
       aria-busy={connecting || undefined}
       onClick={onConnect}
     >
@@ -316,6 +317,7 @@ export function ConnectorsSection() {
   const [disconnecting, setDisconnecting] = useState(false);
   const [notionConnecting, setNotionConnecting] = useState(false);
   const [notionDisconnecting, setNotionDisconnecting] = useState(false);
+  const notionOperationIdRef = useRef(0);
   // Linear team-selection dialog: the account id it's open for (null =
   // closed). Kept separate from the fetched team list/selection so a fetch
   // failure can be retried without losing the open state.
@@ -479,17 +481,19 @@ export function ConnectorsSection() {
   }
 
   async function connectNotion() {
-    if (notionConnecting) return;
+    if (notionConnecting || notionDisconnecting) return;
+    const operationId = notionOperationIdRef.current + 1;
+    notionOperationIdRef.current = operationId;
     setNotionConnecting(true);
     try {
       await notionConnectorConnect();
       await connectorsApplyRuntime();
       await refresh();
-      toast.success("Notion connected");
+      if (operationId === notionOperationIdRef.current) toast.success("Notion connected");
     } catch (err) {
-      toast.error(messageFromError(err));
+      if (operationId === notionOperationIdRef.current) toast.error(messageFromError(err));
     } finally {
-      setNotionConnecting(false);
+      if (operationId === notionOperationIdRef.current) setNotionConnecting(false);
     }
   }
 
@@ -498,17 +502,19 @@ export function ConnectorsSection() {
   }
 
   async function disconnectNotion() {
-    if (notionDisconnecting) return;
+    if (notionDisconnecting || notionConnecting) return;
+    const operationId = notionOperationIdRef.current + 1;
+    notionOperationIdRef.current = operationId;
     setNotionDisconnecting(true);
     try {
       await notionConnectorDisconnect();
       await connectorsApplyRuntime();
       await refresh();
-      toast.success("Notion disconnected");
+      if (operationId === notionOperationIdRef.current) toast.success("Notion disconnected");
     } catch (err) {
-      toast.error(messageFromError(err));
+      if (operationId === notionOperationIdRef.current) toast.error(messageFromError(err));
     } finally {
-      setNotionDisconnecting(false);
+      if (operationId === notionOperationIdRef.current) setNotionDisconnecting(false);
     }
   }
 
