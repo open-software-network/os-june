@@ -105,6 +105,7 @@ export type TranscriptDto = {
 };
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
+export const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT = "june://note-calendar-context-updated";
 
 export type LiveTranscriptEventDto = {
   noteId: string;

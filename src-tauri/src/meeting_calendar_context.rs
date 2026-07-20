@@ -19,6 +19,9 @@ use tauri::AppHandle;
 
 const EVENT_WINDOW_HOURS: i64 = 6;
 const EVENT_GRACE_MINUTES: i64 = 10;
+const MAX_EVENT_PAGES: usize = 10;
+
+pub const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: &str = "june://note-calendar-context-updated";
 
 #[derive(Debug)]
 struct Candidate {
@@ -28,12 +31,12 @@ struct Candidate {
 }
 
 pub async fn enrich_note_for_recording(
-    app: AppHandle,
+    app: &AppHandle,
     repos: Repositories,
     note_id: String,
     expected_title: String,
     recording_started_at: DateTime<Utc>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let accounts = repos.list_connector_accounts().await?;
     let mut best: Option<Candidate> = None;
     let params = ListEventsParams {
@@ -57,46 +60,58 @@ pub async fn enrich_note_for_recording(
                 .iter()
                 .any(|scope| scope == CALENDAR_READONLY || scope == CALENDAR_EVENTS)
     }) {
-        let Ok(token) = connectors::google_access_token(&app, &account.account_id).await else {
+        let Ok(mut token) = connectors::google_access_token(app, &account.account_id).await else {
             continue;
         };
-        let page = match google::list_events(&token, &params).await {
-            Ok(page) => page,
-            Err(GoogleApiError::Unauthorized) => {
-                let Ok(token) =
-                    connectors::force_refresh_google_access_token(&app, &account.account_id).await
+        let mut page_token = None;
+        for _ in 0..MAX_EVENT_PAGES {
+            let mut page_params = params.clone();
+            page_params.page_token = page_token;
+            let page = match google::list_events(&token, &page_params).await {
+                Ok(page) => page,
+                Err(GoogleApiError::Unauthorized) => {
+                    let Ok(refreshed) =
+                        connectors::force_refresh_google_access_token(app, &account.account_id)
+                            .await
+                    else {
+                        break;
+                    };
+                    token = refreshed;
+                    match google::list_events(&token, &page_params).await {
+                        Ok(page) => page,
+                        Err(_) => break,
+                    }
+                }
+                Err(_) => break,
+            };
+            page_token = page.next_page_token;
+
+            for event in page.items {
+                let Some(candidate) =
+                    candidate_for_event(event, &account.email, recording_started_at)
                 else {
                     continue;
                 };
-                match google::list_events(&token, &params).await {
-                    Ok(page) => page,
-                    Err(_) => continue,
+                let is_better = best.as_ref().is_none_or(|current| {
+                    (candidate.distance_ms, candidate.start_distance_ms)
+                        < (current.distance_ms, current.start_distance_ms)
+                });
+                if is_better {
+                    best = Some(candidate);
                 }
             }
-            Err(_) => continue,
-        };
-
-        for event in page.items {
-            let Some(candidate) = candidate_for_event(event, &account.email, recording_started_at)
-            else {
-                continue;
-            };
-            let is_better = best.as_ref().is_none_or(|current| {
-                (candidate.distance_ms, candidate.start_distance_ms)
-                    < (current.distance_ms, current.start_distance_ms)
-            });
-            if is_better {
-                best = Some(candidate);
+            if page_token.is_none() {
+                break;
             }
         }
     }
 
     if let Some(candidate) = best {
-        repos
+        return Ok(repos
             .associate_note_with_calendar_event(&note_id, &expected_title, &candidate.event)
-            .await?;
+            .await?);
     }
-    Ok(())
+    Ok(false)
 }
 
 fn candidate_for_event(

@@ -1391,8 +1391,8 @@ impl Repositories {
         note_id: &str,
         expected_title: &str,
         event: &NoteCalendarEventDto,
-    ) -> Result<(), sqlx::error::Error> {
-        query(
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
             "UPDATE notes
              SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
                  calendar_event_id = ?, calendar_event_title = ?,
@@ -1412,7 +1412,7 @@ impl Repositories {
         .bind(note_id)
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn list_notes(

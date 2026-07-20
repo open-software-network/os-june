@@ -90,6 +90,7 @@ import {
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
+  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
   listCompletedSessions,
   listFolders,
   listNotes,
@@ -1502,6 +1503,21 @@ export function App() {
       unlisten?.();
     };
   }, [closeTab]);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
+      dispatch({ type: "noteUpdated", note: event.payload });
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
 
   // Tab keyboard shortcuts: ⌘T new, ⌘W close, ⌘[ / ⌘] cycle, ⌘1-9 jump
   // (9 = last).

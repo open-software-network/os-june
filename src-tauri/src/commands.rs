@@ -63,7 +63,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::{sync::OnceCell, time::sleep};
 
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
@@ -1443,19 +1443,31 @@ pub async fn start_recording(
     let expected_title = note.title.clone();
     let recording_started_at = Utc::now();
     tokio::spawn(async move {
-        if let Err(error) = crate::meeting_calendar_context::enrich_note_for_recording(
-            calendar_app,
-            calendar_repos,
-            calendar_note_id,
+        let enrichment = crate::meeting_calendar_context::enrich_note_for_recording(
+            &calendar_app,
+            calendar_repos.clone(),
+            calendar_note_id.clone(),
             expected_title,
             recording_started_at,
         )
-        .await
-        {
-            eprintln!(
+        .await;
+        match enrichment {
+            Ok(true) => match calendar_repos.get_note(&calendar_note_id).await {
+                Ok(note) => {
+                    let _ = calendar_app.emit(
+                        crate::meeting_calendar_context::NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
+                        note,
+                    );
+                }
+                Err(error) => {
+                    eprintln!("calendar context was saved but could not be reloaded: {error}")
+                }
+            },
+            Ok(false) => {}
+            Err(error) => eprintln!(
                 "calendar context lookup failed without interrupting recording: {}: {}",
                 error.code, error.message
-            );
+            ),
         }
     });
     if let Err(error) = repos
