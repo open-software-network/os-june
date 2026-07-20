@@ -1514,7 +1514,7 @@ export function App() {
     void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
       const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
       calendarContextNoteProfilesRef.current.delete(event.payload.id);
-      if (noteProfile && noteProfile !== getActiveHermesProfileName()) return;
+      if (noteProfile !== getActiveHermesProfileName()) return;
       dispatch({ type: "noteUpdated", note: event.payload });
     }).then((cleanup) => {
       if (aborted) cleanup();

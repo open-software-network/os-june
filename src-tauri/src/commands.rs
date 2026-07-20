@@ -1453,7 +1453,8 @@ pub async fn start_recording(
         .await;
         match enrichment {
             Ok(true) => match calendar_repos.get_note(&calendar_note_id).await {
-                Ok(note) => {
+                Ok(mut note) => {
+                    note.queued_recordings = processing_queue::queued_behind(&calendar_note_id);
                     let _ = calendar_app.emit(
                         crate::meeting_calendar_context::NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
                         note,

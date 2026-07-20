@@ -420,8 +420,7 @@ describe("notes recording reliability", () => {
   });
 
   it("shows calendar context as soon as the backend matches the open note", async () => {
-    render(<App />);
-    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await startRecordingOnFirstNote();
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
     await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
     expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
@@ -447,6 +446,35 @@ describe("notes recording reliability", () => {
 
     expect(await screen.findByText("Google Calendar")).toBeInTheDocument();
     expect(screen.getByText("june@example.com")).toBeInTheDocument();
+  });
+
+  it("ignores calendar context without profile provenance after a renderer reload", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() =>
+      expect(mocks.listeners.has("june://note-calendar-context-updated")).toBe(true),
+    );
+
+    await act(async () => {
+      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+        payload: {
+          ...first,
+          title: "Stale calendar note",
+          calendarEvent: {
+            eventId: "event-stale",
+            title: "Stale calendar note",
+            startAt: "2026-07-20T14:00:00Z",
+            endAt: "2026-07-20T14:30:00Z",
+            accountEmail: "unknown-profile@example.com",
+          },
+        },
+      });
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    expect(screen.queryByText("Stale calendar note")).toBeNull();
+    expect(screen.queryByText("unknown-profile@example.com")).toBeNull();
+    expect(await screen.findByText("First note")).toBeInTheDocument();
   });
 
   it("retires an old-profile recording note as soon as the recording stops", async () => {
