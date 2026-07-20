@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const tauriMocks = vi.hoisted(() => ({
   computerUseStatus: vi.fn(),
   setComputerUseGrant: vi.fn(),
-  computerUseRequestPermissions: vi.fn(),
   computerUseStop: vi.fn(),
   openPrivacySettings: vi.fn(),
   setComputerUsePermissionDragBounds: vi.fn(),
@@ -15,7 +14,6 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
   computerUseStatus: tauriMocks.computerUseStatus,
   setComputerUseGrant: tauriMocks.setComputerUseGrant,
-  computerUseRequestPermissions: tauriMocks.computerUseRequestPermissions,
   computerUseStop: tauriMocks.computerUseStop,
   openPrivacySettings: tauriMocks.openPrivacySettings,
   setComputerUsePermissionDragBounds: tauriMocks.setComputerUsePermissionDragBounds,
@@ -47,15 +45,6 @@ beforeEach(() => {
   tauriMocks.setComputerUseGrant.mockResolvedValue(
     status({ grantEnabled: true, state: "permission_missing" }),
   );
-  tauriMocks.computerUseRequestPermissions.mockResolvedValue(
-    status({
-      grantEnabled: true,
-      accessibility: true,
-      screenRecording: true,
-      ready: true,
-      state: "ready",
-    }),
-  );
   tauriMocks.computerUseStop.mockResolvedValue({ stopped: true });
   tauriMocks.openPrivacySettings.mockResolvedValue(undefined);
   tauriMocks.setComputerUsePermissionDragBounds.mockResolvedValue(undefined);
@@ -74,26 +63,60 @@ describe("ComputerUseControl", () => {
     await userEvent.click(toggle);
 
     expect(tauriMocks.setComputerUseGrant).toHaveBeenCalledWith(true);
-    expect(tauriMocks.computerUseRequestPermissions).not.toHaveBeenCalled();
+    expect(tauriMocks.openPrivacySettings).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Computer use is enabled/)).toBeNull();
   });
 
-  it("explains both permissions before the explicit macOS request", async () => {
+  it("guides the user through Accessibility as the first macOS step", async () => {
     tauriMocks.computerUseStatus.mockResolvedValue(
       status({ grantEnabled: true, state: "permission_missing" }),
     );
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
-    expect(await screen.findByText("Accessibility")).toBeInTheDocument();
+    expect(await screen.findByText("Allow Accessibility")).toBeInTheDocument();
     expect(screen.getByText("Screen recording")).toBeInTheDocument();
     expect(screen.queryByText(/Captures are never analytics/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText((_, element) =>
+        Boolean(
+          element?.tagName === "P" &&
+            element.textContent?.includes(
+              "Open System Settings, find June Computer Use Driver, and turn it on.",
+            ),
+        ),
+      ),
+    ).toBeInTheDocument();
 
     await userEvent.hover(
       screen.getByRole("button", { name: "Computer use privacy and permissions" }),
     );
     expect(await screen.findByRole("tooltip")).toHaveTextContent(/Captures are never analytics/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Continue to macOS access" }));
-    expect(tauriMocks.computerUseRequestPermissions).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Open Accessibility settings" }));
+    expect(tauriMocks.openPrivacySettings).toHaveBeenCalledWith("accessibility");
+    expect(screen.queryByRole("button", { name: "Continue to macOS access" })).toBeNull();
+  });
+
+  it("advances to Screen recording after Accessibility is allowed", async () => {
+    tauriMocks.computerUseStatus.mockResolvedValue(
+      status({ grantEnabled: true, accessibility: true, state: "permission_missing" }),
+    );
+    render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+
+    expect(await screen.findByText("Step 2 of 2")).toBeInTheDocument();
+    expect(screen.getByText("Allow Screen recording")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open Screen recording settings" }));
+    expect(tauriMocks.openPrivacySettings).toHaveBeenCalledWith("screenRecording");
+  });
+
+  it("keeps Accessibility labeled as step 1 when Screen recording was allowed first", async () => {
+    tauriMocks.computerUseStatus.mockResolvedValue(
+      status({ grantEnabled: true, screenRecording: true, state: "permission_missing" }),
+    );
+    render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+
+    expect(await screen.findByText("Step 1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("Allow Accessibility")).toBeInTheDocument();
   });
 
   it("offers the real helper app as a drag source when macOS access is missing", async () => {
@@ -102,13 +125,40 @@ describe("ComputerUseControl", () => {
     );
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
-    expect(await screen.findByText("Add June to macOS")).toBeInTheDocument();
+    expect(await screen.findByText("June is not in the list?")).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Drag June Computer Use Driver to the open System Settings list",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/No Finder browsing needed/)).toBeInTheDocument();
+    expect(screen.getByText(/Drag the helper below/)).toBeInTheDocument();
+  });
+
+  it("does not expose helper transport errors while permissions are incomplete", async () => {
+    tauriMocks.computerUseStatus.mockResolvedValue(
+      status({
+        grantEnabled: true,
+        state: "permission_missing",
+        error: "Broken pipe (os error 32)",
+      }),
+    );
+    render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+
+    expect(await screen.findByText("Allow Accessibility")).toBeInTheDocument();
+    expect(screen.queryByText(/Broken pipe/)).toBeNull();
+  });
+
+  it("shows helper errors that are not permission setup failures", async () => {
+    tauriMocks.computerUseStatus.mockResolvedValue(
+      status({
+        grantEnabled: true,
+        state: "error",
+        error: "The Computer use driver did not respond in time.",
+      }),
+    );
+    render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+
+    expect(await screen.findByText(/driver did not respond in time/)).toBeInTheDocument();
   });
 
   it("routes a model mismatch to the model picker", async () => {

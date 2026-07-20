@@ -12800,13 +12800,18 @@ input:focus-visible,
 
 .computer-use-permission-assistant {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-5);
+  gap: var(--sp-4);
   padding: var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   background: var(--surface-subtle);
+}
+
+.computer-use-permission-assistant-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-5);
 }
 
 .computer-use-permission-assistant-copy {
@@ -12822,13 +12827,64 @@ input:focus-visible,
 
 .computer-use-permission-assistant-copy h4 {
   color: var(--foreground);
-  font-size: var(--fs-md);
+  font-size: var(--fs-lg);
   font-weight: var(--fw-medium);
 }
 
 .computer-use-permission-assistant-copy p {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.computer-use-permission-assistant-copy p strong {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+}
+
+.computer-use-permission-step {
+  color: var(--accent-foreground);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.btn.computer-use-permission-primary-action {
+  background: var(--foreground);
+  color: var(--primary-foreground);
+  white-space: nowrap;
+}
+
+.btn.computer-use-permission-primary-action:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--foreground) 86%, transparent);
+}
+
+.computer-use-permission-helper {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.computer-use-permission-helper-copy {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.computer-use-permission-helper-copy strong,
+.computer-use-permission-helper-copy p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.computer-use-permission-helper-copy strong {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+}
+
+.computer-use-permission-helper-copy p {
+  color: var(--muted-foreground);
   line-height: 1.5;
 }
 
@@ -12970,9 +13026,15 @@ input:focus-visible,
 
 @media (max-width: 720px) {
   .computer-use-permission-assistant {
+    padding: var(--sp-3);
+  }
+
+  .computer-use-permission-assistant-header,
+  .computer-use-permission-helper {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .computer-use-permission-primary-action,
   .computer-use-permission-drag-card {
     justify-self: stretch;
   }
