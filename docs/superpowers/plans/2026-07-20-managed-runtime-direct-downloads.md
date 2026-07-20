@@ -184,28 +184,25 @@ make verify
 
 Expected: frontend check/typecheck/tests and both Rust workspace format/clippy/test gates exit `0`.
 
-- [ ] **Step 11: Verify the live local app**
-
-Stop the existing worktree development process, then run:
-
-```bash
-pnpm tauri:dev
-```
-
-In the local worktree app, start a new agent session. Expected:
-
-- the managed runtime downloads and installs from the direct endpoints;
-- no `Managed runtime archive checksum mismatch.` banner appears;
-- the session opens with the managed runtime;
-- GitHub repository, issue, and pull-request read tools remain available;
-- the production June app is never opened.
-
-- [ ] **Step 12: Commit and publish the repair**
+- [ ] **Step 11: Commit the repair for independent review**
 
 ```bash
 git add src-tauri/src/hermes_bridge.rs
 git commit -m "Fix managed runtime direct downloads"
-git push origin codex/github-connector-phase-0
 ```
 
-Expected: the existing PR head advances to the repair commit; no new PR is created.
+Expected: the local branch contains the repair commit and is ready for the task and final review passes. Do not push before those reviews finish.
+
+## Post-review controller gate
+
+After the task review and final whole-change review are clean:
+
+1. Re-run `make verify` from the reviewed commit.
+2. Start only the local worktree app with `pnpm tauri:dev`.
+3. Start a new agent session and verify:
+   - the managed runtime downloads and installs from the direct endpoints;
+   - no `Managed runtime archive checksum mismatch.` banner appears;
+   - the session opens with the managed runtime;
+   - GitHub repository, issue, and pull-request read tools remain available;
+   - the production June app is never opened.
+4. Push `codex/github-connector-phase-0` to update the existing PR; do not create a new PR.
