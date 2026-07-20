@@ -1396,6 +1396,7 @@ pub async fn start_hermes_bridge(
 pub fn start_on_app_start(app: &tauri::App) {
     let app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
+        let bridge = app.state::<HermesBridge>();
         // Recovery is an app-start responsibility, not a runtime-availability
         // responsibility. A stale or missing managed install must not leave a
         // previously recorded process group running indefinitely.
@@ -1404,12 +1405,19 @@ pub fn start_on_app_start(app: &tauri::App) {
                 "failed to recover June agent runtimes during app startup: {}",
                 error.message
             );
+            disable_inherited_gateway_after_failed_app_start(
+                &app,
+                &bridge,
+                "runtime recovery failed",
+            )
+            .await;
             return;
         }
         if !hermes_runtime_available_for_auto_start(&app) {
+            disable_inherited_gateway_after_failed_app_start(&app, &bridge, "runtime unavailable")
+                .await;
             return;
         }
-        let bridge = app.state::<HermesBridge>();
         let status = start_hermes_bridge_inner(
             &app,
             &bridge,
@@ -1426,6 +1434,12 @@ pub fn start_on_app_start(app: &tauri::App) {
             );
         });
         let Ok(status) = status else {
+            disable_inherited_gateway_after_failed_app_start(
+                &app,
+                &bridge,
+                "bridge startup failed",
+            )
+            .await;
             return;
         };
         if let Some(connection) = status.connection.as_ref() {
@@ -1437,6 +1451,35 @@ pub fn start_on_app_start(app: &tauri::App) {
             }
         }
     });
+}
+
+/// A Gateway inherited from a crashed June process must never outlive a failed
+/// attempt to recreate its process-local provider proxy. Keep this independent
+/// of Bridge startup success; a later interactive or app-start lifecycle call
+/// can recreate the plist and service once the proxy is healthy again.
+async fn disable_inherited_gateway_after_failed_app_start(
+    app: &AppHandle,
+    bridge: &HermesBridge,
+    reason: &'static str,
+) {
+    match tokio::time::timeout(
+        GATEWAY_SHUTDOWN_TOTAL_TIMEOUT,
+        shutdown_hermes_gateway(app, bridge),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(
+            ?error,
+            reason,
+            "failed to disable inherited routine gateway after app-start failure"
+        ),
+        Err(_) => tracing::warn!(
+            reason,
+            timeout_ms = GATEWAY_SHUTDOWN_TOTAL_TIMEOUT.as_millis(),
+            "timed out disabling inherited routine gateway after app-start failure"
+        ),
+    }
 }
 
 #[tauri::command]
