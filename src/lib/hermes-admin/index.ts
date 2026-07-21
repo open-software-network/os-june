@@ -52,6 +52,7 @@ export * from "./rust-transport";
 export * from "./client";
 export * from "./cache";
 export * from "./gateway-lifecycle";
+export * from "./native-restart";
 export * from "./installed-skills-view";
 export * from "./use-installed-skills";
 export * from "./skill-setup-view";

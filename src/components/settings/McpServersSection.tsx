@@ -28,6 +28,7 @@ import {
   oauthStateFor,
   oauthStatusMeta,
   planServerEdit,
+  restartHermesRuntime,
   redactedEnv,
   redactedHeaders,
   securityLabelsFor,
@@ -51,12 +52,7 @@ import {
   type McpTestState,
   type ToolPolicyDraft,
 } from "../../lib/hermes-admin";
-import {
-  hermesBridgeStatus,
-  startHermesBridge,
-  stopHermesBridge,
-  type HermesBridgeStatus,
-} from "../../lib/tauri";
+import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
 import { AdminNotifications } from "./AdminNotifications";
 import { McpToolsDialog } from "./McpToolsDialog";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
@@ -143,8 +139,7 @@ function McpServersSectionReady({
     try {
       // Scope the stop to THIS page's runtime: stopping everything would
       // silently kill a live session in the other mode and leave it stopped.
-      await stopHermesBridge(mode);
-      const status = await startHermesBridge(undefined, mode === "unrestricted");
+      const status = await restartHermesRuntime(mode);
       setBridge(status);
       setRestart({ phase: "idle" });
     } catch (error) {

@@ -1,9 +1,12 @@
-import { render, renderHook, screen, waitFor, act } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import {
   applySnapshot,
+  buildImportPlan,
   buildSetupSnapshot,
   diffSnapshot,
+  mcpServerDefinitionDifferences,
   parseMcpServer,
   parseSetupSnapshot,
   requiredSecretId,
@@ -217,6 +220,62 @@ describe("setup snapshot — parse", () => {
     expect(parsed.snapshot.mcpServers[0].includeTools).toEqual(["read_file"]);
   });
 
+  it("round-trips complete MCP connection definitions", () => {
+    const server = serverFromWire({
+      name: "linear",
+      enabled: true,
+      transport: "http",
+      args: ["--tenant", "acme"],
+      url: "https://mcp.linear.test",
+      auth: "bearer",
+      env: { LINEAR_TOKEN: FAKE_SECRET },
+      headers: { Authorization: FAKE_BEARER },
+    });
+    const snapshot = buildSetupSnapshot({ ...emptyInput, mcpServers: [server] });
+    const parsed = parseSetupSnapshot(serializeSetupSnapshot(snapshot));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.snapshot.mcpServers[0]).toMatchObject({
+      args: ["--tenant", "acme"],
+      auth: "bearer",
+      envKeys: ["LINEAR_TOKEN"],
+      headerKeys: ["Authorization"],
+    });
+  });
+
+  it("preserves optional skill config, bundle, and external-directory sections", () => {
+    const result = parseSetupSnapshot({
+      schemaVersion: 1,
+      skillConfig: [{ skill: "exporter", key: "format", value: "md" }],
+      bundles: [{ skill: "exporter", hasScripts: true, scriptCount: 2 }],
+      externalDirs: [{ path: "/tmp/shared-skills", warning: "Review this path." }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.skillConfig).toEqual([
+      { skill: "exporter", key: "format", value: "md" },
+    ]);
+    expect(result.snapshot.bundles).toEqual([
+      expect.objectContaining({ skill: "exporter", hasScripts: true, scriptCount: 2 }),
+    ]);
+    expect(result.snapshot.externalDirs).toEqual([
+      { path: "/tmp/shared-skills", warning: "Review this path." },
+    ]);
+  });
+
+  it("preserves an intentionally empty non-secret skill config value", () => {
+    const result = parseSetupSnapshot({
+      schemaVersion: 1,
+      skillConfig: [{ skill: "exporter", key: "prefix", value: "" }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.skillConfig).toEqual([{ skill: "exporter", key: "prefix", value: "" }]);
+  });
+
   it("rejects non-JSON and non-object input without throwing", () => {
     expect(parseSetupSnapshot("not json {").ok).toBe(false);
     expect(parseSetupSnapshot(42).ok).toBe(false);
@@ -320,6 +379,7 @@ describe("setup snapshot — diff", () => {
           name: "github",
           enabled: true,
           transport: "http",
+          args: [],
           url: "https://mcp.github.com",
           envKeys: ["GITHUB_TOKEN"],
           headerKeys: [],
@@ -343,6 +403,52 @@ describe("setup snapshot — diff", () => {
     });
     expect(diff.requiredSecrets).toHaveLength(1);
     expect(requiredSecretId(diff.requiredSecrets[0])).toBe("mcp-env:github:GITHUB_TOKEN");
+  });
+
+  it("compares the complete same-name MCP definition without guessing write-only fields", () => {
+    const snapshotServer: SetupSnapshot["mcpServers"][number] = {
+      name: "linear",
+      enabled: true,
+      transport: "http",
+      args: ["--tenant", "acme"],
+      url: "https://mcp.linear.test",
+      auth: "bearer",
+      envKeys: ["LINEAR_TOKEN"],
+      headerKeys: ["Authorization"],
+      includeTools: [],
+      excludeTools: [],
+    };
+    const matching = serverFromWire({
+      ...snapshotServer,
+      env: { LINEAR_TOKEN: "[configured]" },
+      headers: { Authorization: "[configured]" },
+    });
+    expect(mcpServerDefinitionDifferences(snapshotServer, matching)).toEqual([]);
+
+    const different = serverFromWire({
+      ...snapshotServer,
+      args: ["--tenant", "other"],
+      url: "https://other.test",
+      auth: "oauth",
+      env: { OTHER_TOKEN: "[configured]" },
+      headers: { "X-Api-Key": "[configured]" },
+    });
+    expect(mcpServerDefinitionDifferences(snapshotServer, different)).toEqual([
+      "arguments",
+      "URL",
+      "auth mode",
+      "environment keys",
+      "header keys",
+    ]);
+
+    const redactedListing = serverFromWire({
+      name: "linear",
+      enabled: true,
+      transport: "http",
+      args: ["--tenant", "acme"],
+      url: "https://mcp.linear.test",
+    });
+    expect(mcpServerDefinitionDifferences(snapshotServer, redactedListing)).toEqual([]);
   });
 });
 
@@ -384,6 +490,7 @@ describe("setup snapshot — import driver", () => {
           enabled: true,
           transport: "stdio",
           command: "mcp-server-memory",
+          args: [],
           envKeys: ["MEMORY_KEY"],
           headerKeys: [],
           includeTools: ["recall"],
@@ -407,7 +514,7 @@ describe("setup snapshot — import driver", () => {
   it("applies in safe order and runs a post-import health check", async () => {
     const harness = makeAdminHarness(richInstallScenario());
     const report = await applySnapshot(harness.client, importableSnapshot(), {
-      restartGateway: true,
+      restartRuntime: async () => harness.client,
       sleep: instantSleep,
     });
 
@@ -428,9 +535,9 @@ describe("setup snapshot — import driver", () => {
     });
     const add = report.steps.find((s) => s.category === "mcp-add");
     expect(add?.status).toBe("applied");
-    // Tool filters cannot be set over this Hermes version's API.
+    // Tool filters are restored through the whole-config write contract.
     const filter = report.steps.find((s) => s.category === "tool-filter");
-    expect(filter?.status).toBe("unsupported");
+    expect(filter?.status).toBe("applied");
   });
 
   it("never sends a secret value the user did not supply", async () => {
@@ -448,8 +555,207 @@ describe("setup snapshot — import driver", () => {
     expect(JSON.stringify(harness.server.requestLog)).not.toContain(SECRET_PLACEHOLDER);
   });
 
+  it("restores MCP arguments, auth, env, and header secrets in the add request", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.mcpServers[0] = {
+      ...snapshot.mcpServers[0],
+      transport: "http",
+      command: undefined,
+      args: ["--tenant", "acme"],
+      url: "https://mcp.memory.test",
+      auth: "bearer",
+      headerKeys: ["Authorization"],
+    };
+    snapshot.requiredInputs.push({
+      key: "Authorization",
+      scope: "mcp-header",
+      owner: "memory",
+      placeholder: SECRET_PLACEHOLDER,
+    });
+
+    await applySnapshot(harness.client, snapshot, {
+      secrets: {
+        "mcp-env:memory:MEMORY_KEY": "env-value",
+        "mcp-header:memory:Authorization": "Bearer header-value",
+      },
+      restartRuntime: async () => harness.client,
+      sleep: instantSleep,
+    });
+
+    const addRequest = harness.server.requestLog.find(
+      (entry) => entry.method === "POST" && entry.path === "/api/mcp/servers",
+    );
+    expect(addRequest?.body).toMatchObject({
+      name: "memory",
+      args: ["--tenant", "acme"],
+      url: "https://mcp.memory.test",
+      auth: "bearer",
+      env: { MEMORY_KEY: "env-value" },
+      headers: { Authorization: "Bearer header-value" },
+    });
+  });
+
+  it("reports missing env and header values by secret scope", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.mcpServers[0].headerKeys = ["MEMORY_KEY"];
+
+    const report = await applySnapshot(harness.client, snapshot, {
+      secrets: { "mcp-env:memory:MEMORY_KEY": "environment-value" },
+      restartRuntime: async () => harness.client,
+      sleep: instantSleep,
+    });
+
+    const add = report.steps.find((step) => step.category === "mcp-add");
+    expect(add?.detail).toContain("header MEMORY_KEY");
+    expect(add?.detail).not.toContain("environment MEMORY_KEY");
+  });
+
+  it("plans a repeated import as no-op and never calls the Hermes restart endpoint", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    const restartRuntime = vi.fn(async () => harness.client);
+
+    const first = await applySnapshot(harness.client, snapshot, {
+      secrets: { "mcp-env:memory:MEMORY_KEY": "value-typed-by-user" },
+      restartRuntime,
+      sleep: instantSleep,
+    });
+    const mutationCounts = () => ({
+      installs: harness.server.requestLog.filter(
+        (entry) => entry.method === "POST" && entry.path === "/api/skills/hub/install",
+      ).length,
+      adds: harness.server.requestLog.filter(
+        (entry) => entry.method === "POST" && entry.path === "/api/mcp/servers",
+      ).length,
+      configWrites: harness.server.requestLog.filter(
+        (entry) => entry.method === "PUT" && entry.path === "/api/config",
+      ).length,
+    });
+    const afterFirst = mutationCounts();
+
+    const second = await applySnapshot(harness.client, snapshot, {
+      restartRuntime,
+      sleep: instantSleep,
+    });
+
+    expect(first.hadFailures).toBe(false);
+    expect(mutationCounts()).toEqual(afterFirst);
+    expect(restartRuntime).toHaveBeenCalledTimes(1);
+    expect(
+      second.steps
+        .filter((step) => step.category !== "health-check")
+        .every((step) => step.status === "skipped"),
+    ).toBe(true);
+    expect(harness.server.requestLog.some((entry) => entry.path === "/api/gateway/restart")).toBe(
+      false,
+    );
+  });
+
+  it("treats unsupported plan steps as an unsuccessful import", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [
+      { name: "machine-local", enabled: true, source: "external", hubInstalled: false },
+    ];
+    snapshot.mcpServers = [];
+    snapshot.requiredInputs = [];
+
+    const plan = buildImportPlan(snapshot, {
+      skills: [],
+      mcpServers: [],
+      catalog: [],
+      toolsets: [],
+      config: {},
+    });
+    expect(plan.steps.some((step) => step.disposition === "unsupported")).toBe(true);
+
+    const report = await applySnapshot(harness.client, snapshot, { sleep: instantSleep });
+    expect(report.hadFailures).toBe(true);
+    expect(report.steps.some((step) => step.status === "unsupported")).toBe(true);
+  });
+
+  it("leaves a same-name server with a different definition completely untouched", async () => {
+    const harness = makeAdminHarness({
+      gateway: { gateway_running: true },
+      mcpServers: [
+        {
+          name: "memory",
+          enabled: false,
+          transport: "stdio",
+          command: "different-memory-server",
+          include_tools: ["store"],
+        },
+      ],
+    });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.requiredInputs = [];
+
+    const report = await applySnapshot(harness.client, snapshot, { sleep: instantSleep });
+
+    expect(report.hadFailures).toBe(true);
+    expect(
+      report.steps
+        .filter((step) => ["mcp-add", "mcp-toggle", "tool-filter"].includes(step.category))
+        .every((step) => step.status === "unsupported"),
+    ).toBe(true);
+    expect(
+      harness.server.requestLog.some((entry) => entry.method === "POST" || entry.method === "PUT"),
+    ).toBe(false);
+  });
+
+  it("classifies malformed imported server definitions without forwarding them", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.mcpServers[0].command = "node; curl example.test";
+
+    const report = await applySnapshot(harness.client, snapshot, { sleep: instantSleep });
+
+    expect(report.hadFailures).toBe(true);
+    expect(report.steps.find((step) => step.category === "mcp-add")?.status).toBe("unsupported");
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "POST" && entry.path === "/api/mcp/servers",
+      ),
+    ).toBe(false);
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "PUT" && entry.path === "/api/config",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not write tool filters when the planned server creation fails", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    const failing = {
+      ...harness.client,
+      mcp: {
+        ...harness.client.mcp,
+        addServer: () => Promise.reject(new Error("server add failed")),
+      },
+    } as typeof harness.client;
+
+    const report = await applySnapshot(failing, snapshot, { sleep: instantSleep });
+
+    expect(report.steps.find((step) => step.category === "tool-filter")?.status).toBe("failed");
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "PUT" && entry.path === "/api/config",
+      ),
+    ).toBe(false);
+  });
+
   it("reports a partial failure without aborting the run", async () => {
-    const harness = makeAdminHarness(richInstallScenario());
+    const scenario = richInstallScenario();
+    scenario.skills = scenario.skills?.filter((skill) => skill.name !== "research");
+    const harness = makeAdminHarness(scenario);
     // Force the hub install to fail by stubbing the client method.
     const failing = {
       ...harness.client,
@@ -476,7 +782,15 @@ describe("setup snapshot — import driver", () => {
 
 describe("setup snapshot — controller", () => {
   it("loads live data and builds a sanitized export", async () => {
-    const harness = makeAdminHarness(richInstallScenario());
+    const scenario = richInstallScenario();
+    scenario.config = {
+      skills: {
+        config: {
+          exporter: { format: "md", api_key: FAKE_SECRET },
+        },
+      },
+    };
+    const harness = makeAdminHarness(scenario);
     const { result } = renderHook(() =>
       useSetupSnapshotController(
         {
@@ -497,6 +811,13 @@ describe("setup snapshot — controller", () => {
     expect(bundle.filename).toContain("june-setup-");
     // Sanity: the export carries no secret values.
     expect(bundle.text).not.toContain(FAKE_SECRET);
+
+    act(() => result.current.setIncludeSkillConfig(true));
+    const withConfig = result.current.buildExport(new Date("2026-06-26T00:00:00Z"));
+    expect(withConfig.snapshot.skillConfig).toEqual([
+      { skill: "exporter", key: "format", value: "md" },
+    ]);
+    expect(withConfig.text).not.toContain(FAKE_SECRET);
   });
 
   it("previews a pasted snapshot and diffs it against the live setup", async () => {
@@ -631,7 +952,54 @@ describe("setup snapshot — view", () => {
         })}
       />,
     );
-    expect(screen.getByText(/finished with some failures/i)).toBeTruthy();
+    expect(screen.getByText(/finished with issues/i)).toBeTruthy();
     expect(screen.getByText("hub unreachable")).toBeTruthy();
+  });
+
+  it("requires profile-mismatch confirmation and clears secrets on every preview", async () => {
+    const user = userEvent.setup();
+    const apply = vi.fn(() => Promise.resolve());
+    const preview = vi.fn();
+    render(
+      <SetupSnapshotView
+        state={stubState({
+          profile: "target",
+          preview,
+          apply,
+          importPhase: "previewed",
+          previewSnapshot: { profile: "source" } as SetupSnapshot,
+          previewDiff: {
+            entries: [],
+            requiredSecrets: [
+              {
+                key: "TOKEN",
+                scope: "mcp-env",
+                owner: "memory",
+                placeholder: SECRET_PLACEHOLDER,
+              },
+            ],
+            changeCount: 1,
+          },
+        })}
+      />,
+    );
+
+    const applyButton = screen.getByRole("button", { name: "Apply import" });
+    const confirmation = screen.getByRole("checkbox", {
+      name: /snapshot came from profile source/i,
+    });
+    const secret = screen.getByLabelText("memory · TOKEN") as HTMLInputElement;
+    expect(applyButton).toBeDisabled();
+
+    await user.type(secret, "first-secret");
+    await user.click(confirmation);
+    expect(applyButton).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText("Snapshot JSON"), { target: { value: "{}" } });
+    await user.click(screen.getByRole("button", { name: "Preview import" }));
+    expect(preview).toHaveBeenCalledWith("{}");
+    expect(screen.getByLabelText("memory · TOKEN")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Apply import" })).toBeDisabled();
+    expect(apply).not.toHaveBeenCalled();
   });
 });

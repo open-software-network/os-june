@@ -100,7 +100,11 @@ export type SnapshotMcpServer = {
   enabled: boolean;
   transport: HermesMcpServerInfo["transport"];
   command?: string;
+  /** Positional stdio arguments in their original order. */
+  args: string[];
   url?: string;
+  /** HTTP authentication mode. Secret material is never stored here. */
+  auth?: "none" | "bearer" | "oauth" | "unknown";
   /** Env KEY names only (never values). */
   envKeys: string[];
   /** Header KEY names only (never values). */
@@ -127,7 +131,7 @@ export type SnapshotSkillConfig = {
 
 /** An external skill directory recorded as a configurable path, with a warning
  * that the path must exist on the importing machine and runs outside the
- * sandbox. Gated behind spec 10; absent until that lands. */
+ * sandbox. */
 export type SnapshotExternalDir = {
   path: string;
   /** Sentence-case warning surfaced on import. */
@@ -187,7 +191,7 @@ export type SetupSnapshot = {
   skillConfig?: SnapshotSkillConfig[];
   /** Gated behind spec 11; absent on this branch. */
   bundles?: SnapshotBundle[];
-  /** Gated behind spec 10; absent on this branch. */
+  /** Additive external skill directory paths available in the current config. */
   externalDirs?: SnapshotExternalDir[];
   readiness: SnapshotReadiness;
 };
@@ -196,13 +200,12 @@ export type SetupSnapshot = {
 // Builder
 // ---------------------------------------------------------------------------
 
-/** Optional, capability-gated inputs that are not in this branch yet. When a
- * caller cannot supply them (the parallel specs have not landed), they stay
- * absent and the snapshot is still valid. */
+/** Optional inventory inputs. When a caller cannot supply one, it stays absent
+ * and the snapshot remains valid. */
 export type SnapshotCapabilities = {
   /** Spec 11: skill bundle references, when a bundles surface is available. */
   bundles?: SnapshotBundle[];
-  /** Spec 10: external skill dirs, when a dirs surface is available. */
+  /** External skill dirs, when the config inventory is available. */
   externalDirs?: Array<{ path: string }>;
 };
 
@@ -232,14 +235,17 @@ export type SnapshotInput = {
 
 /** Reads the env/header KEY NAMES from a server's raw payload (the listing never
  * returns values), tolerating a `{ KEY: value }` map or an array of `{ key }`. */
-function configKeyNames(server: HermesMcpServerInfo, keys: string[]): string[] {
+function reportedConfigKeyNames(server: HermesMcpServerInfo, keys: string[]): string[] | undefined {
   const record = asRecord(server.raw);
-  if (!record) return [];
+  if (!record) return undefined;
   for (const key of keys) {
-    const names = keyNamesOf(record[key]);
-    if (names.length > 0) return names;
+    if (Object.hasOwn(record, key)) return keyNamesOf(record[key]);
   }
-  return [];
+  return undefined;
+}
+
+function configKeyNames(server: HermesMcpServerInfo, keys: string[]): string[] {
+  return reportedConfigKeyNames(server, keys) ?? [];
 }
 
 function keyNamesOf(value: unknown): string[] {
@@ -261,6 +267,22 @@ function keyNamesOf(value: unknown): string[] {
     return out;
   }
   return [];
+}
+
+function serverArgs(server: HermesMcpServerInfo): string[] {
+  const record = asRecord(server.raw);
+  return record ? stringList(record.args ?? record.arguments) : [];
+}
+
+function serverAuthMode(server: HermesMcpServerInfo): SnapshotMcpServer["auth"] {
+  if (server.transport === "stdio") return undefined;
+  const record = asRecord(server.raw);
+  const explicit = nonEmptyString(record?.auth)?.toLowerCase();
+  if (explicit === "none" || explicit === "bearer" || explicit === "oauth") {
+    return explicit;
+  }
+  if (server.transport === "http-oauth" || record?.oauth) return "oauth";
+  return "unknown";
 }
 
 /** A separator-free, long alphanumeric run is almost never user-facing config;
@@ -321,7 +343,9 @@ export function buildSetupSnapshot(input: SnapshotInput): SetupSnapshot {
       enabled: server.enabled,
       transport: server.transport,
       command: server.command,
+      args: serverArgs(server),
       url: server.url,
+      auth: serverAuthMode(server),
       envKeys,
       headerKeys,
       includeTools: server.includeTools ?? [],
@@ -382,7 +406,8 @@ export function buildSetupSnapshot(input: SnapshotInput): SetupSnapshot {
     })),
   };
 
-  // Capability-gated, parallel-spec sections. Absent until specs 10/11 land.
+  // Optional inventory sections. Bundles remain absent until that inventory is
+  // available; external directories come from the current config tree.
   const bundles = input.capabilities?.bundles;
   const externalDirs = input.capabilities?.externalDirs?.map((dir) => ({
     path: dir.path,
@@ -456,6 +481,21 @@ function stringList(value: unknown): string[] {
 
 function boolOr(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseSnapshotAuth(
+  value: unknown,
+  transport: string | undefined,
+): SnapshotMcpServer["auth"] {
+  const auth = nonEmptyString(value)?.toLowerCase();
+  if (auth === "none" || auth === "bearer" || auth === "oauth" || auth === "unknown") {
+    return auth;
+  }
+  return transport === "http-oauth" ? "oauth" : transport === "stdio" ? undefined : "none";
 }
 
 /**
@@ -533,7 +573,9 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
             enabled: boolOr(r?.enabled, false),
             transport: (transport as HermesMcpServerInfo["transport"]) ?? "unknown",
             command: r ? nonEmptyString(r.command) : undefined,
+            args: stringList(r?.args),
             url: r ? nonEmptyString(r.url) : undefined,
+            auth: parseSnapshotAuth(r?.auth, transport),
             envKeys: stringList(r?.envKeys),
             headerKeys: stringList(r?.headerKeys),
             includeTools: stringList(r?.includeTools),
@@ -575,6 +617,52 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
         })
         .filter((s): s is SnapshotRequiredSecret => s !== undefined)
     : [];
+
+  const skillConfig = Array.isArray(record.skillConfig)
+    ? record.skillConfig
+        .map((entry): SnapshotSkillConfig | undefined => {
+          const r = asRecord(entry);
+          const skill = r && nonEmptyString(r.skill);
+          const key = r && nonEmptyString(r.key);
+          const value = r && typeof r.value === "string" ? r.value : undefined;
+          return skill && key && value !== undefined ? { skill, key, value } : undefined;
+        })
+        .filter((entry): entry is SnapshotSkillConfig => entry !== undefined)
+    : undefined;
+
+  const bundles = Array.isArray(record.bundles)
+    ? record.bundles
+        .map((entry): SnapshotBundle | undefined => {
+          const r = asRecord(entry);
+          const skill = r && nonEmptyString(r.skill);
+          if (!skill) return undefined;
+          return {
+            skill,
+            hasScripts: typeof r?.hasScripts === "boolean" ? r.hasScripts : undefined,
+            scriptCount: finiteNumber(r?.scriptCount),
+            templateCount: finiteNumber(r?.templateCount),
+            referenceCount: finiteNumber(r?.referenceCount),
+            assetCount: finiteNumber(r?.assetCount),
+          };
+        })
+        .filter((entry): entry is SnapshotBundle => entry !== undefined)
+    : undefined;
+
+  const externalDirs = Array.isArray(record.externalDirs)
+    ? record.externalDirs
+        .map((entry): SnapshotExternalDir | undefined => {
+          const r = asRecord(entry);
+          const path = r && nonEmptyString(r.path);
+          if (!path) return undefined;
+          return {
+            path,
+            warning:
+              nonEmptyString(r?.warning) ??
+              "This external skill directory must exist on the importing machine. Review it before enabling.",
+          };
+        })
+        .filter((entry): entry is SnapshotExternalDir => entry !== undefined)
+    : undefined;
 
   const readinessRecord = asRecord(record.readiness);
   const readiness: SnapshotReadiness = {
@@ -618,6 +706,9 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
         excludeTools: server.excludeTools,
       })),
     requiredInputs: requiredSecrets,
+    ...(skillConfig ? { skillConfig } : {}),
+    ...(bundles ? { bundles } : {}),
+    ...(externalDirs ? { externalDirs } : {}),
     readiness,
   };
 
@@ -664,6 +755,44 @@ function sameList(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false;
   const setB = new Set(b);
   return a.every((item) => setB.has(item));
+}
+
+function sameOrderedList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+/** Names the connection-definition fields that differ from a live server.
+ * Enabled state and tool filters are intentionally handled separately because
+ * June can update them without replacing the server. */
+export function mcpServerDefinitionDifferences(
+  snapshot: SnapshotMcpServer,
+  current: HermesMcpServerInfo,
+): string[] {
+  const differences: string[] = [];
+  if (snapshot.transport !== current.transport) differences.push("transport");
+  if ((snapshot.command ?? "") !== (current.command ?? "")) differences.push("command");
+  if (!sameOrderedList(snapshot.args, serverArgs(current))) differences.push("arguments");
+  if ((snapshot.url ?? "") !== (current.url ?? "")) differences.push("URL");
+  const snapshotAuth = snapshot.auth ?? (snapshot.transport === "stdio" ? undefined : "none");
+  const currentAuth = serverAuthMode(current);
+  if (
+    snapshotAuth !== undefined &&
+    snapshotAuth !== "unknown" &&
+    currentAuth !== undefined &&
+    currentAuth !== "unknown" &&
+    snapshotAuth !== currentAuth
+  ) {
+    differences.push("auth mode");
+  }
+  const currentEnvKeys = reportedConfigKeyNames(current, ["env", "environment", "env_vars"]);
+  if (currentEnvKeys && !sameList(snapshot.envKeys, currentEnvKeys)) {
+    differences.push("environment keys");
+  }
+  const currentHeaderKeys = reportedConfigKeyNames(current, ["headers", "http_headers"]);
+  if (currentHeaderKeys && !sameList(snapshot.headerKeys, currentHeaderKeys)) {
+    differences.push("header keys");
+  }
+  return differences;
 }
 
 /**
@@ -732,15 +861,21 @@ export function diffSnapshot(snapshot: SetupSnapshot, live: LiveSetup): Snapshot
       });
     } else {
       const enabledChanged = current.enabled !== server.enabled;
+      const definitionChanges = mcpServerDefinitionDifferences(server, current);
       const filtersChanged =
         !sameList(current.includeTools ?? [], server.includeTools) ||
         !sameList(current.excludeTools ?? [], server.excludeTools);
-      if (enabledChanged || filtersChanged) {
+      if (enabledChanged || filtersChanged || definitionChanges.length > 0) {
         const parts: string[] = [];
         if (enabledChanged) {
           parts.push(server.enabled ? "will be enabled" : "will be disabled");
         }
         if (filtersChanged) parts.push("tool filters will be updated");
+        if (definitionChanges.length > 0) {
+          parts.push(
+            `connection differs (${definitionChanges.join(", ")}) and will be left unchanged`,
+          );
+        }
         entries.push({
           category: "mcp-server",
           name: server.name,
