@@ -109,7 +109,7 @@ const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_POLL_TIMEOUT_MS = 120_000;
 
 /** Payload for `POST /api/mcp/servers`, matching the dashboard's
- * `MCPServerCreate` schema (v2026.6.19): `name` is required; `command`/`args`
+ * `MCPServerCreate` schema (v2026.7.20): `name` is required; `command`/`args`
  * describe a stdio server, `url`/`auth` an http(-oauth) server; `env` carries
  * secret config. NOTE: this Hermes version's create schema has NO tool
  * include/exclude/filter field, so MCP tool filtering is not configured here
@@ -144,7 +144,7 @@ export type HermesInstallCatalogPayload = {
 } & Record<string, unknown>;
 
 /** Payload for `POST /api/profiles`, matching the dashboard's `ProfileCreate`
- * schema (v2026.6.19). `name` is the only required field.
+ * schema (v2026.7.20). `name` is the only required field.
  * `clone_from_default` seeds the new profile from June's default SOUL and
  * bundled skills unless `no_skills` is set; `keep_skills` narrows which bundled
  * skills survive; `hub_skills` installs optional hub skills at create time;
@@ -220,7 +220,7 @@ export type HermesAdminClient = {
     testServer(name: string): Promise<MutationOutcome<HermesMcpTestResult>>;
     setEnabled(name: string, enabled: boolean): Promise<MutationOutcome<HermesToggleResult>>;
     removeServer(name: string): Promise<MutationOutcome<{ ok: boolean }>>;
-    // NOTE: no setToolFilters. The v2026.6.19 dashboard exposes no
+    // NOTE: no setToolFilters. The v2026.7.20 dashboard exposes no
     // `PUT /api/mcp/servers/{name}/tools` endpoint, and `MCPServerCreate`
     // carries no include/exclude/filter field, so per-tool filtering is not
     // configurable through this contract. Track 16 owns whatever filtering UI

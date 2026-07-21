@@ -1112,6 +1112,74 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("keeps Hermes 0.19 interim commentary when the final answer differs", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "The checks are clean.",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "The checks are clean.",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          delta: "Everything is ready to ship.",
+          complete: true,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(2);
+    expect(
+      turns.map((turn) =>
+        turn.parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join(""),
+      ),
+    ).toEqual(["The checks are clean.", "Everything is ready to ship."]);
+  });
+
+  it("settles a previewed Hermes 0.19 answer onto its interim bubble", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "Partial answer",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "Partial answer",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          delta: "Partial answer with verification.",
+          complete: true,
+          responsePreviewed: true,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
+    ]);
+  });
+
   it("closes a running reasoning turn when only a terminal lifecycle event follows", () => {
     const turns = buildAgentChatTurns(
       [],

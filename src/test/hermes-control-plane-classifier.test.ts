@@ -24,6 +24,7 @@ const CURRENT_GATEWAY_EVENT_NAMES = [
   "session.info",
   "message.start",
   "message.delta",
+  "message.interim",
   "message.complete",
   "thinking.delta",
   "reasoning.delta",
@@ -154,6 +155,25 @@ describe("classifyHermesEvent — transcript", () => {
     } else {
       throw new Error("expected transcript");
     }
+  });
+
+  it("classifies Hermes 0.19 interim commentary as a sealed transcript segment", () => {
+    const interim = classifyHermesEvent(
+      event("message.interim", {
+        message_id: "m1",
+        text: "Let me verify that.",
+        already_streamed: true,
+      }),
+    );
+    expect(interim).toMatchObject({
+      kind: "transcript",
+      sessionId: "sess-1",
+      messageId: "m1",
+      delta: "Let me verify that.",
+      complete: false,
+      interim: true,
+      responsePreviewed: false,
+    });
   });
 
   it("marks failed completes and reads complete text from the builder's summary chain", () => {

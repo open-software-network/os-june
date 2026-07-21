@@ -35,6 +35,13 @@ def load_approval(root: Path):
     utils.is_truthy_value = lambda value: str(value).lower() in {"1", "true", "yes"}
     sys.modules["utils"] = utils
 
+    tools = types.ModuleType("tools")
+    tools.__path__ = []
+    interrupt = types.ModuleType("tools.interrupt")
+    interrupt.is_interrupted = lambda: False
+    sys.modules["tools"] = tools
+    sys.modules["tools.interrupt"] = interrupt
+
     path = root / "tools" / "approval.py"
     if not path.is_file():
         raise RuntimeError("patched Hermes approval module is missing: %s" % path)
@@ -229,6 +236,8 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "_sessions_lock": threading.Lock(),
             "_set_session_context": lambda _key: None,
             "_clear_session_context": lambda _tokens: None,
+            "_session_source": lambda _session: "tui",
+            "_emit": lambda *_args: None,
         }
         exec(compile(source, str(root / "tui_gateway" / "server.py"), "exec"), namespace)
         response = namespace["_image_attach_bytes"](
@@ -658,6 +667,43 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         namespace["_reset_session_agent"]("reset-session", reset_session)
         assert reset_session["agent_error"] is None, reset_session
 
+    # Hermes 0.19 moved queue ownership into _run_prompt_submit after the lazy
+    # agent is ready. The function detaches one immutable batch while holding
+    # history_lock, so later attachments remain queued for the next turn.
+    run_prompt_submit = _function(tree, "_run_prompt_submit")
+    run_lock_blocks = [
+        node
+        for node in run_prompt_submit.body
+        if isinstance(node, ast.With)
+        and any(
+            _session_subscript(item.context_expr, "history_lock")
+            for item in node.items
+        )
+    ]
+    assert len(run_lock_blocks) == 1, len(run_lock_blocks)
+    run_lock = run_lock_blocks[0]
+    image_batch_assigns = [
+        node
+        for node in ast.walk(run_lock)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "images" for target in node.targets)
+    ]
+    queue_clears = [
+        node
+        for node in ast.walk(run_lock)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.List)
+        and not node.value.elts
+        and any(_session_subscript(target, "attached_images") for target in node.targets)
+    ]
+    assert len(image_batch_assigns) == len(queue_clears) == 1, (
+        len(image_batch_assigns),
+        len(queue_clears),
+    )
+    return
+
+    # Legacy pre-0.19 ownership checks retained as documentation for the
+    # older patch shape. Hermes 0.19 takes the verified path above.
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,
     # then hand only that batch to the asynchronous success path. Initialization
@@ -1045,6 +1091,11 @@ def verify_cross_process_config_writer(root: Path) -> None:
         # with a bare host Python too by using JSON, which is a YAML subset.
         yaml_stub = types.ModuleType("yaml")
         yaml_stub.YAMLError = ValueError
+        yaml_stub.SafeDumper = type(
+            "SafeDumper",
+            (),
+            {"increase_indent": lambda self, flow=False, indentless=False: None},
+        )
         yaml_stub.safe_load = lambda source: json.loads(
             source.read() if hasattr(source, "read") else source
         )
@@ -1228,7 +1279,7 @@ def verify_cross_process_config_writer(root: Path) -> None:
             encoding="utf-8",
         )
         telegram_tree = ast.parse(
-            (root / "gateway" / "platforms" / "telegram.py").read_text(
+            (root / "plugins" / "platforms" / "telegram" / "adapter.py").read_text(
                 encoding="utf-8"
             )
         )
@@ -1250,7 +1301,11 @@ def verify_cross_process_config_writer(root: Path) -> None:
             )
         }
         exec(
-            compile(module, str(root / "gateway" / "platforms" / "telegram.py"), "exec"),
+            compile(
+                module,
+                str(root / "plugins" / "platforms" / "telegram" / "adapter.py"),
+                "exec",
+            ),
             namespace,
         )
 
@@ -1269,10 +1324,18 @@ def verify_cross_process_config_writer(root: Path) -> None:
         patched_utils.atomic_yaml_write = atomic_after_june_disable
         hermes_constants = types.ModuleType("hermes_constants")
         hermes_constants.get_hermes_home = lambda: config_path.parent
+        hermes_cli = types.ModuleType("hermes_cli")
+        hermes_config = types.ModuleType("hermes_cli.config")
+        hermes_config.atomic_config_write = atomic_after_june_disable
+        hermes_cli.config = hermes_config
         previous_utils = sys.modules.get("utils")
         previous_constants = sys.modules.get("hermes_constants")
+        previous_hermes_cli = sys.modules.get("hermes_cli")
+        previous_hermes_config = sys.modules.get("hermes_cli.config")
         sys.modules["utils"] = patched_utils
         sys.modules["hermes_constants"] = hermes_constants
+        sys.modules["hermes_cli"] = hermes_cli
+        sys.modules["hermes_cli.config"] = hermes_config
         try:
             writer = namespace["TelegramWriter"]()
             writer.name = "telegram"
@@ -1287,6 +1350,14 @@ def verify_cross_process_config_writer(root: Path) -> None:
                 sys.modules.pop("hermes_constants", None)
             else:
                 sys.modules["hermes_constants"] = previous_constants
+            if previous_hermes_config is None:
+                sys.modules.pop("hermes_cli.config", None)
+            else:
+                sys.modules["hermes_cli.config"] = previous_hermes_config
+            if previous_hermes_cli is None:
+                sys.modules.pop("hermes_cli", None)
+            else:
+                sys.modules["hermes_cli"] = previous_hermes_cli
 
         telegram_saved = patched_utils.yaml.safe_load(
             config_path.read_text(encoding="utf-8")
@@ -1344,12 +1415,23 @@ def verify_model_deny_wins(root: Path) -> None:
         ),
         namespace,
     )
-    definitions = namespace["_compute_tool_definitions"](
-        enabled_toolsets=["memory", "web"],
-        disabled_toolsets=["memory"],
-        quiet_mode=True,
-        skip_tool_search_assembly=True,
-    )
+    toolsets_module = types.ModuleType("toolsets")
+    toolsets_module.bundle_non_core_tools = lambda _name: set()
+    toolsets_module.get_toolset = lambda _name: {}
+    previous_toolsets = sys.modules.get("toolsets")
+    sys.modules["toolsets"] = toolsets_module
+    try:
+        definitions = namespace["_compute_tool_definitions"](
+            enabled_toolsets=["memory", "web"],
+            disabled_toolsets=["memory"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+    finally:
+        if previous_toolsets is None:
+            sys.modules.pop("toolsets", None)
+        else:
+            sys.modules["toolsets"] = previous_toolsets
     names = {definition["function"]["name"] for definition in definitions}
     assert names == {"web_search"}, (
         "disabled memory toolset did not win over the enabled allowlist: %s" % names

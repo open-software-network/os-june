@@ -31,6 +31,7 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
   switch (type) {
     case "message.start":
     case "message.delta":
+    case "message.interim":
     case "message.complete":
       return classifyTranscript(type, sessionId, payload, receivedAt);
 
@@ -142,8 +143,13 @@ function classifyTranscript(
   receivedAt: string,
 ): JuneHermesEvent {
   const complete = type === "message.complete";
+  const interim = type === "message.interim";
   const delta =
-    type === "message.delta" ? rawDeltaText(payload) : complete ? eventText(payload) : undefined;
+    type === "message.delta"
+      ? rawDeltaText(payload)
+      : complete || interim
+        ? eventText(payload)
+        : undefined;
   const failed = complete && stringValue(payload?.status)?.toLowerCase() === "error";
   return {
     kind: "transcript",
@@ -153,6 +159,8 @@ function classifyTranscript(
     // old four-key classifier fallback, so summary/status-only turns survive.
     delta,
     complete,
+    interim,
+    responsePreviewed: payload?.response_previewed === true,
     // The transcript builder gates failed-turn notices on message.complete
     // status=error; carry the same flag so the typed seam cannot drift.
     failed,
