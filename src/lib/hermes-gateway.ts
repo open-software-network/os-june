@@ -28,6 +28,19 @@ export type HermesGatewayEvent<P = unknown> = {
   type: HermesGatewayEventName;
   session_id?: string;
   payload?: P;
+  /** Connection-local identity minted by this client for one event dispatch. */
+  delivery?: HermesGatewayDelivery;
+  /** Optional replay-stable source identity carried by some Hermes builds. */
+  event_id?: unknown;
+  eventId?: unknown;
+  /** Explicit UTF-16 message offset carried by some Hermes builds. */
+  text_offset?: unknown;
+  textOffset?: unknown;
+};
+
+export type HermesGatewayDelivery = {
+  connectionId: number;
+  sequence: number;
 };
 
 type PendingCall = {
@@ -60,6 +73,10 @@ export class HermesGatewayError extends Error {
 // turn is running — see tui_gateway/server.py `_err(rid, 4009, "session busy")`.
 const SESSION_BUSY_CODE = 4009;
 
+// A live stream can outlast a client instance (for example, Note Chat replaces
+// its client after a drop), so connection ids must not collide across clients.
+let nextGatewayConnectionId = 0;
+
 export function isSessionBusyError(err: unknown) {
   return err instanceof HermesGatewayError && err.code === SESSION_BUSY_CODE;
 }
@@ -80,8 +97,12 @@ export class HermesGatewayClient {
     if (this.connectPromise) return this.connectPromise;
     this.close();
     const socket = new WebSocket(wsUrl);
+    const connectionId = ++nextGatewayConnectionId;
+    let eventSequence = 0;
     this.socket = socket;
-    socket.addEventListener("message", (event) => this.handleMessage(event.data));
+    socket.addEventListener("message", (event) =>
+      this.handleMessage(event.data, connectionId, () => ++eventSequence),
+    );
     socket.addEventListener("close", () => {
       // A stale socket's close event must not reject requests pending on
       // the socket that replaced it, nor notify close listeners.
@@ -163,7 +184,7 @@ export class HermesGatewayClient {
     });
   }
 
-  private handleMessage(raw: unknown) {
+  private handleMessage(raw: unknown, connectionId: number, nextEventSequence: () => number) {
     let frame: Frame;
     try {
       frame = JSON.parse(String(raw)) as Frame;
@@ -185,7 +206,14 @@ export class HermesGatewayClient {
       return;
     }
     if (frame.method === "event" && frame.params?.type) {
-      for (const handler of this.handlers) handler(frame.params);
+      const dispatchedEvent: HermesGatewayEvent = {
+        ...frame.params,
+        delivery: {
+          connectionId,
+          sequence: nextEventSequence(),
+        },
+      };
+      for (const handler of this.handlers) handler(dispatchedEvent);
     }
   }
 

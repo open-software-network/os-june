@@ -1,30 +1,64 @@
-import { dispatchAgentRunSettled, dispatchAgentSessionStatus } from "./agent-events";
-import { hermesConnectionForMode } from "./hermes-connection";
+import {
+  dispatchAgentRunSettled,
+  dispatchAgentRunStarted,
+  dispatchAgentSessionStatus,
+} from "./agent-events";
+import { hasFinalContentBearingAssistantReply } from "./agent-chat-runtime";
+import { hermesConnectionForMode, type HermesRuntimeIncarnation } from "./hermes-connection";
 import { HermesGatewayClient } from "./hermes-gateway";
 import { watchHermesRunSettlement, type HermesRunSettlementHandle } from "./hermes-run-settlement";
 import {
   hermesBridgeSessionMessages,
-  hermesBridgeSessions,
   hermesBridgeStatus,
   type HermesSessionMessage,
-  type HermesSessionInfo,
 } from "./tauri";
 
 export type StartAgentRunMonitoringInput = {
   storedSessionId: string;
   runtimeSessionId?: string;
+  /** In-memory identity of the Hermes process that accepted this run. */
+  runtimeIncarnation?: HermesRuntimeIncarnation;
   title: string;
   fullMode: boolean;
   settlementHeld: boolean;
+  /** Identity and freshness proof for the prompt this monitor owns. The
+   * caller retains its surface-specific persisted-user matcher so recovery
+   * cannot mistake an older identical user message for this accepted Agent
+   * run. */
+  acceptedPrompt: AgentRunAcceptedPrompt;
+  terminalEvidence?: AgentRunTerminalEvidence;
+};
+
+export type AgentRunAcceptedPrompt = {
+  dispatchedAtMs: number;
+  findPersistedUserIndex: (messages: readonly HermesSessionMessage[]) => number;
+};
+
+export type AgentRunTerminalEvidence = {
+  status: "completed" | "failed" | "cancelled";
+  summary: string;
+  /** Earliest timestamp that can belong to this accepted prompt. Persisted
+   * or replayed outcome evidence older than this boundary belongs to an
+   * earlier run. */
+  notBeforeMs: number;
+};
+
+export type AgentRunMonitorSnapshot = {
+  generation: number;
+  runtimeSessionId?: string;
+  runtimeIncarnation?: HermesRuntimeIncarnation;
+  fullMode: boolean;
+  phase: "active" | "stopping" | "succeeded" | "terminal";
 };
 
 type AgentRunMonitor = StartAgentRunMonitoringInput & {
-  canProbeBeforeObservedActive: boolean;
   generation: number;
-  observedActive: boolean;
+  stopping: boolean;
   succeeded: boolean;
+  successAuthority?: "explicit" | "assistant-fallback";
   settlement?: HermesRunSettlementHandle;
   settlementCleanupTimer?: ReturnType<typeof setTimeout>;
+  stopCallbacks?: Set<() => void>;
 };
 
 type ModeObserver = {
@@ -34,22 +68,23 @@ type ModeObserver = {
   reconnectTimer?: ReturnType<typeof setTimeout>;
 };
 
-type TerminalOutcome =
-  | { kind: "succeeded" }
-  | { kind: "failed"; summary: string }
-  | { kind: "cancelled" };
+type PersistedCompletion = { authority: "assistant-fallback" };
 
 const OBSERVER_RECONNECT_MS = 1_000;
 const MONITOR_POLL_INTERVAL_MS = 500;
 const MONITOR_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
+const MONITOR_STOP_TIMEOUT_MS = 2_000;
 const runs = new Map<string, AgentRunMonitor>();
+const terminalRunSnapshots = new Map<string, AgentRunMonitorSnapshot>();
+const terminalRunSnapshotOrder: string[] = [];
+const MAX_RUN_MONITOR_SNAPSHOTS = 100;
 const observers = new Map<boolean, ModeObserver>();
 let nextGeneration = 0;
 
 /**
  * Starts observing one accepted Agent run independently of the React surface
  * that submitted it. A later call for the same stored session replaces the
- * prior generation, so delayed frames tagged with its old runtime id cannot
+ * prior generation, so delayed frames tagged with its old runtime session id cannot
  * settle the new run.
  */
 export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
@@ -58,26 +93,78 @@ export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
 
   const run: AgentRunMonitor = {
     ...input,
-    canProbeBeforeObservedActive: previous === undefined,
     generation: ++nextGeneration,
-    observedActive: false,
+    stopping: false,
     succeeded: false,
+    terminalEvidence:
+      input.terminalEvidence && Number.isFinite(input.terminalEvidence.notBeforeMs)
+        ? input.terminalEvidence
+        : undefined,
   };
   runs.set(input.storedSessionId, run);
+  forgetTerminalRunSnapshot(input.storedSessionId);
 
   if (previous && previous.fullMode !== run.fullMode) {
     closeObserverWhenUnused(previous.fullMode);
   }
   void ensureObserver(run.fullMode).catch(() => scheduleObserverReconnect(run.fullMode));
   startSettlementIfReady(run);
+  // Publish after the caller receives and records this generation. The
+  // initiating surface then ignores equality, while any other surface still
+  // holding an older generation can retire its stale local continuity.
+  queueMicrotask(() => {
+    dispatchAgentRunStarted({
+      storedSessionId: run.storedSessionId,
+      runMonitorGeneration: run.generation,
+      runtimeSessionId: run.runtimeSessionId,
+      runtimeIncarnation: run.runtimeIncarnation,
+      fullMode: run.fullMode,
+    });
+  });
   return run.generation;
 }
 
 /** Marks a successful terminal edge learned by the submitting UI surface. */
-export function markAgentRunSucceeded(storedSessionId: string) {
-  const run = runs.get(storedSessionId);
-  if (!run) return false;
-  armSuccessfulRun(run);
+export function markAgentRunSucceeded(storedSessionId: string, expectedGeneration: number) {
+  const run = currentRunForGeneration(storedSessionId, expectedGeneration);
+  if (!run || run.stopping) return false;
+  run.terminalEvidence = undefined;
+  armSuccessfulRun(run, "explicit");
+  return true;
+}
+
+/** Retains unresolved run-outcome evidence for the current monitor generation.
+ * A failed transcript completion is negative evidence without itself being an
+ * Agent-run terminal; a repeated anonymous terminal is replay-ambiguous. While
+ * either is pending, partial assistant prose cannot be inferred as success. */
+export function preserveAgentRunTerminalEvidence(
+  storedSessionId: string,
+  evidence: AgentRunTerminalEvidence,
+  expectedGeneration: number,
+) {
+  const run = currentRunForGeneration(storedSessionId, expectedGeneration);
+  if (!run || run.stopping || !Number.isFinite(evidence.notBeforeMs)) return false;
+  if (run.successAuthority === "explicit") return false;
+  if (
+    run.successAuthority === "assistant-fallback" &&
+    (evidence.status === "failed" || evidence.status === "cancelled")
+  ) {
+    run.succeeded = false;
+    run.successAuthority = undefined;
+  }
+  if (
+    evidence.status === "completed" &&
+    (run.terminalEvidence?.status === "failed" || run.terminalEvidence?.status === "cancelled")
+  ) {
+    // Anonymous/replayed completion is weaker than negative evidence already
+    // observed for this accepted run. Only the surface's explicit terminal
+    // authority may clear that failure or cancellation via markAgentRunSucceeded.
+    return true;
+  }
+  run.terminalEvidence = {
+    ...evidence,
+    notBeforeMs: Math.max(run.terminalEvidence?.notBeforeMs ?? 0, evidence.notBeforeMs),
+  };
   return true;
 }
 
@@ -85,29 +172,104 @@ export function markAgentRunSucceeded(storedSessionId: string) {
  * Retires a failed run learned by the UI. The UI already owns its failed
  * status dispatch, so this function deliberately emits no second event.
  */
-export function markAgentRunFailed(storedSessionId: string, summary?: string) {
+export function markAgentRunFailed(
+  storedSessionId: string,
+  expectedGeneration: number,
+  summary?: string,
+) {
   void summary;
-  const run = runs.get(storedSessionId);
-  if (!run) return false;
+  const run = currentRunForGeneration(storedSessionId, expectedGeneration);
+  if (!run || run.stopping) return false;
   finishRun(run);
   return true;
 }
 
 /** Releases a completed run once all automatic continuation work is drained. */
-export function releaseAgentRunSettlement(storedSessionId: string) {
-  const run = runs.get(storedSessionId);
-  if (!run) return false;
+export function releaseAgentRunSettlement(storedSessionId: string, expectedGeneration: number) {
+  const run = currentRunForGeneration(storedSessionId, expectedGeneration);
+  if (!run || run.stopping) return false;
   run.settlementHeld = false;
   startSettlementIfReady(run);
   return true;
 }
 
 /** Cancels readiness for an explicit Stop, deletion, or superseding workflow. */
-export function cancelAgentRunMonitoring(storedSessionId: string) {
-  const run = runs.get(storedSessionId);
+export function cancelAgentRunMonitoring(storedSessionId: string, expectedGeneration: number) {
+  const run = currentRunForGeneration(storedSessionId, expectedGeneration);
   if (!run) return false;
   finishRun(run);
   return true;
+}
+
+/** Sends Stop to the exact runtime session and mode owned by this generation.
+ * This owns monitor cancellation so passive surfaces never guess from a stale
+ * local runtime session id. The UI updates immediately, while the monitor
+ * remains stopping until the interrupt is issued or reconnect fails. */
+export function stopAgentRunMonitoring(
+  storedSessionId: string,
+  expectedGeneration: number,
+  onStopped?: () => void,
+) {
+  const run = currentRunForGeneration(storedSessionId, expectedGeneration);
+  if (!run) return false;
+  if (onStopped) {
+    if (!run.stopCallbacks) run.stopCallbacks = new Set();
+    run.stopCallbacks.add(onStopped);
+  }
+  if (run.stopping) return true;
+  run.stopping = true;
+  cancelSettlement(run);
+  const runtimeSessionId = run.runtimeSessionId ?? run.storedSessionId;
+  const interrupt = (async () => {
+    const observer = await ensureObserver(run.fullMode);
+    if (!isCurrent(run)) return;
+    // Reconnect is part of delivering Stop and cannot share the acknowledgement
+    // timeout: retiring this generation first would make the guard above drop
+    // the interrupt. Once request() has issued it, bound only the reply wait.
+    const request = observer.gateway.request("session.interrupt", {
+      session_id: runtimeSessionId,
+    });
+    let stopTimeout: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      stopTimeout = setTimeout(resolve, MONITOR_STOP_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([request, timeout]);
+    } finally {
+      if (stopTimeout !== undefined) clearTimeout(stopTimeout);
+    }
+  })().catch(() => {});
+  void interrupt.finally(() => {
+    if (isCurrent(run)) finishRun(run);
+    const callbacks = [...(run.stopCallbacks ?? [])];
+    run.stopCallbacks?.clear();
+    for (const callback of callbacks) {
+      try {
+        callback();
+      } catch {
+        // Stop completion is best-effort; a surface refresh callback must not
+        // turn an already-retired monitor into an unhandled rejection.
+      }
+    }
+  });
+  return true;
+}
+
+/** Read-only app-lifetime ownership for a surface that mounts after run-start. */
+export function agentRunMonitorSnapshot(
+  storedSessionId: string,
+): AgentRunMonitorSnapshot | undefined {
+  const run = runs.get(storedSessionId);
+  if (run) {
+    return {
+      generation: run.generation,
+      runtimeSessionId: run.runtimeSessionId,
+      runtimeIncarnation: run.runtimeIncarnation,
+      fullMode: run.fullMode,
+      phase: run.stopping ? "stopping" : run.succeeded ? "succeeded" : "active",
+    };
+  }
+  return terminalRunSnapshots.get(storedSessionId);
 }
 
 /** Untagged runtime frames are safe to attribute only when this is the sole
@@ -117,14 +279,33 @@ export function canAttributeUntaggedAgentRun(storedSessionId: string, fullMode: 
   return modeRuns.length === 1 && modeRuns[0]?.storedSessionId === storedSessionId;
 }
 
-function armSuccessfulRun(run: AgentRunMonitor) {
+export function hasPendingAgentRunTerminalEvidence(
+  storedSessionId: string,
+  expectedGeneration: number,
+) {
+  return (
+    currentRunForGeneration(storedSessionId, expectedGeneration)?.terminalEvidence !== undefined
+  );
+}
+
+/** True only while this surface's accepted run still owns the app-lifetime
+ * monitor slot for the stored session. */
+export function isAgentRunMonitorGenerationCurrent(
+  storedSessionId: string,
+  expectedGeneration: number,
+) {
+  return currentRunForGeneration(storedSessionId, expectedGeneration) !== undefined;
+}
+
+function armSuccessfulRun(run: AgentRunMonitor, authority: AgentRunMonitor["successAuthority"]) {
   if (!isCurrent(run)) return;
   run.succeeded = true;
+  run.successAuthority = authority;
   startSettlementIfReady(run);
 }
 
 function startSettlementIfReady(run: AgentRunMonitor) {
-  if (!isCurrent(run) || run.settlement) return;
+  if (!isCurrent(run) || run.stopping || run.settlement) return;
   const generation = run.generation;
   run.settlement = watchHermesRunSettlement({
     storedSessionId: run.storedSessionId,
@@ -144,30 +325,24 @@ function startSettlementIfReady(run: AgentRunMonitor) {
           row.session_key === run.runtimeSessionId ||
           row.session_key === run.storedSessionId,
       );
-      if (matchingRows.some((row) => row.status !== "idle")) run.observedActive = true;
-
       // Hermes routes session events only to the transport that created or
       // resumed that session. The submitting UI can report success as a fast
-      // path, but persisted session state is the correctness path after that
-      // UI disappears.
-      if (
-        !run.succeeded &&
-        (run.observedActive || (run.canProbeBeforeObservedActive && matchingRows.length === 0)) &&
-        matchingRows.every((row) => row.status === "idle")
-      ) {
-        const outcome = await persistedTerminalOutcome(run.storedSessionId);
-        if (outcome?.kind === "succeeded") {
+      // path, but persisted messages are the correctness path after that UI
+      // disappears.
+      if (!run.succeeded && matchingRows.every((row) => row.status === "idle")) {
+        const terminalEvidence = run.terminalEvidence;
+        const completion = await persistedRunCompletion(run, terminalEvidence);
+        if (!isCurrent(run) || run.generation !== generation) {
+          return [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }];
+        }
+        if (run.succeeded) return rows;
+        if (run.terminalEvidence !== terminalEvidence) {
+          return [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }];
+        }
+        if (completion) {
+          run.terminalEvidence = undefined;
           run.succeeded = true;
-        } else if (outcome) {
-          finishRun(run);
-          if (outcome.kind === "failed") {
-            dispatchAgentSessionStatus({
-              sessionId: run.storedSessionId,
-              title: run.title,
-              status: "failed",
-              summary: outcome.summary,
-            });
-          }
+          run.successAuthority = completion.authority;
         }
       }
 
@@ -181,6 +356,7 @@ function startSettlementIfReady(run: AgentRunMonitor) {
       dispatchAgentRunSettled({
         sessionId: run.storedSessionId,
         title: run.title,
+        runMonitorGeneration: run.generation,
         summary: "June finished.",
         // Exclude the run that is about to be retired below. The HUD uses the
         // global count to sweep anonymous pending rows only when no other
@@ -191,64 +367,53 @@ function startSettlementIfReady(run: AgentRunMonitor) {
     },
   });
   // The settlement helper intentionally times out silently. Mirror its budget
-  // so a runtime that never becomes reachable cannot retain an observer socket.
+  // so a runtime that never becomes reachable cannot retain an observer socket
+  // or leave a generation owner permanently working in an offscreen surface.
   run.settlementCleanupTimer = setTimeout(() => {
-    if (isCurrent(run) && run.generation === generation) finishRun(run);
+    if (!isCurrent(run) || run.generation !== generation) return;
+    finishRun(run);
+    dispatchAgentSessionStatus({
+      sessionId: run.storedSessionId,
+      title: run.title,
+      status: "failed",
+      runMonitorGeneration: run.generation,
+      summary: "June hit a problem.",
+    });
   }, MONITOR_TIMEOUT_MS + 1);
 }
 
-async function persistedTerminalOutcome(
-  storedSessionId: string,
-): Promise<TerminalOutcome | undefined> {
+async function persistedRunCompletion(
+  run: AgentRunMonitor,
+  terminalEvidence: AgentRunTerminalEvidence | undefined,
+): Promise<PersistedCompletion | undefined> {
   try {
-    const response = await hermesBridgeSessions({
-      limit: 100,
-      minMessages: 0,
-      order: "recent",
-    });
-    const session = response.sessions?.find((candidate) => candidate.id === storedSessionId);
-    if (!session) return undefined;
-    const outcome = terminalOutcomeFromSession(session);
-    if (outcome || sessionLooksWaiting(session)) return outcome;
-    const messages = await hermesBridgeSessionMessages(storedSessionId);
-    return assistantRepliedAfterLatestUser(
-      messages.messages ?? messages.items ?? messages.data ?? [],
-    )
-      ? { kind: "succeeded" }
+    const messagesResponse = await hermesBridgeSessionMessages(run.storedSessionId);
+    const messages =
+      messagesResponse.messages ?? messagesResponse.items ?? messagesResponse.data ?? [];
+    const persistedUserIndex = run.acceptedPrompt.findPersistedUserIndex(messages);
+    if (
+      !Number.isInteger(persistedUserIndex) ||
+      persistedUserIndex < 0 ||
+      persistedUserIndex >= messages.length ||
+      messages[persistedUserIndex]?.role !== "user"
+    ) {
+      return undefined;
+    }
+    // Pinned Hermes persists TUI session lifecycle, not an Agent-run outcome:
+    // `/api/sessions` has ended_at/end_reason but no run status. Do not infer a
+    // failed or cancelled Agent run from lifecycle teardown metadata.
+    // A repeated anonymous failure and a successful run with a stale replay can
+    // both persist an assistant row. Until unique runtime evidence breaks that
+    // tie, treating prose as success would silently erase a genuine failure.
+    if (terminalEvidence?.status === "failed" || terminalEvidence?.status === "cancelled") {
+      return undefined;
+    }
+    return hasFinalContentBearingAssistantReply(messages, persistedUserIndex)
+      ? { authority: "assistant-fallback" }
       : undefined;
   } catch {
     return undefined;
   }
-}
-
-function sessionLooksWaiting(session: HermesSessionInfo) {
-  return /(?:waiting|approval|needs.?input|clarif)/i.test(
-    `${session.status ?? ""} ${session.end_reason ?? ""}`,
-  );
-}
-
-function assistantRepliedAfterLatestUser(messages: readonly HermesSessionMessage[]) {
-  let latestUser = -1;
-  for (let index = 0; index < messages.length; index += 1) {
-    if (messages[index]?.role === "user") latestUser = index;
-  }
-  return (
-    latestUser >= 0 &&
-    messages.slice(latestUser + 1).some((message) => message.role === "assistant")
-  );
-}
-
-function terminalOutcomeFromSession(session: HermesSessionInfo): TerminalOutcome | undefined {
-  if (session.active === true || session.is_active === true) return undefined;
-  const marker = `${session.status ?? ""} ${session.end_reason ?? ""}`.toLowerCase();
-  if (/(?:cancel|stop|interrupt|abort)/.test(marker)) return { kind: "cancelled" };
-  if (/(?:fail|error|timeout)/.test(marker)) {
-    return { kind: "failed", summary: "June hit a problem." };
-  }
-  if (/(?:complete|success|finish|done)/.test(marker) || (session.ended_at ?? session.endedAt)) {
-    return { kind: "succeeded" };
-  }
-  return undefined;
 }
 
 function createObserver(fullMode: boolean) {
@@ -299,8 +464,33 @@ function scheduleObserverReconnect(fullMode: boolean) {
 function finishRun(run: AgentRunMonitor) {
   if (!isCurrent(run)) return;
   runs.delete(run.storedSessionId);
+  rememberTerminalRunSnapshot(run);
   cancelSettlement(run);
   closeObserverWhenUnused(run.fullMode);
+}
+
+function rememberTerminalRunSnapshot(run: AgentRunMonitor) {
+  terminalRunSnapshots.set(run.storedSessionId, {
+    generation: run.generation,
+    runtimeSessionId: run.runtimeSessionId,
+    runtimeIncarnation: run.runtimeIncarnation,
+    fullMode: run.fullMode,
+    phase: "terminal",
+  });
+  const priorIndex = terminalRunSnapshotOrder.indexOf(run.storedSessionId);
+  if (priorIndex >= 0) terminalRunSnapshotOrder.splice(priorIndex, 1);
+  terminalRunSnapshotOrder.push(run.storedSessionId);
+  while (terminalRunSnapshots.size > MAX_RUN_MONITOR_SNAPSHOTS) {
+    const evicted = terminalRunSnapshotOrder.shift();
+    if (!evicted) return;
+    terminalRunSnapshots.delete(evicted);
+  }
+}
+
+function forgetTerminalRunSnapshot(storedSessionId: string) {
+  terminalRunSnapshots.delete(storedSessionId);
+  const priorIndex = terminalRunSnapshotOrder.indexOf(storedSessionId);
+  if (priorIndex >= 0) terminalRunSnapshotOrder.splice(priorIndex, 1);
 }
 
 function cancelSettlement(run: AgentRunMonitor | undefined) {
@@ -315,6 +505,11 @@ function cancelSettlement(run: AgentRunMonitor | undefined) {
 
 function isCurrent(run: AgentRunMonitor) {
   return runs.get(run.storedSessionId)?.generation === run.generation;
+}
+
+function currentRunForGeneration(storedSessionId: string, expectedGeneration: number) {
+  const run = runs.get(storedSessionId);
+  return run?.generation === expectedGeneration ? run : undefined;
 }
 
 function hasRunsForMode(fullMode: boolean) {
@@ -334,6 +529,8 @@ function closeObserverWhenUnused(fullMode: boolean) {
 export function resetAgentRunMonitoringForTests() {
   for (const run of runs.values()) cancelSettlement(run);
   runs.clear();
+  terminalRunSnapshots.clear();
+  terminalRunSnapshotOrder.length = 0;
   for (const observer of observers.values()) {
     if (observer.reconnectTimer !== undefined) clearTimeout(observer.reconnectTimer);
     observer.gateway.close();

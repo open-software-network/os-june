@@ -344,6 +344,27 @@ describe("Hermes adapter", () => {
     expect(isRunningScheduledRunSession(finished as HermesSessionInfo)).toBe(false);
   });
 
+  it("does not mark a recently ended zero-message run as pending when its end time is numeric", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-11T09:01:00Z"));
+    mocks.hermesBridgeSessions.mockResolvedValue({
+      sessions: [
+        {
+          id: "cron_finished_20260611_090000",
+          source: "cron",
+          message_count: 0,
+          ended_at: Math.floor(Date.parse("2026-06-11T09:00:30Z") / 1_000),
+          last_active: "2026-06-11T09:00:30Z",
+        },
+      ],
+    });
+
+    const runs = await listScheduledRunSessions({ includeActive: true });
+
+    expect(runs).toHaveLength(1);
+    expect(isRunningScheduledRunSession(runs[0] as HermesSessionInfo)).toBe(false);
+  });
+
   it("does not mark old zero-message scheduled runs as running", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-11T09:10:00Z"));

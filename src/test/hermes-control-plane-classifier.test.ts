@@ -176,7 +176,7 @@ describe("classifyHermesEvent — transcript", () => {
     });
   });
 
-  it("marks failed completes and reads complete text from the builder's summary chain", () => {
+  it("marks failed completes without promoting summary or status to answer text", () => {
     const complete = classifyHermesEvent(
       event("message.complete", { summary: "  Summary only  ", status: "ERROR" }),
     );
@@ -184,8 +184,78 @@ describe("classifyHermesEvent — transcript", () => {
     if (complete.kind === "transcript") {
       expect(complete.complete).toBe(true);
       expect(complete.failed).toBe(true);
-      expect(complete.delta).toBe("Summary only");
+      expect(complete.delta).toBe("");
     }
+  });
+
+  it("keeps activity-only complete payloads out of an empty transcript baseline", () => {
+    for (const [field, value] of [
+      ["summary", "summarizing"],
+      ["status", "working"],
+      ["output", "tool output"],
+      ["result", "tool result"],
+      ["command", "run command"],
+    ] as const) {
+      const complete = classifyHermesEvent(event("message.complete", { [field]: value }));
+      expect(complete.kind, field).toBe("transcript");
+      if (complete.kind === "transcript") expect(complete.delta, field).toBe("");
+    }
+  });
+
+  it("does not expose a prefix-colliding activity value as completed answer prose", () => {
+    const complete = classifyHermesEvent(
+      event("message.complete", { message_id: "m1", status: "ha!" }),
+    );
+
+    expect(complete.kind).toBe("transcript");
+    if (complete.kind === "transcript") expect(complete.delta).toBe("");
+  });
+
+  it("preserves local delivery identity plus stable source id and explicit text offset", () => {
+    const snakeCase = classifyHermesEvent({
+      ...event("message.delta", {
+        message_id: "m1",
+        delta: "B",
+        event_id: "source-event-1",
+        text_offset: 1,
+      }),
+      delivery: { connectionId: 4, sequence: 9 },
+    });
+    expect(snakeCase.delivery).toEqual({
+      connectionId: 4,
+      sequence: 9,
+      eventId: "source-event-1",
+      textOffset: 1,
+    });
+
+    const camelCase = classifyHermesEvent({
+      ...event("message.delta", {
+        messageId: "m1",
+        delta: "A",
+        eventId: "source-event-2",
+        textOffset: "0",
+      }),
+      delivery: { connectionId: 5, sequence: 1 },
+    });
+    expect(camelCase.delivery).toEqual({
+      connectionId: 5,
+      sequence: 1,
+      eventId: "source-event-2",
+      textOffset: 0,
+    });
+  });
+
+  it("never reinterprets generic sequence or offset payload fields as text offsets", () => {
+    const result = classifyHermesEvent(
+      event("message.delta", {
+        message_id: "m1",
+        delta: "A",
+        sequence: 11,
+        offset: 42,
+      }),
+    );
+
+    expect(result.delivery).toBeUndefined();
   });
 });
 
@@ -456,6 +526,8 @@ describe("classifyHermesEvent — pending actions", () => {
     if (first.kind === "pending_action" && replay.kind === "pending_action") {
       expect(first.action.requestId).toBe(replay.action.requestId);
       expect(first.action.requestId).toMatch(/^legacy:approval\.request:/);
+      expect(first.action).toMatchObject({ requestIdProvenance: "payload-fingerprint" });
+      expect(replay.action).toMatchObject({ requestIdProvenance: "payload-fingerprint" });
     }
   });
 
@@ -474,6 +546,21 @@ describe("classifyHermesEvent — pending actions", () => {
     expect(unconfirmed).toMatchObject({
       kind: "pending_action_expiration",
       action: { kind: "approval", requestId: "a-unconfirmed", reason: "unconfirmed" },
+    });
+
+    const handedOff = classifyHermesEvent(
+      event("approval.expire", {
+        request_id: "a-old-transport",
+        reason: "transport_handoff",
+      }),
+    );
+    expect(handedOff).toMatchObject({
+      kind: "pending_action_expiration",
+      action: {
+        kind: "approval",
+        requestId: "a-old-transport",
+        reason: "transport_handoff",
+      },
     });
 
     const malformed = classifyHermesEvent(event("approval.expire", { reason: "timeout" }));
@@ -684,6 +771,21 @@ describe("classifyHermesEvent — background activity", () => {
 });
 
 describe("classifyHermesEvent — lifecycle", () => {
+  it("keeps transcript completion message-terminal rather than run-terminal", () => {
+    for (const status of ["success", "error"]) {
+      const result = classifyHermesEvent(
+        event("message.complete", {
+          message_id: `message-${status}`,
+          text: "Visible answer",
+          status,
+        }),
+      );
+
+      expect(result.kind).toBe("transcript");
+      expect(isTerminalHermesEvent(result)).toBe(false);
+    }
+  });
+
   it("maps gateway.ready, session.info, status.update, lifecycle.* to lifecycle", () => {
     for (const name of [
       "gateway.ready",

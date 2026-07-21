@@ -16,6 +16,7 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import {
   displayedComposerUserMessageText,
+  stripRenderedMediaReferences,
   type AgentChatPart,
   type AgentChatTurn,
   UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
@@ -145,9 +146,19 @@ function userTurnText(turn: AgentChatTurn) {
     .join("\n");
 }
 
+function turnContainsMediaStructure(turn: Pick<AgentChatTurn, "parts">) {
+  return turn.parts.some(
+    (part) =>
+      part.type === "image" ||
+      part.type === "video" ||
+      (part.type === "tool" && part.media !== undefined),
+  );
+}
+
 function assistantPartNode(
   part: AgentChatPart,
   index: number,
+  holdTrailingMediaTransport: boolean,
   upstreamFailureRetry?: {
     attempted: boolean;
     disabled: boolean;
@@ -156,7 +167,16 @@ function assistantPartNode(
 ) {
   switch (part.type) {
     case "text":
-      return <MarkdownContent key={index} markdown={part.text} repairProse />;
+      return (
+        <MarkdownContent
+          key={part.renderKey ?? index}
+          markdown={stripRenderedMediaReferences(
+            part.text,
+            part.status === "running" || holdTrailingMediaTransport,
+          )}
+          repairProse
+        />
+      );
     case "notice":
       if (part.kind === "upstream-provider") {
         return (
@@ -701,7 +721,7 @@ export function NoteChatPanel({
                 ) : (
                   <div key={turn.id} className="note-chat-turn-assistant">
                     {turn.parts.map((part, index) =>
-                      assistantPartNode(part, index, {
+                      assistantPartNode(part, index, turnContainsMediaStructure(turn), {
                         attempted: storedSessionId
                           ? upstreamProviderRecoveryStore.attempted(
                               storedSessionId,

@@ -242,6 +242,60 @@ describe("agent HUD", () => {
     expect(pillElement().dataset.countOnly).toBe("true");
   });
 
+  it("orders numeric Unix-second session timestamps chronologically", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("older-session", "Older session"),
+          last_active: 1_752_494_340,
+        },
+        {
+          ...sessionFixture("newer-session", "Newer session"),
+          last_active: 1_752_494_460,
+        },
+      ],
+      workingSessionIds: ["older-session", "newer-session"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+
+    const titles = Array.from(stackElement().querySelectorAll(".agent-hud-row-title"), (element) =>
+      element.textContent?.trim(),
+    );
+    expect(titles).toEqual(["Newer session", "Older session"]);
+  });
+
+  it("prefers camelCase recent activity over session start time", async () => {
+    await loadAgentHud();
+
+    emitSessionsChanged({
+      sessions: [
+        {
+          ...sessionFixture("older-session", "Older session"),
+          last_active: undefined,
+          started_at: "2026-07-15T14:00:00Z",
+          lastActive: "2026-07-15T12:00:00Z",
+        },
+        {
+          ...sessionFixture("newer-session", "Newer session"),
+          last_active: undefined,
+          started_at: "2026-07-15T10:00:00Z",
+          lastActive: "2026-07-15T13:00:00Z",
+        },
+      ],
+      workingSessionIds: ["older-session", "newer-session"],
+      waitingSessionIds: [],
+    });
+    await flushPromises();
+
+    const titles = Array.from(stackElement().querySelectorAll(".agent-hud-row-title"), (element) =>
+      element.textContent?.trim(),
+    );
+    expect(titles).toEqual(["Newer session", "Older session"]);
+  });
+
   it("hides the window when there is nothing to report", async () => {
     await loadAgentHud();
 
@@ -1026,8 +1080,9 @@ function emitSessionsChanged(detail: {
     id: string;
     title?: string;
     preview?: string;
-    started_at?: string;
-    last_active?: string;
+    started_at?: string | number;
+    last_active?: string | number;
+    lastActive?: string | number;
     message_count?: number;
   }>;
   workingSessionIds: string[];

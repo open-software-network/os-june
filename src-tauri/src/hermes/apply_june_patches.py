@@ -28,9 +28,9 @@ UPSTREAM_SHA256: Dict[str, str] = {
 # hashes are part of the runtime provenance contract, not best-effort checks.
 PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
-    "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
+    "tools/approval.py": "94b42207d425978e2d6fff7f04650c908d47377c3fd3aa3ff1cf899617c2f032",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
+    "tui_gateway/server.py": "5db3ea64e9456d486da496c1d8bc4e3d6de78fb8e8879bdec96d21c3d56940b0",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -130,6 +130,40 @@ def patch_approval(source: str) -> str:
         self.retired_reason: Optional[str] = None
 
 
+class _GatewayNotify:
+    """One transport generation of the session approval notifier."""
+
+    __slots__ = ("_active", "_callback", "_condition", "_inflight")
+
+    def __init__(self, callback):
+        self._active = True
+        self._callback = callback
+        self._condition = threading.Condition()
+        self._inflight = 0
+
+    def __call__(self, approval_data: dict) -> None:
+        with self._condition:
+            if not self._active:
+                raise RuntimeError("gateway approval notifier generation is retired")
+            self._inflight += 1
+        try:
+            self._callback(approval_data)
+        finally:
+            with self._condition:
+                self._inflight -= 1
+                if self._inflight == 0:
+                    self._condition.notify_all()
+
+    def deactivate(self) -> None:
+        with self._condition:
+            self._active = False
+
+    def wait_until_idle(self) -> None:
+        with self._condition:
+            while self._inflight:
+                self._condition.wait()
+
+
 _MAX_GATEWAY_APPROVALS_PER_SESSION = 32
 _MAX_GATEWAY_APPROVAL_ALIASES = 16
 _MAX_COMPLETED_GATEWAY_APPROVALS_PER_SESSION = 128
@@ -143,7 +177,7 @@ _gateway_completed: dict[str, dict] = {}     # session_key → request_id → ch
 def register_gateway_notify(session_key: str, cb, expire_cb=None) -> None:
     """Register callbacks for approval requests and fail-closed retirement."""
     with _lock:
-        _gateway_notify_cbs[session_key] = cb
+        _gateway_notify_cbs[session_key] = _GatewayNotify(cb)
         if expire_cb is None:
             _gateway_expire_cbs.pop(session_key, None)
         else:
@@ -189,12 +223,16 @@ def _remember_gateway_entry_completion_locked(
 def unregister_gateway_notify(session_key: str) -> None:
     """Unregister callbacks and fail closed every blocked approval."""
     with _lock:
-        _gateway_notify_cbs.pop(session_key, None)
+        notifier = _gateway_notify_cbs.pop(session_key, None)
+        if notifier is not None:
+            notifier.deactivate()
         expire_cb = _gateway_expire_cbs.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.retired_reason = "disconnect"
             _remember_gateway_entry_completion_locked(session_key, entry, None)
+    if notifier is not None:
+        notifier.wait_until_idle()
     for entry in entries:
         entry.event.set()
         if expire_cb is not None:
@@ -202,6 +240,48 @@ def unregister_gateway_notify(session_key: str) -> None:
                 expire_cb({"request_id": entry.request_id, "reason": "disconnect"})
             except Exception as exc:
                 logger.warning("Gateway approval expiration notify failed: %s", exc)
+
+
+def replace_gateway_notify(session_key: str, cb, expire_cb=None) -> list[str]:
+    """Install a new transport notifier after retiring the old generation.
+
+    The replacement is visible atomically under the approval lock. Calls that
+    already entered the old notifier finish before this function returns;
+    captured calls that have not entered fail when they observe deactivation.
+    Every queued old-generation approval is tombstoned and signaled fail closed.
+    The returned ids let the live handoff caller distinguish retired pre-ACK
+    frames from genuinely fresh requests emitted by the replacement generation.
+    """
+    replacement = _GatewayNotify(cb)
+    with _lock:
+        notifier = _gateway_notify_cbs.get(session_key)
+        if notifier is not None:
+            notifier.deactivate()
+        _gateway_notify_cbs[session_key] = replacement
+        previous_expire_cb = _gateway_expire_cbs.get(session_key)
+        if expire_cb is None:
+            _gateway_expire_cbs.pop(session_key, None)
+        else:
+            _gateway_expire_cbs[session_key] = expire_cb
+        entries = _gateway_queues.pop(session_key, [])
+        retired_request_ids = set()
+        for entry in entries:
+            entry.retired_reason = "transport_handoff"
+            retired_request_ids.update(entry.request_ids)
+            _remember_gateway_entry_completion_locked(session_key, entry, None)
+
+    if notifier is not None:
+        notifier.wait_until_idle()
+    for entry in entries:
+        entry.event.set()
+        if previous_expire_cb is not None:
+            try:
+                previous_expire_cb(
+                    {"request_id": entry.request_id, "reason": "transport_handoff"}
+                )
+            except Exception as exc:
+                logger.warning("Gateway approval expiration notify failed: %s", exc)
+    return sorted(retired_request_ids)
 
 
 def resolve_gateway_approval(
@@ -302,6 +382,17 @@ def has_blocking_approval(session_key: str) -> bool:
         if completed is not None:
             choice = completed.get("choice")
             return {"resolved": choice is not None, "choice": choice, "replayed": True}
+        if (
+            isinstance(notify_cb, _GatewayNotify)
+            and _gateway_notify_cbs.get(session_key) is not notify_cb
+        ):
+            _remember_gateway_completion_locked(session_key, request_id, None)
+            return {
+                "resolved": False,
+                "choice": None,
+                "notify_failed": True,
+                "reason": "notifier_replaced",
+            }
 
         queue = _gateway_queues.setdefault(session_key, [])
         entry = next((candidate for candidate in queue if candidate.request_id == request_id), None)
@@ -1203,27 +1294,775 @@ def _queue_attached_image(
     )
     source = replace_once(
         source,
-        '''            session["transport"] = _detached_ws_transport
+        '''# A handful of handlers block the dispatcher loop in entry.py for seconds
+# to minutes (slash.exec, cli.exec, shell.exec, session.resume,
+# session.branch, session.compress, skills.manage).  While they're running, inbound RPCs —
+# notably approval.respond and session.interrupt — sit unread in the
+# stdin pipe.  We route only those slow handlers onto a small thread pool;
+# everything else stays on the main thread so ordering stays sane for the
+# fast path.  write_json is already _stdout_lock-guarded, so concurrent
+# response writes are safe.
+''',
+        '''# Blocking handlers run on a pool so approval and interrupt RPCs stay
+# responsive. session.resume, session.activate, and prompt.submit use a
+# dedicated single-worker ownership lane: snapshots and prompt admission retain
+# receive order while dispatch owns each response write. Everything else stays
+# on the main thread or general pool as before. write_json is
+# _stdout_lock-guarded, so concurrent writes are safe.
+''',
+        "server live snapshot dispatch rationale",
+    )
+    source = replace_once(
+        source,
+        '''atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
+''',
+        '''atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
+
+_LIVE_SNAPSHOT_HANDLERS = frozenset({"session.activate", "session.resume"})
+_ORDERED_SESSION_OWNERSHIP_HANDLERS = _LIVE_SNAPSHOT_HANDLERS | {"prompt.submit"}
+_live_snapshot_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="tui-live-snapshot",
+)
+atexit.register(
+    lambda: _live_snapshot_pool.shutdown(wait=False, cancel_futures=True)
+)
+''',
+        "server ordered live snapshot dispatch lane",
+    )
+    source = replace_once(
+        source,
+        '''def _emit(event: str, sid: str, payload: dict | None = None):
+    params = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload
+    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+''',
+        '''def _emit(
+    event: str,
+    sid: str,
+    payload: dict | None = None,
+    *,
+    transport: Transport | None = None,
+):
+    params = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload
+    frame = {"jsonrpc": "2.0", "method": "event", "params": params}
+    if transport is not None:
+        return transport.write(frame)
+    return write_json(frame)
+
+
+_PENDING_MESSAGE_COMPLETE_TEXT = "_june_pending_message_complete_text"
+_PENDING_MESSAGE_COMPLETE_PAYLOAD = "_june_pending_message_complete_payload"
+_DEFERRED_GOAL_FOLLOWUP = "_june_deferred_goal_followup"
+_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER = (
+    "_june_agent_run_continuation_snapshot_ack_barrier"
+)
+_LIVE_SNAPSHOT_ACK_TOKEN_RESULT = "_june_live_snapshot_ack_token"
+
+
+def _clear_pending_message_complete(session: dict) -> None:
+    session.pop(_PENDING_MESSAGE_COMPLETE_TEXT, None)
+    session.pop(_PENDING_MESSAGE_COMPLETE_PAYLOAD, None)
+
+
+def _message_complete_is_pending(session: dict) -> bool:
+    return isinstance(session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD), dict)
+
+
+def _agent_run_continuation_waits_for_snapshot_ack(session: dict) -> bool:
+    return bool(session.get(_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER))
+
+
+def _defer_goal_followup(session: dict, rid: Any, text: Any) -> None:
+    followup = "" if text is None else str(text)
+    if followup:
+        session[_DEFERRED_GOAL_FOLLOWUP] = {
+            "rid": rid,
+            "snapshot_ack_delivered": False,
+            "text": followup,
+        }
+
+
+def _release_agent_run_continuations_after_snapshot_ack(
+    snapshot_result: dict,
+    snapshot_ack_transport: Transport,
+    snapshot_ack_token: object,
+) -> None:
+    # Dispatch calls this only after a session.resume or session.activate
+    # snapshot is accepted by its transport. Keeping the wake-up behind that
+    # write prevents a newly started continuation from racing ahead of the
+    # live snapshot.
+    result = snapshot_result.get("result") if isinstance(snapshot_result, dict) else None
+    sid = str(result.get("session_id") or "") if isinstance(result, dict) else ""
+    if not sid:
+        return
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    if not isinstance(session, dict):
+        return
+    with session["history_lock"]:
+        if session.get("transport") is not snapshot_ack_transport:
+            return
+        if session.get(_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER) is not snapshot_ack_token:
+            return
+        session.pop(_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER, None)
+        followup = session.get(_DEFERRED_GOAL_FOLLOWUP)
+        if isinstance(followup, dict):
+            followup["snapshot_ack_delivered"] = True
+
+
+def _take_deferred_goal_followup(session: dict) -> dict | None:
+    # The notification poller is the durable wake-up path after a live handoff
+    # retries the older completion. Claiming under history_lock preserves the
+    # existing "user prompt wins" race and prevents two poller iterations from
+    # starting the same continuation.
+    with session["history_lock"]:
+        if (
+            session.get("running")
+            or _message_complete_is_pending(session)
+            or _agent_run_continuation_waits_for_snapshot_ack(session)
+        ):
+            return None
+        followup = session.get(_DEFERRED_GOAL_FOLLOWUP)
+        if (
+            not isinstance(followup, dict)
+            or not followup.get("snapshot_ack_delivered")
+            or not str(followup.get("text") or "")
+        ):
+            return None
+        session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
+        session["running"] = True
+        return {"rid": followup.get("rid"), "text": followup["text"]}
+
+
+def _content_bearing_assistant_texts(history: list[dict]) -> list[str]:
+    return [
+        str(message.get("text") or "")
+        for message in _history_to_messages(history)
+        if message.get("role") == "assistant"
+        and str(message.get("text") or "").strip()
+    ]
+
+
+def _pending_message_complete_proof(
+    history: list[dict], completed_text: Any
+) -> dict | None:
+    text = "" if completed_text is None else str(completed_text)
+    if not text.strip():
+        return None
+    assistant_texts = _content_bearing_assistant_texts(history)
+    # Exact final-row equality is deliberate. Anything else cannot prove which
+    # persisted row an ID-less completion belongs to and must fail closed.
+    if not assistant_texts or assistant_texts[-1] != text:
+        return None
+    return {"assistant_ordinal": len(assistant_texts) - 1}
+
+
+def _mark_pending_message_complete(
+    session: dict,
+    previous_history: list[dict],
+    history: list[dict],
+    completed_text: Any,
+) -> None:
+    # Caller owns history_lock so committing the row and publishing this marker
+    # are one transaction with the live snapshot and transport swap.
+    # A later Agent run must never replace proof for an exact completion that no
+    # transport has accepted. All later Agent run and continuation entry paths
+    # defer while this is true; this guard keeps the invariant fail-closed if a
+    # future path misses it.
+    if _message_complete_is_pending(session):
+        return
+    session.pop(_PENDING_MESSAGE_COMPLETE_TEXT, None)
+    previous_assistant_texts = _content_bearing_assistant_texts(previous_history)
+    assistant_texts = _content_bearing_assistant_texts(history)
+    # Text equality alone cannot distinguish a newly committed reply from an
+    # unchanged earlier identical row. Require the exact previous assistant
+    # sequence to remain a prefix and at least one new content-bearing row.
+    if (
+        len(assistant_texts) <= len(previous_assistant_texts)
+        or assistant_texts[: len(previous_assistant_texts)]
+        != previous_assistant_texts
+    ):
+        return
+    if _pending_message_complete_proof(history, completed_text) is not None:
+        session[_PENDING_MESSAGE_COMPLETE_TEXT] = str(completed_text)
+
+
+def _deliver_message_complete(session: dict, sid: str, payload: dict) -> bool:
+    # Keep selection, write, and outcome inside the same history-lock boundary
+    # as _live_session_payload's transport swap. A failed Transport.write must
+    # retain the exact payload and any available proof for a replacement.
+    with session["history_lock"]:
+        if _message_complete_is_pending(session):
+            raise RuntimeError(
+                "cannot replace an undelivered message.complete payload"
+            )
+        _clear_inflight_turn(session)
+        session[_PENDING_MESSAGE_COMPLETE_PAYLOAD] = {
+            "session_id": sid,
+            "payload": payload,
+        }
+        transport = session.get("transport") or current_transport() or _stdio_transport
+        delivered = bool(
+            _emit("message.complete", sid, payload, transport=transport)
+        )
+        if delivered:
+            _clear_pending_message_complete(session)
+        return delivered
+
+
+def _retry_pending_message_complete_locked(
+    session: dict,
+    transport: Transport,
+    *,
+    snapshot_ack_token: object | None = None,
+) -> bool:
+    pending = session.get(_PENDING_MESSAGE_COMPLETE_PAYLOAD)
+    if not isinstance(pending, dict):
+        return False
+    delivered = bool(
+        _emit(
+            "message.complete",
+            pending["session_id"],
+            pending["payload"],
+            transport=transport,
+        )
+    )
+    if delivered:
+        _clear_pending_message_complete(session)
+        if snapshot_ack_token is not None:
+            session[_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER] = snapshot_ack_token
+    return delivered
+
+
+def _retry_pending_message_complete(
+    session: dict,
+    transport: Transport,
+    *,
+    snapshot_ack_token: object | None = None,
+) -> bool:
+    # Original emission and resume retry use the same lock, so only one can
+    # observe and successfully clear a retained payload.
+    with session["history_lock"]:
+        return _retry_pending_message_complete_locked(
+            session,
+            transport,
+            snapshot_ack_token=snapshot_ack_token,
+        )
+
+
+def _bind_prompt_transport_for_submit(
+    session: dict, request_transport: Transport | None
+) -> bool:
+    # Prompt submission never changes transport ownership. A different client
+    # must complete session.resume or session.activate first so notifier
+    # generation and snapshot authority move together.
+    with session["history_lock"]:
+        if (
+            request_transport is None
+            or _transport_is_dead(request_transport)
+            or session.get("transport") is not request_transport
+        ):
+            return False
+        if _agent_run_continuation_waits_for_snapshot_ack(session):
+            return False
+        _retry_pending_message_complete_locked(session, request_transport)
+        return True
+''',
+        "server atomic pending-complete transport proof",
+    )
+    source = replace_once(
+        source,
+        '''def _live_session_payload(
+    sid: str,
+    session: dict,
+    *,
+    cols: int | None = None,
+    touch: bool = False,
+    transport: Transport | None = None,
+) -> dict:
+''',
+        '''def _live_session_payload(
+    sid: str,
+    session: dict,
+    *,
+    cols: int | None = None,
+    touch: bool = False,
+    transport: Transport | None = None,
+    agent_run_continuation_snapshot_ack_transport: Transport | None = None,
+) -> dict:
+    snapshot_ack_token = (
+        {"transport": agent_run_continuation_snapshot_ack_transport}
+        if agent_run_continuation_snapshot_ack_transport is not None
+        else None
+    )
+''',
+        "server live-snapshot Agent run continuation acknowledgement argument",
+    )
+    source = replace_once(
+        source,
+        '''        if transport is not None:
+            session["transport"] = transport
+        if touch:
+''',
+        '''        if (
+            agent_run_continuation_snapshot_ack_transport is not None
+            and transport is not agent_run_continuation_snapshot_ack_transport
+        ):
+            raise RuntimeError("live snapshot acknowledgement transport mismatch")
+        if transport is not None:
+            existing_snapshot_ack_token = session.get(
+                _AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER
+            )
+            existing_snapshot_ack_transport = (
+                existing_snapshot_ack_token.get("transport")
+                if isinstance(existing_snapshot_ack_token, dict)
+                else None
+            )
+            if (
+                existing_snapshot_ack_token is not None
+                and existing_snapshot_ack_transport is not transport
+                and snapshot_ack_token is None
+            ):
+                raise RuntimeError(
+                    "cannot replace transport while a live snapshot acknowledgement is pending"
+                )
+            session["transport"] = transport
+        if snapshot_ack_token is not None:
+            # Arm or retarget in the same history-lock transaction as the
+            # transport swap and live snapshot. No Agent run continuation can
+            # claim the gap between a completion write and acknowledgement of
+            # that snapshot.
+            session[_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER] = snapshot_ack_token
+        if touch:
+''',
+        "server live-snapshot Agent run continuation acknowledgement barrier",
+    )
+    source = replace_once(
+        source,
+        '''        inflight = _inflight_snapshot(session)
+        queued = _queued_prompt_snapshot(session)
+        running = bool(session.get("running"))
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": _history_to_messages(history),
+''',
+        '''        inflight = _inflight_snapshot(session)
+        queued = _queued_prompt_snapshot(session)
+        running = bool(session.get("running"))
+        pending_message_complete_text = session.get(_PENDING_MESSAGE_COMPLETE_TEXT)
+    messages = _history_to_messages(history)
+    payload = {
+        "info": _fallback_session_info(session),
+        "message_count": len(history),
+        "messages": messages,
+''',
+        "server resume pending-complete snapshot",
+    )
+    source = replace_once(
+        source,
+        '''    if inflight:
+        payload["inflight"] = inflight
+    if queued:
+        payload["queued"] = queued
+    return payload
+''',
+        '''    if inflight:
+        payload["inflight"] = inflight
+    if queued:
+        payload["queued"] = queued
+    pending_message_complete = _pending_message_complete_proof(
+        history, pending_message_complete_text
+    )
+    if pending_message_complete is not None:
+        payload["pending_message_complete"] = pending_message_complete
+    if snapshot_ack_token is not None:
+        # Dispatch removes this process-local token before serializing the
+        # response, then uses its identity to release only this exact snapshot.
+        payload[_LIVE_SNAPSHOT_ACK_TOKEN_RESULT] = snapshot_ack_token
+    return payload
+
+
+def _handoff_live_session_transport(
+    sid: str,
+    session: dict,
+    transport: Transport,
+    *,
+    cols: int | None = None,
+) -> dict:
+    """Retarget every transport-owned live-session channel under the caller's lock."""
+    if _transport_is_dead(transport):
+        raise RuntimeError("live session request transport disconnected")
+    previous_transport = session.get("transport")
+    payload = _live_session_payload(
+        sid,
+        session,
+        cols=cols,
+        touch=True,
+        transport=transport,
+        agent_run_continuation_snapshot_ack_transport=transport,
+    )
+    snapshot_ack_token = payload.get(_LIVE_SNAPSHOT_ACK_TOKEN_RESULT)
+    retired_request_ids = []
+    if previous_transport is not transport:
+        from tools.approval import replace_gateway_notify
+
+        if key := session.get("session_key"):
+            retired_request_ids = replace_gateway_notify(
+                key,
+                lambda data: _emit_approval_request(sid, data),
+                lambda data: _emit("approval.expire", sid, data),
+            )
+    _retry_pending_message_complete(
+        session,
+        transport,
+        snapshot_ack_token=snapshot_ack_token,
+    )
+    payload["retired_approval_request_ids"] = retired_request_ids
+    return payload
+''',
+        "server resume pending-complete response",
+    )
+    activation_handler = '''@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    activate_transport = current_transport() or _stdio_transport
+    with _session_resume_lock:
+        # Close and disconnect cleanup use the same ownership lock. Re-read the
+        # registry under it so a stale pre-lock dict cannot be reactivated after
+        # finalization or removal.
+        with _sessions_lock:
+            session = _sessions.get(sid)
+        if not isinstance(session, dict) or session.get("_finalized"):
+            return _err(rid, 4001, "session not found")
+        payload = _handoff_live_session_transport(
+            sid,
+            session,
+            activate_transport,
+        )
+    return _ok(rid, payload)
+
+
+'''
+    source = replace_region(
+        source,
+        '@method("session.activate")\n',
+        '@method("session.delete")\n',
+        activation_handler,
+        "server activation transport handoff",
+    )
+    source = replace_once(
+        source,
+        '''                        if current_version == history_version:
+                            session["history"] = result["messages"]
+                            session["history_version"] = history_version + 1
+''',
+        '''                        if current_version == history_version:
+                            session["history"] = result["messages"]
+                            session["history_version"] = history_version + 1
+                            proof_history_prefix = list(
+                                session.get("display_history_prefix") or []
+                            )
+                            _mark_pending_message_complete(
+                                session,
+                                proof_history_prefix + list(history),
+                                proof_history_prefix + list(result["messages"]),
+                                result.get("final_response", ""),
+                            )
+''',
+        "server pending-complete history commit",
+    )
+    source = replace_once(
+        source,
+        '''            with session["history_lock"]:
+                _clear_inflight_turn(session)
+            _emit("message.complete", sid, payload)
+''',
+        '''            _deliver_message_complete(session, sid, payload)
+''',
+        "server atomic message-complete delivery",
+    )
+    prompt_admission = '''    # Prompt transport and Agent run admission form one ownership transaction.
+    # A different client must finish a live snapshot handoff first; prompt.submit
+    # cannot move only the stream while leaving approval notifier authority behind.
+    request_transport = current_transport()
+    while True:
+        session_busy = False
+        busy_transport = None
+        with _session_resume_lock:
+            with _sessions_lock:
+                registered_session = _sessions.get(sid)
+            if registered_session is not session or session.get("_finalized"):
+                return _err(rid, 4001, "session not found")
+            if not _bind_prompt_transport_for_submit(session, request_transport):
+                return _err(rid, 4009, "session transport handoff required")
+            with session["history_lock"]:
+                if _message_complete_is_pending(session):
+                    return _err(rid, 4009, "previous completion awaiting reconnect")
+                if _agent_run_continuation_waits_for_snapshot_ack(session):
+                    return _err(rid, 4009, "session snapshot acknowledgement still settling")
+                if session.get("running"):
+                    # Preserve Hermes 0.19's interrupt-and-queue behavior while
+                    # keeping stream and approval ownership in this same lane.
+                    session_busy = True
+                    busy_transport = request_transport or session.get("transport")
+                else:
+                    break
+        if session_busy:
+            busy_response = _handle_busy_submit(
+                rid, sid, session, text, busy_transport
+            )
+            if busy_response is not None:
+                return busy_response
+            # The old turn finished before its queued claim. Retry admission so
+            # this prompt starts normally instead of being stranded.
+            continue
+
+    with _session_resume_lock:
+        with _sessions_lock:
+            registered_session = _sessions.get(sid)
+        if registered_session is not session or session.get("_finalized"):
+            return _err(rid, 4001, "session not found")
+        if not _bind_prompt_transport_for_submit(session, request_transport):
+            return _err(rid, 4009, "session transport handoff required")
+        with session["history_lock"]:
+            if _message_complete_is_pending(session):
+                return _err(rid, 4009, "previous completion awaiting reconnect")
+            if _agent_run_continuation_waits_for_snapshot_ack(session):
+                return _err(rid, 4009, "session snapshot acknowledgement still settling")
+            if session.get("running"):
+                # The prior turn won the gap between the busy check and claim;
+                # retry through the normal queue path on the next request.
+                return _err(rid, 4009, "session busy")
+            # A watch session's run lives in the PARENT turn, so its own running
+            # flag is False — without this, typing mid-run builds a second agent
+            # racing the in-flight child on the same stored session (interleaved
+            # transcript, stale fork). After the run completes, submitting is fine:
+            # the upgrade resumes the child's transcript as a normal conversation.
+            if session.get("lazy") and _child_run_active(
+                str(session.get("session_key") or "")
+            ):
+                return _err(rid, 4009, "subagent still running — wait for it to finish")
+            if truncate_user_ordinal is not None:
+                try:
+                    ordinal = int(truncate_user_ordinal)
+                except (TypeError, ValueError):
+                    return _err(
+                        rid,
+                        4004,
+                        "truncate_before_user_ordinal must be an integer",
+                    )
+                history = session.get("history", [])
+                user_indices = [
+                    i for i, message in enumerate(history)
+                    if message.get("role") == "user"
+                ]
+                if ordinal < 0 or ordinal >= len(user_indices):
+                    return _err(
+                        rid,
+                        4018,
+                        "target user message is no longer in session history",
+                    )
+                truncated = history[: user_indices[ordinal]]
+                session["history"] = truncated
+                session["history_version"] = int(
+                    session.get("history_version", 0)
+                ) + 1
+                if (db := _get_db()) is not None:
+                    try:
+                        db.replace_messages(session["session_key"], truncated)
+                    except Exception as exc:
+                        print(
+                            f"[tui_gateway] prompt.submit: replace_messages failed: {exc}",
+                            file=sys.stderr,
+                        )
+            # A real user prompt wins over a deferred goal continuation,
+            # matching the existing race semantics after the prior completion lands.
+            session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
+            session["running"] = True
+            session["last_active"] = time.time()
+            session["_turn_cancel_requested"] = False
+            _start_inflight_turn(session, text)
+'''
+    source = replace_region(
+        source,
+        "    # Re-bind to the current client transport for this request.",
+        "\n    # Persist the DB row lazily",
+        prompt_admission,
+        "server prompt ownership admission",
+    )
+    source = replace_once(
+        source,
+        '''    Returns a response dict when handled inline. Returns None when the
+    handler was scheduled on the pool; the worker writes its own response
+    via the bound transport when done.
+''',
+        '''    Returns a response dict for ordinary inline handlers. Pool handlers
+    return None and write from their worker. Live snapshots and prompt admission
+    share a single-worker ownership lane so response order matches request receipt.
+''',
+        "server activation dispatch contract",
+    )
+    source = replace_once(
+        source,
+        '''        _rid, method, _params = normalized
+        if method not in _LONG_HANDLERS:
+            return handle_request(req)
+''',
+        '''        _rid, method, _params = normalized
+
+        def write_response(resp: dict) -> None:
+            snapshot_ack_token = None
+            if method in {"session.activate", "session.resume"}:
+                result = resp.get("result") if isinstance(resp, dict) else None
+                if isinstance(result, dict):
+                    snapshot_ack_token = result.pop(
+                        _LIVE_SNAPSHOT_ACK_TOKEN_RESULT, None
+                    )
+            snapshot_ack_delivered = t.write(resp)
+            if snapshot_ack_delivered and snapshot_ack_token is not None:
+                _release_agent_run_continuations_after_snapshot_ack(
+                    resp, t, snapshot_ack_token
+                )
+
+        if (
+            method not in _LONG_HANDLERS
+            and method not in _ORDERED_SESSION_OWNERSHIP_HANDLERS
+        ):
+            return handle_request(req)
+''',
+        "server receive-ordered live snapshot acknowledgement",
+    )
+    source = replace_once(
+        source,
+        '''            if resp is not None:
+                t.write(resp)
+''',
+        '''            if resp is not None:
+                write_response(resp)
+''',
+        "server live snapshot acknowledgement ordered before deferred goal",
+    )
+    source = replace_once(
+        source,
+        '''        _pool.submit(lambda: ctx.run(run))
+''',
+        '''        dispatch_pool = (
+            _live_snapshot_pool
+            if method in _ORDERED_SESSION_OWNERSHIP_HANDLERS
+            else _pool
+        )
+        dispatched = dispatch_pool.submit(lambda: ctx.run(run))
+        if method == "prompt.submit":
+            # Preserve prompt.submit's synchronous handler lifetime while still
+            # admitting it behind earlier snapshots in the ordered lane.
+            dispatched.result()
+''',
+        "server ordered live snapshot pool selection",
+    )
+    source = replace_once(
+        source,
+        '''    with _sessions_lock:
+        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
+    reaped = 0
+    detached = 0
+    for sid, session in owned:
+        if session.get("close_on_disconnect"):
+            _close_session_by_id(sid, end_reason=end_reason)
+            reaped += 1
+        else:
+            # Point detached sessions at the drop sentinel (NOT real stdio) so
+            # _ws_session_is_orphaned recognizes them and the grace-reap can
+            # actually fire; a standalone `hermes --tui` keeps real _stdio.
+            session["transport"] = _detached_ws_transport
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
-''',
-        '''            session["transport"] = _detached_ws_transport
-            detached += 1
-            # A parked session can be resumed, but an approval tied to the
-            # disconnected client cannot. Drain it immediately fail closed;
-            # session.resume registers a fresh callback for future requests.
-            try:
-                from tools.approval import unregister_gateway_notify
-
-                if key := session.get("session_key"):
-                    unregister_gateway_notify(key)
             except Exception:
                 pass
-            try:
-                _schedule_ws_orphan_reap(sid)
 ''',
-        "server disconnect approval drain",
+        '''    reaped = 0
+    detached = 0
+    # Snapshot and detach under the same ownership lock used by every resume
+    # and activation commit. A request either commits before this snapshot and
+    # is cleaned up, or observes the closed transport before it can commit.
+    with _session_resume_lock:
+        with _sessions_lock:
+            owned = [
+                (sid, session)
+                for sid, session in _sessions.items()
+                if session.get("transport") is transport
+            ]
+        for sid, session in owned:
+            with _sessions_lock:
+                if _sessions.get(sid) is not session:
+                    continue
+                if session.get("transport") is not transport:
+                    continue
+                close_on_disconnect = bool(session.get("close_on_disconnect"))
+                if not close_on_disconnect:
+                    session["transport"] = _detached_ws_transport
+            if close_on_disconnect:
+                if _close_session_by_id(sid, end_reason=end_reason):
+                    reaped += 1
+            else:
+                # Point detached sessions at the drop sentinel (NOT real stdio)
+                # so the grace reaper recognizes them. Drain approvals while the
+                # same resume lock still protects the transport boundary.
+                detached += 1
+                try:
+                    from tools.approval import unregister_gateway_notify
+
+                    if key := session.get("session_key"):
+                        unregister_gateway_notify(key)
+                except Exception:
+                    pass
+                try:
+                    _schedule_ws_orphan_reap(sid)
+                except Exception:
+                    pass
+''',
+        "server disconnect ownership and approval drain",
+    )
+    source = replace_once(
+        source,
+        '''def _reap_idle_sessions() -> None:
+    now = time.time()
+    with _sessions_lock:
+        victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
+    for sid in victims:
+        _close_session_by_id(sid, end_reason="idle_timeout")
+''',
+        '''def _reap_idle_sessions() -> None:
+    now = time.time()
+    # A stale victim snapshot must not finalize a session that a live snapshot
+    # handoff has rebound. Recheck identity and evictability under the same
+    # ownership lock used by resume and activation commits.
+    with _session_resume_lock:
+        with _sessions_lock:
+            victims = [
+                (sid, session)
+                for sid, session in _sessions.items()
+                if _session_is_evictable(sid, session, now)
+            ]
+        for sid, session in victims:
+            with _sessions_lock:
+                if _sessions.get(sid) is not session:
+                    continue
+            if not _session_is_evictable(sid, session, now):
+                continue
+            _close_session_by_id(sid, end_reason="idle_timeout")
+''',
+        "server idle reap ownership recheck",
     )
     source = replace_once(
         source,
@@ -1265,6 +2104,354 @@ def _queue_attached_image(
         )
 ''',
         "server exec approval callbacks",
+    )
+    source = replace_once(
+        source,
+        '''    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+''',
+        '''    _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
+    while not stop_event.is_set() and not session.get("_finalized"):
+        # Goal continuations blocked by an undelivered message.complete stay on
+        # the session until resume retries that exact frame. This existing
+        # long-lived poller wakes them without racing the live snapshot acknowledgement.
+        deferred_goal = _take_deferred_goal_followup(session)
+        if deferred_goal is not None:
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(
+                    deferred_goal["rid"], sid, session, deferred_goal["text"]
+                )
+            except Exception as exc:
+                print(
+                    f"[tui_gateway] deferred goal dispatch failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+                    _defer_goal_followup(
+                        session, deferred_goal["rid"], deferred_goal["text"]
+                    )
+                time.sleep(0.1)
+            continue
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+''',
+        "server deferred goal poller wake-up",
+    )
+    source = replace_once(
+        source,
+        '''        _requeued = False
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                _requeued = True
+            else:
+                session["running"] = True
+        if _requeued:
+            # Back off before re-polling: the re-queued event keeps the queue
+            # non-empty, so without a sleep this loop spins at full speed
+            # (100% CPU, GIL churn) for as long as the session stays busy.
+            time.sleep(0.25)
+            continue
+''',
+        '''        _requeued = False
+        with session["history_lock"]:
+            if (
+                session.get("running")
+                or _message_complete_is_pending(session)
+                or _agent_run_continuation_waits_for_snapshot_ack(session)
+                or _DEFERRED_GOAL_FOLLOWUP in session
+            ):
+                process_registry.completion_queue.put(evt)
+                _requeued = True
+            else:
+                session["running"] = True
+        if _requeued:
+            # Back off before re-polling: the re-queued event keeps the queue
+            # non-empty, so without a sleep this loop spins at full speed
+            # (100% CPU, GIL churn) for as long as the session stays busy.
+            time.sleep(0.25)
+            continue
+''',
+        "server notification poller pending-complete deferral",
+    )
+    source = replace_once(
+        source,
+        '''        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+''',
+        '''        with session["history_lock"]:
+            if (
+                session.get("running")
+                or _message_complete_is_pending(session)
+                or _agent_run_continuation_waits_for_snapshot_ack(session)
+                or _DEFERRED_GOAL_FOLLOWUP in session
+            ):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+''',
+        "server notification shutdown-drain pending-complete deferral",
+    )
+    source = replace_once(
+        source,
+        '''@method("session.resume")
+def _(rid, params: dict) -> dict:
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+''',
+        '''@method("session.resume")
+def _(rid, params: dict) -> dict:
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    resume_transport = current_transport() or _stdio_transport
+    if _transport_is_dead(resume_transport):
+        return _err(rid, 4009, "request transport disconnected")
+''',
+        "server resume request transport capture",
+    )
+    source = replace_once(
+        source,
+        '''    def _reuse_live_payload(sid: str, session: dict) -> dict:
+        payload = _live_session_payload(
+            sid,
+            session,
+            cols=cols,
+            touch=True,
+            transport=current_transport() or _stdio_transport,
+        )
+        payload["resumed"] = target
+''',
+        '''    def _reuse_live_payload(sid: str, session: dict) -> dict:
+        payload = _handoff_live_session_transport(
+            sid,
+            session,
+            resume_transport,
+            cols=cols,
+        )
+        payload["resumed"] = target
+''',
+        "server resume approval handoff",
+    )
+    source = replace_once(
+        source,
+        '''    model_override=None,
+    resume_runtime_overrides: dict | None = None,
+) -> dict:
+''',
+        '''    model_override=None,
+    resume_runtime_overrides: dict | None = None,
+    transport: Transport,
+) -> dict:
+''',
+        "server deferred resume captured transport argument",
+    )
+    source = replace_once(
+        source,
+        '''        "tool_started_at": {},
+        "transport": current_transport() or _stdio_transport,
+    }
+
+
+def _claim_or_reuse_live(
+    sid: str, session_key: str, record: dict, lease
+) -> tuple[str, dict] | None:
+''',
+        '''        "tool_started_at": {},
+        "transport": transport,
+    }
+
+
+def _claim_or_reuse_live(
+    sid: str,
+    session_key: str,
+    record: dict,
+    lease,
+    resume_transport: Transport,
+) -> tuple[str, dict] | None | bool:
+''',
+        "server deferred resume transport and claim signature",
+    )
+    source = replace_once(
+        source,
+        '''    with _session_resume_lock:
+        live = _find_live_session_by_key(session_key)
+''',
+        '''    with _session_resume_lock:
+        if _transport_is_dead(resume_transport):
+            if lease is not None:
+                lease.release()
+            return False
+        live = _find_live_session_by_key(session_key)
+''',
+        "server deferred resume dead transport commit guard",
+    )
+    source = replace_count(
+        source,
+        '''            lazy=True,
+        )
+''',
+        '''            lazy=True,
+            transport=resume_transport,
+        )
+''',
+        1,
+        "server lazy resume captured transport",
+    )
+    source = replace_once(
+        source,
+        '''            resume_runtime_overrides=overrides or None,
+        )
+''',
+        '''            resume_runtime_overrides=overrides or None,
+            transport=resume_transport,
+        )
+''',
+        "server cold resume captured transport",
+    )
+    source = replace_count(
+        source,
+        '''        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+            return _ok(rid, _reuse_live_payload(*live))
+''',
+        '''        claim = _claim_or_reuse_live(
+            sid, target, record, lease, resume_transport
+        )
+        if claim is False:
+            return _err(rid, 4009, "request transport disconnected")
+        if claim is not None:
+            return _ok(rid, _reuse_live_payload(*claim))
+''',
+        2,
+        "server deferred resume transport commit",
+    )
+    source = replace_once(
+        source,
+        '''    # Double-checked locking: another concurrent resume may have created the
+    # live session while we were building. Re-check under the lock; if it won,
+    # discard our just-built agent and reuse theirs (no worker/poller wired yet).
+    with _session_resume_lock:
+        live = _find_live_session_by_key(target)
+''',
+        '''    # Double-checked locking: another concurrent resume may have created the
+    # live session while we were building. Re-check under the lock; if it won,
+    # discard our just-built agent and reuse theirs (no worker/poller wired yet).
+    with _session_resume_lock:
+        if _transport_is_dead(resume_transport):
+            try:
+                if hasattr(agent, "close"):
+                    agent.close()
+            except Exception:
+                pass
+            if lease is not None:
+                lease.release()
+            return _err(rid, 4009, "request transport disconnected")
+        live = _find_live_session_by_key(target)
+''',
+        "server rebuilt resume dead transport commit guard",
+    )
+    source = replace_once(
+        source,
+        '''            other_sid, other_session = live
+            payload = _live_session_payload(
+                other_sid,
+                other_session,
+                cols=cols,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+            )
+            payload["resumed"] = target
+            return _ok(rid, payload)
+''',
+        '''            other_sid, other_session = live
+            return _ok(rid, _reuse_live_payload(other_sid, other_session))
+''',
+        "server concurrent resume approval handoff",
+    )
+    source = replace_once(
+        source,
+        '''        if goal_followup:
+            with session["history_lock"]:
+                if session.get("running"):
+                    # User already sent something — their turn wins,
+                    # the judge will re-run on the next turn anyway.
+                    return
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, goal_followup)
+            except Exception as _cont_exc:
+                print(
+                    f"[tui_gateway] goal continuation dispatch failed: "
+                    f"{type(_cont_exc).__name__}: {_cont_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+''',
+        '''        if goal_followup:
+            dispatch_goal_followup = False
+            with session["history_lock"]:
+                if session.get("running"):
+                    # User already sent something — their turn wins,
+                    # the judge will re-run on the next turn anyway.
+                    return
+                if (
+                    _message_complete_is_pending(session)
+                    or _agent_run_continuation_waits_for_snapshot_ack(session)
+                ):
+                    _defer_goal_followup(session, rid, goal_followup)
+                else:
+                    session["running"] = True
+                    dispatch_goal_followup = True
+            if dispatch_goal_followup:
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(rid, sid, session, goal_followup)
+                except Exception as _cont_exc:
+                    print(
+                        f"[tui_gateway] goal continuation dispatch failed: "
+                        f"{type(_cont_exc).__name__}: {_cont_exc}",
+                        file=sys.stderr,
+                    )
+                    with session["history_lock"]:
+                        session["running"] = False
+''',
+        "server goal continuation pending-complete deferral",
+    )
+    source = replace_once(
+        source,
+        '''            for index, (_evt, synth) in enumerate(drained):
+                with session["history_lock"]:
+                    if session.get("running"):
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
+                        break
+                    session["running"] = True
+''',
+        '''            for index, (_evt, synth) in enumerate(drained):
+                with session["history_lock"]:
+                    if (
+                        session.get("running")
+                        or _message_complete_is_pending(session)
+                        or _agent_run_continuation_waits_for_snapshot_ack(session)
+                        or _DEFERRED_GOAL_FOLLOWUP in session
+                    ):
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
+                        break
+                    session["running"] = True
+''',
+        "server completion drain pending-complete deferral",
     )
 
     handler = r'''@method("approval.respond")

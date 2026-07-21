@@ -25,7 +25,7 @@ import {
 } from "./lib/agent-hud-settings";
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
-import { titleFromPrompt } from "./lib/hermes-adapter";
+import { sessionTimestamp as hermesSessionTimestamp, titleFromPrompt } from "./lib/hermes-adapter";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
@@ -538,13 +538,7 @@ function sessionSummary(
 
 function sessionTimestamp(session: HermesSessionInfo, record?: StatusRecord) {
   if (record) return new Date(record.receivedAt).toISOString();
-  return (
-    session.last_active ??
-    session.lastActive ??
-    session.started_at ??
-    session.startedAt ??
-    new Date(0).toISOString()
-  );
+  return hermesSessionTimestamp(session);
 }
 
 function statusTitle(record: StatusRecord) {

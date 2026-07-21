@@ -2,6 +2,7 @@ import type { HermesGatewayEvent } from "../hermes-gateway";
 import type {
   BackgroundHermesActivity,
   BackgroundHermesPhase,
+  HermesEventDelivery,
   JuneHermesEvent,
   PendingHermesAction,
   PendingHermesActionExpiration,
@@ -23,6 +24,13 @@ import { sanitizePayload } from "./sanitize";
  * through as `unsupported`, which is visible and safe rather than dropped.
  */
 export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
+  const event = classifyHermesEventWithoutDelivery(raw);
+  const payload = (raw?.payload ?? undefined) as RawHermesPayload | undefined;
+  const delivery = deliveryOf(raw, payload);
+  return delivery ? { ...event, delivery } : event;
+}
+
+function classifyHermesEventWithoutDelivery(raw: HermesGatewayEvent): JuneHermesEvent {
   const type = typeof raw?.type === "string" ? raw.type : "";
   const sessionId = stringValue(raw?.session_id);
   const payload = (raw?.payload ?? undefined) as RawHermesPayload | undefined;
@@ -148,6 +156,49 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
   };
 }
 
+function deliveryOf(
+  raw: HermesGatewayEvent,
+  payload: RawHermesPayload | undefined,
+): HermesEventDelivery | undefined {
+  const connectionId = deliveryInteger(raw.delivery?.connectionId);
+  const sequence = deliveryInteger(raw.delivery?.sequence);
+  const eventId =
+    stringValue(payload?.event_id) ??
+    stringValue(payload?.eventId) ??
+    stringValue(raw.event_id) ??
+    stringValue(raw.eventId);
+  const textOffset =
+    textOffsetValue(payload?.text_offset) ??
+    textOffsetValue(payload?.textOffset) ??
+    textOffsetValue(raw.text_offset) ??
+    textOffsetValue(raw.textOffset);
+
+  if (
+    connectionId === undefined &&
+    sequence === undefined &&
+    eventId === undefined &&
+    textOffset === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    ...(connectionId === undefined ? {} : { connectionId }),
+    ...(sequence === undefined ? {} : { sequence }),
+    ...(eventId === undefined ? {} : { eventId }),
+    ...(textOffset === undefined ? {} : { textOffset }),
+  };
+}
+
+function deliveryInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function textOffsetValue(value: unknown): number | undefined {
+  const parsed = numberValue(value);
+  return parsed !== undefined && Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function classifyTranscript(
   type: string,
   sessionId: string | undefined,
@@ -156,19 +207,18 @@ function classifyTranscript(
 ): JuneHermesEvent {
   const complete = type === "message.complete";
   const interim = type === "message.interim";
-  const delta =
-    type === "message.delta"
+  const delta = interim
+    ? eventText(payload)
+    : type === "message.delta" || complete
       ? rawDeltaText(payload)
-      : complete || interim
-        ? eventText(payload)
-        : undefined;
+      : undefined;
   const failed = complete && stringValue(payload?.status)?.toLowerCase() === "error";
   return {
     kind: "transcript",
     sessionId: sessionId ?? "",
     messageId: stringValue(payload?.message_id) ?? stringValue(payload?.messageId),
-    // Complete text follows the builder's nine-key visible-text chain, not the
-    // old four-key classifier fallback, so summary/status-only turns survive.
+    // Only answer-bearing fields can become transcript prose. Activity fields
+    // such as summary/status/output/result/command stay in their own families.
     delta,
     complete,
     interim,
@@ -337,12 +387,14 @@ function classifyPendingAction(
   payload: RawHermesPayload | undefined,
   receivedAt: string,
 ): PendingHermesAction {
-  const requestId = requestIdOf(payload, type, receivedAt);
+  const explicitRequestId = explicitRequestIdOf(payload);
+  const requestId = explicitRequestId ?? requestIdOf(payload, type, receivedAt);
   switch (type) {
     case "approval.request":
       return {
         kind: "approval",
         requestId,
+        ...(explicitRequestId ? {} : { requestIdProvenance: "payload-fingerprint" }),
         toolName:
           stringValue(payload?.tool_name) ??
           stringValue(payload?.tool) ??
@@ -450,6 +502,7 @@ function classifyPendingActionExpiration(
     rawReason === "disconnect" ||
     rawReason === "overflow" ||
     rawReason === "stale" ||
+    rawReason === "transport_handoff" ||
     rawReason === "unconfirmed"
       ? rawReason
       : "unknown";
@@ -581,6 +634,8 @@ function lifecycleFlavor(type: string): Extract<JuneHermesEvent, { kind: "lifecy
   }
 }
 
+export const LEGACY_APPROVAL_REQUEST_ID_PREFIX = "legacy:approval.request:";
+
 function requestIdOf(
   payload: RawHermesPayload | undefined,
   type: string,
@@ -588,7 +643,7 @@ function requestIdOf(
 ): string {
   return (
     explicitRequestIdOf(payload) ??
-    (type === "approval.request" ? stableLegacyRequestId(type, payload) : `${type}:${receivedAt}`)
+    (type === "approval.request" ? stableLegacyRequestId(payload) : `${type}:${receivedAt}`)
   );
 }
 
@@ -606,9 +661,9 @@ function explicitRequestIdOf(payload: RawHermesPayload | undefined): string | un
  * causing a card storm without changing non-MCP action compatibility. No raw
  * payload text is retained in the id.
  */
-function stableLegacyRequestId(type: string, payload: RawHermesPayload | undefined): string {
+function stableLegacyRequestId(payload: RawHermesPayload | undefined): string {
   const canonical = stableJson(sanitizePayload(payload ?? {}));
-  return `legacy:${type}:${fingerprint(canonical)}`;
+  return `${LEGACY_APPROVAL_REQUEST_ID_PREFIX}${fingerprint(canonical)}`;
 }
 
 function stableJson(value: unknown): string {

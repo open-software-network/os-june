@@ -716,6 +716,28 @@ describe("RoutinesView connector templates", () => {
     );
   });
 
+  it("normalizes a numeric Unix-second end time before reporting a finished run", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    adapterMocks.listScheduledRunSessions.mockResolvedValue([
+      {
+        id: "cron_abc123_20260709_100000",
+        status: "completed",
+        ended_at: 1_752_055_500,
+        active: false,
+      },
+    ]);
+
+    renderView();
+
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustRecordRun).toHaveBeenCalledWith({
+        jobId: "abc123",
+        runId: "cron_abc123_20260709_100000",
+        runEndedAt: "2025-07-09T10:05:00.000Z",
+      }),
+    );
+  });
+
   it("does not report a still-running or failed run", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     adapterMocks.listScheduledRunSessions.mockResolvedValue([

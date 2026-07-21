@@ -66,15 +66,19 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tools/approval.py",
-        "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
+        "94b42207d425978e2d6fff7f04650c908d47377c3fd3aa3ff1cf899617c2f032",
     ),
     (
         "tools/mcp_tool.py",
         "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
     ),
+    // Includes immediate image-byte attachment, receive-ordered live-snapshot
+    // and prompt ownership, exact retry for a rejected ID-less
+    // message.complete, and a generation-tokened Agent run continuation
+    // acknowledgement barrier.
     (
         "tui_gateway/server.py",
-        "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
+        "5db3ea64e9456d486da496c1d8bc4e3d6de78fb8e8879bdec96d21c3d56940b0",
     ),
     (
         "cron/scheduler.py",
@@ -21227,16 +21231,24 @@ mcp_servers:
     }
 
     #[test]
-    fn managed_runtime_provenance_rejects_the_previous_patch_set() {
+    fn managed_runtime_provenance_rejects_every_parent_patch_set() {
         let current = format!(
             r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"{HERMES_RUNTIME_PATCH_SET}"}}"#
         );
         assert!(hermes_runtime_metadata_is_current(&current));
 
-        let previous = format!(
-            r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"june-approval-memory-v2"}}"#
-        );
-        assert!(!hermes_runtime_metadata_is_current(&previous));
+        for previous_patch_set in [
+            "june-approval-v1",
+            "june-approval-v3",
+            "june-approval-memory-v2",
+            "june-approval-memory-v3",
+            "june-approval-memory-v13",
+        ] {
+            let previous = format!(
+                r#"{{"source":"NousResearch/hermes-agent","commit":"{HERMES_AGENT_INSTALL_COMMIT}","patchSet":"{previous_patch_set}"}}"#
+            );
+            assert!(!hermes_runtime_metadata_is_current(&previous));
+        }
     }
 
     fn test_gateway_connection() -> HermesBridgeConnection {

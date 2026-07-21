@@ -36,7 +36,9 @@ incorporated June's prompt image-batch ownership and atomic Telegram config
 write fixes upstream. Patch set `june-approval-memory-v14` retires those
 redundant transforms while preserving the remaining checksum-gated changes:
 
-- targeted approval request identity, deduplication, expiry, and fail-closed queues
+- targeted approval request identity, deduplication, expiry, fail-closed queues,
+  and approval-safe transport handoff
+- receive-ordered live snapshots and exact retry of rejected message completion
 - immediate byte-image attachment and reset/build race protection
 - global Memory deny propagation across interactive, background, and cron agents
 - cross-process config writer locking and final disabled-toolset subtraction
@@ -50,9 +52,9 @@ fresh upstream tree and the resulting patched tree.
 | Source | Sealed patched or policy SHA-256 |
 | --- | --- |
 | `agent/agent_init.py` | `a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5` |
-| `tools/approval.py` | `c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900` |
+| `tools/approval.py` | `94b42207d425978e2d6fff7f04650c908d47377c3fd3aa3ff1cf899617c2f032` |
 | `tools/mcp_tool.py` | `764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a` |
-| `tui_gateway/server.py` | `750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367` |
+| `tui_gateway/server.py` | `5db3ea64e9456d486da496c1d8bc4e3d6de78fb8e8879bdec96d21c3d56940b0` |
 | `utils.py` | `0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174` |
 | `plugins/platforms/telegram/adapter.py` | `b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b` |
 | `cron/scheduler.py` | `ea54407dddebec57a184f1dbdf1076f8abe94f132da1e619c476cbf1266ed239` |

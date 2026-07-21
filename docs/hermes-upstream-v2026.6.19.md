@@ -10,9 +10,13 @@
 ## June compatibility patch
 
 The upstream pin remains unchanged. June applies the deterministic
-`june-approval-memory-v13` patch set before building the bundled runtime and before
+`june-approval-memory-v14` patch set before building the bundled runtime and
+before
 finishing a managed runtime install. See
-[ADR 0025](adr/0025-targeted-hermes-approval-protocol.md).
+[ADR 0009](adr/0009-hermes-config-shared-ownership-merge.md),
+[ADR 0025](adr/0025-targeted-hermes-approval-protocol.md),
+[ADR 0027](adr/0027-june-owned-project-memory-store.md), and
+[ADR 0036](adr/0036-approval-safe-hermes-transport-handoff.md).
 
 The patch preserves MCP `RequestContext.request_id`, derives an opaque stable
 approval id, and coalesces a still-pending logical request retried after an MCP
@@ -23,6 +27,52 @@ sessions; adds targeted `approval.respond`; and emits targeted
 responses, notification failure, queue overflow, timeout, and disconnect fail
 closed. Existing command/code approvals derive targeted identity from their
 turn/tool-call context, so non-MCP approval behavior is preserved.
+
+The v2 extension makes a live cross-transport `session.resume` an approval-safe
+handoff barrier. It atomically deactivates the old notifier generation,
+installs the replacement, tombstones and expires old queued requests, and waits
+for old notifier calls already in flight before returning. The resume result
+adds `retired_approval_request_ids: string[]`, including reconnect aliases, so
+June can retire old pre-response frames without discarding a genuinely fresh
+request emitted by the replacement notifier. Queue arbitration verifies the
+captured notifier generation so a delayed old request cannot deduplicate into a
+fresh replacement-generation request.
+
+The same atomic resume boundary also closes an ID-less transcript overlap.
+When a newly appended content-bearing assistant row is already present in the
+resume snapshot but its `message.complete` delivery is still undecided, the
+result adds `pending_message_complete: { assistant_ordinal: number }`. The
+zero-based ordinal is measured across content-bearing assistant rows in that
+result's `messages`; blank reasoning/tool-call-only rows do not consume one.
+Resume and completion serialize transport selection, the exact frame write, and
+its Boolean outcome on the history lock. The runtime retains the exact
+`message.complete` payload until one transport accepts it; a closed old
+transport and any failed replacement leave it available for the next live
+resume, which retries it on the replacement before returning the resume result.
+Only a successful write clears the payload and ordinal proof. Starting another
+Agent run cannot clear or replace them. A new user submission retries
+the retained completion on its request transport before it can start. Goal
+continuations remain deferred and process notifications remain queued until a
+live resume accepts the old exact frame; a deferred goal is released only after
+the exact live snapshot response itself is accepted. Every live resume arms a
+per-snapshot token in the same history-lock transaction as its swap and
+snapshot, so an older response on the same transport cannot release a newer
+snapshot. This preserves completion, response, then next-run ordering even when
+the emitter wins after the snapshot. Delivery retry does not depend on
+ordinal authority: missing
+or ambiguous proof is omitted and remains uncompacted rather than relying on
+identical text, but its exact visible completion is still retried.
+
+`session.activate` returns the same live-session snapshot while swapping the
+transport. It therefore shares resume/disconnect serialization, atomically
+retargets the snapshot acknowledgement token, and participates in the same
+response-write release protocol. An unguarded live-payload transport swap fails
+closed while another snapshot acknowledgement is pending.
+Resume, activation, and prompt admission use one receive-ordered ownership
+lane, and prompt submission cannot rebind transport independently. A
+replacement client must complete a live snapshot handoff first. Disconnect and
+idle cleanup share the ownership lock, recheck the exact session, and queued
+resume work rejects a transport that closed before its commit.
 
 The same sealed patch also passes `agent.disabled_toolsets` into the
 desktop/TUI `AIAgent` constructor and every background agent factory. The
@@ -72,9 +122,9 @@ exact source states:
 | File | Upstream SHA-256 | Patched SHA-256 |
 | --- | --- | --- |
 | `agent/agent_init.py` | `7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b` | `58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e` |
-| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d` |
+| `tools/approval.py` | `e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85` | `daaac4cbc6adfffd3a8cbd8442d3cc0c26bc499725e395cf837607dbcebc46d8` |
 | `tools/mcp_tool.py` | `3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01` | `48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa` |
-| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `f375627e61af5e61434592d4d17d39c20e7ba1a7e1280715b0e5a7387a0f26a1` |
+| `tui_gateway/server.py` | `1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a` | `ee9806275e5b5706cadc58151b894d54351057d57f158d36a94e66080263a742` |
 | `cron/scheduler.py` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` | `2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa` |
 | `model_tools.py` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` | `d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d` |
 | `utils.py` | `572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c` | `08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5` |
@@ -187,8 +237,9 @@ Two phases, gated independently:
   deterministic source-state verification, Memory deny propagation and writer
   coordination, duplicate delivery, distinct concurrent requests, targeted
   approval and denial, replay, timeout, malformed identity, bounded overflow,
-  disconnect drain, and immediate image-byte attachment to a new runtime
-  session.
+  disconnect drain, notifier-generation handoff with fresh-request preservation,
+  exact completion retry, live snapshot ownership ordering, and immediate
+  image-byte attachment to a new runtime session.
 - Model smoke (opt-in): set `HERMES_SMOKE_MODEL=1` and ensure the runtime config
   has a real provider key. This adds a minimal no-tool `prompt.submit` and waits
   for a completion. It costs provider tokens, so it is off by default.

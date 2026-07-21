@@ -74,11 +74,22 @@ const RUN_HISTORY_REFRESH_MS = 10000;
  * fresh mount re-reporting a run is harmless.
  */
 async function creditApprovalRuns(runs: HermesSessionInfo[], reported: Set<string>): Promise<void> {
-  for (const run of runs.filter(isCreditableRun)) {
+  for (const run of runs) {
+    const runEndedAt = hermesTimestampString(run.ended_at ?? run.endedAt ?? null);
+    if (
+      !runEndedAt ||
+      !isCreditableRun({
+        active: run.active,
+        is_active: run.is_active,
+        status: run.status,
+        ended_at: runEndedAt,
+      })
+    ) {
+      continue;
+    }
     if (reported.has(run.id)) continue;
     const jobId = scheduledRunJobId(run.id);
-    const runEndedAt = run.ended_at ?? run.endedAt ?? null;
-    if (!jobId || !runEndedAt) continue;
+    if (!jobId) continue;
     reported.add(run.id);
     try {
       await routineTrustRecordRun({ jobId, runId: run.id, runEndedAt });
@@ -87,6 +98,13 @@ async function creditApprovalRuns(runs: HermesSessionInfo[], reported: Set<strin
       reported.delete(run.id);
     }
   }
+}
+
+function hermesTimestampString(value: HermesSessionInfo["ended_at"]): string | null {
+  if (typeof value === "string") return value.trim() ? value : null;
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const milliseconds = value > 0 && value < 10_000_000_000 ? value * 1000 : value;
+  return new Date(milliseconds).toISOString();
 }
 
 type RoutinesViewProps = {

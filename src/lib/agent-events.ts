@@ -1,4 +1,5 @@
 import type { HermesSessionInfo } from "./tauri";
+import type { HermesRuntimeIncarnation } from "./hermes-connection";
 
 export const AGENT_NEW_SESSION_EVENT = "june:agent:new-session";
 export const AGENT_DELETE_SESSION_EVENT = "june:agent:delete-session";
@@ -6,6 +7,7 @@ export const AGENT_SESSIONS_CHANGED_EVENT = "june:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "june:agent:new-session-pending";
 export const AGENT_SESSION_STATUS_EVENT = "june:agent:session-status";
 export const AGENT_RUN_SETTLED_EVENT = "june:agent:run-settled";
+export const AGENT_RUN_STARTED_EVENT = "june:agent:run-started";
 export const AGENT_OPEN_EVENT = "june:agent:open";
 // Dev-only: toggles the agent response gallery (window.__agentGallery) or its
 // error-focused variant (window.__agentErrors).
@@ -24,6 +26,9 @@ export type AgentSessionStatusKind =
 
 export type AgentSessionStatusDetail = {
   sessionId?: string;
+  /** App-lifetime monitor generation that owns this terminal, whether the
+   * monitor or its submitting surface resolved it. */
+  runMonitorGeneration?: number;
   title?: string;
   prompt?: string;
   status: AgentSessionStatusKind;
@@ -35,9 +40,47 @@ export type AgentSessionStatusDetail = {
 export type AgentRunSettledDetail = {
   sessionId: string;
   title: string;
+  /** App-lifetime monitor generation that owns this completion. */
+  runMonitorGeneration: number;
   summary: string;
   activeCount: number;
 };
+
+export type AgentRunStartedDetail = {
+  storedSessionId: string;
+  /** Newly installed app-lifetime monitor generation. Surfaces retire only
+   * generations strictly older than this one. */
+  runMonitorGeneration: number;
+  runtimeSessionId?: string;
+  /** In-memory identity of the Hermes process that accepted this Agent run. */
+  runtimeIncarnation?: HermesRuntimeIncarnation;
+  fullMode: boolean;
+};
+
+export type AgentRunTerminalDispatch =
+  | { kind: "status"; detail: AgentSessionStatusDetail }
+  | { kind: "settled"; detail: AgentRunSettledDetail };
+
+type AgentRunTerminalDispatchGuard = (dispatch: AgentRunTerminalDispatch) => boolean;
+
+const agentRunTerminalDispatchGuards = new Set<AgentRunTerminalDispatchGuard>();
+
+/**
+ * Installs an app-lifetime authority guard before terminal state reaches the
+ * window or native event buses. A guard returns false to block dispatch; the
+ * guard owns whether that terminal is retained for later delivery or dropped.
+ */
+export function registerAgentRunTerminalDispatchGuard(guard: AgentRunTerminalDispatchGuard) {
+  agentRunTerminalDispatchGuards.add(guard);
+  return () => agentRunTerminalDispatchGuards.delete(guard);
+}
+
+function agentRunTerminalDispatchAllowed(dispatch: AgentRunTerminalDispatch) {
+  for (const guard of agentRunTerminalDispatchGuards) {
+    if (!guard(dispatch)) return false;
+  }
+  return true;
+}
 
 export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
@@ -47,6 +90,15 @@ export type AgentSessionsChangedDetail = {
 };
 
 export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
+  if (
+    detail.runMonitorGeneration !== undefined &&
+    (detail.status === "completed" ||
+      detail.status === "failed" ||
+      detail.status === "cancelled") &&
+    !agentRunTerminalDispatchAllowed({ kind: "status", detail })
+  ) {
+    return false;
+  }
   window.dispatchEvent(
     new CustomEvent<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, {
       detail,
@@ -57,9 +109,11 @@ export function dispatchAgentSessionStatus(detail: AgentSessionStatusDetail) {
       typeof api.emit === "function" ? api.emit(AGENT_SESSION_STATUS_EVENT, detail) : undefined,
     )
     .catch(() => {});
+  return true;
 }
 
 export function dispatchAgentRunSettled(detail: AgentRunSettledDetail) {
+  if (!agentRunTerminalDispatchAllowed({ kind: "settled", detail })) return false;
   window.dispatchEvent(
     new CustomEvent<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, {
       detail,
@@ -70,6 +124,15 @@ export function dispatchAgentRunSettled(detail: AgentRunSettledDetail) {
       typeof api.emit === "function" ? api.emit(AGENT_RUN_SETTLED_EVENT, detail) : undefined,
     )
     .catch(() => {});
+  return true;
+}
+
+export function dispatchAgentRunStarted(detail: AgentRunStartedDetail) {
+  window.dispatchEvent(
+    new CustomEvent<AgentRunStartedDetail>(AGENT_RUN_STARTED_EVENT, {
+      detail,
+    }),
+  );
 }
 
 export function dispatchAgentSessionsChanged(detail: AgentSessionsChangedDetail) {

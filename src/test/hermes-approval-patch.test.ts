@@ -14,6 +14,7 @@ import protocolSmoke from "../../scripts/hermes-approval-patch-smoke.py?raw";
 describe("June Hermes compatibility patch", () => {
   it("seals upstream and patched hashes for every protocol file", () => {
     for (const path of [
+      "agent/agent_init.py",
       "tools/approval.py",
       "tools/mcp_tool.py",
       "tui_gateway/server.py",
@@ -44,9 +45,49 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain("_MAX_GATEWAY_APPROVALS_PER_SESSION = 32");
     expect(patcher).toContain("_MAX_GATEWAY_APPROVAL_ALIASES = 16");
     expect(patcher).toContain("_MAX_COMPLETED_GATEWAY_SESSIONS = 256");
+    expect(patcher).toContain("class _GatewayNotify:");
+    expect(patcher).toContain("def replace_gateway_notify(");
+    expect(patcher).toContain("_gateway_notify_cbs.get(session_key) is not notify_cb");
+    expect(patcher).toContain('entry.retired_reason = "transport_handoff"');
+    expect(patcher).toContain('payload["retired_approval_request_ids"] = retired_request_ids');
+    expect(patcher).toContain('if session.get("transport") is not transport:');
+    expect(patcher).toContain("if _sessions.get(sid) is not session:");
     expect(patcher).toContain("tool_call_id = str(_approval_tool_call_id.get()");
     expect(patcher).toContain('if key := session.get("session_key")');
     expect(patcher).toContain('lambda data: _emit("approval.expire", sid, data)');
+    expect(patcher).toContain('payload["pending_message_complete"] = pending_message_complete');
+    expect(patcher).toContain(
+      "def _deliver_message_complete(session: dict, sid: str, payload: dict)",
+    );
+    expect(patcher).toContain(
+      "def _retry_pending_message_complete_locked(\n    session: dict,\n    transport: Transport,\n    *,\n    snapshot_ack_token: object | None = None,",
+    );
+    expect(patcher).toContain("_AGENT_RUN_CONTINUATION_SNAPSHOT_ACK_BARRIER");
+    expect(patcher).toContain("_LIVE_SNAPSHOT_ACK_TOKEN_RESULT");
+    expect(patcher).toContain("def _handoff_live_session_transport(");
+    expect(patcher).toContain("agent_run_continuation_snapshot_ack_transport=transport");
+    expect(patcher).toContain("snapshot_ack_token=snapshot_ack_token");
+    expect(patcher).toContain("_bind_prompt_transport_for_submit(session, request_transport)");
+    expect(patcher).toContain("_ORDERED_SESSION_OWNERSHIP_HANDLERS");
+    expect(patcher).toContain('if method == "prompt.submit":');
+    expect(patcher).toContain("dispatched.result()");
+    expect(patcher).toContain('or session.get("transport") is not request_transport');
+    expect(patcher).toContain("if _transport_is_dead(resume_transport):");
+    expect(patcher).toContain("with _session_resume_lock:");
+    expect(patcher).toContain('if method in {"session.activate", "session.resume"}:');
+    expect(patcher).toContain("if snapshot_ack_delivered and snapshot_ack_token is not None:");
+    expect(patcher).toContain("_PENDING_MESSAGE_COMPLETE_PAYLOAD");
+    expect(patcher).toContain("_clear_pending_message_complete(session)");
+    expect(patcher).not.toContain("server pending-complete final cleanup");
+    expect(patcher).toContain("assistant_texts[: len(previous_assistant_texts)]");
+    expect(patcher).toContain("_deliver_message_complete(session, sid, payload)");
+    expect(protocolSmoke).toContain("# Resume wins:");
+    expect(protocolSmoke).toContain("# Emitter wins:");
+    expect(protocolSmoke).toContain("# A closed transport reports False");
+    expect(protocolSmoke).toContain("# A replacement can itself disappear before the retry");
+    expect(protocolSmoke).toContain(
+      "# An unchanged history with an identical final-response string",
+    );
     expect(patcher).not.toContain('lambda data: _emit("approval.request", sid, data)');
     expect(
       patcher.match(/lambda data: _emit_approval_request\(sid, data\)/g)?.length,
@@ -82,6 +123,10 @@ describe("June Hermes compatibility patch", () => {
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
     expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14"');
+    expect(bridge).not.toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-v2"');
+    expect(bridge).not.toContain(
+      'const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v2"',
+    );
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
     expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
     for (const mapName of ["PATCHED_SHA256", "POLICY_SHA256"]) {

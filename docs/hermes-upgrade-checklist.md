@@ -40,9 +40,9 @@ note (copy `docs/hermes-upstream-template.md` to
 
 ## June compatibility patch set
 
-The current pin also carries the checksum-gated `june-approval-memory-v14` patch set
-documented in `docs/hermes-upstream-v2026.7.20.md`. Its targeted-approval portion
-follows ADR 0025. On every pin bump:
+The current pin also carries the checksum-gated `june-approval-memory-v14` patch
+set documented in `docs/hermes-upstream-v2026.7.20.md`. Its targeted approval
+and transport-handoff portions follow ADR 0025 and ADR 0036. On every pin bump:
 
 1. Check whether upstream now preserves MCP request identity, deduplicates one
    still-pending logical elicitation across transport reconnects without
@@ -133,7 +133,37 @@ must carry a stable `request_id`; `approval.respond` with that id must resolve
 exactly one request; `approval.response` and `approval.expire` must reference
 the same id. A missing or malformed id must not fall back to an actionable
 approval. Re-run the reconnect-retry, same-transport concurrency, disconnect
-drain, non-MCP command approval, alias-bound, and tombstone-bound smoke cases.
+drain, resume notifier-generation handoff, non-MCP command approval,
+alias-bound, and tombstone-bound smoke cases. A live cross-transport resume must
+return `retired_approval_request_ids` for every primary and alias it retired,
+while a fresh request on the replacement notifier remains actionable.
+Also re-run both pending-complete delivery orderings: resume-first must return
+`pending_message_complete.assistant_ordinal` and route the completion to the
+replacement transport; emitter-first must route to its captured old transport
+and return no marker. Include unchanged identical history and tool-call-only
+assistant rows in the fail-closed/ordinal smoke cases. Make the old transport
+return `False`, confirm the exact completion frame is retained, then resume and
+confirm it is emitted once on the replacement before the response. Repeat with
+multiple failed replacement transports and confirm only a successful write
+clears the retained payload. Cover a failed unproven completion separately: it
+must retry without adding `pending_message_complete`.
+Start a goal continuation and queue a process notification after a rejected
+completion write. Confirm neither can clear or replace the old frame: the goal
+stays deferred, the process event stays queued, resume retries the exact old
+completion first, and the goal becomes runnable only after the resume response
+write succeeds. A new user submission must likewise retry the old completion
+before it can start another Agent run. Race `session.activate` on a second
+transport against an unacknowledged live `session.resume` snapshot. Activation
+must atomically retarget the snapshot barrier, the stale resume response must
+not release it, and the activation response must release it without stranding
+later prompts. Queue two snapshots on the same transport and confirm the older
+response cannot release the newer snapshot's generation token.
+Hold an earlier resume in the ordered ownership lane, then queue activation
+and `prompt.submit`. The prompt must wait until both snapshot responses are
+written. Submit a prompt from a different transport without a handoff and
+confirm it fails closed. Race disconnect cleanup and idle reaping against live,
+lazy, and rebuilt resume commits; cleanup must either observe the committed
+owner or the commit must reject the closed request transport.
 
 ## New methods/events (gateway method + event catalog diff)
 

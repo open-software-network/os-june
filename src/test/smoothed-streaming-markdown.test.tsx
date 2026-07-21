@@ -3,8 +3,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SmoothedStreamingMarkdown } from "../components/agent/SmoothedStreamingMarkdown";
 
+const motionPreference = vi.hoisted(() => ({ reduced: false }));
+
+vi.mock("framer-motion", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("framer-motion")>()),
+  useReducedMotion: () => motionPreference.reduced,
+}));
+
 describe("SmoothedStreamingMarkdown", () => {
   afterEach(() => {
+    motionPreference.reduced = false;
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -64,6 +72,28 @@ describe("SmoothedStreamingMarkdown", () => {
     view.rerender(<SmoothedStreamingMarkdown markdown="Hello hidden backlog" running />);
 
     expect(view.container.textContent).toBe("Hello hidden backlog");
+  });
+
+  it("reveals append-only updates immediately when reduced motion is enabled", () => {
+    vi.useFakeTimers();
+    motionPreference.reduced = true;
+    const view = render(<SmoothedStreamingMarkdown markdown="Hello" running />);
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="Hello without animation" running />);
+
+    expect(view.container.textContent).toBe("Hello without animation");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears a pending reveal timer when unmounted", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown="Hello" running />);
+    view.rerender(<SmoothedStreamingMarkdown markdown="Hello with a pending backlog" running />);
+    expect(vi.getTimerCount()).toBe(1);
+
+    view.unmount();
+
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("notifies the transcript when delayed text becomes visible", () => {

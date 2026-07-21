@@ -673,10 +673,14 @@ export type HermesMessagingPlatformsResponse = {
   platforms: HermesMessagingPlatformInfo[];
 };
 
+export type HermesTimestamp = string | number;
+
 export type HermesSessionInfo = {
   id: string;
   active?: boolean;
   is_active?: boolean;
+  /** June-side scheduled-run display state. The pinned Hermes session API does
+   * not persist TUI Agent-run outcomes in this field. */
   status?: string;
   source?: string;
   kind?: string | null;
@@ -687,17 +691,17 @@ export type HermesSessionInfo = {
   user_id?: string;
   model?: string;
   title?: string;
-  started_at?: string;
-  startedAt?: string;
-  ended_at?: string | null;
-  endedAt?: string | null;
+  started_at?: HermesTimestamp;
+  startedAt?: HermesTimestamp;
+  ended_at?: HermesTimestamp | null;
+  endedAt?: HermesTimestamp | null;
   end_reason?: string | null;
   message_count?: number;
   tool_call_count?: number;
   parent_session_id?: string | null;
   parentSessionId?: string | null;
-  last_active?: string;
-  lastActive?: string;
+  last_active?: HermesTimestamp;
+  lastActive?: HermesTimestamp;
   preview?: string;
   has_system_prompt?: boolean;
   has_model_config?: boolean;

@@ -176,11 +176,15 @@ function isRecentPendingRun(session: HermesSessionInfo) {
 }
 
 function hasSessionEnded(session: HermesSessionInfo) {
-  return Boolean(
-    stringPresent(session.ended_at) ||
-      stringPresent(session.endedAt) ||
-      stringPresent(session.end_reason),
+  return (
+    timestampPresent(session.ended_at) ||
+    timestampPresent(session.endedAt) ||
+    stringPresent(session.end_reason)
   );
+}
+
+function timestampPresent(value: unknown) {
+  return stringPresent(value) || (typeof value === "number" && Number.isFinite(value));
 }
 
 function hasScheduledRunContent(session: HermesSessionInfo) {
@@ -255,10 +259,10 @@ export function normalizeHermesSessionMessagesResponse(response: unknown) {
 export function sessionTimestamp(session: HermesSessionInfo) {
   return timestampString(
     session.last_active ??
-      session.started_at ??
-      session.ended_at ??
       (session as { lastActive?: unknown }).lastActive ??
+      session.started_at ??
       (session as { startedAt?: unknown }).startedAt ??
+      session.ended_at ??
       (session as { endedAt?: unknown }).endedAt,
   );
 }

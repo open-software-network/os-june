@@ -115,6 +115,8 @@ export type RawHermesPayload = {
   requestId?: unknown;
   message_id?: unknown;
   messageId?: unknown;
+  event_id?: unknown;
+  eventId?: unknown;
   tool_call_id?: unknown;
   toolCallId?: unknown;
   call_id?: unknown;
@@ -129,6 +131,8 @@ export type RawHermesPayload = {
   result?: unknown;
   status?: unknown;
   role?: unknown;
+  text_offset?: unknown;
+  textOffset?: unknown;
   already_streamed?: unknown;
   response_previewed?: unknown;
 

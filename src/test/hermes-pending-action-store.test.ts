@@ -183,6 +183,76 @@ describe("createPendingActionStore", () => {
     expect(store.getRecords()[0]?.status).toBe("expired");
   });
 
+  it("allows the same payload-fingerprint approval in a later Agent run", () => {
+    const store = createPendingActionStore();
+    const legacyRequest = pendingClassified("approval.request", "s1", {
+      description: "Connect Todoist?",
+      allow_permanent: false,
+    });
+    if (legacyRequest.action.kind !== "approval") throw new Error("Expected an approval");
+
+    store.record(legacyRequest, "sandboxed", { approvalRunEpoch: 1 });
+    store.expireRequest("s1", legacyRequest.action.requestId, "disconnect");
+    store.record(legacyRequest, "sandboxed", { approvalRunEpoch: 2 });
+
+    expect(store.openRecords()).toHaveLength(1);
+    expect(store.openRecords()[0]).toMatchObject({
+      requestId: legacyRequest.action.requestId,
+      approvalRunEpoch: 2,
+      status: "open",
+    });
+
+    store.expireRequest("s1", legacyRequest.action.requestId, "disconnect");
+    store.record(legacyRequest, "sandboxed", { approvalRunEpoch: 2 });
+    expect(store.openRecords()).toHaveLength(0);
+  });
+
+  it("retires only the targeted payload-fingerprint approval instance", () => {
+    const store = createPendingActionStore();
+    const legacyRequest = pendingClassified("approval.request", "s1", {
+      description: "Connect Todoist?",
+      allow_permanent: false,
+    });
+    if (legacyRequest.action.kind !== "approval") throw new Error("Expected an approval");
+
+    store.record(legacyRequest, "sandboxed", { approvalRunEpoch: 1 });
+    const firstInstance = store.openRecords()[0]?.instanceId;
+    if (!firstInstance) throw new Error("Expected the first approval instance");
+    store.expireRequest("s1", legacyRequest.action.requestId, "disconnect", {
+      instanceId: firstInstance,
+    });
+
+    store.record(legacyRequest, "sandboxed", { approvalRunEpoch: 2 });
+    const laterInstance = store.openRecords()[0]?.instanceId;
+    if (!laterInstance) throw new Error("Expected the later approval instance");
+    expect(laterInstance).not.toBe(firstInstance);
+
+    store.resolveRequest("s1", legacyRequest.action.requestId, { instanceId: firstInstance });
+    store.expireRequest("s1", legacyRequest.action.requestId, "disconnect", {
+      instanceId: firstInstance,
+    });
+    expect(store.openRecords()).toEqual([
+      expect.objectContaining({ instanceId: laterInstance, status: "open" }),
+    ]);
+
+    store.resolveRequest("s1", legacyRequest.action.requestId, { instanceId: laterInstance });
+    expect(store.openRecords()).toHaveLength(0);
+  });
+
+  it("keeps an explicit approval id globally sticky even when it uses the legacy prefix", () => {
+    const store = createPendingActionStore();
+    const explicitRequest = pendingClassified("approval.request", "s1", {
+      request_id: "legacy:approval.request:upstream-owned",
+      description: "Connect Todoist?",
+    });
+
+    store.record(explicitRequest, "sandboxed", { approvalRunEpoch: 1 });
+    store.expireRequest("s1", "legacy:approval.request:upstream-owned", "disconnect");
+    store.record(explicitRequest, "sandboxed", { approvalRunEpoch: 2 });
+
+    expect(store.openRecords()).toHaveLength(0);
+  });
+
   it("secret actions never carry a value, only the request", () => {
     const store = createPendingActionStore();
     store.record(

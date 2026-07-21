@@ -45,6 +45,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0033](adr/0033-notion-hosted-mcp-connect-preview.md) - Notion hosted MCP connector preview with read-only `june_notion`, approved page creation and updates, and no selected-resource claim
 - [adr/0034](adr/0034-obsidian-vault-discovery-mcp.md) - Obsidian vault discovery uses a June-owned MCP server, not an ambient environment variable
 - [adr/0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
+- [adr/0036](adr/0036-approval-safe-hermes-transport-handoff.md) - live Hermes resume atomically retires the old approval notifier generation, reports overlap proof, and retries a rejected exact completion
 
 ## Enforceable rules (spec/)
 
@@ -126,7 +127,8 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-upgrade-checklist.md](hermes-upgrade-checklist.md) — the gate for bumping the pinned runtime
 - [hermes-upstream-template.md](hermes-upstream-template.md) — per-bump pin-note template
-- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin and local compatibility patch note (v2026.6.19, `june-approval-memory-v13`)
+- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — prior pin and local compatibility patch note
+- [hermes-upstream-v2026.7.20.md](hermes-upstream-v2026.7.20.md) — current pin and local compatibility patch note (Hermes 0.19, `june-approval-memory-v14`)
 - [hermes-tui-debug.md](hermes-tui-debug.md) — dev-only raw-TUI debug fallback
 
 ## Release & ops runbooks

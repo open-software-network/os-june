@@ -49,6 +49,12 @@ export type PendingHermesAction =
   | {
       kind: "approval";
       requestId: string;
+      /** Present only when June synthesized the id from a sanitized legacy
+       * payload. Runtime-provided ids remain globally replay-sticky. */
+      requestIdProvenance?: "payload-fingerprint";
+      /** June-owned identity for one actionable approval instance. The raw
+       * request id is still used on the Hermes response wire. */
+      instanceId?: string;
       toolName?: string;
       command?: string;
       description?: string;
@@ -86,6 +92,7 @@ export type PendingHermesActionResolution =
   | {
       kind: "approval";
       requestId: string;
+      instanceId?: string;
       command: string;
       description: string;
       allowPermanent: boolean;
@@ -113,7 +120,15 @@ export type PendingHermesActionResolution =
 export type PendingHermesActionExpiration = {
   kind: "approval";
   requestId: string;
-  reason: "timeout" | "disconnect" | "overflow" | "stale" | "unconfirmed" | "unknown";
+  instanceId?: string;
+  reason:
+    | "timeout"
+    | "disconnect"
+    | "overflow"
+    | "stale"
+    | "transport_handoff"
+    | "unconfirmed"
+    | "unknown";
 };
 
 /** The lifecycle phase a background subagent is reporting. */
@@ -154,10 +169,23 @@ export type BackgroundHermesActivity = {
   lastEventAt: string;
 };
 
+/** Delivery metadata used to deduplicate one gateway dispatch without treating
+ * equal text as a duplicate. Source ids and text offsets survive reconnects;
+ * connection ids and sequences are local to one gateway client connection. */
+export type HermesEventDelivery = {
+  connectionId?: number;
+  sequence?: number;
+  eventId?: string;
+  /** UTF-16 code-unit offset within the transcript message. */
+  textOffset?: number;
+};
+
 /** Common fields all normalized June events carry. */
 type JuneHermesEventBase = {
   /** ISO timestamp when June observed or minted the event. */
   receivedAt: string;
+  /** Stable source metadata when available, else local dispatch identity. */
+  delivery?: HermesEventDelivery;
 };
 
 /**
@@ -257,13 +285,16 @@ export type JuneHermesEvent =
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
 
-/** True for classified events that end the current workspace turn. */
+/** True for classified events that end the current Agent run. */
 export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
   switch (event.kind) {
     case "error":
       return true;
     case "transcript":
-      return event.complete === true;
+      // A completed assistant message is only a transcript boundary. Hermes
+      // may still emit tools, continuation text, or a later lifecycle frame
+      // for the same run.
+      return false;
     case "lifecycle":
       return event.flavor === "terminal";
     default:

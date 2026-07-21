@@ -79,7 +79,8 @@ export async function notifyAgentSessionStatus(
 }
 
 export async function notifyAgentRunSettled(
-  detail: Pick<AgentRunSettledDetail, "sessionId" | "title" | "summary">,
+  detail: Pick<AgentRunSettledDetail, "sessionId" | "title" | "summary"> &
+    Partial<Pick<AgentRunSettledDetail, "runMonitorGeneration" | "activeCount">>,
   context: AgentAttentionContext,
 ) {
   return deliverAgentAttention({
