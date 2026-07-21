@@ -798,6 +798,16 @@ describe("AgentWorkspace", () => {
         onOpenHomeTaskSession={onOpenHomeTaskSession}
       />,
     );
+    const returnedHomeScroller = document.querySelector(".agent-scroll") as HTMLElement;
+    const returnedHomeScrollTo = vi.fn();
+    Object.defineProperty(returnedHomeScroller, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(returnedHomeScroller, "scrollTo", {
+      configurable: true,
+      value: returnedHomeScrollTo,
+    });
     await waitFor(() =>
       expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
         messageLoadsBeforeRemount,
@@ -808,6 +818,7 @@ describe("AgentWorkspace", () => {
     );
     expect(screen.queryByText(/full Oaxaca itinerary/)).toBeNull();
     expect(screen.getByRole("button", { name: "Open session" })).toBeInTheDocument();
+    expect(returnedHomeScrollTo).toHaveBeenCalledWith({ top: 1600, behavior: "auto" });
   });
 
   it("upgrades a legacy Home task tool row into a compact session handoff", async () => {

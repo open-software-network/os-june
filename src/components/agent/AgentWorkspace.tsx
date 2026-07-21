@@ -11335,10 +11335,11 @@ export function AgentWorkspace({
     };
   }, [heroMode, selectedHermesSessionId, selectedTaskId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     // The conversation scrolls in .agent-scroll, which sits below the sticky
     // breadcrumb so the scrollbar can't ride up over the bar — drive that
-    // scroller to the bottom as turns arrive.
+    // scroller to the bottom as turns arrive. Layout timing makes a restored
+    // conversation land at its live edge before the return visit paints.
     const scroller = listRef.current?.closest(".agent-scroll");
     if (!(scroller instanceof HTMLElement)) return;
     const selectionKey = `${selectedHermesSessionId ?? ""}:${selectedTaskId ?? ""}`;
@@ -11346,7 +11347,10 @@ export function AgentWorkspace({
     if (!settled) {
       transcriptShouldStickToBottomRef.current = true;
     }
-    if (selectedHistoryLoaded || renderedTurnsSignature > 0) {
+    const selectionReadyToSettle = selectedHermesSessionId
+      ? selectedHistoryLoaded
+      : selectedHistoryLoaded || renderedTurnsSignature > 0;
+    if (selectionReadyToSettle) {
       // The settling run itself still scrolls with the pre-write snapshot, so
       // the history fill after a switch lands instantly; everything after it
       // (including the first streamed turn of an empty conversation) glides.
