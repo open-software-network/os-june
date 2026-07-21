@@ -152,6 +152,12 @@ const methods: HermesCompatibilitySection = {
       "The composer model picker switches a live session by dispatching /model via switchActiveSessionModel (command.dispatch) and only claims success on the gateway ack; covered by hermes-model-switch and agent-workspace tests.",
     since: PIN,
   },
+  "config.set": {
+    status: "supported",
+    rationale:
+      "The composer model menu's Effort submenu retunes a live session's reasoning effort via setSessionReasoningEffort (config.set key reasoning); covered by hermes-control-plane-methods and agent-workspace tests.",
+    since: CURRENT_PIN,
+  },
   "subagent.interrupt": {
     status: "supported",
     rationale:
@@ -337,9 +343,9 @@ const features: HermesCompatibilitySection = {
     since: CURRENT_PIN,
   },
   reasoningEffortControls: {
-    status: "planned",
+    status: "supported",
     rationale:
-      "Hermes 0.19 adds max and ultra reasoning effort plus per-model overrides, but June's model picker does not expose Hermes reasoning tiers.",
+      "The composer model menu's Effort submenu exposes three reasoning levels (Instant, Medium, Hard) mapped onto Hermes effort tiers: new sessions pin reasoning_effort on session.create and a live session retunes via config.set (setSessionReasoningEffort); max/ultra tiers and per-model overrides stay unexposed.",
     since: CURRENT_PIN,
   },
 };

@@ -91,6 +91,7 @@ export type RawHermesMethodName =
   | "sudo.respond"
   | "secret.respond"
   | "subagent.interrupt"
+  | "config.set"
   | "image.attach"
   | (string & {});
 

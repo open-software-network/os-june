@@ -209,6 +209,14 @@ import {
 import { resolveModelSwitchOutcome } from "../../lib/hermes-model-switch";
 import { suggestedModelsForMode } from "../../lib/suggested-models";
 import {
+  loadThinkingLevel,
+  saveThinkingLevel,
+  thinkingEffortForLevel,
+  thinkingOptionForLevel,
+  THINKING_LEVELS,
+  type ThinkingLevel,
+} from "../../lib/thinking-level";
+import {
   contextLabel,
   modelOptions,
   pricingLabel,
@@ -1483,6 +1491,19 @@ export function AgentWorkspace({
   const composerModelTriggerRef = useRef<HTMLButtonElement | null>(null);
   const composerModelPopoverRef = useRef<HTMLDivElement | null>(null);
   const composerModelSearchRef = useRef<HTMLInputElement | null>(null);
+  // Thinking level: how much June reasons before answering. The stored draft
+  // seeds new sessions (session.create's reasoning_effort); a per-session
+  // override records a pick made while a session is open, mirroring
+  // sessionModelOverridesRef. The applied map remembers the last effort the
+  // gateway acked for a session's live runtime so a turn only re-asserts the
+  // override when it changed (config.set writes the profile config each call,
+  // so it is not something to fire blindly on every send).
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() =>
+    loadThinkingLevel(),
+  );
+  const thinkingLevelRef = useRef(thinkingLevel);
+  const sessionThinkingOverridesRef = useRef<Record<string, ThinkingLevel>>({});
+  const sessionThinkingAppliedRef = useRef<Record<string, string>>({});
   // Attestation walkthrough URL served by the backend (same page as Settings
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
@@ -2003,6 +2024,13 @@ export function AgentWorkspace({
     selectedHermesSessionId && !newSessionMode
       ? selectedHermesSession?.model?.trim() || defaultGenerationModelId
       : defaultGenerationModelId;
+  // The control shows the open session's level when one was picked for it,
+  // otherwise the stored draft the next new session will use.
+  const composerThinkingLevel: ThinkingLevel =
+    selectedHermesSessionId && !newSessionMode
+      ? (sessionThinkingOverridesRef.current[selectedHermesSessionId] ??
+        thinkingLevel)
+      : thinkingLevel;
   const generationModel = useMemo(
     () =>
       activeGenerationModelId
@@ -2351,7 +2379,10 @@ export function AgentWorkspace({
         event.preventDefault();
         // Escape peels one layer at a time: the all-models panel first,
         // then the popover itself.
-        if (composerModelFlyout?.kind === "all") {
+        if (
+          composerModelFlyout?.kind === "all" ||
+          composerModelFlyout?.kind === "effort"
+        ) {
           setComposerModelFlyout(null);
           setModelSearch("");
         } else {
@@ -2596,6 +2627,59 @@ export function AgentWorkspace({
     setComposerModelOpen(true);
     setSandboxMenuOpen(false);
     void loadGenerationModel();
+  }
+
+  // Picking a thinking level always updates the stored draft (the next new
+  // session opens with it). With a session open it ALSO retunes that session:
+  // the override is recorded per chat, applied to the live runtime through
+  // config.set (setSessionReasoningEffort), and re-asserted on the next turn
+  // if the runtime is not up right now — see submitHermesSession, which only
+  // re-sends when the last acked effort differs.
+  async function handleSelectThinkingLevel(level: ThinkingLevel) {
+    thinkingLevelRef.current = level;
+    setThinkingLevel(level);
+    saveThinkingLevel(level);
+    const sessionId = newSessionModeRef.current
+      ? undefined
+      : selectedHermesSessionIdRef.current;
+    if (!sessionId || isProvisionalHermesSessionId(sessionId)) return;
+    sessionThinkingOverridesRef.current = {
+      ...sessionThinkingOverridesRef.current,
+      [sessionId]: level,
+    };
+    await applyThinkingLevelToSession(sessionId, level);
+  }
+
+  // Best-effort live retune of one session's reasoning effort. Skips the RPC
+  // entirely when the gateway already acked this effort for the session's
+  // current runtime (the common case: reopening the submenu and picking the
+  // same stop, or sending the next turn after a successful change).
+  async function applyThinkingLevelToSession(
+    sessionId: string,
+    level: ThinkingLevel,
+    explicitRuntimeSessionId?: string,
+  ) {
+    const effort = thinkingEffortForLevel(level);
+    if (sessionThinkingAppliedRef.current[sessionId] === effort) return;
+    const runtimeSessionId =
+      explicitRuntimeSessionId ?? runtimeSessionIdsRef.current[sessionId];
+    if (!runtimeSessionId) return;
+    try {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      await createHermesMethods(gateway).setSessionReasoningEffort({
+        sessionId: runtimeSessionId,
+        effort,
+      });
+      sessionThinkingAppliedRef.current = {
+        ...sessionThinkingAppliedRef.current,
+        [sessionId]: effort,
+      };
+      setError(null);
+    } catch {
+      // The override is still recorded, so the next turn re-asserts it once
+      // the runtime is reachable; no banner for something the send flow
+      // quietly heals.
+    }
   }
 
   // Switching the model always writes the global text-model default (Settings'
@@ -4217,6 +4301,13 @@ export function AgentWorkspace({
                 ...(targetSessionModelId
                   ? { model: targetSessionModelId }
                   : {}),
+                // The thinking level pins the session's reasoning effort at
+                // creation (a per-session override, never a profile config
+                // write), so the level the user picked always wins over
+                // whatever the Hermes profile default happens to be.
+                reasoning_effort: thinkingEffortForLevel(
+                  thinkingLevelRef.current,
+                ),
               },
             );
         const nextStoredSessionId =
@@ -4234,6 +4325,14 @@ export function AgentWorkspace({
         };
       })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
+    if (created) {
+      // The create already pinned this effort, so the re-assert path
+      // must not fire a redundant config.set on the session's first turns.
+      sessionThinkingAppliedRef.current = {
+        ...sessionThinkingAppliedRef.current,
+        [storedSessionId]: thinkingEffortForLevel(thinkingLevelRef.current),
+      };
+    }
     const queuedIssueReport = options?.issueReport;
     if (queuedIssueReport && targetSessionId) {
       queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
@@ -4315,6 +4414,19 @@ export function AgentWorkspace({
       clearQueuedIssueReport();
       rollbackOptimisticBeforePrompt(
         new Error("Hermes did not resume the session."),
+      );
+    }
+    // A thinking level picked while this session's runtime was down (or a
+    // live retune that failed) re-asserts here, before the prompt, so the
+    // turn runs at the level the control shows. No-op when the gateway already
+    // acked this effort for the current runtime.
+    const thinkingOverride =
+      sessionThinkingOverridesRef.current[storedSessionId];
+    if (thinkingOverride) {
+      await applyThinkingLevelToSession(
+        storedSessionId,
+        thinkingOverride,
+        runtimeSessionId,
       );
     }
     // Feature 19: send any imported images to the session through the
@@ -6319,6 +6431,7 @@ export function AgentWorkspace({
               <ComposerModelPicker
                 open={composerModelOpen}
                 model={generationModel}
+                thinkingLevel={composerThinkingLevel}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -6429,11 +6542,17 @@ export function AgentWorkspace({
             model={generationModel}
             options={modelOptions(generationModels, generationModel?.id ?? "")}
             search={modelSearch}
+            thinkingLevel={composerThinkingLevel}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
             onFlyoutChange={setComposerModelFlyout}
             onSearchChange={setModelSearch}
             onSelect={(modelId) => void handleSelectGenerationModel(modelId)}
+            onSelectThinking={(level) => {
+              setComposerModelFlyout(null);
+              setComposerModelOpen(false);
+              void handleSelectThinkingLevel(level);
+            }}
           />
         ) : null}
         {heroMode && sandboxMenuOpen ? (
@@ -7023,15 +7142,18 @@ export function AgentWorkspace({
 function ComposerModelPicker({
   open,
   model,
+  thinkingLevel,
   triggerRef,
   onToggleOpen,
 }: {
   open: boolean;
   model?: VeniceModelDto;
+  thinkingLevel: ThinkingLevel;
   triggerRef: RefObject<HTMLButtonElement>;
   onToggleOpen: () => void;
 }) {
   if (!model) return null;
+  const thinking = thinkingOptionForLevel(thinkingLevel);
   return (
     <div className="agent-composer-model" data-open={open || undefined}>
       <button
@@ -7044,6 +7166,9 @@ function ComposerModelPicker({
         onClick={onToggleOpen}
       >
         <span>{model.name}</span>
+        <span className="agent-composer-model-trigger-level">
+          {thinking.label}
+        </span>
         <IconChevronDownSmall size={12} aria-hidden />
       </button>
     </div>
@@ -7053,10 +7178,12 @@ function ComposerModelPicker({
 // The composer model popover is two-layered, menu-style: the root layer
 // lists the curated suggested models as plain rows, and a flyout panel
 // opens beside it — hover details for a suggested row, or the searchable
-// full catalog behind the "All models" row.
+// full catalog behind the "All models" row, or the thinking-level submenu
+// behind the "Effort" row.
 type ComposerModelFlyout =
   | { kind: "model"; id: string }
   | { kind: "all" }
+  | { kind: "effort" }
   | null;
 
 // Hover-intent delay before a hover opens a flyout or card — a pointer
@@ -7072,21 +7199,25 @@ function ComposerModelPopover({
   model,
   options,
   search,
+  thinkingLevel,
   popoverRef,
   searchRef,
   onFlyoutChange,
   onSearchChange,
   onSelect,
+  onSelectThinking,
 }: {
   flyout: ComposerModelFlyout;
   model?: VeniceModelDto;
   options: VeniceModelDto[];
   search: string;
+  thinkingLevel: ThinkingLevel;
   popoverRef: RefObject<HTMLDivElement>;
   searchRef: RefObject<HTMLInputElement>;
   onFlyoutChange: (flyout: ComposerModelFlyout) => void;
   onSearchChange: (value: string) => void;
   onSelect: (modelId: string) => void;
+  onSelectThinking: (level: ThinkingLevel) => void;
 }) {
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -7347,6 +7478,34 @@ function ComposerModelPopover({
           className="agent-composer-model-row-chevron"
         />
       </button>
+      <button
+        type="button"
+        className="agent-composer-model-row"
+        aria-haspopup="true"
+        aria-expanded={flyout?.kind === "effort"}
+        data-active={flyout?.kind === "effort" || undefined}
+        onMouseEnter={() =>
+          hoverIntent(() => onFlyoutChange({ kind: "effort" }))
+        }
+        onFocus={() => {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: "effort" });
+        }}
+        onClick={() => {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: "effort" });
+        }}
+      >
+        <span className="agent-composer-model-row-name">Effort</span>
+        <span className="agent-composer-model-row-value">
+          {thinkingOptionForLevel(thinkingLevel).label}
+        </span>
+        <IconChevronRightSmall
+          size={12}
+          aria-hidden
+          className="agent-composer-model-row-chevron"
+        />
+      </button>
       {detail ? (
         <div
           ref={flyoutRef}
@@ -7354,6 +7513,47 @@ function ComposerModelPopover({
         >
           <div className="agent-composer-model-surface">
             <ComposerModelCardContent model={detail.model} />
+          </div>
+        </div>
+      ) : flyout?.kind === "effort" ? (
+        <div
+          ref={flyoutRef}
+          className="agent-composer-model-flyout agent-composer-model-effort-panel"
+          role="group"
+          aria-label="Thinking level"
+        >
+          <div className="agent-composer-model-surface">
+            <p className="agent-composer-model-title">Effort</p>
+            <div
+              className="agent-composer-model-menu"
+              role="listbox"
+              aria-label="Thinking level"
+            >
+              {THINKING_LEVELS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="agent-composer-model-row"
+                  role="option"
+                  aria-selected={option.id === thinkingLevel}
+                  onClick={() => onSelectThinking(option.id)}
+                >
+                  <span className="agent-composer-model-row-name">
+                    {option.label}
+                  </span>
+                  {option.id === thinkingLevel ? (
+                    <IconCheckmark1Small
+                      size={14}
+                      aria-hidden
+                      className="agent-composer-model-row-check"
+                    />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+            <p className="agent-composer-model-note">
+              Higher effort consumes usage limits faster.
+            </p>
           </div>
         </div>
       ) : flyout?.kind === "all" ? (
