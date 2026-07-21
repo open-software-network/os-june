@@ -29,15 +29,18 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
   switch (type) {
     case "message.start":
     case "message.delta":
+    case "message.interim":
     case "message.complete":
       return classifyTranscript(type, sessionId, payload);
 
     case "thinking.delta":
     case "reasoning.delta":
+    case "reasoning.available":
       return {
         kind: "reasoning",
         sessionId: sessionId ?? "",
         delta: rawDeltaText(payload),
+        available: type === "reasoning.available",
       };
 
     case "tool.start":
@@ -90,10 +93,11 @@ function classifyTranscript(
   payload: RawHermesPayload | undefined,
 ): JuneHermesEvent {
   const complete = type === "message.complete";
+  const interim = type === "message.interim";
   const delta =
     type === "message.delta"
       ? rawDeltaText(payload)
-      : complete
+      : complete || interim
         ? rawCompleteText(payload)
         : undefined;
   return {
@@ -103,6 +107,7 @@ function classifyTranscript(
       stringValue(payload?.message_id) ?? stringValue(payload?.messageId),
     delta,
     complete,
+    interim,
     role: messageRole(payload),
   };
 }

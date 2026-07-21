@@ -43,9 +43,11 @@ export type RawHermesEventName =
   // Assistant message stream
   | "message.start"
   | "message.delta"
+  | "message.interim"
   | "message.complete"
   | "thinking.delta"
   | "reasoning.delta"
+  | "reasoning.available"
   | "status.update"
   // Tools
   | "tool.start"
@@ -120,6 +122,8 @@ export type RawHermesPayload = {
   result?: unknown;
   status?: unknown;
   role?: unknown;
+  already_streamed?: unknown;
+  response_previewed?: unknown;
 
   // Tools
   name?: unknown;

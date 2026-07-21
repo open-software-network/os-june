@@ -27,11 +27,11 @@ The concrete tools this checklist drives:
 
 ## Version
 
-Pinned Hermes version: `v2026.6.19`.
+Pinned Hermes version: `v2026.7.20`.
 
 This is the version `PINNED_HERMES_VERSION` in
 `src/lib/hermes-control-plane/compatibility/matrix.ts` records and
-`docs/hermes-upstream-v2026.6.19.md` pins. `pnpm hermes:upgrade-check` fails if
+`docs/hermes-upstream-v2026.7.20.md` pins. `pnpm hermes:upgrade-check` fails if
 these three drift apart.
 
 On a bump, set the new version here, in the matrix constant, and in a new pin
@@ -56,7 +56,7 @@ unit test together. The smoke test will fail to start otherwise.
 
 Re-confirm every dashboard REST endpoint June consumes still exists on the new
 build. The authoritative list is in the pin note's "Compatibility checked"
-section (`docs/hermes-upstream-v2026.6.19.md`). For each endpoint:
+section (`docs/hermes-upstream-v2026.7.20.md`). For each endpoint:
 
 - still present and unchanged: no action.
 - changed shape: update the June caller and its test.
@@ -120,6 +120,12 @@ instead of a silent drop. Follow the "On Hermes upgrade" steps in
 Record the outcome here: `pnpm test` green against refreshed fixtures, plus any
 fixture added or retired.
 
+Current pin outcome (`v2026.7.20`): `pnpm test` passed all 1,258 tests (2
+skipped). The existing sanitized fixtures remain labeled `v2026.6.19` because
+they are historical captures and were not relabeled. Focused classifier and
+transcript tests cover the new `message.interim` event shape and its
+`response_previewed` settlement behavior. No fixture was retired.
+
 ## Smoke test status
 
 Run the release-gate smoke test against the NEW bundled runtime before flipping
@@ -137,6 +143,13 @@ smoke test" section for the full environment and skip behavior.
 
 Record the outcome here: protocol phase pass, and model phase pass if it was
 run.
+
+Current pin outcome (`v2026.7.20`): the protocol phase passed against a
+throwaway installation made from the exact pinned archive. Dashboard status,
+token-authenticated WebSocket connection, `session.create`,
+`session.active_list`, the controlled `/model` error path, and
+`session.interrupt` all passed. The provider-backed model phase was not run
+because the throwaway runtime had no provider credentials.
 
 ## Security notes (secrets/auth/sandbox)
 
@@ -162,7 +175,7 @@ record an explicit decision and reflect it on the matrix:
   the rough plan.
 - `unsupported`: June deliberately will not expose it. Note why.
 
-Carry forward the pending decisions from `docs/hermes-upstream-v2026.6.19.md`
+Carry forward the pending decisions from `docs/hermes-upstream-v2026.7.20.md`
 ("Additional June integration work") and resolve or restate each: Photon
 iMessage setup UI, Raft profile and wake-event mapping, WhatsApp Cloud
 credentials, Automation Blueprints vs the Routines editor, inline rendering of
@@ -177,6 +190,15 @@ classify as `unsupported`, and features held at `planned`/`partial`. This is the
 running gap list the matrix points at. Each gap names its owning feature or a
 follow-up task.
 
+Current `v2026.7.20` gaps are recorded in the compatibility matrix:
+
+- `session.context_breakdown`, tool output risk, Mixture of Agents events, turn lifecycle events, session export, vault secret sources, and reasoning effort controls are planned.
+- Reaction and terminal events are intentionally unsupported.
+- Smart approvals are unsupported until June reconciles them with its explicit human approval cards.
+- Nous subscription controls are intentionally unsupported because June uses Open Software billing.
+- Image editing remains partial until generated edits render inline.
+- Messaging integrations remain partial, and Automation Blueprints remain planned.
+
 ## Release note copy
 
 Draft the user-facing release note for the runtime change. Sentence case, no
@@ -184,9 +206,8 @@ dashes, plain hyphens for ranges. Cover only what users can actually rely on
 from June UI (matrix `supported`), not raw upstream capabilities June has not
 exposed. Keep it short and concrete, for example:
 
-> Updated the bundled agent runtime to Hermes v2026.6.19. Background subagents
-> now show per-agent progress in the activity drawer, and you can attach an
-> imported image to an agent turn.
+> Updated June's bundled agent runtime to Hermes 0.19. Agent responses start
+> faster, and mid-task updates now stay visible while June verifies its work.
 
 ## CI guard
 

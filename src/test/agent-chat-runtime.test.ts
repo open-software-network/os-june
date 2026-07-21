@@ -436,6 +436,38 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("replaces streamed reasoning with the reasoning.available fallback", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.start",
+          receivedAt: "2026-07-20T10:00:00.000Z",
+          payload: {},
+        },
+        {
+          type: "reasoning.delta",
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          payload: { text: "partial" },
+        },
+        {
+          type: "reasoning.available",
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          payload: { text: "complete reasoning" },
+        },
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "reasoning",
+        text: "complete reasoning",
+        status: "running",
+      },
+    ]);
+  });
+
   it("renders live clarify requests as answerable chat parts", () => {
     const turns = buildAgentChatTurns(
       [],
@@ -607,6 +639,87 @@ describe("Agent chat runtime", () => {
 
     expect(turns[0]?.parts).toEqual([
       { type: "text", text: "nono", status: "running" },
+    ]);
+  });
+
+  it("keeps Hermes 0.19 interim commentary when the final answer differs", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.start",
+          receivedAt: "2026-07-20T10:00:00.000Z",
+          payload: {},
+        },
+        {
+          type: "message.delta",
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          payload: { text: "The checks are clean." },
+        },
+        {
+          type: "message.interim",
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          payload: { text: "The checks are clean.", already_streamed: true },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          payload: { text: "Everything is ready to ship." },
+        },
+      ],
+    );
+
+    expect(turns).toHaveLength(2);
+    expect(turns.map((turn) => turn.status)).toEqual(["complete", "complete"]);
+    expect(
+      turns.map((turn) =>
+        turn.parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join(""),
+      ),
+    ).toEqual(["The checks are clean.", "Everything is ready to ship."]);
+  });
+
+  it("settles a previewed Hermes 0.19 final answer onto its interim bubble", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        {
+          type: "message.start",
+          receivedAt: "2026-07-20T10:00:00.000Z",
+          payload: {},
+        },
+        {
+          type: "message.delta",
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          payload: { text: "Partial answer" },
+        },
+        {
+          type: "message.interim",
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          payload: { text: "Partial answer", already_streamed: true },
+        },
+        {
+          type: "message.complete",
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          payload: {
+            text: "Partial answer with verification.",
+            response_previewed: true,
+          },
+        },
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
     ]);
   });
 

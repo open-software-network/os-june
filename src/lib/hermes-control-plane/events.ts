@@ -117,9 +117,18 @@ export type JuneHermesEvent =
       messageId?: string;
       delta?: string;
       complete?: boolean;
+      /** Hermes 0.19 seals mid-turn assistant commentary with
+       * `message.interim`. It ends one visible bubble, not the running turn. */
+      interim?: boolean;
       role?: "assistant" | "user" | "system";
     }
-  | { kind: "reasoning"; sessionId: string; delta: string }
+  | {
+      kind: "reasoning";
+      sessionId: string;
+      delta: string;
+      /** Complete fallback reasoning. Replaces streamed reasoning when present. */
+      available?: boolean;
+    }
   | {
       kind: "tool";
       sessionId: string;

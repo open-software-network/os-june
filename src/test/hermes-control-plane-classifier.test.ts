@@ -20,9 +20,11 @@ const CURRENT_GATEWAY_EVENT_NAMES = [
   "session.info",
   "message.start",
   "message.delta",
+  "message.interim",
   "message.complete",
   "thinking.delta",
   "reasoning.delta",
+  "reasoning.available",
   "status.update",
   "tool.start",
   "tool.progress",
@@ -114,16 +116,39 @@ describe("classifyHermesEvent — transcript", () => {
       throw new Error("expected transcript");
     }
   });
+
+  it("classifies Hermes 0.19 interim commentary as a sealed transcript segment", () => {
+    const interim = classifyHermesEvent(
+      event("message.interim", {
+        message_id: "m1",
+        text: "Let me verify that.",
+        already_streamed: true,
+      }),
+    );
+    expect(interim).toMatchObject({
+      kind: "transcript",
+      sessionId: "sess-1",
+      messageId: "m1",
+      delta: "Let me verify that.",
+      complete: false,
+      interim: true,
+    });
+  });
 });
 
 describe("classifyHermesEvent — reasoning", () => {
-  it("maps thinking.delta and reasoning.delta to reasoning", () => {
-    for (const name of ["thinking.delta", "reasoning.delta"]) {
+  it("maps streamed and available reasoning to reasoning", () => {
+    for (const name of [
+      "thinking.delta",
+      "reasoning.delta",
+      "reasoning.available",
+    ]) {
       const result = classifyHermesEvent(event(name, { delta: "mmm" }));
       expect(result).toMatchObject({
         kind: "reasoning",
         sessionId: "sess-1",
         delta: "mmm",
+        available: name === "reasoning.available",
       });
     }
   });

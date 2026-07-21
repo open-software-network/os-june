@@ -393,6 +393,7 @@ function appendLiveHermesEvents(
   events: LiveHermesEvent[],
 ) {
   let currentAssistant: AgentChatTurn | null = null;
+  let lastInterimAssistant: AgentChatTurn | null = null;
   const toolCreatedTurns = new Set<AgentChatTurn>();
 
   for (const event of events) {
@@ -419,6 +420,7 @@ function appendLiveHermesEvents(
 
     if (event.type === "message.start") {
       currentAssistant = createAssistantTurn(turns, event.receivedAt);
+      lastInterimAssistant = null;
       currentAssistant.status = "running";
       continue;
     }
@@ -434,7 +436,38 @@ function appendLiveHermesEvents(
       continue;
     }
 
+    if (event.type === "message.interim") {
+      // Hermes 0.19 emits this boundary for assistant commentary that belongs
+      // beside a tool call, and for a provisional answer before a verification
+      // nudge. Seal the visible text as its own bubble so the later
+      // message.complete cannot replace it. The payload text may already have
+      // arrived through message.delta, so reconcile instead of appending.
+      if (!text) continue;
+      currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+      completeAssistantTextPart(currentAssistant.parts, text);
+      currentAssistant.status = "complete";
+      completeRunningParts(currentAssistant.parts);
+      lastInterimAssistant = currentAssistant;
+      currentAssistant = null;
+      continue;
+    }
+
     if (event.type === "message.complete") {
+      const responsePreviewed =
+        (event.payload as Record<string, unknown> | undefined)
+          ?.response_previewed === true;
+      const previewText = lastInterimAssistant
+        ? assistantTextFromParts(lastInterimAssistant.parts)
+        : "";
+      if (
+        !currentAssistant &&
+        responsePreviewed &&
+        lastInterimAssistant &&
+        text &&
+        (text.startsWith(previewText) || previewText.startsWith(text))
+      ) {
+        currentAssistant = lastInterimAssistant;
+      }
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       const notice = text ? creditsNoticeFromTurnText(text) : undefined;
       if (notice) {
@@ -451,13 +484,22 @@ function appendLiveHermesEvents(
       currentAssistant.status = "complete";
       completeRunningParts(currentAssistant.parts);
       currentAssistant = null;
+      lastInterimAssistant = null;
       continue;
     }
 
-    if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
+    if (
+      event.type === "thinking.delta" ||
+      event.type === "reasoning.delta" ||
+      event.type === "reasoning.available"
+    ) {
       currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
       currentAssistant.status = "running";
-      appendReasoningPart(currentAssistant.parts, deltaEventText(event));
+      if (event.type === "reasoning.available") {
+        replaceReasoningPart(currentAssistant.parts, deltaEventText(event));
+      } else {
+        appendReasoningPart(currentAssistant.parts, deltaEventText(event));
+      }
       continue;
     }
 
@@ -856,6 +898,13 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   }
 }
 
+function assistantTextFromParts(parts: AgentChatPart[]) {
+  return parts
+    .filter((part): part is AgentChatTextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
 // True when `complete` can be derived from `streamed` purely by deleting
 // whitespace characters. Deliberately rejects whitespace substitutions:
 // deletions are the only damage joining trimmed chunks can do, so anything
@@ -883,6 +932,18 @@ function appendReasoningPart(parts: AgentChatPart[], delta: string) {
     return;
   }
   parts.push({ type: "reasoning", text: delta, status: "running" });
+}
+
+function replaceReasoningPart(parts: AgentChatPart[], text: string) {
+  if (!text) return;
+  // Match Hermes' own clients: reasoning.available is the authoritative
+  // fallback only while no assistant answer has been committed.
+  if (parts.some((part) => part.type === "text" && part.text.trim())) return;
+  const withoutReasoning: AgentChatPart[] = parts.filter(
+    (part) => part.type !== "reasoning",
+  );
+  withoutReasoning.push({ type: "reasoning", text, status: "running" });
+  parts.splice(0, parts.length, ...withoutReasoning);
 }
 
 function completeRunningParts(parts: AgentChatPart[]) {

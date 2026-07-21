@@ -136,7 +136,7 @@ describe("HermesAdminClient — requests, auth, profile targeting", () => {
   });
 });
 
-describe("HermesAdminClient — real-contract paths and shapes (v2026.6.19)", () => {
+describe("HermesAdminClient — real-contract paths and shapes (v2026.7.20)", () => {
   it("env.set uses PUT /api/env with { key, value }, not POST", async () => {
     const { client, server } = makeAdminHarness(emptyInstallScenario());
     const outcome = await client.env.set("OPENAI_API_KEY", "sk-FAKE-abc123");

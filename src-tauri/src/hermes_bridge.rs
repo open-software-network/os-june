@@ -31,12 +31,13 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 // Referenced by the spawn match arm on every target; only ever reached when
 // `prepare_sandbox` returns a profile, which it only does on macOS.
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
-// v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
-const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
+// Hermes Agent v0.19.0 (v2026.7.20). See the matching upstream pin note for
+// the audited pin-to-tag compatibility delta.
+const HERMES_AGENT_INSTALL_COMMIT: &str = "3ef6bbd201263d354fd83ec55b3c306ded2eb72a";
 const HERMES_SOURCE_TARBALL_URL: &str =
-    "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
+    "https://github.com/NousResearch/hermes-agent/archive/3ef6bbd201263d354fd83ec55b3c306ded2eb72a.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
-    "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
+    "335c2249b6b2e58be397e12d542788f3315ede84394c0082b339a4ddde6a27d0";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
@@ -667,7 +668,7 @@ async fn start_hermes_bridge_inner(
     }
     let port_string = port.to_string();
     // No --tui: upstream removed the flag from the dashboard subcommand before
-    // v2026.6.19, and the embedded chat gateway (/api/ws) is always enabled.
+    // v2026.7.20, and the embedded chat gateway (/api/ws) is always enabled.
     // Passing the flag is an argparse error.
     let hermes_args: [&str; 6] = [
         "dashboard",
@@ -1359,7 +1360,7 @@ pub async fn ensure_hermes_bridge_session(
         })
     };
 
-    // Hermes dashboard v0.17 no longer creates sessions over REST. The live
+    // Hermes dashboard v0.19 does not create sessions over REST. The live
     // session is created through the gateway; REST is only a best-effort title
     // update for the sidebar/session browser. Model-only switches stay in the
     // frontend session override and live gateway dispatch path.
@@ -2842,7 +2843,7 @@ if [ ! -f "$install_dir/pyproject.toml" ] || [ ! -f "$install_dir/scripts/instal
   mv "$unpacked_dir" "$install_dir"
 fi
 
-# Upstream's install.sh (v2026.6.19) runs $UV_CMD unquoted in the venv-create,
+# Upstream's install.sh (v2026.7.20) runs $UV_CMD unquoted in the venv-create,
 # uv-sync, and pip-install-tier calls. The managed uv it installs lives under
 # the app data dir — "Application Support" on macOS — so the space word-splits
 # the path and every one of those calls fails with "/Users/…/Library/

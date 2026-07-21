@@ -7,7 +7,7 @@ import {
 } from "../lib/hermes-upgrade-check";
 import { PINNED_HERMES_VERSION } from "../lib/hermes-control-plane/compatibility";
 
-const PIN = "v2026.6.19";
+const PIN = "v2026.7.20";
 
 // The doc filenames the release-gate check (scripts/hermes-upgrade-check.ts)
 // reads and asserts agree with the matrix. Kept here so the unit test is the
@@ -32,7 +32,7 @@ function agreeingDocs(version: string): HermesUpgradeCheckDoc[] {
 
 describe("pinNoteFilenameFor — derives the pin-note path from a version", () => {
   it("builds docs/hermes-upstream-v<version>.md", () => {
-    expect(pinNoteFilenameFor(PIN)).toBe("docs/hermes-upstream-v2026.6.19.md");
+    expect(pinNoteFilenameFor(PIN)).toBe("docs/hermes-upstream-v2026.7.20.md");
   });
 });
 

@@ -11565,6 +11565,7 @@ function agentStatusFromHermesEvent(
     event.type === "message.start" ||
     event.type === "thinking.delta" ||
     event.type === "reasoning.delta" ||
+    event.type === "reasoning.available" ||
     event.type === "status.update" ||
     event.type.startsWith("tool.")
   ) {
@@ -11595,7 +11596,11 @@ function agentStatusSummaryFromHermesEvent(
       stringValue(payload?.tool);
     return toolActivitySentence(name, payload);
   }
-  if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
+  if (
+    event.type === "thinking.delta" ||
+    event.type === "reasoning.delta" ||
+    event.type === "reasoning.available"
+  ) {
     return "Thinking.";
   }
   return "June is working.";
