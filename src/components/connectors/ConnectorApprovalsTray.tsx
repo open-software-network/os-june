@@ -234,13 +234,13 @@ export function ConnectorApprovalsTray() {
         <ul className="connector-approvals-list scroll-fade-mask" ref={listRef} {...fade.props}>
           {pending.map((item) => {
             const provider = providerFromServer(item.server);
-            const summary = item.summary || actionToolLabel(item.tool);
+            const summary = item.summary || actionToolLabel(item.tool, item.server);
             const expanded = expandedIds.has(item.approvalId);
             const info = (
               <>
                 <span className="connector-approvals-summary">{summary}</span>
                 <span className="connector-approvals-meta">
-                  {actionToolLabel(item.tool)} · {item.accountEmail}
+                  {actionToolLabel(item.tool, item.server)} · {item.accountEmail}
                 </span>
                 {item.argsPreview ? (
                   <span className="connector-approvals-preview">{item.argsPreview}</span>

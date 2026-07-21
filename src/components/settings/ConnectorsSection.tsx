@@ -41,21 +41,24 @@ import { BROWSER_USE_ENABLED } from "../../lib/feature-flags";
 import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 
 // Read-only by default: Google gets mail read and calendar read, Linear gets
-// workspace read. Write scopes are opt-in checkboxes, so a fresh connect
-// never grants mutation authority the user did not ask for.
-type OAuthConnectorProvider = Extract<ConnectorProvider, "google" | "linear">;
+// workspace read, GitHub gets repository read. Write scopes are opt-in
+// checkboxes, so a fresh connect never grants mutation authority the user
+// did not ask for.
+type OAuthConnectorProvider = Extract<ConnectorProvider, "google" | "linear" | "github">;
 
 const DEFAULT_CONNECT_BUNDLES = {
   google: ["gmail_read", "calendar_read"],
   linear: ["linear_read"],
+  github: ["github_read"],
 } satisfies Record<OAuthConnectorProvider, readonly ConnectorScopeBundle[]>;
 
-const PROVIDER_ORDER = ["google", "linear"] as const;
+const PROVIDER_ORDER = ["google", "linear", "github"] as const;
 
 const PROVIDER_NAMES = {
   google: "Google",
   linear: "Linear",
   notion: "Notion",
+  github: "GitHub",
 } satisfies Record<ConnectorProvider, string>;
 
 /** One-line capability blurb shown while a provider is not connected: what
@@ -63,6 +66,8 @@ const PROVIDER_NAMES = {
 const PROVIDER_BLURBS = {
   google: "Mail and calendar for briefings, triage, and meeting prep.",
   linear: "Projects, cycles, and issues for planning briefs and status updates.",
+  github:
+    "Read issues, pull requests, and code in the repositories chosen when you install the GitHub App. June allows drafting issues and comments with your approval. Repository access is managed on GitHub, not here.",
 } satisfies Record<OAuthConnectorProvider, string>;
 
 const NOTION_CONNECTOR_BLURB =
@@ -219,6 +224,7 @@ function NotionConnectorRow({
 const CONNECT_TITLES = {
   google: { connect: "Connect Google account", add: "Add Google access" },
   linear: { connect: "Connect Linear workspace", add: "Add Linear access" },
+  github: { connect: "Connect GitHub account", add: "Add GitHub access" },
 } satisfies Record<OAuthConnectorProvider, { connect: string; add: string }>;
 
 const CONNECT_TOASTS = {
@@ -231,6 +237,11 @@ const CONNECT_TOASTS = {
     connect: "Linear workspace connected",
     add: "Linear access updated",
     reconnect: "Linear reconnected",
+  },
+  github: {
+    connect: "GitHub account connected",
+    add: "GitHub access updated",
+    reconnect: "GitHub reconnected",
   },
 } satisfies Record<OAuthConnectorProvider, { connect: string; add: string; reconnect: string }>;
 
@@ -255,11 +266,12 @@ function accountDisplayName(account: ConnectorAccount): string {
   return account.email;
 }
 
-/** The login hint the connect flow escalates on: a Google email, or the
- * Linear workspace's account id (Linear escalates by workspace, not by
- * user email). */
+/** The login hint the connect flow escalates on: a Google email; the Linear
+ * workspace's account id (Linear escalates by workspace, not by user email);
+ * or the GitHub numeric user id (GitHub accounts are keyed by id, not login). */
 function loginHintFor(account: ConnectorAccount): string {
-  return account.provider === "linear" ? account.accountId : account.email;
+  if (account.provider === "linear" || account.provider === "github") return account.accountId;
+  return account.email;
 }
 
 function featureSummary(account: ConnectorAccount): string {
@@ -302,13 +314,19 @@ function connectDescription(
   provider: OAuthConnectorProvider,
   target: ConnectorAccount | null,
 ): string {
-  const isGoogle = provider === "google";
+  const isLinear = provider === "linear";
+  const noun = isLinear ? "workspace" : "account";
   const lead = target
     ? `Add to what June may do with ${accountDisplayName(target)}.`
-    : `Pick what June may do with this ${isGoogle ? "account" : "workspace"}.`;
-  const contentPhrase = isGoogle
-    ? "selected mail or calendar content"
-    : "selected project and issue content";
+    : `Pick what June may do with this ${noun}.`;
+  let contentPhrase: string;
+  if (provider === "google") {
+    contentPhrase = "selected mail or calendar content";
+  } else if (provider === "github") {
+    contentPhrase = "selected repository and issue content";
+  } else {
+    contentPhrase = "selected project and issue content";
+  }
   return `${lead} You approve everything in ${PROVIDER_NAMES[provider]}'s own sign-in, and you can disconnect any time. When a feature uses AI, ${contentPhrase} goes to your chosen model provider. Choose a local model to keep inference on this device.`;
 }
 

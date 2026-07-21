@@ -2259,11 +2259,13 @@ export type ConnectorScopeBundle =
   | "calendar_read"
   | "calendar_events"
   | "linear_read"
-  | "linear_write";
+  | "linear_write"
+  | "github_read"
+  | "github_write";
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required" | "unavailable";
 
-export type ConnectorProvider = "google" | "linear" | "notion";
+export type ConnectorProvider = "google" | "linear" | "notion" | "github";
 
 /** One Linear team: the granularity June's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once

@@ -956,3 +956,157 @@ describe("ConnectorsSection — Linear", () => {
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 });
+
+function githubAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAccount {
+  return {
+    accountId: "12345678",
+    provider: "github",
+    email: "octocat",
+    scopes: ["read"],
+    status: "connected",
+    workspaceName: null,
+    workspaceUrlKey: null,
+    selectedTeams: [],
+    ...overrides,
+  };
+}
+
+describe("ConnectorsSection — GitHub", () => {
+  it("renders GitHub in the provider directory with its capability blurb", async () => {
+    render(<ConnectorsSection />);
+    await findEnabledConnect("Connect GitHub");
+
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+    expect(screen.getByText(/read issues, pull requests, and code/i)).toBeInTheDocument();
+  });
+
+  it("connects with github_read by default and applies the runtime", async () => {
+    mocks.connectorsConnect.mockResolvedValue(githubAccount());
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    expect(
+      within(dialog).getByRole("checkbox", {
+        name: /read repositories, issues, and pull requests/i,
+      }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: /create and update issues and comments/i }),
+    ).not.toBeChecked();
+
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read"],
+        loginHint: undefined,
+        provider: "github",
+      }),
+    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+  });
+
+  it("adds github_write when the write checkbox is checked", async () => {
+    mocks.connectorsConnect.mockResolvedValue(githubAccount({ scopes: ["read", "write"] }));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    await userEvent.click(
+      within(dialog).getByRole("checkbox", { name: /create and update issues and comments/i }),
+    );
+
+    mocks.connectorsList.mockResolvedValue([githubAccount({ scopes: ["read", "write"] })]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read", "github_write"],
+        loginHint: undefined,
+        provider: "github",
+      }),
+    );
+  });
+
+  it("shows a connected GitHub account with the login as identity", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText(/octocat/)).toBeInTheDocument();
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+  });
+
+  it("shows read and write state in the connected account subtitle", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ scopes: ["read", "write"] })]);
+    render(<ConnectorsSection />);
+
+    // The subtitle includes feature labels from grantedFeatureLabels
+    expect(await screen.findByText(/octocat/)).toBeInTheDocument();
+    // Both read and write bundles are shown in the subtitle
+    expect(
+      screen.getByText(/read repositories, issues, and pull requests.*create and update issues/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows reconnect_required state for a lapsed GitHub account", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ status: "reconnect_required" })]);
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reconnect GitHub" })).toBeInTheDocument();
+  });
+
+  it("reconnects using the numeric account id as the login hint", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ status: "reconnect_required" })]);
+    mocks.connectorsConnect.mockResolvedValue(githubAccount());
+    render(<ConnectorsSection />);
+    await screen.findByText("Reconnect needed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect GitHub" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read"],
+        loginHint: "12345678",
+        provider: "github",
+      }),
+    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+  });
+
+  it("shows no team management UI for GitHub", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    render(<ConnectorsSection />);
+    await screen.findByText(/octocat/);
+
+    expect(screen.queryByRole("button", { name: "Select teams" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Manage teams" })).toBeNull();
+    expect(screen.queryByText("Select teams to finish setup")).toBeNull();
+  });
+
+  it("disconnects a GitHub account with revoke and applies the runtime", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    render(<ConnectorsSection />);
+    await screen.findByText(/octocat/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect GitHub" }));
+    const dialog = await screen.findByRole("dialog", { name: /Disconnect octocat/ });
+    expect(
+      within(dialog).getByRole("checkbox", { name: /revoke June's access with GitHub/i }),
+    ).toBeChecked();
+
+    mocks.connectorsList.mockResolvedValue([]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsDisconnect).toHaveBeenCalledWith({
+        accountId: "12345678",
+        revoke: true,
+      }),
+    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+    expect(await findEnabledConnect("Connect GitHub")).toBeInTheDocument();
+  });
+});
