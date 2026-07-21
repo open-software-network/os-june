@@ -1,7 +1,7 @@
 import { useReducedMotion } from "framer-motion";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { MarkdownContent } from "./MarkdownContent";
+import { createInlineMarkdownPattern, MarkdownContent } from "./MarkdownContent";
 
 // Deltas gather for one beat, then the whole backlog mounts in a single
 // commit — every word in the batch shares one fade timeline, so a chunk
@@ -11,12 +11,6 @@ import { MarkdownContent } from "./MarkdownContent";
 // enough that the response never feels laggy.
 const STREAM_REVEAL_INTERVAL_MS = 80;
 
-// How long the word-fade spans stay mounted after the turn completes. Must
-// cover the agent-stream-word-in duration in app.css so the trailing ink
-// gradient finishes settling naturally; unwrapping at completion would snap
-// the last ~1.5s of words to full ink.
-const STREAM_WORD_FADE_SETTLE_MS = 1700;
-
 // Longest unclosed inline tail we will stall the reveal on. Past this an open
 // `*` or `[` is literal prose (a bullet used as a word, math, a bracket
 // citation), not a construct still streaming its closing token — revealing it
@@ -25,8 +19,9 @@ const HOLDBACK_MAX_CHARS = 160;
 
 // Completed inline constructs, mirroring MarkdownContent's inline grammar
 // exactly. We strip these to locate where the still-open tail begins.
-const INLINE_PATTERN =
-  /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+const INLINE_PATTERN = createInlineMarkdownPattern();
+const TABLE_SEPARATOR_PATTERN = /^\|(\s*:?-+:?\s*\|)+$/;
+const POSSIBLE_TABLE_SEPARATOR_PATTERN = /^\|[\s:|-]*$/;
 
 function lineStartIndex(segment: string, at: number): number {
   const newline = segment.lastIndexOf("\n", at - 1);
@@ -56,11 +51,21 @@ function firstOpenOpener(segment: string, from: number): number {
     // `~~` opens strikethrough; a lone `~` is literal.
     if (ch === "~") {
       if (segment[at + 1] === "~") return at;
+      // A trailing `~` may become the first half of `~~` in the next chunk.
+      // Hold it until another character proves that it is literal.
+      if (segment[at + 1] === undefined) return at;
       continue;
     }
-    // `*` / `**` open emphasis unless it is a bullet or thematic break.
+    // `*` / `**` open emphasis unless it is a bullet, thematic break, or a
+    // literal star followed by whitespace (`2 * 3`, `use * as a wildcard`).
     if (ch === "*") {
       if (isBlockLevelStar(segment, at)) continue;
+      const markerLength = segment[at + 1] === "*" ? 2 : 1;
+      const next = segment[at + markerLength];
+      if (next !== undefined && /\s/.test(next)) {
+        at += markerLength - 1;
+        continue;
+      }
       return at;
     }
     // `[` opens a link only while the remainder still looks like the
@@ -76,6 +81,66 @@ function firstOpenOpener(segment: string, from: number): number {
         return at;
       }
     }
+  }
+  return -1;
+}
+
+// A pipe row cannot be known to be a table header until the following
+// separator arrives. Keep a still-possible header offscreen so it appears once
+// as <th> content instead of first fading as a paragraph, remounting, and
+// fading again when the separator changes its block parse.
+function pendingTableHeaderStart(segment: string): number {
+  const tableLine = (line: string) => {
+    let content = line.trim();
+    let quoteDepth = 0;
+    while (content.startsWith(">")) {
+      quoteDepth += 1;
+      content = content.slice(1).trimStart();
+    }
+    return { content, quoteDepth };
+  };
+  const lines = segment.split("\n");
+  let lineStart = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const { content: trimmed, quoteDepth } = tableLine(line);
+    if (!trimmed.startsWith("|")) {
+      lineStart += line.length + 1;
+      continue;
+    }
+
+    const nextLine = lines[index + 1];
+    if (nextLine === undefined) return lineStart;
+
+    const completeHeader = trimmed.endsWith("|") && trimmed.length > 1;
+    const { content: next, quoteDepth: nextQuoteDepth } = tableLine(nextLine);
+    if (completeHeader && next === "" && index + 1 === lines.length - 1) return lineStart;
+    if (quoteDepth !== nextQuoteDepth) {
+      lineStart += line.length + 1;
+      continue;
+    }
+    if (completeHeader && TABLE_SEPARATOR_PATTERN.test(next)) {
+      // This table's structure is established. Skip its separator and body;
+      // a later candidate in the same paragraph can still be considered.
+      index += 1;
+      lineStart += line.length + 1 + nextLine.length + 1;
+      while (index + 1 < lines.length) {
+        const body = lines[index + 1];
+        const { content: bodyTrimmed, quoteDepth: bodyQuoteDepth } = tableLine(body);
+        if (
+          bodyQuoteDepth !== quoteDepth ||
+          !(bodyTrimmed.startsWith("|") && bodyTrimmed.endsWith("|"))
+        ) {
+          break;
+        }
+        index += 1;
+        lineStart += body.length + 1;
+      }
+      continue;
+    }
+    if (completeHeader && POSSIBLE_TABLE_SEPARATOR_PATTERN.test(next)) return lineStart;
+
+    lineStart += line.length + 1;
   }
   return -1;
 }
@@ -103,6 +168,12 @@ export function holdbackSafeEnd(text: string): number {
   const lastBreak = text.lastIndexOf("\n\n");
   const segmentStart = lastBreak < 0 ? 0 : lastBreak + 2;
   const segment = text.slice(segmentStart);
+
+  const tableAt = pendingTableHeaderStart(segment);
+  if (tableAt >= 0) {
+    const holdIndex = segmentStart + tableAt;
+    return text.length - holdIndex > HOLDBACK_MAX_CHARS ? text.length : holdIndex;
+  }
 
   // Skip every completed construct; the open tail starts after the last one.
   let scanStart = 0;
@@ -227,16 +298,9 @@ export function SmoothedStreamingMarkdown({
   // every fade from 0.
   if (running !== prevRunning) {
     setPrevRunning(running);
-    setSettling(!running);
+    setSettling(!running && !reducedMotion);
   }
-
-  // Once settling starts, hold the spans for one settle window so the trailing
-  // gradient finishes fading, then unwrap to plain text.
-  useEffect(() => {
-    if (!settling) return;
-    const timer = window.setTimeout(() => setSettling(false), STREAM_WORD_FADE_SETTLE_MS);
-    return () => window.clearTimeout(timer);
-  }, [settling]);
+  if (settling && reducedMotion) setSettling(false);
 
   // Raw chunks still re-render the parent. Reuse the parsed markdown element
   // until the presentation string advances so smoothing does not add duplicate
@@ -252,8 +316,10 @@ export function SmoothedStreamingMarkdown({
         markdown={visibleMarkdown}
         repairProse={repairProse}
         animateWords={animateWords}
+        settlingWords={settling}
+        onWordsSettled={() => setSettling(false)}
       />
     ),
-    [animateWords, repairProse, visibleMarkdown],
+    [animateWords, repairProse, settling, visibleMarkdown],
   );
 }

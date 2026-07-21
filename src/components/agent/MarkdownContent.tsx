@@ -1,6 +1,13 @@
-import type { ReactNode } from "react";
+import type { AnimationEvent, ReactNode } from "react";
 
 import { repairContractionSpacing } from "../../lib/agent-chat-runtime";
+
+// Shared with the streaming holdback so text is classified by the same inline
+// grammar before and after it reaches the renderer. Emphasis delimiters must
+// hug non-whitespace content; whitespace-surrounded stars stay literal.
+export function createInlineMarkdownPattern(): RegExp {
+  return /(\*\*([^*\s](?:[^*]*[^*\s])?)\*\*|\*([^*\s](?:[^*]*[^*\s])?)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+}
 
 /** The agent-side markdown renderer, extracted from AgentWorkspace so other
  * chat surfaces (the note chat panel) render assistant prose identically.
@@ -17,19 +24,33 @@ export function MarkdownContent({
   // stream reveals it. Only set while a turn is actively streaming: the spans
   // are presentation-only and the completed turn re-renders as plain text.
   animateWords = false,
+  settlingWords = false,
+  onWordsSettled,
 }: {
   markdown: string;
   highlight?: string;
   activeHighlightIndex?: number;
   repairProse?: boolean;
   animateWords?: boolean;
+  settlingWords?: boolean;
+  onWordsSettled?: () => void;
 }) {
   const highlightCursor: HighlightCursor = {
     activeIndex: activeHighlightIndex,
     nextIndex: 0,
   };
+  const finishWordSettle = (event: AnimationEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    // jsdom omits animationName, so accept an unnamed root event in tests;
+    // browsers report the name and must match the settle carrier.
+    if (event.animationName && event.animationName !== "agent-stream-settle-clock") return;
+    onWordsSettled?.();
+  };
   return (
-    <div className="agent-markdown">
+    <div
+      className={`agent-markdown${settlingWords ? " agent-stream-settling" : ""}`}
+      onAnimationEnd={settlingWords ? finishWordSettle : undefined}
+    >
       {renderMarkdownBlocks(markdown, highlight, repairProse, highlightCursor, animateWords)}
     </div>
   );
@@ -80,10 +101,10 @@ export function highlightText(
 }
 
 /** Splits string nodes into word spans so streaming prose can fade in one
- * word at a time. Keys are positional within the run: streamed text is
- * append-only, so earlier words keep their spans across re-renders and only
- * newly revealed words mount (and animate). Non-string nodes (search <mark>s)
- * pass through untouched. */
+ * word at a time. The prefix is based on the run's source-text offset, not its
+ * parser branch: appending ` **bold**` can turn a trailing run into a leading
+ * run, but the already-visible words must keep their spans. Non-string nodes
+ * (search <mark>s) pass through untouched. */
 function wrapStreamWords(nodes: ReactNode[], keyPrefix: string): ReactNode[] {
   const wrapped: ReactNode[] = [];
   nodes.forEach((node, nodeIndex) => {
@@ -333,33 +354,40 @@ function renderInlineMarkdown(
   // Prose runs (plain text, emphasis, link text) get the contraction-spacing
   // repair and the streaming word fade; code spans and URLs go through `mark`
   // untouched.
-  const markProse = (value: string, slot: string) => {
+  const markProse = (value: string, sourceOffset: number, slot: string) => {
     const marked = mark(repairProse ? repairContractionSpacing(value) : value, slot);
-    return animateWords ? wrapStreamWords(marked, `${keySeed}-${slot}`) : marked;
+    return animateWords ? wrapStreamWords(marked, `${keySeed}-o${sourceOffset}`) : marked;
   };
-  const pattern =
-    /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
+  const pattern = createInlineMarkdownPattern();
   let lastIndex = 0;
   let index = 0;
   let match = pattern.exec(text);
   while (match !== null) {
     if (match.index > lastIndex) {
-      nodes.push(...markProse(text.slice(lastIndex, match.index), `g${index}`));
+      nodes.push(...markProse(text.slice(lastIndex, match.index), lastIndex, `g${index}`));
     }
     if (match[2]) {
       nodes.push(
-        <strong key={`strong-${keySeed}-${index}`}>{markProse(match[2], `s${index}`)}</strong>,
+        <strong key={`strong-${keySeed}-${index}`}>
+          {markProse(match[2], match.index + 2, `s${index}`)}
+        </strong>,
       );
     } else if (match[3]) {
-      nodes.push(<em key={`em-${keySeed}-${index}`}>{markProse(match[3], `e${index}`)}</em>);
+      nodes.push(
+        <em key={`em-${keySeed}-${index}`}>{markProse(match[3], match.index + 1, `e${index}`)}</em>,
+      );
     } else if (match[4]) {
-      nodes.push(<del key={`del-${keySeed}-${index}`}>{markProse(match[4], `d${index}`)}</del>);
+      nodes.push(
+        <del key={`del-${keySeed}-${index}`}>
+          {markProse(match[4], match.index + 2, `d${index}`)}
+        </del>,
+      );
     } else if (match[5]) {
       nodes.push(<code key={`code-${keySeed}-${index}`}>{mark(match[5], `c${index}`)}</code>);
     } else if (match[6] && match[7]) {
       nodes.push(
         <a key={`link-${keySeed}-${index}`} href={match[7]} rel="noreferrer" target="_blank">
-          {markProse(match[6], `a${index}`)}
+          {markProse(match[6], match.index + 1, `a${index}`)}
         </a>,
       );
     }
@@ -368,7 +396,7 @@ function renderInlineMarkdown(
     match = pattern.exec(text);
   }
   if (lastIndex < text.length) {
-    nodes.push(...markProse(text.slice(lastIndex), "t"));
+    nodes.push(...markProse(text.slice(lastIndex), lastIndex, "t"));
   }
   return nodes;
 }

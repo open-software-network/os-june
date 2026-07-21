@@ -2469,12 +2469,11 @@ button.agent-user-attachment:hover {
  * batches deltas so words that arrived together mount together and settle
  * together. Opacity-only on purpose: batches land several times a second and
  * blur/transform here would churn compositor layers in WKWebView. The
- * duration pairs with STREAM_WORD_FADE_SETTLE_MS in
- * SmoothedStreamingMarkdown, which keeps the spans mounted after completion
- * so the tail finishes settling instead of popping to full ink; reduced
- * motion never mounts them. */
+ * settle clock below derives from the same duration token and keeps the spans
+ * mounted after completion so the tail finishes settling instead of popping
+ * to full ink; reduced motion never mounts them. */
 .agent-markdown .agent-stream-word {
-  animation: agent-stream-word-in 1500ms linear both;
+  animation: agent-stream-word-in var(--stream-word-fade-dur) linear both;
 }
 
 @keyframes agent-stream-word-in {
@@ -2485,6 +2484,21 @@ button.agent-user-attachment:hover {
     opacity: 0.3;
   }
   100% {
+    opacity: 1;
+  }
+}
+
+/* Completion starts one root-level clock after the final stream flush. Its
+ * duration is derived from the word-fade token plus a small scheduling guard,
+ * so React can unwrap the presentation spans on animationend without a second
+ * hard-coded timer drifting out of sync with CSS. */
+.agent-markdown.agent-stream-settling {
+  animation: agent-stream-settle-clock calc(var(--stream-word-fade-dur) + var(--t-fast)) linear both;
+}
+
+@keyframes agent-stream-settle-clock {
+  from,
+  to {
     opacity: 1;
   }
 }
