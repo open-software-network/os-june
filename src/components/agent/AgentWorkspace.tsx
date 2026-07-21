@@ -12637,7 +12637,7 @@ export function AgentWorkspace({
             <span>Your personal assistant</span>
           </span>
           <span className="agent-home-presence">
-            <span aria-hidden /> Here with you
+            <span aria-hidden /> Online
           </span>
         </header>
       ) : !heroMode && !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (

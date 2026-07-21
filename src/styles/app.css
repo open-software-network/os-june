@@ -18998,7 +18998,7 @@ button.memory-project:hover {
   background: color-mix(in oklch, var(--card) 78%, transparent);
   -webkit-backdrop-filter: saturate(140%) blur(14px);
   backdrop-filter: saturate(140%) blur(14px);
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .agent-home-avatar {

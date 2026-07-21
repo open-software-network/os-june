@@ -719,6 +719,16 @@ describe("AgentWorkspace", () => {
     });
   });
 
+  it("shows June's identity and concise online presence in Home", () => {
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    const home = within(screen.getByRole("region", { name: "Home" }));
+    expect(home.getByText("June", { selector: "strong" })).toBeInTheDocument();
+    expect(home.getByText("Your personal assistant")).toBeInTheDocument();
+    expect(home.getByText("Online")).toBeInTheDocument();
+    expect(home.queryByText("Here with you")).not.toBeInTheDocument();
+  });
+
   it("keeps Home in place while June starts a focused session from its handoff tool", async () => {
     const user = userEvent.setup();
     const onOpenHomeTaskSession = vi.fn();
