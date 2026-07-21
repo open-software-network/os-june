@@ -77,6 +77,32 @@ describe("appendHermesLiveEvent", () => {
 
     expect(events).toEqual([first, tool, second, nextMessage]);
   });
+
+  it("preserves an interim boundary after its streamed delta", () => {
+    const delta = transcriptEvent({
+      messageId: "message-1",
+      delta: "The checks are clean.",
+      receivedAt: "2026-07-20T10:00:00.100Z",
+    });
+    const interim = transcriptEvent({
+      messageId: "message-1",
+      delta: "The checks are clean.",
+      interim: true,
+      receivedAt: "2026-07-20T10:00:00.200Z",
+    });
+
+    const events = [delta, interim].reduce(appendHermesLiveEvent, []);
+
+    expect(events).toEqual([delta, interim]);
+    expect(buildHermesSessionChatTurns([], events)[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "The checks are clean.",
+        status: "complete",
+        renderKey: "message-1:text:0",
+      },
+    ]);
+  });
 });
 
 function reasoningEvent(
@@ -1139,6 +1165,190 @@ describe("Agent chat runtime", () => {
     );
     expect(soloTurns[0]?.parts).toEqual([
       { type: "reasoning", text: "One whole thought.", status: "running" },
+    ]);
+  });
+
+  it("keeps Hermes 0.19 interim commentary when the final answer differs", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "The checks are clean.",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "The checks are clean.",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          delta: "Everything is ready to ship.",
+          complete: true,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(2);
+    expect(
+      turns.map((turn) =>
+        turn.parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join(""),
+      ),
+    ).toEqual(["The checks are clean.", "Everything is ready to ship."]);
+  });
+
+  it("settles a previewed Hermes 0.19 answer onto its interim bubble", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "Partial answer",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "Partial answer",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          delta: "Partial answer with verification.",
+          complete: true,
+          responsePreviewed: true,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("settles an interim preview across an interleaved synthetic turn", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "Partial answer",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "Partial answer",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.400Z",
+          delta: "Partial answer with verification.",
+          complete: true,
+          responsePreviewed: true,
+        }),
+      ],
+      [
+        {
+          id: "synthetic-status",
+          role: "system",
+          createdAt: "2026-07-20T10:00:00.300Z",
+          status: "complete",
+          parts: [{ type: "text", text: "Local status", status: "complete" }],
+        },
+      ],
+    );
+
+    const assistantTurns = turns.filter((turn) => turn.role === "assistant");
+    expect(assistantTurns).toHaveLength(1);
+    expect(assistantTurns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("keeps active tool and approval cards live while sealing interim text", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.000Z",
+          delta: "Checking this now.",
+        }),
+        toolEvent({
+          key: "tool-1",
+          toolCallId: "tool-1",
+          phase: "start",
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          name: "search",
+        }),
+        pendingActionEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "python verify.py",
+            description: "Run the verification?",
+            allowPermanent: false,
+          },
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.300Z",
+          delta: "Checking this now.",
+          interim: true,
+        }),
+        toolEvent({
+          key: "tool-1",
+          toolCallId: "tool-1",
+          phase: "complete",
+          receivedAt: "2026-07-20T10:00:00.400Z",
+          name: "search",
+          text: "Verified",
+        }),
+        pendingActionResolutionEvent({
+          receivedAt: "2026-07-20T10:00:00.500Z",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "",
+            description: "",
+            allowPermanent: false,
+            choice: "once",
+          },
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Checking this now.", status: "complete" },
+      expect.objectContaining({
+        type: "tool",
+        id: "tool-1",
+        text: "Verified",
+        status: "complete",
+      }),
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-1",
+        command: "python verify.py",
+        description: "Run the verification?",
+        choice: "once",
+        status: "resolved",
+      }),
     ]);
   });
 

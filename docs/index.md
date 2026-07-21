@@ -127,7 +127,8 @@ Per-repo config the engineering skills read before acting (see the
 
 - [hermes-upgrade-checklist.md](hermes-upgrade-checklist.md) — the gate for bumping the pinned runtime
 - [hermes-upstream-template.md](hermes-upstream-template.md) — per-bump pin-note template
-- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin and local compatibility patch note (v2026.6.19, `june-approval-memory-v14`)
+- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — prior pin and local compatibility patch note
+- [hermes-upstream-v2026.7.20.md](hermes-upstream-v2026.7.20.md) — current pin and local compatibility patch note (Hermes 0.19, `june-approval-memory-v14`)
 - [hermes-tui-debug.md](hermes-tui-debug.md) — dev-only raw-TUI debug fallback
 
 ## Release & ops runbooks

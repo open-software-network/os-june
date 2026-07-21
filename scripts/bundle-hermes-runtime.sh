@@ -249,9 +249,10 @@ cp -R "$out/hermes-agent" "$upstream_smoke"
 rm -rf "$upstream_smoke"
 
 # Dev-only weight the runtime never imports. Conservative on purpose: web/ and
-# ui-tui/ stay (hermes resolves them relative to its project root), and they
-# are small without node_modules, which we never ship.
-for prune in tests website apps .github; do
+# ui-tui/ stay (hermes resolves them relative to its project root), and apps/
+# stays until the dashboard build because Hermes 0.19 web imports apps/shared.
+# They are small without node_modules, which we never ship.
+for prune in tests website .github; do
   rm -rf "$out/hermes-agent/$prune"
 done
 
@@ -295,7 +296,8 @@ fi
 # June never launches.
 rm -rf "$out/hermes-agent/node_modules" \
   "$out/hermes-agent/web/node_modules" \
-  "$out/hermes-agent/ui-tui/node_modules"
+  "$out/hermes-agent/ui-tui/node_modules" \
+  "$out/hermes-agent/apps"
 [ -f "$out/hermes-agent/hermes_cli/web_dist/index.html" ] || die "web_dist missing after build"
 
 # ---- two relocatable CPythons + target-selected dependency trees ------------

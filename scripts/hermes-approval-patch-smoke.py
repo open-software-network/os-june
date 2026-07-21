@@ -47,6 +47,7 @@ def load_server_handoff_helpers(root: Path):
         "_mark_pending_message_complete",
         "_message_complete_is_pending",
         "_pending_message_complete_proof",
+        "_queued_prompt_snapshot",
         "_release_agent_run_continuations_after_snapshot_ack",
         "_reap_idle_sessions",
         "_retry_pending_message_complete",
@@ -87,6 +88,8 @@ def load_server_handoff_helpers(root: Path):
         "_session_live_status": lambda _sid, session: (
             "working" if session.get("running") else "idle"
         ),
+        "_session_lookup_key": lambda session, fallback="": session.get("session_key")
+        or fallback,
         "_sessions": {},
         "_sessions_lock": threading.RLock(),
         "_session_resume_lock": threading.Lock(),
@@ -108,10 +111,14 @@ def load_server_handoff_helpers(root: Path):
         "contextvars": contextvars,
         "json": json,
         "_schedule_ws_orphan_reap": lambda _sid: None,
+        "_enforce_session_cap": lambda: None,
         "_session_is_evictable": lambda _sid, _session, _now: False,
         "time": time,
         "write_json": lambda _frame: None,
     }
+    namespace["_emit_approval_request"] = lambda sid, data: namespace["_emit"](
+        "approval.request", sid, data
+    )
     module = ast.Module(
         body=[
             ast.ImportFrom(
@@ -257,9 +264,9 @@ def assert_server_handoff_source(root: Path) -> None:
     ), poller
     assert poller.count("_message_complete_is_pending(session)") >= 2, poller
     assert poller.count("process_registry.completion_queue.put(evt)") >= 3, poller
-    deferral = poller.find("defer_notification = False")
+    deferral = poller.find("_requeued = False")
     requeue = poller.find("process_registry.completion_queue.put(evt)", deferral)
-    backoff = poller.find("time.sleep(0.1)", requeue)
+    backoff = poller.find("time.sleep(0.25)", requeue)
     retry = poller.find("continue", backoff)
     assert deferral >= 0, "pending process notification has no deferred state"
     assert deferral < requeue < backoff < retry, poller[deferral:retry]
@@ -272,16 +279,14 @@ def assert_server_handoff_source(root: Path) -> None:
     goal_barrier = run_prompt.index(
         "_agent_run_continuation_waits_for_snapshot_ack(session)", goal
     )
-    nested_run = run_prompt.index(
-        "rid, sid, session, goal_followup, [], None", goal
-    )
+    nested_run = run_prompt.index("rid, sid, session, goal_followup", goal)
     assert goal < goal_barrier < defer < nested_run, run_prompt[goal:nested_run]
-    drain = run_prompt.index("for _evt, synth in process_registry.drain_notifications():")
+    drain = run_prompt.index("for index, (_evt, synth) in enumerate(drained):")
     assert run_prompt.index("_message_complete_is_pending(session)", drain) > drain
     drain_dispatch = run_prompt.index('_emit("message.start", sid)', drain)
     drain_guard = run_prompt[drain:drain_dispatch]
-    assert "process_registry.completion_queue.put(_evt)" in drain_guard, drain_guard
-    assert "continue" in drain_guard and "break" not in drain_guard, drain_guard
+    assert "process_registry.completion_queue.put(pending_evt)" in drain_guard, drain_guard
+    assert "drained[index:]" in drain_guard and "break" in drain_guard, drain_guard
 
 
 def load_approval(root: Path):
@@ -298,6 +303,13 @@ def load_approval(root: Path):
     utils.env_var_enabled = lambda _name: False
     utils.is_truthy_value = lambda value: str(value).lower() in {"1", "true", "yes"}
     sys.modules["utils"] = utils
+
+    tools = types.ModuleType("tools")
+    tools.__path__ = []
+    interrupt = types.ModuleType("tools.interrupt")
+    interrupt.is_interrupted = lambda: False
+    sys.modules["tools"] = tools
+    sys.modules["tools.interrupt"] = interrupt
 
     path = root / "tools" / "approval.py"
     if not path.is_file():
@@ -493,6 +505,8 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "_sessions_lock": threading.Lock(),
             "_set_session_context": lambda _key: None,
             "_clear_session_context": lambda _tokens: None,
+            "_session_source": lambda _session: "tui",
+            "_emit": lambda *_args: None,
         }
         exec(compile(source, str(root / "tui_gateway" / "server.py"), "exec"), namespace)
         response = namespace["_image_attach_bytes"](
@@ -630,6 +644,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         obsolete_build_release = threading.Event()
         obsolete_build_closed = threading.Event()
         reset_during_build_calls = 0
+        reset_build_kwargs = []
 
         class ObsoleteHermes:
             def close(self) -> None:
@@ -640,6 +655,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         def make_reset_during_obsolete_build(*_args, **_kwargs):
             nonlocal reset_during_build_calls
             reset_during_build_calls += 1
+            reset_build_kwargs.append(_kwargs)
             if reset_during_build_calls == 1:
                 obsolete_build_started.set()
                 assert obsolete_build_release.wait(2), (
@@ -671,6 +687,10 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "history_lock": threading.Lock(),
             "history_version": 0,
             "image_counter": 1,
+            "model_override": "selected-model",
+            "create_reasoning_override": {"effort": "high"},
+            "create_service_tier_override": "priority",
+            "one_turn_model_restore": "previous-model",
             "prompt_generation": 0,
             "reset_generation": 0,
             "running": False,
@@ -686,6 +706,10 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         )
         assert reset_info == {"model": "replacement-model"}
         assert reset_during_build_session["agent"] is replacement_hermes
+        assert reset_build_kwargs[-1]["model_override"] == "selected-model"
+        assert reset_build_kwargs[-1]["reasoning_config_override"] == {"effort": "high"}
+        assert reset_build_kwargs[-1]["service_tier_override"] == "priority"
+        assert "one_turn_model_restore" not in reset_during_build_session
         assert reset_during_build_session["agent_ready"].is_set(), (
             "successful reset did not publish Hermes readiness"
         )
@@ -922,6 +946,43 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         namespace["_reset_session_agent"]("reset-session", reset_session)
         assert reset_session["agent_error"] is None, reset_session
 
+    # Hermes 0.19 moved queue ownership into _run_prompt_submit after the lazy
+    # agent is ready. The function detaches one immutable batch while holding
+    # history_lock, so later attachments remain queued for the next turn.
+    run_prompt_submit = _function(tree, "_run_prompt_submit")
+    run_lock_blocks = [
+        node
+        for node in run_prompt_submit.body
+        if isinstance(node, ast.With)
+        and any(
+            _session_subscript(item.context_expr, "history_lock")
+            for item in node.items
+        )
+    ]
+    assert len(run_lock_blocks) == 1, len(run_lock_blocks)
+    run_lock = run_lock_blocks[0]
+    image_batch_assigns = [
+        node
+        for node in ast.walk(run_lock)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "images" for target in node.targets)
+    ]
+    queue_clears = [
+        node
+        for node in ast.walk(run_lock)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.List)
+        and not node.value.elts
+        and any(_session_subscript(target, "attached_images") for target in node.targets)
+    ]
+    assert len(image_batch_assigns) == len(queue_clears) == 1, (
+        len(image_batch_assigns),
+        len(queue_clears),
+    )
+    return
+
+    # Legacy pre-0.19 ownership checks retained as documentation for the
+    # older patch shape. Hermes 0.19 takes the verified path above.
     # Lock the queue ownership boundary across prompt.submit. Acceptance must
     # detach an immutable batch under the same history lock used by queue writes,
     # then hand only that batch to the asynchronous success path. Initialization
@@ -1320,6 +1381,11 @@ def verify_cross_process_config_writer(root: Path) -> None:
         # with a bare host Python too by using JSON, which is a YAML subset.
         yaml_stub = types.ModuleType("yaml")
         yaml_stub.YAMLError = ValueError
+        yaml_stub.SafeDumper = type(
+            "SafeDumper",
+            (),
+            {"increase_indent": lambda self, flow=False, indentless=False: None},
+        )
         yaml_stub.safe_load = lambda source: json.loads(
             source.read() if hasattr(source, "read") else source
         )
@@ -1503,7 +1569,7 @@ def verify_cross_process_config_writer(root: Path) -> None:
             encoding="utf-8",
         )
         telegram_tree = ast.parse(
-            (root / "gateway" / "platforms" / "telegram.py").read_text(
+            (root / "plugins" / "platforms" / "telegram" / "adapter.py").read_text(
                 encoding="utf-8"
             )
         )
@@ -1525,7 +1591,11 @@ def verify_cross_process_config_writer(root: Path) -> None:
             )
         }
         exec(
-            compile(module, str(root / "gateway" / "platforms" / "telegram.py"), "exec"),
+            compile(
+                module,
+                str(root / "plugins" / "platforms" / "telegram" / "adapter.py"),
+                "exec",
+            ),
             namespace,
         )
 
@@ -1544,10 +1614,18 @@ def verify_cross_process_config_writer(root: Path) -> None:
         patched_utils.atomic_yaml_write = atomic_after_june_disable
         hermes_constants = types.ModuleType("hermes_constants")
         hermes_constants.get_hermes_home = lambda: config_path.parent
+        hermes_cli = types.ModuleType("hermes_cli")
+        hermes_config = types.ModuleType("hermes_cli.config")
+        hermes_config.atomic_config_write = atomic_after_june_disable
+        hermes_cli.config = hermes_config
         previous_utils = sys.modules.get("utils")
         previous_constants = sys.modules.get("hermes_constants")
+        previous_hermes_cli = sys.modules.get("hermes_cli")
+        previous_hermes_config = sys.modules.get("hermes_cli.config")
         sys.modules["utils"] = patched_utils
         sys.modules["hermes_constants"] = hermes_constants
+        sys.modules["hermes_cli"] = hermes_cli
+        sys.modules["hermes_cli.config"] = hermes_config
         try:
             writer = namespace["TelegramWriter"]()
             writer.name = "telegram"
@@ -1562,6 +1640,14 @@ def verify_cross_process_config_writer(root: Path) -> None:
                 sys.modules.pop("hermes_constants", None)
             else:
                 sys.modules["hermes_constants"] = previous_constants
+            if previous_hermes_config is None:
+                sys.modules.pop("hermes_cli.config", None)
+            else:
+                sys.modules["hermes_cli.config"] = previous_hermes_config
+            if previous_hermes_cli is None:
+                sys.modules.pop("hermes_cli", None)
+            else:
+                sys.modules["hermes_cli"] = previous_hermes_cli
 
         telegram_saved = patched_utils.yaml.safe_load(
             config_path.read_text(encoding="utf-8")
@@ -1619,12 +1705,23 @@ def verify_model_deny_wins(root: Path) -> None:
         ),
         namespace,
     )
-    definitions = namespace["_compute_tool_definitions"](
-        enabled_toolsets=["memory", "web"],
-        disabled_toolsets=["memory"],
-        quiet_mode=True,
-        skip_tool_search_assembly=True,
-    )
+    toolsets_module = types.ModuleType("toolsets")
+    toolsets_module.bundle_non_core_tools = lambda _name: set()
+    toolsets_module.get_toolset = lambda _name: {}
+    previous_toolsets = sys.modules.get("toolsets")
+    sys.modules["toolsets"] = toolsets_module
+    try:
+        definitions = namespace["_compute_tool_definitions"](
+            enabled_toolsets=["memory", "web"],
+            disabled_toolsets=["memory"],
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        )
+    finally:
+        if previous_toolsets is None:
+            sys.modules.pop("toolsets", None)
+        else:
+            sys.modules["toolsets"] = previous_toolsets
     names = {definition["function"]["name"] for definition in definitions}
     assert names == {"web_search"}, (
         "disabled memory toolset did not win over the enabled allowlist: %s" % names

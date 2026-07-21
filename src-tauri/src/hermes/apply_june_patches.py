@@ -16,23 +16,23 @@ from typing import Callable, Dict
 PATCH_SET = "june-approval-memory-v14"
 
 UPSTREAM_SHA256: Dict[str, str] = {
-    "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
-    "tools/approval.py": "e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85",
-    "tools/mcp_tool.py": "3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01",
-    "tui_gateway/server.py": "1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a",
-    "utils.py": "572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c",
-    "gateway/platforms/telegram.py": "3943dc748827f81bf4e40a2a6711e4dfb6f65304bff552474ffbc23fd91e23a6",
+    "agent/agent_init.py": "85b7cb13d6e6306e75d5eec46f193433df680425533b7d35ee99e0f7eab9512a",
+    "tools/approval.py": "f35c78aa0b56c82cafe0242bb886c4f9679bf55219776a105131dceba2ce9672",
+    "tools/mcp_tool.py": "a7328f3f3762ae43f6a9426646b0c28c17ec8663aa391506f48d628035ad5460",
+    "tui_gateway/server.py": "5d00832327e4362ac75032f95003e1fa49aead4756cf7927dcfd66447b205a59",
+    "utils.py": "a60c651a682f739c8e7e167de939c5bb060c8c2b049ce28d65f12ff1f649b207",
+    "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
 
 # Filled after applying the transformations to the exact upstream files. These
 # hashes are part of the runtime provenance contract, not best-effort checks.
 PATCHED_SHA256: Dict[str, str] = {
-    "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
-    "tools/approval.py": "daaac4cbc6adfffd3a8cbd8442d3cc0c26bc499725e395cf837607dbcebc46d8",
-    "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "ee9806275e5b5706cadc58151b894d54351057d57f158d36a94e66080263a742",
-    "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
-    "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
+    "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
+    "tools/approval.py": "94b42207d425978e2d6fff7f04650c908d47377c3fd3aa3ff1cf899617c2f032",
+    "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
+    "tui_gateway/server.py": "5db3ea64e9456d486da496c1d8bc4e3d6de78fb8e8879bdec96d21c3d56940b0",
+    "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
+    "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
 
 # These policy files are not transformed, but their exact bytes are part of
@@ -40,8 +40,8 @@ PATCHED_SHA256: Dict[str, str] = {
 # layering and final deny subtraction to make agent.disabled_toolsets win over
 # every stored per-job allowlist.
 POLICY_SHA256: Dict[str, str] = {
-    "cron/scheduler.py": "2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa",
-    "model_tools.py": "d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d",
+    "cron/scheduler.py": "ea54407dddebec57a184f1dbdf1076f8abe94f132da1e619c476cbf1266ed239",
+    "model_tools.py": "30a2dcb33685783935f66abef6839d06736c90196a89dd034c91c4e6eb65c2db",
 }
 
 
@@ -49,7 +49,21 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+UPSTREAMED_IN_019 = {
+    "prompt image batch ownership",
+    "prompt image batch handoff",
+    "failed prompt image batch restoration",
+    "prompt image batch consumption",
+    "notification prompt image isolation",
+    "goal continuation image isolation",
+    "completion prompt image isolation",
+    "telegram DM topic config writer",
+}
+
+
 def replace_once(source: str, old: str, new: str, label: str) -> str:
+    if label in UPSTREAMED_IN_019:
+        return source
     count = source.count(old)
     if count != 1:
         raise RuntimeError("%s: expected one match, found %d" % (label, count))
@@ -59,6 +73,8 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 def replace_count(
     source: str, old: str, new: str, expected: int, label: str
 ) -> str:
+    if label in UPSTREAMED_IN_019:
+        return source
     count = source.count(old)
     if count != expected:
         raise RuntimeError(
@@ -68,6 +84,8 @@ def replace_count(
 
 
 def replace_region(source: str, start: str, end: str, replacement: str, label: str) -> str:
+    if label in UPSTREAMED_IN_019:
+        return source
     start_index = source.find(start)
     if start_index < 0:
         raise RuntimeError("%s: start marker not found" % label)
@@ -1209,6 +1227,10 @@ def _queue_attached_image(
             # after this lock is released and must not mutate the reset session.
             previous_prompt_generation = int(session.get("prompt_generation", 0))
             previous_reset_generation = int(session.get("reset_generation", 0))
+            # /new starts fresh history but June keeps the session's explicit
+            # model, reasoning, and service-tier selections. Only a one-turn
+            # override expires at this boundary.
+            session.pop("one_turn_model_restore", None)
             session["prompt_generation"] = previous_prompt_generation + 1
             session["reset_generation"] = previous_reset_generation + 1
             tokens = _set_session_context(session["session_key"])
@@ -1217,11 +1239,10 @@ def _queue_attached_image(
                     sid,
                     session["session_key"],
                     session_id=session["session_key"],
-                    # Preserve this session's chosen model across /new so a reset
-                    # doesn't silently revert to global config (or to a model another
-                    # session set). See the cross-session-contamination note in
-                    # _apply_model_switch.
+                    platform_override=_session_source(session),
                     model_override=session.get("model_override"),
+                    reasoning_config_override=session.get("create_reasoning_override"),
+                    service_tier_override=session.get("create_service_tier_override"),
                 )
             except Exception:
                 # The original lazy build and prompt still own the session when a
@@ -1623,6 +1644,7 @@ def _bind_prompt_transport_for_submit(
     source = replace_once(
         source,
         '''        inflight = _inflight_snapshot(session)
+        queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
     payload = {
         "info": _fallback_session_info(session),
@@ -1630,6 +1652,7 @@ def _bind_prompt_transport_for_submit(
         "messages": _history_to_messages(history),
 ''',
         '''        inflight = _inflight_snapshot(session)
+        queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
         pending_message_complete_text = session.get(_PENDING_MESSAGE_COMPLETE_TEXT)
     messages = _history_to_messages(history)
@@ -1644,10 +1667,14 @@ def _bind_prompt_transport_for_submit(
         source,
         '''    if inflight:
         payload["inflight"] = inflight
+    if queued:
+        payload["queued"] = queued
     return payload
 ''',
         '''    if inflight:
         payload["inflight"] = inflight
+    if queued:
+        payload["queued"] = queued
     pending_message_complete = _pending_message_complete_proof(
         history, pending_message_complete_text
     )
@@ -1687,7 +1714,7 @@ def _handoff_live_session_transport(
         if key := session.get("session_key"):
             retired_request_ids = replace_gateway_notify(
                 key,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
                 lambda data: _emit("approval.expire", sid, data),
             )
     _retry_pending_message_complete(
@@ -1764,58 +1791,42 @@ def _(rid, params: dict) -> dict:
 ''',
         "server atomic message-complete delivery",
     )
-    source = replace_once(
-        source,
-        '''    if (t := current_transport()) is not None:
-        session["transport"] = t
-    with session["history_lock"]:
-        if session.get("running"):
-''',
-        '''    request_transport = current_transport()
-    if not _bind_prompt_transport_for_submit(session, request_transport):
-        return _err(rid, 4009, "session snapshot acknowledgement still settling")
-    with session["history_lock"]:
-        if _message_complete_is_pending(session):
-            return _err(rid, 4009, "previous completion awaiting reconnect")
-        if _agent_run_continuation_waits_for_snapshot_ack(session):
-            return _err(rid, 4009, "session snapshot acknowledgement still settling")
-        if session.get("running"):
-''',
-        "server prompt retry before next Agent run",
-    )
-    source = replace_once(
-        source,
-        '''        session["running"] = True
-        session["last_active"] = time.time()
-        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
-        prompt_generation = session["prompt_generation"]
-        _start_inflight_turn(session, text)
-        # Detach this prompt's immutable image batch at the same boundary that
-        # marks the session running. Later attachments remain queued for the next
-        # prompt, regardless of whether Hermes initialization succeeds.
-        submitted_images = list(session.get("attached_images", []))
-        session["attached_images"] = []
-''',
-        '''        # A real user prompt wins over a deferred goal continuation,
-        # matching the existing race semantics after the prior completion lands.
-        session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
-        session["running"] = True
-        session["last_active"] = time.time()
-        session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
-        prompt_generation = session["prompt_generation"]
-        _start_inflight_turn(session, text)
-        # Detach this prompt's immutable image batch at the same boundary that
-        # marks the session running. Later attachments remain queued for the next
-        # prompt, regardless of whether Hermes initialization succeeds.
-        submitted_images = list(session.get("attached_images", []))
-        session["attached_images"] = []
-''',
-        "server user prompt wins deferred goal",
-    )
     prompt_admission = '''    # Prompt transport and Agent run admission form one ownership transaction.
     # A different client must finish a live snapshot handoff first; prompt.submit
     # cannot move only the stream while leaving approval notifier authority behind.
     request_transport = current_transport()
+    while True:
+        session_busy = False
+        busy_transport = None
+        with _session_resume_lock:
+            with _sessions_lock:
+                registered_session = _sessions.get(sid)
+            if registered_session is not session or session.get("_finalized"):
+                return _err(rid, 4001, "session not found")
+            if not _bind_prompt_transport_for_submit(session, request_transport):
+                return _err(rid, 4009, "session transport handoff required")
+            with session["history_lock"]:
+                if _message_complete_is_pending(session):
+                    return _err(rid, 4009, "previous completion awaiting reconnect")
+                if _agent_run_continuation_waits_for_snapshot_ack(session):
+                    return _err(rid, 4009, "session snapshot acknowledgement still settling")
+                if session.get("running"):
+                    # Preserve Hermes 0.19's interrupt-and-queue behavior while
+                    # keeping stream and approval ownership in this same lane.
+                    session_busy = True
+                    busy_transport = request_transport or session.get("transport")
+                else:
+                    break
+        if session_busy:
+            busy_response = _handle_busy_submit(
+                rid, sid, session, text, busy_transport
+            )
+            if busy_response is not None:
+                return busy_response
+            # The old turn finished before its queued claim. Retry admission so
+            # this prompt starts normally instead of being stranded.
+            continue
+
     with _session_resume_lock:
         with _sessions_lock:
             registered_session = _sessions.get(sid)
@@ -1829,6 +1840,8 @@ def _(rid, params: dict) -> dict:
             if _agent_run_continuation_waits_for_snapshot_ack(session):
                 return _err(rid, 4009, "session snapshot acknowledgement still settling")
             if session.get("running"):
+                # The prior turn won the gap between the busy check and claim;
+                # retry through the normal queue path on the next request.
                 return _err(rid, 4009, "session busy")
             # A watch session's run lives in the PARENT turn, so its own running
             # flag is False — without this, typing mid-run builds a second agent
@@ -1853,7 +1866,7 @@ def _(rid, params: dict) -> dict:
                     i for i, message in enumerate(history)
                     if message.get("role") == "user"
                 ]
-                if ordinal >= len(user_indices):
+                if ordinal < 0 or ordinal >= len(user_indices):
                     return _err(
                         rid,
                         4018,
@@ -1877,14 +1890,8 @@ def _(rid, params: dict) -> dict:
             session.pop(_DEFERRED_GOAL_FOLLOWUP, None)
             session["running"] = True
             session["last_active"] = time.time()
-            session["prompt_generation"] = int(session.get("prompt_generation", 0)) + 1
-            prompt_generation = session["prompt_generation"]
+            session["_turn_cancel_requested"] = False
             _start_inflight_turn(session, text)
-            # Detach this prompt's immutable image batch at the same boundary that
-            # marks the session running. Later attachments remain queued for the next
-            # prompt, regardless of whether Hermes initialization succeeds.
-            submitted_images = list(session.get("attached_images", []))
-            session["attached_images"] = []
 '''
     source = replace_region(
         source,
@@ -2060,12 +2067,12 @@ def _(rid, params: dict) -> dict:
     source = replace_once(
         source,
         '''                register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
+                    key, lambda data: _emit_approval_request(sid, data)
                 )
 ''',
         '''                register_gateway_notify(
                     key,
-                    lambda data: _emit("approval.request", sid, data),
+                    lambda data: _emit_approval_request(sid, data),
                     lambda data: _emit("approval.expire", sid, data),
                 )
 ''',
@@ -2075,12 +2082,12 @@ def _(rid, params: dict) -> dict:
         source,
         '''            register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
             )
 ''',
         '''            register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
                 lambda data: _emit("approval.expire", sid, data),
             )
 ''',
@@ -2088,11 +2095,11 @@ def _(rid, params: dict) -> dict:
     )
     source = replace_once(
         source,
-        '''        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        '''        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
 ''',
         '''        register_gateway_notify(
             key,
-            lambda data: _emit("approval.request", sid, data),
+            lambda data: _emit_approval_request(sid, data),
             lambda data: _emit("approval.expire", sid, data),
         )
 ''',
@@ -2115,7 +2122,7 @@ def _(rid, params: dict) -> dict:
             try:
                 _emit("message.start", sid)
                 _run_prompt_submit(
-                    deferred_goal["rid"], sid, session, deferred_goal["text"], [], None
+                    deferred_goal["rid"], sid, session, deferred_goal["text"]
                 )
             except Exception as exc:
                 print(
@@ -2137,13 +2144,21 @@ def _(rid, params: dict) -> dict:
     )
     source = replace_once(
         source,
-        '''        with session["history_lock"]:
+        '''        _requeued = False
+        with session["history_lock"]:
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
-                continue
-            session["running"] = True
+                _requeued = True
+            else:
+                session["running"] = True
+        if _requeued:
+            # Back off before re-polling: the re-queued event keeps the queue
+            # non-empty, so without a sleep this loop spins at full speed
+            # (100% CPU, GIL churn) for as long as the session stays busy.
+            time.sleep(0.25)
+            continue
 ''',
-        '''        defer_notification = False
+        '''        _requeued = False
         with session["history_lock"]:
             if (
                 session.get("running")
@@ -2152,14 +2167,14 @@ def _(rid, params: dict) -> dict:
                 or _DEFERRED_GOAL_FOLLOWUP in session
             ):
                 process_registry.completion_queue.put(evt)
-                defer_notification = True
+                _requeued = True
             else:
                 session["running"] = True
-        if defer_notification:
-            # The shared queue can hand this poller the same event immediately.
-            # Back off outside history_lock so reconnect and sibling sessions
-            # can make progress instead of spinning on a retained completion.
-            time.sleep(0.1)
+        if _requeued:
+            # Back off before re-polling: the re-queued event keeps the queue
+            # non-empty, so without a sleep this loop spins at full speed
+            # (100% CPU, GIL churn) for as long as the session stays busy.
+            time.sleep(0.25)
             continue
 ''',
         "server notification poller pending-complete deferral",
@@ -2229,39 +2244,95 @@ def _(rid, params: dict) -> dict:
     )
     source = replace_once(
         source,
-        '''        with _session_resume_lock:
-            live = _find_live_session_by_key(target)
-            if live is not None:
-                if lease is not None:
-                    lease.release()
-                return _ok(rid, _reuse_live_payload(*live))
-            with _sessions_lock:
+        '''    model_override=None,
+    resume_runtime_overrides: dict | None = None,
+) -> dict:
 ''',
-        '''        with _session_resume_lock:
-            if _transport_is_dead(resume_transport):
-                if lease is not None:
-                    lease.release()
-                return _err(rid, 4009, "request transport disconnected")
-            live = _find_live_session_by_key(target)
-            if live is not None:
-                if lease is not None:
-                    lease.release()
-                return _ok(rid, _reuse_live_payload(*live))
-            with _sessions_lock:
+        '''    model_override=None,
+    resume_runtime_overrides: dict | None = None,
+    transport: Transport,
+) -> dict:
 ''',
-        "server lazy resume dead transport commit guard",
+        "server deferred resume captured transport argument",
     )
     source = replace_once(
         source,
-        '''                    "tool_progress_mode": _load_tool_progress_mode(),
-                    "tool_started_at": {},
-                    "transport": current_transport() or _stdio_transport,
+        '''        "tool_started_at": {},
+        "transport": current_transport() or _stdio_transport,
+    }
+
+
+def _claim_or_reuse_live(
+    sid: str, session_key: str, record: dict, lease
+) -> tuple[str, dict] | None:
 ''',
-        '''                    "tool_progress_mode": _load_tool_progress_mode(),
-                    "tool_started_at": {},
-                    "transport": resume_transport,
+        '''        "tool_started_at": {},
+        "transport": transport,
+    }
+
+
+def _claim_or_reuse_live(
+    sid: str,
+    session_key: str,
+    record: dict,
+    lease,
+    resume_transport: Transport,
+) -> tuple[str, dict] | None | bool:
 ''',
+        "server deferred resume transport and claim signature",
+    )
+    source = replace_once(
+        source,
+        '''    with _session_resume_lock:
+        live = _find_live_session_by_key(session_key)
+''',
+        '''    with _session_resume_lock:
+        if _transport_is_dead(resume_transport):
+            if lease is not None:
+                lease.release()
+            return False
+        live = _find_live_session_by_key(session_key)
+''',
+        "server deferred resume dead transport commit guard",
+    )
+    source = replace_count(
+        source,
+        '''            lazy=True,
+        )
+''',
+        '''            lazy=True,
+            transport=resume_transport,
+        )
+''',
+        1,
         "server lazy resume captured transport",
+    )
+    source = replace_once(
+        source,
+        '''            resume_runtime_overrides=overrides or None,
+        )
+''',
+        '''            resume_runtime_overrides=overrides or None,
+            transport=resume_transport,
+        )
+''',
+        "server cold resume captured transport",
+    )
+    source = replace_count(
+        source,
+        '''        if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
+            return _ok(rid, _reuse_live_payload(*live))
+''',
+        '''        claim = _claim_or_reuse_live(
+            sid, target, record, lease, resume_transport
+        )
+        if claim is False:
+            return _err(rid, 4009, "request transport disconnected")
+        if claim is not None:
+            return _ok(rid, _reuse_live_payload(*claim))
+''',
+        2,
+        "server deferred resume transport commit",
     )
     source = replace_once(
         source,
@@ -2317,9 +2388,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = True
             try:
                 _emit("message.start", sid)
-                _run_prompt_submit(
-                    rid, sid, session, goal_followup, [], None
-                )
+                _run_prompt_submit(rid, sid, session, goal_followup)
             except Exception as _cont_exc:
                 print(
                     f"[tui_gateway] goal continuation dispatch failed: "
@@ -2347,9 +2416,7 @@ def _(rid, params: dict) -> dict:
             if dispatch_goal_followup:
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(
-                        rid, sid, session, goal_followup, [], None
-                    )
+                    _run_prompt_submit(rid, sid, session, goal_followup)
                 except Exception as _cont_exc:
                     print(
                         f"[tui_gateway] goal continuation dispatch failed: "
@@ -2363,14 +2430,15 @@ def _(rid, params: dict) -> dict:
     )
     source = replace_once(
         source,
-        '''            for _evt, synth in process_registry.drain_notifications():
+        '''            for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
                     if session.get("running"):
-                        process_registry.completion_queue.put(_evt)
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
                         break
                     session["running"] = True
 ''',
-        '''            for _evt, synth in process_registry.drain_notifications():
+        '''            for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
                     if (
                         session.get("running")
@@ -2378,11 +2446,9 @@ def _(rid, params: dict) -> dict:
                         or _agent_run_continuation_waits_for_snapshot_ack(session)
                         or _DEFERRED_GOAL_FOLLOWUP in session
                     ):
-                        process_registry.completion_queue.put(_evt)
-                        # drain_notifications() already removed the full batch.
-                        # Requeue every blocked event instead of dropping the
-                        # remainder after the first one.
-                        continue
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
+                        break
                     session["running"] = True
 ''',
         "server completion drain pending-complete deferral",
@@ -2824,7 +2890,7 @@ PATCHERS: Dict[str, Callable[[str], str]] = {
     "tools/mcp_tool.py": patch_mcp_tool,
     "tui_gateway/server.py": patch_server,
     "utils.py": patch_utils,
-    "gateway/platforms/telegram.py": patch_telegram,
+    "plugins/platforms/telegram/adapter.py": patch_telegram,
 }
 
 

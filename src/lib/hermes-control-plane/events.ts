@@ -201,6 +201,10 @@ export type JuneHermesEvent =
       messageId?: string;
       delta?: string;
       complete?: boolean;
+      /** Hermes 0.19 seals mid-turn assistant commentary as its own bubble. */
+      interim?: boolean;
+      /** The final response extends an already-rendered interim preview. */
+      responsePreviewed?: boolean;
       failed: boolean;
       role?: "assistant" | "user" | "system";
     })

@@ -34,6 +34,8 @@ export function appendHermesLiveEvent(
     event.kind === "transcript" &&
     !previous.complete &&
     !event.complete &&
+    !previous.interim &&
+    !event.interim &&
     previous.delta !== undefined &&
     event.delta !== undefined &&
     previous.sessionId === event.sessionId &&
@@ -597,6 +599,7 @@ function appendLiveHermesEvents(
 ) {
   let currentAssistant: AgentChatTurn | null = null;
   let transcriptOwnerMessageId: string | undefined;
+  let lastInterimAssistant: AgentChatTurn | null = null;
   let idlessToolSequence = 0;
   const toolOnlyAssistantRows = new Set<AgentChatTurn>();
   const completedMessageIds = new Set<string>();
@@ -646,7 +649,9 @@ function appendLiveHermesEvents(
       const syntheticTurn = pendingSyntheticTurns.shift();
       if (!syntheticTurn) break;
       turns.push(syntheticTurn);
-      if (syntheticTurn.role !== "assistant") currentAssistant = null;
+      if (syntheticTurn.role !== "assistant") {
+        currentAssistant = null;
+      }
     }
 
     // A gateway suspension can drop tool.complete while leaving tool.start in
@@ -704,18 +709,65 @@ function appendLiveHermesEvents(
           currentAssistant = messageId
             ? identifiedAssistantTurn(messageId, event.receivedAt)
             : createAssistantTurn(turns, event.receivedAt);
+          lastInterimAssistant = null;
           currentAssistant.status = "running";
           break;
         }
-        currentAssistant = messageId
-          ? identifiedAssistantTurn(messageId, event.receivedAt)
-          : (currentAssistant ?? createAssistantTurn(turns, event.receivedAt));
+        if (event.interim) {
+          const interimText = event.delta ?? "";
+          if (interimText) {
+            currentAssistant = messageId
+              ? identifiedAssistantTurn(messageId, event.receivedAt)
+              : (currentAssistant ?? createAssistantTurn(turns, event.receivedAt));
+            completeAssistantTextPart(currentAssistant.parts, interimText, messageId);
+            lastInterimAssistant = currentAssistant;
+            if (hasActiveNonTextPart(currentAssistant.parts)) {
+              currentAssistant.status = "running";
+            } else {
+              currentAssistant.status = "complete";
+              currentAssistant = null;
+            }
+          }
+          break;
+        }
         if (!event.complete) {
+          currentAssistant = messageId
+            ? identifiedAssistantTurn(messageId, event.receivedAt)
+            : (currentAssistant ?? createAssistantTurn(turns, event.receivedAt));
           currentAssistant.status = "running";
           appendAssistantTextPart(currentAssistant.parts, event.delta ?? "", "running", messageId);
           break;
         }
+        currentAssistant = messageId
+          ? identifiedAssistantTurn(messageId, event.receivedAt)
+          : currentAssistant;
         const text = event.delta ?? "";
+        const previewText = lastInterimAssistant
+          ? assistantTextFromParts(lastInterimAssistant.parts)
+          : "";
+        const settlesInterimPreview = Boolean(
+          event.responsePreviewed &&
+            lastInterimAssistant &&
+            text &&
+            (text.startsWith(previewText) || previewText.startsWith(text)),
+        );
+        if (
+          currentAssistant !== null &&
+          currentAssistant === lastInterimAssistant &&
+          !settlesInterimPreview
+        ) {
+          currentAssistant.status = hasActiveNonTextPart(currentAssistant.parts)
+            ? "running"
+            : "complete";
+          currentAssistant = null;
+        }
+        if (!currentAssistant && settlesInterimPreview && lastInterimAssistant) {
+          currentAssistant = lastInterimAssistant;
+        }
+        // A non-preview final following sealed interim commentary is a new
+        // assistant bubble. If Hermes reused the interim message id, do not
+        // reopen that completed render identity for different prose.
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
         // A billing failure is recognizable from its "Error:" text prefix; a
         // context overflow is not, so only fold it when the turn actually
         // failed — an ordinary sentence that mentions "context length" stays prose.
@@ -752,6 +804,7 @@ function appendLiveHermesEvents(
         completeRunningParts(currentAssistant.parts);
         if (messageId) completedMessageIds.add(messageId);
         currentAssistant = null;
+        lastInterimAssistant = null;
         break;
       }
 
@@ -1342,6 +1395,13 @@ function reconcilePersistedStructuredPartInPlace(
   }
 }
 
+function assistantTextFromParts(parts: AgentChatPart[]) {
+  return parts
+    .filter((part): part is AgentChatTextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
 function clonePersistedStructuredPart(
   persisted: PersistedReconciliationPart,
   messageId: string,
@@ -1476,6 +1536,21 @@ function completeRunningParts(parts: AgentChatPart[]) {
     if (part.type === "sudo" && part.status === "pending") part.status = "resolved";
     if (part.type === "secret" && part.status === "pending") part.status = "resolved";
   }
+}
+
+function hasActiveNonTextPart(parts: AgentChatPart[]) {
+  return parts.some((part) => {
+    if (part.type === "reasoning" || part.type === "tool") return part.status === "running";
+    if (
+      part.type === "approval" ||
+      part.type === "clarify" ||
+      part.type === "sudo" ||
+      part.type === "secret"
+    ) {
+      return part.status === "pending";
+    }
+    return false;
+  });
 }
 
 function upsertToolPart(

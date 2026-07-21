@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import gatewayGotchas from "../../docs/hermes-gateway-gotchas.md?raw";
-import pinNote from "../../docs/hermes-upstream-v2026.6.19.md?raw";
+import pinNote from "../../docs/hermes-upstream-v2026.7.20.md?raw";
 import upgradeChecklist from "../../docs/hermes-upgrade-checklist.md?raw";
 import macBundler from "../../scripts/bundle-hermes-runtime.sh?raw";
 import windowsBundler from "../../scripts/bundle-hermes-runtime-windows.ps1?raw";
@@ -19,7 +19,7 @@ describe("June Hermes compatibility patch", () => {
       "tools/mcp_tool.py",
       "tui_gateway/server.py",
       "utils.py",
-      "gateway/platforms/telegram.py",
+      "plugins/platforms/telegram/adapter.py",
     ]) {
       const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(2);
@@ -88,6 +88,10 @@ describe("June Hermes compatibility patch", () => {
     expect(protocolSmoke).toContain(
       "# An unchanged history with an identical final-response string",
     );
+    expect(patcher).not.toContain('lambda data: _emit("approval.request", sid, data)');
+    expect(
+      patcher.match(/lambda data: _emit_approval_request\(sid, data\)/g)?.length,
+    ).toBeGreaterThan(3);
     expect(patcher).toContain('disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],');
     expect(patcher).toContain('"disabled_toolsets": (cfg.get("agent") or {}).get');
     expect(patcher).toContain('user_disabled = agent_cfg.get("disabled_toolsets") or []');
@@ -107,6 +111,13 @@ describe("June Hermes compatibility patch", () => {
       expect(bundler).toContain("--upstream-root");
       expect(bundler).toContain("PATCHSET");
       expect(bundler).toContain("--verify");
+      const dashboardBuild = bundler.indexOf("prebuilding dashboard web UI");
+      const appsPrune = Math.max(
+        bundler.lastIndexOf("$out/hermes-agent/apps"),
+        bundler.lastIndexOf('(Join-Path $agentDir "apps")'),
+      );
+      expect(dashboardBuild).toBeGreaterThan(-1);
+      expect(appsPrune).toBeGreaterThan(dashboardBuild);
     }
   });
 
