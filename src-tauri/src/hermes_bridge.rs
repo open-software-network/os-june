@@ -1454,6 +1454,15 @@ pub fn start_on_app_start(app: &tauri::App) {
                     "failed to start Hermes messaging gateway during app startup: {}",
                     error.message
                 );
+                // Bridge is up, but reconciliation failed. An inherited LaunchAgent
+                // may still be pointed at the previous process's dead proxy port.
+                // Disable it rather than leaving scheduled routines failing silently.
+                disable_inherited_gateway_after_failed_app_start(
+                    &app,
+                    &bridge,
+                    "gateway reconciliation failed",
+                )
+                .await;
             }
         }
     });
