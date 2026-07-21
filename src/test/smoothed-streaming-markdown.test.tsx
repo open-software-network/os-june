@@ -1,7 +1,10 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { SmoothedStreamingMarkdown } from "../components/agent/SmoothedStreamingMarkdown";
+import {
+  holdbackSafeEnd,
+  SmoothedStreamingMarkdown,
+} from "../components/agent/SmoothedStreamingMarkdown";
 
 describe("SmoothedStreamingMarkdown", () => {
   afterEach(() => {
@@ -96,6 +99,48 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(words[1]?.textContent).toBe("world");
   });
 
+  it("withholds an incomplete trailing construct until it closes, never flashing the syntax", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+
+    // The unclosed **bold is held back, so only the safe prefix shows and the
+    // literal ** never reaches the DOM.
+    view.rerender(<SmoothedStreamingMarkdown markdown="before **bold" running />);
+    // The renderer trims the paragraph's trailing space; the point is that
+    // "bold" and the literal ** are both withheld.
+    expect(view.container.textContent).toBe("before");
+    expect(view.container.textContent).not.toContain("**");
+
+    // Once the closing ** streams in, the word moves into <strong> on a fresh
+    // reveal instead of remounting a already-visible span.
+    view.rerender(<SmoothedStreamingMarkdown markdown="before **bold** after" running />);
+    act(() => vi.advanceTimersByTime(80));
+    expect(view.container.querySelector("strong")?.textContent).toBe("bold");
+    expect(view.container.textContent).toBe("before bold after");
+    expect(view.container.textContent).not.toContain("**");
+  });
+
+  it("reveals an over-long unclosed construct as literal text", () => {
+    vi.useFakeTimers();
+    const long = "x".repeat(200);
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+
+    view.rerender(<SmoothedStreamingMarkdown markdown={`start *${long}`} running />);
+
+    // Past the holdback cap, an unclosed * is literal usage — never stall.
+    expect(view.container.textContent).toBe(`start *${long}`);
+  });
+
+  it("flushes a withheld tail when the turn completes", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+    view.rerender(<SmoothedStreamingMarkdown markdown="keep **open" running />);
+    expect(view.container.textContent).toBe("keep");
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="keep **open" running={false} />);
+    expect(view.container.textContent).toBe("keep **open");
+  });
+
   it("notifies the transcript when delayed text becomes visible", () => {
     vi.useFakeTimers();
     const onVisibleMarkdownChange = vi.fn();
@@ -119,5 +164,27 @@ describe("SmoothedStreamingMarkdown", () => {
     act(() => vi.advanceTimersByTime(80));
 
     expect(onVisibleMarkdownChange).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("holdbackSafeEnd", () => {
+  it("does not hold a list-marker line", () => {
+    const text = "- item";
+    expect(holdbackSafeEnd(text)).toBe(text.length);
+  });
+
+  it("does not hold inside an open code fence", () => {
+    const text = "```\ncode *unclosed";
+    expect(holdbackSafeEnd(text)).toBe(text.length);
+  });
+
+  it("holds an incomplete link", () => {
+    const text = "see [docs](https://exa";
+    expect(holdbackSafeEnd(text)).toBe("see ".length);
+  });
+
+  it("does not hold a plain bracket", () => {
+    const text = "item [1] done";
+    expect(holdbackSafeEnd(text)).toBe(text.length);
   });
 });
