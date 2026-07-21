@@ -11,14 +11,15 @@ Environment:
 
 Checks:
 
-- PASS - Managed installer alias regression coverage - the focused production-installer test proved the verified uv CPython alias is removed before relocation and a mismatched alias is retained while installation fails.
-- BLOCKED - Native connector walkthrough - the worktree app did not start because the host is missing the pinned pnpm 11.9.0 executable at `/Users/sarascahya/Library/pnpm/.tools/@pnpm+macos-arm64/11.9.0/bin/pnpm` (`ENOENT`). Therefore the existing GitHub connection, sandboxed repository list, issue read, pull request read, integrity files, and absence of broken aliases could not be inspected live.
+- PASS - Managed installer alias regression coverage - production-command fixtures cover the expected, missing, duplicate, and mismatched uv CPython aliases. Missing and duplicate aliases exit unsuccessfully before `python/current` is created; the duplicate fixture retains both aliases and the selected versioned CPython directory.
+- PASS - Full repository gate - `make verify` ran with the supplied pinned pnpm shim. Frontend tests reported 194 files passed, 3,086 tests passed, and 2 skipped; June API tests reported 145 passed with no failures.
+- BLOCKED - Native connector walkthrough - the worktree app, isolated local June API, and Vite server launched successfully. The native UI automation session was intentionally stopped before an authenticated repository, issue, or pull-request read could be performed. No GitHub write action, token, device code, provider payload, or repository content was accessed or recorded.
 
 Artifacts:
 
-- No recording or screenshots: June did not reach an app window.
-- Terminal launch output recorded the pinned-pnpm `ENOENT` before `beforeDevCommand` completed.
+- No recording or screenshots: the live walkthrough was stopped before interaction.
+- Terminal launch output recorded the isolated June API, Vite at `127.0.0.1:1422`, and Hermes spawning under the macOS Seatbelt write-jail.
 
 Gaps:
 
-- Live native QA remains pending a host repair that restores the repository-pinned pnpm CLI. No connector write action, token, device code, provider payload, or repository content was accessed or recorded.
+- The running worktree app remains open for a manual, signed-in read-only repository, issue, and pull-request walkthrough. The automated run did not prove the managed runtime seal's visible success state or the GitHub read UI.

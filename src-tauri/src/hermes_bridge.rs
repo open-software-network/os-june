@@ -18563,9 +18563,17 @@ esac
         }
 
         #[cfg(unix)]
+        enum ManagedInstallerAliasFixture<'a> {
+            Expected,
+            Missing,
+            Duplicate,
+            Mismatched(&'a Path),
+        }
+
+        #[cfg(unix)]
         fn run_managed_installer_alias_fixture(
             root: &Path,
-            mismatched_alias_target: Option<&Path>,
+            alias_fixture: ManagedInstallerAliasFixture<'_>,
         ) -> std::process::ExitStatus {
             use std::os::unix::fs::PermissionsExt;
 
@@ -18591,8 +18599,21 @@ if [ "${1:-}" = "python" ] && [ "${2:-}" = "install" ]; then
   /bin/mkdir -p "$actual/bin" "$actual/lib/python3.11/site-packages"
   printf '#!/bin/sh\nexit 0\n' > "$actual/bin/python3.11"
   /bin/chmod 755 "$actual/bin/python3.11"
-  target="${JUNE_TEST_UV_ALIAS_TARGET:-$actual}"
-  /bin/ln -s "$target" "$root/cpython-3.11-macos-aarch64-none"
+  case "${JUNE_TEST_UV_ALIAS_MODE:-expected}" in
+    expected)
+      /bin/ln -s "$actual" "$root/cpython-3.11-macos-aarch64-none"
+      ;;
+    missing)
+      ;;
+    duplicate)
+      /bin/ln -s "$actual" "$root/cpython-3.11-macos-aarch64-none"
+      /bin/ln -s "$actual" "$root/cpython-3.11-macos-aarch64-shared"
+      ;;
+    mismatched)
+      /bin/ln -s "${JUNE_TEST_UV_ALIAS_TARGET:?}" "$root/cpython-3.11-macos-aarch64-none"
+      ;;
+    *) exit 65 ;;
+  esac
   exit 0
 fi
 if [ "${1:-}" = "sync" ]; then
@@ -18610,8 +18631,19 @@ exit 64
 
             let mut command =
                 managed_installer_command(&runtime, &install, &hermes_home, &uv, &patch);
-            if let Some(target) = mismatched_alias_target {
-                command.env("JUNE_TEST_UV_ALIAS_TARGET", target);
+            match alias_fixture {
+                ManagedInstallerAliasFixture::Expected => {}
+                ManagedInstallerAliasFixture::Missing => {
+                    command.env("JUNE_TEST_UV_ALIAS_MODE", "missing");
+                }
+                ManagedInstallerAliasFixture::Duplicate => {
+                    command.env("JUNE_TEST_UV_ALIAS_MODE", "duplicate");
+                }
+                ManagedInstallerAliasFixture::Mismatched(target) => {
+                    command
+                        .env("JUNE_TEST_UV_ALIAS_MODE", "mismatched")
+                        .env("JUNE_TEST_UV_ALIAS_TARGET", target);
+                }
             }
             command
                 .stdout(Stdio::null())
@@ -18624,7 +18656,10 @@ exit 64
         #[test]
         fn managed_installer_removes_verified_uv_python_alias_before_relocation() {
             let temp = tempfile::tempdir().expect("temp runtime");
-            let status = run_managed_installer_alias_fixture(temp.path(), None);
+            let status = run_managed_installer_alias_fixture(
+                temp.path(),
+                ManagedInstallerAliasFixture::Expected,
+            );
             let python = temp.path().join("runtime/python");
 
             assert!(status.success());
@@ -18639,14 +18674,51 @@ exit 64
             let unrelated = temp
                 .path()
                 .join("outside/cpython-3.11.15-macos-aarch64-none");
-            let status = run_managed_installer_alias_fixture(temp.path(), Some(&unrelated));
+            let status = run_managed_installer_alias_fixture(
+                temp.path(),
+                ManagedInstallerAliasFixture::Mismatched(&unrelated),
+            );
             let alias = temp
                 .path()
                 .join("runtime/python/cpython-3.11-macos-aarch64-none");
 
             assert!(!status.success());
             assert!(fs::symlink_metadata(&alias).is_ok());
+            assert!(temp
+                .path()
+                .join("runtime/python/cpython-3.11.15-macos-aarch64-none")
+                .is_dir());
             assert!(!temp.path().join("runtime/python/current").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_installer_rejects_missing_uv_python_alias_before_relocation() {
+            let temp = tempfile::tempdir().expect("temp runtime");
+            let status = run_managed_installer_alias_fixture(
+                temp.path(),
+                ManagedInstallerAliasFixture::Missing,
+            );
+
+            assert!(!status.success());
+            assert!(!temp.path().join("runtime/python/current").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_installer_rejects_duplicate_uv_python_aliases_before_relocation() {
+            let temp = tempfile::tempdir().expect("temp runtime");
+            let status = run_managed_installer_alias_fixture(
+                temp.path(),
+                ManagedInstallerAliasFixture::Duplicate,
+            );
+            let python = temp.path().join("runtime/python");
+
+            assert!(!status.success());
+            assert!(fs::symlink_metadata(python.join("cpython-3.11-macos-aarch64-none")).is_ok());
+            assert!(fs::symlink_metadata(python.join("cpython-3.11-macos-aarch64-shared")).is_ok());
+            assert!(python.join("cpython-3.11.15-macos-aarch64-none").is_dir());
+            assert!(!python.join("current").exists());
         }
 
         #[test]
