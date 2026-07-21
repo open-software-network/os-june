@@ -85,11 +85,6 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Optional list of label names to apply.",
                 },
-                "assignees": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional list of GitHub login names to assign.",
-                },
             },
             "required": ["owner", "repo", "title"],
         },
@@ -322,13 +317,6 @@ def build_payload(name: Any, account: str, arguments: dict[str, Any]) -> dict[st
         ]
         if labels:
             payload["labels"] = labels
-        assignees = [
-            str(a).strip()
-            for a in (arguments.get("assignees") or [])
-            if str(a).strip()
-        ]
-        if assignees:
-            payload["assignees"] = assignees
     elif name == "update_issue":
         owner = str(arguments.get("owner") or "").strip()
         if not owner:

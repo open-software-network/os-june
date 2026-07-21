@@ -2292,16 +2292,6 @@ impl ConnectorMcpConfigs {
     fn has_interactive_servers(&self) -> bool {
         self.base.is_some() || self.notion.is_some() || self.notion_actions.is_some()
     }
-
-    /// Whether any GitHub server (read or actions) is registered. Used to
-    /// decide whether to include the GitHub SOUL.md paragraph and to gate
-    /// the `sync_june_connector_mcps` early-exit check.
-    fn has_github_servers(&self) -> bool {
-        self.base
-            .as_ref()
-            .map(|base| base.github.is_some() || base.github_actions.is_some())
-            .unwrap_or(false)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12572,13 +12562,12 @@ async fn describe_github_action(
             let title = require_body_str(body, "title")?;
             let title = approval_field(&title);
             let labels = display_list(&body_string_list(body, "labels"));
-            let assignees = display_list(&body_string_list(body, "assignees"));
             let description =
                 approval_body_field(body_str(body, "body").as_deref().unwrap_or("(none)"));
             Ok((
                 format!("Create a GitHub issue in {owner}/{repo}: {title}"),
                 format!(
-                    "Repo: {owner}/{repo} | Title: {title} | Labels: {labels} | Assignees: {assignees} | Body: {description}"
+                    "Repo: {owner}/{repo} | Title: {title} | Labels: {labels} | Body: {description}"
                 ),
             ))
         }
@@ -13553,11 +13542,14 @@ async fn dispatch_connector_route(
         // check (ADR-0036). Token refresh follows the standard force-refresh-
         // once-and-retry pattern via `connector_github_call`.
         "/v1/github/list_repositories" => {
-            let repos = connector_github_call(app, account_id, |token| async move {
+            let list = connector_github_call(app, account_id, |token| async move {
                 crate::connectors::github::list_repositories(&token).await
             })
             .await?;
-            connector_json(serde_json::json!({ "repositories": connector_json(repos)? }))
+            connector_json(serde_json::json!({
+                "repositories": connector_json(list.repositories)?,
+                "truncated": list.truncated,
+            }))
         }
         "/v1/github/search_issues" => {
             let query = require_body_str(body, "query")?;

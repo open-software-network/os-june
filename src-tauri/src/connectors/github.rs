@@ -456,61 +456,151 @@ struct RepoWire {
     description: Option<String>,
 }
 
-/// List all repositories accessible via the user's GitHub App installations.
-/// Calls `GET /user/installations` then `GET /user/installations/{id}/repositories`
-/// for each installation. This only returns repositories accessible to THIS
-/// app's installations (user-to-server scope).
-pub async fn list_repositories(
-    access_token: &str,
-) -> Result<Vec<GithubRepository>, GithubApiError> {
-    let response = github_api_request(
-        access_token,
-        reqwest::Method::GET,
-        "https://api.github.com/user/installations",
-    )
-    .send()
-    .await
-    .map_err(|e| GithubApiError::Network(e.to_string()))?;
-    let status = response.status().as_u16();
-    if !response.status().is_success() {
-        let message = error_message_from_response(response).await;
-        return Err(classify_api_error(status, message));
-    }
-    let installations: InstallationsWire = response
-        .json()
-        .await
-        .map_err(|e| GithubApiError::Network(e.to_string()))?;
+/// Maximum pages fetched per paginated GitHub endpoint call (100 items/page,
+/// so at most 500 installations or 500 repos per installation).
+const PAGINATION_MAX_PAGES: u32 = 5;
+const PAGINATION_PER_PAGE: u32 = 100;
 
-    let mut repos: Vec<GithubRepository> = Vec::new();
-    for installation in installations.installations {
+/// Result of a paginated page-accumulation run. Carries the accumulated items
+/// and whether the safety cap was reached before exhausting all pages.
+pub struct PageAccumulation {
+    pub count: usize,
+    pub truncated: bool,
+}
+
+/// Pure helper: given the number of items on the latest page (`page_len`) and
+/// the page number just fetched (`page`), decide whether to continue to the
+/// next page. Returns `(fetch_next, truncated)`.
+///
+/// - If `page_len < per_page`, the API has no more items — stop, not truncated.
+/// - If `page == max_pages`, we hit the cap with a full page — stop, truncated.
+/// - Otherwise, continue to `page + 1`.
+pub fn pagination_next(
+    page_len: usize,
+    page: u32,
+    per_page: usize,
+    max_pages: u32,
+) -> (bool, bool) {
+    if page_len < per_page {
+        // Last page (partial or empty): no more data.
+        (false, false)
+    } else if page >= max_pages {
+        // Full page but safety cap reached — more pages may remain.
+        (false, true)
+    } else {
+        (true, false)
+    }
+}
+
+/// List of repositories reachable through the user's GitHub App installations,
+/// with a `truncated` flag that is `true` when the safety-cap cut enumeration
+/// short (meaning more items exist beyond what was returned).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubRepositoryList {
+    pub repositories: Vec<GithubRepository>,
+    /// `true` when the safety page cap was reached with more pages remaining,
+    /// meaning the list is incomplete. Users with more than 500 installations
+    /// or more than 500 repositories in a single installation will see this.
+    pub truncated: bool,
+}
+
+/// List all repositories accessible via the user's GitHub App installations.
+/// Paginates both `GET /user/installations` (up to 5 pages × 100 = 500
+/// installations) and `GET /user/installations/{id}/repositories` (same cap
+/// per installation). Returns `truncated: true` when the safety cap cuts
+/// enumeration short.
+pub async fn list_repositories(access_token: &str) -> Result<GithubRepositoryList, GithubApiError> {
+    // --- Paginate installations -----------------------------------------------
+    let mut installations: Vec<InstallationWire> = Vec::new();
+    let mut install_truncated = false;
+    'install_pages: for page in 1..=PAGINATION_MAX_PAGES {
         let url = format!(
-            "https://api.github.com/user/installations/{}/repositories",
-            installation.id
+            "https://api.github.com/user/installations?per_page={}&page={}",
+            PAGINATION_PER_PAGE, page
         );
-        let resp = github_api_request(access_token, reqwest::Method::GET, &url)
+        let response = github_api_request(access_token, reqwest::Method::GET, &url)
             .send()
             .await
             .map_err(|e| GithubApiError::Network(e.to_string()))?;
-        let install_status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let message = error_message_from_response(resp).await;
-            return Err(classify_api_error(install_status, message));
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let message = error_message_from_response(response).await;
+            return Err(classify_api_error(status, message));
         }
-        let install_repos: InstallationReposWire = resp
+        let wire: InstallationsWire = response
             .json()
             .await
             .map_err(|e| GithubApiError::Network(e.to_string()))?;
-        for repo in install_repos.repositories {
-            repos.push(GithubRepository {
-                full_name: repo.full_name,
-                private: repo.private,
-                default_branch: repo.default_branch,
-                html_url: repo.html_url,
-                description: repo.description,
-            });
+        let page_len = wire.installations.len();
+        installations.extend(wire.installations);
+        let (fetch_next, truncated) = pagination_next(
+            page_len,
+            page,
+            PAGINATION_PER_PAGE as usize,
+            PAGINATION_MAX_PAGES,
+        );
+        if truncated {
+            install_truncated = true;
+            break 'install_pages;
+        }
+        if !fetch_next {
+            break 'install_pages;
         }
     }
-    Ok(repos)
+
+    // --- For each installation, paginate repositories -------------------------
+    let mut repos: Vec<GithubRepository> = Vec::new();
+    let mut repo_truncated = false;
+    for installation in installations {
+        'repo_pages: for page in 1..=PAGINATION_MAX_PAGES {
+            let url = format!(
+                "https://api.github.com/user/installations/{}/repositories?per_page={}&page={}",
+                installation.id, PAGINATION_PER_PAGE, page
+            );
+            let resp = github_api_request(access_token, reqwest::Method::GET, &url)
+                .send()
+                .await
+                .map_err(|e| GithubApiError::Network(e.to_string()))?;
+            let install_status = resp.status().as_u16();
+            if !resp.status().is_success() {
+                let message = error_message_from_response(resp).await;
+                return Err(classify_api_error(install_status, message));
+            }
+            let install_repos: InstallationReposWire = resp
+                .json()
+                .await
+                .map_err(|e| GithubApiError::Network(e.to_string()))?;
+            let page_len = install_repos.repositories.len();
+            for repo in install_repos.repositories {
+                repos.push(GithubRepository {
+                    full_name: repo.full_name,
+                    private: repo.private,
+                    default_branch: repo.default_branch,
+                    html_url: repo.html_url,
+                    description: repo.description,
+                });
+            }
+            let (fetch_next, truncated) = pagination_next(
+                page_len,
+                page,
+                PAGINATION_PER_PAGE as usize,
+                PAGINATION_MAX_PAGES,
+            );
+            if truncated {
+                repo_truncated = true;
+                break 'repo_pages;
+            }
+            if !fetch_next {
+                break 'repo_pages;
+            }
+        }
+    }
+
+    Ok(GithubRepositoryList {
+        repositories: repos,
+        truncated: install_truncated || repo_truncated,
+    })
 }
 
 // ----- Issue search -----------------------------------------------------------
@@ -1323,5 +1413,68 @@ mod tests {
             classify_api_error(403, "Forbidden".to_string()),
             GithubApiError::Forbidden
         ));
+    }
+
+    // ----- pagination_next tests -----------------------------------------------
+
+    #[test]
+    fn pagination_next_partial_page_means_done_not_truncated() {
+        // Fewer items than per_page: we've seen the last page.
+        let (fetch_next, truncated) = pagination_next(42, 1, 100, 5);
+        assert!(!fetch_next);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn pagination_next_empty_page_means_done_not_truncated() {
+        let (fetch_next, truncated) = pagination_next(0, 1, 100, 5);
+        assert!(!fetch_next);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn pagination_next_full_page_below_cap_means_continue() {
+        // Full page and not yet at the cap: fetch the next page.
+        let (fetch_next, truncated) = pagination_next(100, 3, 100, 5);
+        assert!(fetch_next);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn pagination_next_full_page_at_cap_means_truncated() {
+        // Full page at the safety cap: stop and signal truncation.
+        let (fetch_next, truncated) = pagination_next(100, 5, 100, 5);
+        assert!(!fetch_next);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn pagination_next_full_page_on_first_page_at_cap_one_is_truncated() {
+        // Edge case: cap is 1 and we got a full page.
+        let (fetch_next, truncated) = pagination_next(100, 1, 100, 1);
+        assert!(!fetch_next);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn github_repository_list_serializes_camel_case_with_truncated() {
+        let list = GithubRepositoryList {
+            repositories: vec![GithubRepository {
+                full_name: "owner/repo".to_string(),
+                private: false,
+                default_branch: "main".to_string(),
+                html_url: "https://github.com/owner/repo".to_string(),
+                description: None,
+            }],
+            truncated: true,
+        };
+        let json = serde_json::to_value(&list).unwrap();
+        assert_eq!(json["truncated"], true);
+        assert!(json["repositories"].is_array());
+        let repo = &json["repositories"][0];
+        // camelCase field names
+        assert!(repo.get("fullName").is_some());
+        assert!(repo.get("defaultBranch").is_some());
+        assert!(repo.get("htmlUrl").is_some());
     }
 }

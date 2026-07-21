@@ -47,7 +47,13 @@ TOOLS: list[dict[str, Any]] = [
         "name": "list_repositories",
         "description": (
             "List the repositories reachable through the GitHub App "
-            "installation for the connected user. " + INJECTION_WARNING
+            "installation for the connected user. The response contains a "
+            "`repositories` array and a `truncated` boolean flag. When "
+            "`truncated` is true the list is incomplete because the safety "
+            "page cap was reached (more than 500 installations or more than "
+            "500 repositories in a single installation); in that case, inform "
+            "the user that not all repositories could be listed. "
+            + INJECTION_WARNING
         ),
         "inputSchema": {
             "type": "object",
