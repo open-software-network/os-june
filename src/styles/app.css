@@ -6981,6 +6981,42 @@ button.agent-user-attachment:hover {
   font-size: var(--fs-sm);
 }
 
+/* The composer model pill also carries the current thinking level, dimmed
+ * like a secondary value next to the model name. */
+.agent-composer-model-trigger-level {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+/* The Effort submenu row inside the model popover: label on the left,
+ * current level + chevron on the right, like the upstream desktop's model
+ * menu. */
+.agent-composer-model-row-value {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+/* The effort submenu itself: a compact flyout with plain level rows and a
+ * muted cost note under them. */
+.agent-composer-model-effort-panel {
+  width: 180px;
+}
+
+.agent-composer-model-effort-panel .agent-composer-model-surface {
+  gap: var(--sp-1);
+  max-height: inherit;
+  padding: var(--sp-1);
+}
+
+.agent-composer-model-note {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
 /* Attach (+) and dictation (mic) are both quiet ghost buttons that round to a
  * squircle on hover, matching the send button. */
 .agent-composer-attach {

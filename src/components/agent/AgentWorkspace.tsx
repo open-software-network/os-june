@@ -305,6 +305,17 @@ import {
 } from "../../lib/local-generation";
 import { autoPillDesignation, preferredVisionFallbackModel } from "../../lib/suggested-models";
 import {
+  forgetSessionThinkingLevel,
+  loadThinkingLevel,
+  loadSessionThinkingLevels,
+  rememberSessionThinkingLevel,
+  saveThinkingLevel,
+  thinkingEffortForLevel,
+  thinkingLevelForEffort,
+  thinkingOptionForLevel,
+  type ThinkingLevel,
+} from "../../lib/thinking-level";
+import {
   AUTO_MODEL_ID,
   modelOptions,
   selectedModel as selectedModelOption,
@@ -2841,6 +2852,32 @@ export function AgentWorkspace({
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
   const composerModelPopoverRef = useRef<HTMLDivElement>(null);
   const composerModelSearchRef = useRef<HTMLInputElement>(null);
+  // Thinking level: how much June reasons before answering. The stored draft
+  // seeds new sessions (session.create's reasoning_effort). The efforts map
+  // records each session's OWN level — its creation pin, a pick made while
+  // the session was open, or the effort its live runtime last reported via
+  // session.info — persisted in localStorage so it survives relaunch; the
+  // composer shows a session's own level, never the machine-wide draft of
+  // whatever chat was retuned last. The applied map remembers which effort
+  // the session's CURRENT runtime is known to be at (acked config.set, the
+  // create pin, or a session.info report) so a turn only re-asserts when
+  // the runtime or the level actually changed (config.set writes the profile
+  // config each call, so it is not something to fire blindly on every send).
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => loadThinkingLevel());
+  const thinkingLevelRef = useRef(thinkingLevel);
+  const sessionThinkingEffortsRef = useRef<Record<string, ThinkingLevel> | null>(null);
+  // Lazy one-time load of the persisted per-session efforts (a ref, not
+  // state: async send/pick closures must read the latest map, not a render
+  // snapshot).
+  function sessionThinkingEfforts(): Record<string, ThinkingLevel> {
+    if (!sessionThinkingEffortsRef.current) {
+      sessionThinkingEffortsRef.current = loadSessionThinkingLevels();
+    }
+    return sessionThinkingEffortsRef.current;
+  }
+  const sessionThinkingAppliedRef = useRef<Record<string, { runtimeId: string; effort: string }>>(
+    {},
+  );
   // Attestation walkthrough URL served by the backend (same page as Settings
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
@@ -3367,6 +3404,14 @@ export function AgentWorkspace({
           selectedModelOption(generationModelOptions, activeGenerationModelId));
   }, [activeGenerationModelId, generationModelOptions]);
   const generationPrivacyBadge = generationModel ? modelPrivacyBadge(generationModel) : undefined;
+  // The control shows the open session's OWN level (its creation pin, a pick
+  // made while it was open, or what its runtime last reported) — never the
+  // draft, which would label every chat with whatever level was picked last
+  // anywhere. The draft only shows for a new session, where it applies.
+  const composerThinkingLevel: ThinkingLevel =
+    selectedHermesSessionId && !newSessionMode
+      ? (sessionThinkingEfforts()[selectedHermesSessionId] ?? thinkingLevel)
+      : thinkingLevel;
   // The model the image-attach banner offers to switch to: a vision + tool
   // capable model, preferring a known private vision pick (Kimi K2.6) over the
   // alphabetically-first vision model. See preferredVisionFallbackModel.
@@ -3773,7 +3818,7 @@ export function AgentWorkspace({
         }
         // Escape peels one layer at a time: the all-models panel first,
         // then the popover itself.
-        if (composerModelFlyout?.kind === "all") {
+        if (composerModelFlyout?.kind === "all" || composerModelFlyout?.kind === "effort") {
           setComposerModelFlyout(null);
           setModelSearch("");
         } else {
@@ -5008,6 +5053,63 @@ export function AgentWorkspace({
     return assistantTurnId.endsWith(":assistant")
       ? assistantTurnId.slice(0, -":assistant".length)
       : assistantTurnId;
+  }
+
+  // Picking a thinking level always updates the stored draft (the next new
+  // session opens with it). With a session open it ALSO retunes that session:
+  // the level is recorded per chat (persisted, so a relaunch still shows the
+  // session's own level), applied to the live runtime through config.set
+  // (setSessionReasoningEffort), and re-asserted on the next turn if the
+  // runtime is not up right now — see submitHermesSession, which only
+  // re-sends when the current runtime is not already known to be at it.
+  async function handleSelectThinkingLevel(level: ThinkingLevel) {
+    thinkingLevelRef.current = level;
+    setThinkingLevel(level);
+    saveThinkingLevel(level);
+    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+    if (!sessionId || isProvisionalHermesSessionId(sessionId)) return;
+    sessionThinkingEffortsRef.current = {
+      ...sessionThinkingEfforts(),
+      [sessionId]: level,
+    };
+    rememberSessionThinkingLevel(sessionId, level);
+    await applyThinkingLevelToSession(sessionId, level);
+  }
+
+  // Best-effort live retune of one session's reasoning effort. Skips the RPC
+  // entirely when the session's CURRENT runtime is already known to be at
+  // this effort — known via an acked config.set, the creation pin, or the
+  // runtime's own session.info report. Keying the skip on the runtime id (not
+  // just the session) keeps a replacement runtime honest: a resumed session
+  // gets re-asserted on its new runtime instead of trusting the old one's ack.
+  async function applyThinkingLevelToSession(
+    sessionId: string,
+    level: ThinkingLevel,
+    explicitRuntimeSessionId?: string,
+  ) {
+    const effort = thinkingEffortForLevel(level);
+    const runtimeSessionId = explicitRuntimeSessionId ?? runtimeSessionIdsRef.current[sessionId];
+    if (!runtimeSessionId) return;
+    const applied = sessionThinkingAppliedRef.current[sessionId];
+    if (applied?.runtimeId === runtimeSessionId && applied.effort === effort) {
+      return;
+    }
+    try {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      await createHermesMethods(gateway).setSessionReasoningEffort({
+        sessionId: runtimeSessionId,
+        effort,
+      });
+      sessionThinkingAppliedRef.current = {
+        ...sessionThinkingAppliedRef.current,
+        [sessionId]: { runtimeId: runtimeSessionId, effort },
+      };
+      setError(null);
+    } catch {
+      // The level is still recorded, so the next turn re-asserts it once
+      // the runtime is reachable; no banner for something the send flow
+      // quietly heals.
+    }
   }
 
   async function finishImageSlashGeneration(input: {
@@ -7022,6 +7124,33 @@ export function AgentWorkspace({
       // trace panel can reconstruct the session. recordInbound re-classifies and
       // sanitizes internally; nothing raw is retained.
       hermesTraceBuffer.recordInbound(liveEvent, { storedSessionId });
+      // The runtime's session.info is the source of truth for the effort a
+      // session ACTUALLY runs at (emitted after every build and on every
+      // live retune): hydrate the per-session record from it so the composer
+      // labels this chat with its own level after a relaunch or a change made
+      // outside June, and mark the reporting runtime as known-at that effort
+      // so the send flow never fires a redundant config.set against it.
+      if (event.type === "session.info") {
+        const reportedEffort = (event.payload as { reasoning_effort?: unknown } | undefined)
+          ?.reasoning_effort;
+        const reportedLevel = thinkingLevelForEffort(
+          typeof reportedEffort === "string" ? reportedEffort : undefined,
+        );
+        if (reportedLevel) {
+          sessionThinkingEffortsRef.current = {
+            ...sessionThinkingEfforts(),
+            [storedSessionId]: reportedLevel,
+          };
+          rememberSessionThinkingLevel(storedSessionId, reportedLevel);
+          sessionThinkingAppliedRef.current = {
+            ...sessionThinkingAppliedRef.current,
+            [storedSessionId]: {
+              runtimeId: runtimeSessionId,
+              effort: thinkingEffortForLevel(reportedLevel),
+            },
+          };
+        }
+      }
       if (storedClassified.kind === "unsupported") {
         // Feed the bounded per-session store so the user gets a recoverable
         // notice (when this is the active session) and developers get a
@@ -7376,8 +7505,12 @@ export function AgentWorkspace({
               // session.create treats `model` as a per-session override.
               // Under a named profile the override would silently bypass the
               // profile's own configured text model - the point of profiles -
-              // so it is omitted and the profile's model applies.
+              // so it is omitted and the profile's model applies. The
+              // thinking level's reasoning_effort follows the same rule.
               ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
+              ...(!underProfile
+                ? { reasoning_effort: thinkingEffortForLevel(thinkingLevelRef.current) }
+                : {}),
               ...(underProfile ? { profile: nextUnderProfileName } : {}),
             });
         const nextStoredSessionId =
@@ -7410,6 +7543,26 @@ export function AgentWorkspace({
     // message as an Up next item on the durable session.
     if (!modelTarget.targetStoredSessionId) {
       modelTarget.targetStoredSessionId = storedSessionId;
+    }
+    if (created && !createdUnderProfile) {
+      // Record the new session's level as its own (persisted, so a relaunch
+      // still shows this chat at its level), and mark its runtime as already
+      // at it: the create pinned this effort, so the re-assert path must not
+      // fire a redundant config.set on the session's first turns. Skipped
+      // under a named profile, where the profile's own config applies.
+      const createdLevel = thinkingLevelRef.current;
+      sessionThinkingEffortsRef.current = {
+        ...sessionThinkingEfforts(),
+        [storedSessionId]: createdLevel,
+      };
+      rememberSessionThinkingLevel(storedSessionId, createdLevel);
+      sessionThinkingAppliedRef.current = {
+        ...sessionThinkingAppliedRef.current,
+        [storedSessionId]: {
+          runtimeId: created.session_id ?? "",
+          effort: thinkingEffortForLevel(createdLevel),
+        },
+      };
     }
     const queuedIssueReport = options?.issueReport;
     if (queuedIssueReport && targetStoredSessionId) {
@@ -7512,6 +7665,14 @@ export function AgentWorkspace({
     if (!runtimeSessionId) {
       clearQueuedIssueReport();
       rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
+    }
+    // A thinking level picked while this session's runtime was down (or a
+    // live retune that failed) re-asserts here, before the prompt, so the
+    // turn runs at the level the control shows. No-op when the current
+    // runtime is already known to be at it (see applyThinkingLevelToSession).
+    const thinkingSessionLevel = sessionThinkingEfforts()[storedSessionId];
+    if (thinkingSessionLevel) {
+      await applyThinkingLevelToSession(storedSessionId, thinkingSessionLevel, runtimeSessionId);
     }
     const dispatchPreparedSession = async (): Promise<string | undefined> => {
       // Re-read after acquiring the cross-surface lock. NoteChat may have sent
@@ -9910,6 +10071,8 @@ export function AgentWorkspace({
     // id.
     forgetSessionMode(sessionId);
     commitSessionModelSelections(forgetSessionModelSelection(sessionId));
+    // Same for the session's thinking-level record.
+    forgetSessionThinkingLevel(sessionId);
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
@@ -11114,6 +11277,7 @@ export function AgentWorkspace({
                     ? autoPillDesignation(activeGenerationCostQuality)
                     : undefined
                 }
+                effort={thinkingOptionForLevel(composerThinkingLevel).label}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -11321,6 +11485,12 @@ export function AgentWorkspace({
                 void handleSelectGenerationModel(modelId, costQuality, options)
               }
               onCostQualityChange={handleCostQualityChange}
+              thinkingLevel={composerThinkingLevel}
+              onSelectThinking={(level) => {
+                setComposerModelFlyout(null);
+                setComposerModelOpen(false);
+                void handleSelectThinkingLevel(level);
+              }}
             />
           )
         ) : null}
