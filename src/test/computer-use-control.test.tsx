@@ -113,10 +113,11 @@ describe("ComputerUseControl", () => {
     expect(screen.getByText("Allow Screen recording")).toBeInTheDocument();
     expect(screen.getByText(/assigns Screen recording to June itself/)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", {
-        name: "Drag June Computer Use Driver to the open System Settings list",
+      screen.getByRole("button", {
+        name: "Drag June to the open System Settings list",
       }),
-    ).toBeNull();
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Drag June below/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open Screen recording settings" }));
     expect(tauriMocks.computerUseRequestPermissions).toHaveBeenCalledTimes(1);
     expect(tauriMocks.openPrivacySettings).toHaveBeenCalledWith("screenRecording");
@@ -138,13 +139,49 @@ describe("ComputerUseControl", () => {
     );
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
-    expect(await screen.findByText("June is not in the list?")).toBeInTheDocument();
+    expect(await screen.findByText("Driver is not in the list?")).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Drag June Computer Use Driver to the open System Settings list",
       }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Drag the helper below/)).toBeInTheDocument();
+  });
+
+  it("registers the permission owner represented by each drag card", async () => {
+    tauriMocks.computerUseStatus.mockResolvedValue(
+      status({ grantEnabled: true, state: "permission_missing" }),
+    );
+    const { unmount } = render(
+      <ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />,
+    );
+
+    await screen.findByRole("button", {
+      name: "Drag June Computer Use Driver to the open System Settings list",
+    });
+    await waitFor(() =>
+      expect(tauriMocks.setComputerUsePermissionDragBounds).toHaveBeenCalledWith(
+        expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+        "helper",
+      ),
+    );
+
+    unmount();
+    tauriMocks.setComputerUsePermissionDragBounds.mockClear();
+    tauriMocks.computerUseStatus.mockResolvedValue(
+      status({ grantEnabled: true, accessibility: true, state: "permission_missing" }),
+    );
+    render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+
+    await screen.findByRole("button", {
+      name: "Drag June to the open System Settings list",
+    });
+    await waitFor(() =>
+      expect(tauriMocks.setComputerUsePermissionDragBounds).toHaveBeenCalledWith(
+        expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+        "host",
+      ),
+    );
   });
 
   it("does not expose helper transport errors while permissions are incomplete", async () => {

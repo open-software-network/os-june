@@ -2673,9 +2673,10 @@ export async function computerUseRequestPermissions() {
 
 export async function setComputerUsePermissionDragBounds(
   bounds: RecordingPresenceBoundsDto | null,
+  target?: "helper" | "host",
 ) {
   return invoke<void>("set_computer_use_permission_drag_bounds", {
-    request: { bounds },
+    request: { bounds, target: bounds ? target : undefined },
   });
 }
 

@@ -166,19 +166,22 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
 
   useEffect(() => {
     const element = permissionDragRef.current;
-    if (!permissionsMissing || nextPermission !== "accessibility" || !element) {
+    if (!permissionsMissing || !element) {
       void setComputerUsePermissionDragBounds(null);
       return;
     }
 
     const publishBounds = () => {
       const bounds = element.getBoundingClientRect();
-      void setComputerUsePermissionDragBounds({
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-      }).catch((error) => setMessage(messageFromError(error)));
+      void setComputerUsePermissionDragBounds(
+        {
+          x: bounds.x,
+          y: bounds.y,
+          width: bounds.width,
+          height: bounds.height,
+        },
+        nextPermission === "accessibility" ? "helper" : "host",
+      ).catch((error) => setMessage(messageFromError(error)));
     };
     publishBounds();
 
@@ -318,31 +321,36 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
                   </button>
                 </div>
 
-                {nextPermission === "accessibility" ? (
-                  <div className="computer-use-permission-helper">
-                    <div className="computer-use-permission-helper-copy">
-                      <strong>June is not in the list?</strong>
-                      <p>
-                        Drag the helper below into the open System Settings list, then turn it on.
-                      </p>
-                    </div>
-                    <button
-                      ref={permissionDragRef}
-                      type="button"
-                      className="computer-use-permission-drag-card"
-                      aria-label="Drag June Computer Use Driver to the open System Settings list"
-                      onClick={() => void openPermissionSettings(nextPermission)}
-                    >
-                      <span className="computer-use-permission-drag-icon" aria-hidden>
-                        <IconTelevision size={20} />
-                      </span>
-                      <span className="computer-use-permission-drag-copy">
-                        <strong>June Computer Use Driver</strong>
-                        <span>Drag into System Settings</span>
-                      </span>
-                    </button>
+                <div className="computer-use-permission-helper">
+                  <div className="computer-use-permission-helper-copy">
+                    <strong>
+                      {nextPermission === "accessibility" ? "Driver" : "June"} is not in the list?
+                    </strong>
+                    <p>
+                      Drag {nextPermission === "accessibility" ? "the helper" : "June"} below into
+                      the open System Settings list, then turn it on.
+                    </p>
                   </div>
-                ) : null}
+                  <button
+                    ref={permissionDragRef}
+                    type="button"
+                    className="computer-use-permission-drag-card"
+                    aria-label={`Drag ${
+                      nextPermission === "accessibility" ? "June Computer Use Driver" : "June"
+                    } to the open System Settings list`}
+                    onClick={() => void openPermissionSettings(nextPermission)}
+                  >
+                    <span className="computer-use-permission-drag-icon" aria-hidden>
+                      <IconTelevision size={20} />
+                    </span>
+                    <span className="computer-use-permission-drag-copy">
+                      <strong>
+                        {nextPermission === "accessibility" ? "June Computer Use Driver" : "June"}
+                      </strong>
+                      <span>Drag into System Settings</span>
+                    </span>
+                  </button>
+                </div>
               </section>
             ) : null}
 

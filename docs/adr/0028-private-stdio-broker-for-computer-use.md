@@ -255,7 +255,7 @@ native request creates the outer June entry in System Settings.
 
 June therefore requests the next missing grant before opening its matching
 privacy pane. Accessibility setup names and, when needed, offers the nested
-helper as a drag source. Screen Recording setup names the outer June app and
-never tells the user to add the helper to that list. The private transport,
-helper parent authentication, capture execution, and app-owned broker policy are
-unchanged.
+helper as a drag source. Screen Recording setup names and offers the signed
+outer June app as its separate drag source; it never tells the user to add the
+helper to that list. The private transport, helper parent authentication,
+capture execution, and app-owned broker policy are unchanged.

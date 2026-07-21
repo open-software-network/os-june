@@ -8,6 +8,13 @@
 use serde::Deserialize;
 use std::{path::Path, sync::Mutex};
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum PermissionDragTarget {
+    Helper,
+    Host,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PermissionDragBounds {
@@ -36,17 +43,35 @@ impl PermissionDragBounds {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SetComputerUsePermissionDragBoundsRequest {
     bounds: Option<PermissionDragBounds>,
+    target: Option<PermissionDragTarget>,
 }
 
-static PERMISSION_DRAG_BOUNDS: Mutex<Option<PermissionDragBounds>> = Mutex::new(None);
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PermissionDragRegistration {
+    bounds: PermissionDragBounds,
+    target: PermissionDragTarget,
+}
+
+static PERMISSION_DRAG_REGISTRATION: Mutex<Option<PermissionDragRegistration>> = Mutex::new(None);
 
 #[tauri::command]
 pub(crate) fn set_computer_use_permission_drag_bounds(
     request: SetComputerUsePermissionDragBoundsRequest,
 ) {
-    if let Ok(mut current) = PERMISSION_DRAG_BOUNDS.lock() {
-        *current = request.bounds.filter(|bounds| bounds.is_valid());
+    if let Ok(mut current) = PERMISSION_DRAG_REGISTRATION.lock() {
+        *current = request
+            .bounds
+            .filter(|bounds| bounds.is_valid())
+            .zip(request.target)
+            .map(|(bounds, target)| PermissionDragRegistration { bounds, target });
     }
+}
+
+pub(crate) fn permission_drag_target() -> Option<PermissionDragTarget> {
+    PERMISSION_DRAG_REGISTRATION
+        .lock()
+        .ok()
+        .and_then(|registration| registration.map(|registration| registration.target))
 }
 
 pub(crate) fn app_bundle_path(executable: &Path) -> Option<&Path> {
@@ -58,7 +83,7 @@ pub(crate) fn app_bundle_path(executable: &Path) -> Option<&Path> {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::PERMISSION_DRAG_BOUNDS;
+    use super::PERMISSION_DRAG_REGISTRATION;
     use objc2::{
         define_class, msg_send,
         rc::Retained,
@@ -139,11 +164,11 @@ mod macos {
         let frame = content.frame();
         let web_x = point.x;
         let web_y = frame.size.height - point.y;
-        let hit = PERMISSION_DRAG_BOUNDS
+        let hit = PERMISSION_DRAG_REGISTRATION
             .lock()
             .ok()
-            .and_then(|bounds| *bounds)
-            .is_some_and(|bounds| bounds.contains(web_x, web_y));
+            .and_then(|registration| *registration)
+            .is_some_and(|registration| registration.bounds.contains(web_x, web_y));
         if !hit {
             return false;
         }
@@ -210,7 +235,31 @@ mod tests {
                 width: 0.0,
                 height: 20.0,
             }),
+            target: Some(PermissionDragTarget::Helper),
         });
-        assert_eq!(*PERMISSION_DRAG_BOUNDS.lock().expect("bounds lock"), None);
+        assert_eq!(
+            *PERMISSION_DRAG_REGISTRATION.lock().expect("bounds lock"),
+            None
+        );
+    }
+
+    #[test]
+    fn valid_registration_keeps_the_selected_bundle_target() {
+        set_computer_use_permission_drag_bounds(SetComputerUsePermissionDragBoundsRequest {
+            bounds: Some(PermissionDragBounds {
+                x: 1.0,
+                y: 2.0,
+                width: 30.0,
+                height: 40.0,
+            }),
+            target: Some(PermissionDragTarget::Host),
+        });
+        assert_eq!(permission_drag_target(), Some(PermissionDragTarget::Host));
+
+        set_computer_use_permission_drag_bounds(SetComputerUsePermissionDragBoundsRequest {
+            bounds: None,
+            target: None,
+        });
+        assert_eq!(permission_drag_target(), None);
     }
 }
