@@ -149,11 +149,16 @@ import {
   titleFromPrompt,
 } from "../lib/hermes-adapter";
 import {
+  createSingleFlight,
   loadRoutineRunWatchState,
   markRunsNotified,
   routineRunWatchStep,
   saveRoutineRunWatchState,
 } from "../lib/routine-run-notifications";
+import {
+  isPermissionGranted,
+  requestPermission,
+} from "@tauri-apps/plugin-notification";
 import {
   getActiveHermesProfileName,
   PROFILE_DATA_CHANGED_EVENT,
@@ -2093,37 +2098,58 @@ export function App() {
     if (appBlocked || !bootstrapped) return;
     let cancelled = false;
     let state = loadRoutineRunWatchState();
+    const runSingleFlight = createSingleFlight();
+
+    async function notificationPermissionGranted() {
+      let granted = await isPermissionGranted().catch(() => false);
+      if (!granted) {
+        const permission = await requestPermission().catch(() => "denied" as const);
+        granted = permission === "granted";
+      }
+      return granted;
+    }
 
     async function poll() {
-      let sessions: HermesSessionInfo[];
-      try {
-        sessions = await listScheduledRunSessions({ includeActive: true });
-      } catch {
-        // Bridge down (asleep, restarting): try again next tick.
-        return;
-      }
-      if (cancelled) return;
-      const { next, notices } = routineRunWatchStep(state, sessions, Date.now());
-      state = next;
-      // Mark a run seen only after its notification actually went out, so a
-      // transient delivery failure retries on the next tick instead of going
-      // silent forever.
-      const delivered: string[] = [];
-      await Promise.all(
-        notices.map((notice) =>
-          sendAppNotification({
-            title: notice.title,
-            body: notice.body,
-            sound: "Ping",
-            group: notice.jobId ? `june-routine-${notice.jobId}` : "june-routine",
-            sessionId: notice.sessionId,
-          })
-            .then(() => delivered.push(notice.sessionId))
-            .catch(() => {}),
-        ),
-      );
-      state = markRunsNotified(state, delivered);
-      saveRoutineRunWatchState(state);
+      await runSingleFlight(async () => {
+        let sessions: HermesSessionInfo[];
+        try {
+          sessions = await listScheduledRunSessions({ includeActive: true });
+        } catch {
+          // Bridge down (asleep, restarting): try again next tick.
+          return;
+        }
+        if (cancelled) return;
+        const { next, notices } = routineRunWatchStep(state, sessions, Date.now());
+        state = next;
+        if (notices.length === 0) {
+          saveRoutineRunWatchState(state);
+          return;
+        }
+        // Match agent/recording notification paths: ask for permission before
+        // sending, and only mark delivered after a successful send so a denied
+        // or failed delivery can retry while the run is still fresh.
+        if (!(await notificationPermissionGranted())) {
+          saveRoutineRunWatchState(state);
+          return;
+        }
+        if (cancelled) return;
+        const delivered: string[] = [];
+        await Promise.all(
+          notices.map((notice) =>
+            sendAppNotification({
+              title: notice.title,
+              body: notice.body,
+              sound: "Ping",
+              group: notice.jobId ? `june-routine-${notice.jobId}` : "june-routine",
+              sessionId: notice.sessionId,
+            })
+              .then(() => delivered.push(notice.sessionId))
+              .catch(() => {}),
+          ),
+        );
+        state = markRunsNotified(state, delivered);
+        saveRoutineRunWatchState(state);
+      });
     }
 
     void poll();

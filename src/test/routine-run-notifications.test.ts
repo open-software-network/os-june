@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  createSingleFlight,
   loadRoutineRunWatchState,
   markRunsNotified,
+  routineRunFreshnessTimestamp,
   routineRunWatchStep,
   saveRoutineRunWatchState,
   type RoutineRunWatchState,
@@ -127,6 +129,90 @@ describe("routineRunWatchStep", () => {
     const next = markRunsNotified(stepped.next, ["cron_job1_20260720_115000"]);
     expect(next.seen.has("cron_gone_20260101_000000")).toBe(false);
     expect(next.seen.has("cron_job1_20260720_115000")).toBe(true);
+  });
+});
+
+describe("routineRunFreshnessTimestamp", () => {
+  it("prefers ended_at over an older last_active for long-running routines", () => {
+    const timestamp = routineRunFreshnessTimestamp(
+      run("cron_job1_20260720_100000", {
+        last_active: "2026-07-20T10:05:00Z",
+        ended_at: "2026-07-20T11:55:00Z",
+      }),
+    );
+    expect(timestamp).toBe(Date.parse("2026-07-20T11:55:00Z"));
+  });
+
+  it("accepts endedAt camelCase and falls back to sessionTimestamp when no end time exists", () => {
+    expect(
+      routineRunFreshnessTimestamp(
+        run("cron_job1_20260720_115000", {
+          ended_at: null,
+          endedAt: "2026-07-20T11:50:00Z",
+          last_active: "2026-07-20T11:40:00Z",
+        }),
+      ),
+    ).toBe(Date.parse("2026-07-20T11:50:00Z"));
+
+    expect(
+      routineRunFreshnessTimestamp(
+        run("cron_job1_20260720_115000", {
+          ended_at: null,
+          endedAt: null,
+          last_active: "2026-07-20T11:40:00Z",
+        }),
+      ),
+    ).toBe(Date.parse("2026-07-20T11:40:00Z"));
+  });
+});
+
+describe("routineRunWatchStep freshness", () => {
+  it("notifies a just-ended long-running routine even when last_active is old", () => {
+    const { notices } = routineRunWatchStep(
+      PRIMED,
+      [
+        run("cron_job1_20260720_100000", {
+          last_active: "2026-07-20T10:05:00Z",
+          ended_at: "2026-07-20T11:55:00Z",
+        }),
+      ],
+      NOW,
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.sessionId).toBe("cron_job1_20260720_100000");
+  });
+});
+
+describe("createSingleFlight", () => {
+  it("skips overlapping work while one flight is in progress", async () => {
+    const runSingleFlight = createSingleFlight();
+    let resolveFirst!: () => void;
+    const firstDone = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let firstStarted = 0;
+    let secondStarted = 0;
+
+    const first = runSingleFlight(async () => {
+      firstStarted += 1;
+      await firstDone;
+    });
+    const second = runSingleFlight(async () => {
+      secondStarted += 1;
+    });
+
+    await expect(second).resolves.toBe(false);
+    resolveFirst();
+    await expect(first).resolves.toBe(true);
+    expect(firstStarted).toBe(1);
+    expect(secondStarted).toBe(0);
+
+    await expect(
+      runSingleFlight(async () => {
+        secondStarted += 1;
+      }),
+    ).resolves.toBe(true);
+    expect(secondStarted).toBe(1);
   });
 });
 
