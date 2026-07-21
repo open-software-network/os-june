@@ -45,6 +45,16 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).toBe("");
   });
 
+  it("withholds an ambiguous block prefix until its heading content arrives", () => {
+    const view = render(<SmoothedStreamingMarkdown markdown="#" running />);
+    expect(view.container.textContent).toBe("");
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="# Heading" running />);
+
+    expect(view.container.querySelector("h2")?.textContent).toBe("Heading");
+    expect(view.container.textContent).not.toContain("#");
+  });
+
   it("batches appended stream text into one whole-chunk reveal per beat", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="Hello" running repairProse />);
@@ -214,15 +224,24 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).not.toContain("**");
   });
 
-  it("reveals an over-long unclosed construct as literal text", () => {
+  it("reveals an over-long construct without letting a later close restart its fade", () => {
     vi.useFakeTimers();
     const long = "x".repeat(200);
     const view = render(<SmoothedStreamingMarkdown markdown="" running />);
 
     view.rerender(<SmoothedStreamingMarkdown markdown={`start *${long}`} running />);
 
-    // Past the holdback cap, an unclosed * is literal usage — never stall.
+    // Past the holdback cap, never stall. Fade spans are disabled for this
+    // rare fallback so a closing delimiter cannot remount the passage at
+    // opacity zero and replay the full 1.5 second fade.
     expect(view.container.textContent).toBe(`start *${long}`);
+    expect(view.container.querySelector(".agent-stream-word")).toBeNull();
+
+    view.rerender(<SmoothedStreamingMarkdown markdown={`start *${long}*`} running />);
+    act(() => vi.advanceTimersByTime(80));
+
+    expect(view.container.querySelector("em")?.textContent).toBe(long);
+    expect(view.container.querySelector(".agent-stream-word")).toBeNull();
   });
 
   it("does not withhold a whitespace-surrounded literal asterisk", () => {
@@ -270,7 +289,7 @@ describe("SmoothedStreamingMarkdown", () => {
 
     view.rerender(
       <SmoothedStreamingMarkdown
-        markdown={"| Metric | Q1 |\n| --- | --- |\n| Revenue | 1.2M |"}
+        markdown={"| Metric | Q1 |\n| --- | --- |\n| Revenue | 1.2M |\n"}
         running
       />,
     );
@@ -289,7 +308,7 @@ describe("SmoothedStreamingMarkdown", () => {
 
     view.rerender(
       <SmoothedStreamingMarkdown
-        markdown={"> | Metric | Q1 |\n> | --- | --- |\n> | Revenue | 1.2M |"}
+        markdown={"> | Metric | Q1 |\n> | --- | --- |\n> | Revenue | 1.2M |\n"}
         running
       />,
     );
@@ -336,6 +355,35 @@ describe("SmoothedStreamingMarkdown", () => {
 });
 
 describe("holdbackSafeEnd", () => {
+  it("never moves the safe reveal boundary backward for known streaming shapes", () => {
+    const targets = [
+      "before **bold** after",
+      "before *open `code` tail* after",
+      "before *open\n| close*\nnot a separator",
+      "before ~~struck~~ after",
+      "| Metric | Q1 |\n| --- | --- |\n| Revenue | 1.2M |",
+      "> | Metric | Q1 |\n> | --- | --- |\n> | Revenue | 1.2M |",
+      "```ts\nconst value = 1;\n```\nFollowing prose",
+      "# Heading",
+      "1. First item",
+    ];
+
+    for (const target of targets) {
+      let previous = 0;
+      for (let end = 1; end <= target.length; end += 1) {
+        const current = holdbackSafeEnd(target.slice(0, end));
+        expect(current, `${JSON.stringify(target)} at ${end}`).toBeGreaterThanOrEqual(previous);
+        previous = current;
+      }
+    }
+  });
+
+  it("holds ambiguous block prefixes on the editable final line", () => {
+    for (const prefix of ["#", "## ", "- ", "1", "1.", ">", "> #"]) {
+      expect(holdbackSafeEnd(prefix), prefix).toBe(0);
+    }
+  });
+
   it("does not treat a blank quoted line as a pending table separator", () => {
     const text = "> | Not a table |\n>\n> Explanation";
 
@@ -344,6 +392,12 @@ describe("holdbackSafeEnd", () => {
 
   it("keeps an earlier opener active across a completed inner code span", () => {
     const text = "before *open `code` tail";
+
+    expect(holdbackSafeEnd(text)).toBe("before ".length);
+  });
+
+  it("keeps a completed inline opener hidden when it crosses a pending block", () => {
+    const text = "before *open\n| close*";
 
     expect(holdbackSafeEnd(text)).toBe("before ".length);
   });

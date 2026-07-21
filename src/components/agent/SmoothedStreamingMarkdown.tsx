@@ -11,14 +11,20 @@ import { createInlineMarkdownPattern, MarkdownContent } from "./MarkdownContent"
 // enough that the response never feels laggy.
 const STREAM_REVEAL_INTERVAL_MS = 80;
 
-// Longest unclosed inline tail we will stall the reveal on. Past this an open
-// `*` or `[` is literal prose (a bullet used as a word, math, a bracket
-// citation), not a construct still streaming its closing token — revealing it
-// beats freezing the stream on text that will never close.
+// Longest ambiguous markdown tail we will stall the reveal on. Past this,
+// revealing beats freezing the stream on syntax that may never close. That
+// safety fallback also disables word fades for the rest of the turn, so a
+// delimiter that eventually arrives cannot remount 25+ visible words at zero
+// opacity and replay the full fade.
 const HOLDBACK_MAX_CHARS = 160;
 
+type HoldbackDecision = {
+  safeEnd: number;
+  disableWordFade: boolean;
+};
+
 // Completed inline constructs, mirroring MarkdownContent's inline grammar
-// exactly. We strip these to locate where the still-open tail begins.
+// exactly. The opener scan treats these ranges as opaque.
 const INLINE_PATTERN = createInlineMarkdownPattern();
 const TABLE_SEPARATOR_PATTERN = /^\|(\s*:?-+:?\s*\|)+$/;
 const POSSIBLE_TABLE_SEPARATOR_PATTERN = /^\|[\s:|-]*$/;
@@ -26,6 +32,27 @@ const POSSIBLE_TABLE_SEPARATOR_PATTERN = /^\|[\s:|-]*$/;
 function lineStartIndex(segment: string, at: number): number {
   const newline = segment.lastIndexOf("\n", at - 1);
   return newline < 0 ? 0 : newline + 1;
+}
+
+function markdownLine(line: string): { content: string; quoteDepth: number } {
+  let content = line.trim();
+  let quoteDepth = 0;
+  while (content.startsWith(">")) {
+    quoteDepth += 1;
+    content = content.slice(1).trimStart();
+  }
+  return { content, quoteDepth };
+}
+
+// A bare block prefix can still become a heading, list, quote, or thematic
+// break when the next delta arrives. Keep only that editable final line back;
+// once content follows, the renderer's block branch is stable.
+function pendingBlockPrefixStart(segment: string): number {
+  const start = lineStartIndex(segment, segment.length);
+  const { content, quoteDepth } = markdownLine(segment.slice(start));
+  if (quoteDepth > 0 && content === "") return start;
+  if (/^(?:#{1,4}|[-*_]{1,2}|\d+\.?)\s*$/.test(content)) return start;
+  return -1;
 }
 
 // A `*` opening a list item (`* item`) or sitting on a thematic-break line
@@ -102,6 +129,21 @@ function firstOpenOpener(segment: string): number {
   return -1;
 }
 
+// A completed inline match can span into a block whose parse is still
+// withheld (for example `*open\n| close*`). Until that block resolves, exposing
+// the opener would still let the eventual branch change remount visible text.
+function firstCompletedOpenerCrossing(segment: string, boundary: number): number {
+  INLINE_PATTERN.lastIndex = 0;
+  for (
+    let match = INLINE_PATTERN.exec(segment);
+    match !== null;
+    match = INLINE_PATTERN.exec(segment)
+  ) {
+    if (match.index < boundary && INLINE_PATTERN.lastIndex > boundary) return match.index;
+  }
+  return -1;
+}
+
 function fenceState(text: string): { open: boolean; afterLastClosed: number } {
   let open = false;
   let afterLastClosed = 0;
@@ -125,20 +167,11 @@ function fenceState(text: string): { open: boolean; afterLastClosed: number } {
 // as <th> content instead of first fading as a paragraph, remounting, and
 // fading again when the separator changes its block parse.
 function pendingTableHeaderStart(segment: string): number {
-  const tableLine = (line: string) => {
-    let content = line.trim();
-    let quoteDepth = 0;
-    while (content.startsWith(">")) {
-      quoteDepth += 1;
-      content = content.slice(1).trimStart();
-    }
-    return { content, quoteDepth };
-  };
   const lines = segment.split("\n");
   let lineStart = 0;
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const { content: trimmed, quoteDepth } = tableLine(line);
+    const { content: trimmed, quoteDepth } = markdownLine(line);
     if (!trimmed.startsWith("|")) {
       lineStart += line.length + 1;
       continue;
@@ -148,26 +181,33 @@ function pendingTableHeaderStart(segment: string): number {
     if (nextLine === undefined) return lineStart;
 
     const completeHeader = trimmed.endsWith("|") && trimmed.length > 1;
-    const { content: next, quoteDepth: nextQuoteDepth } = tableLine(nextLine);
+    const { content: next, quoteDepth: nextQuoteDepth } = markdownLine(nextLine);
     if (completeHeader && next === "" && index + 1 === lines.length - 1) return lineStart;
     if (quoteDepth !== nextQuoteDepth) {
       lineStart += line.length + 1;
       continue;
     }
     if (completeHeader && TABLE_SEPARATOR_PATTERN.test(next)) {
+      // A separator that is still the editable final line can grow another
+      // column (`| --- |` -> `| --- | -`) and temporarily stop parsing as a
+      // table. Wait for its newline before committing the header branch.
+      if (index + 1 === lines.length - 1) return lineStart;
       // This table's structure is established. Skip its separator and body;
       // a later candidate in the same paragraph can still be considered.
       index += 1;
       lineStart += line.length + 1 + nextLine.length + 1;
       while (index + 1 < lines.length) {
         const body = lines[index + 1];
-        const { content: bodyTrimmed, quoteDepth: bodyQuoteDepth } = tableLine(body);
+        const { content: bodyTrimmed, quoteDepth: bodyQuoteDepth } = markdownLine(body);
         if (
           bodyQuoteDepth !== quoteDepth ||
           !(bodyTrimmed.startsWith("|") && bodyTrimmed.endsWith("|"))
         ) {
           break;
         }
+        // Like the separator, a complete-looking final body row is still
+        // editable and may stop being a row when the next token appends.
+        if (index + 1 === lines.length - 1) return lineStart;
         index += 1;
         lineStart += body.length + 1;
       }
@@ -186,15 +226,16 @@ function pendingTableHeaderStart(segment: string): number {
  * emphasis / a link once its closing token arrives (`**important` becomes a
  * `<strong>`), which moves the word into a different parent element, remounts
  * its `.agent-stream-word` span at opacity 0, and re-fades it for 1.5s — a word
- * blinking out. We withhold an incomplete trailing inline construct until it
- * closes (or runs long enough to be literal). Exported for tests.
+ * blinking out. We withhold an incomplete trailing construct until it closes;
+ * crossing the safety cap reveals it but disables further word fades for that
+ * turn. Exported for tests.
  */
-export function holdbackSafeEnd(text: string): number {
+function holdbackDecision(text: string): HoldbackDecision {
   // Fence bodies render unanimated and must keep streaming. Once a fence
   // closes, scan only prose after it so its delimiter backticks can never be
   // mistaken for inline-code openers.
   const fences = fenceState(text);
-  if (fences.open) return text.length;
+  if (fences.open) return { safeEnd: text.length, disableWordFade: false };
 
   // Only the tail after the last blank line can still be open — earlier
   // paragraphs are already flushed and parsed. A completed fence is also a
@@ -203,19 +244,24 @@ export function holdbackSafeEnd(text: string): number {
   const segmentStart = Math.max(lastBreak < 0 ? 0 : lastBreak + 2, fences.afterLastClosed);
   const segment = text.slice(segmentStart);
 
+  const blockAt = pendingBlockPrefixStart(segment);
   const tableAt = pendingTableHeaderStart(segment);
-  if (tableAt >= 0) {
-    const holdIndex = segmentStart + tableAt;
-    return text.length - holdIndex > HOLDBACK_MAX_CHARS ? text.length : holdIndex;
-  }
-
+  const structuralCandidates = [blockAt, tableAt].filter((at) => at >= 0);
+  const structuralAt = structuralCandidates.length > 0 ? Math.min(...structuralCandidates) : -1;
+  const crossingAt = structuralAt >= 0 ? firstCompletedOpenerCrossing(segment, structuralAt) : -1;
   const openAt = firstOpenOpener(segment);
-  if (openAt < 0) return text.length;
+  const candidates = [blockAt, tableAt, crossingAt, openAt].filter((at) => at >= 0);
+  if (candidates.length === 0) return { safeEnd: text.length, disableWordFade: false };
 
-  const holdIndex = segmentStart + openAt;
-  // An unclosed `*`/`[` that runs long is literal usage — never stall on it.
-  if (text.length - holdIndex > HOLDBACK_MAX_CHARS) return text.length;
-  return holdIndex;
+  const holdIndex = segmentStart + Math.min(...candidates);
+  if (text.length - holdIndex > HOLDBACK_MAX_CHARS) {
+    return { safeEnd: text.length, disableWordFade: true };
+  }
+  return { safeEnd: holdIndex, disableWordFade: false };
+}
+
+export function holdbackSafeEnd(text: string): number {
+  return holdbackDecision(text).safeEnd;
 }
 
 /**
@@ -237,16 +283,25 @@ export function SmoothedStreamingMarkdown({
   onVisibleMarkdownChange?: (visibleMarkdown: string) => void;
 }) {
   const reducedMotion = useReducedMotion() ?? false;
-  const initialVisible =
-    !running || reducedMotion || document.hidden
-      ? markdown
-      : markdown.slice(0, holdbackSafeEnd(markdown));
+  const initialPresentationRef = useRef<{ visible: string; fadeDisabled: boolean } | null>(null);
+  if (initialPresentationRef.current === null) {
+    const decision =
+      !running || reducedMotion || document.hidden
+        ? { safeEnd: markdown.length, disableWordFade: false }
+        : holdbackDecision(markdown);
+    initialPresentationRef.current = {
+      visible: markdown.slice(0, decision.safeEnd),
+      fadeDisabled: decision.disableWordFade,
+    };
+  }
+  const initialPresentation = initialPresentationRef.current;
   // True from the moment a streaming turn completes until its trailing word
   // fades have had time to finish — the spans stay mounted through it.
   const [settling, setSettling] = useState(false);
+  const [fadeDisabled, setFadeDisabled] = useState(initialPresentation.fadeDisabled);
   const [prevRunning, setPrevRunning] = useState(running);
-  const [visibleMarkdown, setVisibleMarkdown] = useState(initialVisible);
-  const visibleRef = useRef(initialVisible);
+  const [visibleMarkdown, setVisibleMarkdown] = useState(initialPresentation.visible);
+  const visibleRef = useRef(initialPresentation.visible);
   const targetRef = useRef(markdown);
   const timerRef = useRef<number | null>(null);
   const visibleMarkdownMountedRef = useRef(false);
@@ -271,7 +326,9 @@ export function SmoothedStreamingMarkdown({
       // one commit, so the whole batch starts its fade on the same frame.
       // Reveal only up to the safe holdback so an incomplete trailing
       // construct does not surface and then re-parse under the next delta.
-      const safe = targetRef.current.slice(0, holdbackSafeEnd(targetRef.current));
+      const decision = holdbackDecision(targetRef.current);
+      if (decision.disableWordFade) setFadeDisabled(true);
+      const safe = targetRef.current.slice(0, decision.safeEnd);
       if (safe !== visibleRef.current) {
         reveal(safe);
       }
@@ -284,6 +341,7 @@ export function SmoothedStreamingMarkdown({
     // text unchanged — no fade to protect, so no reason to withhold a tail.
     if (!running || reducedMotion || document.hidden) {
       stopTimer();
+      if (running) setFadeDisabled(true);
       reveal(markdown);
       return;
     }
@@ -291,7 +349,9 @@ export function SmoothedStreamingMarkdown({
     // rather than waiting a beat, but still only up to the safe holdback.
     if (visibleRef.current.length === 0 || !markdown.startsWith(visibleRef.current)) {
       stopTimer();
-      const safe = markdown.slice(0, holdbackSafeEnd(markdown));
+      const decision = holdbackDecision(markdown);
+      if (decision.disableWordFade) setFadeDisabled(true);
+      const safe = markdown.slice(0, decision.safeEnd);
       if (safe !== visibleRef.current) reveal(safe);
       return;
     }
@@ -302,6 +362,8 @@ export function SmoothedStreamingMarkdown({
     const flushWhileHidden = () => {
       if (document.hidden) {
         stopTimer();
+        setFadeDisabled(true);
+        setSettling(false);
         reveal(targetRef.current);
       }
     };
@@ -329,9 +391,9 @@ export function SmoothedStreamingMarkdown({
   // every fade from 0.
   if (running !== prevRunning) {
     setPrevRunning(running);
-    setSettling(!running && !reducedMotion);
+    setSettling(!running && !reducedMotion && !fadeDisabled && !document.hidden);
   }
-  if (settling && reducedMotion) setSettling(false);
+  if (settling && (reducedMotion || fadeDisabled || document.hidden)) setSettling(false);
 
   // Raw chunks still re-render the parent. Reuse the parsed markdown element
   // until the presentation string advances so smoothing does not add duplicate
@@ -340,7 +402,7 @@ export function SmoothedStreamingMarkdown({
   // Word fade-in only exists while the turn streams (plus the settle window):
   // afterwards the turn re-renders as plain text, so the spans never
   // accumulate in the transcript DOM.
-  const animateWords = (running || settling) && !reducedMotion;
+  const animateWords = (running || settling) && !reducedMotion && !fadeDisabled;
   return useMemo(
     () => (
       <MarkdownContent
