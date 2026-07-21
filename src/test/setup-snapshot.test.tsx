@@ -276,6 +276,24 @@ describe("setup snapshot — parse", () => {
     expect(result.snapshot.skillConfig).toEqual([{ skill: "exporter", key: "prefix", value: "" }]);
   });
 
+  it("drops secret-shaped skill config from a hand-edited snapshot", () => {
+    const result = parseSetupSnapshot({
+      schemaVersion: 1,
+      skillConfig: [
+        { skill: "exporter", key: "format", value: "md" },
+        { skill: "exporter", key: "api_key", value: "short-secret" },
+        { skill: "exporter", key: "custom", value: FAKE_SECRET },
+        { skill: "exporter", key: "header", value: FAKE_BEARER },
+      ],
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.skillConfig).toEqual([
+      { skill: "exporter", key: "format", value: "md" },
+    ]);
+  });
+
   it("rejects non-JSON and non-object input without throwing", () => {
     expect(parseSetupSnapshot("not json {").ok).toBe(false);
     expect(parseSetupSnapshot(42).ok).toBe(false);
@@ -676,6 +694,34 @@ describe("setup snapshot — import driver", () => {
     const report = await applySnapshot(harness.client, snapshot, { sleep: instantSleep });
     expect(report.hadFailures).toBe(true);
     expect(report.steps.some((step) => step.status === "unsupported")).toBe(true);
+  });
+
+  it("continues unrelated imports when optional inventory endpoints fail", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true } });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.readiness.toolsets = [];
+    snapshot.skillConfig = [{ skill: "exporter", key: "format", value: "md" }];
+    const client = {
+      ...harness.client,
+      mcp: {
+        ...harness.client.mcp,
+        catalog: () => Promise.reject(new Error("catalog unavailable")),
+      },
+      toolsets: {
+        ...harness.client.toolsets,
+        list: () => Promise.reject(new Error("toolsets unavailable")),
+      },
+    } as typeof harness.client;
+
+    const report = await applySnapshot(client, snapshot, {
+      restartRuntime: async () => harness.client,
+      sleep: instantSleep,
+    });
+
+    expect(report.steps.find((step) => step.category === "mcp-add")?.status).toBe("applied");
+    expect(report.steps.find((step) => step.category === "skill-config")?.status).toBe("applied");
+    expect(report.steps.at(-1)?.category).toBe("health-check");
   });
 
   it("leaves a same-name server with a different definition completely untouched", async () => {

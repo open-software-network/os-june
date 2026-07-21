@@ -35,7 +35,7 @@
  */
 
 import { asRecord, nonEmptyString } from "../hermes-control-plane/parse";
-import { redactForLog } from "./redact";
+import { isSensitiveKey, redactForLog } from "./redact";
 import type {
   HermesMcpCatalogEntry,
   HermesMcpServerInfo,
@@ -289,8 +289,16 @@ function serverAuthMode(server: HermesMcpServerInfo): SnapshotMcpServer["auth"] 
  * it is a credential. Mirrors the sanitizer's value heuristic so opt-in skill
  * config still never captures a secret-shaped value. */
 function looksSecretShaped(value: string): boolean {
+  if (/^bearer\s+\S+/i.test(value.trim())) return true;
   if (value.includes("/") || value.includes("\\")) return false;
   return value.length >= 32 && !/\s/.test(value) && /[A-Za-z0-9]/.test(value);
+}
+
+/** Skill config is the only snapshot section that can carry arbitrary values.
+ * Treat both credential-shaped values and credential-named keys as secrets so
+ * exports and hand-edited imports use the same deny rule. */
+function isSafeSkillConfig(key: string, value: string): boolean {
+  return !isSensitiveKey(key) && !looksSecretShaped(value);
 }
 
 /**
@@ -390,7 +398,7 @@ export function buildSetupSnapshot(input: SnapshotInput): SetupSnapshot {
         if (typeof value !== "string") continue;
         // Opt-in captures NON-secret config only. Drop a secret-shaped value
         // even when the user opted in, so a config-disguised token never leaks.
-        if (looksSecretShaped(value)) continue;
+        if (!isSafeSkillConfig(key, value)) continue;
         skillConfig.push({ skill, key, value });
       }
     }
@@ -625,7 +633,9 @@ export function parseSetupSnapshot(input: unknown): SnapshotParseResult {
           const skill = r && nonEmptyString(r.skill);
           const key = r && nonEmptyString(r.key);
           const value = r && typeof r.value === "string" ? r.value : undefined;
-          return skill && key && value !== undefined ? { skill, key, value } : undefined;
+          return skill && key && value !== undefined && isSafeSkillConfig(key, value)
+            ? { skill, key, value }
+            : undefined;
         })
         .filter((entry): entry is SnapshotSkillConfig => entry !== undefined)
     : undefined;

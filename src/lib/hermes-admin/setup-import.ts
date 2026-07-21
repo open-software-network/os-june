@@ -553,8 +553,8 @@ async function loadImportInventory(client: HermesAdminClient): Promise<ImportInv
   const [skills, mcpServers, catalog, toolsets, config] = await Promise.all([
     client.skills.list(),
     client.mcp.listServers(),
-    client.mcp.catalog(),
-    client.toolsets.list(),
+    client.mcp.catalog().catch(() => []),
+    client.toolsets.list().catch(() => []),
     client.config.get(),
   ]);
   return { skills, mcpServers, catalog, toolsets, config: config.config };
