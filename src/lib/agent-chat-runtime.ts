@@ -160,7 +160,7 @@ export const UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT = [
 
 const UPSTREAM_PROVIDER_FAILURE_MARKER = "upstream_provider_failed";
 const PERSISTED_UPSTREAM_PROVIDER_FAILURE =
-  /^\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\b/i;
+  /^\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*$/i;
 
 /** A mid-run instruction the user steered into a still-working session (feature
  * 06), rendered as a quiet "Steering" system item so the transcript records

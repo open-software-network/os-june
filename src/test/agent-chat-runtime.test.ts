@@ -3309,12 +3309,19 @@ describe("Agent chat runtime", () => {
       },
     ]);
     const prose = `A log can say ${UPSTREAM_PROVIDER_ERROR} while explaining recovery.`;
+    const prefixedProse = `${UPSTREAM_PROVIDER_ERROR} while explaining recovery.`;
     const successful = buildHermesSessionChatTurns([
       {
         id: "successful",
         role: "assistant",
         content: prose,
         timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "successful-prefixed",
+        role: "assistant",
+        content: prefixedProse,
+        timestamp: "2026-06-04T10:00:01.000Z",
       },
     ]);
 
@@ -3326,6 +3333,9 @@ describe("Agent chat runtime", () => {
       },
     ]);
     expect(successful[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+    expect(successful[1]?.parts).toEqual([
+      { type: "text", text: prefixedProse, status: "complete" },
+    ]);
   });
 
   it("renders the persisted provider-recovery prompt as Try again", () => {
