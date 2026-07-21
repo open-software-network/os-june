@@ -55,6 +55,26 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).not.toContain("#");
   });
 
+  it("does not expose a heading marker while its first inline construct is open", () => {
+    const view = render(<SmoothedStreamingMarkdown markdown="# **Heading" running />);
+    expect(view.container.textContent).toBe("");
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="# **Heading**" running />);
+
+    expect(view.container.querySelector("h2 strong")?.textContent).toBe("Heading");
+    expect(view.container.textContent).not.toContain("#");
+  });
+
+  it("does not expose a list marker while its first inline construct is open", () => {
+    const view = render(<SmoothedStreamingMarkdown markdown="1. `Item" running />);
+    expect(view.container.textContent).toBe("");
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="1. `Item`" running />);
+
+    expect(view.container.querySelector("ol li code")?.textContent).toBe("Item");
+    expect(view.container.textContent).not.toContain("1.");
+  });
+
   it("batches appended stream text into one whole-chunk reveal per beat", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="Hello" running repairProse />);
@@ -201,6 +221,30 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.querySelector("pre code")?.textContent).toBe("const value = 1;");
     expect(view.container.querySelector("p")?.textContent).toBe("Following prose");
     expect(view.container.textContent).not.toContain("`");
+  });
+
+  it("keeps revealing through a streamed code fence inside a blockquote", () => {
+    vi.useFakeTimers();
+    const view = render(
+      <SmoothedStreamingMarkdown markdown={"> ```ts\n> const value = 1;"} running />,
+    );
+
+    expect(view.container.querySelector("blockquote pre code")?.textContent).toBe(
+      "const value = 1;",
+    );
+
+    view.rerender(
+      <SmoothedStreamingMarkdown
+        markdown={"> ```ts\n> const value = 1;\n> ```\n> Following prose"}
+        running
+      />,
+    );
+    act(() => vi.advanceTimersByTime(80));
+
+    expect(view.container.querySelector("blockquote pre code")?.textContent).toBe(
+      "const value = 1;",
+    );
+    expect(view.container.querySelector("blockquote p")?.textContent).toBe("Following prose");
   });
 
   it("withholds an incomplete trailing construct until it closes, never flashing the syntax", () => {
@@ -364,8 +408,15 @@ describe("holdbackSafeEnd", () => {
       "| Metric | Q1 |\n| --- | --- |\n| Revenue | 1.2M |",
       "> | Metric | Q1 |\n> | --- | --- |\n> | Revenue | 1.2M |",
       "```ts\nconst value = 1;\n```\nFollowing prose",
+      "> ```ts\n> const value = 1;\n> ```\n> Following prose",
+      "> > ```ts\n> > const value = 1;\n> > ```\n> > Following prose",
       "# Heading",
+      "# **Heading**",
       "1. First item",
+      "1. `First item`",
+      "- [First item](https://example.com)",
+      "***\nFollowing prose",
+      "***Item",
     ];
 
     for (const target of targets) {
@@ -379,7 +430,7 @@ describe("holdbackSafeEnd", () => {
   });
 
   it("holds ambiguous block prefixes on the editable final line", () => {
-    for (const prefix of ["#", "## ", "- ", "1", "1.", ">", "> #"]) {
+    for (const prefix of ["#", "## ", "- ", "1", "1.", ">", "> #", "***", "---", "___"]) {
       expect(holdbackSafeEnd(prefix), prefix).toBe(0);
     }
   });

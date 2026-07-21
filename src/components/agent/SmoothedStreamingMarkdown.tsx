@@ -51,8 +51,22 @@ function pendingBlockPrefixStart(segment: string): number {
   const start = lineStartIndex(segment, segment.length);
   const { content, quoteDepth } = markdownLine(segment.slice(start));
   if (quoteDepth > 0 && content === "") return start;
+  if (/^([-*_])\1{2,}$/.test(content)) return start;
   if (/^(?:#{1,4}|[-*_]{1,2}|\d+\.?)\s*$/.test(content)) return start;
   return -1;
+}
+
+// An inline hold point immediately after a block introducer is not itself a
+// stable render boundary. For example, revealing `# ` from `# **Heading`
+// paints a literal paragraph; the same prefix becomes a heading once the
+// emphasized content closes. Keep the whole editable line back until its
+// first inline construct is complete.
+function stableInlineHoldStart(segment: string, at: number): number {
+  const start = lineStartIndex(segment, at);
+  const { content, quoteDepth } = markdownLine(segment.slice(start, at));
+  if (quoteDepth > 0 && content === "") return start;
+  if (/^(?:#{1,4}|[-*]|\d+\.)$/.test(content)) return start;
+  return at;
 }
 
 // A `*` opening a list item (`* item`) or sitting on a thematic-break line
@@ -145,21 +159,35 @@ function firstCompletedOpenerCrossing(segment: string, boundary: number): number
 }
 
 function fenceState(text: string): { open: boolean; afterLastClosed: number } {
-  let open = false;
+  let openDepth: number | null = null;
   let afterLastClosed = 0;
   let offset = 0;
   const lines = text.split("\n");
 
   for (const [index, line] of lines.entries()) {
     const afterLine = offset + line.length + (index < lines.length - 1 ? 1 : 0);
-    if (line.trim().startsWith("```")) {
-      open = !open;
-      if (!open) afterLastClosed = afterLine;
+    const { content, quoteDepth } = markdownLine(line);
+
+    // A quoted fence is implicitly bounded by its blockquote container. Once
+    // the quote depth drops, the renderer has already ended that recursive
+    // block even if no explicit closing delimiter arrived.
+    if (openDepth !== null && quoteDepth < openDepth) {
+      openDepth = null;
+      afterLastClosed = offset;
+    }
+
+    if (content.startsWith("```") && (openDepth === null || quoteDepth === openDepth)) {
+      if (openDepth === null) {
+        openDepth = quoteDepth;
+      } else {
+        openDepth = null;
+        afterLastClosed = afterLine;
+      }
     }
     offset = afterLine;
   }
 
-  return { open, afterLastClosed };
+  return { open: openDepth !== null, afterLastClosed };
 }
 
 // A pipe row cannot be known to be a table header until the following
@@ -253,7 +281,8 @@ function holdbackDecision(text: string): HoldbackDecision {
   const candidates = [blockAt, tableAt, crossingAt, openAt].filter((at) => at >= 0);
   if (candidates.length === 0) return { safeEnd: text.length, disableWordFade: false };
 
-  const holdIndex = segmentStart + Math.min(...candidates);
+  const holdAt = stableInlineHoldStart(segment, Math.min(...candidates));
+  const holdIndex = segmentStart + holdAt;
   if (text.length - holdIndex > HOLDBACK_MAX_CHARS) {
     return { safeEnd: text.length, disableWordFade: true };
   }
