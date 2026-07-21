@@ -317,6 +317,33 @@ pub async fn fetch_identity(access_token: &str) -> Result<GithubIdentity, AppErr
     })
 }
 
+/// Whether the connected user has at least one installation of THIS GitHub
+/// App (the user-to-server token only ever lists this app's installations).
+///
+/// GitHub Apps split "user authorization" (the OAuth grant this connect just
+/// completed) from "installation" (which repositories the app can touch). A
+/// user who authorized but never installed the app holds a valid token that
+/// reaches zero repositories, so the connect flow uses this to refuse a
+/// hollow "connected" account rather than storing one. Only the first page is
+/// read: presence, not enumeration, is the question.
+pub async fn has_installation(access_token: &str) -> Result<bool, GithubApiError> {
+    let url = "https://api.github.com/user/installations?per_page=1";
+    let response = github_api_request(access_token, reqwest::Method::GET, url)
+        .send()
+        .await
+        .map_err(|e| GithubApiError::Network(e.to_string()))?;
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        let message = error_message_from_response(response).await;
+        return Err(classify_api_error(status, message));
+    }
+    let wire: InstallationsWire = response
+        .json()
+        .await
+        .map_err(|e| GithubApiError::Network(e.to_string()))?;
+    Ok(!wire.installations.is_empty())
+}
+
 // ----- Revoke -----------------------------------------------------------------
 
 /// Best-effort revocation of a user access token at GitHub (used by
@@ -384,7 +411,14 @@ impl From<GithubApiError> for AppError {
                 "The requested GitHub resource was not found.",
             ),
             GithubApiError::Api { status, message } => AppError::new(
-                "github_api_error",
+                // A 5xx can arrive AFTER GitHub committed a mutation, so it is
+                // ambiguous rather than a definitive rejection (mirrors
+                // Linear's linear_upstream_error). 4xx is a real rejection.
+                if status >= 500 {
+                    "github_upstream_error"
+                } else {
+                    "github_api_error"
+                },
                 format!("GitHub API request failed ({status}): {message}"),
             ),
             GithubApiError::Network(message) => AppError::new("network_error", message),
@@ -1542,5 +1576,15 @@ mod tests {
         assert!(repo.get("fullName").is_some());
         assert!(repo.get("defaultBranch").is_some());
         assert!(repo.get("htmlUrl").is_some());
+    }
+
+    #[test]
+    fn server_5xx_maps_to_ambiguous_upstream_error_not_definitive() {
+        // A 5xx can land after GitHub committed a mutation, so it must carry
+        // the ambiguous code; 4xx stays a definitive github_api_error.
+        let upstream: AppError = classify_api_error(502, "bad gateway".to_string()).into();
+        assert_eq!(upstream.code, "github_upstream_error");
+        let definitive: AppError = classify_api_error(422, "validation failed".to_string()).into();
+        assert_eq!(definitive.code, "github_api_error");
     }
 }

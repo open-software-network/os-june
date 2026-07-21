@@ -1332,6 +1332,20 @@ pub async fn begin_connect_github(
     let identity = grant.identity;
     let user_id = identity.user_id.clone();
 
+    // A GitHub App user grant is worthless without an installation: the token
+    // only reaches repositories the app is installed on, and authorization and
+    // installation are separate GitHub steps. A user who authorized but never
+    // installed the app would otherwise get a "connected" row and MCP servers
+    // backed by a token that lists zero repositories. Refuse it here, before
+    // any custody write, and point them at the install flow. Reconnecting an
+    // account that already installed still passes (it has installations).
+    if !github::has_installation(&grant.tokens.access_token).await? {
+        return Err(AppError::new(
+            "connector_github_not_installed",
+            "Install the June GitHub App on at least one repository, then connect again. Open github.com/apps/open-software-network to choose repositories.",
+        ));
+    }
+
     // A reconnect id means the user asked to (re)connect one specific account.
     // The browser can still consent for a different one; abort on mismatch
     // rather than silently storing the wrong account.

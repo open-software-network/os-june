@@ -63,6 +63,14 @@ whether installation-token minting needs a TEE signer.
    the login kept as the display identity, following Linear's
    workspace-id-not-email keying. One GitHub account at a time, like every
    other provider in local mode.
+6. **Connect refuses a grant with no installation.** Authorization and
+   installation are separate GitHub steps, and a user-to-server token reaches
+   only repositories the app is installed on. So `begin_connect_github`
+   checks `GET /user/installations` after resolving identity and, when the
+   user has authorized but not installed the app, returns
+   `connector_github_not_installed` (pointing at the install page) instead of
+   storing a "connected" account whose token can read nothing. Repository
+   selection itself still lives on GitHub, not in June.
 
 ## Consequences
 

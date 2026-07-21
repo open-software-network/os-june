@@ -13875,10 +13875,11 @@ fn linear_outcome_is_ambiguous(error: &AppError) -> bool {
 /// so GitHub may or may not have received and applied it. Definitive
 /// rejections (4xx, auth, etc.) are not ambiguous.
 fn github_outcome_is_ambiguous(error: &AppError) -> bool {
-    // Mirror the Linear pattern: transport loss is ambiguous; API rejections
-    // are definitive. GitHub has no distinct upstream_error variant so only
-    // network_error applies here.
-    error.code == "network_error"
+    // Mirror the Linear pattern: transport loss AND a received 5xx are both
+    // "the mutation may have applied" (a gateway error can arrive after
+    // GitHub committed the write). Everything else - 4xx validation, auth,
+    // rate limit, not-found - is a definitive rejection that never applied.
+    error.code == "network_error" || error.code == "github_upstream_error"
 }
 
 /// An ambiguous GitHub action outcome. The agent must check GitHub and must
@@ -24116,16 +24117,22 @@ mcp_servers:
     /// GitHub outcome ambiguity: transport failures are ambiguous; API
     /// rejections and pre-send failures are definitive.
     #[test]
-    fn github_outcome_ambiguity_covers_transport_errors_only() {
-        // Transport failure: outcome unknown.
+    fn github_outcome_ambiguity_covers_transport_and_upstream_errors() {
+        // Transport failure and a received 5xx both leave the outcome unknown:
+        // the mutation may have applied before the error surfaced.
         assert!(github_outcome_is_ambiguous(&AppError::new(
             "network_error",
             "connection reset"
         )));
-        // API rejections are definitive.
+        assert!(github_outcome_is_ambiguous(&AppError::new(
+            "github_upstream_error",
+            "GitHub API request failed (502): bad gateway"
+        )));
+        // 4xx and non-API errors are definitive rejections that never applied.
         for code in [
             "github_api_error",
             "github_unauthorized",
+            "github_forbidden",
             "github_not_found",
             "connector_not_connected",
             "connector_reconnect_required",
