@@ -7,6 +7,14 @@
 - **Status:** Accepted direction in JUN-278
 - **Canonical detailed spec:** [../browser-computer-use-prd.md](../browser-computer-use-prd.md)
 
+**Division of authority.** This document is canonical for the *business* half:
+ranking, positioning, packaging and pricing, success measures, strategic risks.
+The detailed spec above is canonical for the *implementation* half: the
+`june_browser` tool contract and its tool names, the trust boundary, the
+transports, policy, distribution mechanics, and tests. Neither re-decides the
+other's half. An implementation detail here that disagrees with the detailed
+spec is a bug in this document.
+
 ## Thesis
 
 Browser use is June's universal adapter for web work that does not yet have a
@@ -32,7 +40,9 @@ profile would solve the capability problem by creating a larger trust problem.
 June works only in clearly marked tabs it creates or a tab the user explicitly
 shares. It pauses before sending, submitting, publishing, purchasing, deleting,
 or making another consequential change. Disconnect means the browser is no
-longer under June's control.
+longer under June's control. A crash, browser restart, or extension update ends
+automation immediately; June never keeps driving a browser it has lost contact
+with, and a task fails rather than resuming silently.
 
 ## V1 experience
 
@@ -78,15 +88,18 @@ is no provider API fee; model and support costs determine final packaging.
 | Consequential actions executed without a valid approval | 0 |
 | Sessions touching an unshared pre-existing tab | 0 |
 | Median time from access request to first snapshot | under 90 seconds |
+| Users disconnecting because behavior surprised them | under 2% |
 
 A verifiable outcome is defined before execution and recorded by the broker,
 such as reaching a target state, producing the requested artifact, or receiving
 an action receipt. Agent self-reported completion does not count.
-| Users disconnecting because behavior surprised them | under 2% |
 
 ## Strategic risks
 
 - Extension-store approval and independent update cadence are release risks.
+  A rejection of the debugger permission holds the attended launch; there is
+  no reduced-permission fallback. A store update can also land mid-task, so
+  tasks must fail safely when the extension reloads.
 - Browser DOMs change constantly; recovery quality matters more than demo-path
   success.
 - Signed-in pages contain prompt injection and high-value actions. Structural

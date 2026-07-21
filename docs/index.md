@@ -42,7 +42,10 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0030](adr/0030-explicit-per-session-profile-targeting.md) — profile switching writes the sticky active profile AND threads it explicitly on session.create; no per-profile Hermes process
 - [adr/0031](adr/0031-per-profile-data-isolation.md) — profiles isolate user data (notes/dictation/projects via a `profile` column, chat sessions via a `session_profiles` map); profile is the first data-partition key; delete prompts move-to-default vs delete
 - [adr/0032](adr/0032-session-completion-june-owned-local-state.md) — marking a session complete is June-owned local SQLite state keyed by the stored Hermes session id, orthogonal to Hermes' archive flag; mirrors the `session_folders` stack
-- [adr/0033](adr/0033-approval-safe-hermes-transport-handoff.md) - live Hermes resume atomically retires the old approval notifier generation, reports overlap proof, and retries a rejected exact completion
+- [adr/0033](adr/0033-notion-hosted-mcp-connect-preview.md) - Notion hosted MCP connector preview with read-only `june_notion`, approved page creation and updates, and no selected-resource claim
+- [adr/0034](adr/0034-obsidian-vault-discovery-mcp.md) - Obsidian vault discovery uses a June-owned MCP server, not an ambient environment variable
+- [adr/0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
+- [adr/0036](adr/0036-approval-safe-hermes-transport-handoff.md) - live Hermes resume atomically retires the old approval notifier generation, reports overlap proof, and retries a rejected exact completion
 
 ## Enforceable rules (spec/)
 
@@ -53,6 +56,7 @@ feature specs). Full index: [spec/index.md](../spec/index.md).
 - UI styling: [spec/icons-central-only](../spec/icons-central-only.md), [spec/design-tokens](../spec/design-tokens.md), [spec/no-tabular-numerals](../spec/no-tabular-numerals.md)
 - Typography: [spec/type-scale](../spec/type-scale.md), [spec/font-weights](../spec/font-weights.md), [spec/font-families](../spec/font-families.md)
 - Controls: [spec/control-sizes](../spec/control-sizes.md)
+- Agent surface: [spec/mcp-tool-naming](../spec/mcp-tool-naming.md)
 
 ## Design system
 
@@ -79,6 +83,8 @@ Per-repo config the engineering skills read before acting (see the
 - [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
 - [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
 - [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
+- [release-extension.md](release-extension.md) - Chrome Web Store publisher setup, RC review gate, stable promotion, and recovery runbook
+- [computer-use-cua-driver-spike.md](computer-use-cua-driver-spike.md) — spike (JUN-288): run the bundled cua-driver outside the write jail as a broker-owned, separately-signed daemon (recommended on identity/lifecycle grounds; a fully relocated daemon does start in-jail, up to the TCC gate); pinning + installer-never-runs confirmed
 - [plugins/portfolio.md](plugins/portfolio.md) — JUN-309 portfolio: current ChatGPT plugin surface inventory, ranking rubric, June's top 10, shared product contract, sequencing, metrics, and explicit deferrals
   - [Google Workspace](plugins/google-workspace-prd.md) — [implementation plan](plugins/google-workspace-implementation-plan.md)
   - [Browser use](plugins/browser-use-prd.md) — [implementation plan](plugins/browser-use-implementation-plan.md)

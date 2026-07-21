@@ -837,6 +837,51 @@ describe("note chat session map", () => {
     expect(firstNode).not.toHaveTextContent("MEDIA:");
   });
 
+  it("hides attachment manifest metadata in a reloaded note chat user turn", () => {
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat({
+          turns: [
+            {
+              id: "user-attachment",
+              role: "user",
+              createdAt: "2026-07-20T19:48:57.000Z",
+              status: "complete",
+              parts: [
+                {
+                  type: "text",
+                  status: "complete",
+                  text: [
+                    '@note:note-1 ("Launch planning") What changed?',
+                    "",
+                    "[June attachment manifest v1]",
+                    "Attached files copied into the June workspace:",
+                    "- plan.png (Workspace): uploads/plan.png",
+                    "",
+                    "Use these file paths when inspecting or operating on the files.",
+                  ].join("\n"),
+                },
+                {
+                  type: "attachment",
+                  name: "plan.png",
+                  path: "uploads/plan.png",
+                  kind: "image",
+                },
+              ],
+            },
+          ],
+        }),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    expect(screen.getByText("What changed?")).toBeInTheDocument();
+    expect(screen.queryByText(/June attachment manifest/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Attached files copied/)).not.toBeInTheDocument();
+  });
+
   it("shows the Auto billing note in the picker while a Venice key is saved", async () => {
     const user = userEvent.setup();
     mocks.providerModelSettings.mockResolvedValue({

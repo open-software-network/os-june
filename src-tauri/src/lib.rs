@@ -1,6 +1,9 @@
 pub mod agent_hud;
 pub mod app_paths;
 pub mod audio;
+pub mod browser;
+mod browser_broker;
+pub mod claude_projects;
 pub mod commands;
 pub mod computer_use;
 mod computer_use_permission_drag;
@@ -8,16 +11,19 @@ pub mod connectors;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod extension_host;
 pub mod feature_flags;
 pub mod hermes_bridge;
 pub mod image_safety;
 pub mod june_api;
 pub mod macos_menu_icons;
+pub mod meeting_calendar_context;
 pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
 mod note_audio_export;
 pub mod notifications;
+pub mod obsidian;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
@@ -123,6 +129,15 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Launch-at-login. LaunchAgent (not AppleScript) so the entry
+        // survives macOS upgrades and shows up under System Settings ->
+        // General -> Login Items. Enabling/disabling stays a user action in
+        // Settings and onboarding; registering the plugin alone changes
+        // nothing.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
@@ -154,6 +169,8 @@ pub fn run() {
             commands::delete_note,
             commands::delete_notes,
             commands::create_folder,
+            commands::discover_claude_projects,
+            commands::import_claude_projects,
             commands::list_folders,
             commands::delete_folder,
             commands::rename_folder,
@@ -249,6 +266,11 @@ pub fn run() {
             hermes_bridge::update_hermes_bridge_messaging_platform,
             hermes_bridge::hermes_agent_cli_access,
             hermes_bridge::set_hermes_agent_cli_access,
+            hermes_bridge::hermes_browser_access,
+            hermes_bridge::browser_transport_policy,
+            hermes_bridge::set_hermes_browser_access,
+            hermes_bridge::routine_browser_access_get,
+            hermes_bridge::routine_browser_access_set,
             hermes_bridge::june_character,
             hermes_bridge::set_june_character,
             hermes_bridge::open_hermes_tui_debug,
@@ -331,12 +353,22 @@ pub fn run() {
             os_accounts::os_accounts_change_plan,
             os_accounts::os_accounts_open_portal,
             os_accounts::os_accounts_referral_summary,
+            extension_host::extension_pairing_status,
+            extension_host::register_browser_extension_host,
             connectors::commands::connectors_list,
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,
             connectors::commands::connectors_disconnect,
             connectors::commands::connectors_linear_teams,
             connectors::commands::connectors_selected_teams_set,
+            obsidian::obsidian_status,
+            obsidian::obsidian_configure,
+            obsidian::obsidian_disconnect,
+            connectors::commands::notion_connector_status,
+            connectors::commands::notion_connector_connect,
+            connectors::commands::notion_connector_cancel_connect,
+            connectors::commands::notion_connector_disconnect,
+            connectors::commands::notion_connector_list_tools,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
             connectors::commands::routine_trust_record_run,
@@ -346,6 +378,8 @@ pub fn run() {
             connectors::approvals::connector_approvals_pending,
             connectors::approvals::connector_approval_respond,
             connectors::approvals::connector_approvals_respond_all,
+            hermes_bridge::browser_approvals_pending,
+            hermes_bridge::browser_approval_respond,
             hermes_bridge::connectors_apply_runtime,
             computer_use::computer_use_status,
             computer_use::set_computer_use_grant,
@@ -366,8 +400,11 @@ pub fn run() {
         .manage(hermes_bridge::HermesBridge::default())
         .manage(computer_use::ComputerUseState::default())
         .manage(os_accounts::LoginFlow::default())
+        .manage(extension_host::ExtensionHost::default())
         .manage(connectors::ConnectFlow::default())
+        .manage(connectors::NotionConnectFlow::default())
         .setup(|app| {
+            browser::setup_on_app_start();
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             providers::setup(app);
@@ -381,6 +418,7 @@ pub fn run() {
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);
+            extension_host::setup(app);
             // Poll Google for the events routines subscribe to (email arrivals,
             // upcoming meetings) and wake the matching routine. Runs after the
             // bridge init so cron triggers have a runtime to fire into.

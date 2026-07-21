@@ -134,7 +134,8 @@ describe("TabBar", () => {
     const strip = container.querySelector(".tab-strip");
 
     expect(strip).not.toBeNull();
-    fireEvent.pointerDown(strip!);
+    if (!strip) throw new Error("Expected tab strip to render");
+    fireEvent.pointerDown(strip);
 
     expect(props.onDragRegionPointerDown).toHaveBeenCalledTimes(1);
   });
@@ -170,7 +171,8 @@ describe("TabBar", () => {
             toJSON: () => ({}),
           }) as DOMRect;
       });
-      const first = tabEls[0]!;
+      const first = tabEls[0];
+      if (!first) throw new Error("Expected first tab to render");
       fireEvent.pointerDown(first, { button: 0, pointerId: 1, clientX: 100 });
       fireEvent.pointerMove(first, { pointerId: 1, clientX: 400 });
       // Page-wide text selection is locked while the drag is live...
@@ -212,7 +214,8 @@ describe("TabBar", () => {
         { left: 212, width: 40 },
       ];
       tabEls.forEach((el, index) => {
-        const rect = rects[index]!;
+        const rect = rects[index];
+        if (!rect) throw new Error(`Missing test rect for tab ${index}`);
         el.getBoundingClientRect = () =>
           ({
             x: rect.left,
@@ -226,7 +229,8 @@ describe("TabBar", () => {
             toJSON: () => ({}),
           }) as DOMRect;
       });
-      const first = tabEls[0]!;
+      const first = tabEls[0];
+      if (!first) throw new Error("Expected first tab to render");
       // 30px of travel is past the halfway point to the first landing (46px),
       // so the swap must register — center-crossing math would demand ~106px.
       fireEvent.pointerDown(first, { button: 0, pointerId: 1, clientX: 50 });

@@ -17,6 +17,13 @@ const mocks = vi.hoisted(() => ({
   routineDetailOnRunNow: undefined as (() => Promise<void>) | undefined,
 }));
 
+// Pin BROWSER_USE_ENABLED on so the routine Browser use opt-in stays testable
+// regardless of the committed flag value.
+vi.mock("../lib/feature-flags", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/feature-flags")>()),
+  BROWSER_USE_ENABLED: true,
+}));
+
 vi.mock("../lib/hermes-routines", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/hermes-routines")>()),
   ...mocks,
@@ -51,9 +58,20 @@ const tauriMocks = vi.hoisted(() => ({
   routineTrustGet: vi.fn(),
   routineTrustRecordRun: vi.fn(),
   routineTrustSet: vi.fn(),
+  routineBrowserAccessGet: vi.fn(),
+  routineBrowserAccessSet: vi.fn(),
   connectorTriggersList: vi.fn(),
   connectorTriggerSet: vi.fn(),
   connectorTriggerDelete: vi.fn(),
+  browserTransportPolicy: vi.fn(),
+}));
+
+const eventMocks = vi.hoisted(() => ({
+  listen: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: eventMocks.listen,
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
@@ -144,6 +162,12 @@ beforeEach(() => {
   tauriMocks.connectorsConnect.mockResolvedValue(googleAccount());
   tauriMocks.connectorsApplyRuntime.mockResolvedValue(undefined);
   tauriMocks.routineTrustGet.mockResolvedValue(null);
+  tauriMocks.routineBrowserAccessGet.mockResolvedValue({ enabled: false });
+  tauriMocks.routineBrowserAccessSet.mockImplementation(async (input: { enabled: boolean }) =>
+    input.enabled
+      ? { enabled: true, serverName: "june_browser_routine_abc123" }
+      : { enabled: false },
+  );
   tauriMocks.routineTrustRecordRun.mockResolvedValue(null);
   tauriMocks.routineTrustSet.mockImplementation(
     async (input: { trustMode: string; autonomousTools?: string[] }) => ({
@@ -160,6 +184,11 @@ beforeEach(() => {
     }),
   );
   tauriMocks.connectorTriggerDelete.mockResolvedValue(undefined);
+  tauriMocks.browserTransportPolicy.mockResolvedValue({
+    attendedEnabled: true,
+    managedEnabled: true,
+  });
+  eventMocks.listen.mockResolvedValue(() => {});
 });
 
 function googleAccount(overrides: Record<string, unknown> = {}) {
@@ -744,6 +773,51 @@ describe("RoutinesView connector templates", () => {
 });
 
 describe("RoutinesView detail", () => {
+  it("keeps routine browser use off by default and persists an explicit opt-in", async () => {
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    const browser = await screen.findByRole("switch", {
+      name: "Allow browser use for this routine",
+    });
+    expect(browser).not.toBeChecked();
+
+    await userEvent.click(browser);
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(tauriMocks.routineBrowserAccessSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        enabled: true,
+      }),
+    );
+    expect(mocks.updateRoutine).toHaveBeenCalledWith(
+      "abc123",
+      expect.objectContaining({
+        enabledToolsets: expect.arrayContaining(["june_browser_routine_abc123"]),
+      }),
+    );
+    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled();
+  });
+
+  it("explains and disables routine Browser use when managed transport is remotely disabled", async () => {
+    tauriMocks.browserTransportPolicy.mockResolvedValue({
+      attendedEnabled: true,
+      managedEnabled: false,
+    });
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    expect(
+      await screen.findByText("Browser use for routines is temporarily unavailable."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Allow browser use for this routine" }),
+    ).toBeDisabled();
+  });
+
   it("opens a routine with its full instructions", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     renderView();

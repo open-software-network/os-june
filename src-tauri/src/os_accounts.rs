@@ -606,6 +606,37 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
     }
 }
 
+/// Routine Browser use is a paid capability: attended browsing remains
+/// available on Hobby, while managed routine browsing requires a live Pro or
+/// Max subscription. Legacy subscribed rows predate plan slugs and represent
+/// Pro, so a missing slug is admitted only when the subscription itself is
+/// active. Local development keeps the capability available for end-to-end
+/// testing without a live OS Accounts deployment.
+fn routine_browser_entitled(status: &AccountStatus) -> bool {
+    if status.local_dev {
+        return true;
+    }
+    let Some(subscription) = status.subscription.as_ref() else {
+        return false;
+    };
+    subscription.subscribed
+        && matches!(subscription.status.as_deref(), Some("active" | "trialing"))
+        && matches!(subscription.plan.as_deref(), None | Some("pro" | "max"))
+}
+
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) async fn require_routine_browser_entitlement() -> Result<(), AppError> {
+    let status = os_accounts_status().await?;
+    if routine_browser_entitled(&status) {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "browser_routine_pro_required",
+            "Routine Browser use requires a Pro or Max plan.",
+        ))
+    }
+}
+
 /// Launch fast-path: derive signed-in state from the keychain alone, with no
 /// network I/O, so first paint doesn't block on the account snapshot. The
 /// user/balance/subscription returned here are the *last-known* values cached
@@ -2158,6 +2189,70 @@ fn browser_open_command(url: &str) -> std::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn account_status_for_plan(
+        plan: Option<&str>,
+        subscription_status: Option<&str>,
+        subscribed: bool,
+    ) -> AccountStatus {
+        AccountStatus {
+            signed_in: true,
+            configured: true,
+            subscription: Some(AccountSubscription {
+                subscribed,
+                status: subscription_status.map(str::to_string),
+                plan: plan.map(str::to_string),
+                plan_credits: None,
+                trial_end: None,
+                current_period_end: None,
+                trial_period_days: None,
+                scheduled_plan: None,
+                scheduled_plan_credits: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn routine_browser_entitlement_requires_a_live_pro_or_max_subscription() {
+        assert!(routine_browser_entitled(&account_status_for_plan(
+            Some("pro"),
+            Some("active"),
+            true,
+        )));
+        assert!(routine_browser_entitled(&account_status_for_plan(
+            Some("max"),
+            Some("trialing"),
+            true,
+        )));
+        assert!(routine_browser_entitled(&account_status_for_plan(
+            None,
+            Some("active"),
+            true,
+        )));
+        assert!(!routine_browser_entitled(&account_status_for_plan(
+            Some("hobby"),
+            Some("active"),
+            true,
+        )));
+        assert!(!routine_browser_entitled(&account_status_for_plan(
+            Some("pro"),
+            Some("past_due"),
+            true,
+        )));
+        assert!(!routine_browser_entitled(&account_status_for_plan(
+            Some("pro"),
+            Some("active"),
+            false,
+        )));
+        assert!(!routine_browser_entitled(&AccountStatus::default()));
+
+        let local_dev = AccountStatus {
+            local_dev: true,
+            ..Default::default()
+        };
+        assert!(routine_browser_entitled(&local_dev));
+    }
 
     #[test]
     fn callback_validation_ignores_wrong_state() {

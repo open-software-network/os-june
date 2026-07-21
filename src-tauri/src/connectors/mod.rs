@@ -16,6 +16,7 @@ pub mod approvals;
 pub mod commands;
 pub mod google;
 pub mod linear;
+pub mod notion;
 pub mod oauth;
 pub mod scopes;
 pub mod store;
@@ -31,6 +32,7 @@ use std::{
 };
 use tokio::sync::Mutex as AsyncMutex;
 
+pub use notion::NotionConnectFlow;
 pub use oauth::ConnectFlow;
 
 /// Access tokens within this many seconds of expiry are refreshed instead of
@@ -44,6 +46,7 @@ const LINEAR_OAUTH_CLIENT_ID_ENV: &str = "LINEAR_OAUTH_CLIENT_ID";
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorProvider {
     Google,
+    Notion,
     Linear,
 }
 
@@ -51,6 +54,7 @@ impl ConnectorProvider {
     pub fn as_str(&self) -> &'static str {
         match self {
             ConnectorProvider::Google => "google",
+            ConnectorProvider::Notion => "notion",
             ConnectorProvider::Linear => "linear",
         }
     }
@@ -61,6 +65,7 @@ impl ConnectorProvider {
     /// over a single stale or corrupt row.
     pub fn from_db(value: &str) -> Self {
         match value {
+            "notion" => ConnectorProvider::Notion,
             "linear" => ConnectorProvider::Linear,
             _ => ConnectorProvider::Google,
         }
@@ -72,6 +77,8 @@ impl ConnectorProvider {
 pub enum ConnectorAccountStatus {
     Connected,
     ReconnectRequired,
+    /// Transient settings-list projection. Never persist this as account state.
+    Unavailable,
 }
 
 impl ConnectorAccountStatus {
@@ -79,6 +86,7 @@ impl ConnectorAccountStatus {
         match self {
             ConnectorAccountStatus::Connected => "connected",
             ConnectorAccountStatus::ReconnectRequired => "reconnect_required",
+            ConnectorAccountStatus::Unavailable => "unavailable",
         }
     }
 
@@ -590,16 +598,106 @@ async fn account_dto(
     })
 }
 
-/// Enumerate connected accounts from the non-secret DB index (no keychain
-/// access, so listing never prompts).
-pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
+/// Enumerate persisted Google accounts from the non-secret DB index.
+///
+/// This intentionally does not inspect Notion. Callers that need a real Google
+/// identity for grants or Google MCP registration must use this provider-scoped
+/// listing so the synthetic Notion preview row can never be treated as an email.
+pub async fn list_google_accounts(
+    app: &tauri::AppHandle,
+) -> Result<Vec<ConnectorAccount>, AppError> {
+    let repos = crate::commands::repositories(app).await?;
+    let records = repos.list_connector_accounts().await?;
+    let mut accounts = Vec::new();
+    for record in records {
+        if record.provider == ConnectorProvider::Google.as_str() {
+            accounts.push(account_dto(&repos, record).await?);
+        }
+    }
+    Ok(accounts)
+}
+
+/// Enumerate the persisted account index used for Google and Linear runtime
+/// registration. Notion is deliberately excluded: its optional Keychain state
+/// must never hide otherwise healthy database-backed connector accounts.
+pub async fn list_runtime_accounts(
+    app: &tauri::AppHandle,
+) -> Result<Vec<ConnectorAccount>, AppError> {
     let repos = crate::commands::repositories(app).await?;
     let records = repos.list_connector_accounts().await?;
     let mut accounts = Vec::with_capacity(records.len());
     for record in records {
-        accounts.push(account_dto(&repos, record).await?);
+        if record.provider != ConnectorProvider::Notion.as_str() {
+            accounts.push(account_dto(&repos, record).await?);
+        }
     }
     Ok(accounts)
+}
+
+/// Enumerate connected accounts for shared API consumers.
+pub async fn list_accounts(app: &tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
+    let mut accounts = list_runtime_accounts(app).await?;
+    append_notion_account(&mut accounts, notion::account_status(app).await, false)?;
+    Ok(accounts)
+}
+
+/// Enumerate accounts for the Connectors settings UI.
+///
+/// The settings provider directory owns disconnected rows, so an unreadable
+/// optional Notion preview is represented by a transient unavailable row.
+/// Shared API consumers should call [`list_accounts`] and receive the original
+/// Notion read error.
+pub async fn list_accounts_resilient(
+    app: &tauri::AppHandle,
+) -> Result<Vec<ConnectorAccount>, AppError> {
+    let repos = crate::commands::repositories(app).await?;
+    let records = repos.list_connector_accounts().await?;
+    let mut accounts = Vec::with_capacity(records.len() + 1);
+    for record in records {
+        if record.provider != ConnectorProvider::Notion.as_str() {
+            accounts.push(account_dto(&repos, record).await?);
+        }
+    }
+    append_notion_account(&mut accounts, notion::account_status(app).await, true)?;
+    Ok(accounts)
+}
+
+fn append_notion_account(
+    accounts: &mut Vec<ConnectorAccount>,
+    status: Result<Option<ConnectorAccountStatus>, AppError>,
+    suppress_error: bool,
+) -> Result<(), AppError> {
+    match status {
+        Ok(Some(status)) => accounts.push(ConnectorAccount {
+            account_id: notion::notion_account_id().to_string(),
+            provider: ConnectorProvider::Notion,
+            email: notion::notion_account_email().to_string(),
+            scopes: Vec::new(),
+            status,
+            workspace_name: None,
+            workspace_url_key: None,
+            selected_teams: Vec::new(),
+        }),
+        Ok(None) => {}
+        Err(error) if suppress_error => {
+            tracing::warn!(
+                error_code = %error.code,
+                "failed to read optional Notion connector status"
+            );
+            accounts.push(ConnectorAccount {
+                account_id: notion::notion_account_id().to_string(),
+                provider: ConnectorProvider::Notion,
+                email: notion::notion_account_email().to_string(),
+                scopes: Vec::new(),
+                status: ConnectorAccountStatus::Unavailable,
+                workspace_name: None,
+                workspace_url_key: None,
+                selected_teams: Vec::new(),
+            });
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(())
 }
 
 /// The identity of an already-stored account, for the SAME provider, that
@@ -986,7 +1084,17 @@ pub async fn disconnect(
         Some(record) => match ConnectorProvider::from_db(&record.provider) {
             ConnectorProvider::Google => &[ConnectorProvider::Google],
             ConnectorProvider::Linear => &[ConnectorProvider::Linear],
+            ConnectorProvider::Notion => {
+                notion::disconnect(app).await?;
+                emit_connectors_changed(app);
+                return Ok(());
+            }
         },
+        None if account_id == notion::notion_account_id() => {
+            notion::disconnect(app).await?;
+            emit_connectors_changed(app);
+            return Ok(());
+        }
         None => &[ConnectorProvider::Google, ConnectorProvider::Linear],
     };
     for &provider in providers {
@@ -1018,6 +1126,7 @@ pub async fn disconnect(
                             let _ = linear::revoke(&stored.access_token, "access_token").await;
                         }
                     }
+                    ConnectorProvider::Notion => {}
                 }
             }
         }
@@ -1213,12 +1322,25 @@ mod tests {
             "\"google\""
         );
         assert_eq!(
+            serde_json::to_string(&ConnectorProvider::Notion).unwrap(),
+            "\"notion\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ConnectorProvider>("\"notion\"").unwrap(),
+            ConnectorProvider::Notion
+        );
+        assert_eq!(ConnectorProvider::Notion.as_str(), "notion");
+        assert_eq!(
             serde_json::to_string(&ConnectorProvider::Linear).unwrap(),
             "\"linear\""
         );
         assert_eq!(
             serde_json::to_string(&ConnectorAccountStatus::ReconnectRequired).unwrap(),
             "\"reconnect_required\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ConnectorAccountStatus::Unavailable).unwrap(),
+            "\"unavailable\""
         );
         assert_eq!(
             serde_json::from_str::<ConnectorAccountStatus>("\"connected\"").unwrap(),
@@ -1286,6 +1408,81 @@ mod tests {
     }
 
     #[test]
+    fn notion_account_serializes_camel_case_for_the_frontend() {
+        let account = ConnectorAccount {
+            account_id: notion::notion_account_id().to_string(),
+            provider: ConnectorProvider::Notion,
+            email: notion::notion_account_email().to_string(),
+            scopes: Vec::new(),
+            status: ConnectorAccountStatus::Connected,
+            workspace_name: None,
+            workspace_url_key: None,
+            selected_teams: Vec::new(),
+        };
+        let json = serde_json::to_value(&account).unwrap();
+        assert_eq!(json["accountId"], "notion-hosted-mcp");
+        assert_eq!(json["provider"], "notion");
+        assert_eq!(json["email"], "Notion");
+        assert_eq!(json["scopes"].as_array().unwrap().len(), 0);
+        assert_eq!(json["status"], "connected");
+        assert!(json["workspaceName"].is_null());
+        assert!(json["workspaceUrlKey"].is_null());
+        assert_eq!(json["selectedTeams"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn append_notion_account_preserves_errors_unless_resilient() {
+        let mut strict = Vec::new();
+        let error = AppError::new("notion_keychain_read_failed", "failed");
+        let strict_error =
+            append_notion_account(&mut strict, Err(error.clone()), false).unwrap_err();
+        assert_eq!(strict_error.code, error.code);
+        assert_eq!(strict_error.message, error.message);
+        assert!(strict.is_empty());
+
+        let mut resilient = Vec::new();
+        append_notion_account(&mut resilient, Err(error), true).unwrap();
+        assert_eq!(resilient.len(), 1);
+        assert_eq!(resilient[0].provider, ConnectorProvider::Notion);
+        assert_eq!(resilient[0].status, ConnectorAccountStatus::Unavailable);
+
+        let mut disconnected = Vec::new();
+        append_notion_account(&mut disconnected, Ok(None), true).unwrap();
+        assert!(disconnected.is_empty());
+    }
+
+    #[test]
+    fn append_notion_account_adds_synthetic_connected_row() {
+        let mut accounts = Vec::new();
+        append_notion_account(
+            &mut accounts,
+            Ok(Some(ConnectorAccountStatus::Connected)),
+            false,
+        )
+        .unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].provider, ConnectorProvider::Notion);
+        assert_eq!(accounts[0].account_id, notion::notion_account_id());
+        assert_eq!(accounts[0].email, notion::notion_account_email());
+        assert!(accounts[0].selected_teams.is_empty());
+    }
+
+    #[test]
+    fn append_notion_account_preserves_reconnect_required_status() {
+        let mut accounts = Vec::new();
+        append_notion_account(
+            &mut accounts,
+            Ok(Some(ConnectorAccountStatus::ReconnectRequired)),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            accounts[0].status,
+            ConnectorAccountStatus::ReconnectRequired
+        );
+    }
+
+    #[test]
     fn freshness_uses_expiry_buffer() {
         let now = 1_000_000;
         assert!(access_token_is_fresh(now + 61, now));
@@ -1305,6 +1502,10 @@ mod tests {
         );
         assert_eq!(
             ConnectorAccountStatus::from_db("unexpected"),
+            ConnectorAccountStatus::Connected
+        );
+        assert_eq!(
+            ConnectorAccountStatus::from_db("unavailable"),
             ConnectorAccountStatus::Connected
         );
     }

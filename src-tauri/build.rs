@@ -25,6 +25,7 @@ fn main() {
     prepare_computer_use_driver();
     build_windows_dictation_helper();
     ensure_bundled_hermes_dir();
+    ensure_nm_shim_placeholder();
     tauri_build::build();
 }
 
@@ -224,6 +225,39 @@ fn computer_use_signature_matches(app_dir: &std::path::Path, identity: &str) -> 
         details
             .lines()
             .any(|line| line.trim() == format!("Authority={identity}"))
+    }
+}
+
+/// `tauri_build::build()` validates every `bundle.resources` source path at
+/// compile time, but the native messaging shim is a sibling `[[bin]]` of this
+/// crate — it does not exist yet while build.rs runs. This placeholder keeps
+/// the mapping valid for every cargo invocation; `scripts/bundle-nm-shim.sh`
+/// (the macOS `beforeBundleCommand`) replaces it with the real signed binary
+/// after compilation and fails the bundle if it cannot.
+fn ensure_nm_shim_placeholder() {
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let Some(helper_dir) = manifest_dir
+        .parent()
+        .map(|repo_dir| repo_dir.join(".tauri-helper"))
+    else {
+        return;
+    };
+    let shim = helper_dir.join("june-nm-shim");
+    if shim.exists() {
+        return;
+    }
+    if let Err(error) = std::fs::create_dir_all(&helper_dir).and_then(|_| {
+        std::fs::write(
+            &shim,
+            b"placeholder: replaced by scripts/bundle-nm-shim.sh\n",
+        )
+    }) {
+        println!("cargo:warning=could not create nm shim placeholder: {error}");
     }
 }
 
@@ -643,6 +677,8 @@ fn build_dictation_helper() {
     std::fs::create_dir_all(&resources_dir)
         .expect("dictation helper resources dir should be created");
     let executable = macos_dir.join("june-dictation-helper");
+    let icon_source = manifest_dir.join("icons").join("icon.icns");
+    let icon_destination = resources_dir.join("June.icns");
 
     let executable_current = swift_helper_executable_current(&source, &executable);
     let mut should_sign = false;
@@ -684,6 +720,8 @@ fn build_dictation_helper() {
   <string>june-dictation-helper</string>
   <key>CFBundleIdentifier</key>
   <string>co.opensoftware.june.dictation-helper</string>
+  <key>CFBundleIconFile</key>
+  <string>June.icns</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -709,6 +747,23 @@ fn build_dictation_helper() {
     if !plist_current {
         std::fs::write(plist, &plist_contents)
             .expect("dictation helper Info.plist should be written");
+        should_sign = true;
+    }
+
+    let icon_bytes = std::fs::read(&icon_source).unwrap_or_else(|error| {
+        panic!(
+            "June app icon {} should be readable: {error}",
+            icon_source.display()
+        )
+    });
+    let icon_current = std::fs::read(&icon_destination).is_ok_and(|current| current == icon_bytes);
+    if !icon_current {
+        std::fs::write(&icon_destination, icon_bytes).unwrap_or_else(|error| {
+            panic!(
+                "June app icon should be copied to dictation helper resources at {}: {error}",
+                icon_destination.display()
+            )
+        });
         should_sign = true;
     }
 

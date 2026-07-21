@@ -31,7 +31,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: rc-desktop-release
+  group: desktop-release-pipeline
   cancel-in-progress: false
 
 env:
@@ -166,7 +166,7 @@ jobs:
           # package.json is the current released version. Reuse bump-version's
           # compareSemver for the same ordering the version-bump gate uses.
           node --input-type=module <<'NODE'
-          import { readFileSync } from "node:fs";
+          import { appendFileSync, readFileSync } from "node:fs";
           import {
             compareSemver,
             currentVersionFromPackageJson,
@@ -183,6 +183,11 @@ jobs:
           }
           console.log(`Base version ${base} is ahead of main (${main}).`);
           NODE
+          # Chrome accepts one to four numeric components, each at most 65535.
+          # Validate the correlated extension build before spending macOS runner
+          # time on a desktop RC that could never reach the Web Store.
+          node scripts/extension-release.mjs validate-version \
+            --desktop-version "${BASE_VERSION_INPUT}-rc.${RC_NUMBER_INPUT}"
           echo "VERSION=${BASE_VERSION_INPUT}-rc.${RC_NUMBER_INPUT}" >> "$GITHUB_ENV"
           # Record the exact source commit so promote-desktop.yml can rebuild the
           # clean X.Y.Z from this same tree (only the version string differs).
@@ -576,4 +581,271 @@ jobs:
             echo "- Version: \`$VERSION\`"
             echo "- Channel manifest: \`https://github.com/open-software-network/os-june-releases/releases/download/rc/latest-rc.json\`"
             echo "- Promote to stable: run \`promote-desktop.yml\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  extension-rc:
+    name: Submit extension release candidate
+    needs: release
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Mint release token (GitHub App)
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-software-network
+          repositories: os-june,os-june-releases
+
+      - name: Resolve the published desktop RC
+        id: rc
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          EXPECTED_VERSION: ${{ format('{0}-rc.{1}', inputs.base-version, inputs.rc-number) }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/extension-rc-meta"
+          mkdir -p "$dir"
+          gh release download rc \
+            --repo open-software-network/os-june-releases \
+            --pattern "rc-build.json" \
+            --dir "$dir"
+          RC_META_DIR="$dir" node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          import { join } from "node:path";
+          const metadata = JSON.parse(
+            readFileSync(join(process.env.RC_META_DIR, "rc-build.json"), "utf8"),
+          );
+          if (metadata.version !== process.env.EXPECTED_VERSION) {
+            throw new Error(
+              `Desktop RC release holds ${metadata.version}; expected ${process.env.EXPECTED_VERSION}.`,
+            );
+          }
+          if (!/^[0-9a-f]{40}$/.test(metadata.commit)) {
+            throw new Error("Desktop RC metadata has an invalid source commit.");
+          }
+          const output = process.env.GITHUB_OUTPUT;
+          appendFileSync(output, `version=${metadata.version}\ncommit=${metadata.commit}\n`);
+          NODE
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.rc.outputs.commit }}
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test and build extension
+        run: |
+          set -euo pipefail
+          pnpm --filter june-extension typecheck
+          pnpm --filter june-extension test
+          pnpm extension:build
+
+      - name: Download prior extension release metadata
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          prior="$RUNNER_TEMP/extension-prior"
+          mkdir -p "$prior/rc" "$prior/stable"
+
+          rc_assets="$(gh release view rc \
+            --repo open-software-network/os-june-releases \
+            --json assets --jq '.assets[].name')"
+          if grep -Fqx "extension-build.json" <<< "$rc_assets"; then
+            gh release download rc \
+              --repo open-software-network/os-june-releases \
+              --pattern "extension-build.json" \
+              --dir "$prior/rc"
+          fi
+          if grep -Fqx "June-extension.zip" <<< "$rc_assets"; then
+            gh release download rc \
+              --repo open-software-network/os-june-releases \
+              --pattern "June-extension.zip" \
+              --dir "$prior/rc"
+          fi
+
+          stable_tag="$(gh release view \
+            --repo open-software-network/os-june-releases \
+            --json tagName --jq .tagName)"
+          stable_assets="$(gh release view "$stable_tag" \
+            --repo open-software-network/os-june-releases \
+            --json assets --jq '.assets[].name')"
+          if grep -Fqx "extension-build.json" <<< "$stable_assets"; then
+            gh release download "$stable_tag" \
+              --repo open-software-network/os-june-releases \
+              --pattern "extension-build.json" \
+              --dir "$prior/stable"
+          fi
+
+      # Missing Web Store identity configuration is a clean skip, not a
+      # failure: the desktop RC is already published when this job runs, so
+      # failing here would leave a half-released RC. Until the one-time store
+      # bootstrap in docs/release-extension.md is complete, RCs are
+      # desktop-only by design.
+      - name: Detect Web Store identity configuration
+        id: store-config
+        env:
+          WORKLOAD_IDENTITY_PROVIDER: ${{ vars.CHROME_WEB_STORE_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.CHROME_WEB_STORE_SERVICE_ACCOUNT }}
+          PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+        run: |
+          set -euo pipefail
+          configured=true
+          for name in WORKLOAD_IDENTITY_PROVIDER SERVICE_ACCOUNT PUBLISHER_ID; do
+            if [ -z "${!name:-}" ]; then
+              echo "::notice::CHROME_WEB_STORE ${name} is not configured; skipping extension store submission for this RC."
+              configured=false
+            fi
+          done
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+
+      # A skipped RC must not leave a previous RC's extension assets on the
+      # fixed rc release: stable promotion correlates those assets with the
+      # desktop RC being promoted, and stale metadata would either block the
+      # promotion or promote bytes this RC never built.
+      - name: Remove stale extension assets from the RC release
+        if: ${{ steps.store-config.outputs.configured != 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view rc \
+            --repo open-software-network/os-june-releases \
+            --json assets --jq '.assets[].name')"
+          for asset in extension-build.json June-extension.zip; do
+            if grep -Fqx "$asset" <<< "$assets"; then
+              gh release delete-asset rc "$asset" \
+                --repo open-software-network/os-june-releases \
+                --yes
+              echo "::notice::Removed stale $asset from the rc release; this RC carries no extension."
+            fi
+          done
+          {
+            echo "### Extension release candidate"
+            echo "- Desktop RC: \`${{ steps.rc.outputs.version }}\`"
+            echo "- Result: skipped, Chrome Web Store identity is not configured."
+            echo "- This RC promotes desktop-only; see docs/release-extension.md for the store bootstrap."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Authenticate to Google Cloud
+        if: ${{ steps.store-config.outputs.configured == 'true' }}
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.CHROME_WEB_STORE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.CHROME_WEB_STORE_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+
+      - name: Inspect prior extension submission
+        if: ${{ steps.store-config.outputs.configured == 'true' }}
+        id: prior-store
+        env:
+          CHROME_WEB_STORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CHROME_WEB_STORE_PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/extension-prior/rc/extension-build.json"
+          reusable=false
+          if [ -f "$metadata" ]; then
+            reusable="$(node scripts/chrome-web-store.mjs reuse-status --metadata "$metadata")"
+          fi
+          echo "reusable=$reusable" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare correlated extension package
+        if: ${{ steps.store-config.outputs.configured == 'true' }}
+        id: extension
+        env:
+          DESKTOP_VERSION: ${{ steps.rc.outputs.version }}
+          SOURCE_COMMIT: ${{ steps.rc.outputs.commit }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/extension-release"
+          prior="$RUNNER_TEMP/extension-prior"
+          args=(
+            prepare
+            --desktop-version "$DESKTOP_VERSION"
+            --source-commit "$SOURCE_COMMIT"
+            --output-dir "$output"
+          )
+          if [ -f "$prior/stable/extension-build.json" ]; then
+            args+=(--previous-stable-metadata "$prior/stable/extension-build.json")
+          fi
+          if [ -f "$prior/rc/extension-build.json" ]; then
+            args+=(--previous-rc-metadata "$prior/rc/extension-build.json")
+          fi
+          if [ -f "$prior/rc/June-extension.zip" ]; then
+            args+=(--previous-rc-package "$prior/rc/June-extension.zip")
+          fi
+          if [ "${{ steps.prior-store.outputs.reusable }}" = "true" ]; then
+            args+=(--reuse-previous-rc true)
+          fi
+          node scripts/extension-release.mjs "${args[@]}"
+
+      - name: Submit extension for review or verify unchanged state
+        if: ${{ steps.store-config.outputs.configured == 'true' }}
+        env:
+          CHROME_WEB_STORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CHROME_WEB_STORE_PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+        run: |
+          set -euo pipefail
+          args=(submit --metadata "${{ steps.extension.outputs.metadata_path }}")
+          if [ "${{ steps.extension.outputs.release_required }}" = "true" ]; then
+            args+=(--package "${{ steps.extension.outputs.package_path }}")
+          fi
+          node scripts/chrome-web-store.mjs "${args[@]}"
+
+      - name: Publish extension RC assets
+        if: ${{ steps.store-config.outputs.configured == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_REQUIRED: ${{ steps.extension.outputs.release_required }}
+        run: |
+          set -euo pipefail
+          metadata="${{ steps.extension.outputs.metadata_path }}"
+          if [ "$RELEASE_REQUIRED" = "true" ]; then
+            gh release upload rc "${{ steps.extension.outputs.package_path }}" \
+              --repo open-software-network/os-june-releases \
+              --clobber
+          elif gh release view rc \
+            --repo open-software-network/os-june-releases \
+            --json assets --jq '.assets[].name' | grep -Fqx "June-extension.zip"; then
+            gh release delete-asset rc "June-extension.zip" \
+              --repo open-software-network/os-june-releases \
+              --yes
+          fi
+          # Metadata is the commit marker. Publishing it last means promotion
+          # never trusts a package upload that did not complete.
+          gh release upload rc "$metadata" \
+            --repo open-software-network/os-june-releases \
+            --clobber
+
+      - name: Summary
+        if: ${{ steps.store-config.outputs.configured == 'true' }}
+        run: |
+          {
+            echo "### Extension release candidate"
+            echo "- Desktop RC: \`${{ steps.rc.outputs.version }}\`"
+            echo "- Store version: \`${{ steps.extension.outputs.store_version }}\`"
+            echo "- Result: \`${{ steps.extension.outputs.release_reason }}\`"
+            if [ "${{ steps.extension.outputs.release_required }}" = "true" ]; then
+              echo "- Stable promotion is blocked until Chrome reports \`STAGED\`."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

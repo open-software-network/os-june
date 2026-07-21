@@ -87,6 +87,11 @@ exists. The workflow records the source commit in `rc-build.json` (so promote ca
 rebuild the same tree) and does NOT touch `main`. It also fails closed if it
 cannot read the current RC metadata, preserving the RC release channel's
 forward-only ordering.
+After the desktop asset publishes, the extension release job compares its build
+inputs with the latest stable extension. Changed inputs are packaged, attached
+to the same fixed `rc` release, and submitted to Chrome for deferred publication;
+unchanged inputs make no store write. See
+[release-extension.md](release-extension.md).
 
 ### 2. Test the candidate
 
@@ -106,18 +111,36 @@ GitHub Actions -> promote-desktop-release -> Run workflow
 holds; a mismatch (or a blank field) fails the run, so you can never promote a
 different candidate than you intend.
 
+Before the macOS stable build starts, promotion also freezes and verifies the RC
+extension metadata. If the extension changed, Chrome must have approved that
+exact package into `STAGED`; pending review or any version/hash mismatch blocks
+the whole stable release. After the desktop release succeeds, the same reviewed
+extension package is published to stable. Allow for Chrome review time when
+planning a release.
+
 `promote-desktop-release` checks out the exact commit the RC was built from,
 stamps the clean `X.Y.Z`, and reruns the full sign + notarize path, so stable
 ships the same source you tested with a clean version string. It then:
 
 - publishes the `vX.Y.Z` stable release (marked latest) with the DMG, updater
   archive + signature, a regenerated `latest.json`, and a `stable-build.json`
-  recording the source commit (so the Windows build reuses the same tree);
+  recording the source commit and asset SHA-256 values (so the Windows build
+  reuses the same tree); the release stays draft until every asset verifies and
+  those hashes are frozen in an immutable pre-publication workflow artifact;
+- publishes the exact staged extension (or rechecks unchanged store state)
+  immediately after the desktop release boundary;
 - generates the changelog (first-parent commits since the previous `release: v...`)
   and embeds it in both the GitHub release notes and `latest.json`;
-- commits `release: vX.Y.Z` directly to `main` (the release bot is on the
+- updates the Homebrew tap and commits `release: vX.Y.Z` directly to `main`
+  only after the extension step succeeds (the release bot is on the
   branch-protection bypass list), advancing the version files so the next RC's
-  gate and the next changelog can anchor on it. No PR to merge.
+  gate and the next changelog can anchor on it. The tap DMG must match immutable
+  signing-job provenance. No PR to merge.
+
+If publication succeeds but its job loses the response, rerun the failed
+`publish-desktop` job in that same workflow run. It reuses the pre-publication
+artifact and fails if any public release byte changed. Starting a new promotion
+against an already-public version is deliberately rejected.
 
 ### 4. Cut the Windows release
 

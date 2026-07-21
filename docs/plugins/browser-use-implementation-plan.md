@@ -30,6 +30,15 @@ reference expiry, consequential-action classification, approval journal,
 artifact references, and teardown. The extension and headless driver execute
 commands but do not decide policy.
 
+The broker is not merely where policy is written; it is the only place it can
+be *enforced*. The agent runtime can read its own loopback token out of its
+config and call the broker's routes directly, so gating at the runtime's tool
+layer gates nothing. See the 2026-07-13 addendum to
+[ADR-0017](../adr/0017-browser-use-via-june-extension.md). Concretely: the
+Browser access grant, re-checked in the broker on every request, is the sole
+authorization gate, and every consequential-action approval (JUN-297) is
+enforced broker-side.
+
 ## MCP contract
 
 - Session: `start_session`, `close_session`.
@@ -52,6 +61,11 @@ workspace file references rather than native-messaging payloads.
   socket to the broker.
 - Browser-owned debugging banner plus June tab grouping as visible indicators.
 - Extension detaches and clears state on broker/native-host loss.
+- Transport loss (extension reload or store update, browser exit, shim or
+  broker death) ends every attended session; a reconnect is a fresh pairing,
+  and session-restored tabs are orphaned, never re-adopted.
+- Parked approvals are bound to their tab; tab loss discards the action and
+  resolves the approval as not executed.
 
 ## Routine transport
 
@@ -95,11 +109,15 @@ workspace file references rather than native-messaging payloads.
 - Cross-language protocol fixtures for framing, version mismatch, reconnect,
   and file-reference payloads.
 - Extension integration tests against hostile fixture pages and navigation
-  races.
+  races. Best-effort in v1 and deliberately not a release gate (the canonical
+  PRD's testing decisions); the committed gates are the Rust policy tests, the
+  protocol fixtures, and the MCP schema fixtures.
 - MCP schema fixtures plus pinned-runtime live smoke.
 - Live macOS walkthrough: install, pair, create task tab, share one tab, approve
-  an action, deny an action, human takeover, stop, disconnect, and crash the
-  broker while attached.
+  an action, deny an action, human takeover, stop, disconnect, crash the broker
+  while attached, close a task tab mid-action, detach the debugger from the
+  banner, rename or ungroup the June tab group, restart the browser mid-task,
+  and update the extension mid-task.
 - Security test that unrelated tabs, local network targets, and sensitive
   fields stay unreachable.
 
@@ -112,6 +130,8 @@ transport. Do not log URLs, page text, screenshots, or field values.
 
 ## Open gate
 
-Public release depends on publisher verification and store approval. The
-implementation direction itself requires no new ADR unless the work departs
-from ADR-0017.
+Public release depends on publisher verification and store approval. A
+debugger-permission rejection holds the attended launch; the answer is a
+revised submission, not a reduced-permission build (the canonical PRD's
+distribution section). The implementation direction itself requires no new
+ADR unless the work departs from ADR-0017.

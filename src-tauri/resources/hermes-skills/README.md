@@ -14,6 +14,14 @@ Skill lookup precedence is:
 That order is deliberate: user-installed or profile-installed skills can shadow
 June-bundled copies with the same name.
 
+## june-obsidian
+
+June-owned Obsidian vault discovery. The skill calls the permanently registered
+`june_obsidian` MCP server for the current selected vault instead of using an
+environment variable or guessing a default path. The adapter asks the Rust
+process on every request, so connection changes take effect without restarting
+Hermes.
+
 ## unbroker
 
 Source: `NousResearch/hermes-agent/optional-skills/security/unbroker`

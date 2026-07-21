@@ -12,8 +12,8 @@ use axum::{
 };
 use june_api::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, router};
 use june_config::{
-    DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES, DEFAULT_MAX_ISSUE_REPORT_BYTES,
-    ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
+    BrowserTransportsConfig, DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES,
+    DEFAULT_MAX_ISSUE_REPORT_BYTES, ModelPriceConfig, ModelProvider, ModelType, PriceUnit,
 };
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream,
@@ -90,6 +90,7 @@ pub(crate) fn test_state_with_issue_sink_and_timeout(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
         share: None,
     })
 }
@@ -126,6 +127,7 @@ pub(crate) fn test_state_with_sinks_and_transcriber(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
         share: None,
     })
 }
@@ -144,6 +146,7 @@ pub(crate) fn test_state_with_generator_and_timeout(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
         share: None,
     })
 }
@@ -159,6 +162,7 @@ pub(crate) fn test_state_with_p3a_sink(p3a_sink: Arc<dyn P3aSink>) -> ApiState {
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink,
+        browser_transports: BrowserTransportsConfig::default(),
         share: None,
     })
 }
@@ -177,6 +181,7 @@ pub(crate) fn test_state_with_share(
         chat_completer: Arc::new(FakeChatCompleter),
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
         share,
     };
     let _ = &mut state;
@@ -260,6 +265,7 @@ pub(crate) fn test_state_with_text_pricing_without_auto_and_kimi_capabilities(
         chat_completer,
         request_timeout_secs: 5,
         p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
         share: None,
     })
 }
@@ -274,7 +280,24 @@ pub(crate) struct TestStateDeps {
     pub(crate) chat_completer: Arc<dyn AgentChatCompleter>,
     pub(crate) request_timeout_secs: u64,
     pub(crate) p3a_sink: Arc<dyn P3aSink>,
+    pub(crate) browser_transports: BrowserTransportsConfig,
     pub(crate) share: Option<Arc<june_services::ShareService>>,
+}
+
+pub(crate) fn default_test_state_deps() -> TestStateDeps {
+    TestStateDeps {
+        pricing: models(),
+        local_dev_enabled: false,
+        issue_reports: test_issue_report_service(Arc::new(RecordingIssueReportSink::default())),
+        attestation: test_attestation(),
+        transcriber: Arc::new(FakeTranscriber),
+        generator: Arc::new(FakeGenerator),
+        chat_completer: Arc::new(FakeChatCompleter),
+        request_timeout_secs: 5,
+        p3a_sink: Arc::new(RecordingP3aSink::default()),
+        browser_transports: BrowserTransportsConfig::default(),
+        share: None,
+    }
 }
 
 pub(crate) fn test_state_from_deps(deps: TestStateDeps) -> ApiState {
@@ -383,6 +406,7 @@ pub(crate) fn test_state_from_deps_with_viewer(
             request_timeout_secs: deps.request_timeout_secs,
         },
         attestation: deps.attestation,
+        browser_transports: deps.browser_transports,
     })
 }
 

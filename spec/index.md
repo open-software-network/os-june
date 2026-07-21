@@ -31,6 +31,10 @@ authoritative, reviewable version.
 
 - [control-sizes](control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 
+## Agent surface — MCP
+
+- [mcp-tool-naming](mcp-tool-naming.md) — internal MCP tools are `verb_object`; the owning PRD names them before the code is written
+
 ## Tooling — dependencies
 
 - [package-install-security](package-install-security.md) — pnpm-only; new package installs go through `sfw`; 7-day `minimumReleaseAge` cooldown

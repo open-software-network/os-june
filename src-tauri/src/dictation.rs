@@ -3495,6 +3495,12 @@ fn deliver_dictation_outcome(
         let _ = std::fs::remove_file(audio_path);
         return;
     }
+    // The terminal command and any shortcut command written after it are
+    // consumed by the helper in order. Re-arm as soon as that handoff
+    // succeeds instead of waiting for the helper to echo a terminal event:
+    // discard outcomes used to emit no echo once recording had finalized,
+    // leaving Fn suppressed until the 30-second safety timeout expired.
+    update_shortcut_helper_finalizing(app, false);
     if let Some(event) = outcome.event {
         emit_dictation_event_value(app, event);
     }
@@ -6574,6 +6580,32 @@ mod tests {
                 ShortcutKeyEdge::Down,
                 DictationShortcutKind::PushToTalk,
                 now + FINALIZING_SUPPRESSION_EXPIRY
+            ),
+            Some(DictationCommand::StartListening)
+        );
+    }
+
+    #[test]
+    fn completed_outcome_immediately_rearms_push_to_talk() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+
+        controller.mark_helper_finalizing();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            None
+        );
+
+        controller.clear_helper_finalizing();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now + Duration::from_millis(1)
             ),
             Some(DictationCommand::StartListening)
         );

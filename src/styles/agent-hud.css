@@ -74,10 +74,10 @@ body {
   pointer-events: none;
 }
 
-/* Shared surface recipe: near-opaque dark glass, borderless. The box-shadow
- * below does the edge definition; CSS backdrop-filter can't sample other
- * apps' pixels, so opacity does the legibility work. Matches the dictation
- * and recording pills, which are likewise borderless over their vibrancy.
+/* Shared surface recipe: near-opaque dark glass, borderless. CSS
+ * backdrop-filter can't sample other apps' pixels, so opacity does the
+ * legibility work. The native window owns the shadow so its hit-tested bounds
+ * can match this surface exactly.
  *
  * Shared geometry: the header and every row place their leading icon in
  * the same 14px column at the same inset, so the header label and row
@@ -89,20 +89,21 @@ body {
   --hud-expanded-w: 248px;
 
   position: absolute;
-  top: var(--sp-3);
-  right: var(--sp-4);
+  top: 0;
+  right: 0;
   display: grid;
   width: fit-content;
-  max-width: min(var(--hud-expanded-w), calc(100vw - 2 * var(--sp-4)));
+  max-width: var(--hud-expanded-w);
   overflow: hidden;
   /* Half the collapsed pill height, NOT --r-pill: a 999px radius
    * interpolating down to 14px mid-expansion produced blob shapes. */
   border-radius: 16px;
   background: color-mix(in oklch, var(--popover) 92%, transparent);
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-3px) scale(0.98);
+  transform: scale(0.98);
+  transform-origin: top right;
   /* Out (base state): a longer, calmer fade; agent-hud.ts keeps the last
    * content rendered underneath it and delays the native hide to match.
    * Width is in the list for the JS FLIP that animates expand/collapse. */
@@ -126,7 +127,10 @@ body {
 }
 
 .agent-hud[data-expanded="true"] .agent-hud-surface {
-  width: min(var(--hud-expanded-w), calc(100vw - 2 * var(--sp-4)));
+  /* Deliberately independent of 100vw: while collapsed the native window is
+   * pill-width, so viewport-relative sizing would prevent this surface from
+   * measuring its expanded width and growing the window. */
+  width: var(--hud-expanded-w);
   border-radius: var(--r-xl);
 }
 
@@ -476,13 +480,13 @@ body {
 .agent-hud-menu {
   position: absolute;
   top: 44px;
-  right: var(--sp-4);
+  right: 0;
   min-width: 148px;
   padding: var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: color-mix(in oklch, var(--popover) 96%, transparent);
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
   pointer-events: auto;
 }
 

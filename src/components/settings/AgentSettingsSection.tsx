@@ -22,6 +22,7 @@ import {
   type HermesMessagingPlatformInfo,
   type HermesFilesystemSnapshot,
   type JuneCharacterStatus,
+  type FolderDto,
 } from "../../lib/tauri";
 import {
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
@@ -41,6 +42,7 @@ import {
   MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
 } from "../../lib/hermes-messaging";
 import { Switch } from "../ui/Switch";
+import { ImportClaudeProjectsDialog } from "../folders/ImportClaudeProjectsDialog";
 import { SettingsPageHeader } from "./AppSettings";
 
 type AgentSettingsPanel = "messaging" | "files";
@@ -49,6 +51,8 @@ export function AgentSettingsSection({
   selectedPlatformId,
   onSelectPlatform,
   onBackFromPlatform,
+  folders = [],
+  onFoldersImported,
 }: {
   /** The messaging platform whose detail is open, lifted into AppSettings so the
    * drill-in can pin at the very top of the settings surface (replacing the
@@ -58,6 +62,8 @@ export function AgentSettingsSection({
   onSelectPlatform?: (platformId: string) => void;
   /** Return to the platform list. */
   onBackFromPlatform?: () => void;
+  folders?: FolderDto[];
+  onFoldersImported?: (folders: FolderDto[]) => void;
 } = {}) {
   // Messaging / Files present as the system underline tabs (same pattern as
   // the routine detail tabs), with the active panel's content beneath.
@@ -81,15 +87,24 @@ export function AgentSettingsSection({
   // default for a setting with security weight.
   const [cliAccessEnabled, setCliAccessEnabled] = useState<boolean | null>(null);
   const [cliAccessSaving, setCliAccessSaving] = useState(false);
+  const [cliAccessLoadFailed, setCliAccessLoadFailed] = useState(false);
+  const [projectImportOpen, setProjectImportOpen] = useState(false);
+  const linkedProjectCount = folders.filter((folder) => folder.localPath).length;
 
   useEffect(() => {
     let cancelled = false;
     hermesAgentCliAccess()
       .then((status) => {
-        if (!cancelled) setCliAccessEnabled(status.enabled);
+        if (!cancelled) {
+          setCliAccessEnabled(status.enabled);
+          setCliAccessLoadFailed(false);
+        }
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(messageFromError(err));
+        if (!cancelled) {
+          setCliAccessLoadFailed(true);
+          setError(messageFromError(err));
+        }
       });
     return () => {
       cancelled = true;
@@ -115,6 +130,21 @@ export function AgentSettingsSection({
       setCliAccessEnabled(status.enabled);
       setError(null);
     } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setCliAccessSaving(false);
+    }
+  }
+
+  async function handleCliAccessRetry() {
+    setCliAccessSaving(true);
+    setCliAccessLoadFailed(false);
+    try {
+      const status = await hermesAgentCliAccess();
+      setCliAccessEnabled(status.enabled);
+      setError(null);
+    } catch (err) {
+      setCliAccessLoadFailed(true);
       setError(messageFromError(err));
     } finally {
       setCliAccessSaving(false);
@@ -410,16 +440,47 @@ export function AgentSettingsSection({
                 </p>
               </div>
               <div className="settings-row-control">
-                <Switch
-                  checked={cliAccessEnabled === true}
-                  disabled={cliAccessEnabled === null || cliAccessSaving}
-                  onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
-                  aria-label="Allow agent CLI access"
-                />
+                {cliAccessLoadFailed ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    disabled={cliAccessSaving}
+                    onClick={() => void handleCliAccessRetry()}
+                  >
+                    {cliAccessSaving ? "Trying again..." : "Try again"}
+                  </button>
+                ) : (
+                  <Switch
+                    checked={cliAccessEnabled === true}
+                    disabled={cliAccessEnabled === null || cliAccessSaving}
+                    onCheckedChange={(enabled) => void handleCliAccessChange(enabled)}
+                    aria-label="Allow agent CLI access"
+                  />
+                )}
+              </div>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Claude Code projects</h3>
+                <p className="settings-row-description">
+                  {linkedProjectCount > 0
+                    ? `${linkedProjectCount} ${linkedProjectCount === 1 ? "project folder is" : "project folders are"} linked. Scan again to add folders you used with Claude Code more recently.`
+                    : "Add local project folders you have used with Claude Code. Files stay in their current locations."}
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <button type="button" className="btn" onClick={() => setProjectImportOpen(true)}>
+                  {linkedProjectCount > 0 ? "Scan again" : "Add projects"}
+                </button>
               </div>
             </div>
           </div>
         </div>
+        <ImportClaudeProjectsDialog
+          open={projectImportOpen}
+          onClose={() => setProjectImportOpen(false)}
+          onImported={onFoldersImported ?? (() => {})}
+        />
         {error ? <p className="settings-row-error">{error}</p> : null}
       </section>
       <CharacterGroup />

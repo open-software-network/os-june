@@ -6,6 +6,7 @@ import {
   hasFinalContentBearingAssistantReply,
   textFromHermesContent,
   textFromHermesTransportContent,
+  USER_ATTACHMENT_PROMPT_MARKER,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
 import { withTimeout } from "../../lib/async-timeout";
@@ -137,6 +138,7 @@ function withAttachmentPaths(message: string, attachments: NoteChatAttachment[])
   return [
     message || "Use the attached file(s).",
     "",
+    USER_ATTACHMENT_PROMPT_MARKER,
     "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>
@@ -1493,6 +1495,10 @@ function beginNoteChatTranscriptRefresh(record: NoteChatContinuityRecord): NoteC
 
 function canonicalNoteChatUserText(value: string): string {
   return displayedComposerUserMessageText(value)
+    .replace(
+      /\n+Attached files copied into the June workspace:\n[\s\S]*?\n+Use these file paths when inspecting or operating on the files\.\s*$/i,
+      "",
+    )
     .replace(/^@note:\S+(?:\s+\("[^"]*"\))?\s*/i, "")
     .replace(/\s+/g, " ")
     .trim();

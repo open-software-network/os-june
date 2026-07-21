@@ -64,6 +64,7 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
+    ensure_column(_pool, "folders", "local_path", "TEXT").await?;
     // Folder names don't need to be unique — each folder has a stable
     // UUID, and the user may legitimately want two "Inbox"es etc.
     drop_index_if_exists(_pool, "idx_folders_active_name").await?;
@@ -153,6 +154,11 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
     .await?;
     ensure_column(_pool, "p3a_counters", "reported_at", "TEXT").await?;
     ensure_column(_pool, "notes", "profile", "TEXT NOT NULL DEFAULT 'default'").await?;
+    ensure_column(_pool, "notes", "calendar_event_id", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_event_title", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_event_start_at", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_event_end_at", "TEXT").await?;
+    ensure_column(_pool, "notes", "calendar_account_email", "TEXT").await?;
     ensure_column(
         _pool,
         "dictation_history",
@@ -166,6 +172,13 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         "profile",
         "TEXT NOT NULL DEFAULT 'default'",
     )
+    .await?;
+    query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_active_local_path
+         ON folders (profile, local_path)
+         WHERE deleted_at IS NULL AND local_path IS NOT NULL",
+    )
+    .execute(_pool)
     .await?;
     if !index_exists(_pool, "idx_notes_profile_created_at").await? {
         query(
@@ -253,6 +266,18 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
         }
     }
     for statement in include_str!("../../migrations/020_completed_sessions.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/021_routine_browser_grants.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    for statement in include_str!("../../migrations/022_browser_outcome_ledger.sql").split(';') {
         let statement = statement.trim();
         if !statement.is_empty() {
             query(statement).execute(_pool).await?;

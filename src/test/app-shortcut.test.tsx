@@ -92,6 +92,7 @@ const mocks = vi.hoisted(() => ({
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
   hermesAgentCliAccess: vi.fn(),
+  hermesBrowserAccess: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeStatus: vi.fn(),
   listAgentTasks: vi.fn(),
@@ -179,6 +180,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "note-calendar-context-updated-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps
   // these shortcut tests focused on the meetings surfaces.
@@ -233,6 +235,7 @@ vi.mock("../lib/tauri", () => ({
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
+  hermesBrowserAccess: mocks.hermesBrowserAccess,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   listAgentTasks: mocks.listAgentTasks,
@@ -389,6 +392,7 @@ describe("App shortcuts", () => {
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
     mocks.ensureHermesBridgeSession.mockResolvedValue({});
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
+    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: false,

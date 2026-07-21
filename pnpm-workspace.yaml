@@ -1,5 +1,10 @@
 # pnpm settings (pnpm 11 no longer reads the "pnpm" field in package.json).
 
+# Workspace packages: the app root plus the browser extension (JUN-287).
+packages:
+  - '.'
+  - 'extension'
+
 # Supply-chain cooldown: refuse package versions published less than 7 days
 # ago (value is in minutes). Applies to all dependencies, including transitive
 # ones. Fail closed when registry metadata omits publication times. For an

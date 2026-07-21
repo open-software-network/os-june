@@ -185,6 +185,11 @@ describe("account status", () => {
       label: "Reconnect needed",
       tone: "attention",
     });
+    expect(accountStatusMeta("unavailable", "notion")).toEqual({
+      label: "Status unavailable",
+      tone: "attention",
+      blurb: "June could not confirm the Notion connection. Try again in a moment.",
+    });
   });
 
   it("names the provider in the reconnect blurb, sharing the connected blurb", () => {
@@ -245,7 +250,9 @@ describe("routineToolsetsFor", () => {
     expect(toolsets).toContain("june_gmail");
     expect(toolsets).toContain("june_gcal");
     expect(toolsets).toContain("june_linear");
+    expect(toolsets).toContain("june_notion");
     expect(toolsets).not.toContain("june_gmail_actions");
+    expect(toolsets).not.toContain("june_notion_actions");
   });
 
   it("approval: adds the actions servers on top of the read servers", () => {
@@ -253,7 +260,9 @@ describe("routineToolsetsFor", () => {
     expect(toolsets).toContain("june_gmail_actions");
     expect(toolsets).toContain("june_gcal_actions");
     expect(toolsets).toContain("june_linear_actions");
+    expect(toolsets).toContain("june_notion_actions");
     expect(toolsets).toContain("june_gmail");
+    expect(toolsets).toContain("june_notion");
   });
 
   it("autonomous: swaps actions servers for the per-job auto servers", () => {
@@ -264,7 +273,9 @@ describe("routineToolsetsFor", () => {
     expect(toolsets).toContain("june_gmail_auto_ab12cd34");
     expect(toolsets).not.toContain("june_gmail_actions");
     expect(toolsets).not.toContain("june_gcal_actions");
+    expect(toolsets).not.toContain("june_notion_actions");
     expect(toolsets).toContain("june_gmail");
+    expect(toolsets).toContain("june_notion");
   });
 
   it("dedupes and stays stable with no auto servers granted", () => {
@@ -281,6 +292,7 @@ describe("routineTrustModeFromToolsets", () => {
     expect(routineTrustModeFromToolsets(["web", "june_gmail"])).toBe("read_only");
     expect(routineTrustModeFromToolsets(["web", "june_linear"])).toBe("read_only");
     expect(routineTrustModeFromToolsets(["june_gmail", "june_gmail_actions"])).toBe("approval");
+    expect(routineTrustModeFromToolsets(["june_notion", "june_notion_actions"])).toBe("approval");
     expect(routineTrustModeFromToolsets(["june_gmail", "june_gcal_auto_ab12cd34"])).toBe(
       "autonomous",
     );
@@ -334,7 +346,7 @@ describe("event triggers", () => {
   it("warns only when a connected account lacks the trigger's scope", () => {
     // A calendar-only account can't back an email_received trigger.
     expect(triggerScopeWarning({ source: "email_received" }, [CALENDAR_EVENTS])).toBe(
-      "This trigger needs read mail access on your connected Google account. Add it in Settings under Connectors.",
+      "This trigger needs read mail access on your connected Google account. Add it in Settings under Plugins.",
     );
     // Gmail read covers the new-mail trigger, so no warning.
     expect(triggerScopeWarning({ source: "email_received" }, [GMAIL_READONLY])).toBeNull();
@@ -356,7 +368,7 @@ describe("providerFromServer", () => {
     expect(providerFromServer("june_gmail_actions")).toBe("google");
     expect(providerFromServer("june_gcal")).toBe("google");
     expect(providerFromServer("june_gcal_auto_abc123")).toBe("google");
-    expect(providerFromServer("june_notion_actions")).toBeNull();
+    expect(providerFromServer("june_notion_actions")).toBe("notion");
     expect(providerFromServer("june_linear")).toBe("linear");
     expect(providerFromServer("june_linear_auto_xyz")).toBe("linear");
     expect(providerFromServer("june_linear_actions")).toBe("linear");
@@ -369,6 +381,7 @@ describe("connector action tools", () => {
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_linear_actions");
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_gmail_actions");
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_gcal_actions");
+    expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_notion_actions");
   });
 
   it("labels the four Linear action tools for the approvals surface", () => {
@@ -376,25 +389,29 @@ describe("connector action tools", () => {
     expect(actionToolLabel("update_issue")).toBe("Update issues");
     expect(actionToolLabel("add_comment")).toBe("Comment on issues");
     expect(actionToolLabel("create_project_update")).toBe("Post project updates");
+    expect(actionToolLabel("notion-create-pages")).toBe("Create Notion pages");
+    expect(actionToolLabel("notion-update-page")).toBe("Update Notion pages");
   });
 
-  it("marks every Google action tool grantable and every Linear action tool not grantable", () => {
-    const google = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server !== "june_linear_actions");
+  it("marks only Google action tools grantable", () => {
+    const google = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server.startsWith("june_g"));
     const linear = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_linear_actions");
+    const notion = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_notion_actions");
     expect(google.length).toBeGreaterThan(0);
     expect(linear).toHaveLength(4);
+    expect(notion).toHaveLength(2);
     for (const tool of google) {
       expect(tool.grantable).toBe(true);
     }
-    for (const tool of linear) {
+    for (const tool of [...linear, ...notion]) {
       expect(tool.grantable).toBe(false);
     }
   });
 
-  it("excludes Linear tools from the earned-autonomy grant checklist while keeping Google tools", () => {
+  it("excludes Linear and Notion tools from earned autonomy while keeping Google tools", () => {
     // The grant-checklist consumer must read GRANTABLE_CONNECTOR_ACTION_TOOLS
-    // (not CONNECTOR_ACTION_TOOLS directly) so Linear's four write tools never
-    // appear as grantable, per the "Linear has no autonomy" decision.
+    // (not CONNECTOR_ACTION_TOOLS directly) so Linear and Notion actions never
+    // appear as grantable.
     const ids = GRANTABLE_CONNECTOR_ACTION_TOOLS.map((tool) => tool.id);
     expect(ids).toEqual(
       expect.arrayContaining([

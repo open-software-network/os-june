@@ -1783,11 +1783,14 @@ final class DictationController {
     func discard() {
         // Cancel any start still waiting on the permission prompt — the
         // graze is over, so a later grant must not open the microphone.
-        // The HUD shows on listening_started, so a discard that interrupts a
-        // live recording (a grazed push-to-talk key, a signed-out session)
-        // must announce itself or the HUD stays stuck on "Listening".
-        let wasListening = cancelAndResetRecording()
-        if wasListening {
+        // A discard can also arrive after recording_ready, while the helper is
+        // finalizing a no-speech, quarantined, or failed transcription. Rust
+        // suppresses new shortcuts until it sees a terminal helper event, so
+        // announce every active discard. Otherwise that gate only recovers
+        // when its 30-second safety timeout expires.
+        let hadActiveDictation = startPending || isListening || isFinalizing
+        cancelAndResetRecording()
+        if hadActiveDictation {
             emit("recording_discarded")
         }
     }

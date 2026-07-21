@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import {
+  displayedComposerUserMessageText,
   stripRenderedMediaReferences,
   type AgentChatPart,
   type AgentChatTurn,
@@ -127,21 +128,12 @@ function stripLeadingNoteToken(text: string) {
   return text.replace(/^@note:[\w-]+(?: \("[^"]*"\))?\s*/, "");
 }
 
-/** The attachment path block is machinery for the agent, not the message the
- * user typed — same display strip the workspace composer applies. */
-function stripAttachmentBlock(text: string) {
-  return text
-    .replace(
-      /\n+Attached files copied into the June workspace:\n[\s\S]*?\n+Use these file paths when inspecting or operating on the files\.\s*$/i,
-      "",
-    )
-    .trim();
-}
-
 function userTurnText(turn: AgentChatTurn) {
   return turn.parts
     .map((part) =>
-      part.type === "text" ? stripAttachmentBlock(stripLeadingNoteToken(part.text)) : "",
+      part.type === "text"
+        ? displayedComposerUserMessageText(stripLeadingNoteToken(part.text))
+        : "",
     )
     .filter(Boolean)
     .join("\n");

@@ -4,7 +4,9 @@ use axum::{
     http::{Method, Request, StatusCode, header},
 };
 use june_api::{AttestationInfo, router};
-use june_config::{DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES};
+use june_config::{
+    BrowserTransportsConfig, DEFAULT_MAX_AGENT_CHAT_BYTES, DEFAULT_MAX_IMAGE_EDIT_BYTES,
+};
 use june_domain::{
     AgentChatCompleter, AgentChatCompletion, AgentChatRequest, AgentChatStream, DomainError,
     GeneratedNote, GenerationRequest, Generator, IssueReport, IssueReportDelivery, IssueReportSink,
@@ -24,6 +26,30 @@ use tower::ServiceExt;
 
 mod support;
 use support::*;
+
+#[tokio::test]
+async fn browser_transport_policy_returns_configured_independent_switches()
+-> Result<(), Box<dyn Error>> {
+    let mut deps = default_test_state_deps();
+    deps.browser_transports = BrowserTransportsConfig {
+        attended_enabled: false,
+        managed_enabled: true,
+    };
+    let response = router(test_state_from_deps(deps))
+        .oneshot(get_request("/v1/browser-transport-policy")?)
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => match error {},
+    };
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await?;
+    assert_eq!(body["success"], true);
+    assert_eq!(body["data"]["attendedEnabled"], false);
+    assert_eq!(body["data"]["managedEnabled"], true);
+    Ok(())
+}
 
 #[tokio::test]
 async fn integration_computer_use_rollout_is_public_and_version_aware() -> Result<(), Box<dyn Error>>

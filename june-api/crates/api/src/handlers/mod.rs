@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub(crate) mod browser_transport_policy;
 pub(crate) mod computer_use;
 pub(crate) mod dictate;
 pub(crate) mod health;

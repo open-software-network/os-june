@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { AccountGate, JuneMark } from "../components/account/AccountGate";
+import { AccountGate, AccountStatusFailure, JuneMark } from "../components/account/AccountGate";
 import { FundingChip, FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
@@ -90,6 +90,7 @@ import {
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
+  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
   listCompletedSessions,
   listFolders,
   listNotes,
@@ -113,6 +114,7 @@ import {
   agentHudHide,
   agentHudShow,
   agentOpenReady,
+  sendAppNotification,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
@@ -141,7 +143,17 @@ import { getAgentSoundsEnabled } from "../lib/agent-sound-settings";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { errorCode, messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
-import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import {
+  listHermesSessions,
+  listScheduledRunSessions,
+  titleFromPrompt,
+} from "../lib/hermes-adapter";
+import {
+  loadRoutineRunWatchState,
+  markRunsNotified,
+  routineRunWatchStep,
+  saveRoutineRunWatchState,
+} from "../lib/routine-run-notifications";
 import {
   getActiveHermesProfileName,
   PROFILE_DATA_CHANGED_EVENT,
@@ -198,8 +210,10 @@ import type {
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
+import { applyAutostartDefaultOnce, retryPendingAutostartDefault } from "../lib/autostart";
 import {
   applyOnboardingReplayFlag,
+  hasCompletedAnyOnboardingVersion,
   isOnboardingComplete,
   markOnboardingComplete,
   shouldReplayOnboarding,
@@ -280,6 +294,9 @@ const CHECK_FOR_UPDATES_EVENT = "june://check-for-updates";
 const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_MENU_BAR_SESSION_LIMIT = 6;
 const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
+// Matches the Routines view's run-history cadence; a routine notification a
+// few seconds late is fine, hammering the bridge is not.
+const ROUTINE_RUN_NOTIFY_POLL_MS = 15000;
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
@@ -609,6 +626,10 @@ export function App() {
   // switches profiles. Remember that exception so stopping the take can remove
   // the old-profile note and its tab snapshots immediately.
   const crossProfileRecordingNoteIdRef = useRef<string | undefined>(undefined);
+  // Calendar matching finishes in the background and emits a global event.
+  // Remember which profile started each lookup so a late result cannot upsert
+  // an old-profile note into whichever profile is visible when it arrives.
+  const calendarContextNoteProfilesRef = useRef(new Map<string, string>());
   // Reactive mirror of recordingNoteIdRef. The ref serves the async finish/HUD
   // paths that need the latest value synchronously; this state drives render
   // decisions — which note shows the in-note RecorderBar, and whether the
@@ -1503,6 +1524,24 @@ export function App() {
     };
   }, [closeTab]);
 
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
+      const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
+      calendarContextNoteProfilesRef.current.delete(event.payload.id);
+      if (noteProfile !== getActiveHermesProfileName()) return;
+      dispatch({ type: "noteUpdated", note: event.payload });
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
+
   // Tab keyboard shortcuts: ⌘T new, ⌘W close, ⌘[ / ⌘] cycle, ⌘1-9 jump
   // (9 = last).
   // isPrimaryShortcut handles the cross-platform modifier (⌘ on mac, Ctrl on
@@ -2044,6 +2083,57 @@ export function App() {
     };
   }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionProfiles]);
 
+  // Routine runs finish on the launchd-managed gateway with no webview
+  // involvement, so nothing event-driven announces them. Poll the session
+  // store (the same feed the Routines view reads) and post one native,
+  // click-through notification per newly finished run. State persists so
+  // reloads and restarts never renotify, and the first poll of an install
+  // baselines silently instead of backfilling history.
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    let cancelled = false;
+    let state = loadRoutineRunWatchState();
+
+    async function poll() {
+      let sessions: HermesSessionInfo[];
+      try {
+        sessions = await listScheduledRunSessions({ includeActive: true });
+      } catch {
+        // Bridge down (asleep, restarting): try again next tick.
+        return;
+      }
+      if (cancelled) return;
+      const { next, notices } = routineRunWatchStep(state, sessions, Date.now());
+      state = next;
+      // Mark a run seen only after its notification actually went out, so a
+      // transient delivery failure retries on the next tick instead of going
+      // silent forever.
+      const delivered: string[] = [];
+      await Promise.all(
+        notices.map((notice) =>
+          sendAppNotification({
+            title: notice.title,
+            body: notice.body,
+            sound: "Ping",
+            group: notice.jobId ? `june-routine-${notice.jobId}` : "june-routine",
+            sessionId: notice.sessionId,
+          })
+            .then(() => delivered.push(notice.sessionId))
+            .catch(() => {}),
+        ),
+      );
+      state = markRunsNotified(state, delivered);
+      saveRoutineRunWatchState(state);
+    }
+
+    void poll();
+    const timer = window.setInterval(() => void poll(), ROUTINE_RUN_NOTIFY_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [appBlocked, bootstrapped]);
+
   // Project assignments for agent sessions, loaded once storage is up.
   useEffect(() => {
     if (appBlocked || !bootstrapped) return;
@@ -2092,6 +2182,16 @@ export function App() {
       cancelled = true;
     };
   }, [appBlocked, bootstrapped]);
+
+  // A fresh install whose automatic launch-at-login enable failed during
+  // onboarding completion gets another chance on every normal startup:
+  // completion hides the wizard, so without this the retry would wait for
+  // an onboarding version bump. No-ops once the default has been settled
+  // (applied, or overridden by an explicit Settings toggle).
+  useEffect(() => {
+    if (appBlocked) return;
+    void retryPendingAutostartDefault();
+  }, [appBlocked]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2936,6 +3036,13 @@ export function App() {
     }
   }
 
+  function handleFoldersImported(folders: FolderDto[]) {
+    for (const folder of folders) {
+      dispatch({ type: "folderCreated", folder });
+    }
+    toast.success(`${folders.length} ${folders.length === 1 ? "project" : "projects"} added`);
+  }
+
   async function handleRenameFolder(folderId: string, name: string, description?: string) {
     try {
       const folder = await renameFolder(folderId, name, description);
@@ -3358,6 +3465,7 @@ export function App() {
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
+      const recordingProfile = getActiveHermesProfileName();
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -3389,6 +3497,7 @@ export function App() {
             ? "microphoneOnly"
             : requestedSourceMode;
 
+        calendarContextNoteProfilesRef.current.set(noteId, recordingProfile);
         const recording = await startRecording(noteId, effectiveMode);
         setRecordingNote(noteId);
         const status = recordingToStatus(recording);
@@ -3400,6 +3509,7 @@ export function App() {
         playRecordingSound("start");
         return true;
       } catch (err) {
+        calendarContextNoteProfilesRef.current.delete(noteId);
         // The ref was set optimistically above; a failed start must not leave
         // the meeting HUD's reopen path pointing at a note with no recording.
         setRecordingNote(undefined);
@@ -3740,7 +3850,15 @@ export function App() {
     if (selectedNote && selectedNote.id === owningNoteId) {
       dispatch({
         type: "noteProcessingUpdated",
-        note: { ...selectedNote, processingStatus: "transcribing" },
+        note: {
+          ...selectedNote,
+          processingStatus: "transcribing",
+          lastError:
+            selectedNote.processingStatus === "failed" ||
+            selectedNote.processingStatus === "recoverable"
+              ? undefined
+              : selectedNote.lastError,
+        },
       });
     }
     try {
@@ -3922,7 +4040,24 @@ export function App() {
           data-tauri-drag-region
           onPointerDown={handleTitlebarPointerDown}
         />
-        <div className="welcome-screen welcome-screen-loading" aria-label="Loading account" />
+        <div className="welcome-screen welcome-screen-loading">
+          <Spinner size="lg" aria-label="Starting June" />
+          <p>Starting June...</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (accountError && !account.signedIn && !devAccountsUnconfigured) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <AccountStatusFailure message={accountError} onRetry={refreshAccount} />
       </main>
     );
   }
@@ -3940,7 +4075,15 @@ export function App() {
           account={account}
           onAccountChanged={handleAccountChanged}
           onComplete={() => {
+            // Read before marking complete: marking writes the completion
+            // key that distinguishes a fresh install from a wizard replay.
+            const firstOnboardingCompletion = !hasCompletedAnyOnboardingVersion();
             markOnboardingComplete();
+            // A background assistant only works while it runs; make sure a
+            // fresh install starts at login. One-shot and first-run only: a
+            // user who later turns the login item off stays off, and wizard
+            // replays never re-enroll existing users.
+            void applyAutostartDefaultOnce({ firstOnboardingCompletion });
             setOnboardingDone(true);
           }}
         />
@@ -4217,6 +4360,7 @@ export function App() {
                   onEnableAccessibility={handleEnableAccessibility}
                   onEnableSystemAudio={handleEnableSystemAudio}
                   folders={state.folders}
+                  onFoldersImported={handleFoldersImported}
                   memoryFolderFilter={memoryFolderFilter}
                   onOpenProject={(folderId) => {
                     handleSelectFolder(folderId);
@@ -4309,6 +4453,7 @@ export function App() {
                           id: folder.id,
                           name: folder.name,
                           instructions: folder.instructions,
+                          localPath: folder.localPath,
                         }
                       : undefined;
                   }}
@@ -4318,6 +4463,7 @@ export function App() {
                           id: agentProjectContextFolder.id,
                           name: agentProjectContextFolder.name,
                           instructions: agentProjectContextFolder.instructions,
+                          localPath: agentProjectContextFolder.localPath,
                         }
                       : undefined
                   }
@@ -4452,6 +4598,7 @@ export function App() {
                   }
                   onSelectFolder={(folderId) => handleSelectFolder(folderId)}
                   onCreateFolder={(name, description) => handleCreateFolder(name, description)}
+                  onFoldersImported={handleFoldersImported}
                   onRenameFolder={(folderId, name, description) =>
                     handleRenameFolder(folderId, name, description)
                   }

@@ -191,7 +191,9 @@ describe("skills hub — install", () => {
   it("drives a background install to done, with progress, and invalidates skills", async () => {
     const { harness, controller } = controllerFor();
     await controller.search("pdf");
-    const result = controller.getSnapshot().results.find((r) => r.identifier === "official/pdf")!;
+    const result = controller.getSnapshot().results.find((r) => r.identifier === "official/pdf");
+    expect(result).toBeDefined();
+    if (!result) throw new Error("Expected pdf skill search result");
 
     const progresses: Array<number | undefined> = [];
     const unsub = controller.subscribe(() => {

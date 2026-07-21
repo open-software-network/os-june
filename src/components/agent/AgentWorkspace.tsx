@@ -102,6 +102,7 @@ import {
   hermesBridgeFilePreview,
   hermesBridgeFileText,
   hermesAgentCliAccess,
+  hermesBrowserAccess,
   hermesBridgeSkills,
   generateImage,
   localVideoFileSrc,
@@ -116,10 +117,12 @@ import {
   openHermesTuiDebug,
   osAccountsUpgrade,
   providerModelSettings,
+  registerBrowserExtensionHost,
   retryAgentTask,
   imagePromptMayBeExplicit,
   revealPath,
   setHermesAgentCliAccess,
+  setHermesBrowserAccess,
   setImageSafeMode,
   setImageSafeModePromptDismissed,
   setLocalGenerationEnabled,
@@ -149,6 +152,9 @@ import {
   type LocalGenerationSettingsDto,
   type ProviderModelSettingsDto,
   type VeniceModelDto,
+  type PendingBrowserApproval,
+  browserApprovalRespond,
+  browserApprovalsPending,
 } from "../../lib/tauri";
 import {
   beginComputerUseRunLease,
@@ -412,6 +418,11 @@ import {
   stripAgentCliAccessRequest,
 } from "../../lib/agent-cli-access";
 import {
+  BROWSER_ACCESS_ENABLED_MESSAGE,
+  hasBrowserAccessRequest,
+  stripBrowserAccessRequest,
+} from "../../lib/browser-access";
+import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
@@ -420,6 +431,7 @@ import {
   stripRenderedMediaReferences,
   textFromHermesContent,
   textFromHermesTransportContent,
+  USER_ATTACHMENT_PROMPT_MARKER,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -439,6 +451,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 
+const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
 const AGENT_TITLE_TIMEOUT_MS = 2500;
 const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
@@ -3329,6 +3342,8 @@ export function AgentWorkspace({
   );
   const [imageSafeModeConsentRequest, setImageSafeModeConsentRequest] =
     useState<ImageSafeModeConsentRequest | null>(null);
+  const [browserApprovals, setBrowserApprovals] = useState<PendingBrowserApproval[]>([]);
+  const [browserApprovalSubmitting, setBrowserApprovalSubmitting] = useState<string>();
   const imageSafeModeConsentRequestRef = useRef<ImageSafeModeConsentRequest | null>(null);
   const composerSizeProceedSignatureRef = useRef<string | null>(null);
   const composerSizeProceedInputSignatureRef = useRef<string | null>(null);
@@ -3431,6 +3446,48 @@ export function AgentWorkspace({
       setErrorState(nextError);
     },
     [],
+  );
+
+  const refreshBrowserApprovals = useCallback(async () => {
+    try {
+      setBrowserApprovals(await browserApprovalsPending());
+    } catch {
+      // The broker may not be configured until a runtime starts. Its change
+      // event will retry once an attended action parks.
+    }
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void refreshBrowserApprovals();
+    const interval = window.setInterval(() => void refreshBrowserApprovals(), 5_000);
+    void listen(BROWSER_APPROVALS_CHANGED_EVENT, () => void refreshBrowserApprovals()).then(
+      (cleanup) => {
+        if (disposed) cleanup();
+        else unlisten = cleanup;
+      },
+    );
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+      unlisten?.();
+    };
+  }, [refreshBrowserApprovals]);
+
+  const respondToBrowserApproval = useCallback(
+    async (approvalId: string, approve: boolean, allowSite = false) => {
+      setBrowserApprovalSubmitting(approvalId);
+      try {
+        await browserApprovalRespond({ approvalId, approve, allowSite });
+      } catch (error) {
+        setError(messageFromError(error));
+      } finally {
+        setBrowserApprovalSubmitting(undefined);
+        void refreshBrowserApprovals();
+      }
+    },
+    [refreshBrowserApprovals, setError],
   );
   const handleTopUp = useCallback(() => {
     const result = onTopUp ? onTopUp() : osAccountsUpgrade();
@@ -3834,6 +3891,25 @@ export function AgentWorkspace({
       .catch(() => {
         // Unknown stays unknown; the card keeps its actionable default.
         if (!cancelled) setCliAccessEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  // Whether "Browser use" (Settings, Agent tab) is on — the stored Browser
+  // access grant behind June's in-chat request card. Same lifecycle as the
+  // CLI access state above.
+  const [browserAccessEnabled, setBrowserAccessEnabled] = useState<boolean>();
+  const [browserAccessSubmitting, setBrowserAccessSubmitting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    hermesBrowserAccess()
+      .then((status) => {
+        if (!cancelled) setBrowserAccessEnabled(status.enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setBrowserAccessEnabled(false);
       });
     return () => {
       cancelled = true;
@@ -11631,6 +11707,26 @@ export function AgentWorkspace({
     }
   }
 
+  // One-click approval of June's in-chat [REQUEST:BROWSER_ACCESS] card. Same
+  // trust boundary as the CLI access card above: the click persists the
+  // Browser access grant (the setter also retires both runtime modes), and
+  // the follow-up send retries the turn that asked — the request-card path is
+  // the only retried shape, so no completed tool call is ever re-issued.
+  async function enableBrowserAccessFromChat() {
+    setBrowserAccessSubmitting(true);
+    try {
+      await setHermesBrowserAccess(true);
+      await registerBrowserExtensionHost();
+      setBrowserAccessEnabled(true);
+      await submitHermesSession(BROWSER_ACCESS_ENABLED_MESSAGE);
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setBrowserAccessSubmitting(false);
+    }
+  }
+
   // Feature 07: fork the conversation into a NEW session that starts from the
   // given message, through the typed control-plane method (session.branch).
   // The source session is never mutated. The returned session id is
@@ -14635,6 +14731,17 @@ export function AgentWorkspace({
       </form>
     ) : null;
 
+  const browserApprovalCards = browserApprovals.map((approval) => (
+    <BrowserApprovalCard
+      key={approval.approvalId}
+      approval={approval}
+      submitting={browserApprovalSubmitting === approval.approvalId}
+      onRespond={(approve, allowSite) =>
+        void respondToBrowserApproval(approval.approvalId, approve, allowSite)
+      }
+    />
+  ));
+
   const detailContent = gallerySections ? (
     <AgentResponseGallery
       sections={gallerySections}
@@ -14691,6 +14798,11 @@ export function AgentWorkspace({
             enabled: cliAccessEnabled,
             submitting: cliAccessSubmitting,
             onEnable: () => void enableCliAccessFromChat(),
+          }}
+          browserAccess={{
+            enabled: browserAccessEnabled,
+            submitting: browserAccessSubmitting,
+            onEnable: () => void enableBrowserAccessFromChat(),
           }}
           thinkingOpen={thinkingOpen}
           onThinkingOpenChange={setThinkingOpen}
@@ -14763,6 +14875,7 @@ export function AgentWorkspace({
           onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
         />
       ))}
+      {browserApprovalCards}
       <AgentThinking
         visible={
           workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user"
@@ -14819,6 +14932,11 @@ export function AgentWorkspace({
               submitting: cliAccessSubmitting,
               onEnable: () => void enableCliAccessFromChat(),
             }}
+            browserAccess={{
+              enabled: browserAccessEnabled,
+              submitting: browserAccessSubmitting,
+              onEnable: () => void enableBrowserAccessFromChat(),
+            }}
             thinkingOpen={thinkingOpen}
             onThinkingOpenChange={setThinkingOpen}
             onDownloadArtifact={downloadArtifact}
@@ -14873,6 +14991,7 @@ export function AgentWorkspace({
             }}
           />
         ))}
+        {browserApprovalCards}
         <AgentThinking
           visible={workingTaskIds.has(selectedTask.id) && taskTurns.at(-1)?.role === "user"}
         />
@@ -16714,6 +16833,7 @@ function AgentChatTurnRow({
   sudoSubmitting,
   secretSubmitting,
   cliAccess,
+  browserAccess,
   thinkingOpen,
   onApproval,
   onClarify,
@@ -16746,6 +16866,9 @@ function AgentChatTurnRow({
   /** State + handler for June's in-chat Agent CLI access request card.
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
+  /** State + handler for June's in-chat Browser use request card. Optional
+   * for the same reason. */
+  browserAccess?: AgentBrowserAccessCardProps;
   thinkingOpen: (key: string) => boolean;
   onApproval: (
     part: Extract<AgentChatPart, { type: "approval" }>,
@@ -16885,6 +17008,9 @@ function AgentChatTurnRow({
   const contextParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "context" }> => part.type === "context",
   );
+  const attachmentParts = turn.parts.filter(
+    (part): part is Extract<AgentChatPart, { type: "attachment" }> => part.type === "attachment",
+  );
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const holdTrailingMediaTransport = turnContainsMediaStructure(turn);
   const concreteResponse = turnIsConcreteResponse(turn);
@@ -17001,14 +17127,20 @@ function AgentChatTurnRow({
           </span>
         ) : null}
         <div className="agent-user-turn-body">
-          {textParts.map((part, index) => (
-            <MarkdownContent
-              key={`${turn.id}:text:${index}`}
-              // Issue-report sessions open with the wrapped investigation
-              // prompt; the transcript shows only what the user typed.
-              markdown={displayedComposerUserMessageText(part.text)}
-            />
-          ))}
+          {textParts.map((part, index) => {
+            const markdown = displayedComposerUserMessageText(part.text);
+            return markdown ? (
+              <MarkdownContent
+                key={`${turn.id}:text:${index}`}
+                // Issue-report sessions open with the wrapped investigation
+                // prompt; the transcript shows only what the user typed.
+                markdown={markdown}
+              />
+            ) : null;
+          })}
+          {attachmentParts.length ? (
+            <AgentUserAttachmentList attachments={attachmentParts} onOpen={onOpenArtifact} />
+          ) : null}
         </div>
         {turnActions}
       </article>
@@ -17020,15 +17152,24 @@ function AgentChatTurnRow({
       <div className="agent-assistant-turn-body">
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
-            hasAgentCliAccessRequest(part.text) ? (
+            hasAgentCliAccessRequest(part.text) || hasBrowserAccessRequest(part.text) ? (
               // June's soul emits a literal token to request the Agent CLI
-              // access setting; the token renders as an approval card, never
-              // as text.
+              // access or Browser use setting; each token renders as an
+              // approval card, never as text. A reply carrying both tokens
+              // gets both cards.
               <div key={part.renderKey ?? `${turn.id}:text:${index}`}>
-                {stripAgentCliAccessRequest(part.text) ? (
-                  <MarkdownContent markdown={stripAgentCliAccessRequest(part.text)} repairProse />
+                {stripBrowserAccessRequest(stripAgentCliAccessRequest(part.text)) ? (
+                  <MarkdownContent
+                    markdown={stripBrowserAccessRequest(stripAgentCliAccessRequest(part.text))}
+                    repairProse
+                  />
                 ) : null}
-                <AgentCliAccessCard cliAccess={cliAccess} />
+                {hasAgentCliAccessRequest(part.text) ? (
+                  <AgentCliAccessCard cliAccess={cliAccess} />
+                ) : null}
+                {hasBrowserAccessRequest(part.text) ? (
+                  <AgentBrowserAccessCard browserAccess={browserAccess} />
+                ) : null}
               </div>
             ) : (
               <div key={part.renderKey ?? `${turn.id}:text:${index}`}>
@@ -17175,6 +17316,92 @@ function AgentChatTurnRow({
   );
 }
 
+function AgentUserAttachmentList({
+  attachments,
+  onOpen,
+}: {
+  attachments: Extract<AgentChatPart, { type: "attachment" }>[];
+  onOpen?: (artifact: AgentArtifact) => void;
+}) {
+  return (
+    <div className="agent-user-attachments" role="group" aria-label="Attachments">
+      {attachments.map((attachment) => (
+        <AgentUserAttachment key={attachment.path} attachment={attachment} onOpen={onOpen} />
+      ))}
+    </div>
+  );
+}
+
+function AgentUserAttachment({
+  attachment,
+  onOpen,
+}: {
+  attachment: Extract<AgentChatPart, { type: "attachment" }>;
+  onOpen?: (artifact: AgentArtifact) => void;
+}) {
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (attachment.kind !== "image") return;
+    let cancelled = false;
+    hermesBridgeFilePreview(attachment.path)
+      .then((dataUrl) => {
+        if (!cancelled) setPreviewDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [attachment.kind, attachment.path]);
+
+  const artifact: AgentArtifact = {
+    name: attachment.name,
+    path: attachment.path,
+    rootLabel: "Workspace",
+  };
+  const content =
+    attachment.kind === "image" ? (
+      previewDataUrl ? (
+        <img src={previewDataUrl} alt="" aria-hidden="true" draggable={false} />
+      ) : previewDataUrl === undefined ? (
+        <span className="agent-user-attachment-loading text-shimmer shimmer">Loading image...</span>
+      ) : (
+        <>
+          <span className="agent-attachment-file-icon" aria-hidden="true">
+            <FileTypeIcon name={attachment.name} size={18} />
+          </span>
+          <span className="agent-user-attachment-name">{attachment.name}</span>
+        </>
+      )
+    ) : (
+      <>
+        <span className="agent-attachment-file-icon" aria-hidden="true">
+          <FileTypeIcon name={attachment.name} size={18} />
+        </span>
+        <span className="agent-user-attachment-name">{attachment.name}</span>
+      </>
+    );
+
+  return onOpen ? (
+    <button
+      type="button"
+      className="agent-user-attachment"
+      data-kind={attachment.kind}
+      aria-label={`Open ${attachment.name}`}
+      title={attachment.name}
+      onClick={() => onOpen(artifact)}
+    >
+      {content}
+    </button>
+  ) : (
+    <div className="agent-user-attachment" data-kind={attachment.kind} title={attachment.name}>
+      {content}
+    </div>
+  );
+}
+
 function copyableTextForTurn(turn: AgentChatTurn): string {
   if (turn.role === "user") return userPromptTextForTurn(turn);
   if (turn.role !== "assistant") return "";
@@ -17182,8 +17409,10 @@ function copyableTextForTurn(turn: AgentChatTurn): string {
   return turn.parts
     .filter((part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text")
     .map((part) =>
-      stripAgentCliAccessRequest(
-        stripRenderedMediaReferences(part.text, holdTrailingMediaTransport),
+      stripBrowserAccessRequest(
+        stripAgentCliAccessRequest(
+          stripRenderedMediaReferences(part.text, holdTrailingMediaTransport),
+        ),
       ).trim(),
     )
     .filter(Boolean)
@@ -18612,6 +18841,130 @@ export function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCa
             onClick={() => cliAccess?.onEnable()}
           >
             {busy ? "Enabling…" : "Enable Agent CLI access"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost agent-approval-deny"
+            disabled={busy}
+            onClick={() => setDismissed(true)}
+          >
+            Not now
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+type AgentBrowserAccessCardProps = {
+  /** undefined while the stored grant is still loading. */
+  enabled?: boolean;
+  submitting: boolean;
+  onEnable: () => void;
+};
+
+export function BrowserApprovalCard({
+  approval,
+  submitting,
+  onRespond,
+}: {
+  approval: PendingBrowserApproval;
+  submitting: boolean;
+  onRespond: (approve: boolean, allowSite: boolean) => void;
+}) {
+  const action = approval.action.charAt(0).toUpperCase() + approval.action.slice(1);
+  return (
+    <article className="agent-approval-card" data-status="pending">
+      <div className="agent-tool-title">
+        <span>Browser approval required</span>
+      </div>
+      <p>
+        Site: {approval.site}
+        {"\n"}
+        Action: {action}
+        {"\n"}
+        Element: {approval.elementLabel}
+      </p>
+      <div className="agent-approval-actions">
+        <button
+          type="button"
+          className="btn btn-secondary"
+          disabled={submitting}
+          onClick={() => onRespond(true, false)}
+        >
+          Approve
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={submitting}
+          onClick={() => onRespond(true, true)}
+        >
+          Approve all on this site for this task
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost agent-approval-deny"
+          disabled={submitting}
+          onClick={() => onRespond(false, false)}
+        >
+          Decline
+        </button>
+      </div>
+    </article>
+  );
+}
+
+/** June asked to enable Browser use via the literal token its soul teaches
+ * ([REQUEST:BROWSER_ACCESS]). The agent can never flip the setting itself —
+ * the Browser access grant is a flag file outside every sandbox write root —
+ * so this card is the one-click, user-approved path. Resolution is derived
+ * from the live grant rather than stored per message, exactly like the Agent
+ * CLI access card above: a revisited transcript shows "Enabled" once the
+ * grant is on, and re-offers the choice while it is off. */
+export function AgentBrowserAccessCard({
+  browserAccess,
+}: {
+  browserAccess?: AgentBrowserAccessCardProps;
+}) {
+  const [dismissed, setDismissed] = useState(false);
+  const enabled = browserAccess?.enabled === true;
+  const resolved = enabled || dismissed;
+  const busy = Boolean(browserAccess?.submitting);
+
+  const description = (
+    <p>
+      June wants to drive your browser to finish this task, in tabs it opens and tabs you explicitly
+      share. Page content from those tabs (visible text and screenshots) leaves this device and is
+      sent to your configured AI model for inference. Enabling turns on "Browser use" in Settings
+      and restarts the agent runtime.
+    </p>
+  );
+
+  // Resolved collapses to a quiet receipt row, expandable to the description.
+  if (resolved) {
+    return (
+      <ResolvedActionRow denied={!enabled} label={enabled ? "Browser use enabled" : "Not now"}>
+        {description}
+      </ResolvedActionRow>
+    );
+  }
+
+  return (
+    <article className="agent-approval-card" data-status="pending">
+      <div>
+        <div className="agent-tool-title">
+          <span>Browser use requested</span>
+        </div>
+        {description}
+        <div className="agent-approval-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={busy || !browserAccess || browserAccess.enabled === undefined}
+            onClick={() => browserAccess?.onEnable()}
+          >
+            {busy ? "Enabling…" : "Enable Browser use"}
           </button>
           <button
             type="button"
@@ -20092,6 +20445,7 @@ function promptWithAttachments(message: string, attachments: AgentAttachment[]):
   return [
     message || "Use the attached file(s).",
     "",
+    USER_ATTACHMENT_PROMPT_MARKER,
     "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>

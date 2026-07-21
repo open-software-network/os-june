@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use june_config::BrowserTransportsConfig;
 use june_domain::{TokenVerifier, UserId};
 use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
@@ -150,6 +151,7 @@ struct ApiStateInner {
     p3a_reports: Arc<P3aReportService>,
     limits: ApiLimits,
     attestation: AttestationInfo,
+    browser_transports: BrowserTransportsConfig,
 }
 
 #[derive(Clone, Copy)]
@@ -247,6 +249,7 @@ pub struct ApiStateParams {
     pub share_viewer: ShareViewerInfo,
     pub limits: ApiLimits,
     pub attestation: AttestationInfo,
+    pub browser_transports: BrowserTransportsConfig,
 }
 
 impl ApiState {
@@ -277,6 +280,7 @@ impl ApiState {
                 p3a_reports: params.p3a_reports,
                 limits: params.limits,
                 attestation: params.attestation,
+                browser_transports: params.browser_transports,
             }),
         }
     }
@@ -383,6 +387,10 @@ impl ApiState {
 
     pub(crate) fn attestation(&self) -> &AttestationInfo {
         &self.inner.attestation
+    }
+
+    pub(crate) fn browser_transports(&self) -> BrowserTransportsConfig {
+        self.inner.browser_transports
     }
 }
 

@@ -30,11 +30,17 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
+#[cfg(any(target_os = "macos", test))]
+use tokio::io::BufReader;
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
-    net::{unix::OwnedReadHalf, unix::OwnedWriteHalf, UnixStream},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt},
     process::Command,
     sync::{oneshot, Mutex as AsyncMutex},
+};
+#[cfg(target_os = "macos")]
+use tokio::{
+    io::{AsyncWriteExt, BufWriter},
+    net::{unix::OwnedReadHalf, unix::OwnedWriteHalf, UnixStream},
 };
 
 pub const MCP_SERVER_NAME: &str = "june_computer_use";
@@ -269,6 +275,7 @@ where
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
+#[cfg(target_os = "macos")]
 struct DriverClient {
     stdin: OwnedWriteHalf,
     stdout: BufReader<OwnedReadHalf>,
@@ -277,6 +284,7 @@ struct DriverClient {
     socket_dir: PathBuf,
 }
 
+#[cfg(target_os = "macos")]
 impl DriverClient {
     async fn start(
         path: &Path,
@@ -500,11 +508,48 @@ impl DriverClient {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for DriverClient {
     fn drop(&mut self) {
         self.terminate();
         let _ = std::fs::remove_dir_all(&self.socket_dir);
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+struct DriverClient;
+
+#[cfg(not(target_os = "macos"))]
+impl DriverClient {
+    async fn start(
+        _path: &Path,
+        _permission_prompt: Option<DriverPermissionPrompt>,
+    ) -> Result<Self, AppError> {
+        Err(AppError::new(
+            "computer_use_unsupported",
+            "Computer use is available on macOS only.",
+        ))
+    }
+
+    fn pid(&self) -> u32 {
+        0
+    }
+
+    async fn request(&mut self, _method: &str, _params: Value) -> Result<Value, AppError> {
+        Err(AppError::new(
+            "computer_use_unsupported",
+            "Computer use is available on macOS only.",
+        ))
+    }
+
+    async fn call_tool(&mut self, _name: &str, _arguments: Value) -> Result<Value, AppError> {
+        Err(AppError::new(
+            "computer_use_unsupported",
+            "Computer use is available on macOS only.",
+        ))
+    }
+
+    async fn stop(self) {}
 }
 
 /// Fixed release-only QA bridge. It runs as June's real signed executable so
@@ -778,6 +823,7 @@ fn driver_launch_spec(
     })
 }
 
+#[cfg(target_os = "macos")]
 async fn connect_driver_socket(path: &Path) -> io::Result<UnixStream> {
     let deadline = Instant::now() + DRIVER_START_TIMEOUT;
     loop {
@@ -1658,12 +1704,12 @@ fn clear_app_authorizations(state: &ComputerUseState) {
     }
 }
 
-fn force_stop_pid(pid: u32) {
+fn force_stop_pid(_pid: u32) {
     #[cfg(target_os = "macos")]
-    if pid > 0 {
+    if _pid > 0 {
         let _ = std::process::Command::new("/bin/kill")
             .arg("-KILL")
-            .arg(pid.to_string())
+            .arg(_pid.to_string())
             .status();
     }
 }

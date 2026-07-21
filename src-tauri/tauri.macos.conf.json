@@ -1,12 +1,14 @@
 {
   "build": {
-    "runner": "../scripts/cargo-os-june-runner.sh"
+    "runner": "../scripts/cargo-os-june-runner.sh",
+    "beforeBundleCommand": "bash scripts/bundle-nm-shim.sh"
   },
   "bundle": {
     "targets": ["app", "dmg"],
     "resources": {
       "../.tauri-helper/June.app": "native/bin/June.app",
       "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",
+      "../.tauri-helper/june-nm-shim": "native/bin/june-nm-shim",
       "../.tauri-helper/June Computer Use Driver.app": "native/bin/June Computer Use Driver.app",
       "../.tauri-hermes/hermes": "native/hermes",
       "resources/hermes-skills": "native/hermes-skills"

@@ -65,6 +65,163 @@ describe("agent HUD", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
   });
 
+  it("fits the native window to the visible HUD surface", async () => {
+    const surface = surfaceElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, width: 112, height: 32 },
+    });
+  });
+
+  it("remeasures the HUD before a deferred collapse resize", async () => {
+    const surface = surfaceElement();
+    let width = 248;
+    let height = 180;
+    vi.spyOn(surface, "offsetWidth", "get").mockImplementation(() => width);
+    vi.spyOn(surface, "offsetHeight", "get").mockImplementation(() => height);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "waitingForUser",
+      title: "Review the branch.",
+      summary: "Needs input.",
+    });
+    await flushPromises();
+    expect(hudElement().dataset.expanded).toBe("true");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    width = 112;
+    height = 32;
+    vi.useFakeTimers();
+    mocks.invoke.mockClear();
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    width = 96;
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, width: 96, height: 32 },
+    });
+  });
+
+  it("sizes the native window to the final expanded height during the reveal", async () => {
+    const surface = surfaceElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(248);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(36);
+    vi.spyOn(pillElement(), "offsetHeight", "get").mockReturnValue(36);
+    vi.spyOn(stackElement(), "scrollHeight", "get").mockReturnValue(50);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "waitingForUser",
+      title: "Review the branch.",
+      summary: "Needs input.",
+    });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: true, cardCount: 1, width: 248, height: 86 },
+    });
+  });
+
+  it("sizes the native window to the final expanded width during the reveal", async () => {
+    const surface = surfaceElement();
+    const rectWithWidth = (width: number) => ({ width }) as DOMRect;
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    vi.spyOn(surface, "getBoundingClientRect").mockImplementation(() => {
+      const inlineWidth = Number.parseFloat(surface.style.width);
+      if (Number.isFinite(inlineWidth)) return rectWithWidth(inlineWidth);
+      return rectWithWidth(hudElement().dataset.expanded === "true" ? 248 : 112);
+    });
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    mocks.invoke.mockClear();
+
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: true, cardCount: 1, width: 248, height: 32 },
+    });
+  });
+
+  it("uses the context-menu fallback until the menu has measurable bounds", async () => {
+    const surface = surfaceElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+    mocks.invoke.mockClear();
+
+    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, contextMenuOpen: true },
+    });
+  });
+
+  it("fits the native window to a measurable context menu", async () => {
+    const surface = surfaceElement();
+    const menu = menuElement();
+    vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(112);
+    vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(32);
+    vi.spyOn(menu, "offsetWidth", "get").mockReturnValue(148);
+    vi.spyOn(menu, "offsetHeight", "get").mockReturnValue(36);
+    vi.spyOn(menu, "offsetTop", "get").mockReturnValue(44);
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+    mocks.invoke.mockClear();
+
+    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    openMenuFromNative?.({ payload: undefined });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: {
+        expanded: false,
+        cardCount: 0,
+        contextMenuOpen: true,
+        width: 148,
+        height: 80,
+      },
+    });
+  });
+
   it("shortens the collapsed label when multiple agents are running", async () => {
     await loadAgentHud();
 
@@ -982,6 +1139,12 @@ function stackElement() {
   const stack = document.querySelector<HTMLElement>("#agent-hud-stack");
   expect(stack).toBeTruthy();
   return stack as HTMLElement;
+}
+
+function surfaceElement() {
+  const surface = document.querySelector<HTMLElement>(".agent-hud-surface");
+  expect(surface).toBeTruthy();
+  return surface as HTMLElement;
 }
 
 function menuElement() {

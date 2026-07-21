@@ -27,13 +27,14 @@ use crate::{
             AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
             AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
             AssignNoteToFolderRequest, AssignSessionToFolderRequest, AssignSessionToProfileRequest,
-            BootstrapResponse, CheckRecordingSourceReadinessRequest, CompletedSessionDto,
-            CreateAgentTaskRequest, CreateDictionaryEntryRequest, CreateFolderRequest,
-            CreateNoteRequest, DeleteDictionaryEntryRequest, DeleteFolderRequest,
-            DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto, DownloadNoteAudioRequest,
-            DownloadNoteAudioResponse, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
-            FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
-            ListNotesResponse, MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
+            BootstrapResponse, CheckRecordingSourceReadinessRequest, ClaudeProjectCandidateDto,
+            CompletedSessionDto, CreateAgentTaskRequest, CreateDictionaryEntryRequest,
+            CreateFolderRequest, CreateNoteRequest, DeleteDictionaryEntryRequest,
+            DeleteFolderRequest, DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto,
+            DownloadNoteAudioRequest, DownloadNoteAudioResponse, ExplainAgentApprovalRequest,
+            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
+            GetNoteRequest, ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse,
+            MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
             OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto,
             RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
             RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
@@ -63,7 +64,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::{sync::OnceCell, time::sleep};
 
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
@@ -322,6 +323,73 @@ pub async fn list_folders(
 ) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
     let profile = active_profile(&app);
     Ok(repositories(&app).await?.list_folders(&profile).await?)
+}
+
+#[tauri::command]
+pub async fn discover_claude_projects(
+    app: AppHandle,
+) -> Result<Vec<ClaudeProjectCandidateDto>, AppError> {
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| AppError::new("claude_projects_unavailable", error.to_string()))?;
+    let profile = active_profile(&app);
+    let folders = repositories(&app).await?.list_folders(&profile).await?;
+    let already_added = folders
+        .into_iter()
+        .filter_map(|folder| folder.local_path)
+        .filter_map(|path| PathBuf::from(path).canonicalize().ok())
+        .collect::<HashSet<_>>();
+    Ok(crate::claude_projects::discover(&home, &already_added))
+}
+
+#[tauri::command]
+pub async fn import_claude_projects(
+    app: AppHandle,
+    request: ImportClaudeProjectsRequest,
+) -> Result<Vec<crate::domain::types::FolderDto>, AppError> {
+    if request.paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    if request.paths.len() > 500 {
+        return Err(AppError::new(
+            "claude_projects_too_many",
+            "Choose 500 project folders or fewer at a time.",
+        ));
+    }
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|error| AppError::new("claude_projects_unavailable", error.to_string()))?;
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for path in request.paths {
+        let Some(canonical) = crate::claude_projects::validate_import_path(&home, &path) else {
+            return Err(AppError::new(
+                "claude_project_invalid",
+                "One of the selected project folders is no longer available.",
+            ));
+        };
+        if seen.insert(canonical.clone()) {
+            paths.push(canonical);
+        }
+    }
+
+    let mut projects = Vec::with_capacity(paths.len());
+    for path in paths {
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            return Err(AppError::new(
+                "claude_project_invalid",
+                "One of the selected project folders has no usable name.",
+            ));
+        };
+        projects.push((name.to_string(), path.to_string_lossy().into_owned()));
+    }
+    let profile = active_profile(&app);
+    Ok(repositories(&app)
+        .await?
+        .create_linked_folders(&profile, &projects)
+        .await?)
 }
 
 /// The sticky active profile, read straight from the Hermes home file. Gives
@@ -1423,6 +1491,7 @@ pub async fn start_recording(
     finish_active_capture_before_start(&repos).await?;
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
+    let calendar_app = app.clone();
     let started = start_capture_with_timeout(move |abandoned| {
         start_capture_with_cancel(app, &capture_paths, capture_note_id, source_mode, abandoned)
     })
@@ -1437,6 +1506,39 @@ pub async fn start_recording(
             started.device_label.clone(),
         )
         .await?;
+    let calendar_repos = repos.clone();
+    let calendar_note_id = note.id.clone();
+    let expected_title = note.title.clone();
+    let recording_started_at = Utc::now();
+    tokio::spawn(async move {
+        let enrichment = crate::meeting_calendar_context::enrich_note_for_recording(
+            &calendar_app,
+            calendar_repos.clone(),
+            calendar_note_id.clone(),
+            expected_title,
+            recording_started_at,
+        )
+        .await;
+        match enrichment {
+            Ok(true) => match calendar_repos.get_note(&calendar_note_id).await {
+                Ok(mut note) => {
+                    note.queued_recordings = processing_queue::queued_behind(&calendar_note_id);
+                    let _ = calendar_app.emit(
+                        crate::meeting_calendar_context::NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
+                        note,
+                    );
+                }
+                Err(error) => {
+                    eprintln!("calendar context was saved but could not be reloaded: {error}")
+                }
+            },
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "calendar context lookup failed without interrupting recording: {}: {}",
+                error.code, error.message
+            ),
+        }
+    });
     if let Err(error) = repos
         .add_checkpoint(
             &started.session_id,

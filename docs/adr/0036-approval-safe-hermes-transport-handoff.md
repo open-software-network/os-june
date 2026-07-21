@@ -1,4 +1,4 @@
-# ADR 0033: Approval-safe Hermes transport handoff
+# ADR 0036: Approval-safe Hermes transport handoff
 
 Date: 2026-07-16
 Status: accepted

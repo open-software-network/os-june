@@ -99,6 +99,48 @@ describe("NoteEditor", () => {
     expect(screen.getByText("First point")).toBeInTheDocument();
   });
 
+  it("renders the note title as multiline print content", () => {
+    const title = "Retour d'expérience Mago vs. pipeline interne, approche et conclusions";
+    const { container } = render(<NoteEditor {...props} note={note({ title })} />);
+
+    expect(screen.getByLabelText("Note title")).toHaveValue(title);
+    const printTitle = container.querySelector(".note-title-print");
+    expect(printTitle?.tagName).toBe("DIV");
+    expect(printTitle).toHaveTextContent(title);
+    expect(printTitle).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("uses the note placeholder for an empty print title", () => {
+    const { container } = render(<NoteEditor {...props} note={note({ title: "" })} />);
+
+    expect(screen.getByLabelText("Note title")).toHaveAttribute("placeholder", "New note");
+    expect(container.querySelector(".note-title-print")).toHaveTextContent("New note");
+  });
+
+  it("shows the Google Calendar event matched to the recording", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          title: "Product review",
+          calendarEvent: {
+            eventId: "event-1",
+            title: "Product review",
+            startAt: "2026-05-19T14:00:00Z",
+            endAt: "2026-05-19T14:30:00Z",
+            accountEmail: "june@example.com",
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Google Calendar")).toBeInTheDocument();
+    expect(screen.getByText("june@example.com")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Matched to Product review in Google Calendar"),
+    ).toBeInTheDocument();
+  });
+
   it("shows raw transcript in transcription tab", () => {
     render(
       <NoteEditor
@@ -646,6 +688,26 @@ describe("NoteEditor", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Transcribing audio");
     expect(screen.getByRole("status")).toHaveAttribute("data-status", "transcribing");
     expect(screen.queryByText("No transcript is available yet.")).toBeNull();
+  });
+
+  it("shows a friendly warning while note transcription is still running", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "notes",
+          processingStatus: "transcribing",
+          lastError: "authorization_denied",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+      "The service is busy right now. Wait a minute, then retry.",
+    );
+    expect(screen.getByText("Transcribing audio")).toBeInTheDocument();
+    expect(screen.queryByText("authorization_denied")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
   it("orders source transcript turns by persisted turn metadata", () => {

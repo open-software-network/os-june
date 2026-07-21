@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isTerminalHermesEvent, type JuneHermesEvent } from "../lib/hermes-control-plane";
 import {
   type AgentChatToolPart,
+  appendHermesLiveEvent,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   completedHermesMessageText,
@@ -39,6 +40,44 @@ function transcriptEvent(event: Partial<TranscriptEvent> = {}): TranscriptEvent 
     ...event,
   };
 }
+
+describe("appendHermesLiveEvent", () => {
+  it("preserves an in-progress response beyond the live event limit", () => {
+    const chunks = Array.from({ length: 250 }, (_, index) => `chunk-${index} `);
+    let events: JuneHermesEvent[] = [
+      transcriptEvent({ messageId: "long-response", delta: undefined }),
+    ];
+
+    for (const delta of chunks) {
+      events = appendHermesLiveEvent(
+        events,
+        transcriptEvent({ messageId: "long-response", delta }),
+      );
+    }
+
+    const turns = buildHermesSessionChatTurns([], events);
+    expect(events).toHaveLength(2);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: chunks.join(""),
+        status: "running",
+        renderKey: "long-response:text:0",
+      },
+    ]);
+  });
+
+  it("keeps separate messages and tool boundaries in event order", () => {
+    const first = transcriptEvent({ messageId: "first", delta: "Before tool." });
+    const tool = toolEvent({ key: "lookup", phase: "start" });
+    const second = transcriptEvent({ messageId: "first", delta: "After tool." });
+    const nextMessage = transcriptEvent({ messageId: "second", delta: "Next message." });
+
+    const events = [first, tool, second, nextMessage].reduce(appendHermesLiveEvent, []);
+
+    expect(events).toEqual([first, tool, second, nextMessage]);
+  });
+});
 
 function reasoningEvent(
   event: Pick<ReasoningEvent, "delta"> & Partial<ReasoningEvent>,
@@ -753,6 +792,7 @@ describe("Agent chat runtime", () => {
           "",
           "wdyt?",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- CleanShot.png (Workspace): uploads/CleanShot.png",
           "",
@@ -768,12 +808,19 @@ describe("Agent chat runtime", () => {
         text: [
           "wdyt?",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- CleanShot.png (Workspace): uploads/CleanShot.png",
           "",
           "Use these file paths when inspecting or operating on the files.",
         ].join("\n"),
         status: "complete",
+      },
+      {
+        type: "attachment",
+        name: "CleanShot.png",
+        path: "uploads/CleanShot.png",
+        kind: "image",
       },
     ]);
   });
@@ -788,6 +835,7 @@ describe("Agent chat runtime", () => {
           "",
           "wdyt?",
           "",
+          "[June attachment manifest v1]",
           "Attached files copied into the June workspace:",
           "- CleanShot.png (Workspace): uploads/CleanShot.png",
           "",
@@ -795,6 +843,106 @@ describe("Agent chat runtime", () => {
         ].join("\n"),
       ),
     ).toBe("wdyt?");
+  });
+
+  it("turns persisted image prompt scaffolding into a user attachment", () => {
+    const content = [
+      "what is this math",
+      "",
+      "Attached files copied into the June workspace:",
+      "- CleanShot.png (Workspace): uploads/CleanShot.png",
+      "",
+      "Use these file paths when inspecting or operating on the files.",
+      "",
+      "[Image attached at: /Users/alex/Library/Application Support/June/images/upload.png]",
+      "[screenshot]",
+    ].join("\n");
+
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "image-message",
+        role: "user",
+        content,
+        timestamp: "2026-07-20T19:48:57.000Z",
+      },
+    ]);
+
+    expect(displayedComposerUserMessageText(content)).toBe("what is this math");
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: content, status: "complete" },
+      {
+        type: "attachment",
+        name: "CleanShot.png",
+        path: "uploads/CleanShot.png",
+        kind: "image",
+      },
+    ]);
+  });
+
+  it("shows an attachment-only turn without synthetic fallback copy", () => {
+    const content = [
+      "Use the attached file(s).",
+      "",
+      "[June attachment manifest v1]",
+      "Attached files copied into the June workspace:",
+      "- brief.pdf (Workspace): uploads/brief.pdf",
+      "",
+      "Use these file paths when inspecting or operating on the files.",
+    ].join("\n");
+
+    expect(displayedComposerUserMessageText(content)).toBe("");
+    expect(
+      buildHermesSessionChatTurns([
+        {
+          id: "file-message",
+          role: "user",
+          content,
+          timestamp: "2026-07-20T19:48:57.000Z",
+        },
+      ])[0]?.parts.at(-1),
+    ).toEqual({
+      type: "attachment",
+      name: "brief.pdf",
+      path: "uploads/brief.pdf",
+      kind: "file",
+    });
+  });
+
+  it("preserves user-authored text that resembles the attachment scaffold", () => {
+    const content = [
+      "Here is the literal prompt text:",
+      "",
+      "Attached files copied into the June workspace:",
+      "- example.png (Workspace): uploads/example.png",
+      "",
+      "Use these file paths when inspecting or operating on the files.",
+    ].join("\n");
+
+    expect(displayedComposerUserMessageText(content)).toBe(content);
+    expect(
+      buildHermesSessionChatTurns([
+        {
+          id: "quoted-scaffold",
+          role: "user",
+          content,
+          timestamp: "2026-07-20T19:48:57.000Z",
+        },
+      ])[0]?.parts,
+    ).toEqual([{ type: "text", text: content, status: "complete" }]);
+  });
+
+  it("drops a user turn containing only a synthetic image marker", () => {
+    expect(
+      buildHermesSessionChatTurns([
+        {
+          id: "synthetic-image-marker",
+          role: "user",
+          content:
+            "[Image attached at: /Users/alex/Library/Application Support/June/images/upload.png]",
+          timestamp: "2026-07-20T19:48:57.000Z",
+        },
+      ]),
+    ).toEqual([]);
   });
 
   it("hides injected project context from persisted user turns", () => {
@@ -828,6 +976,7 @@ describe("Agent chat runtime", () => {
     const content = [
       "wdyt?",
       "",
+      "[June attachment manifest v1]",
       "Attached files copied into the June workspace:",
       "- screenshot.png (Workspace): uploads/screenshot.png",
       "",
@@ -2852,6 +3001,48 @@ describe("Agent chat runtime", () => {
     const tool = turns[0]?.parts.find((part) => part.type === "tool");
     expect(tool).toMatchObject({ media: "image" });
     expect(tool?.type === "tool" ? tool.text : "").not.toContain("aGVsbG8=");
+  });
+
+  it("renders a browser screenshot file reference from a tool result inline", () => {
+    const filename = "browser-screenshot-abc123.png";
+    const turns = buildHermesSessionChatTurns([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "call-1",
+            function: {
+              name: "screenshot",
+              arguments: { session_id: "session-1", tab_id: 7 },
+            },
+          },
+        ]),
+      },
+      {
+        id: "tool-1",
+        role: "tool",
+        tool_call_id: "call-1",
+        tool_name: "screenshot",
+        content: [
+          {
+            type: "text",
+            text: `${JSON.stringify({ fileReference: filename })}\nMEDIA:${filename}`,
+          },
+        ],
+        timestamp: "2026-07-14T10:00:01.000Z",
+      },
+    ]);
+
+    expect(turns[0]?.parts).toContainEqual({
+      type: "image",
+      status: "complete",
+      prompt: "Generated image",
+      path: filename,
+      name: filename,
+    });
   });
 
   it("allows a generated image to be shown again after a new user turn", () => {

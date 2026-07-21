@@ -37,6 +37,15 @@ describe("userFacingFailureMessage", () => {
       "Microphone: The processing service returned an invalid response.",
     );
   });
+
+  it("turns authorization denials into retry guidance", () => {
+    expect(userFacingFailureMessage("authorization_denied")).toBe(
+      "The service is busy right now. Wait a minute, then retry.",
+    );
+    expect(userFacingFailureMessage("Microphone: authorization_denied")).toBe(
+      "Microphone: The service is busy right now. Wait a minute, then retry.",
+    );
+  });
 });
 
 describe("NoteFailureBanner", () => {

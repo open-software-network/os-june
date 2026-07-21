@@ -182,7 +182,7 @@ mod tests {
                 move || target_hit.store(true, Ordering::SeqCst)
             });
         let redirect_response = format!(
-            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/video.mp4\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{}/video.mp4\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             target_addr.port()
         );
         let (redirect_addr, redirect_thread) = spawn_one_response_server(&redirect_response, || {});
@@ -223,10 +223,22 @@ mod tests {
                     Err(error) => panic!("test server accept failed: {error}"),
                 }
             };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
             let mut buffer = [0_u8; 1024];
-            let _ = stream.read(&mut buffer);
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(
+                    read > 0,
+                    "test client closed before sending request headers"
+                );
+                request.extend_from_slice(&buffer[..read]);
+            }
             on_request();
             stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
         });
         (addr, handle)
     }

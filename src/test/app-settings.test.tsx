@@ -290,6 +290,7 @@ describe("AppSettings", () => {
     resetActiveHermesProfileForTests();
     localState = { baseUrl: "", modelId: "", apiKey: "", enabled: false };
     mocks.eventHandler = undefined;
+    mocks.listen.mockResolvedValue(vi.fn());
     mocks.invoke.mockResolvedValue(null);
     mocks.dictationCapabilities.mockResolvedValue({
       capabilities: {
@@ -4621,6 +4622,54 @@ describe("AppSettings", () => {
     await user.click(cliSwitch);
     await waitFor(() => expect(mocks.setHermesAgentCliAccess).toHaveBeenCalledWith(false));
     expect(cliSwitch).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("retries the Agent CLI access status after a transient load failure", async () => {
+    const user = userEvent.setup();
+    mocks.hermesAgentCliAccess.mockRejectedValueOnce(new Error("bridge unavailable"));
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    const title = await screen.findByText("Agent CLI access", { selector: "h3" });
+    const row = title.closest(".settings-row") as HTMLElement;
+    await user.click(await within(row).findByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(mocks.hermesAgentCliAccess).toHaveBeenCalledTimes(2));
+    expect(
+      await within(row).findByRole("switch", { name: "Allow agent CLI access" }),
+    ).toBeEnabled();
+  });
+
+  it("does not show an independent Browser use control in Agent settings", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Agent" }));
+    await screen.findByRole("heading", { name: "Agent" });
+    expect(screen.queryByText("Browser use")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Allow browser use" })).toBeNull();
   });
 
   it("drills into a messaging platform as a pinned detail with bar actions", async () => {

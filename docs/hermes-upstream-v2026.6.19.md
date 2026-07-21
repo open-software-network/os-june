@@ -16,7 +16,7 @@ finishing a managed runtime install. See
 [ADR 0009](adr/0009-hermes-config-shared-ownership-merge.md),
 [ADR 0025](adr/0025-targeted-hermes-approval-protocol.md),
 [ADR 0027](adr/0027-june-owned-project-memory-store.md), and
-[ADR 0033](adr/0033-approval-safe-hermes-transport-handoff.md).
+[ADR 0036](adr/0036-approval-safe-hermes-transport-handoff.md).
 
 The patch preserves MCP `RequestContext.request_id`, derives an opaque stable
 approval id, and coalesces a still-pending logical request retried after an MCP

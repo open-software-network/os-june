@@ -144,6 +144,7 @@ describe("mcp servers — view logic", () => {
 
   it("hides June-owned internal MCP servers from user-managed lists", () => {
     expect(INTERNAL_MCP_SERVER_NAMES).toContain("june_video");
+    expect(INTERNAL_MCP_SERVER_NAMES).toContain("june_browser");
     expect(INTERNAL_MCP_SERVER_NAMES).toContain("june_computer_use");
     const servers = [
       ...INTERNAL_MCP_SERVER_NAMES.map((name) =>
@@ -154,6 +155,12 @@ describe("mcp servers — view logic", () => {
           command: `${name}_mcp.py`,
         }),
       ),
+      serverFromWire({
+        name: "june_notion_auto_ab12cd34",
+        enabled: true,
+        transport: "stdio",
+        command: "june_notion_actions_mcp.py",
+      }),
       serverFromWire({
         name: "linear",
         enabled: true,

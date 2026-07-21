@@ -75,3 +75,64 @@ prompting the model (the connectors precedent).
   engine is bundled in v1.
 - Private-system-interface risk in cua-driver is accepted for phase 2 behind
   a pinned driver version and a release self-test.
+
+## Addendum, 2026-07-13: the grant is the only authorization gate, and where
+## the sandbox does not help
+
+Building the JUN-286 and JUN-287 skeletons surfaced two facts about this
+trust boundary that the decision above assumed without stating. Both are
+recorded here because the next slices build approval surfaces directly on
+them, and a reader who assumes otherwise will place an enforcement point
+where there is none.
+
+**The loopback token is not a boundary against the agent.** Each internal MCP
+server gets a distinct loopback token (provider, recorder, browser) so that
+one MCP subprocess cannot call another's routes. That is real, and it is all
+it is. The tokens are rendered in plaintext into the runtime's own
+`config.yaml`, and the Seatbelt profile is a *write* jail: it denies reads
+only for a short secret denylist, and the runtime's home is readable by
+design because the runtime must read its own config. The agent can therefore
+read any of its tokens and call the loopback proxy directly, bypassing the
+runtime's toolset gating. Consequently **the Browser access grant, re-checked
+in the Rust broker on every request, is the sole authorization gate for
+`/v1/browser/*`.** Tool-layer gating in the runtime is ergonomics, not
+enforcement. Every consequential-action approval must be enforced in the
+broker (JUN-297), never at the runtime's tool-dispatch layer.
+
+**The grant is read at request time, not cached at spawn.** The grant was
+initially a value captured when a runtime spawned. That cannot hold: revoke
+runs outside the lock that serializes spawns, so a spawn already in flight
+would come up with browser access and survive the revoke, and a spawn
+interleaving with the revoke could re-enable the broker from a flag file that
+no longer exists. The broker now consults the persisted grant on every
+browser request and fails closed. A `stat` per request is free relative to the
+loopback round trip, and it makes revocation authoritative regardless of what
+any runtime process believes.
+
+**Known gap, deliberately not closed here.** The grant is a presence file in
+app data, outside every sandbox write root, so a *jailed* runtime cannot
+grant itself browser access. An Unrestricted-mode session runs with no
+Seatbelt profile at all and could create that file, producing a persisted,
+UI-visible grant the user never gave. This is consent integrity rather than
+capability escalation (an Unrestricted agent already has a shell), and the
+same shape exists in the shipped Agent CLI access grant, so the fix is a
+shared one: bind the grant to a value the app can verify rather than trusting
+file presence. Tracked separately; it is not closed by this ADR.
+
+## Addendum, 2026-07-15: routine opt-in is bound by a per-job credential
+
+The gateway marks cron execution only with the process-global value
+`HERMES_CRON_SESSION=1`; it does not expose the active job id to MCP children,
+and multiple jobs can run concurrently. That marker therefore cannot bind a
+browser request to one routine, and a job id supplied in the request body
+would be forgeable by the model.
+
+Each opted-in routine instead receives a distinct June-authored MCP server and
+random bearer credential. The routine's stored `enabled_toolsets` selects that
+server. The provider proxy maps the credential to June-side routine state, and
+the Rust browser broker re-checks that routine's opt-in on every request,
+including requests made through an already-running managed session. Disabling
+the opt-in retains the credential only for authentication and refusal, removes
+the server from rendered configuration, and makes the broker return
+`browser_routine_not_opted_in`. Attended credentials remain a separate class
+and never consult routine opt-ins.

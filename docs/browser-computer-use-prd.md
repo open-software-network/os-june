@@ -5,6 +5,30 @@ Supersedes the JUN-229 scope proposal (PR #689, closed unmerged); that
 document's surface inventory and gap analysis inform this PRD.
 Date: 2026-07-13
 
+**Division of authority.** Two documents describe Browser use, and each is
+canonical for one half. They must never re-decide the other's half.
+
+| | Canonical document |
+| --- | --- |
+| **Implementation**: tool contract and tool names, trust boundary, transports, policy, distribution mechanics, tests | **this document** |
+| **Business**: ranking, positioning, packaging and pricing, success measures, strategic risks | [plugins/browser-use-prd.md](plugins/browser-use-prd.md) (portfolio, JUN-309) |
+
+The portfolio also carries
+[plugins/browser-use-implementation-plan.md](plugins/browser-use-implementation-plan.md)
+and the Computer use pair
+([prd](plugins/computer-use-prd.md), [plan](plugins/computer-use-implementation-plan.md));
+those are summaries of this document, not a second source of truth. Where an
+implementation detail disagrees, this document wins and the other is the bug.
+Where a business detail disagrees, the portfolio PRD wins and this one is the
+bug.
+
+**Packaging (from the portfolio PRD, binding on this build).** Attended Browser
+use is available on Hobby at launch, to maximize trust feedback. Routine
+browsing (the managed transport) and higher automation limits are Pro. There is
+no provider API fee; model and support cost set the final packaging. This is a
+capability gate the app must actually enforce, not a marketing line, and it is
+tracked as its own slice.
+
 ## Problem statement
 
 June's agent can search the web and fetch a single page as markdown, but it
@@ -137,6 +161,21 @@ June's current Stage Manager group after that app authorization.
   close, navigate, snapshot (visible text plus interactive references that
   expire on navigation or mutation), click, fill, press, screenshot, back,
   and tab operations (list, open, switch, close, accept a user-shared tab).
+- The tool names are canonical here, because two documents naming them
+  differently is how the contract drifts:
+
+  | Group | Tools |
+  | --- | --- |
+  | Session | `start_session`, `close_session` |
+  | Navigation | `navigate`, `back` |
+  | Perception | `snapshot`, `screenshot` |
+  | Interaction | `click`, `fill`, `press` |
+  | Tabs | `list_tabs`, `open_tab`, `switch_tab`, `close_tab`, `accept_shared_tab` |
+
+  Verb first, matching every other internal June MCP server
+  (`start_recording`, `generate_image`, `search_threads`, `get_meeting_note`).
+  A tool declared here but not yet implemented fails cleanly; it never
+  silently no-ops.
 - The Rust browser broker is the choke point. Policy decisions are made in
   Rust, never by prompting the model (the connectors precedent): grant
   checks, consequential-action classification, approval parking, per-task
@@ -173,6 +212,21 @@ June's current Stage Manager group after that app authorization.
   persistent is stored. Typing into password, one-time
   code, or payment fields is never automated; the user is asked to take
   over.
+- Task tabs cannot open windows or escape their session. Declarative
+  (`target=_blank`) and scripted (`window.open`) attempts triggered by a
+  task action are refused or closed immediately, because a new window would
+  sit outside the task-tab isolation the grant covers.
+- Sharing a tab is a user gesture in the extension popup, never a model
+  request: the popup mints a one-use share code, the user pastes it into
+  chat, and the agent redeems it with `accept_shared_tab`. An unredeemed
+  code grants nothing, and redeeming consumes it.
+- User gestures that break the markings end ownership immediately: closing
+  a task tab, detaching its debugger (for example from the debugging
+  banner's cancel action), renaming the June group, or dragging a task tab
+  out of it. The extension detaches, every later command against that tab
+  fails as an explicit ownership error, and a shared tab's release is
+  reported to the broker at once. The extension never re-attaches to a tab
+  the user took back.
 
 ### Routines track (the managed browser)
 
@@ -194,6 +248,39 @@ June's current Stage Manager group after that app authorization.
   result, and the plugin tile states the requirement up front. No browser
   engine is bundled.
 
+### Failure semantics of the attended track
+
+The attended track drives a live user browser, so its failure modes are
+user-visible. Each rule below is a testable commitment.
+
+- Transport loss ends automation. Browser exit or crash, shim death, an
+  extension reload, or app or broker death drops the native port. The
+  extension detaches from every task tab and clears its state; the broker
+  ends the affected sessions and fails the active task. A reconnect is a
+  new pairing with empty state; automation never resumes silently on a
+  fresh connection.
+- Session-restored tabs are orphaned, never re-adopted. After a browser
+  restart, restored task tabs can still carry the June group label, but
+  the extension's ownership registry is empty and it must not attach to
+  them. v1 leaves closing them to the user.
+- An extension update lands mid-session on the store's schedule, not
+  June's. The update reloads the extension, which is transport loss under
+  the rule above: the active task fails safely, and pairing resumes only
+  after the version handshake passes. June prefers a failed task over
+  continued control after an unattended update.
+- Parked approvals die with their tab. A consequential action waiting on
+  an approval card is bound to its tab; if that tab leaves the session
+  (closed, detached, ungrouped) before the card resolves, the action is
+  discarded and the approval resolves as not executed. It never executes
+  against a restored or reused tab.
+- The version handshake runs at connect time only; there is no mid-session
+  re-negotiation. An app or extension update takes effect on the next
+  connect, and both update paths converge on transport loss above. Unknown
+  frames are dropped, never fatal, so a newer app does not crash an older
+  extension worker. The mismatch prompt names the outdated side (update
+  the app versus update the extension), because the two update on
+  independent cadences.
+
 ### Extension distribution
 
 - The extension lives in this repository as its own package, built with the
@@ -206,6 +293,18 @@ June's current Stage Manager group after that app authorization.
   stable so one native-messaging host manifest serves local and store
   builds. The load-extension command-line flag is blocked on branded stable
   Chrome, so scripted QA uses developer mode or a Chrome for Testing binary.
+- The Chrome Web Store listing is the only v1 store presence. Brave
+  installs from the same listing; stock Chromium loads the built package
+  unpacked. The host manifest is registered for every supported browser,
+  so pairing works wherever the extension is installed. The Edge install
+  path is undecided and tracked under Open questions.
+- A store-review rejection of the `debugger` permission holds the attended
+  launch. The response is a revised submission with a stronger
+  justification and privacy policy, never a reduced-permission build:
+  per-tab debugger control is the accepted ADR 0017 mechanism, and an
+  attended track without it is a redesign that needs its own ADR. Unpacked
+  loading remains a development path and is not a consumer answer to a
+  rejection.
 
 ### Computer use (phase 2)
 
@@ -230,6 +329,31 @@ June's current Stage Manager group after that app authorization.
 - A release self-test starts the bundled driver and fails the build if the
   private system interfaces it relies on break on a macOS update.
 
+### Operability and privacy of the capability itself
+
+These come from the portfolio PRD and implementation plan
+([plugins/browser-use-prd.md](plugins/browser-use-prd.md),
+[plugins/browser-use-implementation-plan.md](plugins/browser-use-implementation-plan.md))
+and are recorded here because they are release-gating and no slice owned them:
+
+- **Two kill switches, not one.** The attended transport (the extension) and
+  the managed transport (the routines browser) fail in different ways and are
+  operated by different people, so each gets its own remote disable. Killing
+  the extension must not silently take routines down with it, and the reverse.
+- **The capability logs nothing about what it saw.** No URLs, page text,
+  screenshots, or field values in telemetry or logs. What a browsing session
+  touched is exactly the material the user is trusting June with, and a log
+  line is a copy of it outside the boundary the rest of this PRD builds.
+- **The broker records outcomes; the model does not get to grade itself.** A
+  task's declared outcome is recorded by the broker before execution and
+  checked after, because the launch metric ("browser tasks with a verifiable
+  outcome") is meaningless if the agent's own claim of success is the
+  evidence. Approval events (parked, approved, declined) are counted; their
+  contents are not.
+
+Each of these is a slice that does not exist yet; they are tracked separately
+rather than folded into an existing one.
+
 ### Naming
 
 - User-facing names are "Browser use" and "Computer use" (sentence case),
@@ -250,6 +374,11 @@ Committed coverage:
 - **Native-messaging protocol** (both halves): version negotiation, framing,
   and the oversize-payload file-reference path, tested against the Rust shim
   and the TypeScript client.
+- **Ownership and transport loss** (both halves): user tab close, user
+  debugger detach, group rename or ungroup, extension reload, and browser
+  or broker death each end ownership deterministically and fail in-flight
+  and parked work, covered on the pairing state machine, the tab registry,
+  and the broker's session teardown.
 - **MCP schema fixtures**: `june_browser` joins the runtime compatibility
   fixtures and the live smoke test, at release-gate level like the existing
   internal servers.
@@ -272,6 +401,53 @@ best-effort and are not a release gate in v1.
 - Reading or acting on the user's pre-existing tabs without an explicit
   share.
 - Multi-account or browser-profile management inside the extension.
+- A reduced-permission attended build (for example content-script-only
+  input) as a store-review fallback; an attended track without debugger
+  control is a redesign, not a fallback.
+
+## Open questions
+
+Implementation in `extension/` and `src-tauri/` has already answered some
+questions this document is silent on, and in places the two disagree. Per
+the division of authority at the top, this document winning makes some of
+these items code bugs; they are recorded here so the fix is a deliberate
+decision, not silent drift in either direction.
+
+- **The `status` tool.** The `june_browser` MCP server exposes a `status`
+  tool (grant state and active-session count) that the canonical tool
+  table above does not list. Decide: add it to the table, or remove it
+  from the server.
+- **`inspect_reference` and the `expected` re-check.** The broker and the
+  extension exchange a fourteenth wire verb, `inspect_reference`, and the
+  broker injects the inspected element facts as an `expected` argument
+  into click, fill, and press so the extension refuses when the element
+  changed since the snapshot. Neither the verb nor the mutation guard
+  appears in this document. Decide: document the broker-to-extension wire
+  vocabulary here as a layer distinct from the model-facing table, or
+  extend the table.
+- **The large-payload path.** This document says large payloads pass as
+  file references, never inline, because host messages are size-capped.
+  The extension instead streams base64 chunks over the native port for
+  every artifact, and inlines snapshots below its chunk threshold; file
+  references exist only between the broker and the model. Decide which
+  description is normative and bring the other side in line.
+- **Snapshot value redaction.** The extension masks value-control contents
+  in snapshots (reported as filled or empty, never the text); this
+  document defines a snapshot as visible text plus interactive references
+  and is silent on redaction. Decide whether redaction is designed
+  behavior, noting it aligns with the rule that the capability logs
+  nothing about what it saw.
+- **Share-code expiry.** A share code lives until it is redeemed, revoked,
+  its tab closes, or the transport drops; there is no time expiry. Decide
+  whether unredeemed offers expire.
+- **Edge distribution.** The host manifest is registered for Edge, but the
+  only store listing is the Chrome Web Store. Decide the Edge install
+  path (installing from the Chrome Web Store versus a separate Edge
+  Add-ons listing) before Edge support is claimed anywhere user-facing.
+- **Multiple app instances.** Two running June instances (for example a
+  stable and an rc build) race on the same host manifest and connection
+  descriptor. Decide the v1 behavior: refuse a second pairing,
+  last-writer-wins, or per-channel manifests.
 
 ## Further notes
 

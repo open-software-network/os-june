@@ -55,6 +55,20 @@ export function isOnboardingComplete(): boolean {
   }
 }
 
+/** Whether this machine has ever finished onboarding, at any version.
+ * Distinguishes a genuinely fresh install from a wizard replay after an
+ * ONBOARDING_VERSION bump, so one-time first-run defaults (like enabling
+ * launch at login) never re-apply to existing users. */
+export function hasCompletedAnyOnboardingVersion(): boolean {
+  try {
+    return window.localStorage.getItem(COMPLETED_KEY) !== null;
+  } catch {
+    // Storage unavailable reads as "not a fresh install": err on the side
+    // of not applying first-run defaults.
+    return true;
+  }
+}
+
 export function markOnboardingComplete() {
   try {
     window.localStorage.setItem(COMPLETED_KEY, String(ONBOARDING_VERSION));

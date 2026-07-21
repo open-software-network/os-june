@@ -30,6 +30,7 @@ pub use envelope::{
     ERR_SHARING_UNAVAILABLE, ERR_TIMEOUT, ERR_UNAUTHORIZED, ERR_UNPROCESSABLE, ERR_UPSTREAM,
 };
 pub use error::ApiError;
+pub use handlers::browser_transport_policy::BrowserTransportPolicyDto;
 pub use handlers::computer_use::ComputerUseRolloutDto;
 pub use handlers::dictate::{
     DictateCleanupRequest, DictateCleanupResponse, DictateTranscribeResponse,
@@ -88,6 +89,10 @@ pub fn router(state: ApiState) -> Router {
             get(handlers::share::link_view),
         )
         .route("/v1/models", get(handlers::models::list_models))
+        .route(
+            "/v1/browser-transport-policy",
+            get(handlers::browser_transport_policy::get),
+        )
         .route(
             "/v1/computer-use/rollout",
             get(handlers::computer_use::rollout),

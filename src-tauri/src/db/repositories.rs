@@ -2,8 +2,8 @@ use crate::domain::types::{
     AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto, DictionaryEntryDto,
-    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteDto,
-    NoteListItemDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteCalendarEventDto,
+    NoteDto, NoteListItemDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
     NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
     ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
     SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
@@ -146,9 +146,224 @@ pub struct ConnectorGrant {
     pub account_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutineBrowserGrantRecord {
+    pub job_id: String,
+    pub server_name: String,
+    pub token: String,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BrowserActionOutcomeRecord {
+    pub id: String,
+    pub operation: String,
+    pub transport_kind: String,
+    pub session_id: String,
+    pub approval_id: Option<String>,
+    pub outcome_class: Option<String>,
+    pub result_kind: String,
+    pub result_code_class: Option<String>,
+    pub outcome_verified: bool,
+    pub declared_at: String,
+    pub evaluated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BrowserOutcomeCounts {
+    pub declared: u64,
+    pub verified_successes: u64,
+    pub executed: u64,
+    pub refused: u64,
+    pub transport_errors: u64,
+    pub parked: u64,
+    pub approved: u64,
+    pub declined: u64,
+    pub expired: u64,
+    pub cancelled_by_task_end: u64,
+}
+
 impl Repositories {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
+    }
+
+    pub async fn declare_browser_action(
+        &self,
+        id: &str,
+        operation: &str,
+        transport_kind: &str,
+        session_id: &str,
+        outcome_class: Option<&str>,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "INSERT INTO browser_action_outcomes (
+               id, operation, transport_kind, session_id, outcome_class, declared_at
+             ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(operation)
+        .bind(transport_kind)
+        .bind(session_id)
+        .bind(outcome_class)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn evaluate_browser_action(
+        &self,
+        id: &str,
+        result_kind: &str,
+        result_code_class: Option<&str>,
+        outcome_verified: bool,
+    ) -> Result<(), sqlx::error::Error> {
+        let result = query(
+            "UPDATE browser_action_outcomes
+             SET result_kind = ?, result_code_class = ?, outcome_verified = ?, evaluated_at = ?
+             WHERE id = ? AND result_kind = 'pending'",
+        )
+        .bind(result_kind)
+        .bind(result_code_class)
+        .bind(outcome_verified)
+        .bind(timestamp())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(sqlx::Error::RowNotFound)
+        }
+    }
+
+    pub async fn park_browser_approval(
+        &self,
+        action_id: &str,
+        approval_id: &str,
+        session_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        let updated = query(
+            "UPDATE browser_action_outcomes
+             SET approval_id = ?
+             WHERE id = ? AND result_kind = 'pending' AND approval_id IS NULL",
+        )
+        .bind(approval_id)
+        .bind(action_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        insert_browser_approval_event(&mut tx, approval_id, action_id, session_id, "parked")
+            .await?;
+        tx.commit().await
+    }
+
+    pub async fn record_browser_approval_event(
+        &self,
+        action_id: &str,
+        approval_id: &str,
+        session_id: &str,
+        event_kind: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        insert_browser_approval_event(&mut tx, approval_id, action_id, session_id, event_kind)
+            .await?;
+        tx.commit().await
+    }
+
+    pub async fn finish_browser_approval(
+        &self,
+        action_id: &str,
+        approval_id: &str,
+        session_id: &str,
+        event_kind: &str,
+        result_code_class: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        insert_browser_approval_event(&mut tx, approval_id, action_id, session_id, event_kind)
+            .await?;
+        let updated = query(
+            "UPDATE browser_action_outcomes
+             SET result_kind = 'refused', result_code_class = ?, outcome_verified = 0,
+                 evaluated_at = ?
+             WHERE id = ? AND result_kind = 'pending'",
+        )
+        .bind(result_code_class)
+        .bind(timestamp())
+        .bind(action_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        tx.commit().await
+    }
+
+    pub async fn browser_action_outcomes_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<BrowserActionOutcomeRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT id, operation, transport_kind, session_id, approval_id, outcome_class,
+                    result_kind, result_code_class, outcome_verified, declared_at, evaluated_at
+             FROM browser_action_outcomes
+             WHERE session_id = ?
+             ORDER BY declared_at ASC, id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| BrowserActionOutcomeRecord {
+                id: row.get("id"),
+                operation: row.get("operation"),
+                transport_kind: row.get("transport_kind"),
+                session_id: row.get("session_id"),
+                approval_id: row.get("approval_id"),
+                outcome_class: row.get("outcome_class"),
+                result_kind: row.get("result_kind"),
+                result_code_class: row.get("result_code_class"),
+                outcome_verified: row.get("outcome_verified"),
+                declared_at: row.get("declared_at"),
+                evaluated_at: row.get("evaluated_at"),
+            })
+            .collect())
+    }
+
+    pub async fn browser_outcome_counts(&self) -> Result<BrowserOutcomeCounts, sqlx::error::Error> {
+        let row = query(
+            "SELECT
+               COUNT(*) AS declared,
+               COALESCE(SUM(outcome_verified), 0) AS verified_successes,
+               COALESCE(SUM(result_kind = 'executed'), 0) AS executed,
+               COALESCE(SUM(result_kind = 'refused'), 0) AS refused,
+               COALESCE(SUM(result_kind = 'transport_error'), 0) AS transport_errors,
+               (SELECT COUNT(*) FROM browser_approval_events WHERE event_kind = 'parked') AS parked,
+               (SELECT COUNT(*) FROM browser_approval_events WHERE event_kind = 'approved') AS approved,
+               (SELECT COUNT(*) FROM browser_approval_events WHERE event_kind = 'declined') AS declined,
+               (SELECT COUNT(*) FROM browser_approval_events WHERE event_kind = 'expired') AS expired,
+               (SELECT COUNT(*) FROM browser_approval_events WHERE event_kind = 'cancelled_by_task_end') AS cancelled_by_task_end
+             FROM browser_action_outcomes",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(BrowserOutcomeCounts {
+            declared: nonnegative_u64(row.get("declared")),
+            verified_successes: nonnegative_u64(row.get("verified_successes")),
+            executed: nonnegative_u64(row.get("executed")),
+            refused: nonnegative_u64(row.get("refused")),
+            transport_errors: nonnegative_u64(row.get("transport_errors")),
+            parked: nonnegative_u64(row.get("parked")),
+            approved: nonnegative_u64(row.get("approved")),
+            declined: nonnegative_u64(row.get("declined")),
+            expired: nonnegative_u64(row.get("expired")),
+            cancelled_by_task_end: nonnegative_u64(row.get("cancelled_by_task_end")),
+        })
     }
 
     pub async fn increment_p3a_counter(
@@ -847,12 +1062,73 @@ impl Repositories {
         Ok(())
     }
 
-    /// Remove every connector row keyed to a routine when the routine itself is
+    pub async fn list_routine_browser_grants(
+        &self,
+    ) -> Result<Vec<RoutineBrowserGrantRecord>, AppError> {
+        let rows = query(
+            "SELECT job_id, server_name, token, enabled FROM routine_browser_grants ORDER BY job_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| RoutineBrowserGrantRecord {
+                job_id: row.get("job_id"),
+                server_name: row.get("server_name"),
+                token: row.get("token"),
+                enabled: row.get("enabled"),
+            })
+            .collect())
+    }
+
+    pub async fn routine_browser_grant(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<RoutineBrowserGrantRecord>, AppError> {
+        let row = query(
+            "SELECT job_id, server_name, token, enabled FROM routine_browser_grants WHERE job_id = ?",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| RoutineBrowserGrantRecord {
+            job_id: row.get("job_id"),
+            server_name: row.get("server_name"),
+            token: row.get("token"),
+            enabled: row.get("enabled"),
+        }))
+    }
+
+    pub async fn set_routine_browser_grant(
+        &self,
+        grant: &RoutineBrowserGrantRecord,
+    ) -> Result<(), AppError> {
+        query(
+            "INSERT INTO routine_browser_grants (job_id, server_name, token, enabled, created_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(job_id) DO UPDATE SET
+               server_name = excluded.server_name,
+               token = excluded.token,
+               enabled = excluded.enabled,
+               created_at = excluded.created_at",
+        )
+        .bind(&grant.job_id)
+        .bind(&grant.server_name)
+        .bind(&grant.token)
+        .bind(grant.enabled)
+        .bind(timestamp())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove every June-owned row keyed to a routine when the routine itself is
     /// deleted: its triggers (so the poller stops firing a missing job), its
     /// per-job event cursor, its trust row and credited-run ledger, and its
-    /// autonomy grants (so a deleted routine can never keep an auto MCP server
-    /// or a live grant token). Email cursors are per account, not per job, so
-    /// they are left for the account's own lifecycle.
+    /// autonomy grants, and its Browser use credential (so a deleted routine
+    /// can never keep a per-job MCP server or a live token). Email cursors are
+    /// per account, not per job, so they are left for the account's own
+    /// lifecycle.
     pub async fn delete_routine_connector_state(
         &self,
         job_id: &str,
@@ -879,12 +1155,16 @@ impl Repositories {
             .bind(job_id)
             .execute(&mut *tx)
             .await?;
+        query("DELETE FROM routine_browser_grants WHERE job_id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await
     }
 
     pub async fn list_folders(&self, profile: &str) -> Result<Vec<FolderDto>, sqlx::error::Error> {
         let rows = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE profile = ? AND deleted_at IS NULL
              ORDER BY lower(name) ASC",
@@ -912,6 +1192,7 @@ impl Repositories {
             description: description.clone(),
             instructions: None,
             memory_disabled: false,
+            local_path: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -930,6 +1211,59 @@ impl Repositories {
         .await?;
 
         Ok(folder)
+    }
+
+    pub async fn create_linked_folders(
+        &self,
+        profile: &str,
+        projects: &[(String, String)],
+    ) -> Result<Vec<FolderDto>, sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        let mut folders = Vec::with_capacity(projects.len());
+        for (name, local_path) in projects {
+            if let Some(row) = query(
+                "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
+                 FROM folders
+                 WHERE profile = ? AND local_path = ? AND deleted_at IS NULL",
+            )
+            .bind(profile)
+            .bind(local_path)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                folders.push(folder_from_row(row));
+                continue;
+            }
+
+            let now = timestamp();
+            let folder = FolderDto {
+                id: Uuid::new_v4().to_string(),
+                name: name.trim().to_string(),
+                description: None,
+                instructions: None,
+                memory_disabled: false,
+                local_path: Some(local_path.to_string()),
+                created_at: now.clone(),
+                updated_at: now,
+            };
+            query(
+                "INSERT INTO folders
+                 (id, name, description, profile, local_path, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&folder.id)
+            .bind(&folder.name)
+            .bind(&folder.description)
+            .bind(profile)
+            .bind(&folder.local_path)
+            .bind(&folder.created_at)
+            .bind(&folder.updated_at)
+            .execute(&mut *tx)
+            .await?;
+            folders.push(folder);
+        }
+        tx.commit().await?;
+        Ok(folders)
     }
 
     pub async fn rename_folder(
@@ -960,7 +1294,7 @@ impl Repositories {
         }
 
         let row = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -1032,7 +1366,7 @@ impl Repositories {
 
     async fn get_folder(&self, folder_id: &str) -> Result<FolderDto, AppError> {
         let row = query(
-            "SELECT id, name, description, instructions, memory_disabled, created_at, updated_at
+            "SELECT id, name, description, instructions, memory_disabled, local_path, created_at, updated_at
              FROM folders
              WHERE id = ? AND deleted_at IS NULL",
         )
@@ -1327,7 +1661,10 @@ impl Repositories {
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
         let row = query(
-            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error FROM notes WHERE id = ?",
+            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error,
+                    calendar_event_id, calendar_event_title, calendar_event_start_at,
+                    calendar_event_end_at, calendar_account_email
+             FROM notes WHERE id = ?",
         )
         .bind(note_id)
         .fetch_one(&self.pool)
@@ -1364,6 +1701,7 @@ impl Repositories {
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
             duration_ms: None,
+            calendar_event: note_calendar_event_from_row(&row),
             generated_content: row.get("generated_content"),
             edited_content: row.get("edited_content"),
             transcript: self.latest_transcript(note_id).await?,
@@ -1377,6 +1715,38 @@ impl Repositories {
             queued_recordings: 0,
             retry_recording_session_id,
         })
+    }
+
+    /// Persist the event provenance even when the user has already supplied a
+    /// title. The calendar title only fills an untouched note title, so a
+    /// background match can never clobber text typed while the request ran.
+    pub async fn associate_note_with_calendar_event(
+        &self,
+        note_id: &str,
+        expected_title: &str,
+        event: &NoteCalendarEventDto,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE notes
+             SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
+                 calendar_event_id = ?, calendar_event_title = ?,
+                 calendar_event_start_at = ?, calendar_event_end_at = ?,
+                 calendar_account_email = ?, updated_at = ?
+             WHERE id = ? AND calendar_event_id IS NULL",
+        )
+        .bind(i64::from(expected_title.trim().is_empty()))
+        .bind(expected_title)
+        .bind(&event.title)
+        .bind(&event.event_id)
+        .bind(&event.title)
+        .bind(&event.start_at)
+        .bind(&event.end_at)
+        .bind(&event.account_email)
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn list_notes(
@@ -1631,6 +2001,57 @@ impl Repositories {
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
+        let duplicate_linked_folders = query(
+            "SELECT source.id AS source_id, target.id AS target_id
+             FROM folders source
+             INNER JOIN folders target
+               ON target.profile = 'default'
+              AND target.local_path = source.local_path
+              AND target.deleted_at IS NULL
+             WHERE source.profile = ?
+               AND source.local_path IS NOT NULL
+               AND source.deleted_at IS NULL",
+        )
+        .bind(profile)
+        .fetch_all(&mut *transaction)
+        .await?;
+        for row in duplicate_linked_folders {
+            let source_id = row.get::<String, _>("source_id");
+            let target_id = row.get::<String, _>("target_id");
+            query(
+                "INSERT OR IGNORE INTO note_folders (note_id, folder_id, assigned_at)
+                 SELECT note_id, ?, assigned_at FROM note_folders WHERE folder_id = ?",
+            )
+            .bind(&target_id)
+            .bind(&source_id)
+            .execute(&mut *transaction)
+            .await?;
+            query("DELETE FROM note_folders WHERE folder_id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query(
+                "INSERT OR IGNORE INTO session_folders (session_id, folder_id, assigned_at)
+                 SELECT session_id, ?, assigned_at FROM session_folders WHERE folder_id = ?",
+            )
+            .bind(&target_id)
+            .bind(&source_id)
+            .execute(&mut *transaction)
+            .await?;
+            query("DELETE FROM session_folders WHERE folder_id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query("UPDATE memories SET folder_id = ? WHERE folder_id = ?")
+                .bind(&target_id)
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+            query("DELETE FROM folders WHERE id = ?")
+                .bind(&source_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         query("UPDATE folders SET profile = 'default' WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
@@ -2562,6 +2983,26 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn set_note_transcription_warning(
+        &self,
+        note_id: &str,
+        warning: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE notes
+             SET last_error = ?, updated_at = ?
+             WHERE id = ?
+               AND processing_status = 'transcribing'
+               AND last_error IS NULL",
+        )
+        .bind(warning)
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn set_generated_note(
         &self,
         note_id: &str,
@@ -2829,8 +3270,19 @@ impl Repositories {
         .bind(final_path)
         .execute(&self.pool)
         .await?;
-        self.set_note_status(note_id, ProcessingStatus::Recording, None)
-            .await?;
+        // A new capture may be stacked while an earlier recording from this
+        // note is still processing. Keep that active stage and its warning;
+        // the recording session row is the source of truth for live capture.
+        query(
+            "UPDATE notes
+             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             WHERE id = ?
+               AND processing_status NOT IN ('transcribing', 'generating')",
+        )
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
         if let Err(error) = self.add_checkpoint(session_id, "start", None).await {
             eprintln!(
                 "failed to persist start checkpoint for recording session {session_id}: {error}"
@@ -5199,6 +5651,33 @@ pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+async fn insert_browser_approval_event(
+    tx: &mut sqlx::transaction::Transaction<'_, sqlx_sqlite::Sqlite>,
+    approval_id: &str,
+    action_id: &str,
+    session_id: &str,
+    event_kind: &str,
+) -> Result<(), sqlx::error::Error> {
+    query(
+        "INSERT INTO browser_approval_events (
+           id, approval_id, action_id, session_id, event_kind, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(approval_id)
+    .bind(action_id)
+    .bind(session_id)
+    .bind(event_kind)
+    .bind(timestamp())
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn nonnegative_u64(value: i64) -> u64 {
+    value.max(0) as u64
+}
+
 async fn count_profile_rows(
     pool: &SqlitePool,
     table: &str,
@@ -5248,6 +5727,31 @@ fn connector_account_from_row(row: sqlx_sqlite::SqliteRow) -> ConnectorAccountRe
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
+}
+
+fn note_calendar_event_from_row(row: &sqlx_sqlite::SqliteRow) -> Option<NoteCalendarEventDto> {
+    Some(NoteCalendarEventDto {
+        event_id: row
+            .try_get::<Option<String>, _>("calendar_event_id")
+            .ok()
+            .flatten()?,
+        title: row
+            .try_get::<Option<String>, _>("calendar_event_title")
+            .ok()
+            .flatten()?,
+        start_at: row
+            .try_get::<Option<String>, _>("calendar_event_start_at")
+            .ok()
+            .flatten()?,
+        end_at: row
+            .try_get::<Option<String>, _>("calendar_event_end_at")
+            .ok()
+            .flatten()?,
+        account_email: row
+            .try_get::<Option<String>, _>("calendar_account_email")
+            .ok()
+            .flatten()?,
+    })
 }
 
 fn selected_team_from_row(row: sqlx_sqlite::SqliteRow) -> SelectedTeamRecord {
@@ -5330,6 +5834,17 @@ fn folder_from_row(row: sqlx_sqlite::SqliteRow) -> FolderDto {
                 }
             }),
         memory_disabled: row.try_get::<i64, _>("memory_disabled").unwrap_or_default() != 0,
+        local_path: row
+            .try_get::<Option<String>, _>("local_path")
+            .unwrap_or(None)
+            .and_then(|value| {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     }
@@ -5443,8 +5958,8 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 mod tests {
     use super::Repositories;
     use crate::domain::types::{
-        NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobStatus,
-        ProcessingStatus, RecordingSourceMode,
+        NoteCalendarEventDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+        NoteTranscriptionJobStatus, ProcessingStatus, RecordingSourceMode,
     };
     use sqlx::query::query;
     use sqlx::row::Row;
@@ -5463,6 +5978,44 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn calendar_event_titles_only_untouched_notes_and_hydrates_context() {
+        let repos = test_repositories().await;
+        let untouched = repos.create_note("default", None).await.expect("note");
+        let named = repos
+            .create_note("default", None)
+            .await
+            .expect("named note");
+        query("UPDATE notes SET title = 'My own title' WHERE id = ?")
+            .bind(&named.id)
+            .execute(&repos.pool)
+            .await
+            .expect("name note");
+        let event = NoteCalendarEventDto {
+            event_id: "event-1".to_string(),
+            title: "Product review".to_string(),
+            start_at: "2026-07-20T14:00:00Z".to_string(),
+            end_at: "2026-07-20T14:30:00Z".to_string(),
+            account_email: "june@example.com".to_string(),
+        };
+
+        repos
+            .associate_note_with_calendar_event(&untouched.id, "", &event)
+            .await
+            .expect("associate untouched note");
+        repos
+            .associate_note_with_calendar_event(&named.id, "My own title", &event)
+            .await
+            .expect("associate named note");
+
+        let untouched = repos.get_note(&untouched.id).await.expect("untouched");
+        let named = repos.get_note(&named.id).await.expect("named");
+        assert_eq!(untouched.title, "Product review");
+        assert_eq!(untouched.calendar_event, Some(event.clone()));
+        assert_eq!(named.title, "My own title");
+        assert_eq!(named.calendar_event, Some(event));
     }
 
     async fn recording_fixture(
@@ -5513,6 +6066,90 @@ mod tests {
         (note.id, artifact.id)
     }
 
+    #[tokio::test]
+    async fn linked_folder_batch_rolls_back_when_any_insert_fails() {
+        let repos = test_repositories().await;
+        query(
+            "CREATE TRIGGER reject_linked_folder
+             BEFORE INSERT ON folders
+             WHEN NEW.local_path = '/tmp/reject'
+             BEGIN SELECT RAISE(ABORT, 'rejected for test'); END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("create rejection trigger");
+
+        let projects = vec![
+            ("Accepted".to_string(), "/tmp/accepted".to_string()),
+            ("Rejected".to_string(), "/tmp/reject".to_string()),
+        ];
+        assert!(repos
+            .create_linked_folders("default", &projects)
+            .await
+            .is_err());
+        assert!(repos
+            .list_folders("default")
+            .await
+            .expect("list folders after rollback")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn moving_profile_merges_duplicate_linked_folders() {
+        let repos = test_repositories().await;
+        let default_folder = repos
+            .create_linked_folders(
+                "default",
+                &[("Default project".to_string(), "/tmp/shared".to_string())],
+            )
+            .await
+            .expect("create default folder")
+            .remove(0);
+        let source_folder = repos
+            .create_linked_folders(
+                "work",
+                &[("Work project".to_string(), "/tmp/shared".to_string())],
+            )
+            .await
+            .expect("create source folder")
+            .remove(0);
+        let note = repos
+            .create_note("work", Some(source_folder.id.clone()))
+            .await
+            .expect("create source note");
+        let memory = repos
+            .create_memory("work", Some(&source_folder.id), "Remember this", "user")
+            .await
+            .expect("create source memory");
+
+        repos
+            .move_profile_data_to_default("work")
+            .await
+            .expect("move profile data");
+
+        let folders = repos
+            .list_folders("default")
+            .await
+            .expect("list default folders");
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].id, default_folder.id);
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("moved note")
+                .folder_ids,
+            vec![default_folder.id.clone()]
+        );
+        let memory_row = query("SELECT profile, folder_id FROM memories WHERE id = ?")
+            .bind(&memory.id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("moved memory");
+        assert_eq!(memory_row.get::<String, _>("profile"), "default");
+        assert_eq!(memory_row.get::<String, _>("folder_id"), default_folder.id);
+    }
+
     fn transcription_plan(
         span_id: &str,
         artifact_id: &str,
@@ -5534,6 +6171,40 @@ mod tests {
             pipeline_version: "pipeline-v1".to_string(),
             configuration_fingerprint: "config-v1".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn recording_session_preserves_active_note_processing_warning() {
+        let repos = test_repositories().await;
+        let note = repos
+            .create_note("default", None)
+            .await
+            .expect("create note");
+        let warning = "The service is busy right now. Wait a minute, then retry.";
+        repos
+            .set_note_status(
+                &note.id,
+                ProcessingStatus::Transcribing,
+                Some(warning.to_string()),
+            )
+            .await
+            .expect("set active warning");
+
+        repos
+            .create_recording_session(
+                &note.id,
+                "stacked-session",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/stacked.partial.wav",
+                "/tmp/stacked.wav",
+                None,
+            )
+            .await
+            .expect("create stacked recording session");
+
+        let active = repos.get_note(&note.id).await.expect("active note");
+        assert_eq!(active.processing_status, ProcessingStatus::Transcribing);
+        assert_eq!(active.last_error.as_deref(), Some(warning));
     }
 
     async fn transcript_count(repos: &Repositories, session_id: &str) -> i64 {
@@ -6745,6 +7416,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_outcome_ledger_is_queryable_and_content_free() {
+        let repos = test_repositories().await;
+        repos
+            .declare_browser_action(
+                "action-1",
+                "navigate",
+                "attended",
+                "session-1",
+                Some("target_state"),
+            )
+            .await
+            .expect("declare action");
+        repos
+            .park_browser_approval("action-1", "approval-1", "session-1")
+            .await
+            .expect("park approval");
+        repos
+            .record_browser_approval_event("action-1", "approval-1", "session-1", "approved")
+            .await
+            .expect("approve");
+        repos
+            .evaluate_browser_action("action-1", "executed", None, true)
+            .await
+            .expect("evaluate action");
+
+        let counts = repos.browser_outcome_counts().await.expect("counts");
+        assert_eq!(counts.declared, 1);
+        assert_eq!(counts.verified_successes, 1);
+        assert_eq!(counts.executed, 1);
+        assert_eq!(counts.parked, 1);
+        assert_eq!(counts.approved, 1);
+
+        let rows = repos
+            .browser_action_outcomes_for_session("session-1")
+            .await
+            .expect("rows");
+        let serialized = serde_json::to_string(&serde_json::json!({
+            "id": rows[0].id,
+            "operation": rows[0].operation,
+            "transportKind": rows[0].transport_kind,
+            "sessionId": rows[0].session_id,
+            "approvalId": rows[0].approval_id,
+            "outcomeClass": rows[0].outcome_class,
+            "resultKind": rows[0].result_kind,
+            "resultCodeClass": rows[0].result_code_class,
+            "outcomeVerified": rows[0].outcome_verified,
+            "declaredAt": rows[0].declared_at,
+            "evaluatedAt": rows[0].evaluated_at,
+        }))
+        .expect("serialize ledger row");
+        for sentinel in [
+            "https://sentinel.invalid/private",
+            "sentinel element label",
+            "sentinel field value",
+        ] {
+            assert!(!serialized.contains(sentinel));
+        }
+    }
+
+    #[tokio::test]
     async fn connector_account_upsert_list_and_status() {
         let repos = test_repositories().await;
         repos
@@ -7259,6 +7990,15 @@ mod tests {
             )
             .await
             .expect("grant");
+        repos
+            .set_routine_browser_grant(&super::RoutineBrowserGrantRecord {
+                job_id: "job-1".to_string(),
+                server_name: "june_browser_routine_job1".to_string(),
+                token: "browser-token".to_string(),
+                enabled: true,
+            })
+            .await
+            .expect("browser grant");
 
         repos
             .delete_routine_connector_state("job-1")
@@ -7285,12 +8025,56 @@ mod tests {
             .await
             .expect("grants")
             .is_empty());
+        assert!(repos
+            .routine_browser_grant("job-1")
+            .await
+            .expect("browser grant")
+            .is_none());
         // The account itself survives; only the per-job rows are cleared.
         assert!(repos
             .get_connector_account("user@example.com")
             .await
             .expect("account")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn routine_browser_grant_persists_disabled_credentials_for_request_time_refusal() {
+        let repos = test_repositories().await;
+        let enabled = super::RoutineBrowserGrantRecord {
+            job_id: "job-1".to_string(),
+            server_name: "june_browser_routine_job1".to_string(),
+            token: "browser-token".to_string(),
+            enabled: true,
+        };
+        repos
+            .set_routine_browser_grant(&enabled)
+            .await
+            .expect("enable browser");
+
+        let disabled = super::RoutineBrowserGrantRecord {
+            enabled: false,
+            ..enabled.clone()
+        };
+        repos
+            .set_routine_browser_grant(&disabled)
+            .await
+            .expect("disable browser");
+
+        assert_eq!(
+            repos
+                .routine_browser_grant("job-1")
+                .await
+                .expect("get browser grant"),
+            Some(disabled.clone())
+        );
+        assert_eq!(
+            repos
+                .list_routine_browser_grants()
+                .await
+                .expect("list browser grants"),
+            vec![disabled]
+        );
     }
 
     #[tokio::test]

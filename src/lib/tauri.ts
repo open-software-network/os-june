@@ -26,8 +26,16 @@ export type FolderDto = {
   description?: string;
   instructions?: string;
   memoryDisabled: boolean;
+  localPath?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ClaudeProjectCandidate = {
+  name: string;
+  path: string;
+  lastUsedAt?: string;
+  alreadyAdded: boolean;
 };
 
 export type MemoryDto = {
@@ -105,6 +113,7 @@ export type TranscriptDto = {
 };
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
+export const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT = "june://note-calendar-context-updated";
 
 export type LiveTranscriptEventDto = {
   noteId: string;
@@ -429,6 +438,7 @@ export type DownloadNoteAudioResponse = {
 };
 
 export type NoteDto = NoteListItemDto & {
+  calendarEvent?: NoteCalendarEventDto;
   generatedContent?: string;
   editedContent?: string;
   transcript?: TranscriptDto;
@@ -443,6 +453,14 @@ export type NoteDto = NoteListItemDto & {
   retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
+};
+
+export type NoteCalendarEventDto = {
+  eventId: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  accountEmail: string;
 };
 
 export type TranscriptCoverageDto = {
@@ -844,6 +862,14 @@ export async function listFolders() {
   return invoke<FolderDto[]>("list_folders");
 }
 
+export async function discoverClaudeProjects() {
+  return invoke<ClaudeProjectCandidate[]>("discover_claude_projects");
+}
+
+export async function importClaudeProjects(paths: string[]) {
+  return invoke<FolderDto[]>("import_claude_projects", { request: { paths } });
+}
+
 export async function assignNoteToFolder(noteId: string, folderId: string) {
   return invoke<NoteDto>("assign_note_to_folder", {
     request: { noteId, folderId },
@@ -993,6 +1019,8 @@ export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   contextMenuOpen?: boolean;
+  width?: number;
+  height?: number;
 }) {
   return invoke<void>("agent_hud_set_layout", { request: input });
 }
@@ -1187,6 +1215,35 @@ export async function hermesAgentCliAccess() {
  * the next session spawns with matching sandbox grants. */
 export async function setHermesAgentCliAccess(enabled: boolean) {
   return invoke<AgentCliAccessStatus>("set_hermes_agent_cli_access", {
+    request: { enabled },
+  });
+}
+
+export type BrowserAccessStatus = {
+  enabled: boolean;
+};
+
+export type BrowserTransportPolicy = {
+  attendedEnabled: boolean;
+  managedEnabled: boolean;
+};
+
+export const BROWSER_TRANSPORT_POLICY_CHANGED_EVENT = "june://browser-transport-policy-changed";
+
+/** Last successfully fetched remote policy for the two Browser use transports. */
+export async function browserTransportPolicy() {
+  return invoke<BrowserTransportPolicy>("browser_transport_policy");
+}
+
+/** Whether the stored Browser access grant is enabled. */
+export async function hermesBrowserAccess() {
+  return invoke<BrowserAccessStatus>("hermes_browser_access");
+}
+
+/** Persists the Browser access grant and retires both runtime modes so the
+ * next sessions receive matching june_browser config. */
+export async function setHermesBrowserAccess(enabled: boolean) {
+  return invoke<BrowserAccessStatus>("set_hermes_browser_access", {
     request: { enabled },
   });
 }
@@ -2150,6 +2207,48 @@ export async function latestDictationEvent() {
   return parseDictationHelperEvent(payload);
 }
 
+// --- Browser extension pairing (JUN-287) ---
+
+export type ExtensionPairingStatus = {
+  paired: boolean;
+  listenerRunning: boolean;
+  extensionVersion?: string;
+  protocolVersion?: number;
+};
+
+/** Emitted by the extension host whenever pairing state changes. */
+export const EXTENSION_PAIRING_CHANGED_EVENT = "june://extension-pairing-changed";
+
+export async function extensionPairingStatus() {
+  return invoke<ExtensionPairingStatus>("extension_pairing_status");
+}
+
+export type RegisterBrowserExtensionHostResult = {
+  manifestPath: string;
+  shimPath: string;
+};
+
+/** Writes native messaging host manifests for the supported Chromium-family
+ * browsers, pinning the June extension id to the bundled shim. */
+export async function registerBrowserExtensionHost() {
+  return invoke<RegisterBrowserExtensionHostResult>("register_browser_extension_host");
+}
+
+export type RoutineBrowserAccess = {
+  enabled: boolean;
+  serverName?: string | null;
+};
+
+export async function routineBrowserAccessGet(jobId: string) {
+  return invoke<RoutineBrowserAccess>("routine_browser_access_get", { jobId });
+}
+
+export async function routineBrowserAccessSet(input: { jobId: string; enabled: boolean }) {
+  return invoke<RoutineBrowserAccess>("routine_browser_access_set", {
+    request: input,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Private connectors (local mode): Google and Linear
 // ---------------------------------------------------------------------------
@@ -2166,9 +2265,9 @@ export type ConnectorScopeBundle =
   | "linear_read"
   | "linear_write";
 
-export type ConnectorAccountStatus = "connected" | "reconnect_required";
+export type ConnectorAccountStatus = "connected" | "reconnect_required" | "unavailable";
 
-export type ConnectorProvider = "google" | "linear";
+export type ConnectorProvider = "google" | "linear" | "notion";
 
 /** One Linear team: the granularity June's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once
@@ -2181,7 +2280,7 @@ export type LinearTeam = {
 
 /** One connected connector account, as the connectors module reports it.
  * Carries only metadata (identity, granted scopes, health) — never a token.
- * Google rows leave `workspaceName`/`workspaceUrlKey` null and
+ * Google and Notion rows leave `workspaceName`/`workspaceUrlKey` null and
  * `selectedTeams` empty. A Linear row's `accountId` is the Linear workspace
  * id (an opaque UUID, not an email); `email` is the signed-in Linear user's
  * email and may be empty. */
@@ -2190,7 +2289,7 @@ export type ConnectorAccount = {
   provider: ConnectorProvider;
   email: string;
   /** Granted scope identifiers: Google's full auth URLs, Linear's short
-   * scope names ("read", "write") — not bundle names. */
+   * scope names ("read", "write") — not bundle names. Empty for Notion preview. */
   scopes: string[];
   status: ConnectorAccountStatus;
   /** Linear workspace display name; null for Google rows. */
@@ -2242,6 +2341,16 @@ export type PendingConnectorApproval = {
   accountEmail: string;
   summary: string;
   argsPreview: string;
+  requestedAtMs: number;
+};
+
+/** One attended Browser use action parked in the Rust broker. Page content is
+ * limited to the exact origin and element label needed for informed consent. */
+export type PendingBrowserApproval = {
+  approvalId: string;
+  site: string;
+  action: "click" | "fill" | "press";
+  elementLabel: string;
   requestedAtMs: number;
 };
 
@@ -2326,6 +2435,60 @@ export async function connectorsCancelConnect() {
   return invoke<void>("connectors_cancel_connect");
 }
 
+export type NotionConnectionStatus = {
+  connected: boolean;
+  accountId: string;
+  endpoint: string;
+  preview: boolean;
+  selectedResourceScopingVerified: boolean;
+  accessTokenPresent: boolean;
+  refreshTokenPresent: boolean;
+  clientIdPresent: boolean;
+  keychainOnly: boolean;
+};
+
+export type NotionConnection = {
+  accountId: string;
+  endpoint: string;
+  preview: boolean;
+  selectedResourceScopingVerified: boolean;
+};
+
+export type NotionToolSummary = {
+  name: string;
+  description?: string;
+  writeClass: string;
+};
+
+export type NotionToolInventory = {
+  endpoint: string;
+  protocolVersion: string;
+  toolCount: number;
+  tools: NotionToolSummary[];
+  sessionEstablished: boolean;
+  inventoryBytes: number;
+};
+
+export async function notionConnectorStatus() {
+  return invoke<NotionConnectionStatus>("notion_connector_status");
+}
+
+export async function notionConnectorConnect() {
+  return invoke<NotionConnection>("notion_connector_connect");
+}
+
+export async function notionConnectorCancelConnect() {
+  return invoke<void>("notion_connector_cancel_connect");
+}
+
+export async function notionConnectorDisconnect() {
+  return invoke<void>("notion_connector_disconnect");
+}
+
+export async function notionConnectorListTools() {
+  return invoke<NotionToolInventory>("notion_connector_list_tools");
+}
+
 /** Removes a connected account. With `revoke`, also revokes June's grant with
  * the provider before clearing the Keychain item. */
 export async function connectorsDisconnect(input: { accountId: string; revoke: boolean }) {
@@ -2369,6 +2532,29 @@ export async function connectorsSetSelectedTeams(input: {
  * providers: Google registers its four servers, and Linear registers
  * june_linear plus june_linear_actions once the workspace has selected
  * teams. */
+export type ObsidianStatus = {
+  connected: boolean;
+  /** False when a saved vault is currently missing or cannot be validated.
+   * Optional so older desktop responses remain compatible. */
+  available?: boolean;
+  vaultPath?: string;
+  vaultName?: string;
+};
+
+export async function obsidianStatus() {
+  return invoke<ObsidianStatus>("obsidian_status");
+}
+
+export async function obsidianConfigure(vaultPath: string) {
+  return invoke<ObsidianStatus>("obsidian_configure", {
+    request: { vaultPath },
+  });
+}
+
+export async function obsidianDisconnect() {
+  return invoke<ObsidianStatus>("obsidian_disconnect");
+}
+
 export async function connectorsApplyRuntime() {
   return invoke<void>("connectors_apply_runtime");
 }
@@ -2456,6 +2642,22 @@ export async function connectorApprovalsRespondAll(input: {
   return invoke<void>("connector_approvals_respond_all", {
     approve: input.approve,
     approvalIds: input.approvalIds,
+  });
+}
+
+export async function browserApprovalsPending() {
+  return invoke<PendingBrowserApproval[]>("browser_approvals_pending");
+}
+
+export async function browserApprovalRespond(input: {
+  approvalId: string;
+  approve: boolean;
+  allowSite?: boolean;
+}) {
+  return invoke<void>("browser_approval_respond", {
+    approvalId: input.approvalId,
+    approve: input.approve,
+    allowSite: input.allowSite ?? false,
   });
 }
 

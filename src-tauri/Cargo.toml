@@ -6,6 +6,9 @@ authors = ["Open Software Network"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.80.0"
+# Two binaries below; `cargo run` (tauri dev via scripts/cargo-os-june-runner.sh)
+# must keep launching the app.
+default-run = "os-june"
 
 [lib]
 name = "os_june_lib"
@@ -15,9 +18,26 @@ crate-type = ["rlib"]
 name = "os-june"
 path = "src/main.rs"
 
+# The native messaging shim Chrome spawns for the June extension (JUN-287).
+# Not auto-bundled: scripts/bundle-nm-shim.sh copies and signs it into
+# .tauri-helper/ before bundling (see tauri.macos.conf.json).
+[[bin]]
+name = "june-nm-shim"
+path = "src/bin/june_nm_shim.rs"
+required-features = ["helper-binaries"]
+
 [[bin]]
 name = "june-computer-use-driver"
 path = "src/computer_use_driver.rs"
+required-features = ["helper-binaries"]
+
+# Tauri bundles every Cargo binary whose required features appear in its
+# explicit feature list. Keep helper binaries enabled for ordinary Cargo
+# builds and tests via the default feature, while excluding them from Tauri's
+# app executable list so the signed resource copies remain authoritative.
+[features]
+default = ["helper-binaries"]
+helper-binaries = []
 
 [build-dependencies]
 serde_json = "1.0"
@@ -31,6 +51,8 @@ chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 dotenvy = "0.15"
 hound = "3.5"
+# fd plumbing (pipe/dup2) for the managed browser's CDP pipe transport.
+libc = "0.2"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 # Pure-Rust FFT for the echo-rejection similarity gate (GCC-PHAT lag estimation).
@@ -60,10 +82,13 @@ thiserror = "2.0"
 tempfile = "3.14"
 tokio = { version = "1.42", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
+# Untrusted URL parsing for the managed browser's public-web policy.
+url = "2"
 urlencoding = "2"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
 zip = { version = "=4.2.0", default-features = false }
+tauri-plugin-autostart = "2.5.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

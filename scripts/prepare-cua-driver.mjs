@@ -12,6 +12,8 @@ const pinPath = path.join(rootDir, "src-tauri", "cua-driver-pin.json");
 const pin = JSON.parse(readFileSync(pinPath, "utf8"));
 const sbomSource = path.join(rootDir, "src-tauri", "cua-driver-sbom.spdx.json");
 const licenseSource = path.join(rootDir, "src-tauri", "cua-driver-LICENSE.md");
+const iconSource = path.join(rootDir, "src-tauri", "icons", "icon.icns");
+const iconFileName = "June.icns";
 
 const tauriPlatform = process.env.TAURI_ENV_PLATFORM?.trim();
 if (process.platform !== "darwin" || (tauriPlatform && tauriPlatform !== "darwin")) {
@@ -44,6 +46,7 @@ const executableDir = path.join(contentsDir, "MacOS");
 const resourcesDir = path.join(contentsDir, "Resources");
 const executable = path.join(executableDir, pin.executable);
 const stampPath = path.join(resourcesDir, "june-cua-driver-pin.json");
+const iconDestination = path.join(resourcesDir, iconFileName);
 
 if (preparedBundleMatches()) {
   console.error(
@@ -115,6 +118,7 @@ writeFileSync(
   <key>CFBundleDisplayName</key><string>June Computer Use Driver</string>
   <key>CFBundleExecutable</key><string>${pin.executable}</string>
   <key>CFBundleIdentifier</key><string>${bundleIdentifier}</string>
+  <key>CFBundleIconFile</key><string>${iconFileName}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>June Computer Use Driver</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -142,6 +146,7 @@ writeFileSync(
 );
 cpSync(sbomSource, path.join(resourcesDir, "june-cua-driver.spdx.json"));
 cpSync(licenseSource, path.join(resourcesDir, "cua-driver-LICENSE.md"));
+cpSync(iconSource, iconDestination);
 run("/usr/bin/codesign", [
   "--force",
   "--deep",
@@ -231,8 +236,21 @@ function preparedBundleMatches() {
     architectures.every((architecture) => actualArchitectures.has(architecture)) &&
     version.version === pin.version &&
     version.commit === pin.sourceCommit &&
+    bundleIconMatches() &&
     bundleSignatureMatches()
   );
+}
+
+function bundleIconMatches() {
+  if (!existsSync(iconDestination)) return false;
+  if (!readFileSync(iconDestination).equals(readFileSync(iconSource))) return false;
+  const plist = path.join(contentsDir, "Info.plist");
+  const result = spawnSync(
+    "/usr/bin/plutil",
+    ["-extract", "CFBundleIconFile", "raw", "-o", "-", plist],
+    { encoding: "utf8" },
+  );
+  return result.status === 0 && result.stdout.trim() === iconFileName;
 }
 
 function bundleSignatureMatches() {

@@ -127,6 +127,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "june://note-calendar-context-updated",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
@@ -192,6 +193,7 @@ vi.mock("../lib/tauri", () => ({
     veniceApiKeyConfigured: false,
   })),
   hermesAgentCliAccess: vi.fn(async () => ({ enabled: false })),
+  hermesBrowserAccess: vi.fn(async () => ({ enabled: false })),
   listVeniceModels: vi.fn(async () => ({
     mode: "generation",
     modelType: "text",
@@ -399,6 +401,17 @@ describe("notes recording reliability", () => {
     });
   }
 
+  async function startRecordingDirectlyOnFirstNote() {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: "First note Preview" }));
+    await userEvent.click(screen.getByRole("button", { name: "Record" }));
+    await waitFor(() =>
+      expect(mocks.startRecording).toHaveBeenCalledWith("note-1", "microphonePlusSystem"),
+    );
+  }
+
   it("swaps notes to the new profile's list when the active profile switches", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
@@ -416,6 +429,64 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
     expect(await screen.findByText("Work profile note")).toBeInTheDocument();
     expect(screen.queryByText("First note")).toBeNull();
+  });
+
+  it("shows calendar context as soon as the backend matches the open note", async () => {
+    await startRecordingOnFirstNote();
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
+    expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listeners.has("june://note-calendar-context-updated")).toBe(true),
+    );
+
+    await act(async () => {
+      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+        payload: {
+          ...first,
+          title: "Product review",
+          calendarEvent: {
+            eventId: "event-1",
+            title: "Product review",
+            startAt: "2026-07-20T14:00:00Z",
+            endAt: "2026-07-20T14:30:00Z",
+            accountEmail: "june@example.com",
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByText("Google Calendar")).toBeInTheDocument();
+    expect(screen.getByText("june@example.com")).toBeInTheDocument();
+  });
+
+  it("ignores calendar context without profile provenance after a renderer reload", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() =>
+      expect(mocks.listeners.has("june://note-calendar-context-updated")).toBe(true),
+    );
+
+    await act(async () => {
+      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+        payload: {
+          ...first,
+          title: "Stale calendar note",
+          calendarEvent: {
+            eventId: "event-stale",
+            title: "Stale calendar note",
+            startAt: "2026-07-20T14:00:00Z",
+            endAt: "2026-07-20T14:30:00Z",
+            accountEmail: "unknown-profile@example.com",
+          },
+        },
+      });
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    expect(screen.queryByText("Stale calendar note")).toBeNull();
+    expect(screen.queryByText("unknown-profile@example.com")).toBeNull();
+    expect(await screen.findByText("First note")).toBeInTheDocument();
   });
 
   it("retires an old-profile recording note as soon as the recording stops", async () => {
@@ -453,6 +524,25 @@ describe("notes recording reliability", () => {
     expect(notesTab).toHaveAttribute("data-active", "true");
     await userEvent.click(screen.getByRole("button", { name: "Meeting notes" }));
     expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(screen.queryByText("First note")).toBeNull();
+
+    await act(async () => {
+      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+        payload: {
+          ...first,
+          title: "Old profile calendar note",
+          calendarEvent: {
+            eventId: "event-old-profile",
+            title: "Old profile calendar note",
+            startAt: "2026-07-20T14:00:00Z",
+            endAt: "2026-07-20T14:30:00Z",
+            accountEmail: "personal@example.com",
+          },
+        },
+      });
+    });
+
+    expect(screen.queryByText("Old profile calendar note")).toBeNull();
     expect(screen.queryByText("First note")).toBeNull();
   });
 
@@ -1163,6 +1253,95 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     await waitFor(() => expect(screen.getByText(/Transcribing audio/)).toBeInTheDocument());
+  });
+
+  it("clears a stale failure when Stop optimistically starts transcription", async () => {
+    const failedNote = {
+      ...first,
+      processingStatus: "failed" as const,
+      lastError: "Microphone: upstream_provider_failed",
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [failedNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : failedNote,
+    );
+    const pendingFinish = deferred<never>();
+    mocks.finishRecording.mockReturnValue(pendingFinish.promise);
+
+    await startRecordingDirectlyOnFirstNote();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+
+    expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert", { name: "Transcription warning" })).toBeNull();
+    expect(
+      screen.queryByText(/The transcription provider could not process this audio\./),
+    ).toBeNull();
+  });
+
+  it("clears a stale recovery error when Stop optimistically starts transcription", async () => {
+    const recoverableNote = {
+      ...first,
+      processingStatus: "recoverable" as const,
+      lastError: "Recording interrupted. June saved the audio for recovery.",
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [recoverableNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : recoverableNote,
+    );
+    const pendingFinish = deferred<never>();
+    mocks.finishRecording.mockReturnValue(pendingFinish.promise);
+
+    await startRecordingDirectlyOnFirstNote();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+
+    expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert", { name: "Transcription warning" })).toBeNull();
+    expect(screen.queryByText(/Recording interrupted/)).toBeNull();
+  });
+
+  it("preserves an active warning when Stop queues another recording", async () => {
+    const warningNote = {
+      ...first,
+      processingStatus: "transcribing" as const,
+      lastError: "authorization_denied",
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [warningNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : warningNote,
+    );
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...warningNote, queuedRecordings: 1 },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+    });
+
+    await startRecordingDirectlyOnFirstNote();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+        "The service is busy right now. Wait a minute, then retry.",
+      ),
+    );
   });
 
   it("polls newly persisted turns while note transcription remains active", async () => {

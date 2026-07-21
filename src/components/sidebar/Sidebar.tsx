@@ -298,7 +298,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
       },
       {
         id: "connectors",
-        label: "Connectors",
+        label: "Plugins",
         icon: <IconPlugin1 size={16} />,
       },
       {
