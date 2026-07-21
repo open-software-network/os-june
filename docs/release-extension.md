@@ -25,6 +25,12 @@ The architecture and trade-offs are recorded in [ADR 0035](adr/0035-extension-re
   CI packages automatically; the manual bootstrap zip had it stripped by hand.
 - The first manual publish (after review) is still required before API
   publication works.
+- While the bootstrap review is pending, the `production` environment variable
+  `CHROME_WEB_STORE_PENDING_REVIEW` (any non-empty value; ours describes the
+  hold) keeps the pipeline off the store even though the identity variables
+  are set: RCs skip extension submission and stay desktop-only, and promoting
+  an RC that froze extension work fails fast. Delete the variable after the
+  first manual publish to lift the hold.
 - The Google Cloud project, the dedicated service account, and the Workload
   Identity provider do not exist yet; the other two GitHub variables are
   produced by those steps. The pipeline uses keyless GitHub OIDC, so no
