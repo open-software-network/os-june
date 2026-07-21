@@ -442,6 +442,17 @@ export function buildImportPlan(snapshot: SetupSnapshot, live: ImportInventory):
       steps.push(planStep("tool-filter", server.name, "skip", "Tool filters already match."));
       continue;
     }
+    if (!current && !willCreateServers.has(server.name)) {
+      steps.push(
+        planStep(
+          "tool-filter",
+          server.name,
+          "unsupported",
+          "The server must be installed before its tool filters can be restored.",
+        ),
+      );
+      continue;
+    }
     const write: ConfigSegmentWrite =
       server.includeTools.length === 0 && server.excludeTools.length === 0
         ? { op: "delete", segments: ["mcp_servers", server.name, "tools"] }

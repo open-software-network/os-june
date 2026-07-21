@@ -724,6 +724,29 @@ describe("setup snapshot — import driver", () => {
     expect(report.steps.at(-1)?.category).toBe("health-check");
   });
 
+  it("does not write tool filters for an unavailable catalog server", async () => {
+    const harness = makeAdminHarness({ gateway: { gateway_running: true }, mcpCatalog: [] });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.catalogInstalls = [
+      { installName: "memory", enabled: true, requiredEnvKeys: ["MEMORY_KEY"] },
+    ];
+
+    const report = await applySnapshot(harness.client, snapshot, { sleep: instantSleep });
+
+    expect(report.steps.find((step) => step.category === "catalog-install")?.status).toBe(
+      "unsupported",
+    );
+    expect(report.steps.find((step) => step.category === "tool-filter")?.status).toBe(
+      "unsupported",
+    );
+    expect(
+      harness.server.requestLog.some(
+        (entry) => entry.method === "PUT" && entry.path === "/api/config",
+      ),
+    ).toBe(false);
+  });
+
   it("leaves a same-name server with a different definition completely untouched", async () => {
     const harness = makeAdminHarness({
       gateway: { gateway_running: true },
