@@ -228,10 +228,15 @@ impl NoteTranscribeService {
                 return Err(error.into());
             }
         };
-        let idempotency_key = format!(
+        // Keep the legacy zero-credit key byte-identical; only consented,
+        // billable previews get a distinct settlement namespace.
+        let mut idempotency_key = format!(
             "note_transcribe_preview:{}:{}:{}",
             params.user_id.0, params.note_id, audio_digest
         );
+        if params.preview_opted_in {
+            idempotency_key.push_str(":opted");
+        }
         // Consented previews (disclosed setting, user left it on) bill the
         // computed price clamped to the authorized hold cap, exactly like the
         // final path; everything else settles at zero per ADR-0002.
