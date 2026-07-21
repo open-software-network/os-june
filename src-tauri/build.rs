@@ -25,8 +25,39 @@ fn main() {
     prepare_computer_use_driver();
     build_windows_dictation_helper();
     ensure_bundled_hermes_dir();
+    ensure_bundled_extension_dir();
     ensure_nm_shim_placeholder();
     tauri_build::build();
+}
+
+/// `tauri_build::build()` validates resource source directories during every
+/// Cargo invocation, while `extension/dist` is intentionally gitignored.
+/// Ordinary tests and rust-analyzer only need the directory to exist. Tauri
+/// packaging runs `pnpm extension:build` first and replaces its contents with
+/// the fresh extension whose manifest retains the pinned development key.
+fn ensure_bundled_extension_dir() {
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let Some(extension_dir) = manifest_dir
+        .parent()
+        .map(|repo_dir| repo_dir.join("extension").join("dist"))
+    else {
+        return;
+    };
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .parent()
+            .expect("src-tauri should have a repository parent")
+            .join("extension")
+            .join("public")
+            .join("manifest.json")
+            .display()
+    );
+    if let Err(error) = std::fs::create_dir_all(&extension_dir) {
+        println!("cargo:warning=could not create extension resource directory: {error}");
+    }
 }
 
 /// Keep the Tauri resource source present for ordinary `cargo test` and

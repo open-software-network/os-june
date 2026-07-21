@@ -13259,8 +13259,30 @@ button.agent-user-attachment:hover {
   font-size: var(--fs-md);
 }
 
+.settings-meta-unlock-trigger {
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  line-height: inherit;
+  cursor: default;
+}
+
+.settings-meta-unlock-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--sp-px) var(--ring);
+}
+
 .settings-meta-value-mono {
   font-family: var(--font-mono);
+}
+
+.experiments-card .settings-row-error {
+  margin-top: var(--sp-3);
 }
 
 /* Billing card — plan identity stacked over a labeled usage meter,

@@ -37,7 +37,7 @@ import { Dialog } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
-import { BROWSER_USE_ENABLED } from "../../lib/feature-flags";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 
 // Read-only by default: Google gets mail read and calendar read, Linear gets
@@ -329,6 +329,7 @@ export function ConnectorsSection({
   onOpenModels?: () => void;
   onOpenBilling?: () => void;
 }) {
+  const { browserUseEnabled } = useExperimentalFlags();
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<ConnectorProvider | null>(null);
@@ -744,7 +745,7 @@ export function ConnectorsSection({
 
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
-          {BROWSER_USE_ENABLED ? <BrowserUseCapabilityRow /> : null}
+          {browserUseEnabled ? <BrowserUseCapabilityRow /> : null}
           <li className="connector-row">
             <span className="connector-logo" aria-hidden>
               <ConnectorProviderIcon provider="obsidian" />

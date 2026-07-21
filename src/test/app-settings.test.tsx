@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppSettings } from "../components/settings/AppSettings";
 import { accountAvatarStyle } from "../components/account/AccountAvatar";
@@ -17,6 +18,7 @@ import {
 } from "../lib/active-hermes-profile";
 import { DATE_FORMAT_STORAGE_KEY } from "../lib/date-format";
 import { setStoredFontScale } from "../lib/font-scale";
+import { setExperimentalFlags } from "../lib/experimental-flags";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -52,8 +54,11 @@ const mocks = vi.hoisted(() => ({
   osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
   hermesBridgeStatus: vi.fn(),
+  connectorsApplyRuntime: vi.fn(),
+  unpackBundledExtension: vi.fn(),
   osAccountsSetAvatarSeed: vi.fn(),
   toastSuccess: vi.fn(),
+  toastDefault: vi.fn(),
   toastWarning: vi.fn(),
   toastError: vi.fn(),
   hermesBridgeSkills: vi.fn(),
@@ -90,11 +95,11 @@ vi.mock("../lib/updater", () => ({
 }));
 
 vi.mock("../components/ui/Toaster", () => ({
-  toast: {
+  toast: Object.assign(mocks.toastDefault, {
     success: mocks.toastSuccess,
     warning: mocks.toastWarning,
     error: mocks.toastError,
-  },
+  }),
 }));
 
 // Pin a prerelease build so the leave-rc reconcile offer can be exercised; the
@@ -139,6 +144,8 @@ vi.mock("../lib/tauri", () => ({
   osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
+  connectorsApplyRuntime: mocks.connectorsApplyRuntime,
+  unpackBundledExtension: mocks.unpackBundledExtension,
   osAccountsSetAvatarSeed: mocks.osAccountsSetAvatarSeed,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
@@ -164,6 +171,10 @@ vi.mock("../lib/tauri", () => ({
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: mocks.listen,
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: mocks.invoke,
 }));
 
 // Enumerate storage the spec way (length + key(i)) rather than relying on
@@ -327,6 +338,8 @@ describe("AppSettings", () => {
         },
       ],
     });
+    mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
+    mocks.unpackBundledExtension.mockResolvedValue("/tmp/extension-unpacked");
     mocks.setDictationLanguage.mockImplementation(async (language) => ({
       ...baseSettings,
       language,
@@ -627,6 +640,107 @@ describe("AppSettings", () => {
 
   afterEach(() => {
     resetActiveHermesProfileForTests();
+  });
+
+  it("shows the experimental restart action under React Strict Mode", async () => {
+    const user = userEvent.setup();
+    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    render(
+      <StrictMode>
+        <AppSettings
+          account={signedInAccount}
+          accountLoading={false}
+          sourceMode="microphoneOnly"
+          checkingSourceReadiness={false}
+          onAccountChanged={vi.fn()}
+          onAccountRefresh={vi.fn()}
+          onSourceModeChange={vi.fn()}
+          onEnableSystemAudio={vi.fn()}
+          activeTab="about"
+          onTabChange={vi.fn()}
+        />
+      </StrictMode>,
+    );
+
+    const version = await screen.findByRole("button", { name: APP_VERSION });
+    for (let click = 0; click < 7; click += 1) await user.click(version);
+    await screen.findByRole("heading", { name: "Experiments" });
+
+    await user.click(screen.getByRole("switch", { name: "Enable experimental Browser use" }));
+
+    expect(await screen.findByRole("button", { name: "Restart agent" })).toBeInTheDocument();
+    await setExperimentalFlags({ unlocked: false, browser_use: false });
+  });
+
+  it("shows the experimental restart action when Browser use is turned off", async () => {
+    const user = userEvent.setup();
+    await setExperimentalFlags({ unlocked: true, browser_use: true });
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="about"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    const browserUse = await screen.findByRole("switch", {
+      name: "Enable experimental Browser use",
+    });
+    await waitFor(() => expect(mocks.hermesBridgeStatus).toHaveBeenCalled());
+    await user.click(browserUse);
+
+    expect(await screen.findByRole("button", { name: "Restart agent" })).toBeInTheDocument();
+    expect(
+      screen.getByText("Turning it off applies fully after June restarts.", { exact: false }),
+    ).toBeInTheDocument();
+    await setExperimentalFlags({ unlocked: false, browser_use: false });
+  });
+
+  it("locks experimental controls while an operation is in progress", async () => {
+    const user = userEvent.setup();
+    let finishUnpack: ((path: string) => void) | undefined;
+    mocks.unpackBundledExtension.mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          finishUnpack = resolve;
+        }),
+    );
+    await setExperimentalFlags({ unlocked: true, browser_use: false });
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+        activeTab="about"
+        onTabChange={vi.fn()}
+      />,
+    );
+
+    const hide = await screen.findByRole("button", { name: "Hide again" });
+    const browserUse = screen.getByRole("switch", {
+      name: "Enable experimental Browser use",
+    });
+    await user.click(screen.getByRole("button", { name: "Unpack and reveal folder" }));
+
+    expect(hide).toBeDisabled();
+    expect(browserUse).toBeDisabled();
+
+    await act(async () => finishUnpack?.("/tmp/extension-unpacked"));
+    await waitFor(() => expect(hide).toBeEnabled());
+    expect(browserUse).toBeEnabled();
+    await setExperimentalFlags({ unlocked: false, browser_use: false });
   });
 
   it("opens checkout from Upgrade in billing settings", async () => {

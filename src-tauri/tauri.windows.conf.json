@@ -4,6 +4,7 @@
     "targets": ["nsis"],
     "resources": {
       "../.tauri-hermes/hermes": "native/hermes",
+      "../extension/dist": "native/extension",
       "resources/hermes-skills": "native/hermes-skills",
       "native/bin/june-dictation-helper.exe": "native/bin/june-dictation-helper.exe"
     },

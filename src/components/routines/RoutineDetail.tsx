@@ -16,7 +16,7 @@ import {
   triggerScopeWarning,
   type TriggerDraft,
 } from "../../lib/connectors";
-import { BROWSER_USE_ENABLED } from "../../lib/feature-flags";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
   pauseRoutine,
   resumeRoutine,
@@ -119,6 +119,7 @@ export function RoutineDetail({
   onRetryLoad,
   retrying,
 }: RoutineDetailProps) {
+  const { browserUseEnabled } = useExperimentalFlags();
   const [name, setName] = useState(routine.name);
   const [draft, setDraft] = useState<ScheduleDraft>(() => draftFromSchedule(routine.schedule));
   const [prompt, setPrompt] = useState(routine.prompt);
@@ -754,7 +755,7 @@ export function RoutineDetail({
               </h2>
               <div className="settings-card">
                 <RoutineModePicker unrestricted={unrestricted} onChange={setUnrestricted} />
-                {BROWSER_USE_ENABLED ? (
+                {browserUseEnabled ? (
                   <div className="settings-row">
                     <div className="settings-row-info">
                       <div className="settings-row-title">Browser use</div>
