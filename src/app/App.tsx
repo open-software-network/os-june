@@ -376,7 +376,7 @@ function tabMeta(
     case "home":
       return {
         title: "Home",
-        icon: <JuneMark />,
+        icon: null,
       };
     case "meetings": {
       const note = nav.noteId ? notes.find((n) => n.id === nav.noteId) : undefined;

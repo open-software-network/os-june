@@ -10349,6 +10349,12 @@ button.agent-user-attachment:hover {
   display: none;
 }
 
+/* Text-only tabs such as Home keep their identity when the strip is compact;
+ * there is no glyph to fall back to. */
+.tab-strip[data-size="icon"] .tab:not([data-active]):not([data-has-icon]) .tab-label {
+  display: block;
+}
+
 .tab-strip[data-size="icon"] .tab:not([data-active]) {
   justify-content: center;
   gap: 0;
