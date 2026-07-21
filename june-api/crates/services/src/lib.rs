@@ -627,7 +627,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_authorizes_dispatches_asr_and_charges_actual_credits() {
+    async fn note_transcribe_preview_settles_zero_and_identical_final_charges_actual_credits() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let transcriber = Arc::new(RecordingTranscriber::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
@@ -645,25 +645,49 @@ mod tests {
             preview_max_audio_seconds: 30,
         });
 
-        let output = service
-            .transcribe(NoteTranscribeParams {
-                user_id: UserId("usr_123".to_string()),
-                note_id: "live-preview-session-1".to_string(),
-                audio: vec![1, 2, 3],
-                filename: "preview.wav".to_string(),
-                context: Some("Previous words".to_string()),
-                language: Some("en".to_string()),
-                model_id: ModelId("audio-model".to_string()),
-                preview: true,
-                provider_credentials: ProviderCredentials::default(),
-            })
+        let params = NoteTranscribeParams {
+            user_id: UserId("usr_123".to_string()),
+            note_id: "live-preview-session-1".to_string(),
+            audio: vec![1, 2, 3],
+            filename: "preview.wav".to_string(),
+            context: Some("Previous words".to_string()),
+            language: Some("en".to_string()),
+            model_id: ModelId("audio-model".to_string()),
+            preview: true,
+            provider_credentials: ProviderCredentials::default(),
+        };
+        let preview_output = service
+            .transcribe(params.clone())
             .await
             .expect("preview transcription succeeds");
+        let final_output = service
+            .transcribe(NoteTranscribeParams {
+                preview: false,
+                ..params
+            })
+            .await
+            .expect("final transcription succeeds");
 
-        assert_eq!(output.receipt.credits_charged.0, 4);
+        assert_eq!(preview_output.receipt.credits_charged.0, 0);
+        assert_eq!(final_output.receipt.credits_charged.0, 4);
         assert_eq!(
             os_accounts.events(),
             vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 4,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 0,
+                    idempotency_key: concat!(
+                        "note_transcribe_preview:usr_123:live-preview-session-1:",
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                    )
+                    .to_string(),
+                },
                 RecordedCall::Authorize {
                     user_id: "usr_123".to_string(),
                     action: "note_transcribe".to_string(),
@@ -673,15 +697,11 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 4,
-                    idempotency_key: concat!(
-                        "note_transcribe_preview:usr_123:live-preview-session-1:",
-                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
-                    )
-                    .to_string(),
+                    idempotency_key: "note_transcribe:usr_123:live-preview-session-1".to_string(),
                 },
             ]
         );
-        assert_eq!(transcriber.call_count(), 1);
+        assert_eq!(transcriber.call_count(), 2);
         assert_eq!(
             transcriber.last_context(),
             Some("Previous words".to_string())
@@ -719,7 +739,7 @@ mod tests {
                 context: None,
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
-                preview: true,
+                preview: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await
@@ -819,7 +839,7 @@ mod tests {
                 RecordedCall::Authorize {
                     user_id: "usr_123".to_string(),
                     action: "note_transcribe".to_string(),
-                    estimate: 1024,
+                    estimate: 4,
                     hold_ttl: 60,
                 },
                 release_charge_event("note_transcribe"),
@@ -997,7 +1017,7 @@ mod tests {
             vec![RecordedCall::Authorize {
                 user_id: "usr_123".to_string(),
                 action: "note_transcribe".to_string(),
-                estimate: 1024,
+                estimate: 4,
                 hold_ttl: 60,
             }]
         );

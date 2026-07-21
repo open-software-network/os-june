@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
-        log_settled, release_hold, zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldOutcome, ReleaseHoldParams, authorize_or_deny,
+        charge, clamp_to_cap, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -66,6 +66,7 @@ impl NoteTranscribeService {
             user_id = %params.user_id.0,
             note_id = %params.note_id,
             model = %params.model_id.0,
+            preview = params.preview,
             audio_bytes = params.audio.len(),
             audio_format = ?format,
             "note_transcribe: handler entered"
@@ -79,11 +80,15 @@ impl NoteTranscribeService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
-        // The Hold must cover the already-known price: the charge below is
-        // clamped to the Hold's cap, so a flat-only estimate would silently
-        // underbill any audio priced above it. The flat value remains the
-        // floor, keeping short-audio holds exactly as before.
-        let estimate = Credits(actual.0.max(self.flat_estimate_credits));
+        // Preview is not charged, but its Hold remains an abuse gate sized to
+        // the already-known price. Final note transcription keeps the flat
+        // floor, and raises it when the computed price is higher so settlement
+        // cannot be silently clamped below actual usage.
+        let estimate = if params.preview {
+            actual
+        } else {
+            Credits(actual.0.max(self.flat_estimate_credits))
+        };
         let prepared = PreparedNoteTranscription {
             params,
             format,
@@ -175,7 +180,9 @@ impl NoteTranscribeService {
         tracing::info!(
             note_id = %params.note_id,
             model = %params.model_id.0,
-            seconds,
+            preview = true,
+            probed_seconds = seconds,
+            computed_credits = actual.0,
             estimate_credits = estimate.0,
             "note_transcribe: preview request authorized"
         );
@@ -196,16 +203,29 @@ impl NoteTranscribeService {
             Err(error) => {
                 // Failed previews used to settle at the full audio price just
                 // to avoid stranding the hold; release bills nothing instead.
-                release_hold(ReleaseHoldParams {
+                let release_outcome = release_hold(ReleaseHoldParams {
                     os_accounts: self.os_accounts.as_ref(),
                     action: ActionSlug::NoteTranscribe,
                     action_token: authorization.action_token,
                 })
                 .await;
+                if let ReleaseHoldOutcome::Settled(receipt) = release_outcome {
+                    tracing::info!(
+                        user_id = %params.user_id.0,
+                        action = ActionSlug::NoteTranscribe.as_str(),
+                        note_id = %params.note_id,
+                        model = %params.model_id.0,
+                        preview = true,
+                        probed_seconds = seconds,
+                        computed_credits = actual.0,
+                        settled_credits = receipt.credits_charged.0,
+                        idempotent_replay = receipt.idempotent_replay,
+                        "settled failed note transcription"
+                    );
+                }
                 return Err(error.into());
             }
         };
-        let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
         let idempotency_key = format!(
             "note_transcribe_preview:{}:{}:{}",
             params.user_id.0, params.note_id, audio_digest
@@ -213,14 +233,21 @@ impl NoteTranscribeService {
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
-            credits: charge_credits,
+            credits: Credits(0),
             idempotency_key,
         })
         .await?;
         tracing::info!(
+            user_id = %params.user_id.0,
+            action = ActionSlug::NoteTranscribe.as_str(),
             note_id = %params.note_id,
-            credits_charged = receipt.credits_charged.0,
-            "note_transcribe: preview hold settled"
+            model = %params.model_id.0,
+            preview = true,
+            probed_seconds = seconds,
+            computed_credits = actual.0,
+            settled_credits = receipt.credits_charged.0,
+            idempotent_replay = receipt.idempotent_replay,
+            "settled note transcription"
         );
         Ok(NoteTranscribeOutput {
             transcript,
@@ -296,11 +323,17 @@ impl NoteTranscribeService {
             idempotency_key,
         })
         .await?;
-        log_settled(
-            ActionSlug::NoteTranscribe,
-            &params.user_id,
-            &params.model_id.0,
-            &receipt,
+        tracing::info!(
+            user_id = %params.user_id.0,
+            action = ActionSlug::NoteTranscribe.as_str(),
+            note_id = %params.note_id,
+            model = %params.model_id.0,
+            preview = false,
+            probed_seconds = seconds,
+            computed_credits = actual.0,
+            settled_credits = receipt.credits_charged.0,
+            idempotent_replay = receipt.idempotent_replay,
+            "settled note transcription",
         );
         Ok(NoteTranscribeOutput {
             transcript,
