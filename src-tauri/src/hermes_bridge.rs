@@ -9429,6 +9429,7 @@ enum ManagedArchiveEntryKind {
     Directory,
     File,
     IgnoredNodeLauncherSymlink,
+    IgnoredPaxGlobalMetadata,
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -9468,6 +9469,22 @@ fn validate_managed_archive_entry<R: Read>(
         ));
     }
     let entry_type = entry.header().entry_type();
+    state.expanded = state
+        .expanded
+        .checked_add(entry.size())
+        .ok_or_else(|| AppError::new("hermes_runtime_install_failed", "Archive size overflow."))?;
+    if state.expanded > MANAGED_ARCHIVE_MAX_EXPANDED_BYTES {
+        return Err(AppError::new(
+            "hermes_runtime_install_failed",
+            "Managed archive exceeds its expanded size limit.",
+        ));
+    }
+    if entry_type.is_pax_global_extensions() {
+        return Ok((
+            PathBuf::new(),
+            ManagedArchiveEntryKind::IgnoredPaxGlobalMetadata,
+        ));
+    }
     let is_dir = entry_type.is_dir();
     let raw_path = entry.path_bytes();
     let normalized = validated_archive_relative_path(&raw_path, expected_top_level, is_dir)
@@ -9490,16 +9507,6 @@ fn validate_managed_archive_entry<R: Read>(
             "Managed archive contains a link, device, FIFO, or unsupported entry.",
         ));
     };
-    state.expanded = state
-        .expanded
-        .checked_add(entry.size())
-        .ok_or_else(|| AppError::new("hermes_runtime_install_failed", "Archive size overflow."))?;
-    if state.expanded > MANAGED_ARCHIVE_MAX_EXPANDED_BYTES {
-        return Err(AppError::new(
-            "hermes_runtime_install_failed",
-            "Managed archive exceeds its expanded size limit.",
-        ));
-    }
     let identity = normalized.to_string_lossy().to_lowercase();
     if state.paths.contains_key(&identity) {
         return Err(AppError::new(
@@ -9639,7 +9646,8 @@ fn extract_validated_managed_tar_gz_with_policy(
                     AppError::new("hermes_runtime_install_failed", error.to_string())
                 })?;
             }
-            ManagedArchiveEntryKind::IgnoredNodeLauncherSymlink => {}
+            ManagedArchiveEntryKind::IgnoredNodeLauncherSymlink
+            | ManagedArchiveEntryKind::IgnoredPaxGlobalMetadata => {}
         }
     }
     if state.count == 0 {
@@ -10264,6 +10272,20 @@ if [ -z "$python_install" ]; then
   echo "uv did not create the managed CPython 3.11 installation." >&2
   exit 1
 fi
+python_alias=""
+while IFS= read -r candidate; do
+  candidate_target="$(/usr/bin/readlink "$candidate")"
+  if [ "$candidate_target" != "$python_install" ] || [ -n "$python_alias" ]; then
+    echo "uv created an unexpected managed Python alias." >&2
+    exit 1
+  fi
+  python_alias="$candidate"
+done < <(/usr/bin/find "$runtime_dir/python" -mindepth 1 -maxdepth 1 -type l -name 'cpython-3.11-*' -print)
+if [ -z "$python_alias" ]; then
+  echo "uv did not create the expected managed Python alias." >&2
+  exit 1
+fi
+/bin/rm "$python_alias"
 /bin/mv "$python_install" "$runtime_dir/python/current"
 python="$runtime_dir/python/current/bin/python3.11"
 if [ ! -x "$python" ]; then
@@ -17274,12 +17296,17 @@ mod tests {
             let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
             let mut builder = tar::Builder::new(encoder);
             for (name, kind) in entries {
-                let payload: &[u8] = if *kind == b'f' { b"payload" } else { b"" };
+                let payload: &[u8] = match *kind {
+                    b'f' => b"payload",
+                    b'g' => b"52 comment=2bd1977d8fad185c9b4be47884f7e87f1add0ce3\n",
+                    _ => b"",
+                };
                 let mut header = tar::Header::new_gnu();
                 header.set_mode(if *kind == b'd' { 0o755 } else { 0o644 });
                 header.set_size(payload.len() as u64);
                 header.set_entry_type(match *kind {
                     b'd' => tar::EntryType::Directory,
+                    b'g' => tar::EntryType::XGlobalHeader,
                     b'l' => tar::EntryType::Symlink,
                     b'p' => tar::EntryType::Fifo,
                     _ => tar::EntryType::Regular,
@@ -18312,6 +18339,26 @@ esac
 
         #[cfg(unix)]
         #[test]
+        fn managed_archive_extraction_ignores_pax_global_metadata() {
+            let temp = tempfile::tempdir().expect("PAX global metadata fixture");
+            let archive = VerifiedArchive {
+                bytes: Arc::from(managed_archive_fixture(&[
+                    ("pax_global_header", b'g'),
+                    ("root", b'd'),
+                    ("root/uv", b'f'),
+                ])),
+            };
+
+            let extracted =
+                extract_validated_managed_tar_gz(&archive, &temp.path().join("out"), "root")
+                    .expect("PAX global metadata must not block authenticated payload extraction");
+
+            assert_eq!(fs::read(extracted.join("uv")).expect("uv file"), b"payload");
+            assert!(!temp.path().join("out/pax_global_header").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
         fn managed_archive_urls_are_fixed_direct_https_endpoints() {
             assert_eq!(
                 HERMES_SOURCE_TARBALL_URL,
@@ -18513,6 +18560,93 @@ esac
                 .collect();
             assert_eq!(envs.get("PATH"), Some(&Some("/usr/bin:/bin".to_string())));
             assert_eq!(command.get_program(), "/bin/bash");
+        }
+
+        #[cfg(unix)]
+        fn run_managed_installer_alias_fixture(
+            root: &Path,
+            mismatched_alias_target: Option<&Path>,
+        ) -> std::process::ExitStatus {
+            use std::os::unix::fs::PermissionsExt;
+
+            let runtime = root.join("runtime");
+            let install = runtime.join("hermes-agent");
+            let hermes_home = root.join("hermes-home");
+            let uv = root.join("verified-uv");
+            let patch = root.join("patch.py");
+            fs::create_dir_all(install.join("hermes_cli/web_dist")).expect("web dist");
+            fs::write(
+                install.join("hermes_cli/web_dist/index.html"),
+                "<script src=\"/app.js\"></script>",
+            )
+            .expect("dashboard index");
+            fs::write(&patch, "# fixture patch\n").expect("patch fixture");
+            fs::write(
+                &uv,
+                r#"#!/bin/bash
+set -euo pipefail
+if [ "${1:-}" = "python" ] && [ "${2:-}" = "install" ]; then
+  root="${UV_PYTHON_INSTALL_DIR:?}"
+  actual="$root/cpython-3.11.15-macos-aarch64-none"
+  /bin/mkdir -p "$actual/bin" "$actual/lib/python3.11/site-packages"
+  printf '#!/bin/sh\nexit 0\n' > "$actual/bin/python3.11"
+  /bin/chmod 755 "$actual/bin/python3.11"
+  target="${JUNE_TEST_UV_ALIAS_TARGET:-$actual}"
+  /bin/ln -s "$target" "$root/cpython-3.11-macos-aarch64-none"
+  exit 0
+fi
+if [ "${1:-}" = "sync" ]; then
+  /bin/mkdir -p "$UV_PROJECT_ENVIRONMENT/lib/python3.11/site-packages"
+  /bin/mkdir -p "$UV_PROJECT_ENVIRONMENT/bin"
+  exit 0
+fi
+exit 64
+"#,
+            )
+            .expect("uv fixture");
+            let mut permissions = fs::metadata(&uv).expect("uv metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&uv, permissions).expect("executable uv fixture");
+
+            let mut command =
+                managed_installer_command(&runtime, &install, &hermes_home, &uv, &patch);
+            if let Some(target) = mismatched_alias_target {
+                command.env("JUNE_TEST_UV_ALIAS_TARGET", target);
+            }
+            command
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("run managed installer fixture")
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_installer_removes_verified_uv_python_alias_before_relocation() {
+            let temp = tempfile::tempdir().expect("temp runtime");
+            let status = run_managed_installer_alias_fixture(temp.path(), None);
+            let python = temp.path().join("runtime/python");
+
+            assert!(status.success());
+            assert!(python.join("current/bin/python3.11").is_file());
+            assert!(fs::symlink_metadata(python.join("cpython-3.11-macos-aarch64-none")).is_err());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn managed_installer_rejects_mismatched_uv_python_alias_without_deleting_it() {
+            let temp = tempfile::tempdir().expect("temp runtime");
+            let unrelated = temp
+                .path()
+                .join("outside/cpython-3.11.15-macos-aarch64-none");
+            let status = run_managed_installer_alias_fixture(temp.path(), Some(&unrelated));
+            let alias = temp
+                .path()
+                .join("runtime/python/cpython-3.11-macos-aarch64-none");
+
+            assert!(!status.success());
+            assert!(fs::symlink_metadata(&alias).is_ok());
+            assert!(!temp.path().join("runtime/python/current").exists());
         }
 
         #[test]
