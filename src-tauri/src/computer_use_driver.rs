@@ -826,6 +826,12 @@ fn pointer_notification(
                     pid,
                     element_index,
                 )?;
+                // element_window_local_xy captures internally, so this is a
+                // second capture per element action. Deliberate: the AX
+                // coordinates must be paired with dimensions from the same
+                // moment - reusing the cached get_window_state size could
+                // pair stale dimensions with fresh coordinates and offset
+                // the cursor overlay after a window resize.
                 let png = platform_macos::capture::screenshot_window_bytes(
                     u32::try_from(window_id).ok()?,
                 )
@@ -861,7 +867,12 @@ fn pointer_notification(
                     "to_y": json_number(arguments.get("to_y"))?,
                     "screenshot_width": size.width,
                     "screenshot_height": size.height,
-                    "duration_ms": 500,
+                    // Mirror the pinned driver's `duration_ms` argument
+                    // (default 500) instead of assuming the default.
+                    "duration_ms": arguments
+                        .get("duration_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(500),
                 }
             }))
         }
@@ -1160,6 +1171,22 @@ mod tests {
         assert_eq!(notification["params"]["from_x"], 100.0);
         assert_eq!(notification["params"]["to_y"], 700.0);
         assert_eq!(notification["params"]["duration_ms"], 500);
+
+        let explicit = pointer_notification(
+            "drag",
+            &json!({
+                "pid": 42,
+                "window_id": 84,
+                "from_x": 100,
+                "from_y": 200,
+                "to_x": 600,
+                "to_y": 700,
+                "duration_ms": 1200,
+            }),
+            &sizes,
+        )
+        .expect("drag notification with explicit duration");
+        assert_eq!(explicit["params"]["duration_ms"], 1200);
     }
 
     #[test]

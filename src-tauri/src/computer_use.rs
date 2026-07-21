@@ -1871,7 +1871,12 @@ async fn handle_action(
         "focus_app" => focus_app(app, state, &arguments, epoch, task_generation).await,
         "click" | "double_click" | "right_click" | "drag" | "scroll" | "type" | "key"
         | "set_value" => mutate(app, state, &action, &arguments, epoch, task_generation).await,
-        _ => unreachable!("supported Computer use action validated above"),
+        // The allowlist above should make this unreachable; if the two ever
+        // drift, fail the action instead of panicking an attended task.
+        _ => Err(AppError::new(
+            "computer_use_action_invalid",
+            "Computer use received an unknown action.",
+        )),
     }
 }
 
@@ -2065,22 +2070,14 @@ async fn windows(
                     .get("z_index")
                     .and_then(Value::as_i64)
                     .unwrap_or(i64::MAX),
-                x: window
-                    .pointer("/bounds/x")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                y: window
-                    .pointer("/bounds/y")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                width: window
-                    .pointer("/bounds/width")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                height: window
-                    .pointer("/bounds/height")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
+                // Bounds are guaranteed by the pinned helper schema; treat a
+                // missing field as drift and drop the window (fail closed, as
+                // with identity above) rather than defaulting the origin to
+                // (0, 0) and silently misplacing the cursor overlay.
+                x: window.pointer("/bounds/x").and_then(Value::as_f64)?,
+                y: window.pointer("/bounds/y").and_then(Value::as_f64)?,
+                width: window.pointer("/bounds/width").and_then(Value::as_f64)?,
+                height: window.pointer("/bounds/height").and_then(Value::as_f64)?,
                 is_on_screen: window
                     .get("is_on_screen")
                     .and_then(Value::as_bool)
