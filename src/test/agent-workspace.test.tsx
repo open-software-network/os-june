@@ -4078,7 +4078,64 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
-    expect(await screen.findByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
+    const picker = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(
+      within(picker).queryByRole("textbox", { name: "Search models" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stages /model from the slash menu, then opens the model palette on Enter", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/");
+    await user.click(await screen.findByRole("option", { name: "Model" }));
+
+    expect(composer).toHaveTextContent("/model");
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(within(palette).getByRole("combobox", { name: "Search models" })).toHaveFocus();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("searches and keyboard-selects a model when bare /model is submitted", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    expect(search).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("switch", { name: "Only show private models" }),
+    ).not.toBeChecked();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
+
+    await user.type(search, "GLM 5.2");
+    expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
+    );
+    expect(composer).toHaveFocus();
   });
 
   it("queues /model in an existing chat and applies it before the next message", async () => {
@@ -11732,9 +11789,9 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("prefers the suggested vision model over the first eligible one (JUN-165)", async () => {
+  it("prefers the private vision fallback over the first eligible one (JUN-165)", async () => {
     // The banner action is a one-tap fix, and with several image-capable models
-    // it prefers a curated suggested pick (Kimi K2.6) rather than the
+    // it prefers a known private vision pick (Kimi K2.6) rather than the
     // alphabetically-first vision model — otherwise it lands on an arbitrary
     // model like Claude Fable 5. Qwen VL is listed first here to prove the
     // preference overrides list order; no non-vision-scoped picker is opened.

@@ -32,22 +32,24 @@ export function autoPillDesignation(costQuality: number | undefined): string | u
 /**
  * Curated picks for the model picker's "Suggested" tab — the handful of
  * models we actually recommend, weighed on benchmark performance, price,
- * tool use, and privacy (June's agent needs tool calling, and June's pitch
- * is zero-retention privacy, so every text pick here is a "private" catalog
- * model that supports tools).
+ * tool use, and privacy. June's agent needs tool calling, so every text pick
+ * supports tools; each model's live catalog privacy badge remains the source
+ * of truth for whether it is private or anonymized.
  *
  * Auto lives in the picker's pinned toggle section, not in these rows: the
  * suggested rows stay concrete models so they double as the landing spots
  * when Auto is switched off (the first pick is the toggle-off fallback).
  *
- * Curation snapshot (June 2026), from the live Venice catalog plus public
+ * Curation snapshot (July 2026), from the live Venice catalog plus public
  * benchmarks (SWE-bench agentic coding, Artificial Analysis intelligence
  * index):
  * - GLM 5.2: latest GLM flagship and June's default text model, with
  *   reasoning effort controls, tool use, 200K context, $1.75/$5.50 per 1M
  *   tokens.
- * - Kimi K2.6: leads the open-weights intelligence rankings, built for long
- *   agentic tool runs, 256K context, $0.85/$4.66.
+ * - Kimi K3: newest Kimi flagship, built for multimodal reasoning and long
+ *   agentic tool runs, 1M context, $3.75/$18.75 in anonymous mode.
+ * - Kimi K2.6: private Kimi alternative with multimodal reasoning, tool use,
+ *   and 256K context, $0.85/$4.66 with zero data retention.
  * - GLM 5.1: previous GLM flagship, top-tier agentic coding and tool use
  *   among open models, 200K context, $1.75/$5.50 per 1M tokens.
  * - Parakeet: fast, accurate everyday dictation at the lowest price tier.
@@ -68,9 +70,14 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
         "Default pick: latest GLM flagship with strong reasoning, tool use, structured output, and zero data retention.",
     },
     {
+      id: "kimi-k3",
+      reason:
+        "Newest Kimi flagship: multimodal reasoning, tool use, and a 1M-token context window in anonymous mode.",
+    },
+    {
       id: "kimi-k2-6",
       reason:
-        "Best alternate: leads independent intelligence rankings and excels at long tool-driven tasks, with zero data retention.",
+        "Private Kimi option: multimodal reasoning, tool use, and a 256K-token context window with zero data retention.",
     },
     {
       id: "zai-org-glm-5-1",
@@ -153,10 +160,10 @@ export function preferredVisionFallbackModel(models: VeniceModelDto[]): VeniceMo
   const eligible = models.filter(
     (model) => modelSupportsImageInput(model) && modelSupportsTools(model),
   );
-  const suggested = PREFERRED_VISION_FALLBACK_IDS.map((id) =>
+  const preferred = PREFERRED_VISION_FALLBACK_IDS.map((id) =>
     eligible.find((model) => model.id === id),
   ).find((model): model is VeniceModelDto => model !== undefined);
-  return suggested ?? eligible[0];
+  return preferred ?? eligible[0];
 }
 
 /** The curated picks that are actually present in the live catalog, in

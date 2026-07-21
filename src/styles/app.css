@@ -6728,6 +6728,74 @@ button.agent-user-attachment:hover {
   padding: var(--sp-1);
 }
 
+/* Bare `/model` opens one command-result palette rather than the toolbar
+ * picker's two-layer drill-in. It aligns to the composer box, leads with
+ * search, keeps curated suggestions first, and continues into the remaining
+ * catalog below a divider. */
+.agent-composer-model-command-palette {
+  gap: 0;
+  width: auto;
+  max-height: min(50vh, var(--model-command-available-height, 50vh));
+  padding: var(--sp-1);
+  overflow: hidden;
+}
+
+.agent-composer-model-command-list-wrap {
+  min-height: 0;
+  overflow: hidden;
+  contain: paint;
+  --scroll-fade-size: var(--sp-4);
+}
+
+.agent-composer-model-command-list {
+  max-height: calc(
+    min(50vh, var(--model-command-available-height, 50vh)) -
+    (2 * var(--control-md)) -
+    var(--sp-2)
+  );
+  padding: var(--sp-1) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.agent-composer-model-command-section {
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.agent-composer-model-command-section-label {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.2;
+}
+
+.agent-composer-model-command-divider {
+  height: var(--sp-px);
+  margin: var(--sp-1) var(--sp-2);
+  border: 0;
+  background: color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+.agent-composer-model-command-row .agent-composer-model-row-copy {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.agent-composer-model-command-description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-composer-model-search {
   display: flex;
   align-items: center;

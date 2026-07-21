@@ -309,7 +309,11 @@ import {
   modelOptions,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
+import {
+  ModelCommandPalette,
+  ModelPickerPopover,
+  type ModelPickerFlyout,
+} from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
@@ -2825,6 +2829,7 @@ export function AgentWorkspace({
   // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
   const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
+  const [composerModelCommandPalette, setComposerModelCommandPalette] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -3350,7 +3355,7 @@ export function AgentWorkspace({
   }, [activeGenerationModelId, generationModelOptions]);
   const generationPrivacyBadge = generationModel ? modelPrivacyBadge(generationModel) : undefined;
   // The model the image-attach banner offers to switch to: a vision + tool
-  // capable model, preferring a curated suggested pick (Kimi K2.6) over the
+  // capable model, preferring a known private vision pick (Kimi K2.6) over the
   // alphabetically-first vision model. See preferredVisionFallbackModel.
   const preferredVisionModel = useMemo(
     () => preferredVisionFallbackModel(generationModels),
@@ -3748,6 +3753,11 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (composerModelCommandPalette) {
+          setComposerModelOpen(false);
+          composerEditorRef.current?.focus();
+          return;
+        }
         // Escape peels one layer at a time: the all-models panel first,
         // then the popover itself.
         if (composerModelFlyout?.kind === "all") {
@@ -3764,13 +3774,13 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [composerModelOpen, composerModelFlyout]);
+  }, [composerModelCommandPalette, composerModelOpen, composerModelFlyout]);
 
   useLayoutEffect(() => {
-    if (composerModelOpen && composerModelFlyout?.kind === "all") {
+    if (composerModelOpen && (composerModelCommandPalette || composerModelFlyout?.kind === "all")) {
       composerModelSearchRef.current?.focus();
     }
-  }, [composerModelFlyout, composerModelOpen]);
+  }, [composerModelCommandPalette, composerModelFlyout, composerModelOpen]);
 
   // The popover lives outside the composer box (whose overflow:hidden would
   // clip it), so CSS alone can only anchor it to the box, leaving the whole
@@ -3778,15 +3788,34 @@ export function AgentWorkspace({
   // open and pin the menu right above it instead.
   useLayoutEffect(() => {
     if (!composerModelOpen) return;
-    const trigger = composerModelTriggerRef.current;
-    const popover = composerModelPopoverRef.current;
-    const form = popover?.parentElement;
-    if (!trigger || !popover || !form) return;
-    const triggerRect = trigger.getBoundingClientRect();
-    const formRect = form.getBoundingClientRect();
-    popover.style.right = `${formRect.right - triggerRect.right}px`;
-    popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
-  }, [composerModelOpen]);
+    function positionPopover() {
+      const trigger = composerModelTriggerRef.current;
+      const popover = composerModelPopoverRef.current;
+      const form = popover?.parentElement;
+      if (!trigger || !popover || !form) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const formRect = form.getBoundingClientRect();
+      if (composerModelCommandPalette) {
+        const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
+        const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
+        popover.style.left = `${composerRect.left - formRect.left}px`;
+        popover.style.right = `${formRect.right - composerRect.right}px`;
+        popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
+        popover.style.setProperty(
+          "--model-command-available-height",
+          `${Math.max(96, composerRect.top - 12)}px`,
+        );
+        return;
+      }
+      popover.style.left = "";
+      popover.style.removeProperty("--model-command-available-height");
+      popover.style.right = `${formRect.right - triggerRect.right}px`;
+      popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
+    }
+    positionPopover();
+    window.addEventListener("resize", positionPopover);
+    return () => window.removeEventListener("resize", positionPopover);
+  }, [composerModelCommandPalette, composerModelOpen]);
 
   useLayoutEffect(() => {
     if (sandboxMenuOpen) {
@@ -4185,9 +4214,10 @@ export function AgentWorkspace({
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
-  function openComposerModelPicker() {
+  function openComposerModelPicker(commandPalette = false) {
     setModelSearch("");
     setComposerModelFlyout(null);
+    setComposerModelCommandPalette(commandPalette);
     setComposerModelOpen(true);
     setSandboxMenuOpen(false);
     void loadGenerationModel();
@@ -5769,7 +5799,7 @@ export function AgentWorkspace({
     const query = argument.trim();
     if (!query) {
       clearComposerCommandDraft(commandText);
-      openComposerModelPicker();
+      openComposerModelPicker(true);
       return;
     }
 
@@ -10725,7 +10755,7 @@ export function AgentWorkspace({
         {textActionsDisabledReason
           ? (renderFundingNotice?.({
               ...textFundingContext,
-              onSelectVeniceModel: openComposerModelPicker,
+              onSelectVeniceModel: () => openComposerModelPicker(),
             }) ?? (
               <p className="agent-composer-notice" role="status">
                 {textActionsDisabledReason}
@@ -11206,23 +11236,38 @@ export function AgentWorkspace({
           />
         ) : null}
         {composerModelOpen ? (
-          <ModelPickerPopover
-            mode="generation"
-            flyout={composerModelFlyout}
-            model={generationModel}
-            options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-            costQuality={activeGenerationCostQuality}
-            veniceApiKeyConfigured={veniceApiKeyConfigured}
-            search={modelSearch}
-            popoverRef={composerModelPopoverRef}
-            searchRef={composerModelSearchRef}
-            onFlyoutChange={setComposerModelFlyout}
-            onSearchChange={setModelSearch}
-            onSelect={(modelId, costQuality, options) =>
-              void handleSelectGenerationModel(modelId, costQuality, options)
-            }
-            onCostQualityChange={handleCostQualityChange}
-          />
+          composerModelCommandPalette ? (
+            <ModelCommandPalette
+              model={generationModel}
+              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+              search={modelSearch}
+              popoverRef={composerModelPopoverRef}
+              searchRef={composerModelSearchRef}
+              onSearchChange={setModelSearch}
+              onSelect={(modelId) => {
+                void handleSelectGenerationModel(modelId);
+                composerEditorRef.current?.focus();
+              }}
+            />
+          ) : (
+            <ModelPickerPopover
+              mode="generation"
+              flyout={composerModelFlyout}
+              model={generationModel}
+              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+              costQuality={activeGenerationCostQuality}
+              veniceApiKeyConfigured={veniceApiKeyConfigured}
+              search={modelSearch}
+              popoverRef={composerModelPopoverRef}
+              searchRef={composerModelSearchRef}
+              onFlyoutChange={setComposerModelFlyout}
+              onSearchChange={setModelSearch}
+              onSelect={(modelId, costQuality, options) =>
+                void handleSelectGenerationModel(modelId, costQuality, options)
+              }
+              onCostQualityChange={handleCostQualityChange}
+            />
+          )
         ) : null}
         {heroMode && sandboxMenuOpen ? (
           <div
