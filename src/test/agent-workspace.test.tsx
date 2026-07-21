@@ -4085,6 +4085,218 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows the current thinking level on the model menu's Effort row", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Effort Medium" }));
+
+    const submenu = await screen.findByRole("group", {
+      name: "Thinking level",
+    });
+    expect(within(submenu).getByRole("option", { name: "Instant" })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+    expect(within(submenu).getByRole("option", { name: "Medium" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(within(submenu).getByRole("option", { name: "Hard" })).toHaveAttribute(
+      "aria-selected",
+      "false",
+    );
+    expect(
+      within(submenu).getByText("Higher effort consumes usage limits faster."),
+    ).toBeInTheDocument();
+  });
+
+  it("retunes the open session live when the thinking level changes", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    // Send once so the session has a live runtime the retune can target.
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "first message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "first message",
+      }),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Effort Medium" }));
+    const submenu = await screen.findByRole("group", {
+      name: "Thinking level",
+    });
+    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+
+    // The live runtime retunes through config.set (the same surface as the
+    // TUI's /reasoning), keyed by the runtime session id.
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+        session_id: "runtime-session-1",
+        key: "reasoning",
+        value: "high",
+      }),
+    );
+  });
+
+  it("pins the picked thinking level on the next new session", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Effort Medium" }));
+    const submenu = await screen.findByRole("group", {
+      name: "Thinking level",
+    });
+    await user.click(within(submenu).getByRole("option", { name: "Instant" }));
+
+    window.dispatchEvent(
+      new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+        detail: { prompt: "write a project update" },
+      }),
+    );
+
+    // New sessions pin the chosen level as a per-session override on
+    // session.create, never a profile config write.
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+        title: "Summarize Current Page",
+        cols: 96,
+        model: "__june_remote_generation__:zai-org-glm-5-2",
+        reasoning_effort: "minimal",
+      }),
+    );
+  });
+
+  it("labels a chat with the effort its runtime reports, not the draft", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    // Send once so the session's listener is attached to its runtime.
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "first message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "first message",
+      }),
+    );
+
+    // No local pick was ever made; the runtime reports this session's own
+    // effort (e.g. it was retuned before a relaunch, and the in-memory record
+    // is gone). The composer must show the session's actual level.
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "session.info",
+          session_id: "runtime-session-1",
+          payload: { reasoning_effort: "high" },
+        });
+      }
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    expect(within(dialog).getByRole("button", { name: "Effort Hard" })).toBeInTheDocument();
+  });
+
+  it("keeps another chat on its own level after retuning the current chat", async () => {
+    const secondSession = {
+      ...existingSession,
+      id: "session-2",
+      title: "Second session",
+      preview: "Second preview",
+      last_active: "2026-06-04T12:05:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([existingSession, secondSession]);
+    // session-2 runs at Medium (its creation pin, persisted). Retuning
+    // session-1 must not relabel it with the new global draft.
+    window.localStorage.setItem(
+      "june.agent.sessionThinkingLevels",
+      JSON.stringify({ "session-2": "medium" }),
+    );
+    const user = userEvent.setup();
+
+    const view = render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Effort Medium" }));
+    const submenu = await screen.findByRole("group", {
+      name: "Thinking level",
+    });
+    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+
+    view.rerender(<AgentWorkspace initialSession={secondSession} />);
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog2 = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    expect(within(dialog2).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+    expect(within(dialog2).queryByRole("button", { name: "Effort Hard" })).not.toBeInTheDocument();
+  });
+
+  it("re-asserts a persisted session level on the first send after a reload", async () => {
+    // The session was retuned to Hard before the app restarted: its record
+    // survived (localStorage) but the in-memory ack cache did not, so the
+    // fresh runtime must be retuned before the next prompt runs.
+    window.localStorage.setItem(
+      "june.agent.sessionThinkingLevels",
+      JSON.stringify({ "session-1": "hard" }),
+    );
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    expect(within(dialog).getByRole("button", { name: "Effort Hard" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "hello again");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+        session_id: "runtime-session-1",
+        key: "reasoning",
+        value: "high",
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "hello again",
+    });
+  });
+
   it("stages /model from the slash menu, then opens the model palette on Enter", async () => {
     const user = userEvent.setup();
 
@@ -7583,6 +7795,7 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
       title: "Summarize Current Page",
       cols: 96,
+      reasoning_effort: "medium",
     });
     expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
       sessionId: "session-2",
@@ -9533,6 +9746,7 @@ describe("AgentWorkspace", () => {
         title: "Summarize Current Page",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
+        reasoning_effort: "medium",
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {

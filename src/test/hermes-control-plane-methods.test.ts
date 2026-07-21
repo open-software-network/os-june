@@ -73,6 +73,21 @@ describe("createHermesMethods — typed command wrappers", () => {
     });
   });
 
+  it("setSessionReasoningEffort sets the reasoning key through config.set", async () => {
+    const { request, methods } = setup();
+    await methods.setSessionReasoningEffort({
+      sessionId: "runtime-1",
+      effort: "high",
+    });
+    // The session id is the RUNTIME id (the gateway's live-session map key),
+    // and the effort passes through untouched: callers own the level mapping.
+    expect(request).toHaveBeenCalledWith("config.set", {
+      session_id: "runtime-1",
+      key: "reasoning",
+      value: "high",
+    });
+  });
+
   it("respondToSudo forwards approval + mode to sudo.respond", async () => {
     const { request, methods } = setup();
     await methods.respondToSudo({

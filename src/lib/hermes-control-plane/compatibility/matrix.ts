@@ -149,8 +149,8 @@ const methods: HermesCompatibilitySection = {
   "config.set": {
     status: "supported",
     rationale:
-      "Before the next user message, AgentWorkspace applies a queued session model with session-scoped config.set; Hermes rejects the mutation with 4009 while the agent run is active.",
-    since: PIN,
+      "Session-scoped config.set applies a queued session model before the next user message and retunes a live session's reasoning effort from the composer model menu's Effort submenu (setSessionReasoningEffort); covered by hermes-control-plane-methods and agent-workspace tests.",
+    since: CURRENT_PIN,
   },
   "command.dispatch": {
     status: "planned",
@@ -359,9 +359,9 @@ const features: HermesCompatibilitySection = {
     since: CURRENT_PIN,
   },
   reasoningEffortControls: {
-    status: "planned",
+    status: "supported",
     rationale:
-      "Hermes 0.19 adds max and ultra reasoning effort plus per-model overrides, but June's model picker does not expose those tiers.",
+      "The composer model menu's Effort submenu exposes three reasoning levels (Instant, Medium, Hard) mapped onto Hermes effort tiers: new sessions pin reasoning_effort on session.create and a live session retunes via config.set (setSessionReasoningEffort); max/ultra tiers and per-model overrides stay unexposed.",
     since: CURRENT_PIN,
   },
 };

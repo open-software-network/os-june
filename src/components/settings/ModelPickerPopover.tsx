@@ -18,6 +18,11 @@ import {
   suggestedModelsForMode,
 } from "../../lib/suggested-models";
 import type { ProviderModelMode, VeniceModelDto } from "../../lib/tauri";
+import {
+  thinkingOptionForLevel,
+  THINKING_LEVELS,
+  type ThinkingLevel,
+} from "../../lib/thinking-level";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { rectFromElement, type HoverBridgeRect } from "../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../ui/useModelHoverBridge";
@@ -30,6 +35,7 @@ export type ModelPickerFlyout =
   | { kind: "model"; id: string }
   | { kind: "all" }
   | { kind: "auto" }
+  | { kind: "effort" }
   | null;
 
 // The automatic router's cost-to-quality preference, shared by this popover's
@@ -103,6 +109,8 @@ export function ModelPickerPopover({
   onSearchChange,
   onSelect,
   onCostQualityChange,
+  thinkingLevel,
+  onSelectThinking,
 }: {
   mode: ProviderModelMode;
   flyout: ModelPickerFlyout;
@@ -131,6 +139,11 @@ export function ModelPickerPopover({
    * swaps the selection to/from the Auto router, plus the Preference
    * drill-in writing through this callback while Auto is on. */
   onCostQualityChange?: (value: number) => void;
+  /** Enables the Effort drill-in row (agent surfaces): shows the session's
+   * thinking level and opens the three-level submenu. Omitted on surfaces
+   * without reasoning effort control (image/video pickers). */
+  thinkingLevel?: ThinkingLevel;
+  onSelectThinking?: (level: ThinkingLevel) => void;
 }) {
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -660,6 +673,45 @@ export function ModelPickerPopover({
         <span className="agent-composer-model-row-name">All models</span>
         <IconChevronRightSmall size={16} aria-hidden className="agent-composer-model-row-chevron" />
       </button>
+      {thinkingLevel && onSelectThinking ? (
+        <button
+          type="button"
+          className="agent-composer-model-row"
+          aria-haspopup="true"
+          aria-expanded={flyout?.kind === "effort"}
+          data-active={flyout?.kind === "effort" || undefined}
+          onMouseEnter={() => {
+            if (modelBridge.isActive()) {
+              return;
+            }
+            const open = () => onFlyoutChange({ kind: "effort" });
+            if (flyout) {
+              cancelHoverIntent();
+              open();
+            } else {
+              hoverIntent(open);
+            }
+          }}
+          onFocus={() => {
+            cancelHoverIntent();
+            onFlyoutChange({ kind: "effort" });
+          }}
+          onClick={() => {
+            cancelHoverIntent();
+            onFlyoutChange({ kind: "effort" });
+          }}
+        >
+          <span className="agent-composer-model-row-name">Effort</span>
+          <span className="agent-composer-model-row-value">
+            {thinkingOptionForLevel(thinkingLevel).label}
+          </span>
+          <IconChevronRightSmall
+            size={16}
+            aria-hidden
+            className="agent-composer-model-row-chevron"
+          />
+        </button>
+      ) : null}
       {detail && portalTarget
         ? createPortal(
             // Portaled to the body and fixed-positioned so no scroll container
@@ -739,6 +791,44 @@ export function ModelPickerPopover({
                 ) : null}
               </button>
             ))}
+          </div>
+        </div>
+      ) : null}
+      {thinkingLevel && onSelectThinking && flyout?.kind === "effort" ? (
+        <div
+          ref={flyoutRef}
+          className="agent-composer-model-flyout agent-composer-model-effort-panel"
+          role="group"
+          aria-label="Thinking level"
+          onPointerLeave={() => {
+            cancelHoverIntent();
+            setBridging(false);
+          }}
+        >
+          <div className="agent-composer-model-surface">
+            <p className="agent-composer-model-title">Effort</p>
+            <div className="agent-composer-model-menu" role="listbox" aria-label="Thinking level">
+              {THINKING_LEVELS.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className="agent-composer-model-row"
+                  role="option"
+                  aria-selected={option.id === thinkingLevel}
+                  onClick={() => onSelectThinking(option.id)}
+                >
+                  <span className="agent-composer-model-row-name">{option.label}</span>
+                  {option.id === thinkingLevel ? (
+                    <IconCheckmark2Small
+                      size={14}
+                      aria-hidden
+                      className="agent-composer-model-row-check"
+                    />
+                  ) : null}
+                </button>
+              ))}
+            </div>
+            <p className="agent-composer-model-note">Higher effort consumes usage limits faster.</p>
           </div>
         </div>
       ) : null}
