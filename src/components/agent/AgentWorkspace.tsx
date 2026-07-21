@@ -12011,6 +12011,7 @@ export function AgentWorkspace({
       ) : null}
       {browserApprovalCards}
       <AgentThinking
+        variant={homeMode ? "typing-bubble" : "label"}
         visible={
           Boolean(homeOptimisticTurn) ||
           (Boolean(transcriptSessionId) &&

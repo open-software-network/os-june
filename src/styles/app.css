@@ -2299,36 +2299,68 @@ input:focus-visible,
   display: none;
 }
 
-.agent-timeline[data-home="true"] .agent-thinking {
-  width: fit-content;
-  min-height: var(--control-lg);
-  padding: var(--sp-2) var(--sp-4);
+.agent-thinking[data-variant="typing-bubble"] {
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: calc(var(--sp-12) + var(--sp-5));
+  height: var(--control-xl);
+  max-width: none;
+  justify-content: center;
+  gap: 0;
+  padding: 0 var(--sp-5);
+  overflow: hidden;
+  border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-sm);
   background: var(--muted);
-  color: var(--foreground);
-  font-size: var(--fs-md);
+  color: var(--spinner-neutral);
   line-height: 1;
 }
 
-.agent-timeline[data-home="true"] .agent-thinking-label {
-  position: relative;
+.agent-typing-dots {
   display: inline-flex;
-  width: var(--sp-8);
-  overflow: hidden;
-  color: transparent;
-  white-space: nowrap;
-  -webkit-text-fill-color: transparent;
-  animation: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
 }
 
-.agent-timeline[data-home="true"] .agent-thinking-label::after {
-  content: "•••";
-  position: absolute;
-  inset: 0;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  letter-spacing: var(--sp-px);
-  -webkit-text-fill-color: var(--foreground);
+.agent-typing-dots > span {
+  width: var(--sp-2);
+  height: var(--sp-2);
+  border-radius: var(--r-pill);
+  background: currentColor;
+  opacity: 0.42;
+  animation: agent-typing-dot calc(var(--t-slow) * 5) var(--ease-in-out) infinite;
+}
+
+.agent-typing-dots > span:nth-child(2) {
+  animation-delay: var(--t-fast);
+}
+
+.agent-typing-dots > span:nth-child(3) {
+  animation-delay: calc(var(--t-fast) * 2);
+}
+
+@keyframes agent-typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.42;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(calc(-1 * var(--sp-px)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-typing-dots > span {
+    opacity: 0.72;
+    transform: none;
+    animation: none;
+  }
 }
 
 .agent-timeline[data-home="true"] .agent-turn-actions {
