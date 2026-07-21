@@ -131,6 +131,20 @@ describe("TabBar", () => {
     expect(rule).not.toContain("--titlebar-controls-nudge");
   });
 
+  it("lets the Windows sidebar toggle ride with the first tab", () => {
+    const rule = cssRuleFor('.app-shell[data-platform="windows"] .chrome-sidebar-toggle');
+
+    // Anchored to the animated sidebar edge so the toggle sits next to the
+    // first tab when expanded and floors at --sp-3 when collapsed. The shared
+    // --sidebar-w-current clock keeps it in lockstep with the grid + tab strip.
+    expect(rule).toContain("var(--sidebar-w-current)");
+    expect(rule).toContain("var(--control-md)");
+    expect(rule).toContain("var(--sp-3)");
+    // macOS keeps the fixed calc(var(--titlebar-controls-end) + …) left; the
+    // Windows override must not reintroduce that token on the toggle.
+    expect(rule).not.toContain("--titlebar-controls-end");
+  });
+
   it("keeps the tab strip full-width when the files panel is open", () => {
     const panelRule = cssRuleFor(
       '.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel',

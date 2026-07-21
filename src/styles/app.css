@@ -8319,6 +8319,22 @@ button.agent-user-attachment:hover {
   --titlebar-controls-gap: var(--sp-3);
 }
 
+/* Windows-only: let the sidebar toggle ride with the first tab instead of
+ * staying pinned at the left edge. Anchored to the animated sidebar edge
+ * (minus the toggle width and a gap) so it sits immediately to the left of
+ * the first tab in expanded state, and floors at --sp-3 when collapsed.
+ * Because --sidebar-w-current is a registered @property whose transition
+ * lives on .app-shell, the toggle tweens on the same clock as the grid and
+ * the tab strip — no drift mid-snap, and it jumps in sync on button presses
+ * (data-sidebar-transition="none"). macOS is untouched: it keeps the fixed
+ * 80px left from the rule above. */
+.app-shell[data-platform="windows"] .chrome-sidebar-toggle {
+  left: max(
+    var(--sp-3),
+    calc(var(--sidebar-w-current) - var(--control-md) - var(--sp-3))
+  );
+}
+
 .chrome-sidebar-toggle {
   position: fixed;
   /* Vertically centered in the titlebar, then nudged down a hair to sit level
