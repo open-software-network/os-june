@@ -753,9 +753,13 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.juneHomeChat).toHaveBeenCalledWith([
-        { role: "user", content: "Please research a weekend in Oaxaca" },
-      ]),
+      expect(mocks.juneHomeChat).toHaveBeenCalledWith(
+        [{ role: "user", content: "Please research a weekend in Oaxaca" }],
+        expect.objectContaining({
+          model: "__june_auto_generation__:0",
+          reasoningEffort: "minimal",
+        }),
+      ),
     );
 
     expect(
@@ -763,11 +767,15 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/full Oaxaca itinerary/)).toBeNull();
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Oaxaca weekend",
-        cols: 96,
-        model: "__june_auto_generation__:0",
-      }),
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.create",
+        expect.objectContaining({
+          title: "Oaxaca weekend",
+          cols: 96,
+          model: "__june_remote_generation__:zai-org-glm-5-2",
+          reasoning_effort: "medium",
+        }),
+      ),
     );
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -783,7 +791,7 @@ describe("AgentWorkspace", () => {
       JSON.parse(window.localStorage.getItem("june.home.taskHandoffs.v1") ?? "{}")["session-1"],
     ).toEqual([
       expect.objectContaining({
-        sessionId: "session-2",
+        storedSessionId: "session-2",
         status: "running",
       }),
     ]);
@@ -898,7 +906,7 @@ describe("AgentWorkspace", () => {
         expect.objectContaining({
           title: "Home",
           model: "__june_auto_generation__:0",
-          reasoning_effort: "low",
+          reasoning_effort: "minimal",
           fast: true,
         }),
       ),
@@ -972,11 +980,18 @@ describe("AgentWorkspace", () => {
     resolveFirst?.({ content: "Pretty good — thanks for asking." });
     expect(await screen.findByText("Pretty good — thanks for asking.")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.juneHomeChat).toHaveBeenNthCalledWith(2, [
-        { role: "user", content: "How was your day?" },
-        { role: "assistant", content: "Pretty good — thanks for asking." },
-        { role: "user", content: "Also, what should we do tomorrow?" },
-      ]),
+      expect(mocks.juneHomeChat).toHaveBeenNthCalledWith(
+        2,
+        [
+          { role: "user", content: "How was your day?" },
+          { role: "assistant", content: "Pretty good — thanks for asking." },
+          { role: "user", content: "Also, what should we do tomorrow?" },
+        ],
+        expect.objectContaining({
+          model: "__june_auto_generation__:0",
+          reasoningEffort: "minimal",
+        }),
+      ),
     );
 
     resolveSecond?.({ content: "Let’s make a simple plan tomorrow morning." });
@@ -1004,6 +1019,36 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
     expect(await screen.findByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
+  });
+
+  it("honors explicit Home model and effort choices on the lightweight path", async () => {
+    window.localStorage.setItem(
+      `june.home.conversationalDefaultMigrated.v2:${existingSession.id}`,
+      "1",
+    );
+    stageSessionModelSelection(existingSession.id, { modelId: "zai-org-glm-5-2" });
+    const user = userEvent.setup();
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+    await user.click(within(dialog).getByRole("button", { name: "Effort Instant" }));
+    const submenu = await screen.findByRole("group", { name: "Thinking level" });
+    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Think this through");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.juneHomeChat).toHaveBeenCalledWith(
+        [{ role: "user", content: "Think this through" }],
+        {
+          model: "__june_remote_generation__:zai-org-glm-5-2",
+          reasoningEffort: "high",
+        },
+      ),
+    );
   });
 
   it("reuses activity projection set identities when membership is unchanged", () => {
@@ -13213,11 +13258,18 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "Second message");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(await screen.findByText("Second reply.")).toBeInTheDocument();
-    expect(mocks.juneHomeChat).toHaveBeenNthCalledWith(2, [
-      { role: "user", content: "First message" },
-      { role: "assistant", content: "First reply." },
-      { role: "user", content: "Second message" },
-    ]);
+    expect(mocks.juneHomeChat).toHaveBeenNthCalledWith(
+      2,
+      [
+        { role: "user", content: "First message" },
+        { role: "assistant", content: "First reply." },
+        { role: "user", content: "Second message" },
+      ],
+      expect.objectContaining({
+        model: "__june_auto_generation__:0",
+        reasoningEffort: "minimal",
+      }),
+    );
     expect(
       mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.resume"),
     ).toHaveLength(0);

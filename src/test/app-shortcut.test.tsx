@@ -15,7 +15,6 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
-import { JUNE_HOME_CONTEXT_OPEN } from "../lib/june-home";
 import { hermesActivityStore } from "../lib/hermes-activity-store";
 import type {
   AccountStatus,
@@ -114,6 +113,7 @@ const mocks = vi.hoisted(() => ({
   startHermesBridge: vi.fn(),
   startPeriodicJuneUpdateChecks: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
+  juneHomeChat: vi.fn(),
   gatewayRequest: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
 }));
@@ -259,6 +259,7 @@ vi.mock("../lib/tauri", () => ({
   })),
   startHermesBridge: mocks.startHermesBridge,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
+  juneHomeChat: mocks.juneHomeChat,
 }));
 
 const now = "2026-05-19T10:00:00Z";
@@ -409,6 +410,7 @@ describe("App shortcuts", () => {
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.juneHomeChat.mockResolvedValue({ content: "I’m here." });
     mocks.listSessionProfiles.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
@@ -499,13 +501,18 @@ describe("App shortcuts", () => {
         expect.objectContaining({ title: "Home" }),
       ),
     );
-    await waitFor(() => {
-      const promptCall = mocks.gatewayRequest.mock.calls.find(
-        ([method]) => method === "prompt.submit",
-      );
-      expect(promptCall?.[1]?.text).toContain(JUNE_HOME_CONTEXT_OPEN);
-      expect(promptCall?.[1]?.text).toContain("Help me plan the afternoon");
-    });
+    await waitFor(() =>
+      expect(mocks.juneHomeChat).toHaveBeenCalledWith(
+        [{ role: "user", content: "Help me plan the afternoon" }],
+        expect.objectContaining({
+          model: "__june_auto_generation__:0",
+          reasoningEffort: "minimal",
+        }),
+      ),
+    );
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
     await waitFor(() =>
       expect(JSON.parse(localStorage.getItem("june:home:session-ids:v1") ?? "{}")).toEqual({
         default: "session-2",

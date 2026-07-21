@@ -1101,11 +1101,21 @@ export type JuneHomeChatResponse = {
   };
 };
 
+export type JuneHomeChatOptions = {
+  /** June's tagged per-run model id captured at the Send boundary. */
+  model?: string;
+  /** OpenAI-compatible reasoning effort captured at the Send boundary. */
+  reasoningEffort?: string;
+};
+
 /** Lightweight private conversation path for Home. Concrete work is returned
  * as a structured handoff and continues in a normal full-agent session. */
-export async function juneHomeChat(messages: JuneHomeChatMessage[]) {
+export async function juneHomeChat(
+  messages: JuneHomeChatMessage[],
+  options: JuneHomeChatOptions = {},
+) {
   return invoke<JuneHomeChatResponse>("june_home_chat", {
-    request: { messages },
+    request: { messages, ...options },
   });
 }
 

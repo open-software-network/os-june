@@ -52,13 +52,13 @@ function writeJson(key: string, value: unknown): void {
 }
 
 export function readJuneHomeSessionId(profile: string): string | undefined {
-  const sessionId = readStringMap(HOME_SESSION_IDS_STORAGE_KEY)[profile]?.trim();
-  return sessionId || undefined;
+  const storedSessionId = readStringMap(HOME_SESSION_IDS_STORAGE_KEY)[profile]?.trim();
+  return storedSessionId || undefined;
 }
 
-export function writeJuneHomeSessionId(profile: string, sessionId: string): void {
+export function writeJuneHomeSessionId(profile: string, storedSessionId: string): void {
   const normalizedProfile = profile.trim() || "default";
-  const normalizedSessionId = sessionId.trim();
+  const normalizedSessionId = storedSessionId.trim();
   if (!normalizedSessionId) return;
   writeJson(HOME_SESSION_IDS_STORAGE_KEY, {
     ...readStringMap(HOME_SESSION_IDS_STORAGE_KEY),
@@ -66,9 +66,9 @@ export function writeJuneHomeSessionId(profile: string, sessionId: string): void
   });
 }
 
-export function forgetJuneHomeSessionId(profile: string, expectedSessionId?: string): void {
+export function forgetJuneHomeSessionId(profile: string, expectedStoredSessionId?: string): void {
   const records = readStringMap(HOME_SESSION_IDS_STORAGE_KEY);
-  if (expectedSessionId && records[profile] !== expectedSessionId) return;
+  if (expectedStoredSessionId && records[profile] !== expectedStoredSessionId) return;
   if (!(profile in records)) return;
   delete records[profile];
   writeJson(HOME_SESSION_IDS_STORAGE_KEY, records);
@@ -108,7 +108,10 @@ export function stripJuneHomeContextFromPreview(preview: string | undefined): st
 
 export function isJuneHomeStartTaskTool(name: string | undefined): boolean {
   if (!name) return false;
-  const normalized = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
   return normalized === "start_task" || normalized.endsWith("june_home_start_task");
 }
 

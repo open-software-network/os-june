@@ -3,7 +3,7 @@ import appCss from "../styles/app.css?raw";
 
 function cssRuleFor(selector: string) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{`).exec(appCss);
   if (!match) throw new Error(`Missing CSS rule for ${selector}`);
   const openIndex = match.index + match[0].length - 1;
   let depth = 0;

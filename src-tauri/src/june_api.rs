@@ -1593,6 +1593,8 @@ pub struct JuneHomeChatMessage {
 #[serde(rename_all = "camelCase")]
 pub struct JuneHomeChatRequest {
     messages: Vec<JuneHomeChatMessage>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1651,6 +1653,20 @@ fn june_home_chat_task(message: &serde_json::Value) -> Option<JuneHomeChatTask> 
 pub async fn june_home_chat(
     request: JuneHomeChatRequest,
 ) -> Result<JuneHomeChatResponse, AppError> {
+    let model = request
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("__june_auto_generation__:0")
+        .to_string();
+    let reasoning_effort = request
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("minimal")
+        .to_string();
     let mut messages = vec![serde_json::json!({
         "role": "system",
         "content": JUNE_HOME_CHAT_SYSTEM_PROMPT,
@@ -1681,7 +1697,8 @@ pub async fn june_home_chat(
     messages.extend(retained);
 
     let response = proxy_agent_chat_completions(serde_json::json!({
-        "model": "__june_auto_generation__:0",
+        "model": model,
+        "reasoning_effort": reasoning_effort,
         "messages": messages,
         "tools": [{
             "type": "function",

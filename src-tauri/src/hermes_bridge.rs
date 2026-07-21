@@ -10376,7 +10376,7 @@ async fn refresh_june_routed_session_model_routes(
     let current_base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
 
     for row in rows {
-        let session_id: String = row.try_get("id").unwrap_or_default();
+        let stored_session_id: String = row.try_get("id").unwrap_or_default();
         let stored_model: String = row.try_get("model").unwrap_or_default();
         let raw_config: Option<String> = row.try_get("model_config").unwrap_or(None);
         let mut model_config = raw_config
@@ -10413,7 +10413,7 @@ async fn refresh_june_routed_session_model_routes(
         );
         sqlx::query::query("UPDATE sessions SET model_config = ? WHERE id = ?")
             .bind(model_config.to_string())
-            .bind(session_id)
+            .bind(stored_session_id)
             .execute(&pool)
             .await
             .map_err(|error| {
@@ -25447,6 +25447,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -25488,6 +25489,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -25541,6 +25543,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -25702,6 +25705,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -25743,6 +25747,7 @@ mcp_servers:
         };
         let configs_read = BuiltinMcpConfigs {
             context: Some(&context),
+            home: None,
             web: None,
             obsidian: None,
             image: None,
@@ -25772,6 +25777,7 @@ mcp_servers:
         // The actions server is NEVER in the cron ambient toolset.
         let configs_write = BuiltinMcpConfigs {
             context: Some(&context),
+            home: None,
             web: None,
             obsidian: None,
             image: None,

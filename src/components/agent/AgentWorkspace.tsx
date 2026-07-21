@@ -1876,20 +1876,61 @@ type AgentWorkspaceProps = {
 type HomeTaskHandoff = JuneHomeTaskRequest & {
   id: string;
   status: "starting" | "running" | "failed";
-  sessionId?: string;
+  storedSessionId?: string;
   error?: string;
 };
 
 const HOME_TASK_HANDOFFS_STORAGE_KEY = "june.home.taskHandoffs.v1";
 const HOME_DIRECT_TURNS_STORAGE_KEY = "june.home.directTurns.v1";
+const homeDirectChatChains = new Map<string, Promise<void>>();
+const homeDirectPendingCounts = new Map<string, number>();
+const homeDirectQueueListeners = new Set<() => void>();
 
-function readPersistedHomeDirectTurns(homeSessionId: string | undefined): AgentChatTurn[] {
-  if (!homeSessionId) return [];
+function emitHomeDirectQueueChange() {
+  for (const listener of homeDirectQueueListeners) listener();
+}
+
+function subscribeHomeDirectQueue(listener: () => void) {
+  homeDirectQueueListeners.add(listener);
+  return () => {
+    homeDirectQueueListeners.delete(listener);
+  };
+}
+
+function homeDirectPendingCount(homeStoredSessionId: string | undefined) {
+  return homeStoredSessionId ? (homeDirectPendingCounts.get(homeStoredSessionId) ?? 0) : 0;
+}
+
+function enqueueHomeDirectChat(homeStoredSessionId: string, operation: () => Promise<void>) {
+  homeDirectPendingCounts.set(homeStoredSessionId, homeDirectPendingCount(homeStoredSessionId) + 1);
+  emitHomeDirectQueueChange();
+  const previous = homeDirectChatChains.get(homeStoredSessionId) ?? Promise.resolve();
+  const request = previous.catch(() => undefined).then(operation);
+  const settled = request.finally(() => {
+    const nextPending = Math.max(0, homeDirectPendingCount(homeStoredSessionId) - 1);
+    if (nextPending) homeDirectPendingCounts.set(homeStoredSessionId, nextPending);
+    else homeDirectPendingCounts.delete(homeStoredSessionId);
+    emitHomeDirectQueueChange();
+  });
+  const tail = settled.catch(() => undefined);
+  homeDirectChatChains.set(homeStoredSessionId, tail);
+  void tail
+    .finally(() => {
+      if (homeDirectChatChains.get(homeStoredSessionId) === tail) {
+        homeDirectChatChains.delete(homeStoredSessionId);
+      }
+    })
+    .catch(() => undefined);
+  return settled;
+}
+
+function readPersistedHomeDirectTurns(homeStoredSessionId: string | undefined): AgentChatTurn[] {
+  if (!homeStoredSessionId) return [];
   try {
     const records = JSON.parse(
       window.localStorage.getItem(HOME_DIRECT_TURNS_STORAGE_KEY) ?? "{}",
     ) as Record<string, unknown>;
-    const turns = records[homeSessionId];
+    const turns = records[homeStoredSessionId];
     if (!Array.isArray(turns)) return [];
     return turns.filter(
       (value): value is AgentChatTurn =>
@@ -1906,15 +1947,16 @@ function readPersistedHomeDirectTurns(homeSessionId: string | undefined): AgentC
   }
 }
 
-function persistHomeDirectTurns(homeSessionId: string, turns: AgentChatTurn[]) {
+function persistHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTurn[]) {
   try {
     const records = JSON.parse(
       window.localStorage.getItem(HOME_DIRECT_TURNS_STORAGE_KEY) ?? "{}",
     ) as Record<string, unknown>;
     window.localStorage.setItem(
       HOME_DIRECT_TURNS_STORAGE_KEY,
-      JSON.stringify({ ...records, [homeSessionId]: turns.slice(-80) }),
+      JSON.stringify({ ...records, [homeStoredSessionId]: turns.slice(-80) }),
     );
+    emitHomeDirectQueueChange();
   } catch {
     // Home remains usable when browser storage is unavailable.
   }
@@ -1946,14 +1988,23 @@ function juneHomeChatMessagesFromTurns(turns: AgentChatTurn[]) {
     .slice(-20);
 }
 
-function readPersistedHomeTaskHandoffs(homeSessionId: string | undefined): HomeTaskHandoff[] {
-  if (!homeSessionId) return [];
+function readPersistedHomeTaskHandoffs(homeStoredSessionId: string | undefined): HomeTaskHandoff[] {
+  if (!homeStoredSessionId) return [];
   try {
     const records = JSON.parse(
       window.localStorage.getItem(HOME_TASK_HANDOFFS_STORAGE_KEY) ?? "{}",
     ) as Record<string, unknown>;
-    const handoffs = records[homeSessionId];
-    if (!Array.isArray(handoffs)) return [];
+    const rawHandoffs = records[homeStoredSessionId];
+    if (!Array.isArray(rawHandoffs)) return [];
+    const handoffs = rawHandoffs.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const legacy = value as Record<string, unknown>;
+      if (typeof legacy.sessionId !== "string" || typeof legacy.storedSessionId === "string") {
+        return value;
+      }
+      const { sessionId: legacySessionId, ...rest } = legacy;
+      return { ...rest, storedSessionId: legacySessionId };
+    });
     return handoffs.filter(
       (value): value is HomeTaskHandoff =>
         Boolean(value) &&
@@ -1964,24 +2015,24 @@ function readPersistedHomeTaskHandoffs(homeSessionId: string | undefined): HomeT
         ((value as HomeTaskHandoff).status === "running" ||
           (value as HomeTaskHandoff).status === "failed") &&
         ((value as HomeTaskHandoff).status === "failed" ||
-          typeof (value as HomeTaskHandoff).sessionId === "string"),
+          typeof (value as HomeTaskHandoff).storedSessionId === "string"),
     );
   } catch {
     return [];
   }
 }
 
-function persistHomeTaskHandoffs(homeSessionId: string, handoffs: HomeTaskHandoff[]) {
+function persistHomeTaskHandoffs(homeStoredSessionId: string, handoffs: HomeTaskHandoff[]) {
   try {
     const records = JSON.parse(
       window.localStorage.getItem(HOME_TASK_HANDOFFS_STORAGE_KEY) ?? "{}",
     ) as Record<string, unknown>;
     const durable = handoffs
-      .filter((handoff) => handoff.status === "failed" || Boolean(handoff.sessionId))
+      .filter((handoff) => handoff.status === "failed" || Boolean(handoff.storedSessionId))
       .slice(-24);
     window.localStorage.setItem(
       HOME_TASK_HANDOFFS_STORAGE_KEY,
-      JSON.stringify({ ...records, [homeSessionId]: durable }),
+      JSON.stringify({ ...records, [homeStoredSessionId]: durable }),
     );
   } catch {
     // Home remains usable when browser storage is unavailable.
@@ -2562,6 +2613,9 @@ export function resetAgentSessionContinuity() {
     for (const item of items) item.dispatchReservation?.cancel();
   }
   sessionContinuity = null;
+  homeDirectChatChains.clear();
+  homeDirectPendingCounts.clear();
+  emitHomeDirectQueueChange();
   agentComposerDrafts.clear();
   removeStoredNewSessionDraft();
   for (const record of hermesActivityStore.getRecords()) {
@@ -2657,9 +2711,6 @@ export function AgentWorkspace({
     homeMode ? readPersistedHomeDirectTurns(initialSessionId) : [],
   );
   const homeDirectTurnsRef = useRef(homeDirectTurns);
-  const [homeDirectPendingCount, setHomeDirectPendingCount] = useState(0);
-  const homeDirectPendingCountRef = useRef(0);
-  const homeDirectChatChainRef = useRef<Promise<void>>(Promise.resolve());
   const [homeOptimisticTurn, setHomeOptimisticTurn] = useState<AgentChatTurn | null>(null);
   const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
@@ -2777,6 +2828,11 @@ export function AgentWorkspace({
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<string | undefined>(
     initialSessionId,
   );
+  const homeDirectPendingCountValue = useSyncExternalStore(
+    subscribeHomeDirectQueue,
+    () => homeDirectPendingCount(selectedHermesSessionId),
+    () => 0,
+  );
   const selectedHermesSessionIdRef = useRef<string | undefined>(selectedHermesSessionId);
   useEffect(() => {
     homeDirectTurnsRef.current = homeDirectTurns;
@@ -2786,6 +2842,14 @@ export function AgentWorkspace({
     const restored = readPersistedHomeDirectTurns(selectedHermesSessionId);
     homeDirectTurnsRef.current = restored;
     setHomeDirectTurns(restored);
+  }, [homeMode, selectedHermesSessionId]);
+  useEffect(() => {
+    if (!homeMode || !selectedHermesSessionId) return;
+    return subscribeHomeDirectQueue(() => {
+      const restored = readPersistedHomeDirectTurns(selectedHermesSessionId);
+      homeDirectTurnsRef.current = restored;
+      setHomeDirectTurns(restored);
+    });
   }, [homeMode, selectedHermesSessionId]);
   useEffect(() => {
     if (
@@ -3158,6 +3222,7 @@ export function AgentWorkspace({
   // the runtime or the level actually changed (config.set writes the profile
   // config each call, so it is not something to fire blindly on every send).
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => loadThinkingLevel());
+  const [homeDraftThinkingLevel, setHomeDraftThinkingLevel] = useState<ThinkingLevel>("instant");
   const thinkingLevelRef = useRef(thinkingLevel);
   const sessionThinkingEffortsRef = useRef<Record<string, ThinkingLevel> | null>(null);
   // Lazy one-time load of the persisted per-session efforts (a ref, not
@@ -3711,8 +3776,11 @@ export function AgentWorkspace({
   // made while it was open, or what its runtime last reported) — never the
   // draft, which would label every chat with whatever level was picked last
   // anywhere. The draft only shows for a new session, where it applies.
-  const composerThinkingLevel: ThinkingLevel =
-    selectedHermesSessionId && !newSessionMode
+  const composerThinkingLevel: ThinkingLevel = homeMode
+    ? selectedHermesSessionId && !newSessionMode
+      ? (sessionThinkingEfforts()[selectedHermesSessionId] ?? "instant")
+      : homeDraftThinkingLevel
+    : selectedHermesSessionId && !newSessionMode
       ? (sessionThinkingEfforts()[selectedHermesSessionId] ?? thinkingLevel)
       : thinkingLevel;
   // The model the image-attach banner offers to switch to: a vision + tool
@@ -5390,10 +5458,23 @@ export function AgentWorkspace({
   // runtime is not up right now — see submitHermesSession, which only
   // re-sends when the current runtime is not already known to be at it.
   async function handleSelectThinkingLevel(level: ThinkingLevel) {
+    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+    if (homeMode) {
+      if (!sessionId || isProvisionalHermesSessionId(sessionId)) {
+        setHomeDraftThinkingLevel(level);
+        return;
+      }
+      sessionThinkingEffortsRef.current = {
+        ...sessionThinkingEfforts(),
+        [sessionId]: level,
+      };
+      rememberSessionThinkingLevel(sessionId, level);
+      await applyThinkingLevelToSession(sessionId, level);
+      return;
+    }
     thinkingLevelRef.current = level;
     setThinkingLevel(level);
     saveThinkingLevel(level);
-    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
     if (!sessionId || isProvisionalHermesSessionId(sessionId)) return;
     sessionThinkingEffortsRef.current = {
       ...sessionThinkingEfforts(),
@@ -6383,7 +6464,7 @@ export function AgentWorkspace({
     const message = draft.trim();
     const canLayerHomeMessage = Boolean(
       homeMode &&
-        homeDirectPendingCountRef.current > 0 &&
+        homeDirectPendingCountValue > 0 &&
         selectedHermesSessionIdRef.current &&
         message &&
         !attachments.length &&
@@ -6402,6 +6483,7 @@ export function AgentWorkspace({
     // title generation, and session resume can all await; a picker change
     // during any of them belongs to the following run.
     const sentModelTarget = captureSessionModelTarget();
+    const sentThinkingLevel = composerThinkingLevel;
     const sentDispatchOrder = ++composerDispatchOrderRef.current;
     const sentDispatchReservation = sentModelTarget.targetStoredSessionId
       ? reserveComposerDispatch(sentModelTarget.targetStoredSessionId)
@@ -6609,6 +6691,8 @@ export function AgentWorkspace({
     let optimisticHomeTurnId: string | undefined;
     let homeSubmissionAccepted = false;
     let homeDirectUserCommitted = false;
+    let homeDirectUserTurnId: string | undefined;
+    let homeDirectStoredSessionId: string | undefined;
     let clearedIssueReportReview:
       | {
           sessionId: string;
@@ -6716,12 +6800,14 @@ export function AgentWorkspace({
             attachments: [],
             modelTarget: sentModelTarget,
             dispatchReservation: sentDispatchReservation,
+            thinkingLevel: sentThinkingLevel,
           });
         }
         if (!submittedSessionId) {
           throw new Error("June could not create the Home conversation.");
         }
-        const homeSessionId = submittedSessionId;
+        const homeStoredSessionId = submittedSessionId;
+        homeDirectStoredSessionId = homeStoredSessionId;
         const startedAt = Date.now();
         const directTurnId = `${startedAt}:${Math.random().toString(36).slice(2)}`;
         const userTurn: AgentChatTurn = {
@@ -6731,65 +6817,64 @@ export function AgentWorkspace({
           status: "complete",
           parts: [{ type: "text", text: prepared.displayContent, status: "complete" }],
         };
+        homeDirectUserTurnId = userTurn.id;
         // A Home send is a chat bubble immediately, never an "Up next" row.
         // Requests are serialized privately so rapid messages retain one
         // coherent friend-like conversation context without exposing a queue.
-        commitHomeDirectTurns(homeSessionId, [...homeDirectTurnsRef.current, userTurn]);
+        commitHomeDirectTurns(homeStoredSessionId, [
+          ...readPersistedHomeDirectTurns(homeStoredSessionId),
+          userTurn,
+        ]);
         homeDirectUserCommitted = true;
         homeSubmissionAccepted = true;
         setHomeOptimisticTurn((current) => (current?.id === optimisticHomeTurnId ? null : current));
-        changeHomeDirectPendingCount(1);
-        const request = homeDirectChatChainRef.current
-          .catch(() => undefined)
-          .then(async () => {
-            const currentTurns = homeDirectTurnsRef.current;
-            const userIndex = currentTurns.findIndex((turn) => turn.id === userTurn.id);
-            const contextTurns =
-              userIndex < 0 ? currentTurns : currentTurns.slice(0, userIndex + 1);
-            const response = await juneHomeChat(
-              juneHomeChatMessagesFromTurns([...hermesTurns, ...contextTurns]),
-            );
-            const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
-            const assistantTurn: AgentChatTurn = response.task
-              ? {
-                  id: `home:direct:assistant:${directTurnId}`,
-                  role: "assistant",
-                  createdAt: new Date().toISOString(),
-                  status: "complete",
-                  parts: [
-                    {
-                      type: "tool",
-                      id: taskToolCallId,
-                      name: "mcp_june_home_start_task",
-                      text: "",
-                      status: "complete",
-                    },
-                  ],
-                }
-              : {
-                  id: `home:direct:assistant:${directTurnId}`,
-                  role: "assistant",
-                  createdAt: new Date().toISOString(),
-                  status: "complete",
-                  parts: [
-                    {
-                      type: "text",
-                      text: response.content?.trim() || "I’m here.",
-                      status: "complete",
-                    },
-                  ],
-                };
-            insertHomeDirectReply(homeSessionId, userTurn.id, assistantTurn);
-            if (response.task && taskToolCallId) {
-              void startHomeTask(response.task, taskToolCallId);
-            }
-          });
-        homeDirectChatChainRef.current = request.catch(() => undefined);
-        try {
-          await request;
-        } finally {
-          changeHomeDirectPendingCount(-1);
-        }
+        const request = enqueueHomeDirectChat(homeStoredSessionId, async () => {
+          const currentTurns = readPersistedHomeDirectTurns(homeStoredSessionId);
+          const userIndex = currentTurns.findIndex((turn) => turn.id === userTurn.id);
+          const contextTurns = userIndex < 0 ? currentTurns : currentTurns.slice(0, userIndex + 1);
+          const response = await juneHomeChat(
+            juneHomeChatMessagesFromTurns([...hermesTurns, ...contextTurns]),
+            {
+              model: sentModelTarget.hermesModelId,
+              reasoningEffort: thinkingEffortForLevel(sentThinkingLevel),
+            },
+          );
+          const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
+          const assistantTurn: AgentChatTurn = response.task
+            ? {
+                id: `home:direct:assistant:${directTurnId}`,
+                role: "assistant",
+                createdAt: new Date().toISOString(),
+                status: "complete",
+                parts: [
+                  {
+                    type: "tool",
+                    id: taskToolCallId,
+                    name: "mcp_june_home_start_task",
+                    text: "",
+                    status: "complete",
+                  },
+                ],
+              }
+            : {
+                id: `home:direct:assistant:${directTurnId}`,
+                role: "assistant",
+                createdAt: new Date().toISOString(),
+                status: "complete",
+                parts: [
+                  {
+                    type: "text",
+                    text: response.content?.trim() || "I’m here.",
+                    status: "complete",
+                  },
+                ],
+              };
+          insertHomeDirectReply(homeStoredSessionId, userTurn.id, assistantTurn);
+          if (response.task && taskToolCallId) {
+            void startHomeTask(response.task, taskToolCallId);
+          }
+        });
+        await request;
       } else {
         submittedSessionId = await submitHermesSession(runtimeContent, undefined, {
           displayContent: prepared.displayContent,
@@ -6798,6 +6883,7 @@ export function AgentWorkspace({
           attachments,
           modelTarget: sentModelTarget,
           dispatchReservation: sentDispatchReservation,
+          thinkingLevel: sentThinkingLevel,
           onAttachmentsUpdated: (nextAttachments) => {
             submittedAttachments = nextAttachments;
           },
@@ -6824,6 +6910,19 @@ export function AgentWorkspace({
           attachmentsRef.current.length,
       );
       let recoveredInFollowUpQueue = false;
+      if (homeDirectUserCommitted && homeDirectStoredSessionId && homeDirectUserTurnId) {
+        const failedUserTurnId = homeDirectUserTurnId;
+        const retained = readPersistedHomeDirectTurns(homeDirectStoredSessionId).filter(
+          (turn) =>
+            turn.id !== failedUserTurnId &&
+            turn.id !== failedUserTurnId.replace(":user:", ":assistant:"),
+        );
+        commitHomeDirectTurns(homeDirectStoredSessionId, retained);
+        if (!composerHasNewInput && (composerEditorRef.current?.isEmpty() ?? true)) {
+          composerEditorRef.current?.setContent(message, reportCategory);
+          rememberComposerDraft(submittedDraftKey, message, reportCategory, attachments);
+        }
+      }
       // Restore the composer so a failed send doesn't eat the message, its
       // category chip, or its attachments. A model switch can wait for Hermes
       // to become idle, so the user may already be writing the next draft when
@@ -7572,25 +7671,35 @@ export function AgentWorkspace({
         const next = current.map((handoff) =>
           handoff.id === handoffId ? { ...handoff, ...patch } : handoff,
         );
-        const homeSessionId = selectedHermesSessionIdRef.current;
-        if (homeSessionId) persistHomeTaskHandoffs(homeSessionId, next);
+        const homeStoredSessionId = selectedHermesSessionIdRef.current;
+        if (homeStoredSessionId) persistHomeTaskHandoffs(homeStoredSessionId, next);
         return next;
       });
     };
     try {
-      // Preserve the model choice visible in Home, while explicitly removing
-      // its session target so the focused work gets a new durable session.
-      const modelTarget = captureSessionModelTarget();
-      modelTarget.targetStoredSessionId = null;
-      const sessionId = await submitHermesSession(request.prompt, undefined, {
+      // A handoff returns to the normal new-session defaults. Home's implicit
+      // Auto Lower + Instant route is for conversational latency, not task work.
+      const defaultModelId = defaultGenerationModelIdRef.current;
+      const selection: SessionModelSelection =
+        defaultModelId === AUTO_MODEL_ID && generationCostQualityRef.current !== undefined
+          ? { modelId: defaultModelId, costQuality: generationCostQualityRef.current }
+          : { modelId: defaultModelId };
+      const modelTarget: CapturedSessionModelTarget = {
+        targetStoredSessionId: null,
+        selection,
+        hermesModelId: hermesModelIdForSelection(selection),
+        shouldApply: false,
+        globalIntentRevision: generationSelectionIntentRevisionRef.current,
+      };
+      const storedSessionId = await submitHermesSession(request.prompt, undefined, {
         displayContent: request.prompt,
         titleContent: request.title,
         sessionTitle: request.title,
         selectSession: false,
         modelTarget,
       });
-      if (!sessionId) throw new Error("June could not create the focused session.");
-      updateHandoff({ status: "running", sessionId });
+      if (!storedSessionId) throw new Error("June could not create the focused session.");
+      updateHandoff({ status: "running", storedSessionId });
     } catch (err) {
       updateHandoff({ status: "failed", error: messageFromError(err) });
     } finally {
@@ -7598,28 +7707,22 @@ export function AgentWorkspace({
     }
   }
 
-  function commitHomeDirectTurns(homeSessionId: string, turns: AgentChatTurn[]) {
+  function commitHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTurn[]) {
     const retained = turns.slice(-80);
     homeDirectTurnsRef.current = retained;
     setHomeDirectTurns(retained);
-    persistHomeDirectTurns(homeSessionId, retained);
-  }
-
-  function changeHomeDirectPendingCount(delta: number) {
-    const next = Math.max(0, homeDirectPendingCountRef.current + delta);
-    homeDirectPendingCountRef.current = next;
-    setHomeDirectPendingCount(next);
+    persistHomeDirectTurns(homeStoredSessionId, retained);
   }
 
   function insertHomeDirectReply(
-    homeSessionId: string,
+    homeStoredSessionId: string,
     userTurnId: string,
     assistantTurn: AgentChatTurn,
   ) {
-    const turns = homeDirectTurnsRef.current;
+    const turns = readPersistedHomeDirectTurns(homeStoredSessionId);
     const userIndex = turns.findIndex((turn) => turn.id === userTurnId);
     const insertAt = userIndex < 0 ? turns.length : userIndex + 1;
-    commitHomeDirectTurns(homeSessionId, [
+    commitHomeDirectTurns(homeStoredSessionId, [
       ...turns.slice(0, insertAt),
       assistantTurn,
       ...turns.slice(insertAt),
@@ -7864,6 +7967,8 @@ export function AgentWorkspace({
       onAttachmentsUpdated?: (attachments: AgentAttachment[]) => void;
       /** Model choice captured synchronously when the user pressed Send. */
       modelTarget?: CapturedSessionModelTarget;
+      /** Reasoning choice captured synchronously when the user pressed Send. */
+      thinkingLevel?: ThinkingLevel;
       /** FIFO slot captured at the same Send boundary as `modelTarget`. */
       dispatchReservation?: HermesSessionDispatchReservation;
       /** Create + select the session and add the user bubble, then stop BEFORE
@@ -8058,9 +8163,7 @@ export function AgentWorkspace({
               // relationship thread gets the runtime's lowest reasoning effort
               // and priority service tier. Focused sessions spawned from Home
               // keep their normal task-quality settings (selectSession=false).
-              ...(homeMode && options?.selectSession !== false
-                ? { reasoning_effort: "low", fast: true }
-                : {}),
+              ...(homeMode && options?.selectSession !== false ? { fast: true } : {}),
               // session.create treats `model` as a per-session override.
               // Under a named profile the override would silently bypass the
               // profile's own configured text model - the point of profiles -
@@ -8068,7 +8171,11 @@ export function AgentWorkspace({
               // thinking level's reasoning_effort follows the same rule.
               ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
               ...(!underProfile
-                ? { reasoning_effort: thinkingEffortForLevel(thinkingLevelRef.current) }
+                ? {
+                    reasoning_effort: thinkingEffortForLevel(
+                      options?.thinkingLevel ?? thinkingLevelRef.current,
+                    ),
+                  }
                 : {}),
               ...(underProfile ? { profile: nextUnderProfileName } : {}),
             });
@@ -8109,7 +8216,7 @@ export function AgentWorkspace({
       // at it: the create pinned this effort, so the re-assert path must not
       // fire a redundant config.set on the session's first turns. Skipped
       // under a named profile, where the profile's own config applies.
-      const createdLevel = thinkingLevelRef.current;
+      const createdLevel = options?.thinkingLevel ?? thinkingLevelRef.current;
       sessionThinkingEffortsRef.current = {
         ...sessionThinkingEfforts(),
         [storedSessionId]: createdLevel,
@@ -11947,13 +12054,13 @@ export function AgentWorkspace({
                     (submitting &&
                       !(
                         homeMode &&
-                        homeDirectPendingCount > 0 &&
+                        homeDirectPendingCountValue > 0 &&
                         selectedHermesSessionId &&
                         !attachments.length &&
                         !category
                       )) ||
                     (homeMode &&
-                      homeDirectPendingCount > 0 &&
+                      homeDirectPendingCountValue > 0 &&
                       (attachments.length > 0 || Boolean(category))) ||
                     importingFiles ||
                     Boolean(textActionsDisabledReason) ||
@@ -12213,7 +12320,9 @@ export function AgentWorkspace({
   const duplicateHomeTaskTurnIds = new Set<string>();
   if (homeMode) {
     const claimedSessionIds = new Set(
-      homeTaskHandoffs.flatMap((handoff) => (handoff.sessionId ? [handoff.sessionId] : [])),
+      homeTaskHandoffs.flatMap((handoff) =>
+        handoff.storedSessionId ? [handoff.storedSessionId] : [],
+      ),
     );
     for (const handoff of homeTaskHandoffs) {
       const matchingTurns = visibleHermesTurns.filter((turn) =>
@@ -12281,7 +12390,7 @@ export function AgentWorkspace({
         title,
         prompt,
         status: "running",
-        sessionId: matchedSession.session.id,
+        storedSessionId: matchedSession.session.id,
       });
       claimedSessionIds.add(matchedSession.session.id);
       for (const duplicate of matches.slice(0, -1)) {
@@ -12457,7 +12566,7 @@ export function AgentWorkspace({
         variant={homeMode ? "typing-bubble" : "label"}
         visible={
           homeMode
-            ? Boolean(homeOptimisticTurn) || homeDirectPendingCount > 0
+            ? Boolean(homeOptimisticTurn) || homeDirectPendingCountValue > 0
             : Boolean(transcriptSessionId) &&
               workingSessionIds.has(transcriptSessionId) &&
               hermesTurns.at(-1)?.role === "user"
@@ -14707,11 +14816,11 @@ function AgentChatTurnRow({
             <span>{handoffCopy}</span>
             {homeTaskHandoff.status === "failed" ? (
               <small>{homeTaskHandoff.error || "Please try again."}</small>
-            ) : homeTaskHandoff.sessionId ? (
+            ) : homeTaskHandoff.storedSessionId ? (
               <button
                 type="button"
                 onClick={() =>
-                  onOpenHomeTaskSession?.(homeTaskHandoff.sessionId!, homeTaskHandoff.title)
+                  onOpenHomeTaskSession?.(homeTaskHandoff.storedSessionId!, homeTaskHandoff.title)
                 }
               >
                 Open session

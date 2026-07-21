@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AGENT_DELETE_SESSION_EVENT,
-  AGENT_NEW_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../components/agent/AgentWorkspace";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
@@ -63,11 +62,9 @@ describe("folders UI", () => {
     hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
   });
 
-  it("renders the primary entries and starts agent sessions from the sidebar", async () => {
+  it("renders the primary entries and opens Home from the sidebar", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
-    const onNewSession = vi.fn();
-    window.addEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
     render(
       <Sidebar
         notes={notes}
@@ -89,13 +86,10 @@ describe("folders UI", () => {
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Meeting notes" }));
-    await user.click(screen.getByRole("button", { name: "New session" }));
+    await user.click(screen.getByRole("button", { name: "Home" }));
 
     expect(onChangeView).toHaveBeenCalledWith("notes");
-    expect(onChangeView).toHaveBeenCalledWith("agent");
-    await waitFor(() => expect(onNewSession).toHaveBeenCalled());
-
-    window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
+    expect(onChangeView).toHaveBeenCalledWith("home");
   });
 
   it("renders agent sessions in the sidebar and selects them", async () => {
@@ -145,29 +139,44 @@ describe("folders UI", () => {
     expect(onSelectAgentSession).toHaveBeenCalledWith(expect.objectContaining({ id: "session-1" }));
   });
 
-  it("marks new session active until an existing agent session is selected", async () => {
+  it("marks Home active and opens it from an existing agent session", async () => {
     const user = userEvent.setup();
-    const onNewAgentSession = vi.fn();
-    render(
+    const onChangeView = vi.fn();
+    const { rerender } = render(
       <Sidebar
         notes={notes}
-        activeView="agent"
-        onChangeView={vi.fn()}
+        activeView="home"
+        onChangeView={onChangeView}
         onSelectNote={vi.fn()}
         onDeleteNote={vi.fn()}
         onOpenMoveDialog={vi.fn()}
         onRemoveNoteFromFolder={vi.fn()}
-        onNewAgentSession={onNewAgentSession}
+        onNewAgentSession={vi.fn()}
         onRenameAgentSession={vi.fn()}
         onSelectAgentSession={vi.fn()}
       />,
     );
 
-    const newSessionButton = screen.getByRole("button", {
-      name: "New session",
+    const homeButton = screen.getByRole("button", {
+      name: "Home",
     });
-    expect(newSessionButton).toHaveAttribute("data-active", "true");
-    expect(newSessionButton).toHaveAttribute("aria-current", "page");
+    expect(homeButton).toHaveAttribute("data-active", "true");
+    expect(homeButton).toHaveAttribute("aria-current", "page");
+
+    rerender(
+      <Sidebar
+        notes={notes}
+        activeView="agent"
+        onChangeView={onChangeView}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+        onOpenMoveDialog={vi.fn()}
+        onRemoveNoteFromFolder={vi.fn()}
+        onNewAgentSession={vi.fn()}
+        onRenameAgentSession={vi.fn()}
+        onSelectAgentSession={vi.fn()}
+      />,
+    );
 
     act(() => {
       window.dispatchEvent(
@@ -189,14 +198,12 @@ describe("folders UI", () => {
     });
 
     await screen.findByText("Researching Google");
-    expect(newSessionButton).not.toHaveAttribute("data-active");
-    expect(newSessionButton).not.toHaveAttribute("aria-current");
+    expect(homeButton).not.toHaveAttribute("data-active");
+    expect(homeButton).not.toHaveAttribute("aria-current");
 
-    await user.click(newSessionButton);
+    await user.click(homeButton);
 
-    expect(onNewAgentSession).toHaveBeenCalledTimes(1);
-    expect(newSessionButton).toHaveAttribute("data-active", "true");
-    expect(newSessionButton).toHaveAttribute("aria-current", "page");
+    expect(onChangeView).toHaveBeenCalledWith("home");
   });
 
   it("pins agent sessions in a dedicated sidebar section", async () => {

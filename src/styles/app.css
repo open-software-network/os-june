@@ -2377,7 +2377,7 @@ input:focus-visible,
 .agent-home-nudges button {
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
+  border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--r-pill);
   background: color-mix(in oklch, var(--card) 82%, transparent);
   color: var(--muted-foreground);
@@ -2406,7 +2406,7 @@ input:focus-visible,
   align-items: center;
   gap: var(--sp-3);
   padding: var(--sp-3);
-  border: 1px solid var(--brand-line);
+  border: var(--border-width) solid var(--brand-line);
   border-radius: var(--r-xl);
   background: color-mix(in oklch, var(--card) 90%, var(--brand-tint));
   box-shadow: var(--shadow-sm);
@@ -2429,7 +2429,7 @@ input:focus-visible,
 .agent-home-task-copy {
   display: grid;
   min-width: 0;
-  gap: 2px;
+  gap: var(--sp-px);
 }
 
 .agent-home-task-copy strong {
@@ -19095,8 +19095,23 @@ button.memory-project:hover {
 }
 
 .agent-workspace[data-home="true"]
-  .agent-composer-box:has(:is(.agent-composer-attachments, .agent-composer-size-warning))
-  :is(.agent-composer-editor-root, .agent-composer-attach, .agent-composer-actions) {
+  .agent-composer-box:has(.agent-composer-attachments)
+  .agent-composer-editor-root,
+.agent-workspace[data-home="true"]
+  .agent-composer-box:has(.agent-composer-attachments)
+  .agent-composer-attach,
+.agent-workspace[data-home="true"]
+  .agent-composer-box:has(.agent-composer-attachments)
+  .agent-composer-actions,
+.agent-workspace[data-home="true"]
+  .agent-composer-box:has(.agent-composer-size-warning)
+  .agent-composer-editor-root,
+.agent-workspace[data-home="true"]
+  .agent-composer-box:has(.agent-composer-size-warning)
+  .agent-composer-attach,
+.agent-workspace[data-home="true"]
+  .agent-composer-box:has(.agent-composer-size-warning)
+  .agent-composer-actions {
   grid-row: 2;
 }
 
