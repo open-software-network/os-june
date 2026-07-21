@@ -17,7 +17,7 @@
  */
 
 import type { ExternalDirStatus } from "../tauri";
-import type { HermesSkillInfo } from "./schemas";
+import { stripWindowsVerbatimPrefix, type HermesSkillInfo } from "./schemas";
 import type { HermesAdminMode } from "./target";
 
 /** The advisory above the list, accurate to the runtime being viewed. In the
@@ -220,9 +220,11 @@ export type AddDirValidation = { ok: true; value: string } | { ok: false; reason
  * string, since the same path written two ways is still two config entries).
  * Resolution/existence is NOT required here: a path may legitimately be added
  * before it exists (it is created later, or lives on a not-yet-mounted volume),
- * and missing dirs are non-fatal. */
+ * and missing dirs are non-fatal. The Windows `\\?\` verbatim prefix is
+ * stripped before the dedup check so a picker-returned prefixed path matches
+ * an already-cleaned entry and is written clean. */
 export function validateNewDir(candidate: string, existing: readonly string[]): AddDirValidation {
-  const value = candidate.trim();
+  const value = stripWindowsVerbatimPrefix(candidate.trim());
   if (!value) {
     return { ok: false, reason: "Enter a directory path." };
   }

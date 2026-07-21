@@ -75,6 +75,25 @@ describe("external dirs — config read", () => {
       "E:\\team-skills",
     ]);
   });
+  it("strips lowercase and mixed-case verbatim prefixes", () => {
+    expect(
+      readExternalDirs({
+        skills: {
+          external_dirs: ["\\\\?\\c:\\lower", "\\\\?\\unc\\server\\share"],
+        },
+      }),
+    ).toEqual(["c:\\lower", "\\\\server\\share"]);
+  });
+
+  it("leaves non-drive verbatim namespaces unchanged", () => {
+    expect(
+      readExternalDirs({
+        skills: {
+          external_dirs: ["\\\\?\\GLOBALROOT\\Device\\Foo", "\\\\?\\Volume{guid}\\skills"],
+        },
+      }),
+    ).toEqual(["\\\\?\\GLOBALROOT\\Device\\Foo", "\\\\?\\Volume{guid}\\skills"]);
+  });
 });
 
 describe("external dirs — path expansion display", () => {
@@ -225,6 +244,12 @@ describe("external dirs — add/remove list math", () => {
     expect(validateNewDir("~/skills", ["~/skills"]).ok).toBe(false);
     const ok = validateNewDir("  ~/new  ", ["~/old"]);
     expect(ok).toEqual({ ok: true, value: "~/new" });
+  });
+  it("strips the Windows verbatim prefix and dedupes against clean paths", () => {
+    const result = validateNewDir("\\\\?\\C:\\skills", ["C:\\skills"]);
+    expect(result.ok).toBe(false);
+    const ok = validateNewDir("\\\\?\\E:\\new-skills", ["C:\\skills"]);
+    expect(ok).toEqual({ ok: true, value: "E:\\new-skills" });
   });
 
   it("adds and removes without mutating the source array", () => {

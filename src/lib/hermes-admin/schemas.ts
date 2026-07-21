@@ -1415,15 +1415,28 @@ export const EXTERNAL_DIRS_CONFIG_PATH = ["skills", "external_dirs"] as const;
  * a list; non-string entries are dropped. Returns the raw configured strings in
  * declared order — resolution/expansion happens June-side, never here. The
  * Windows `\\?\` verbatim prefix is stripped so it never reaches the UI. */
-function stripWindowsVerbatimPrefix(path: string): string {
+
+/** Strips the Windows verbatim path prefix (`\\?\`) when it is safe to do so:
+ * only the drive-letter form (`\\?\X:\…` → `X:\…`) and the UNC form
+ * (`\\?\UNC\server\share` → `\\server\share`), matched case-insensitively.
+ * Other verbatim namespaces (`\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`) are left
+ * unchanged because stripping the prefix can change whether the path works.
+ * Non-Windows paths are returned unchanged (the prefixes are Windows-only). */
+export function stripWindowsVerbatimPrefix(path: string): string {
+  const lower = path.toLowerCase();
   // `\\?\UNC\server\share` → `\\server\share` (check UNC first since it also
-  // starts with `\\?\`).
-  if (path.startsWith("\\\\?\\UNC\\")) {
+  // starts with `\\?\`). Case-insensitive: Windows treats `\\?\unc\` the same.
+  if (lower.startsWith("\\\\?\\unc\\")) {
     return `\\\\${path.slice(8)}`;
   }
-  // `\\?\C:\path` → `C:\path`
-  if (path.startsWith("\\\\?\\")) {
-    return path.slice(4);
+  // `\\?\X:\path` → `X:\path` — drive-letter form only. Leaves
+  // `\\?\GLOBALROOT`, `\\?\Volume{…}`, and other non-drive verbatim paths
+  // unchanged so they remain operable.
+  if (lower.startsWith("\\\\?\\")) {
+    const rest = path.slice(4);
+    if (/^[a-z]:\\/i.test(rest)) {
+      return rest;
+    }
   }
   return path;
 }
