@@ -1,6 +1,16 @@
 import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const motionPreference = vi.hoisted(() => ({ reduced: false }));
+
+vi.mock("framer-motion", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("framer-motion")>();
+  return {
+    ...actual,
+    useReducedMotion: () => motionPreference.reduced,
+  };
+});
+
 import {
   holdbackSafeEnd,
   SmoothedStreamingMarkdown,
@@ -8,6 +18,7 @@ import {
 
 describe("SmoothedStreamingMarkdown", () => {
   afterEach(() => {
+    motionPreference.reduced = false;
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
@@ -19,6 +30,19 @@ describe("SmoothedStreamingMarkdown", () => {
     view.rerender(<SmoothedStreamingMarkdown markdown="First chunk" running />);
 
     expect(view.container.textContent).toBe("First chunk");
+  });
+
+  it("applies inline holdback when the component mounts on the first live delta", () => {
+    const view = render(<SmoothedStreamingMarkdown markdown="before **bold" running />);
+
+    expect(view.container.textContent).toBe("before");
+    expect(view.container.textContent).not.toContain("**");
+  });
+
+  it("applies table holdback when the component mounts on the first live delta", () => {
+    const view = render(<SmoothedStreamingMarkdown markdown="| Metric | Q1 |" running />);
+
+    expect(view.container.textContent).toBe("");
   });
 
   it("batches appended stream text into one whole-chunk reveal per beat", () => {
@@ -54,6 +78,15 @@ describe("SmoothedStreamingMarkdown", () => {
     const view = render(<SmoothedStreamingMarkdown markdown="Draft answer" running />);
     view.rerender(<SmoothedStreamingMarkdown markdown="Corrected answer" running />);
     expect(view.container.textContent).toBe("Corrected answer");
+  });
+
+  it("renders streaming prose without presentation spans for reduced motion", () => {
+    motionPreference.reduced = true;
+
+    const view = render(<SmoothedStreamingMarkdown markdown="No motion" running />);
+
+    expect(view.container.textContent).toBe("No motion");
+    expect(view.container.querySelector(".agent-stream-word")).toBeNull();
   });
 
   it("flushes stream updates received while the document is hidden", () => {
@@ -129,6 +162,35 @@ describe("SmoothedStreamingMarkdown", () => {
     const view = render(<SmoothedStreamingMarkdown markdown="before *valid words*" running />);
 
     expect(view.container.querySelector("em")?.textContent).toBe("valid words");
+  });
+
+  it("excludes inline and fenced code from word-fade spans", () => {
+    const view = render(
+      <SmoothedStreamingMarkdown
+        markdown={"Fade prose around `inline code`.\n\n```ts\nconst value = 1;\n```"}
+        running
+      />,
+    );
+
+    expect(view.container.querySelector("p .agent-stream-word")).not.toBeNull();
+    expect(view.container.querySelector("code .agent-stream-word")).toBeNull();
+  });
+
+  it("keeps revealing after a streamed code fence closes", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown={"```ts\nconst value = 1;"} running />);
+
+    view.rerender(
+      <SmoothedStreamingMarkdown
+        markdown={"```ts\nconst value = 1;\n```\nFollowing prose"}
+        running
+      />,
+    );
+    act(() => vi.advanceTimersByTime(80));
+
+    expect(view.container.querySelector("pre code")?.textContent).toBe("const value = 1;");
+    expect(view.container.querySelector("p")?.textContent).toBe("Following prose");
+    expect(view.container.textContent).not.toContain("`");
   });
 
   it("withholds an incomplete trailing construct until it closes, never flashing the syntax", () => {
@@ -274,6 +336,18 @@ describe("SmoothedStreamingMarkdown", () => {
 });
 
 describe("holdbackSafeEnd", () => {
+  it("does not treat a blank quoted line as a pending table separator", () => {
+    const text = "> | Not a table |\n>\n> Explanation";
+
+    expect(holdbackSafeEnd(text)).toBe(text.length);
+  });
+
+  it("keeps an earlier opener active across a completed inner code span", () => {
+    const text = "before *open `code` tail";
+
+    expect(holdbackSafeEnd(text)).toBe("before ".length);
+  });
+
   it("never moves backward when a trailing tilde becomes strikethrough", () => {
     const singleTilde = "before ~";
     const doubleTilde = "before ~~open";

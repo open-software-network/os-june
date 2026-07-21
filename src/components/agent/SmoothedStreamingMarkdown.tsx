@@ -41,10 +41,27 @@ function isBlockLevelStar(segment: string, at: number): boolean {
   return before.trim() === "" && next !== undefined && /\s/.test(next);
 }
 
-// Earliest index in `segment` (from `from`) where an inline construct opens but
-// has not yet completed within the text, or -1 if the tail is safe to reveal.
-function firstOpenOpener(segment: string, from: number): number {
-  for (let at = from; at < segment.length; at += 1) {
+// Earliest index in `segment` where an inline construct opens but has not yet
+// completed within the text, or -1 if the tail is safe to reveal. Completed
+// constructs are opaque only when the scan reaches their own opener: a later
+// complete code span must not hide an earlier still-open emphasis marker.
+function firstOpenOpener(segment: string): number {
+  const completedEnds = new Map<number, number>();
+  INLINE_PATTERN.lastIndex = 0;
+  for (
+    let match = INLINE_PATTERN.exec(segment);
+    match !== null;
+    match = INLINE_PATTERN.exec(segment)
+  ) {
+    completedEnds.set(match.index, INLINE_PATTERN.lastIndex);
+  }
+
+  for (let at = 0; at < segment.length; at += 1) {
+    const completedEnd = completedEnds.get(at);
+    if (completedEnd !== undefined) {
+      at = completedEnd - 1;
+      continue;
+    }
     const ch = segment[at];
     // A backtick with no closing backtick remaining opens a code span.
     if (ch === "`") return at;
@@ -83,6 +100,24 @@ function firstOpenOpener(segment: string, from: number): number {
     }
   }
   return -1;
+}
+
+function fenceState(text: string): { open: boolean; afterLastClosed: number } {
+  let open = false;
+  let afterLastClosed = 0;
+  let offset = 0;
+  const lines = text.split("\n");
+
+  for (const [index, line] of lines.entries()) {
+    const afterLine = offset + line.length + (index < lines.length - 1 ? 1 : 0);
+    if (line.trim().startsWith("```")) {
+      open = !open;
+      if (!open) afterLastClosed = afterLine;
+    }
+    offset = afterLine;
+  }
+
+  return { open, afterLastClosed };
 }
 
 // A pipe row cannot be known to be a table header until the following
@@ -155,18 +190,17 @@ function pendingTableHeaderStart(segment: string): number {
  * closes (or runs long enough to be literal). Exported for tests.
  */
 export function holdbackSafeEnd(text: string): number {
-  // Fence bodies render unanimated and must keep streaming; an odd count of
-  // ``` lines means the text is inside an open fence.
-  let fences = 0;
-  for (const line of text.split("\n")) {
-    if (line.trim().startsWith("```")) fences += 1;
-  }
-  if (fences % 2 === 1) return text.length;
+  // Fence bodies render unanimated and must keep streaming. Once a fence
+  // closes, scan only prose after it so its delimiter backticks can never be
+  // mistaken for inline-code openers.
+  const fences = fenceState(text);
+  if (fences.open) return text.length;
 
   // Only the tail after the last blank line can still be open — earlier
-  // paragraphs are already flushed and parsed.
+  // paragraphs are already flushed and parsed. A completed fence is also a
+  // hard block boundary, even when following prose starts on the next line.
   const lastBreak = text.lastIndexOf("\n\n");
-  const segmentStart = lastBreak < 0 ? 0 : lastBreak + 2;
+  const segmentStart = Math.max(lastBreak < 0 ? 0 : lastBreak + 2, fences.afterLastClosed);
   const segment = text.slice(segmentStart);
 
   const tableAt = pendingTableHeaderStart(segment);
@@ -175,14 +209,7 @@ export function holdbackSafeEnd(text: string): number {
     return text.length - holdIndex > HOLDBACK_MAX_CHARS ? text.length : holdIndex;
   }
 
-  // Skip every completed construct; the open tail starts after the last one.
-  let scanStart = 0;
-  INLINE_PATTERN.lastIndex = 0;
-  for (let m = INLINE_PATTERN.exec(segment); m !== null; m = INLINE_PATTERN.exec(segment)) {
-    scanStart = INLINE_PATTERN.lastIndex;
-  }
-
-  const openAt = firstOpenOpener(segment, scanStart);
+  const openAt = firstOpenOpener(segment);
   if (openAt < 0) return text.length;
 
   const holdIndex = segmentStart + openAt;
@@ -210,12 +237,16 @@ export function SmoothedStreamingMarkdown({
   onVisibleMarkdownChange?: (visibleMarkdown: string) => void;
 }) {
   const reducedMotion = useReducedMotion() ?? false;
+  const initialVisible =
+    !running || reducedMotion || document.hidden
+      ? markdown
+      : markdown.slice(0, holdbackSafeEnd(markdown));
   // True from the moment a streaming turn completes until its trailing word
   // fades have had time to finish — the spans stay mounted through it.
   const [settling, setSettling] = useState(false);
   const [prevRunning, setPrevRunning] = useState(running);
-  const [visibleMarkdown, setVisibleMarkdown] = useState(markdown);
-  const visibleRef = useRef(markdown);
+  const [visibleMarkdown, setVisibleMarkdown] = useState(initialVisible);
+  const visibleRef = useRef(initialVisible);
   const targetRef = useRef(markdown);
   const timerRef = useRef<number | null>(null);
   const visibleMarkdownMountedRef = useRef(false);

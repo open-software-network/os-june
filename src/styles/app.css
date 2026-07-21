@@ -2473,7 +2473,7 @@ button.agent-user-attachment:hover {
  * mounted after completion so the tail finishes settling instead of popping
  * to full ink; reduced motion never mounts them. */
 .agent-markdown .agent-stream-word {
-  animation: agent-stream-word-in var(--stream-word-fade-dur) linear both;
+  animation: agent-stream-word-in var(--stream-word-fade-dur) var(--ease-linear) both;
 }
 
 @keyframes agent-stream-word-in {
@@ -2493,7 +2493,8 @@ button.agent-user-attachment:hover {
  * so React can unwrap the presentation spans on animationend without a second
  * hard-coded timer drifting out of sync with CSS. */
 .agent-markdown.agent-stream-settling {
-  animation: agent-stream-settle-clock calc(var(--stream-word-fade-dur) + var(--t-fast)) linear both;
+  animation: agent-stream-settle-clock calc(var(--stream-word-fade-dur) + var(--t-fast))
+    var(--ease-linear) both;
 }
 
 @keyframes agent-stream-settle-clock {
