@@ -206,6 +206,7 @@ pub fn run() {
             commands::save_agent_assistant_message,
             commands::save_agent_hermes_session,
             commands::suggest_agent_session_title,
+            june_api::june_home_chat,
             commands::submit_issue_report,
             commands::finalize_hermes_bridge_branch,
             commands::explain_agent_approval,

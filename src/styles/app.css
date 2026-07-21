@@ -2464,6 +2464,49 @@ input:focus-visible,
   background: var(--brand-tint-strong);
 }
 
+.agent-home-task-message {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.agent-home-task-message > span:first-child {
+  color: var(--foreground);
+}
+
+.agent-home-task-message small {
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
+.agent-home-task-message > button {
+  display: inline-flex;
+  width: fit-content;
+  min-height: var(--control-md);
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--brand-tint-strong);
+  color: var(--brand);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.agent-home-task-message > button:hover {
+  background: color-mix(in oklch, var(--brand-tint-strong) 75%, var(--brand));
+}
+
+.agent-home-task-pending {
+  display: inline-flex;
+  width: var(--control-md);
+  height: var(--control-md);
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
 .agent-user-attachments {
   display: flex;
   flex-wrap: wrap;

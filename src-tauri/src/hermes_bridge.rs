@@ -358,7 +358,7 @@ Messages may reference a specific note as `@note:<id>`, usually followed by the 
 "#;
 
 const JUNE_SOUL_HOME_MD: &str = r#"
-Home task handoffs: only when the current prompt contains the `[June home context]` marker, you have a `june_home` MCP toolset with `start_task`. Call `start_task` once for each distinct concrete task that benefits from focused or background work. Do not call it outside Home, and do not call it more than once for the same task. Keep conversation, quick answers, clarifying questions, and preference updates in Home rather than handing them off.
+Home task handoffs: only when the current prompt contains the `[June home context]` marker, you have a `june_home` MCP toolset with `start_task`. Call `start_task` once for each distinct concrete task that benefits from focused or background work. Do not call it outside Home, and do not call it more than once for the same task. Keep conversation, quick answers, clarifying questions, and preference updates in Home rather than handing them off. Once `start_task` returns, stop doing that task in Home and emit only one brief handoff acknowledgement. The Home UI attaches the session button; never duplicate the focused session's findings, progress, or answer in Home.
 "#;
 
 /// Appended only while the June memory store is globally enabled. Scope is
@@ -1748,6 +1748,12 @@ async fn start_hermes_bridge_inner(
         &june_computer_use_mcp,
         june_connector_mcp.as_ref(),
     )?;
+    refresh_june_routed_session_model_routes(
+        &hermes_home,
+        provider_proxy.port,
+        &provider_proxy.token,
+    )
+    .await?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
@@ -10336,6 +10342,88 @@ fn default_python_command() -> &'static str {
     }
 }
 
+fn is_june_routed_session_model(model: &str) -> bool {
+    model.starts_with("__june_auto_generation__:")
+        || model.starts_with("__june_remote_generation__:")
+}
+
+/// Hermes deliberately persists per-session provider metadata so ordinary
+/// custom endpoints survive a restart. June's private text route is different:
+/// it is a loopback proxy with a new ephemeral port and bearer token on every
+/// app launch. Heal only June-owned Auto/remote session rows before the Hermes
+/// process starts; user-configured local model endpoints remain untouched.
+async fn refresh_june_routed_session_model_routes(
+    hermes_home: &Path,
+    provider_proxy_port: u16,
+    provider_proxy_token: &str,
+) -> Result<(), AppError> {
+    use sqlx::row::Row as _;
+
+    let database_path = hermes_home.join("state.db");
+    if !database_path.exists() {
+        return Ok(());
+    }
+    let database_url = format!("sqlite://{}", database_path.display());
+    let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&database_url)
+        .await
+        .map_err(|error| AppError::new("hermes_session_route_refresh_failed", error.to_string()))?;
+    let rows = sqlx::query::query("SELECT id, model, model_config FROM sessions")
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| AppError::new("hermes_session_route_refresh_failed", error.to_string()))?;
+    let current_base_url = format!("http://127.0.0.1:{provider_proxy_port}/v1");
+
+    for row in rows {
+        let session_id: String = row.try_get("id").unwrap_or_default();
+        let stored_model: String = row.try_get("model").unwrap_or_default();
+        let raw_config: Option<String> = row.try_get("model_config").unwrap_or(None);
+        let mut model_config = raw_config
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        let configured_model = model_config
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !is_june_routed_session_model(&stored_model)
+            && !is_june_routed_session_model(configured_model)
+        {
+            continue;
+        }
+        let Some(config) = model_config.as_object_mut() else {
+            continue;
+        };
+        let route_is_current = config.get("base_url").and_then(serde_json::Value::as_str)
+            == Some(current_base_url.as_str());
+        let token_is_current =
+            config.get("api_key").and_then(serde_json::Value::as_str) == Some(provider_proxy_token);
+        if route_is_current && token_is_current {
+            continue;
+        }
+        config.insert(
+            "base_url".to_string(),
+            serde_json::Value::String(current_base_url.clone()),
+        );
+        config.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(provider_proxy_token.to_string()),
+        );
+        sqlx::query::query("UPDATE sessions SET model_config = ? WHERE id = ?")
+            .bind(model_config.to_string())
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .map_err(|error| {
+                AppError::new("hermes_session_route_refresh_failed", error.to_string())
+            })?;
+    }
+    pool.close().await;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_hermes_config(
     app: &AppHandle,
@@ -17011,6 +17099,84 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn refreshes_only_june_routed_session_loopback_credentials() {
+        use sqlx::row::Row as _;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let database_path = home.path().join("state.db");
+        std::fs::File::create(&database_path).expect("create state db");
+        let database_url = format!("sqlite://{}", database_path.display());
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("open state db");
+        sqlx::query::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, model_config TEXT)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create sessions");
+        for (id, model, model_config) in [
+            (
+                "auto",
+                "__june_auto_generation__:20",
+                r#"{"model":"__june_auto_generation__:20","base_url":"http://127.0.0.1:51071/v1","api_key":"old-token"}"#,
+            ),
+            (
+                "remote",
+                "",
+                r#"{"model":"__june_remote_generation__:vendor%2Fmodel","base_url":"http://127.0.0.1:51071/v1","api_key":"old-token"}"#,
+            ),
+            (
+                "local",
+                "__june_local_generation__:llama3.1%3A8b",
+                r#"{"model":"__june_local_generation__:llama3.1%3A8b","base_url":"http://127.0.0.1:11434/v1","api_key":"local-token"}"#,
+            ),
+        ] {
+            sqlx::query::query("INSERT INTO sessions (id, model, model_config) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(model)
+                .bind(model_config)
+                .execute(&pool)
+                .await
+                .expect("insert session");
+        }
+        pool.close().await;
+
+        refresh_june_routed_session_model_routes(home.path(), 61234, "new-token")
+            .await
+            .expect("refresh session routes");
+
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&database_url)
+            .await
+            .expect("reopen state db");
+        let rows = sqlx::query::query("SELECT id, model_config FROM sessions ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("load sessions");
+        let config_for = |id: &str| {
+            let raw: String = rows
+                .iter()
+                .find(|row| row.get::<String, _>("id") == id)
+                .expect("session row")
+                .get("model_config");
+            serde_json::from_str::<serde_json::Value>(&raw).expect("model config json")
+        };
+        let auto = config_for("auto");
+        assert_eq!(auto["base_url"], "http://127.0.0.1:61234/v1");
+        assert_eq!(auto["api_key"], "new-token");
+        let remote = config_for("remote");
+        assert_eq!(remote["base_url"], "http://127.0.0.1:61234/v1");
+        assert_eq!(remote["api_key"], "new-token");
+        let local = config_for("local");
+        assert_eq!(local["base_url"], "http://127.0.0.1:11434/v1");
+        assert_eq!(local["api_key"], "local-token");
+    }
 
     // The bundled MCP scripts are written verbatim into the Hermes home and
     // evaluated at import time by the runtime venv. A NameError in module

@@ -40,6 +40,7 @@ describe("June Home", () => {
     expect(isJuneHomeStartTaskTool("start_task")).toBe(true);
     expect(isJuneHomeStartTaskTool("mcp_june_home_start_task")).toBe(true);
     expect(isJuneHomeStartTaskTool("june_home.start_task")).toBe(true);
+    expect(isJuneHomeStartTaskTool("Mcp june home start task")).toBe(true);
     expect(isJuneHomeStartTaskTool("start_session")).toBe(false);
 
     expect(

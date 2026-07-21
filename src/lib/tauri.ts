@@ -1087,6 +1087,28 @@ export async function suggestAgentSessionTitle(prompt: string, response?: string
   });
 }
 
+export type JuneHomeChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+export type JuneHomeChatResponse = {
+  content?: string;
+  task?: {
+    title: string;
+    prompt: string;
+    summary?: string;
+  };
+};
+
+/** Lightweight private conversation path for Home. Concrete work is returned
+ * as a structured handoff and continues in a normal full-agent session. */
+export async function juneHomeChat(messages: JuneHomeChatMessage[]) {
+  return invoke<JuneHomeChatResponse>("june_home_chat", {
+    request: { messages },
+  });
+}
+
 export type SubmitIssueReportRequest = {
   /** Which kind of report this is: "bug" | "feedback" | "feature". Drives the
    * team's triage. Direct dialog reports run no model turn, so there is

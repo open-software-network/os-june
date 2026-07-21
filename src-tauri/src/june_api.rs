@@ -1580,6 +1580,166 @@ pub async fn suggest_agent_session_title(
     })
 }
 
+const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are June, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, clarifying questions, and preference updates directly. Never claim that all inference runs locally: June is local-first and routes model requests privately with zero data retention. When a concrete request benefits from focused work, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JuneHomeChatMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JuneHomeChatRequest {
+    messages: Vec<JuneHomeChatMessage>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JuneHomeChatTask {
+    pub title: String,
+    pub prompt: String,
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JuneHomeChatResponse {
+    pub content: Option<String>,
+    pub task: Option<JuneHomeChatTask>,
+}
+
+fn june_home_chat_task(message: &serde_json::Value) -> Option<JuneHomeChatTask> {
+    let call = message.get("tool_calls")?.as_array()?.iter().find(|call| {
+        call.pointer("/function/name")
+            .and_then(serde_json::Value::as_str)
+            == Some("start_task")
+    })?;
+    let raw_arguments = call.pointer("/function/arguments")?;
+    let arguments = if let Some(raw) = raw_arguments.as_str() {
+        serde_json::from_str::<serde_json::Value>(raw).ok()?
+    } else {
+        raw_arguments.clone()
+    };
+    let title = arguments.get("title")?.as_str()?.trim().to_string();
+    let prompt = arguments.get("prompt")?.as_str()?.trim().to_string();
+    if title.is_empty() || prompt.is_empty() {
+        return None;
+    }
+    let summary = arguments
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    Some(JuneHomeChatTask {
+        title,
+        prompt,
+        summary,
+    })
+}
+
+/// Fast path for June's persistent Home conversation.
+///
+/// Full Hermes sessions intentionally carry the complete agent system prompt
+/// and every enabled tool schema. That context is valuable for focused work but
+/// adds substantial prefill latency to short personal-assistant turns. Home
+/// sends only its compact relationship prompt and one handoff tool; delegated
+/// work still runs in a normal Hermes session after `start_task` is returned.
+#[tauri::command]
+pub async fn june_home_chat(
+    request: JuneHomeChatRequest,
+) -> Result<JuneHomeChatResponse, AppError> {
+    let mut messages = vec![serde_json::json!({
+        "role": "system",
+        "content": JUNE_HOME_CHAT_SYSTEM_PROMPT,
+    })];
+    let mut retained = request
+        .messages
+        .into_iter()
+        .filter_map(|message| {
+            let role = message.role.trim().to_lowercase();
+            let content = message.content.trim();
+            if !matches!(role.as_str(), "user" | "assistant") || content.is_empty() {
+                return None;
+            }
+            Some(serde_json::json!({ "role": role, "content": content }))
+        })
+        .collect::<Vec<_>>();
+    if retained.is_empty()
+        || retained.last().and_then(|message| message["role"].as_str()) != Some("user")
+    {
+        return Err(AppError::new(
+            "home_chat_message_required",
+            "A Home message is required.",
+        ));
+    }
+    if retained.len() > 24 {
+        retained.drain(..retained.len() - 24);
+    }
+    messages.extend(retained);
+
+    let response = proxy_agent_chat_completions(serde_json::json!({
+        "model": "__june_auto_generation__:0",
+        "messages": messages,
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "start_task",
+                "description": "Create a focused June session for concrete work that benefits from tools, research, files, or background execution.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "A short, concrete session title."
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "A complete standalone instruction for the focused agent session."
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "An optional brief handoff acknowledgement."
+                        }
+                    },
+                    "required": ["title", "prompt"],
+                    "additionalProperties": false
+                }
+            }
+        }],
+        "tool_choice": "auto",
+        "temperature": 0.4,
+        "max_tokens": 900,
+        "stream": false
+    }))
+    .await?;
+    if !(200..300).contains(&response.status) {
+        return Err(AppError::new(
+            "home_chat_failed",
+            format!("Home chat returned status {}.", response.status),
+        ));
+    }
+    let body = response.collect_body().await?;
+    let value: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|error| AppError::new("home_chat_invalid", error.to_string()))?;
+    let message = value
+        .pointer("/choices/0/message")
+        .ok_or_else(|| AppError::new("home_chat_invalid", "Home chat returned no message."))?;
+    let task = june_home_chat_task(message);
+    let content = extract_chat_completion_text(&value)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+    if content.is_none() && task.is_none() {
+        return Err(AppError::new(
+            "home_chat_empty",
+            "June returned an empty Home reply.",
+        ));
+    }
+    Ok(JuneHomeChatResponse { content, task })
+}
+
 /// One-shot YES/NO classification: does this image prompt request explicit
 /// (adult) content? Language-agnostic - this backs the /image consent gate
 /// where no model is otherwise in the loop. Metered like any agent chat.
@@ -3747,6 +3907,41 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             .expect("formatted content should include assistant reply prefix");
         assert_eq!(excerpt.chars().count(), 1200);
         assert_eq!(excerpt, "é".repeat(1200));
+    }
+
+    #[test]
+    fn parses_home_task_handoff_from_string_arguments() {
+        let message = serde_json::json!({
+            "tool_calls": [{
+                "function": {
+                    "name": "start_task",
+                    "arguments": "{\"title\":\"Oaxaca weekend\",\"prompt\":\"Plan a weekend in Oaxaca.\",\"summary\":\"I created the planning session.\"}"
+                }
+            }]
+        });
+
+        let task = june_home_chat_task(&message).expect("valid handoff should parse");
+
+        assert_eq!(task.title, "Oaxaca weekend");
+        assert_eq!(task.prompt, "Plan a weekend in Oaxaca.");
+        assert_eq!(
+            task.summary.as_deref(),
+            Some("I created the planning session.")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_home_task_handoffs() {
+        let message = serde_json::json!({
+            "tool_calls": [{
+                "function": {
+                    "name": "start_task",
+                    "arguments": { "title": " ", "prompt": "Do the work." }
+                }
+            }]
+        });
+
+        assert!(june_home_chat_task(&message).is_none());
     }
 
     #[test]

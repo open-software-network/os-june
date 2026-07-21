@@ -81,6 +81,7 @@ export function withJuneHomeContext(prompt: string): string {
     "This is June's persistent Home conversation with the user.",
     "Keep quick answers, conversation, clarifying questions, and preference updates in Home.",
     "When a concrete request benefits from focused work or background execution, call the june_home start_task tool exactly once with a short title and a complete standalone prompt. Do not perform that focused task in Home after handing it off.",
+    "After start_task returns, stop working on that task in Home. Reply with one short handoff acknowledgement only; the Home UI adds the session button. Never include findings, progress, or a second answer from the focused task in Home.",
     JUNE_HOME_CONTEXT_CLOSE,
     "",
     visiblePrompt,
@@ -107,7 +108,7 @@ export function stripJuneHomeContextFromPreview(preview: string | undefined): st
 
 export function isJuneHomeStartTaskTool(name: string | undefined): boolean {
   if (!name) return false;
-  const normalized = name.trim().toLowerCase().replace(/[.:/]/g, "_");
+  const normalized = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
   return normalized === "start_task" || normalized.endsWith("june_home_start_task");
 }
 

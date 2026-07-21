@@ -100,6 +100,7 @@ const mocks = vi.hoisted(() => ({
   startHermesBridge: vi.fn(),
   submitIssueReport: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
+  juneHomeChat: vi.fn(),
   titleFromPrompt: vi.fn((prompt: string) => prompt.trim() || "Untitled session"),
   explainAgentApproval: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
@@ -203,6 +204,7 @@ vi.mock("../lib/tauri", () => ({
   startHermesBridge: mocks.startHermesBridge,
   submitIssueReport: mocks.submitIssueReport,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
+  juneHomeChat: mocks.juneHomeChat,
   explainAgentApproval: mocks.explainAgentApproval,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
@@ -696,6 +698,7 @@ describe("AgentWorkspace", () => {
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
     });
+    mocks.juneHomeChat.mockResolvedValue({ content: "I’m here." });
     mocks.explainAgentApproval.mockResolvedValue({
       explanation: "This deletes the build folder, then rebuilds the project from scratch.",
     });
@@ -719,8 +722,15 @@ describe("AgentWorkspace", () => {
   it("keeps Home in place while June starts a focused session from its handoff tool", async () => {
     const user = userEvent.setup();
     const onOpenHomeTaskSession = vi.fn();
+    mocks.juneHomeChat.mockResolvedValueOnce({
+      task: {
+        title: "Oaxaca weekend",
+        prompt: "Research and plan a weekend in Oaxaca for the user.",
+        summary: "I’m putting together the itinerary in a focused session.",
+      },
+    });
 
-    render(
+    const first = render(
       <AgentWorkspace
         homeMode
         initialSession={existingSession}
@@ -733,49 +743,20 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-        session_id: "runtime-session-1",
-        text: expect.stringContaining("[June home context]"),
-      }),
+      expect(mocks.juneHomeChat).toHaveBeenCalledWith([
+        { role: "user", content: "Please research a weekend in Oaxaca" },
+      ]),
     );
 
-    act(() => {
-      for (const handler of mocks.gatewayEventHandlers) {
-        handler({
-          type: "tool.start",
-          session_id: "runtime-session-1",
-          payload: {
-            tool_id: "home-task-1",
-            tool_name: "mcp_june_home_start_task",
-            arguments: {
-              title: "Oaxaca weekend",
-              prompt: "Research and plan a weekend in Oaxaca for the user.",
-              summary: "I’m putting together the itinerary in a focused session.",
-            },
-          },
-        });
-        handler({
-          type: "tool.complete",
-          session_id: "runtime-session-1",
-          payload: {
-            tool_id: "home-task-1",
-            tool_name: "mcp_june_home_start_task",
-            structuredContent: {
-              title: "Oaxaca weekend",
-              prompt: "Research and plan a weekend in Oaxaca for the user.",
-              summary: "I’m putting together the itinerary in a focused session.",
-            },
-          },
-        });
-      }
-    });
-
-    expect(await screen.findByText("Oaxaca weekend")).toBeInTheDocument();
+    expect(
+      await screen.findByText("I created a session for “Oaxaca weekend”."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/full Oaxaca itinerary/)).toBeNull();
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
         title: "Oaxaca weekend",
         cols: 96,
-        model: "__june_auto_generation__:20",
+        model: "__june_auto_generation__:0",
       }),
     );
     await waitFor(() =>
@@ -788,11 +769,101 @@ describe("AgentWorkspace", () => {
     expect(screen.getByRole("region", { name: "Home" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open session" }));
     expect(onOpenHomeTaskSession).toHaveBeenCalledWith("session-2", "Oaxaca weekend");
+    expect(
+      JSON.parse(window.localStorage.getItem("june.home.taskHandoffs.v1") ?? "{}")["session-1"],
+    ).toEqual([
+      expect.objectContaining({
+        sessionId: "session-2",
+        status: "running",
+      }),
+    ]);
+
+    first.unmount();
+    mocks.listHermesSessionMessages.mockResolvedValue([]);
+    const messageLoadsBeforeRemount = mocks.listHermesSessionMessages.mock.calls.length;
+    render(
+      <AgentWorkspace
+        homeMode
+        initialSession={existingSession}
+        onOpenHomeTaskSession={onOpenHomeTaskSession}
+      />,
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        messageLoadsBeforeRemount,
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("I created a session for “Oaxaca weekend”.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/full Oaxaca itinerary/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Open session" })).toBeInTheDocument();
+  });
+
+  it("upgrades a legacy Home task tool row into a compact session handoff", async () => {
+    const user = userEvent.setup();
+    const onOpenHomeTaskSession = vi.fn();
+    mocks.listHermesSessions.mockResolvedValue([
+      existingSession,
+      {
+        id: "legacy-focused-session",
+        title: "Research quiet coffee shops in Mexico City",
+        started_at: "2026-07-21T12:01:00.000Z",
+      },
+    ]);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "legacy-user-task",
+        role: "user",
+        content:
+          "Research three quiet coffee shops in Mexico City that are good for working and put the findings in a focused session.",
+        timestamp: "2026-07-21T12:00:00.000Z",
+      },
+      {
+        id: "legacy-assistant-handoff",
+        role: "assistant",
+        content: "Here are the coffee shop findings that should not remain in Home.",
+        timestamp: "2026-07-21T12:00:05.000Z",
+        tool_calls: JSON.stringify([
+          {
+            id: "legacy-home-task-1",
+            function: {
+              name: "mcp_june_home_start_task",
+              arguments: {
+                title: "Research quiet coffee shops in Mexico City",
+                prompt: "Research three quiet coffee shops in Mexico City for working.",
+              },
+            },
+          },
+        ]),
+      },
+    ]);
+
+    render(
+      <AgentWorkspace
+        homeMode
+        initialSession={existingSession}
+        onOpenHomeTaskSession={onOpenHomeTaskSession}
+      />,
+    );
+
+    expect(
+      await screen.findByText(
+        "I created a session for “Research quiet coffee shops in Mexico City”.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/coffee shop findings that should not remain/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open session" }));
+    expect(onOpenHomeTaskSession).toHaveBeenCalledWith(
+      "legacy-focused-session",
+      "Research quiet coffee shops in Mexico City",
+    );
   });
 
   it("does not adopt an existing focused session when Home has no conversation yet", async () => {
     const user = userEvent.setup();
     const onHomeSessionCreated = vi.fn();
+    mocks.juneHomeChat.mockResolvedValueOnce({ content: "Hello — I’m here." });
 
     render(<AgentWorkspace homeMode onHomeSessionCreated={onHomeSessionCreated} />);
 
@@ -803,7 +874,12 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith(
         "session.create",
-        expect.objectContaining({ title: "Home" }),
+        expect.objectContaining({
+          title: "Home",
+          model: "__june_auto_generation__:0",
+          reasoning_effort: "low",
+          fast: true,
+        }),
       ),
     );
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", {
@@ -811,18 +887,19 @@ describe("AgentWorkspace", () => {
       cols: 96,
     });
     expect(onHomeSessionCreated).toHaveBeenCalledWith("session-2");
+
+    expect(await screen.findByText("Hello — I’m here.")).toBeInTheDocument();
+    expect(screen.getByText("Hello June")).toBeInTheDocument();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
   });
 
-  it("shows a sent Home message immediately while the runtime resumes", async () => {
+  it("shows a sent Home message immediately while the lightweight reply is pending", async () => {
     const user = userEvent.setup();
-    let resolveResume: ((value: { session_id: string }) => void) | undefined;
-    const resume = new Promise<{ session_id: string }>((resolve) => {
-      resolveResume = resolve;
+    let resolveHomeChat: ((value: { content: string }) => void) | undefined;
+    const homeReply = new Promise<{ content: string }>((resolve) => {
+      resolveHomeChat = resolve;
     });
-    mocks.gatewayRequest.mockImplementation((method: string) => {
-      if (method === "session.resume") return resume;
-      return Promise.resolve({});
-    });
+    mocks.juneHomeChat.mockReturnValueOnce(homeReply);
 
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
@@ -834,13 +911,11 @@ describe("AgentWorkspace", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
 
-    resolveResume?.({ session_id: "runtime-session-1" });
-    await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
-        "prompt.submit",
-        expect.objectContaining({ session_id: "runtime-session-1" }),
-      ),
-    );
+    resolveHomeChat?.({ content: "Yes — right here." });
+    expect(await screen.findByText("Yes — right here.")).toBeInTheDocument();
+    expect(screen.getByText("Are you there?")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
   });
 
   it("migrates an existing Home thread to the conversational model default only once", async () => {
@@ -852,7 +927,7 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(readSessionModelSelections()[existingSession.id]?.selection).toEqual({
         modelId: "open-software/auto",
-        costQuality: 20,
+        costQuality: 0,
       }),
     );
 
@@ -13009,36 +13084,29 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
-  it("resumes Home again after a terminal turn instead of reusing a dead runtime id", async () => {
+  it("keeps consecutive Home turns on the lightweight conversation path", async () => {
     const user = userEvent.setup();
+    mocks.juneHomeChat
+      .mockResolvedValueOnce({ content: "First reply." })
+      .mockResolvedValueOnce({ content: "Second reply." });
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
     await user.type(composer, "First message");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.resume"),
-      ).toHaveLength(1),
-    );
-
-    act(() => {
-      for (const handler of mocks.gatewayEventHandlers) {
-        handler({
-          type: "message.complete",
-          session_id: "runtime-session-1",
-          payload: { status: "complete", text: "I'm here." },
-        });
-      }
-    });
+    expect(await screen.findByText("First reply.")).toBeInTheDocument();
 
     await user.type(composer, "Second message");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.resume"),
-      ).toHaveLength(2),
-    );
+    expect(await screen.findByText("Second reply.")).toBeInTheDocument();
+    expect(mocks.juneHomeChat).toHaveBeenNthCalledWith(2, [
+      { role: "user", content: "First message" },
+      { role: "assistant", content: "First reply." },
+      { role: "user", content: "Second message" },
+    ]);
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.resume"),
+    ).toHaveLength(0);
   });
 
   it("keeps model-routing metadata out of the Home conversation", async () => {
@@ -13063,6 +13131,59 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("A useful system notice.")).toBeInTheDocument();
     expect(screen.queryByText("Model changed to Auto Lower.")).toBeNull();
+  });
+
+  it("shows only the latest retryable service notice in Home", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "failed-1",
+        role: "assistant",
+        content: "API call failed after 3 retries: Connection error.",
+        timestamp: "2026-07-21T12:00:00.000Z",
+      },
+      {
+        id: "retry",
+        role: "user",
+        content: "Try again",
+        timestamp: "2026-07-21T12:00:01.000Z",
+      },
+      {
+        id: "failed-2",
+        role: "assistant",
+        content: "API call failed after 3 retries: HTTP 503: metering_provider_failed",
+        timestamp: "2026-07-21T12:00:02.000Z",
+      },
+    ]);
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    expect(
+      await screen.findAllByText(
+        "June's service is temporarily unavailable. Your message is saved.",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("hides stale internal 401 errors from the Home conversation", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "user-before-401",
+        role: "user",
+        content: "Are you there?",
+        timestamp: "2026-07-21T12:00:00.000Z",
+      },
+      {
+        id: "stale-401",
+        role: "assistant",
+        content: "Error: HTTP 401: Unauthorized",
+        timestamp: "2026-07-21T12:00:01.000Z",
+      },
+    ]);
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    expect(await screen.findByText("Are you there?")).toBeInTheDocument();
+    expect(screen.queryByText(/HTTP 401: Unauthorized/i)).toBeNull();
   });
 
   it("drops duplicate agent safe-mode consent events while the dialog is open", async () => {
