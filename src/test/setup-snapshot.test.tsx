@@ -734,16 +734,20 @@ describe("setup snapshot — import driver", () => {
     const harness = makeAdminHarness({ gateway: { gateway_running: true } });
     const snapshot = importableSnapshot();
     snapshot.skills = [];
+    const setEnabled = vi.fn(harness.client.mcp.setEnabled);
     const failing = {
       ...harness.client,
       mcp: {
         ...harness.client.mcp,
         addServer: () => Promise.reject(new Error("server add failed")),
+        setEnabled,
       },
     } as typeof harness.client;
 
     const report = await applySnapshot(failing, snapshot, { sleep: instantSleep });
 
+    expect(report.steps.find((step) => step.category === "mcp-toggle")?.status).toBe("skipped");
+    expect(setEnabled).not.toHaveBeenCalled();
     expect(report.steps.find((step) => step.category === "tool-filter")?.status).toBe("failed");
     expect(
       harness.server.requestLog.some(
@@ -752,16 +756,54 @@ describe("setup snapshot — import driver", () => {
     ).toBe(false);
   });
 
+  it("does not toggle a catalog server when its install fails", async () => {
+    const harness = makeAdminHarness(richInstallScenario());
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.catalogInstalls = [{ installName: "github", enabled: true, requiredEnvKeys: [] }];
+    snapshot.mcpServers = [
+      {
+        name: "github",
+        enabled: true,
+        transport: "http-oauth",
+        args: [],
+        auth: "oauth",
+        envKeys: [],
+        headerKeys: [],
+        includeTools: [],
+        excludeTools: [],
+      },
+    ];
+    snapshot.requiredInputs = [];
+    const setEnabled = vi.fn(harness.client.mcp.setEnabled);
+    const failing = {
+      ...harness.client,
+      mcp: {
+        ...harness.client.mcp,
+        installCatalogEntry: () => Promise.reject(new Error("catalog install failed")),
+        setEnabled,
+      },
+    } as typeof harness.client;
+
+    const report = await applySnapshot(failing, snapshot, { sleep: instantSleep });
+
+    expect(report.steps.find((step) => step.category === "catalog-install")?.status).toBe("failed");
+    expect(report.steps.find((step) => step.category === "mcp-toggle")?.status).toBe("skipped");
+    expect(setEnabled).not.toHaveBeenCalled();
+  });
+
   it("reports a partial failure without aborting the run", async () => {
     const scenario = richInstallScenario();
     scenario.skills = scenario.skills?.filter((skill) => skill.name !== "research");
     const harness = makeAdminHarness(scenario);
     // Force the hub install to fail by stubbing the client method.
+    const toggle = vi.fn(harness.client.skills.toggle);
     const failing = {
       ...harness.client,
       skills: {
         ...harness.client.skills,
         hubInstall: () => Promise.reject(new Error("hub unreachable")),
+        toggle,
       },
     } as typeof harness.client;
     const report = await applySnapshot(failing, importableSnapshot(), {
@@ -769,6 +811,8 @@ describe("setup snapshot — import driver", () => {
     });
     const install = report.steps.find((s) => s.category === "skill-install");
     expect(install?.status).toBe("failed");
+    expect(report.steps.find((step) => step.category === "skill-toggle")?.status).toBe("skipped");
+    expect(toggle).not.toHaveBeenCalled();
     expect(report.hadFailures).toBe(true);
     // The run continued: the MCP add still happened after the failure.
     expect(report.steps.some((s) => s.category === "mcp-add")).toBe(true);

@@ -613,6 +613,7 @@ export async function applySnapshot(
   const steps: ImportStepResult[] = [];
   const plan = buildImportPlan(snapshot, await loadImportInventory(client));
   const configSteps: ImportPlanStep[] = [];
+  const failedSkillInstalls = new Set<string>();
   const failedServerCreates = new Set<string>();
   let requiresRestart = false;
 
@@ -635,6 +636,24 @@ export async function applySnapshot(
     if (!operation) continue;
     if (operation.kind === "config-write") {
       configSteps.push(step);
+      continue;
+    }
+    if (operation.kind === "skill-toggle" && failedSkillInstalls.has(step.name)) {
+      record({
+        category: step.category,
+        name: step.name,
+        status: "skipped",
+        detail: "The skill was not installed, so June left its enabled state unchanged.",
+      });
+      continue;
+    }
+    if (operation.kind === "mcp-toggle" && failedServerCreates.has(step.name)) {
+      record({
+        category: step.category,
+        name: step.name,
+        status: "skipped",
+        detail: "The server was not created, so June left its enabled state unchanged.",
+      });
       continue;
     }
 
@@ -723,6 +742,9 @@ export async function applySnapshot(
         });
       }
     } catch (error) {
+      if (operation.kind === "skill-install") {
+        failedSkillInstalls.add(step.name);
+      }
       if (operation.kind === "mcp-add" || operation.kind === "catalog-install") {
         failedServerCreates.add(step.name);
       }
