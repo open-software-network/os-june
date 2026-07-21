@@ -435,7 +435,7 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);
                 tauri::async_runtime::block_on(computer_use::shutdown(app));
-                hermes_bridge::shutdown(app);
+                tauri::async_runtime::block_on(hermes_bridge::shutdown(app));
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
