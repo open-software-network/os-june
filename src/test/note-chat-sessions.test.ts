@@ -291,7 +291,10 @@ describe("note chat session map", () => {
     expect(result.current.modelSelection).toEqual({ modelId: "kimi-k2-6" });
 
     await act(async () => {
-      expect(await result.current.submit("Use the upgraded route.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Use the upgraded route.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
       session_id: "runtime-note-chat",
@@ -324,7 +327,10 @@ describe("note chat session map", () => {
       }),
     );
     await act(async () => {
-      expect(await result.current.submit("Keep this local.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Keep this local.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith(
       "config.set",
@@ -396,7 +402,10 @@ describe("note chat session map", () => {
     expect(result.current.appliedHermesModelId).toBe("__june_remote_generation__:kimi-k2-6");
 
     await act(async () => {
-      expect(await result.current.submit("Keep my queued GLM choice.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Keep my queued GLM choice.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
       session_id: "runtime-note-chat",
@@ -419,7 +428,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
 
     await act(async () => {
-      expect(await result.current.submit("What changed?")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("What changed?")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
@@ -597,7 +609,6 @@ describe("note chat session map", () => {
     fireEvent.click(retry);
     expect(retryUpstreamFailure).toHaveBeenCalledOnce();
   });
-
 
   it("shows the Auto billing note in the picker while a Venice key is saved", async () => {
     const user = userEvent.setup();
@@ -853,7 +864,10 @@ describe("note chat session map", () => {
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
 
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(result.current.working).toBe(true);
 
@@ -879,7 +893,10 @@ describe("note chat session map", () => {
     mocks.gatewayRequest.mockClear();
 
     await act(async () => {
-      expect(await result.current.submit("What should we do next?")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("What should we do next?")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     expect(mocks.gatewayRequest.mock.calls).toEqual([
@@ -913,7 +930,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
       storedSessionId: "stored-note-chat",
@@ -942,7 +962,10 @@ describe("note chat session map", () => {
     );
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     unmount();
@@ -955,7 +978,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     act(() => result.current.stop());
@@ -980,7 +1006,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({ accepted: true, current: true });
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     mocks.markAgentRunSucceeded.mockClear();
     mocks.cancelAgentRunMonitoring.mockClear();
@@ -1010,7 +1039,10 @@ describe("note chat session map", () => {
       const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
       await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
       await act(async () => {
-        expect(await result.current.submit("Summarize the current plan.")).toMatchObject({ accepted: true, current: true });
+        expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+          accepted: true,
+          current: true,
+        });
       });
 
       act(() => {
