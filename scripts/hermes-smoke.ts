@@ -47,7 +47,7 @@
  * 1 = a phase failed (an artifact with logs is written next to this run).
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
@@ -72,6 +72,10 @@ import {
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const HOST = "127.0.0.1";
+// Must match the pinned runtime and the Rust shutdown target. The source-state
+// gate hashes hermes_cli/gateway.py (including its Label/domain resolution),
+// while this live smoke corroborates the CLI's reported plist basename.
+const HERMES_GATEWAY_LAUNCHD_LABEL = "ai.hermes.gateway";
 
 const RPC_TIMEOUT_MS = numberEnv("HERMES_SMOKE_TIMEOUT_MS", 120_000);
 const READY_TIMEOUT_MS = numberEnv("HERMES_SMOKE_READY_MS", 45_000);
@@ -150,6 +154,7 @@ async function main(): Promise<void> {
 
   try {
     record(`hermes-smoke: spawned hermes dashboard on ${HOST}:${port} (pid ${child.pid ?? "?"})`);
+    assertMacosGatewayPlistName(resolved.command, home, record);
 
     await waitForStatus(
       port,
@@ -228,6 +233,36 @@ async function main(): Promise<void> {
   }
 
   process.exit(failed ? 1 : 0);
+}
+
+function assertMacosGatewayPlistName(
+  command: string,
+  home: string,
+  record: (line: string) => void,
+): void {
+  if (process.platform !== "darwin") return;
+
+  const result = spawnSync(command, ["gateway", "status"], {
+    cwd: home,
+    env: {
+      ...process.env,
+      HERMES_HOME: home,
+      JUNE_HERMES_HOME: home,
+    },
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  if (result.error) {
+    throw new Error(`gateway status failed while checking launchd label: ${result.error.message}`);
+  }
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const expectedPlist = `/${HERMES_GATEWAY_LAUNCHD_LABEL}.plist`;
+  if (!output.includes(expectedPlist)) {
+    throw new Error(
+      `gateway status no longer reports ${expectedPlist}; update the Rust shutdown label for this Hermes pin`,
+    );
+  }
+  record(`hermes-smoke: PASS macOS LaunchAgent plist is ${HERMES_GATEWAY_LAUNCHD_LABEL}.plist`);
 }
 
 /**

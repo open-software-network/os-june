@@ -4,6 +4,7 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -765,6 +766,217 @@ export function ModelPickerPopover({
             portalTarget,
           )
         : null}
+    </div>
+  );
+}
+
+/** Single-panel catalog opened by submitting bare `/model` in the composer.
+ * It keeps the curated picks pinned above the rest of the searchable catalog,
+ * using the same row, provider, privacy, and selection language as the compact
+ * toolbar picker. */
+export function ModelCommandPalette({
+  model,
+  options,
+  search,
+  popoverRef,
+  searchRef,
+  onSearchChange,
+  onSelect,
+}: {
+  model?: VeniceModelDto;
+  options: VeniceModelDto[];
+  search: string;
+  popoverRef: RefObject<HTMLDivElement>;
+  searchRef: RefObject<HTMLInputElement>;
+  onSearchChange: (value: string) => void;
+  onSelect: (modelId: string) => void;
+}) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const fade = useScrollFade(listRef);
+  const listId = useId();
+  const [privateOnly, setPrivateOnly] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const query = search.trim().toLowerCase();
+  const selectable = useMemo(
+    () => options.filter((option) => modelAvailableForMode("generation", option)),
+    [options],
+  );
+  const privacyFiltered = useMemo(
+    () => (privateOnly ? selectable.filter(modelIsPrivate) : selectable),
+    [privateOnly, selectable],
+  );
+  const matching = useMemo(
+    () =>
+      query
+        ? privacyFiltered.filter((option) => modelMatchesQuery(option, query))
+        : privacyFiltered,
+    [privacyFiltered, query],
+  );
+  const suggested = useMemo(() => suggestedModelsForMode("generation", selectable), [selectable]);
+  const matchingSuggested = suggested.filter(({ model: option }) =>
+    matching.some((candidate) => candidate.id === option.id),
+  );
+  const suggestedIds = new Set(matchingSuggested.map(({ model: option }) => option.id));
+  const remaining = matching.filter((option) => !suggestedIds.has(option.id));
+  const resultRows = [
+    ...matchingSuggested.map(({ model: option, reason }) => ({ option, description: reason })),
+    ...remaining.map((option) => ({ option, description: option.description })),
+  ];
+  const resolvedActiveIndex = Math.min(activeIndex, Math.max(resultRows.length - 1, 0));
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [privateOnly, query]);
+
+  useLayoutEffect(() => {
+    fade.update();
+  }, [fade.update, matchingSuggested.length, remaining.length]);
+
+  function moveActive(delta: number) {
+    if (!resultRows.length) return;
+    setActiveIndex((current) => {
+      const currentIndex = Math.min(current, resultRows.length - 1);
+      const nextIndex = (currentIndex + delta + resultRows.length) % resultRows.length;
+      window.requestAnimationFrame(() => {
+        document
+          .getElementById(`${listId}-option-${nextIndex}`)
+          ?.scrollIntoView?.({ block: "nearest" });
+      });
+      return nextIndex;
+    });
+  }
+
+  const modelRow = (option: VeniceModelDto, description: string | undefined, index: number) => (
+    <button
+      key={option.id}
+      id={`${listId}-option-${index}`}
+      type="button"
+      className="agent-composer-model-row agent-composer-model-command-row"
+      role="option"
+      tabIndex={-1}
+      aria-selected={option.id === model?.id}
+      data-active={index === resolvedActiveIndex || undefined}
+      onFocus={() => setActiveIndex(index)}
+      onPointerMove={() => setActiveIndex(index)}
+      onClick={() => onSelect(option.id)}
+    >
+      <span className="agent-composer-model-row-logo" aria-hidden>
+        <ProviderLogo provider={option.provider} id={option.id} name={option.name} />
+      </span>
+      <span className="agent-composer-model-row-copy">
+        <span className="agent-composer-model-row-name">{option.name}</span>
+        {description ? (
+          <span className="agent-composer-model-command-description">{description}</span>
+        ) : null}
+      </span>
+      {option.id === model?.id ? (
+        <IconCheckmark2Small size={14} aria-hidden className="agent-composer-model-row-check" />
+      ) : null}
+      <ModelRowPrivacyBadge model={option} />
+    </button>
+  );
+
+  return (
+    <div
+      ref={popoverRef}
+      className="agent-composer-model-popover agent-composer-model-command-palette"
+      role="dialog"
+      aria-label="Choose text model"
+    >
+      <label className="agent-composer-model-search">
+        <input
+          ref={searchRef}
+          value={search}
+          onChange={(event) => onSearchChange(event.currentTarget.value)}
+          placeholder="Search models"
+          aria-label="Search models"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded="true"
+          aria-controls={listId}
+          aria-activedescendant={
+            resultRows.length ? `${listId}-option-${resolvedActiveIndex}` : undefined
+          }
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              moveActive(1);
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              moveActive(-1);
+              return;
+            }
+            if (event.key === "Enter" && resultRows.length) {
+              event.preventDefault();
+              event.stopPropagation();
+              onSelect(resultRows[resolvedActiveIndex].option.id);
+            }
+          }}
+        />
+      </label>
+      <div className="agent-composer-model-filter">
+        <span>Private</span>
+        <Switch
+          checked={privateOnly}
+          onCheckedChange={setPrivateOnly}
+          aria-label="Only show private models"
+        />
+      </div>
+      <div className="agent-composer-model-command-list-wrap scroll-fade" {...fade.props}>
+        <div
+          ref={listRef}
+          id={listId}
+          className="agent-composer-model-command-list"
+          role="listbox"
+          aria-label="Text models"
+        >
+          {matchingSuggested.length ? (
+            <div
+              className="agent-composer-model-command-section"
+              role="group"
+              aria-labelledby={`${listId}-suggested-label`}
+            >
+              <p
+                id={`${listId}-suggested-label`}
+                className="agent-composer-model-command-section-label"
+              >
+                Suggested
+              </p>
+              {matchingSuggested.map(({ model: option, reason }, index) =>
+                modelRow(option, reason, index),
+              )}
+            </div>
+          ) : null}
+          {matchingSuggested.length && remaining.length ? (
+            <hr className="agent-composer-model-command-divider" role="presentation" />
+          ) : null}
+          {remaining.length ? (
+            <div
+              className="agent-composer-model-command-section"
+              role="group"
+              aria-labelledby={`${listId}-all-label`}
+            >
+              <p id={`${listId}-all-label`} className="agent-composer-model-command-section-label">
+                All models
+              </p>
+              {remaining.map((option, index) =>
+                modelRow(option, option.description, matchingSuggested.length + index),
+              )}
+            </div>
+          ) : null}
+        </div>
+        {!resultRows.length ? (
+          <p className="agent-composer-model-empty" role="status">
+            {privateOnly
+              ? query
+                ? "No private models match your search."
+                : "No private models available."
+              : "No models match your search."}
+          </p>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -343,7 +343,11 @@ import {
   modelOptions,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
+import {
+  ModelCommandPalette,
+  ModelPickerPopover,
+  type ModelPickerFlyout,
+} from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
@@ -427,10 +431,13 @@ import {
   buildHermesSessionChatTurns,
   displayedComposerUserMessageText,
   hasFinalContentBearingAssistantReply,
+  isUpstreamProviderFailureText,
   isGeneratedVideoFilename,
   stripRenderedMediaReferences,
   textFromHermesContent,
   textFromHermesTransportContent,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   USER_ATTACHMENT_PROMPT_MARKER,
   type AgentApprovalChoice,
   type AgentChatPart,
@@ -450,6 +457,10 @@ import {
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
+import {
+  upstreamProviderRecoveryIds,
+  upstreamProviderRecoveryStore,
+} from "../../lib/upstream-provider-recovery";
 
 const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
@@ -3824,6 +3835,7 @@ export function AgentWorkspace({
   // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
   const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
+  const [composerModelCommandPalette, setComposerModelCommandPalette] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -3872,6 +3884,13 @@ export function AgentWorkspace({
   // reliably whether Hermes may already have accepted a response.
   const approvalResponsesInFlightRef = useRef(new Map<string, AgentApprovalChoice>());
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
+  // Shared across chat surfaces and component remounts for this app process.
+  // reserve() closes the duplicate-click gap before React commits a render.
+  useSyncExternalStore(
+    upstreamProviderRecoveryStore.subscribe,
+    upstreamProviderRecoveryStore.getVersion,
+    upstreamProviderRecoveryStore.getVersion,
+  );
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
   const [sudoSubmitting, setSudoSubmitting] = useState<Record<string, "approve" | "deny">>({});
@@ -4688,7 +4707,7 @@ export function AgentWorkspace({
   }, [activeGenerationModelId, generationModelOptions]);
   const generationPrivacyBadge = generationModel ? modelPrivacyBadge(generationModel) : undefined;
   // The model the image-attach banner offers to switch to: a vision + tool
-  // capable model, preferring a curated suggested pick (Kimi K2.6) over the
+  // capable model, preferring a known private vision pick (Kimi K2.6) over the
   // alphabetically-first vision model. See preferredVisionFallbackModel.
   const preferredVisionModel = useMemo(
     () => preferredVisionFallbackModel(generationModels),
@@ -5086,6 +5105,11 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (composerModelCommandPalette) {
+          setComposerModelOpen(false);
+          composerEditorRef.current?.focus();
+          return;
+        }
         // Escape peels one layer at a time: the all-models panel first,
         // then the popover itself.
         if (composerModelFlyout?.kind === "all") {
@@ -5102,13 +5126,13 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [composerModelOpen, composerModelFlyout]);
+  }, [composerModelCommandPalette, composerModelOpen, composerModelFlyout]);
 
   useLayoutEffect(() => {
-    if (composerModelOpen && composerModelFlyout?.kind === "all") {
+    if (composerModelOpen && (composerModelCommandPalette || composerModelFlyout?.kind === "all")) {
       composerModelSearchRef.current?.focus();
     }
-  }, [composerModelFlyout, composerModelOpen]);
+  }, [composerModelCommandPalette, composerModelFlyout, composerModelOpen]);
 
   // The popover lives outside the composer box (whose overflow:hidden would
   // clip it), so CSS alone can only anchor it to the box, leaving the whole
@@ -5116,15 +5140,34 @@ export function AgentWorkspace({
   // open and pin the menu right above it instead.
   useLayoutEffect(() => {
     if (!composerModelOpen) return;
-    const trigger = composerModelTriggerRef.current;
-    const popover = composerModelPopoverRef.current;
-    const form = popover?.parentElement;
-    if (!trigger || !popover || !form) return;
-    const triggerRect = trigger.getBoundingClientRect();
-    const formRect = form.getBoundingClientRect();
-    popover.style.right = `${formRect.right - triggerRect.right}px`;
-    popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
-  }, [composerModelOpen]);
+    function positionPopover() {
+      const trigger = composerModelTriggerRef.current;
+      const popover = composerModelPopoverRef.current;
+      const form = popover?.parentElement;
+      if (!trigger || !popover || !form) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const formRect = form.getBoundingClientRect();
+      if (composerModelCommandPalette) {
+        const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
+        const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
+        popover.style.left = `${composerRect.left - formRect.left}px`;
+        popover.style.right = `${formRect.right - composerRect.right}px`;
+        popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
+        popover.style.setProperty(
+          "--model-command-available-height",
+          `${Math.max(96, composerRect.top - 12)}px`,
+        );
+        return;
+      }
+      popover.style.left = "";
+      popover.style.removeProperty("--model-command-available-height");
+      popover.style.right = `${formRect.right - triggerRect.right}px`;
+      popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
+    }
+    positionPopover();
+    window.addEventListener("resize", positionPopover);
+    return () => window.removeEventListener("resize", positionPopover);
+  }, [composerModelCommandPalette, composerModelOpen]);
 
   useLayoutEffect(() => {
     if (sandboxMenuOpen) {
@@ -5523,9 +5566,10 @@ export function AgentWorkspace({
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
-  function openComposerModelPicker() {
+  function openComposerModelPicker(commandPalette = false) {
     setModelSearch("");
     setComposerModelFlyout(null);
+    setComposerModelCommandPalette(commandPalette);
     setComposerModelOpen(true);
     setSandboxMenuOpen(false);
     void loadGenerationModel();
@@ -7263,7 +7307,7 @@ export function AgentWorkspace({
     const query = argument.trim();
     if (!query) {
       clearComposerCommandDraft(commandText);
-      openComposerModelPicker();
+      openComposerModelPicker(true);
       return;
     }
 
@@ -9282,6 +9326,17 @@ export function AgentWorkspace({
             notBeforeMs,
           });
         }
+        if (
+          storedClassified.failed &&
+          isUpstreamProviderFailureText(storedClassified.delta ?? "")
+        ) {
+          // A provider outage is retryable immediately even though the stable
+          // run monitor still owns the eventual lifecycle terminal. Remove the
+          // optimistic busy projection so the user may start that recovery (or
+          // another prompt); the monitor/listener remains authoritative for any
+          // late terminal from the failed run.
+          clearSessionActivity(storedSessionId, "failed");
+        }
         // Hydrate persistence at the message boundary without treating it as
         // the Agent run boundary. Later tool/continuation frames stay subscribed.
         window.setTimeout(() => {
@@ -10525,6 +10580,49 @@ export function AgentWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+
+  async function retryUpstreamProviderFailure(
+    storedSessionId: string | undefined,
+    recoveryId: string | undefined,
+    allowWhileProviderFailureIsLatest: boolean,
+  ) {
+    if (!storedSessionId || isProvisionalHermesSessionId(storedSessionId)) return;
+    if (
+      !allowWhileProviderFailureIsLatest &&
+      (workingSessionIdsRef.current.has(storedSessionId) ||
+        waitingSessionIdsRef.current.has(storedSessionId))
+    ) {
+      return;
+    }
+    if (!recoveryId || !upstreamProviderRecoveryStore.reserve(storedSessionId, recoveryId)) return;
+    const session = hermesSessionItemsRef.current.find((item) => item.id === storedSessionId);
+    if (!session) {
+      upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+      setError(SESSION_NOT_AVAILABLE_MESSAGE, { sessionId: storedSessionId });
+      return;
+    }
+
+    try {
+      // This starts a new agent run in the same stored session and reuses its
+      // runtime session when it is still live. The prompt has an exact
+      // persisted-display mapping to the "Try again" transcript label, so a
+      // later refresh cannot expose the continuation instruction. This path
+      // never reads or clears the composer and never replays clarify.respond.
+      await submitHermesSession(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT, session, {
+        displayContent: "Try again",
+        titleContent: "Try again",
+        modelTarget: captureSessionModelTarget(session),
+        selectSession: false,
+      });
+      setError(null);
+    } catch (err) {
+      // prompt.submit never accepted the recovery, so the same notice may try
+      // again. Once accepted, the key remains spent; a second provider failure
+      // creates a new turn id and its own one-shot action.
+      upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+      setError(messageFromError(err), { sessionId: storedSessionId });
+    }
+  }
 
   // "Try again" on a connection-shaped error banner: rebuild the bridge +
   // gateway connection and reload sessions, surfacing whatever still fails.
@@ -13715,6 +13813,25 @@ export function AgentWorkspace({
         ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
+  const upstreamFailureRecoveryIds = upstreamProviderRecoveryIds(hermesTurns);
+  const latestUpstreamFailureTurnId = Array.from(upstreamFailureRecoveryIds.keys()).at(-1);
+  const currentRunStartRevision = selectedHermesSessionId
+    ? (pendingAgentRunAcceptanceRef.current.get(selectedHermesSessionId)
+        ?.candidateRunStartRevision ??
+      agentRunStartRevisionsRef.current.get(selectedHermesSessionId))
+    : undefined;
+  const currentRunHasUpstreamProviderFailure = Boolean(
+    selectedHermesSessionId &&
+      currentRunStartRevision !== undefined &&
+      liveEvents[selectedHermesSessionId]?.entries.some(
+        ({ event, revision }) =>
+          revision > currentRunStartRevision &&
+          event.kind === "transcript" &&
+          event.complete &&
+          event.failed &&
+          isUpstreamProviderFailureText(event.delta ?? ""),
+      ),
+  );
   const taskTurns = selectedTask
     ? mergeThinkingTurns(
         buildAgentChatTurns(
@@ -14154,7 +14271,7 @@ export function AgentWorkspace({
         {textActionsDisabledReason
           ? (renderFundingNotice?.({
               ...textFundingContext,
-              onSelectVeniceModel: openComposerModelPicker,
+              onSelectVeniceModel: () => openComposerModelPicker(),
             }) ?? (
               <p className="agent-composer-notice" role="status">
                 {textActionsDisabledReason}
@@ -14635,23 +14752,38 @@ export function AgentWorkspace({
           />
         ) : null}
         {composerModelOpen ? (
-          <ModelPickerPopover
-            mode="generation"
-            flyout={composerModelFlyout}
-            model={generationModel}
-            options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-            costQuality={activeGenerationCostQuality}
-            veniceApiKeyConfigured={veniceApiKeyConfigured}
-            search={modelSearch}
-            popoverRef={composerModelPopoverRef}
-            searchRef={composerModelSearchRef}
-            onFlyoutChange={setComposerModelFlyout}
-            onSearchChange={setModelSearch}
-            onSelect={(modelId, costQuality, options) =>
-              void handleSelectGenerationModel(modelId, costQuality, options)
-            }
-            onCostQualityChange={handleCostQualityChange}
-          />
+          composerModelCommandPalette ? (
+            <ModelCommandPalette
+              model={generationModel}
+              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+              search={modelSearch}
+              popoverRef={composerModelPopoverRef}
+              searchRef={composerModelSearchRef}
+              onSearchChange={setModelSearch}
+              onSelect={(modelId) => {
+                void handleSelectGenerationModel(modelId);
+                composerEditorRef.current?.focus();
+              }}
+            />
+          ) : (
+            <ModelPickerPopover
+              mode="generation"
+              flyout={composerModelFlyout}
+              model={generationModel}
+              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+              costQuality={activeGenerationCostQuality}
+              veniceApiKeyConfigured={veniceApiKeyConfigured}
+              search={modelSearch}
+              popoverRef={composerModelPopoverRef}
+              searchRef={composerModelSearchRef}
+              onFlyoutChange={setComposerModelFlyout}
+              onSearchChange={setModelSearch}
+              onSelect={(modelId, costQuality, options) =>
+                void handleSelectGenerationModel(modelId, costQuality, options)
+              }
+              onCostQualityChange={handleCostQualityChange}
+            />
+          )
         ) : null}
         {heroMode && sandboxMenuOpen ? (
           <div
@@ -14816,6 +14948,22 @@ export function AgentWorkspace({
           onDownloadVideo={downloadGeneratedVideo}
           onRetryVideo={(assistantTurnId, part) =>
             void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+          }
+          onRetryUpstreamFailure={(turnId) =>
+            void retryUpstreamProviderFailure(
+              selectedHermesSessionId,
+              upstreamFailureRecoveryIds.get(turnId),
+              turn.id === latestUpstreamFailureTurnId && currentRunHasUpstreamProviderFailure,
+            )
+          }
+          upstreamFailureRetryAttempted={upstreamProviderRecoveryStore.attempted(
+            selectedHermesSessionId,
+            upstreamFailureRecoveryIds.get(turn.id) ?? "",
+          )}
+          upstreamFailureRetryDisabled={
+            (workingSessionIds.has(selectedHermesSessionId) ||
+              waitingSessionIds.has(selectedHermesSessionId)) &&
+            (turn.id !== latestUpstreamFailureTurnId || !currentRunHasUpstreamProviderFailure)
           }
           creditActionsDisabledReason={creditActionsDisabledReason}
           onApproval={(part, choice) =>
@@ -16763,6 +16911,9 @@ function AgentResponseGallery({
   onClose: () => void;
 }) {
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
+  const [upstreamFailureRetryAttempts, setUpstreamFailureRetryAttempts] = useState<
+    Record<string, true>
+  >({});
   const setThinkingOpen = useCallback((key: string, open: boolean) => {
     setThinkingOpenByKey((current) =>
       current[key] === open ? current : { ...current, [key]: open },
@@ -16813,6 +16964,10 @@ function AgentResponseGallery({
               onSudo={galleryNoop}
               onSecret={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onRetryUpstreamFailure={(turnId) =>
+                setUpstreamFailureRetryAttempts((current) => ({ ...current, [turnId]: true }))
+              }
+              upstreamFailureRetryAttempted={Boolean(upstreamFailureRetryAttempts[turn.id])}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
               fundingTier={fundingTier}
@@ -16846,6 +17001,9 @@ function AgentChatTurnRow({
   onRetryImage,
   onDownloadVideo,
   onRetryVideo,
+  onRetryUpstreamFailure,
+  upstreamFailureRetryAttempted,
+  upstreamFailureRetryDisabled,
   creditActionsDisabledReason,
   onThinkingOpenChange,
   onTopUp,
@@ -16886,6 +17044,9 @@ function AgentChatTurnRow({
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetryUpstreamFailure?: (assistantTurnId: string) => void;
+  upstreamFailureRetryAttempted?: boolean;
+  upstreamFailureRetryDisabled?: boolean;
   creditActionsDisabledReason?: string;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
@@ -17269,6 +17430,13 @@ function AgentChatTurnRow({
           ) : part.type === "notice" ? (
             part.kind === "context-overflow" ? (
               <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
+            ) : part.kind === "upstream-provider" ? (
+              <UpstreamProviderFailureNoticePart
+                key={`${turn.id}:notice:${index}`}
+                attempted={upstreamFailureRetryAttempted}
+                disabled={upstreamFailureRetryDisabled}
+                onRetry={onRetryUpstreamFailure ? () => onRetryUpstreamFailure(turn.id) : undefined}
+              />
             ) : (
               <CreditsNoticePart
                 key={`${turn.id}:notice:${index}`}
@@ -17695,6 +17863,38 @@ function CreditsNoticePart({
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
             {topUpLabel}
+          </button>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function UpstreamProviderFailureNoticePart({
+  attempted = false,
+  disabled = false,
+  onRetry,
+}: {
+  attempted?: boolean;
+  disabled?: boolean;
+  onRetry?: () => void;
+}) {
+  return (
+    <InlineNotice
+      className="agent-upstream-provider-notice"
+      tone="warning"
+      role="alert"
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      body={UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY}
+      actions={
+        onRetry ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={attempted || disabled}
+            onClick={onRetry}
+          >
+            Try again
           </button>
         ) : undefined
       }

@@ -38,6 +38,7 @@ import {
   dispatchAgentSessionStatus,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
+import { UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT } from "../lib/agent-chat-runtime";
 import { setActiveHermesProfileName } from "../lib/active-hermes-profile";
 import { classifyHermesEvent } from "../lib/hermes-control-plane";
 import { hermesActivityStore, type AgentActivityRecord } from "../lib/hermes-activity-store";
@@ -9964,7 +9965,64 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
-    expect(await screen.findByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
+    const picker = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(
+      within(picker).queryByRole("textbox", { name: "Search models" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("stages /model from the slash menu, then opens the model palette on Enter", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/");
+    await user.click(await screen.findByRole("option", { name: "Model" }));
+
+    expect(composer).toHaveTextContent("/model");
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(within(palette).getByRole("combobox", { name: "Search models" })).toHaveFocus();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("searches and keyboard-selects a model when bare /model is submitted", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    expect(search).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("switch", { name: "Only show private models" }),
+    ).not.toBeChecked();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
+
+    await user.type(search, "GLM 5.2");
+    expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
+    );
+    expect(composer).toHaveFocus();
   });
 
   it("queues /model in an existing chat and applies it before the next message", async () => {
@@ -21431,9 +21489,9 @@ describe("AgentWorkspace", () => {
     );
   });
 
-  it("prefers the suggested vision model over the first eligible one (JUN-165)", async () => {
+  it("prefers the private vision fallback over the first eligible one (JUN-165)", async () => {
     // The banner action is a one-tap fix, and with several image-capable models
-    // it prefers a curated suggested pick (Kimi K2.6) rather than the
+    // it prefers a known private vision pick (Kimi K2.6) rather than the
     // alphabetically-first vision model — otherwise it lands on an arbitrary
     // model like Claude Fable 5. Qwen VL is listed first here to prove the
     // preference overrides list order; no non-vision-scoped picker is opened.
@@ -24059,6 +24117,191 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText(/Hermes API returned 500/)).toBeNull();
   });
 
+  it("retries an upstream-provider failure once in the same stored session and preserves clarification state", async () => {
+    const user = userEvent.setup();
+    let resolveFirstRetry: (() => void) | undefined;
+    mocks.gatewayRequest.mockImplementation(
+      (method: string, params?: { session_id?: string; text?: string }) => {
+        if (method === "session.resume") {
+          return Promise.resolve({ session_id: "runtime-session-1" });
+        }
+        if (method === "prompt.submit" && params?.text === UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT) {
+          if (!resolveFirstRetry) {
+            return new Promise((resolve) => {
+              resolveFirstRetry = () => resolve({});
+            });
+          }
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      },
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByRole("textbox");
+    await user.type(composer, "Review the document");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Review the document",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "clarify.request",
+          session_id: "runtime-session-1",
+          payload: {
+            request_id: "clarify-upstream-retry",
+            question: "Which interpretation should I use?",
+            choices: ["Use the saved answer", "Use the alternative"],
+          },
+        });
+      }
+    });
+    await user.click(await screen.findByRole("button", { name: /Use the saved answer/ }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("clarify.respond", {
+        request_id: "clarify-upstream-retry",
+        answer: "Use the saved answer",
+      }),
+    );
+
+    const providerFailure = "API call failed after 3 retries: HTTP 502: upstream_provider_failed";
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "error", text: providerFailure },
+        });
+      }
+    });
+
+    expect(
+      await screen.findByText(
+        "The model service is temporarily unavailable. Your answer is saved.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/upstream_provider_failed/)).toBeNull();
+    await user.type(composer, "Keep this draft");
+
+    const firstRetry = screen.getByRole("button", { name: "Try again" });
+    fireEvent.click(firstRetry);
+    fireEvent.click(firstRetry);
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(
+          ([method, params]) =>
+            method === "prompt.submit" &&
+            (params as { text?: string } | undefined)?.text ===
+              UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+        ),
+      ).toHaveLength(1),
+    );
+    expect(firstRetry).toBeDisabled();
+    expect(composer).toHaveTextContent("Keep this draft");
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "clarify.respond"),
+    ).toHaveLength(1);
+
+    await act(async () => resolveFirstRetry?.());
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "error", text: providerFailure },
+        });
+      }
+    });
+
+    const retryButtons = await screen.findAllByRole("button", { name: "Try again" });
+    const secondRetry = retryButtons.find((button) => !button.hasAttribute("disabled"));
+    expect(secondRetry).toBeDefined();
+    await user.click(secondRetry as HTMLButtonElement);
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(
+          ([method, params]) =>
+            method === "prompt.submit" &&
+            (params as { text?: string } | undefined)?.text ===
+              UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+        ),
+      ).toHaveLength(2),
+    );
+    expect(composer).toHaveTextContent("Keep this draft");
+    expect(
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "clarify.respond"),
+    ).toHaveLength(1);
+  });
+
+  it("disables an older provider retry while the session is running", async () => {
+    const user = userEvent.setup();
+    let resolveNewerRun: (() => void) | undefined;
+    mocks.listHermesSessions.mockResolvedValue([
+      { ...existingSession, id: "busy-provider-session" },
+    ]);
+    mocks.gatewayRequest.mockImplementation((method: string, params?: { text?: string }) =>
+      method === "session.resume"
+        ? Promise.resolve({ session_id: "runtime-session-1" })
+        : method === "prompt.submit" && params?.text === "Start a newer run"
+          ? new Promise((resolve) => {
+              resolveNewerRun = () => resolve({});
+            })
+          : Promise.resolve({}),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "Start the first run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Start the first run",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-1",
+          payload: {
+            status: "error",
+            text: "API call failed after 3 retries: HTTP 502: upstream_provider_failed",
+          },
+        });
+      }
+    });
+
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    await waitFor(() => expect(retry).toBeEnabled());
+
+    await user.type(screen.getByRole("textbox"), "Start a newer run");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Start a newer run",
+      }),
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+    });
+    await act(async () => resolveNewerRun?.());
+  });
+
   it("renders an out-of-credits notice with an upgrade action instead of the raw 402 error", async () => {
     const user = userEvent.setup();
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
@@ -24152,6 +24395,7 @@ describe("AgentWorkspace", () => {
   });
 
   it("shows every error surface via the __agentErrors() dev handle", async () => {
+    const user = userEvent.setup();
     const agentErrors = (window as unknown as { __agentErrors: (show?: boolean) => string })
       .__agentErrors;
     render(<AgentWorkspace />);
@@ -24164,9 +24408,19 @@ describe("AgentWorkspace", () => {
       // Turn-level samples from the catalog (section label + the card itself)…
       expect(screen.getAllByText("Out of credits").length).toBeGreaterThan(0);
       expect(screen.getByRole("button", { name: "Upgrade" })).toBeInTheDocument();
+      const providerSection = screen.getByText("Model service unavailable").closest("section");
+      expect(providerSection).not.toBeNull();
+      expect(
+        screen.getByText("The model service is temporarily unavailable. Your answer is saved."),
+      ).toBeInTheDocument();
+      const providerRetry = within(providerSection as HTMLElement).getByRole("button", {
+        name: "Try again",
+      });
+      await user.click(providerRetry);
+      expect(providerRetry).toBeDisabled();
       // …plus the forced chrome samples the turn gallery can't represent.
       expect(screen.getByText("Could not connect to Hermes gateway.")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+      expect(screen.getAllByRole("button", { name: "Try again" })).toHaveLength(2);
       // Scope to the gallery's inline composer pill: the busy notice now also
       // fires as a toast (.june-toast), so an unscoped text query can also match
       // a busy toast lingering from an earlier test.

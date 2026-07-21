@@ -10,7 +10,8 @@ import { IconFlag1 } from "central-icons/IconFlag1";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconStop } from "central-icons/IconStop";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import {
@@ -18,9 +19,14 @@ import {
   stripRenderedMediaReferences,
   type AgentChatPart,
   type AgentChatTurn,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
 } from "../../lib/agent-chat-runtime";
 import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
 import { messageFromError } from "../../lib/errors";
+import {
+  upstreamProviderRecoveryIds,
+  upstreamProviderRecoveryStore,
+} from "../../lib/upstream-provider-recovery";
 import { attachmentStateFrom } from "../../lib/hermes-image-attach";
 import {
   decodeHermesModelSelection,
@@ -48,6 +54,7 @@ import {
 } from "../../lib/tauri";
 import { FileTypeIcon } from "../agent/FileTypeIcon";
 import { MarkdownContent } from "../agent/MarkdownContent";
+import { InlineNotice } from "../ui/InlineNotice";
 import { ComposerEditor, type ComposerEditorHandle } from "../agent/composer/ComposerEditor";
 import {
   ComposerModelPicker,
@@ -152,6 +159,11 @@ function assistantPartNode(
   part: AgentChatPart,
   index: number,
   holdTrailingMediaTransport: boolean,
+  upstreamFailureRetry?: {
+    attempted: boolean;
+    disabled: boolean;
+    onRetry: () => void;
+  },
 ) {
   switch (part.type) {
     case "text":
@@ -166,6 +178,29 @@ function assistantPartNode(
         />
       );
     case "notice":
+      if (part.kind === "upstream-provider") {
+        return (
+          <InlineNotice
+            key={index}
+            tone="warning"
+            role="alert"
+            icon={<IconExclamationTriangle size={14} aria-hidden />}
+            body={UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY}
+            actions={
+              upstreamFailureRetry ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={upstreamFailureRetry.disabled || upstreamFailureRetry.attempted}
+                  onClick={upstreamFailureRetry.onRetry}
+                >
+                  Try again
+                </button>
+              ) : undefined
+            }
+          />
+        );
+      }
       return <MarkdownContent key={index} markdown={part.text} />;
     case "tool":
       return (
@@ -223,6 +258,7 @@ export function NoteChatPanel({
     modelSelection,
     appliedHermesModelId,
     submit,
+    retryUpstreamFailure,
     stop,
     setSessionModel,
   } = chat;
@@ -235,11 +271,31 @@ export function NoteChatPanel({
   const [attachments, setAttachments] = useState<NoteChatAttachment[]>([]);
   const [importing, setImporting] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
+  useSyncExternalStore(
+    upstreamProviderRecoveryStore.subscribe,
+    upstreamProviderRecoveryStore.getVersion,
+    upstreamProviderRecoveryStore.getVersion,
+  );
+  const upstreamFailureRecoveryIds = useMemo(() => upstreamProviderRecoveryIds(turns), [turns]);
   const composerRef = useRef<ComposerEditorHandle | null>(null);
   const draftRef = useRef("");
   const panelRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  async function handleUpstreamFailureRetry(turnId: string) {
+    const recoveryId = upstreamFailureRecoveryIds.get(turnId);
+    if (
+      !storedSessionId ||
+      !recoveryId ||
+      !upstreamProviderRecoveryStore.reserve(storedSessionId, recoveryId)
+    ) {
+      return;
+    }
+    const accepted = await retryUpstreamFailure().catch(() => false);
+    if (accepted) return;
+    upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+  }
 
   // The "+" picker routes through the same bridge import as the workspace so
   // the agent always gets a real, readable workspace path. One file at a
@@ -665,7 +721,16 @@ export function NoteChatPanel({
                 ) : (
                   <div key={turn.id} className="note-chat-turn-assistant">
                     {turn.parts.map((part, index) =>
-                      assistantPartNode(part, index, turnContainsMediaStructure(turn)),
+                      assistantPartNode(part, index, turnContainsMediaStructure(turn), {
+                        attempted: storedSessionId
+                          ? upstreamProviderRecoveryStore.attempted(
+                              storedSessionId,
+                              upstreamFailureRecoveryIds.get(turn.id) ?? "",
+                            )
+                          : false,
+                        disabled: working || chat.submissionPending,
+                        onRetry: () => void handleUpstreamFailureRetry(turn.id),
+                      }),
                     )}
                   </div>
                 ),

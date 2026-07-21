@@ -6160,6 +6160,18 @@ button.agent-user-attachment:hover {
   border: 0;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .agent-follow-up-actions {
   display: flex;
   align-items: center;
@@ -6726,6 +6738,74 @@ button.agent-user-attachment:hover {
   width: min(280px, calc(100vw - 48px));
   max-height: inherit;
   padding: var(--sp-1);
+}
+
+/* Bare `/model` opens one command-result palette rather than the toolbar
+ * picker's two-layer drill-in. It aligns to the composer box, leads with
+ * search, keeps curated suggestions first, and continues into the remaining
+ * catalog below a divider. */
+.agent-composer-model-command-palette {
+  gap: 0;
+  width: auto;
+  max-height: min(50vh, var(--model-command-available-height, 50vh));
+  padding: var(--sp-1);
+  overflow: hidden;
+}
+
+.agent-composer-model-command-list-wrap {
+  min-height: 0;
+  overflow: hidden;
+  contain: paint;
+  --scroll-fade-size: var(--sp-4);
+}
+
+.agent-composer-model-command-list {
+  max-height: calc(
+    min(50vh, var(--model-command-available-height, 50vh)) -
+    (2 * var(--control-md)) -
+    var(--sp-2)
+  );
+  padding: var(--sp-1) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.agent-composer-model-command-section {
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.agent-composer-model-command-section-label {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.2;
+}
+
+.agent-composer-model-command-divider {
+  height: var(--sp-px);
+  margin: var(--sp-1) var(--sp-2);
+  border: 0;
+  background: color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+.agent-composer-model-command-row .agent-composer-model-row-copy {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.agent-composer-model-command-description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agent-composer-model-search {
@@ -22052,6 +22132,11 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
+.dialog-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .dialog-description {
   margin: calc(-1 * var(--sp-3)) 0 0;
   color: var(--muted-foreground);
@@ -26983,14 +27068,23 @@ button.memory-project:hover {
   line-height: 1.4;
 }
 
-.connector-disclosure {
+.connector-title-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connectors-notion-disclosures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.connectors-notion-disclosure {
   margin: 0;
-  overflow: hidden;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .connector-actions {

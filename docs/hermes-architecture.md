@@ -106,6 +106,10 @@ Builtin composer slash commands are **`/model`**, **`/file`**, and
 (`src/lib/agent-composer-slash-commands.ts`) — plus **skill** slash commands
 (`skill-slash-commands.ts`). In an existing session, `/model` queues the same
 next-message choice as the picker; it does not mutate the active agent run.
+Choosing Model from the slash menu stages `/model`; pressing Enter opens a
+searchable catalog with suggested models pinned above the remaining models and
+an optional Private-only filter. Typing `/model <name>` selects a matching
+model directly.
 
 ## Key Tauri commands
 

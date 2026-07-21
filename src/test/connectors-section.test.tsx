@@ -415,13 +415,55 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText(/Pages and workspace content for briefs, search, and approved updates/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
-    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
 
     await userEvent.click(connect);
 
+    expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Connect Notion" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/You'll sign in to Notion and approve June's access/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Access may extend beyond selected pages/i).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText(/Search may include Notion-connected sources/i).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    // The (i) button's aria-describedby must resolve to exactly one element
+    // containing both disclosure strings, so screen readers encounter the
+    // caveat when navigating the row.
+    const infoButton = screen.getByRole("button", { name: "Notion privacy and access scope" });
+    const describedById = infoButton.getAttribute("aria-describedby");
+    expect(describedById).toBe("notion-scope-disclosure");
+    const describedByTarget = document.getElementById("notion-scope-disclosure");
+    expect(describedByTarget).not.toBeNull();
+    expect(describedByTarget).toHaveTextContent(/Access may extend beyond selected pages/i);
+    expect(describedByTarget).toHaveTextContent(/Search may include Notion-connected sources/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
     expect(mocks.connectorsConnect).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Notion dialog open and shows an error when OAuth fails", async () => {
+    mocks.notionConnectorConnect.mockRejectedValue(new Error("OAuth rejected"));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect Notion"));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
+    // Dialog stays open after an OAuth failure so the user can retry.
+    expect(screen.getByRole("dialog", { name: "Connect Notion" })).toBeInTheDocument();
   });
 
   it("shows connected Notion preview state and disconnects locally", async () => {
@@ -441,8 +483,13 @@ describe("ConnectorsSection", () => {
 
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText(/Pages, search, and approved updates/i)).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
-    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
 
     mocks.connectorsList.mockResolvedValue([]);
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
@@ -470,9 +517,27 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText(/Reconnect Notion to restore pages, search, and approved updates/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
-    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
+    expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Reconnect Notion" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/You'll sign in to Notion and approve June's access/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Access may extend beyond selected pages/i).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText(/Search may include Notion-connected sources/i).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
   });
 
@@ -495,7 +560,13 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText("June could not confirm the Notion connection. Try again in a moment."),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
     expect(screen.queryByRole("button", { name: "Connect Notion" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect Notion" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
@@ -523,6 +594,8 @@ describe("ConnectorsSection", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Reconnect Notion" }));
 
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Reconnect Notion" })).toBeDisabled(),
     );
@@ -546,6 +619,7 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Reconnect Notion" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
 
     expect(mocks.notionConnectorDisconnect).not.toHaveBeenCalled();

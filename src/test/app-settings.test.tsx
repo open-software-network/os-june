@@ -428,14 +428,28 @@ describe("AppSettings", () => {
                 id: "kimi-k2-6",
                 name: "Kimi K2.6",
                 modelType: "text",
-                description: "Open-weights model built for long tool-driven tasks.",
+                description: "Private multimodal model built for long tool-driven tasks.",
                 privacy: "private",
                 priceUnit: "tokens",
                 inputCreditsPerMillionTokens: 850,
                 outputCreditsPerMillionTokens: 4660,
                 contextTokens: 256000,
                 traits: [],
-                capabilities: ["supportsFunctionCalling"],
+                capabilities: ["supportsFunctionCalling", "supportsVision"],
+              },
+              {
+                provider: "venice",
+                id: "kimi-k3",
+                name: "Kimi K3",
+                modelType: "text",
+                description: "Multimodal reasoning model built for long tool-driven tasks.",
+                privacy: "anonymized",
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 3750,
+                outputCreditsPerMillionTokens: 18750,
+                contextTokens: 1000000,
+                traits: [],
+                capabilities: ["supportsFunctionCalling", "supportsVision"],
               },
               {
                 provider: "venice",
@@ -4053,6 +4067,7 @@ describe("AppSettings", () => {
     // section, not the suggested rows.
     expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Kimi K3/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Auto/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();

@@ -15,6 +15,15 @@ import { displayedSkillInvocationText } from "./skill-slash-commands";
 import type { JuneHermesEvent } from "./hermes-control-plane";
 import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
 import { stripProjectContext } from "./agent-project-context";
+import {
+  displayedUpstreamProviderRecoveryText,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+} from "./upstream-provider-recovery";
+
+export {
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+} from "./upstream-provider-recovery";
 
 const HERMES_LIVE_EVENT_LIMIT = 200;
 
@@ -146,14 +155,27 @@ export type AgentChatSecretPart = {
 };
 
 /** A turn-level condition the user can act on, rendered as a notice card
- * instead of raw error text: `credits` (the balance ran out) or
+ * instead of raw error text: `credits` (the balance ran out),
+ * `upstream-provider` (the runtime exhausted its provider retries), or
  * `context-overflow` (the request outgrew the model's context / the agent
  * request-size limit and cannot be retried as-is — JUN-169). */
 export type AgentChatNoticePart = {
   type: "notice";
-  kind: "credits" | "context-overflow";
+  kind: "credits" | "context-overflow" | "upstream-provider";
   text: string;
 };
+
+const UPSTREAM_PROVIDER_FAILURE_MARKER = "upstream_provider_failed";
+const PERSISTED_UPSTREAM_PROVIDER_FAILURE =
+  /^\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*$/i;
+// Not anchored to the end: the strip must cover the same scope the marker
+// detection does, so a sentinel followed by more prose never renders raw.
+const UPSTREAM_PROVIDER_FAILURE_SENTENCE =
+  /\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*/gi;
+
+export function isUpstreamProviderFailureText(text: string) {
+  return PERSISTED_UPSTREAM_PROVIDER_FAILURE.test(text);
+}
 
 /** A mid-run instruction the user steered into a still-working session (feature
  * 06), rendered as a quiet "Steering" system item so the transcript records
@@ -408,7 +430,9 @@ export function buildHermesSessionChatTurns(
       if (content) {
         const notice =
           turn.role === "assistant"
-            ? (creditsNoticeFromTurnText(content) ?? persistedContextOverflowNotice(content))
+            ? (creditsNoticeFromTurnText(content) ??
+              persistedContextOverflowNotice(content) ??
+              upstreamProviderFailureNotice(content))
             : undefined;
         turn.parts.push(
           notice ?? {
@@ -510,6 +534,29 @@ function contextOverflowNotice(text: string): AgentChatNoticePart | undefined {
     : undefined;
 }
 
+// Hermes exposes an exhausted upstream-provider retry as assistant text. A
+// live message.complete has an authoritative failed flag. Persisted messages
+// lose that flag, so only the exact runtime sentinel may fold on reload. The
+// same exactness on live failures keeps partial output out of this recovery
+// path; retrying a truncated answer is deliberately outside JUN-363.
+function upstreamProviderFailureNotice(
+  text: string,
+  failed?: boolean,
+): AgentChatNoticePart | undefined {
+  const matches = failed !== false && isUpstreamProviderFailureText(text);
+  return matches
+    ? {
+        type: "notice",
+        kind: "upstream-provider",
+        text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+      }
+    : undefined;
+}
+
+function withoutUpstreamProviderFailureSentinel(text: string) {
+  return text.replace(UPSTREAM_PROVIDER_FAILURE_SENTENCE, "\n").trim();
+}
+
 // Persisted/reloaded turns carry no failure flag (the stored message has no
 // status field), so only the unambiguous error sentinels may fold. An ordinary
 // saved answer that discusses "the maximum context length" must stay text, not
@@ -538,7 +585,8 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   const notice =
     message.role === "assistant"
       ? (creditsNoticeFromTurnText(message.content) ??
-        persistedContextOverflowNotice(message.content))
+        persistedContextOverflowNotice(message.content) ??
+        upstreamProviderFailureNotice(message.content))
       : undefined;
   return {
     id: message.id,
@@ -768,16 +816,28 @@ function appendLiveHermesEvents(
         // assistant bubble. If Hermes reused the interim message id, do not
         // reopen that completed render identity for different prose.
         currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
-        // A billing failure is recognizable from its "Error:" text prefix; a
-        // context overflow is not, so only fold it when the turn actually
-        // failed — an ordinary sentence that mentions "context length" stays prose.
+        // Upstream-provider and context failures only fold when the turn
+        // actually failed; successful prose mentioning either marker stays
+        // prose. Billing also requires its runtime "Error:" prefix.
         const displayText = stripMediaReferences(text).trim();
+        const hasStreamedAssistantText = currentAssistant.parts.some(
+          (part) => part.type === "text" && Boolean(part.text.trim()),
+        );
         const imageParts = imagePartsFromHermesContent(text);
         const videoParts = videoPartsFromHermesContent(text);
         const notice = displayText
-          ? (creditsNoticeFromTurnText(displayText) ??
+          ? ((!hasStreamedAssistantText
+              ? upstreamProviderFailureNotice(displayText, event.failed)
+              : undefined) ??
+            creditsNoticeFromTurnText(displayText) ??
             (event.failed ? contextOverflowNotice(displayText) : undefined))
           : undefined;
+        const visibleDisplayText =
+          !notice &&
+          event.failed === true &&
+          displayText.toLowerCase().includes(UPSTREAM_PROVIDER_FAILURE_MARKER)
+            ? withoutUpstreamProviderFailureSentinel(displayText)
+            : displayText;
         if (notice) {
           if (
             !currentAssistant.parts.some(
@@ -787,10 +847,10 @@ function appendLiveHermesEvents(
             currentAssistant.parts.push(notice);
           }
         } else if (text) {
-          if (displayText) {
+          if (visibleDisplayText) {
             completeAssistantTextPart(
               currentAssistant.parts,
-              displayText,
+              visibleDisplayText,
               messageId,
               imageParts.length > 0 ||
                 videoParts.length > 0 ||
@@ -1890,6 +1950,8 @@ function displayedUserPromptText(content: string) {
 }
 
 export function displayedComposerUserMessageText(content: string): string {
+  const recoveryText = displayedUpstreamProviderRecoveryText(content);
+  if (recoveryText !== content) return recoveryText;
   return stripSyntheticImageAttachmentMarker(
     stripAttachmentPromptBlock(displayedUserPromptText(stripImageAnalysisFailureNotice(content))),
   );
