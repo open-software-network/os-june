@@ -417,12 +417,26 @@ export function SmoothedStreamingMarkdown({
   // transition in a passive effect instead would paint one frame with
   // animateWords already false — every .agent-stream-word span would unwrap,
   // then the effect's re-render would re-wrap and remount them, restarting
-  // every fade from 0.
+  // every fade from 0. A canonical completion that replaces visible text is
+  // different: its new tree must flush unwrapped so corrected prose cannot
+  // mount at zero opacity during the settle window.
+  const completionReplacesVisibleText = !running && !markdown.startsWith(visibleRef.current);
   if (running !== prevRunning) {
     setPrevRunning(running);
-    setSettling(!running && !reducedMotion && !fadeDisabled && !document.hidden);
+    setSettling(
+      !running &&
+        !completionReplacesVisibleText &&
+        !reducedMotion &&
+        !fadeDisabled &&
+        !document.hidden,
+    );
   }
-  if (settling && (reducedMotion || fadeDisabled || document.hidden)) setSettling(false);
+  if (
+    settling &&
+    (completionReplacesVisibleText || reducedMotion || fadeDisabled || document.hidden)
+  ) {
+    setSettling(false);
+  }
 
   // Raw chunks still re-render the parent. Reuse the parsed markdown element
   // until the presentation string advances so smoothing does not add duplicate

@@ -103,6 +103,17 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).toBe("Hello streaming backlog");
   });
 
+  it("flushes a structurally corrected completion without fading replacement text", () => {
+    const view = render(<SmoothedStreamingMarkdown markdown="Draft answer" running />);
+    expect(view.container.querySelectorAll(".agent-stream-word").length).toBeGreaterThan(0);
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="# Corrected answer" running={false} />);
+
+    expect(view.container.querySelector("h2")?.textContent).toBe("Corrected answer");
+    expect(view.container.querySelector(".agent-stream-word")).toBeNull();
+    expect(view.container.querySelector(".agent-stream-settling")).toBeNull();
+  });
+
   it("does not animate through a reconciled text replacement", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="Draft answer" running />);
