@@ -259,6 +259,19 @@ async function reconcileStoredSessionModelMetadata(storedSessionId: string): Pro
   return { appliedHermesModelId, selection };
 }
 
+/** Result of a note-chat prompt attempt.
+ * `accepted` is true once Hermes accepted `prompt.submit`.
+ * `current` is true only while this panel still owns that attempt. */
+export type NoteChatSubmitResult = {
+  accepted: boolean;
+  current: boolean;
+};
+
+export const NOTE_CHAT_SUBMIT_REJECTED: NoteChatSubmitResult = {
+  accepted: false,
+  current: false,
+};
+
 export type NoteChat = {
   /** The rendered conversation: persisted turns + the live streaming tail. */
   turns: AgentChatTurn[];
@@ -274,13 +287,13 @@ export type NoteChat = {
   storedSessionId: string | undefined;
   /** Sends a question about the note, with any imported attachments (images
    * ride the structured attach flow before the prompt; every file's workspace
-   * path rides in the prompt block). Resolves true when the prompt was
-   * accepted (the caller can clear its composer), false on failure (the
-   * caller keeps the draft and chips so the user can retry). */
-  submit: (text: string, attachments?: NoteChatAttachment[]) => Promise<boolean>;
+   * path rides in the prompt block). Resolves `accepted: true` once Hermes
+   * took the prompt. `current` is only true while this panel still owns the
+   * attempt, so a stale unmount can keep drafts/recovery keys correct. */
+  submit: (text: string, attachments?: NoteChatAttachment[]) => Promise<NoteChatSubmitResult>;
   /** Starts one continuation in this chat's existing session without reading
    * or clearing the composer. */
-  retryUpstreamFailure: () => Promise<boolean>;
+  retryUpstreamFailure: () => Promise<NoteChatSubmitResult>;
   /** Interrupts the running agent run. The UI reads stopped immediately; the
    * interrupt RPC follows best-effort, like the workspace's stop. */
   stop: () => void;
@@ -528,12 +541,12 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       rawText: string,
       attachments: NoteChatAttachment[] = [],
       displayText?: string,
-    ): Promise<boolean> => {
+    ): Promise<NoteChatSubmitResult> => {
       const question = rawText.trim();
-      if ((!question && !attachments.length) || !noteId) return false;
+      if ((!question && !attachments.length) || !noteId) return NOTE_CHAT_SUBMIT_REJECTED;
       // Reject a second send that races the first before setWorking(true)
       // commits — otherwise both could create a session and submit the prompt.
-      if (activeSubmissionRef.current) return false;
+      if (activeSubmissionRef.current) return NOTE_CHAT_SUBMIT_REJECTED;
       const submissionToken = Symbol("note-chat-submit");
       activeSubmissionRef.current = submissionToken;
       setSubmissionPending(true);
@@ -745,7 +758,10 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           stoppedRuntimeSessionIdRef.current = undefined;
           stoppedRunRef.current = false;
         });
-        return submissionIsCurrent();
+        // Hermes accepted the prompt even if this panel later unmounted or
+        // switched notes. Callers that only care about UI ownership should
+        // check `current`; recovery keys must key off `accepted`.
+        return { accepted: true, current: submissionIsCurrent() };
       } catch (err) {
         dispatchReservation?.cancel();
         if (submissionIsCurrent()) {
@@ -770,7 +786,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             }
           }
         }
-        return false;
+        return { accepted: false, current: submissionIsCurrent() };
       } finally {
         if (activeSubmissionRef.current === submissionToken) {
           activeSubmissionRef.current = undefined;
@@ -787,7 +803,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   );
 
   const retryUpstreamFailure = useCallback(() => {
-    if (!storedSessionIdRef.current) return Promise.resolve(false);
+    if (!storedSessionIdRef.current) return Promise.resolve(NOTE_CHAT_SUBMIT_REJECTED);
     return submitPrompt(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT, [], "Try again");
   }, [submitPrompt]);
 

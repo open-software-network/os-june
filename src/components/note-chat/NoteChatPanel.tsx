@@ -272,8 +272,14 @@ export function NoteChatPanel({
     ) {
       return;
     }
-    const accepted = await retryUpstreamFailure().catch(() => false);
-    if (accepted) return;
+    // Keep the one-shot key spent once Hermes accepted the continuation, even
+    // if this panel unmounted or switched notes before the submit resolved.
+    // Only a rejected/failed submit may re-arm "Try again".
+    const result = await retryUpstreamFailure().catch(() => ({
+      accepted: false,
+      current: false,
+    }));
+    if (result.accepted) return;
     upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
   }
 
@@ -598,8 +604,10 @@ export function NoteChatPanel({
   async function handleSend(text: string) {
     if (working || importing || textActionsDisabledReason) return;
     setComposerError(null);
-    const accepted = await submit(text, attachments);
-    if (accepted) {
+    const result = await submit(text, attachments);
+    // Clear the composer only when this panel still owns the accepted send.
+    // A stale/switched panel must not wipe the draft of the newly selected note.
+    if (result.accepted && result.current) {
       draftRef.current = "";
       setDraftEmpty(true);
       setAttachments([]);
