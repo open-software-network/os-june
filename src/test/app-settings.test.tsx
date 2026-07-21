@@ -2518,12 +2518,10 @@ describe("AppSettings", () => {
       const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
       expect(systemAudioRow).not.toBeNull();
       expect(within(systemAudioRow as HTMLElement).getByLabelText("Available")).toBeInTheDocument();
-      await userEvent.click(
-        within(systemAudioRow as HTMLElement).getByRole("button", {
-          name: "Open sound settings",
-        }),
-      );
-      expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+      // Windows has no per-app system-audio permission to grant, so the row
+      // is informational only: the "Open sound settings" action is not rendered.
+      expect(within(systemAudioRow as HTMLElement).queryByRole("button")).not.toBeInTheDocument();
+      expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
       await userEvent.click(
