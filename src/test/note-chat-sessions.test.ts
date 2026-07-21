@@ -229,6 +229,29 @@ describe("note chat session map", () => {
     expect(noteChatSessionIdFor("note-1")).toBe("sess-a");
   });
 
+  it("keeps accepted true when post-submit bookkeeping throws", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat" }]);
+    mocks.startAgentRunMonitoring.mockImplementationOnce(() => {
+      throw new Error("monitor failed after accept");
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      await expect(result.current.retryUpstreamFailure()).resolves.toMatchObject({
+        accepted: true,
+        current: true,
+      });
+    });
+
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-note-chat",
+      text: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+    });
+    expect(result.current.error).toMatch(/monitor failed after accept/i);
+  });
+
   it("submits an upstream-provider retry in the existing note-chat session", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat" }]);

@@ -594,6 +594,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       setPendingUserTurns((current) => [...current, optimistic]);
       workingRef.current = true;
       setWorking(true);
+      let promptAccepted = false;
       try {
         const gateway = await connectGateway(true);
         if (!gateway) throw new Error("Hermes gateway is not connected.");
@@ -748,6 +749,9 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             session_id: runtimeSessionId,
             text: content,
           });
+          // Hermes ownership starts here. Later local bookkeeping failures must
+          // not re-arm recovery keys or look like a rejected submit.
+          promptAccepted = true;
           startAgentRunMonitoring({
             storedSessionId: activeStoredSessionId,
             runtimeSessionId,
@@ -763,17 +767,22 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         // check `current`; recovery keys must key off `accepted`.
         return { accepted: true, current: submissionIsCurrent() };
       } catch (err) {
-        dispatchReservation?.cancel();
+        if (!promptAccepted) {
+          dispatchReservation?.cancel();
+        }
         if (submissionIsCurrent()) {
-          setPendingUserTurns((current) => current.filter((turn) => turn !== optimistic));
-          workingRef.current = false;
-          setWorking(false);
+          if (!promptAccepted) {
+            setPendingUserTurns((current) => current.filter((turn) => turn !== optimistic));
+            workingRef.current = false;
+            setWorking(false);
+          }
+          // Surface a late bookkeeping failure without undoing Hermes acceptance.
           setError(
             isSessionBusyError(err)
               ? "June is still working on the previous message."
               : messageFromError(err),
           );
-          if (!isSessionBusyError(err)) {
+          if (!promptAccepted && !isSessionBusyError(err)) {
             const currentStoredSessionId = storedSessionIdRef.current;
             if (currentStoredSessionId) {
               cancelAgentRunMonitoring(currentStoredSessionId);
@@ -786,7 +795,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             }
           }
         }
-        return { accepted: false, current: submissionIsCurrent() };
+        return { accepted: promptAccepted, current: submissionIsCurrent() };
       } finally {
         if (activeSubmissionRef.current === submissionToken) {
           activeSubmissionRef.current = undefined;
