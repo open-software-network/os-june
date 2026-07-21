@@ -65,6 +65,7 @@ struct CursorSnapshot {
 struct CursorLifecycle {
     visible_epoch: Option<u64>,
     last_point: Option<ScreenPoint>,
+    native_revision: Option<u64>,
     revision: u64,
 }
 
@@ -104,10 +105,29 @@ impl CursorLifecycle {
         })
     }
 
-    fn hide(&mut self) {
+    fn hide(&mut self) -> u64 {
         self.visible_epoch = None;
         self.last_point = None;
         self.revision = self.revision.saturating_add(1);
+        self.revision
+    }
+
+    fn record_native_show(&mut self, revision: u64) {
+        self.native_revision = Some(
+            self.native_revision
+                .map_or(revision, |current| current.max(revision)),
+        );
+    }
+
+    fn claim_native_hide(&mut self, hide_revision: u64) -> bool {
+        if self
+            .native_revision
+            .is_some_and(|native_revision| native_revision > hide_revision)
+        {
+            return false;
+        }
+        self.native_revision = None;
+        true
     }
 
     fn accepts(&self, expected_epoch: u64, current_epoch: u64, revision: u64) -> bool {
@@ -142,22 +162,26 @@ impl ComputerUseCursorState {
             .apply_motion(expected_epoch, current_epoch, motion)
     }
 
-    fn hide(&self) {
+    fn hide(&self) -> Option<u64> {
+        Some(self.lifecycle.lock().ok()?.hide())
+    }
+
+    fn record_native_show(&self, revision: u64) {
         if let Ok(mut lifecycle) = self.lifecycle.lock() {
-            lifecycle.hide();
+            lifecycle.record_native_show(revision);
         }
+    }
+
+    fn claim_native_hide(&self, hide_revision: u64) -> bool {
+        self.lifecycle.lock().map_or(true, |mut lifecycle| {
+            lifecycle.claim_native_hide(hide_revision)
+        })
     }
 
     pub(crate) fn accepts(&self, expected_epoch: u64, current_epoch: u64, revision: u64) -> bool {
         self.lifecycle
             .lock()
             .is_ok_and(|lifecycle| lifecycle.accepts(expected_epoch, current_epoch, revision))
-    }
-
-    pub(crate) fn is_hidden(&self) -> bool {
-        self.lifecycle
-            .lock()
-            .map_or(true, |lifecycle| lifecycle.visible_epoch.is_none())
     }
 }
 
@@ -192,13 +216,17 @@ pub(crate) fn apply_driver_notification(
 }
 
 pub(crate) fn hide(app: &AppHandle) {
-    app.state::<crate::computer_use::ComputerUseState>()
+    let hide_revision = app
+        .state::<crate::computer_use::ComputerUseState>()
         .cursor()
         .hide();
     let app_for_main = app.clone();
     let _ = app.run_on_main_thread(move || {
         let state = app_for_main.state::<crate::computer_use::ComputerUseState>();
-        if state.cursor().is_hidden() {
+        let should_hide = hide_revision
+            .map(|revision| state.cursor().claim_native_hide(revision))
+            .unwrap_or(true);
+        if should_hide {
             hide_native_panel();
         }
     });
@@ -271,6 +299,7 @@ fn schedule_point(app: &AppHandle, expected_epoch: u64, revision: u64, point: Sc
             return;
         }
         show_native_panel(point);
+        state.cursor().record_native_show(revision);
     });
 }
 
@@ -694,5 +723,42 @@ mod tests {
             .is_none());
         assert!(lifecycle.visible_epoch.is_none());
         assert!(!lifecycle.accepts(5, 6, shown.revision));
+    }
+
+    #[test]
+    fn queued_hide_still_claims_a_panel_when_a_new_epoch_only_arms() {
+        let mut lifecycle = CursorLifecycle::default();
+        lifecycle.show(5, 5).expect("first epoch arms");
+        let first_motion = lifecycle
+            .apply_motion(5, 5, PointerMotion::Point(ScreenPoint { x: 3.0, y: 4.0 }))
+            .expect("first epoch moves");
+        lifecycle.record_native_show(first_motion.revision);
+
+        let hide_revision = lifecycle.hide();
+        let next = lifecycle.show(6, 6).expect("next epoch arms");
+
+        assert_eq!(next.motion, None);
+        assert!(lifecycle.claim_native_hide(hide_revision));
+        assert!(lifecycle.native_revision.is_none());
+    }
+
+    #[test]
+    fn queued_hide_skips_a_panel_rendered_by_a_newer_epoch() {
+        let mut lifecycle = CursorLifecycle::default();
+        lifecycle.show(5, 5).expect("first epoch arms");
+        let first_motion = lifecycle
+            .apply_motion(5, 5, PointerMotion::Point(ScreenPoint { x: 3.0, y: 4.0 }))
+            .expect("first epoch moves");
+        lifecycle.record_native_show(first_motion.revision);
+
+        let hide_revision = lifecycle.hide();
+        lifecycle.show(6, 6).expect("next epoch arms");
+        let next_motion = lifecycle
+            .apply_motion(6, 6, PointerMotion::Point(ScreenPoint { x: 7.0, y: 8.0 }))
+            .expect("next epoch moves");
+        lifecycle.record_native_show(next_motion.revision);
+
+        assert!(!lifecycle.claim_native_hide(hide_revision));
+        assert_eq!(lifecycle.native_revision, Some(next_motion.revision));
     }
 }
