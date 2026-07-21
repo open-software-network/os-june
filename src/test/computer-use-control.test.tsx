@@ -122,7 +122,7 @@ describe("ComputerUseControl", () => {
     expect(tauriMocks.openPrivacySettings).toHaveBeenCalledWith("screenRecording");
   });
 
-  it("opens Screen recording settings before the permission probe finishes", async () => {
+  it("opens Screen recording settings immediately and coalesces pending permission probes", async () => {
     tauriMocks.computerUseStatus.mockResolvedValue(
       status({ grantEnabled: true, accessibility: true, state: "permission_missing" }),
     );
@@ -135,11 +135,12 @@ describe("ComputerUseControl", () => {
     );
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Open Screen recording settings" }),
-    );
+    const button = await screen.findByRole("button", { name: "Open Screen recording settings" });
+    await userEvent.click(button);
+    await userEvent.click(button);
 
-    expect(tauriMocks.openPrivacySettings).toHaveBeenCalledWith("screenRecording");
+    expect(tauriMocks.openPrivacySettings).toHaveBeenCalledTimes(2);
+    expect(tauriMocks.openPrivacySettings).toHaveBeenLastCalledWith("screenRecording");
     expect(tauriMocks.computerUseRequestPermissions).toHaveBeenCalledTimes(1);
 
     finishPermissionProbe?.(
@@ -151,6 +152,7 @@ describe("ComputerUseControl", () => {
         state: "ready",
       }),
     );
+    await screen.findByText("Ready");
   });
 
   it("keeps Accessibility labeled as step 1 when Screen recording was allowed first", async () => {

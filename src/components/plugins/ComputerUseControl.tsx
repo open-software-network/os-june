@@ -59,6 +59,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>();
   const permissionDragRef = useRef<HTMLButtonElement>(null);
+  const permissionRequestRef = useRef<Promise<void> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -143,8 +144,17 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
         // Give the click immediate visible feedback. Starting the signed helper
         // and probing TCC can take several seconds on a cold launch.
         await openPrivacySettings(pane);
-        const next = await computerUseRequestPermissions();
-        publish(next);
+        if (!permissionRequestRef.current) {
+          const request = computerUseRequestPermissions()
+            .then(publish)
+            .finally(() => {
+              if (permissionRequestRef.current === request) {
+                permissionRequestRef.current = null;
+              }
+            });
+          permissionRequestRef.current = request;
+        }
+        await permissionRequestRef.current;
       } catch (error) {
         setMessage(messageFromError(error));
       }
