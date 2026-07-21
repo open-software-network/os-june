@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import { ComputerUseControl } from "../plugins/ComputerUseControl";
 import {
@@ -35,10 +36,12 @@ import {
 import { Checkbox } from "../ui/Checkbox";
 import { Dialog } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
+import { HoverTip } from "../ui/HoverTip";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
 import { BROWSER_USE_ENABLED } from "../../lib/feature-flags";
 import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
 
 // Read-only by default: Google gets mail read and calendar read, Linear gets
 // workspace read. Write scopes are opt-in checkboxes, so a fresh connect
@@ -76,20 +79,27 @@ const NOTION_SCOPE_DISCLOSURE = "Access may extend beyond selected pages.";
 
 const NOTION_SEARCH_DISCLOSURE = "Search may include Notion-connected sources.";
 
+const NOTION_CONNECT_DIALOG_DESCRIPTION =
+  "You'll sign in to Notion and approve June's access in your browser. June reads pages and workspace content for briefs and search, and creates or updates pages only with your approval.";
+
+const NOTION_CONNECT_DIALOG_TITLE = "Connect Notion";
+
+const NOTION_RECONNECT_DIALOG_TITLE = "Reconnect Notion";
+
 type NotionConnectorRowProps = {
   account: ConnectorAccount | null;
   connecting: boolean;
   disconnecting: boolean;
-  onConnect: () => void;
-  onReconnect: () => void;
   onDisconnect: () => void;
+  onOpenConnectDialog: () => void;
+  onOpenReconnectDialog: () => void;
 };
 
 type NotionConnectorState = "disconnected" | "connected" | "reconnect_required" | "unavailable";
 
 type NotionConnectorActionsProps = Pick<
   NotionConnectorRowProps,
-  "connecting" | "disconnecting" | "onConnect" | "onReconnect" | "onDisconnect"
+  "connecting" | "disconnecting" | "onDisconnect" | "onOpenConnectDialog" | "onOpenReconnectDialog"
 > & {
   state: NotionConnectorState;
 };
@@ -105,9 +115,9 @@ function NotionConnectorActions({
   state,
   connecting,
   disconnecting,
-  onConnect,
-  onReconnect,
   onDisconnect,
+  onOpenConnectDialog,
+  onOpenReconnectDialog,
 }: NotionConnectorActionsProps) {
   const busy = connecting || disconnecting;
   const disconnectButton = (
@@ -133,7 +143,7 @@ function NotionConnectorActions({
           aria-label="Reconnect Notion"
           disabled={busy}
           aria-busy={connecting || undefined}
-          onClick={onReconnect}
+          onClick={onOpenReconnectDialog}
         >
           {connecting ? "Waiting for browser…" : "Reconnect"}
         </button>
@@ -148,7 +158,7 @@ function NotionConnectorActions({
       aria-label="Connect Notion"
       disabled={busy}
       aria-busy={connecting || undefined}
-      onClick={onConnect}
+      onClick={onOpenConnectDialog}
     >
       {connecting ? "Waiting for browser…" : "Connect"}
     </button>
@@ -159,9 +169,9 @@ function NotionConnectorRow({
   account,
   connecting,
   disconnecting,
-  onConnect,
-  onReconnect,
   onDisconnect,
+  onOpenConnectDialog,
+  onOpenReconnectDialog,
 }: NotionConnectorRowProps) {
   const state = notionConnectorState(account);
   const details = {
@@ -190,12 +200,32 @@ function NotionConnectorRow({
         <ConnectorProviderIcon provider="notion" />
       </span>
       <div className="connector-main">
-        <span className="connector-name">Notion</span>
+        <span className="connector-title-line">
+          <span className="connector-name">Notion</span>
+          <HoverTip
+            tip={
+              <>
+                {NOTION_SCOPE_DISCLOSURE} {NOTION_SEARCH_DISCLOSURE}
+              </>
+            }
+            width={360}
+          >
+            <button
+              type="button"
+              className="settings-row-info-affordance"
+              aria-label="Notion privacy and access scope"
+              aria-describedby="notion-scope-disclosure"
+            >
+              <IconCircleInfo size={13} ariaHidden />
+            </button>
+          </HoverTip>
+          <span id="notion-scope-disclosure" className="visually-hidden">
+            {NOTION_SCOPE_DISCLOSURE} {NOTION_SEARCH_DISCLOSURE}
+          </span>
+        </span>
         <p className="connector-subtitle" title={subtitle}>
           {subtitle}
         </p>
-        <p className="connector-disclosure">{NOTION_SCOPE_DISCLOSURE}</p>
-        <p className="connector-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
       </div>
       <div className="connector-actions">
         {statusLabel ? (
@@ -207,9 +237,9 @@ function NotionConnectorRow({
           state={state}
           connecting={connecting}
           disconnecting={disconnecting}
-          onConnect={onConnect}
-          onReconnect={onReconnect}
           onDisconnect={onDisconnect}
+          onOpenConnectDialog={onOpenConnectDialog}
+          onOpenReconnectDialog={onOpenReconnectDialog}
         />
       </div>
     </li>
@@ -359,6 +389,8 @@ export function ConnectorsSection({
   const [obsidianDisconnecting, setObsidianDisconnecting] = useState(false);
   const [notionConnecting, setNotionConnecting] = useState(false);
   const [notionDisconnecting, setNotionDisconnecting] = useState(false);
+  const [notionConnectOpen, setNotionConnectOpen] = useState(false);
+  const [notionDialogMode, setNotionDialogMode] = useState<"connect" | "reconnect">("connect");
   const notionOperationIdRef = useRef(0);
   // Linear team-selection dialog: the account id it's open for (null =
   // closed). Kept separate from the fetched team list/selection so a fetch
@@ -537,9 +569,20 @@ export function ConnectorsSection({
     setNotionConnecting(true);
     try {
       await notionConnectorConnect();
+      // OAuth succeeded: tokens are stored. Close the consent dialog now,
+      // before the runtime apply/refresh that can fail independently. A
+      // runtime-apply failure after a successful grant is a transient
+      // infra issue, not a reason to re-prompt for OAuth. The success
+      // toast is deferred until the full chain completes so the user
+      // never sees "connected" followed by an error.
+      if (operationId === notionOperationIdRef.current) {
+        setNotionConnectOpen(false);
+      }
       await connectorsApplyRuntime();
       await refresh();
-      if (operationId === notionOperationIdRef.current) toast.success("Notion connected");
+      if (operationId === notionOperationIdRef.current) {
+        toast.success("Notion connected");
+      }
     } catch (err) {
       if (operationId === notionOperationIdRef.current) toast.error(messageFromError(err));
     } finally {
@@ -894,9 +937,15 @@ export function ConnectorsSection({
             account={accounts?.find((entry) => entry.provider === "notion") ?? null}
             connecting={accounts === null || notionConnecting}
             disconnecting={notionDisconnecting}
-            onConnect={() => void connectNotion()}
-            onReconnect={() => void reconnectNotion()}
             onDisconnect={() => void disconnectNotion()}
+            onOpenConnectDialog={() => {
+              setNotionDialogMode("connect");
+              setNotionConnectOpen(true);
+            }}
+            onOpenReconnectDialog={() => {
+              setNotionDialogMode("reconnect");
+              setNotionConnectOpen(true);
+            }}
           />
           <ComputerUseControl onOpenModels={onOpenModels} onOpenBilling={onOpenBilling} />
         </ul>
@@ -1092,6 +1141,52 @@ export function ConnectorsSection({
             </div>
           </>
         )}
+      </Dialog>
+      <Dialog
+        open={notionConnectOpen}
+        onClose={() => {
+          if (!notionConnecting) setNotionConnectOpen(false);
+        }}
+        title={
+          notionDialogMode === "reconnect"
+            ? NOTION_RECONNECT_DIALOG_TITLE
+            : NOTION_CONNECT_DIALOG_TITLE
+        }
+        description={NOTION_CONNECT_DIALOG_DESCRIPTION}
+        disableBackdropClose={notionConnecting}
+        closeDisabled={notionConnecting}
+        footer={
+          <Fragment>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={() => setNotionConnectOpen(false)}
+              disabled={notionConnecting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={notionConnecting}
+              aria-busy={notionConnecting || undefined}
+              onClick={() => {
+                if (notionDialogMode === "reconnect") {
+                  void reconnectNotion();
+                } else {
+                  void connectNotion();
+                }
+              }}
+            >
+              {notionConnecting ? "Waiting for browser…" : "Continue"}
+            </button>
+          </Fragment>
+        }
+      >
+        <div className="connectors-notion-disclosures">
+          <p className="connectors-notion-disclosure">{NOTION_SCOPE_DISCLOSURE}</p>
+          <p className="connectors-notion-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
+        </div>
       </Dialog>
     </section>
   );
