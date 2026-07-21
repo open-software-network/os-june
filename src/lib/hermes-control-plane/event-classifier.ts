@@ -31,6 +31,7 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
   switch (type) {
     case "message.start":
     case "message.delta":
+    case "message.interim":
     case "message.complete":
       return classifyTranscript(type, sessionId, payload, receivedAt);
 
@@ -102,6 +103,18 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     case "error":
       return classifyError(sessionId, payload, receivedAt);
 
+    case "tool.output_risk":
+      // Hermes 0.19 metadata, not a tool lifecycle frame. Keeping it out of
+      // the broad tool.* fallback prevents a completed card from reopening as
+      // generic progress until June has a dedicated risk-metadata surface.
+      return {
+        kind: "unsupported",
+        sessionId,
+        rawType: type,
+        sanitizedPayload: payload === undefined ? undefined : sanitizePayload(payload),
+        receivedAt,
+      };
+
     default:
       break;
   }
@@ -142,8 +155,13 @@ function classifyTranscript(
   receivedAt: string,
 ): JuneHermesEvent {
   const complete = type === "message.complete";
+  const interim = type === "message.interim";
   const delta =
-    type === "message.delta" ? rawDeltaText(payload) : complete ? eventText(payload) : undefined;
+    type === "message.delta"
+      ? rawDeltaText(payload)
+      : complete || interim
+        ? eventText(payload)
+        : undefined;
   const failed = complete && stringValue(payload?.status)?.toLowerCase() === "error";
   return {
     kind: "transcript",
@@ -153,6 +171,8 @@ function classifyTranscript(
     // old four-key classifier fallback, so summary/status-only turns survive.
     delta,
     complete,
+    interim,
+    responsePreviewed: payload?.response_previewed === true,
     // The transcript builder gates failed-turn notices on message.complete
     // status=error; carry the same flag so the typed seam cannot drift.
     failed,

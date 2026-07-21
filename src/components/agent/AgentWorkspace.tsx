@@ -392,6 +392,8 @@ import {
   isGeneratedVideoFilename,
   stripRenderedMediaReferences,
   textFromHermesContent,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   USER_ATTACHMENT_PROMPT_MARKER,
   type AgentApprovalChoice,
   type AgentChatPart,
@@ -411,6 +413,10 @@ import {
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
+import {
+  upstreamProviderRecoveryIds,
+  upstreamProviderRecoveryStore,
+} from "../../lib/upstream-provider-recovery";
 
 const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
@@ -2873,6 +2879,13 @@ export function AgentWorkspace({
   // reliably whether Hermes may already have accepted a response.
   const approvalResponsesInFlightRef = useRef(new Map<string, AgentApprovalChoice>());
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
+  // Shared across chat surfaces and component remounts for this app process.
+  // reserve() closes the duplicate-click gap before React commits a render.
+  useSyncExternalStore(
+    upstreamProviderRecoveryStore.subscribe,
+    upstreamProviderRecoveryStore.getVersion,
+    upstreamProviderRecoveryStore.getVersion,
+  );
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
   const [sudoSubmitting, setSudoSubmitting] = useState<Record<string, "approve" | "deny">>({});
@@ -7848,6 +7861,47 @@ export function AgentWorkspace({
     [],
   );
 
+  async function retryUpstreamProviderFailure(
+    storedSessionId: string | undefined,
+    recoveryId: string | undefined,
+  ) {
+    if (!storedSessionId || isProvisionalHermesSessionId(storedSessionId)) return;
+    if (
+      workingSessionIdsRef.current.has(storedSessionId) ||
+      waitingSessionIdsRef.current.has(storedSessionId)
+    ) {
+      return;
+    }
+    if (!recoveryId || !upstreamProviderRecoveryStore.reserve(storedSessionId, recoveryId)) return;
+    const session = hermesSessionItemsRef.current.find((item) => item.id === storedSessionId);
+    if (!session) {
+      upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+      setError(SESSION_NOT_AVAILABLE_MESSAGE, { sessionId: storedSessionId });
+      return;
+    }
+
+    try {
+      // This starts a new agent run in the same stored session and reuses its
+      // runtime session when it is still live. The prompt has an exact
+      // persisted-display mapping to the "Try again" transcript label, so a
+      // later refresh cannot expose the continuation instruction. This path
+      // never reads or clears the composer and never replays clarify.respond.
+      await submitHermesSession(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT, session, {
+        displayContent: "Try again",
+        titleContent: "Try again",
+        modelTarget: captureSessionModelTarget(session),
+        selectSession: false,
+      });
+      setError(null);
+    } catch (err) {
+      // prompt.submit never accepted the recovery, so the same notice may try
+      // again. Once accepted, the key remains spent; a second provider failure
+      // creates a new turn id and its own one-shot action.
+      upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+      setError(messageFromError(err), { sessionId: storedSessionId });
+    }
+  }
+
   // "Try again" on a connection-shaped error banner: rebuild the bridge +
   // gateway connection and reload sessions, surfacing whatever still fails.
   async function retryGatewayConnection() {
@@ -10286,6 +10340,7 @@ export function AgentWorkspace({
         ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
+  const upstreamFailureRecoveryIds = upstreamProviderRecoveryIds(hermesTurns);
   const taskTurns = selectedTask
     ? mergeThinkingTurns(
         buildAgentChatTurns(
@@ -11386,6 +11441,20 @@ export function AgentWorkspace({
           onDownloadVideo={downloadGeneratedVideo}
           onRetryVideo={(assistantTurnId, part) =>
             void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+          }
+          onRetryUpstreamFailure={(turnId) =>
+            void retryUpstreamProviderFailure(
+              selectedHermesSessionId,
+              upstreamFailureRecoveryIds.get(turnId),
+            )
+          }
+          upstreamFailureRetryAttempted={upstreamProviderRecoveryStore.attempted(
+            selectedHermesSessionId,
+            upstreamFailureRecoveryIds.get(turn.id) ?? "",
+          )}
+          upstreamFailureRetryDisabled={
+            workingSessionIds.has(selectedHermesSessionId) ||
+            waitingSessionIds.has(selectedHermesSessionId)
           }
           creditActionsDisabledReason={creditActionsDisabledReason}
           onApproval={(part, choice) =>
@@ -13324,6 +13393,9 @@ function AgentResponseGallery({
   onClose: () => void;
 }) {
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
+  const [upstreamFailureRetryAttempts, setUpstreamFailureRetryAttempts] = useState<
+    Record<string, true>
+  >({});
   const setThinkingOpen = useCallback((key: string, open: boolean) => {
     setThinkingOpenByKey((current) =>
       current[key] === open ? current : { ...current, [key]: open },
@@ -13373,6 +13445,10 @@ function AgentResponseGallery({
               onSudo={galleryNoop}
               onSecret={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onRetryUpstreamFailure={(turnId) =>
+                setUpstreamFailureRetryAttempts((current) => ({ ...current, [turnId]: true }))
+              }
+              upstreamFailureRetryAttempted={Boolean(upstreamFailureRetryAttempts[turn.id])}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
               fundingTier={fundingTier}
@@ -13405,6 +13481,9 @@ function AgentChatTurnRow({
   onRetryImage,
   onDownloadVideo,
   onRetryVideo,
+  onRetryUpstreamFailure,
+  upstreamFailureRetryAttempted,
+  upstreamFailureRetryDisabled,
   creditActionsDisabledReason,
   onThinkingOpenChange,
   onTopUp,
@@ -13444,6 +13523,9 @@ function AgentChatTurnRow({
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetryUpstreamFailure?: (assistantTurnId: string) => void;
+  upstreamFailureRetryAttempted?: boolean;
+  upstreamFailureRetryDisabled?: boolean;
   creditActionsDisabledReason?: string;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
@@ -13765,6 +13847,13 @@ function AgentChatTurnRow({
           ) : part.type === "notice" ? (
             part.kind === "context-overflow" ? (
               <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
+            ) : part.kind === "upstream-provider" ? (
+              <UpstreamProviderFailureNoticePart
+                key={`${turn.id}:notice:${index}`}
+                attempted={upstreamFailureRetryAttempted}
+                disabled={upstreamFailureRetryDisabled}
+                onRetry={onRetryUpstreamFailure ? () => onRetryUpstreamFailure(turn.id) : undefined}
+              />
             ) : (
               <CreditsNoticePart
                 key={`${turn.id}:notice:${index}`}
@@ -14175,6 +14264,38 @@ function CreditsNoticePart({
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
             {topUpLabel}
+          </button>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function UpstreamProviderFailureNoticePart({
+  attempted = false,
+  disabled = false,
+  onRetry,
+}: {
+  attempted?: boolean;
+  disabled?: boolean;
+  onRetry?: () => void;
+}) {
+  return (
+    <InlineNotice
+      className="agent-upstream-provider-notice"
+      tone="warning"
+      role="alert"
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      body={UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY}
+      actions={
+        onRetry ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={attempted || disabled}
+            onClick={onRetry}
+          >
+            Try again
           </button>
         ) : undefined
       }

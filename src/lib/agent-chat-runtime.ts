@@ -15,6 +15,15 @@ import { displayedSkillInvocationText } from "./skill-slash-commands";
 import type { JuneHermesEvent } from "./hermes-control-plane";
 import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
 import { stripProjectContext } from "./agent-project-context";
+import {
+  displayedUpstreamProviderRecoveryText,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+} from "./upstream-provider-recovery";
+
+export {
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+} from "./upstream-provider-recovery";
 
 const HERMES_LIVE_EVENT_LIMIT = 200;
 
@@ -34,6 +43,8 @@ export function appendHermesLiveEvent(
     event.kind === "transcript" &&
     !previous.complete &&
     !event.complete &&
+    !previous.interim &&
+    !event.interim &&
     previous.delta !== undefined &&
     event.delta !== undefined &&
     previous.sessionId === event.sessionId &&
@@ -138,14 +149,23 @@ export type AgentChatSecretPart = {
 };
 
 /** A turn-level condition the user can act on, rendered as a notice card
- * instead of raw error text: `credits` (the balance ran out) or
+ * instead of raw error text: `credits` (the balance ran out),
+ * `upstream-provider` (the runtime exhausted its provider retries), or
  * `context-overflow` (the request outgrew the model's context / the agent
  * request-size limit and cannot be retried as-is — JUN-169). */
 export type AgentChatNoticePart = {
   type: "notice";
-  kind: "credits" | "context-overflow";
+  kind: "credits" | "context-overflow" | "upstream-provider";
   text: string;
 };
+
+const UPSTREAM_PROVIDER_FAILURE_MARKER = "upstream_provider_failed";
+const PERSISTED_UPSTREAM_PROVIDER_FAILURE =
+  /^\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*$/i;
+// Not anchored to the end: the strip must cover the same scope the marker
+// detection does, so a sentinel followed by more prose never renders raw.
+const UPSTREAM_PROVIDER_FAILURE_SENTENCE =
+  /\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*/gi;
 
 /** A mid-run instruction the user steered into a still-working session (feature
  * 06), rendered as a quiet "Steering" system item so the transcript records
@@ -400,7 +420,9 @@ export function buildHermesSessionChatTurns(
       if (content) {
         const notice =
           turn.role === "assistant"
-            ? (creditsNoticeFromTurnText(content) ?? persistedContextOverflowNotice(content))
+            ? (creditsNoticeFromTurnText(content) ??
+              persistedContextOverflowNotice(content) ??
+              upstreamProviderFailureNotice(content))
             : undefined;
         turn.parts.push(
           notice ?? {
@@ -494,6 +516,29 @@ function contextOverflowNotice(text: string): AgentChatNoticePart | undefined {
     : undefined;
 }
 
+// Hermes exposes an exhausted upstream-provider retry as assistant text. A
+// live message.complete has an authoritative failed flag. Persisted messages
+// lose that flag, so only the exact runtime sentinel may fold on reload. The
+// same exactness on live failures keeps partial output out of this recovery
+// path; retrying a truncated answer is deliberately outside JUN-363.
+function upstreamProviderFailureNotice(
+  text: string,
+  failed?: boolean,
+): AgentChatNoticePart | undefined {
+  const matches = failed !== false && PERSISTED_UPSTREAM_PROVIDER_FAILURE.test(text);
+  return matches
+    ? {
+        type: "notice",
+        kind: "upstream-provider",
+        text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+      }
+    : undefined;
+}
+
+function withoutUpstreamProviderFailureSentinel(text: string) {
+  return text.replace(UPSTREAM_PROVIDER_FAILURE_SENTENCE, "\n").trim();
+}
+
 // Persisted/reloaded turns carry no failure flag (the stored message has no
 // status field), so only the unambiguous error sentinels may fold. An ordinary
 // saved answer that discusses "the maximum context length" must stay text, not
@@ -522,7 +567,8 @@ function messageToTurn(message: AgentMessageDto): AgentChatTurn {
   const notice =
     message.role === "assistant"
       ? (creditsNoticeFromTurnText(message.content) ??
-        persistedContextOverflowNotice(message.content))
+        persistedContextOverflowNotice(message.content) ??
+        upstreamProviderFailureNotice(message.content))
       : undefined;
   return {
     id: message.id,
@@ -582,6 +628,7 @@ function appendLiveHermesEvents(
   persistedToolResultIds: ReadonlySet<string> = new Set(),
 ) {
   let currentAssistant: AgentChatTurn | null = null;
+  let lastInterimAssistant: AgentChatTurn | null = null;
   let idlessToolSequence = 0;
   const toolCreatedTurns = new Set<AgentChatTurn>();
   const pendingSyntheticTurns = sortAgentChatTurns(
@@ -596,7 +643,9 @@ function appendLiveHermesEvents(
       const syntheticTurn = pendingSyntheticTurns.shift();
       if (!syntheticTurn) break;
       turns.push(syntheticTurn);
-      if (syntheticTurn.role !== "assistant") currentAssistant = null;
+      if (syntheticTurn.role !== "assistant") {
+        currentAssistant = null;
+      }
     }
 
     // A gateway suspension can drop tool.complete while leaving tool.start in
@@ -637,26 +686,77 @@ function appendLiveHermesEvents(
       case "transcript": {
         if (!event.complete && event.delta === undefined) {
           currentAssistant = createAssistantTurn(turns, event.receivedAt);
+          lastInterimAssistant = null;
           currentAssistant.status = "running";
           break;
         }
-        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        if (event.interim) {
+          const interimText = event.delta ?? "";
+          if (interimText) {
+            currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+            completeAssistantTextPart(currentAssistant.parts, interimText);
+            lastInterimAssistant = currentAssistant;
+            if (hasActiveNonTextPart(currentAssistant.parts)) {
+              currentAssistant.status = "running";
+            } else {
+              currentAssistant.status = "complete";
+              currentAssistant = null;
+            }
+          }
+          break;
+        }
         if (!event.complete) {
+          currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
           currentAssistant.status = "running";
           appendAssistantTextPart(currentAssistant.parts, event.delta ?? "", "running");
           break;
         }
         const text = event.delta ?? "";
-        // A billing failure is recognizable from its "Error:" text prefix; a
-        // context overflow is not, so only fold it when the turn actually
-        // failed — an ordinary sentence that mentions "context length" stays prose.
+        const previewText = lastInterimAssistant
+          ? assistantTextFromParts(lastInterimAssistant.parts)
+          : "";
+        const settlesInterimPreview = Boolean(
+          event.responsePreviewed &&
+            lastInterimAssistant &&
+            text &&
+            (text.startsWith(previewText) || previewText.startsWith(text)),
+        );
+        if (
+          currentAssistant !== null &&
+          currentAssistant === lastInterimAssistant &&
+          !settlesInterimPreview
+        ) {
+          currentAssistant.status = hasActiveNonTextPart(currentAssistant.parts)
+            ? "running"
+            : "complete";
+          currentAssistant = null;
+        }
+        if (!currentAssistant && settlesInterimPreview && lastInterimAssistant) {
+          currentAssistant = lastInterimAssistant;
+        }
+        currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
+        // Upstream-provider and context failures only fold when the turn
+        // actually failed; successful prose mentioning either marker stays
+        // prose. Billing also requires its runtime "Error:" prefix.
         const displayText = stripMediaReferences(text).trim();
+        const hasStreamedAssistantText = currentAssistant.parts.some(
+          (part) => part.type === "text" && Boolean(part.text.trim()),
+        );
         const imageParts = imagePartsFromHermesContent(text);
         const videoParts = videoPartsFromHermesContent(text);
         const notice = displayText
-          ? (creditsNoticeFromTurnText(displayText) ??
+          ? ((!hasStreamedAssistantText
+              ? upstreamProviderFailureNotice(displayText, event.failed)
+              : undefined) ??
+            creditsNoticeFromTurnText(displayText) ??
             (event.failed ? contextOverflowNotice(displayText) : undefined))
           : undefined;
+        const visibleDisplayText =
+          !notice &&
+          event.failed === true &&
+          displayText.toLowerCase().includes(UPSTREAM_PROVIDER_FAILURE_MARKER)
+            ? withoutUpstreamProviderFailureSentinel(displayText)
+            : displayText;
         if (notice) {
           // The complete text is authoritative for the turn (see
           // completeAssistantTextPart); when it's a billing failure, any
@@ -670,11 +770,15 @@ function appendLiveHermesEvents(
             // stripped complete text. Replace the text wholesale with the
             // stripped prose (or drop it) so the reference never stays visible.
             removeAssistantTextParts(currentAssistant.parts);
-            if (displayText) {
-              currentAssistant.parts.push({ type: "text", text: displayText, status: "complete" });
+            if (visibleDisplayText) {
+              currentAssistant.parts.push({
+                type: "text",
+                text: visibleDisplayText,
+                status: "complete",
+              });
             }
-          } else if (displayText) {
-            completeAssistantTextPart(currentAssistant.parts, displayText);
+          } else if (visibleDisplayText) {
+            completeAssistantTextPart(currentAssistant.parts, visibleDisplayText);
           }
           appendImageParts(currentAssistant.parts, imageParts);
           appendVideoParts(currentAssistant.parts, videoParts);
@@ -682,6 +786,7 @@ function appendLiveHermesEvents(
         currentAssistant.status = "complete";
         completeRunningParts(currentAssistant.parts);
         currentAssistant = null;
+        lastInterimAssistant = null;
         break;
       }
 
@@ -1061,6 +1166,13 @@ function completeAssistantTextPart(parts: AgentChatPart[], text: string) {
   }
 }
 
+function assistantTextFromParts(parts: AgentChatPart[]) {
+  return parts
+    .filter((part): part is AgentChatTextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
 function removeAssistantTextParts(parts: AgentChatPart[]) {
   for (let index = parts.length - 1; index >= 0; index -= 1) {
     if (parts[index]?.type === "text") parts.splice(index, 1);
@@ -1198,6 +1310,21 @@ function completeRunningParts(parts: AgentChatPart[]) {
     if (part.type === "sudo" && part.status === "pending") part.status = "resolved";
     if (part.type === "secret" && part.status === "pending") part.status = "resolved";
   }
+}
+
+function hasActiveNonTextPart(parts: AgentChatPart[]) {
+  return parts.some((part) => {
+    if (part.type === "reasoning" || part.type === "tool") return part.status === "running";
+    if (
+      part.type === "approval" ||
+      part.type === "clarify" ||
+      part.type === "sudo" ||
+      part.type === "secret"
+    ) {
+      return part.status === "pending";
+    }
+    return false;
+  });
 }
 
 function upsertToolPart(
@@ -1516,6 +1643,8 @@ function displayedUserPromptText(content: string) {
 }
 
 export function displayedComposerUserMessageText(content: string): string {
+  const recoveryText = displayedUpstreamProviderRecoveryText(content);
+  if (recoveryText !== content) return recoveryText;
   return stripSyntheticImageAttachmentMarker(
     stripAttachmentPromptBlock(displayedUserPromptText(stripImageAnalysisFailureNotice(content))),
   );

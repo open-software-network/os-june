@@ -101,7 +101,7 @@ Run it against the new bundled runtime BEFORE flipping any matrix entry to
 pnpm test:hermes-smoke
 ```
 
-See `docs/hermes-upstream-v2026.6.19.md` for the smoke test's two phases
+See `docs/hermes-upstream-v2026.7.20.md` for the smoke test's two phases
 (protocol vs model), its environment variables, and its skip behavior.
 
 ## Version agreement

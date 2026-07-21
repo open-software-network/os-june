@@ -51,55 +51,56 @@ const JUNE_HERMES_DISABLE_SANDBOX_ENV: &str = "JUNE_HERMES_DISABLE_SANDBOX";
 // Referenced by the spawn match arm on every target; only ever reached when
 // `prepare_sandbox` returns a profile, which it only does on macOS.
 const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
-// v2026.6.19 - see the bump PR for the audited pin-to-tag compatibility delta.
-const HERMES_AGENT_INSTALL_COMMIT: &str = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3";
-/// Pinned Hermes v2026.6.19 installs this macOS LaunchAgent label. The
+// Hermes Agent v0.19.0 (v2026.7.20). See the matching upstream pin note for
+// the audited pin-to-tag compatibility delta.
+const HERMES_AGENT_INSTALL_COMMIT: &str = "3ef6bbd201263d354fd83ec55b3c306ded2eb72a";
+/// Pinned Hermes v0.19.0 installs this macOS LaunchAgent label. The
 /// audited `hermes_cli/gateway.py` source hash pins its Label/domain behavior;
 /// the live smoke also corroborates the CLI's reported plist basename.
 const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v13";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "agent/agent_init.py",
-        "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
+        "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     ),
     (
         "tools/approval.py",
-        "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
+        "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     ),
     (
         "tools/mcp_tool.py",
-        "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
+        "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
     ),
     (
         "tui_gateway/server.py",
-        "f375627e61af5e61434592d4d17d39c20e7ba1a7e1280715b0e5a7387a0f26a1",
+        "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
     ),
     (
         "cron/scheduler.py",
-        "2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa",
+        "ea54407dddebec57a184f1dbdf1076f8abe94f132da1e619c476cbf1266ed239",
     ),
     (
         "model_tools.py",
-        "d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d",
+        "30a2dcb33685783935f66abef6839d06736c90196a89dd034c91c4e6eb65c2db",
     ),
     (
         "utils.py",
-        "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
+        "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     ),
     (
         "hermes_cli/gateway.py",
-        "263ad798dd67ddc175ab7e7172a3a54e379aeb4bdbcad014aa0ccdea7dc07abd",
+        "ed105fe335d5d46ae94f57a85e68839de3e0a2de76093b01aed039d0d5862d76",
     ),
     (
-        "gateway/platforms/telegram.py",
-        "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
+        "plugins/platforms/telegram/adapter.py",
+        "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
     ),
 ];
 const HERMES_SOURCE_TARBALL_URL: &str =
-    "https://github.com/NousResearch/hermes-agent/archive/2bd1977d8fad185c9b4be47884f7e87f1add0ce3.tar.gz";
+    "https://github.com/NousResearch/hermes-agent/archive/3ef6bbd201263d354fd83ec55b3c306ded2eb72a.tar.gz";
 const HERMES_SOURCE_TARBALL_SHA256: &str =
-    "7a9bd367066183898831c2760f269368ab54b458a1d1b51d14ef1f484dd490cc";
+    "335c2249b6b2e58be397e12d542788f3315ede84394c0082b339a4ddde6a27d0";
 const BUNDLED_HERMES_SKILLS_RESOURCE_DIR: &str = "native/hermes-skills";
 const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
@@ -1101,7 +1102,7 @@ pub struct UpdateHermesSkillRequest {
 }
 
 /// Request to reset (or restore) a bundled skill to its shipped baseline. The
-/// dashboard REST surface (v2026.6.19) exposes no endpoint for this, so June
+/// dashboard REST surface (v2026.7.20) exposes no endpoint for this, so June
 /// runs the pinned Hermes CLI with a SAFE argument array — the skill name is
 /// validated argument-safe on both sides and passed as a discrete CLI argument,
 /// never shell-interpolated. `mode` names the runtime explicitly (`sandboxed` /
@@ -1131,7 +1132,7 @@ pub struct ResetHermesSkillResult {
 }
 
 /// Request to list, add, or remove a custom GitHub skill tap (admin surfaces
-/// spec 13). The dashboard REST surface (v2026.6.19) exposes no tap endpoints, so
+/// spec 13). The dashboard REST surface (v2026.7.20) exposes no tap endpoints, so
 /// June runs the pinned Hermes CLI with a SAFE argument array — the `owner/repo`
 /// and optional `path` are validated argument-safe on both sides and passed as
 /// discrete CLI arguments, never shell-interpolated. `mode` names the runtime
@@ -1768,7 +1769,7 @@ async fn start_hermes_bridge_inner(
     }
     let port_string = port.to_string();
     // No --tui: upstream removed the flag from the dashboard subcommand before
-    // v2026.6.19, and the embedded chat gateway (/api/ws) is always enabled.
+    // v2026.7.20, and the embedded chat gateway (/api/ws) is always enabled.
     // Passing the flag is an argparse error.
     let hermes_args: [&str; 6] = [
         "dashboard",
@@ -2651,7 +2652,7 @@ pub fn update_hermes_bridge_skill(
 // With `skills.write_approval: true`, Hermes stages agent-authored skill writes
 // (create / edit / delete) under `<hermes_home>/pending/skills/` instead of
 // applying them, and waits for a human to approve or reject the diff. The
-// dashboard REST surface (v2026.6.19) exposes NO endpoint for this queue, so
+// dashboard REST surface (v2026.7.20) exposes NO endpoint for this queue, so
 // June reads the staged manifests directly. This is the documented file-parsing
 // FALLBACK the spec sanctions; it is version-gated below by requiring a
 // recognized manifest `version`/shape and only ever touching the managed skills
@@ -5558,7 +5559,7 @@ pub async fn hermes_reset_bundled_skill(
 // Team skill taps manager (admin surfaces spec 13).
 //
 // A Hermes skill tap is a GitHub repository of reusable SKILL.md directories
-// (default under `skills/`). The dashboard REST surface (v2026.6.19) exposes NO
+// (default under `skills/`). The dashboard REST surface (v2026.7.20) exposes NO
 // tap endpoints, so June drives the pinned Hermes CLI:
 //
 //     hermes skills tap list
@@ -5673,7 +5674,7 @@ fn build_hermes_skill_tap_command(
 }
 
 /// Parses `hermes skills tap list` output into a tap list. The exact CLI format
-/// is not pinned in the v2026.6.19 contract, so this is intentionally lenient: it
+/// is not pinned in the v2026.7.20 contract, so this is intentionally lenient: it
 /// accepts one tap per line, ignores blank lines and obvious headers, extracts the
 /// first `owner/repo` token on the line, and reads an optional `path=<p>` or
 /// `(path: <p>)` hint and a `trusted`/`verified` marker. A tap whose repo token is
@@ -5946,7 +5947,7 @@ pub async fn hermes_skill_tap_remove(
 //
 // A Hermes skill bundle is a YAML alias under
 // `<hermes_home>/skill-bundles/<slug>.yaml` (per profile) that loads several
-// skills under one slash command. The dashboard REST surface (v2026.6.19)
+// skills under one slash command. The dashboard REST surface (v2026.7.20)
 // exposes NO bundle endpoints, so June reads/writes these files directly. This
 // is the narrow, sanctioned file fallback the spec calls for. These writes run
 // in June's own (un-jailed) Rust process, so the real risk is NOT permissions
@@ -8812,7 +8813,7 @@ if [ ! -f "$install_dir/pyproject.toml" ] || [ ! -f "$install_dir/scripts/instal
   mv "$unpacked_dir" "$install_dir"
 fi
 
-# Upstream's install.sh (v2026.6.19) runs $UV_CMD unquoted in the venv-create,
+# Upstream's install.sh (v2026.7.20) runs $UV_CMD unquoted in the venv-create,
 # uv-sync, and pip-install-tier calls. The managed uv it installs lives under
 # the app data dir — "Application Support" on macOS — so the space word-splits
 # the path and every one of those calls fails with "/Users/…/Library/
@@ -10832,6 +10833,11 @@ fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf, relative_base:
     if dir.as_os_str().is_empty() {
         return;
     }
+    // Strip the Windows verbatim path prefix (`\\?\`) so it never leaks into
+    // config.yaml or the UI. `canonicalize()` (and some Tauri path resolvers)
+    // add this prefix on Windows; `dunce::simplified` removes it when it is
+    // safe to do so (a no-op on non-Windows).
+    let dir = dunce::simplified(&dir).to_path_buf();
     let identity = external_skill_dir_identity(&dir, relative_base);
     if dirs
         .iter()
@@ -10899,7 +10905,11 @@ fn render_hermes_config(
   supports_vision: {supports_vision}
 agent:
   max_turns: 90
+  api_max_retries: 3
   disabled_toolsets: [{upstream_disabled_toolsets}]
+approvals:
+  mode: manual
+  cron_mode: deny
 display:
   skin: mono
 platform_toolsets:
@@ -10909,7 +10919,7 @@ skills:
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
-        upstream_disabled_toolsets = &UPSTREAM_DISABLED_TOOLSETS.join(", "),
+        upstream_disabled_toolsets = UPSTREAM_DISABLED_TOOLSETS.join(", "),
     )
 }
 
@@ -20574,6 +20584,12 @@ mcp_servers:
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
+        // The pinned runtime counts this as three total provider attempts,
+        // with its built-in jittered waits between attempts. June owns the
+        // schedule explicitly so a Hermes default change cannot multiply
+        // agent-chat calls behind shipped clients.
+        assert!(config.contains("agent:\n  max_turns: 90\n  api_max_retries: 3\n"));
+        assert!(config.contains("approvals:\n  mode: manual\n  cron_mode: deny\n"));
         assert!(config.contains(
             "skills:\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
         ));
@@ -20771,8 +20787,9 @@ mcp_servers:
         assert!(config.contains("  june_obsidian:\n"));
         assert!(config.contains("  june_recorder:\n"));
         assert!(config.contains("  june_computer_use:\n"));
-        assert!(config
-            .contains("agent:\n  max_turns: 90\n  disabled_toolsets: [browser, computer_use]\n"));
+        assert!(config.contains(
+            "agent:\n  max_turns: 90\n  api_max_retries: 3\n  disabled_toolsets: [browser, computer_use]\n"
+        ));
         assert!(config.contains("  june_computer_use:\n    enabled: true\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));

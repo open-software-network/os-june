@@ -12,7 +12,7 @@ import {
   statSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -34,6 +34,7 @@ function parseArgs(argv) {
     headless: true,
     video: true,
     keepHermesHome: false,
+    expectText: "",
     hermesCommand: process.env.JUNE_HERMES_COMMAND || "",
     sourceHermesHome: process.env.JUNE_HERMES_HOME || "",
     chromeExecutable: process.env.CHROME_EXECUTABLE || "",
@@ -53,6 +54,7 @@ function parseArgs(argv) {
     else if (arg === "--out-dir") args.outDir = next();
     else if (arg === "--hermes-command") args.hermesCommand = next();
     else if (arg === "--source-hermes-home") args.sourceHermesHome = next();
+    else if (arg === "--expect-text") args.expectText = next();
     else if (arg === "--chrome-executable") args.chromeExecutable = next();
     else if (arg === "--headed") args.headless = false;
     else if (arg === "--no-video") args.video = false;
@@ -83,6 +85,7 @@ Options:
   --out-dir <path>               Artifact directory. Default: .tmp/qa-recordings
   --hermes-command <path>        Hermes binary. Default: JUNE_HERMES_COMMAND or app dev runtime
   --source-hermes-home <path>    Hermes home to copy config from. Default: JUNE_HERMES_HOME or app dev home
+  --expect-text <text>           Require the visible assistant reply to contain this text
   --chrome-executable <path>     Chrome executable. Default: CHROME_EXECUTABLE or common macOS paths
   --headed                       Run a visible browser instead of headless
   --no-video                     Disable Playwright video recording
@@ -325,9 +328,11 @@ function browserInitScript() {
           window.__qaWsEvents.push(type);
           if (
             type === "message.complete" ||
+            type === "error" ||
             type === "session.idle" ||
             type === "turn.complete" ||
             type === "turn.completed" ||
+            type === "turn.error" ||
             type === "session.completed"
           ) {
             window.__qaComplete = true;
@@ -350,10 +355,12 @@ function browserInitScript() {
       if (
         cmd === "plugin:event|unlisten" ||
         cmd === "plugin:event|emit" ||
-        cmd === "dictation_helper_command"
+        cmd === "dictation_helper_command" ||
+        cmd === "computer_use_begin_run"
       ) {
         return undefined;
       }
+      if (cmd === "plugin:window|is_focused") return true;
       if (cmd === "bootstrap_app") {
         return {
           folders: [],
@@ -432,6 +439,7 @@ function browserInitScript() {
       }
       if (cmd === "hermes_bridge_sessions") return { sessions: [], items: [] };
       if (cmd === "hermes_bridge_session_messages") return { messages: [], items: [] };
+      if (cmd === "list_completed_sessions") return [];
       if (cmd === "hermes_agent_cli_access") return { enabled: false };
       if (cmd === "suggest_agent_session_title") {
         return { title: prompt.slice(0, 40) || "Agent session" };
@@ -533,7 +541,9 @@ async function main() {
   const host = DEFAULT_HOST;
   const port = await allocatePort(host);
   const token = randomToken();
-  const hermesHome = mkdtempSync(join(root, ".tmp/qa-hermes-"));
+  // Hermes syncs bundled skills into its home. Keep that churn outside Vite's
+  // watched workspace so a QA turn cannot trigger a full-page reload.
+  const hermesHome = mkdtempSync(join(tmpdir(), "june-qa-hermes-"));
   const childRef = { current: null };
   const unregisterCleanup = registerHermesCleanup({
     hermesHome,
@@ -609,9 +619,11 @@ async function main() {
       throw new Error(`Start session stayed disabled for prompt ${JSON.stringify(args.prompt)}`);
     }
     await startButton.click();
-    await page.waitForFunction(() => window.__qaComplete === true, {
-      timeout: args.timeoutMs,
-    });
+    await page.waitForFunction(
+      () => window.__qaComplete === true,
+      undefined,
+      { timeout: args.timeoutMs },
+    );
     await page.waitForFunction(
       () =>
         Array.from(document.querySelectorAll(".agent-assistant-turn-body")).some((element) => {
@@ -626,6 +638,7 @@ async function main() {
             rect.height > 0
           );
         }),
+      undefined,
       { timeout: args.timeoutMs },
     );
 
@@ -636,9 +649,43 @@ async function main() {
     if (!assistantText) {
       throw new Error("No visible assistant reply rendered after completion");
     }
-    completed = true;
     screenshotPath = join(outDir, `${stamp}-background-agent-${slugFor(args.prompt)}.png`);
     await page.screenshot({ path: screenshotPath, fullPage: true });
+    if (args.expectText && !assistantText.includes(args.expectText)) {
+      throw new Error(
+        `Visible assistant reply did not contain expected text ${JSON.stringify(args.expectText)}: ` +
+          JSON.stringify(assistantText),
+      );
+    }
+    completed = true;
+  } catch (error) {
+    if (page) {
+      const failureScreenshotPath = join(
+        outDir,
+        `${stamp}-background-agent-${slugFor(args.prompt)}-failure.png`,
+      );
+      await page.screenshot({ path: failureScreenshotPath, fullPage: true }).catch(() => {});
+      if (existsSync(failureScreenshotPath)) {
+        screenshotPath = failureScreenshotPath;
+        console.error(`failure_screenshot_path=${failureScreenshotPath}`);
+      }
+      const diagnostics = await page
+        .evaluate(() => ({
+          invokes: window.__qaInvokes || [],
+          wsEvents: window.__qaWsEvents || [],
+        }))
+        .catch(() => undefined);
+      if (diagnostics) {
+        console.error(`browser_diagnostics=${JSON.stringify(diagnostics)}`);
+      }
+    }
+    if (consoleMessages.length) {
+      console.error(`browser_console=${JSON.stringify(consoleMessages.slice(-20))}`);
+    }
+    if (hermesStderr) {
+      console.error(`hermes_stderr=${hermesStderr}`);
+    }
+    throw error;
   } finally {
     const video = page?.video?.();
     if (page) await page.close().catch(() => {});

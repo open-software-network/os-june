@@ -115,7 +115,7 @@ falls back to the config's `oauth` marker and OAuth-shaped probe errors.
 ## Events
 
 **MCP approvals are identity-addressed, not FIFO.** The pinned runtime carries
-June's checksum-gated `june-approval-memory-v13` patch. MCP elicitation preserves the
+June's checksum-gated `june-approval-memory-v14` patch. MCP elicitation preserves the
 SDK request id and emits an opaque stable `request_id` on `approval.request`.
 While unanswered, the same logical request retried after an MCP transport
 reconnect joins the existing entry; separate requests on one transport remain
@@ -144,6 +144,13 @@ classified with `full: true`, and consumers REPLACE the thought instead of
 appending so a post-delta replay cannot duplicate it.
 
 ## Upstream (via june-api)
+
+**Hermes owns agent-chat retries.** June pins `agent.api_max_retries: 3` in
+the per-spawn config. In the pinned runtime that means three total provider
+attempts, with the runtime's jittered waits between them. The desktop forwards
+each attempt once, and June API makes one upstream call for each request. Do not
+add another retry at either layer without moving ownership deliberately: shipped
+clients would multiply the new retry count by Hermes' attempts.
 
 **One bad tool schema can brick every chat request.** The AI upstream rejects a
 tool parameter schema carrying both `type` and a sibling `allOf` (valid JSON

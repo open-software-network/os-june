@@ -15,6 +15,7 @@ import {
   titleFromPrompt,
 } from "../lib/hermes-adapter";
 import type { HermesSessionInfo } from "../lib/tauri";
+import { UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT } from "../lib/upstream-provider-recovery";
 
 const SCHEDULED_PREAMBLE =
   "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: produce " +
@@ -392,6 +393,26 @@ describe("Hermes adapter", () => {
 
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.id).toBe("session-1");
+  });
+
+  it("replaces complete and truncated internal recovery session previews", () => {
+    const sessions = normalizeHermesSessionsResponse({
+      sessions: [
+        {
+          id: "complete-recovery",
+          preview: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+          last_active: "2026-06-04T13:00:00Z",
+        },
+        {
+          id: "truncated-recovery",
+          preview: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT.slice(0, 70),
+          last_active: "2026-06-04T12:00:00Z",
+        },
+      ],
+    });
+
+    expect(sessions.map((session) => session.preview)).toEqual(["Try again", "Try again"]);
+    expect(JSON.stringify(sessions)).not.toContain("June upstream provider recovery");
   });
 
   it("normalizes raw gateway message lists", () => {

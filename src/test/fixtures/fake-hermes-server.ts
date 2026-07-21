@@ -270,7 +270,7 @@ export type FakeRequestLogEntry = {
   body?: unknown;
 };
 
-const PINNED_HERMES_VERSION = "v2026.6.19";
+const PINNED_HERMES_VERSION = "v2026.7.20";
 
 // ---------------------------------------------------------------------------
 // Server
@@ -502,7 +502,7 @@ export class FakeHermesServer {
         enabled: server.enabled,
       });
     }
-    // NOTE: no `/api/mcp/servers/:name/tools` route — the real v2026.6.19
+    // NOTE: no `/api/mcp/servers/:name/tools` route. The real v2026.7.20
     // dashboard does not expose one, and MCPServerCreate has no filter field.
     const removeMatch = matchPath(path, "/api/mcp/servers/:name");
     if (method === "DELETE" && removeMatch) {

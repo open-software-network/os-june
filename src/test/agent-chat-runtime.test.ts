@@ -11,6 +11,8 @@ import {
   mediaVideoReferences,
   repairContractionSpacing,
   stripRenderedMediaReferences,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   videoPartsFromHermesContent,
 } from "../lib/agent-chat-runtime";
 import { categoryPrompt } from "../lib/issue-report-prompt";
@@ -74,6 +76,27 @@ describe("appendHermesLiveEvent", () => {
     const events = [first, tool, second, nextMessage].reduce(appendHermesLiveEvent, []);
 
     expect(events).toEqual([first, tool, second, nextMessage]);
+  });
+
+  it("preserves an interim boundary after its streamed delta", () => {
+    const delta = transcriptEvent({
+      messageId: "message-1",
+      delta: "The checks are clean.",
+      receivedAt: "2026-07-20T10:00:00.100Z",
+    });
+    const interim = transcriptEvent({
+      messageId: "message-1",
+      delta: "The checks are clean.",
+      interim: true,
+      receivedAt: "2026-07-20T10:00:00.200Z",
+    });
+
+    const events = [delta, interim].reduce(appendHermesLiveEvent, []);
+
+    expect(events).toEqual([delta, interim]);
+    expect(buildHermesSessionChatTurns([], events)[0]?.parts).toEqual([
+      { type: "text", text: "The checks are clean.", status: "complete" },
+    ]);
   });
 });
 
@@ -1109,6 +1132,190 @@ describe("Agent chat runtime", () => {
     );
     expect(soloTurns[0]?.parts).toEqual([
       { type: "reasoning", text: "One whole thought.", status: "running" },
+    ]);
+  });
+
+  it("keeps Hermes 0.19 interim commentary when the final answer differs", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "The checks are clean.",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "The checks are clean.",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          delta: "Everything is ready to ship.",
+          complete: true,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(2);
+    expect(
+      turns.map((turn) =>
+        turn.parts
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join(""),
+      ),
+    ).toEqual(["The checks are clean.", "Everything is ready to ship."]);
+  });
+
+  it("settles a previewed Hermes 0.19 answer onto its interim bubble", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "Partial answer",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "Partial answer",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:01.000Z",
+          delta: "Partial answer with verification.",
+          complete: true,
+          responsePreviewed: true,
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("settles an interim preview across an interleaved synthetic turn", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "Partial answer",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "Partial answer",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.400Z",
+          delta: "Partial answer with verification.",
+          complete: true,
+          responsePreviewed: true,
+        }),
+      ],
+      [
+        {
+          id: "synthetic-status",
+          role: "system",
+          createdAt: "2026-07-20T10:00:00.300Z",
+          status: "complete",
+          parts: [{ type: "text", text: "Local status", status: "complete" }],
+        },
+      ],
+    );
+
+    const assistantTurns = turns.filter((turn) => turn.role === "assistant");
+    expect(assistantTurns).toHaveLength(1);
+    expect(assistantTurns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
+    ]);
+  });
+
+  it("keeps active tool and approval cards live while sealing interim text", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.000Z",
+          delta: "Checking this now.",
+        }),
+        toolEvent({
+          key: "tool-1",
+          toolCallId: "tool-1",
+          phase: "start",
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          name: "search",
+        }),
+        pendingActionEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "python verify.py",
+            description: "Run the verification?",
+            allowPermanent: false,
+          },
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.300Z",
+          delta: "Checking this now.",
+          interim: true,
+        }),
+        toolEvent({
+          key: "tool-1",
+          toolCallId: "tool-1",
+          phase: "complete",
+          receivedAt: "2026-07-20T10:00:00.400Z",
+          name: "search",
+          text: "Verified",
+        }),
+        pendingActionResolutionEvent({
+          receivedAt: "2026-07-20T10:00:00.500Z",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "",
+            description: "",
+            allowPermanent: false,
+            choice: "once",
+          },
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Checking this now.", status: "complete" },
+      expect.objectContaining({
+        type: "tool",
+        id: "tool-1",
+        text: "Verified",
+        status: "complete",
+      }),
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-1",
+        command: "python verify.py",
+        description: "Run the verification?",
+        choice: "once",
+        status: "resolved",
+      }),
     ]);
   });
 
@@ -3048,6 +3255,175 @@ describe("Agent chat runtime", () => {
     ]);
 
     expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  const UPSTREAM_PROVIDER_ERROR =
+    "API call failed after 3 retries: HTTP 502: upstream_provider_failed";
+
+  it("folds a failed upstream-provider message.complete into a friendly notice", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: UPSTREAM_PROVIDER_ERROR,
+          failed: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "notice",
+        kind: "upstream-provider",
+        text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+      },
+    ]);
+  });
+
+  it("keeps successful prose that mentions upstream_provider_failed as text", () => {
+    const prose = "The code upstream_provider_failed is how June API normalizes transport errors.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: prose,
+          failed: false,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+  });
+
+  it("keeps a successful exact upstream-provider sentinel as text", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: UPSTREAM_PROVIDER_ERROR,
+          failed: false,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: UPSTREAM_PROVIDER_ERROR, status: "complete" },
+    ]);
+  });
+
+  it("preserves streamed partial output instead of offering provider recovery", () => {
+    const partialAnswer = "Here is the part I completed.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          delta: partialAnswer,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: UPSTREAM_PROVIDER_ERROR,
+          failed: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: partialAnswer, status: "complete" }]);
+  });
+
+  it("strips a mid-text provider sentinel so the raw marker never renders", () => {
+    const partialAnswer = "Here is the part I completed.";
+    const followUp = "June will retry this step.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:00.000Z",
+          delta: partialAnswer,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: `${partialAnswer}\n${UPSTREAM_PROVIDER_ERROR}\n${followUp}`,
+          failed: true,
+        }),
+      ],
+    );
+
+    const texts = turns[0]?.parts.filter((part) => part.type === "text") ?? [];
+    expect(texts).toHaveLength(1);
+    expect(texts[0]?.text).toContain(partialAnswer);
+    expect(texts[0]?.text).toContain(followUp);
+    expect(texts[0]?.text).not.toContain("upstream_provider_failed");
+  });
+
+  it("strips a trailing provider sentinel while preserving partial completion prose", () => {
+    const partialAnswer = "Here is the part I completed.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: `${partialAnswer}\n${UPSTREAM_PROVIDER_ERROR}`,
+          failed: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([{ type: "text", text: partialAnswer, status: "complete" }]);
+  });
+
+  it("folds only the exact persisted upstream-provider failure sentinel", () => {
+    const failed = buildHermesSessionChatTurns([
+      {
+        id: "failed",
+        role: "assistant",
+        content: UPSTREAM_PROVIDER_ERROR,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+    ]);
+    const prose = `A log can say ${UPSTREAM_PROVIDER_ERROR} while explaining recovery.`;
+    const prefixedProse = `${UPSTREAM_PROVIDER_ERROR} while explaining recovery.`;
+    const successful = buildHermesSessionChatTurns([
+      {
+        id: "successful",
+        role: "assistant",
+        content: prose,
+        timestamp: "2026-06-04T10:00:00.000Z",
+      },
+      {
+        id: "successful-prefixed",
+        role: "assistant",
+        content: prefixedProse,
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+
+    expect(failed[0]?.parts).toEqual([
+      {
+        type: "notice",
+        kind: "upstream-provider",
+        text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+      },
+    ]);
+    expect(successful[0]?.parts).toEqual([{ type: "text", text: prose, status: "complete" }]);
+    expect(successful[1]?.parts).toEqual([
+      { type: "text", text: prefixedProse, status: "complete" },
+    ]);
+  });
+
+  it("renders the persisted provider-recovery prompt as Try again", () => {
+    expect(displayedComposerUserMessageText(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT)).toBe(
+      "Try again",
+    );
   });
 
   // The terminal error Hermes surfaces when a single oversized turn cannot be

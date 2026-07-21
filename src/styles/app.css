@@ -6160,6 +6160,18 @@ button.agent-user-attachment:hover {
   border: 0;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .agent-follow-up-actions {
   display: flex;
   align-items: center;
@@ -22052,6 +22064,11 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
+.dialog-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .dialog-description {
   margin: calc(-1 * var(--sp-3)) 0 0;
   color: var(--muted-foreground);
@@ -26983,14 +27000,23 @@ button.memory-project:hover {
   line-height: 1.4;
 }
 
-.connector-disclosure {
+.connector-title-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connectors-notion-disclosures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.connectors-notion-disclosure {
   margin: 0;
-  overflow: hidden;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .connector-actions {
