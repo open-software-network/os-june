@@ -3,16 +3,26 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { MarkdownContent } from "./MarkdownContent";
 
-// Keep the reveal comfortably above the threshold where individual updates
-// read as discrete provider chunks, without making markdown parsing compete
-// with every display refresh.
-const STREAM_REVEAL_INTERVAL_MS = 32;
-const STREAM_CATCH_UP_STEPS = 4;
+// Deltas gather for one beat, then the whole backlog mounts in a single
+// commit — every word in the batch shares one fade timeline, so a chunk
+// surfaces as a unit instead of a mask sweeping left to right. The interval
+// is the batch width: long enough that a fast token stream groups into
+// visible chunks (and markdown parsing stays off the display refresh), short
+// enough that the response never feels laggy.
+const STREAM_REVEAL_INTERVAL_MS = 80;
+
+// How long the word-fade spans stay mounted after the turn completes. Must
+// cover the agent-stream-word-in duration in app.css so the trailing ink
+// gradient finishes settling naturally; unwrapping at completion would snap
+// the last ~1.5s of words to full ink.
+const STREAM_WORD_FADE_SETTLE_MS = 1700;
 
 /**
- * Smooths append-only assistant text for presentation. The authoritative text
- * remains the raw stream in AgentWorkspace; this component only trails it by a
- * few frames so irregular provider chunks read as one continuous response.
+ * Presents append-only assistant text as chunk-batched reveals: deltas are
+ * held for one short beat and released together, so each batch fades in as a
+ * unit (see agent-stream-word-in). The authoritative text remains the raw
+ * stream in AgentWorkspace; this component only trails it by at most one
+ * batch interval.
  */
 export function SmoothedStreamingMarkdown({
   markdown,
@@ -26,6 +36,10 @@ export function SmoothedStreamingMarkdown({
   onVisibleMarkdownChange?: (visibleMarkdown: string) => void;
 }) {
   const reducedMotion = useReducedMotion() ?? false;
+  // True from the moment a streaming turn completes until its trailing word
+  // fades have had time to finish — the spans stay mounted through it.
+  const [settling, setSettling] = useState(false);
+  const wasRunningRef = useRef(running);
   const [visibleMarkdown, setVisibleMarkdown] = useState(markdown);
   const visibleRef = useRef(markdown);
   const targetRef = useRef(markdown);
@@ -46,28 +60,14 @@ export function SmoothedStreamingMarkdown({
 
   const scheduleReveal = useCallback(() => {
     if (timerRef.current !== null) return;
-    const tick = () => {
+    timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
-      const current = visibleRef.current;
-      const target = targetRef.current;
-      if (current === target) return;
-
-      // Completion reconciliation can replace streamed text rather than append
-      // to it. Never animate through content the model has corrected.
-      if (!target.startsWith(current)) {
-        reveal(target);
-        return;
+      // Everything that arrived during the batch interval mounts at once, in
+      // one commit, so the whole batch starts its fade on the same frame.
+      if (visibleRef.current !== targetRef.current) {
+        reveal(targetRef.current);
       }
-
-      const remaining = target.length - current.length;
-      const step = Math.max(1, Math.ceil(remaining / STREAM_CATCH_UP_STEPS));
-      const end = safeTextSliceEnd(target, Math.min(target.length, current.length + step));
-      reveal(target.slice(0, end));
-      if (end < target.length) {
-        timerRef.current = window.setTimeout(tick, STREAM_REVEAL_INTERVAL_MS);
-      }
-    };
-    timerRef.current = window.setTimeout(tick, STREAM_REVEAL_INTERVAL_MS);
+    }, STREAM_REVEAL_INTERVAL_MS);
   }, [reveal]);
 
   useLayoutEffect(() => {
@@ -108,17 +108,38 @@ export function SmoothedStreamingMarkdown({
     onVisibleMarkdownChange?.(visibleMarkdown);
   }, [onVisibleMarkdownChange, visibleMarkdown]);
 
+  // Completion keeps the spans through a settle window rather than unwrapping
+  // immediately, so the trailing gradient finishes fading on its own clock.
+  // A turn rendered from history was never running here and gets plain text.
+  useEffect(() => {
+    if (running) {
+      wasRunningRef.current = true;
+      setSettling(false);
+      return;
+    }
+    if (!wasRunningRef.current) return;
+    wasRunningRef.current = false;
+    setSettling(true);
+    const timer = window.setTimeout(() => setSettling(false), STREAM_WORD_FADE_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [running]);
+
   // Raw chunks still re-render the parent. Reuse the parsed markdown element
   // until the presentation string advances so smoothing does not add duplicate
   // markdown work on those intermediate renders.
+  //
+  // Word fade-in only exists while the turn streams (plus the settle window):
+  // afterwards the turn re-renders as plain text, so the spans never
+  // accumulate in the transcript DOM.
+  const animateWords = (running || settling) && !reducedMotion;
   return useMemo(
-    () => <MarkdownContent markdown={visibleMarkdown} repairProse={repairProse} />,
-    [repairProse, visibleMarkdown],
+    () => (
+      <MarkdownContent
+        markdown={visibleMarkdown}
+        repairProse={repairProse}
+        animateWords={animateWords}
+      />
+    ),
+    [animateWords, repairProse, visibleMarkdown],
   );
-}
-
-function safeTextSliceEnd(text: string, proposedEnd: number) {
-  if (proposedEnd <= 0 || proposedEnd >= text.length) return proposedEnd;
-  const previous = text.charCodeAt(proposedEnd - 1);
-  return previous >= 0xd800 && previous <= 0xdbff ? proposedEnd + 1 : proposedEnd;
 }

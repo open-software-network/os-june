@@ -18,7 +18,7 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).toBe("First chunk");
   });
 
-  it("reveals appended stream text over a short catch-up window", () => {
+  it("batches appended stream text into one whole-chunk reveal per beat", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="Hello" running repairProse />);
     view.rerender(
@@ -29,13 +29,10 @@ describe("SmoothedStreamingMarkdown", () => {
       />,
     );
 
+    // The delta holds for one batch interval, then mounts all at once — a
+    // chunk fading in as a unit, never a partial left-to-right dribble.
     expect(view.container.textContent).toBe("Hello");
-    act(() => vi.advanceTimersByTime(32));
-    expect(view.container.textContent?.startsWith("Hello")).toBe(true);
-    expect(view.container.textContent).not.toBe("Hello");
-    expect(view.container.textContent).not.toBe("Hello from a larger provider chunk");
-
-    act(() => vi.advanceTimersByTime(1_000));
+    act(() => vi.advanceTimersByTime(80));
     expect(view.container.textContent).toBe("Hello from a larger provider chunk");
   });
 
@@ -66,6 +63,39 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).toBe("Hello hidden backlog");
   });
 
+  it("fades streamed words in and keeps the spans through the settle window", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+    view.rerender(<SmoothedStreamingMarkdown markdown="Hello brave" running />);
+
+    const words = view.container.querySelectorAll(".agent-stream-word");
+    expect([...words].map((word) => word.textContent)).toEqual(["Hello", "brave"]);
+
+    // Completion must not unwrap the spans mid-fade — the trailing gradient
+    // settles on its own clock, then the turn re-renders as plain text.
+    view.rerender(<SmoothedStreamingMarkdown markdown="Hello brave" running={false} />);
+    expect(view.container.querySelectorAll(".agent-stream-word")).toHaveLength(2);
+
+    act(() => vi.advanceTimersByTime(1_700));
+    expect(view.container.querySelectorAll(".agent-stream-word")).toHaveLength(0);
+    expect(view.container.textContent).toBe("Hello brave");
+  });
+
+  it("keeps earlier word spans mounted as text appends so they do not re-fade", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+    view.rerender(<SmoothedStreamingMarkdown markdown="Hello" running />);
+    const firstWord = view.container.querySelector(".agent-stream-word");
+
+    view.rerender(<SmoothedStreamingMarkdown markdown="Hello world" running />);
+    act(() => vi.advanceTimersByTime(1_000));
+
+    const words = view.container.querySelectorAll(".agent-stream-word");
+    expect(words).toHaveLength(2);
+    expect(words[0]).toBe(firstWord);
+    expect(words[1]?.textContent).toBe("world");
+  });
+
   it("notifies the transcript when delayed text becomes visible", () => {
     vi.useFakeTimers();
     const onVisibleMarkdownChange = vi.fn();
@@ -86,7 +116,7 @@ describe("SmoothedStreamingMarkdown", () => {
     );
     expect(onVisibleMarkdownChange).not.toHaveBeenCalled();
 
-    act(() => vi.advanceTimersByTime(32));
+    act(() => vi.advanceTimersByTime(80));
 
     expect(onVisibleMarkdownChange).toHaveBeenCalledTimes(1);
   });

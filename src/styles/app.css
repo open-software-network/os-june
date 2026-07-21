@@ -2461,6 +2461,34 @@ button.agent-user-attachment:hover {
   overflow-wrap: anywhere;
 }
 
+/* While a turn streams, each newly revealed word mounts as a span and fades
+ * in over a deliberately long window: a quick rise to ~30% ink so new words
+ * are readable at once, then a slow linear crawl to full. Because the crawl
+ * far outlasts the gap between chunks, the last second-or-so of prose reads
+ * as a soft ink gradient trailing the reveal — SmoothedStreamingMarkdown
+ * batches deltas so words that arrived together mount together and settle
+ * together. Opacity-only on purpose: batches land several times a second and
+ * blur/transform here would churn compositor layers in WKWebView. The
+ * duration pairs with STREAM_WORD_FADE_SETTLE_MS in
+ * SmoothedStreamingMarkdown, which keeps the spans mounted after completion
+ * so the tail finishes settling instead of popping to full ink; reduced
+ * motion never mounts them. */
+.agent-markdown .agent-stream-word {
+  animation: agent-stream-word-in 1500ms linear both;
+}
+
+@keyframes agent-stream-word-in {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
 .agent-markdown > :first-child {
   margin-top: 0;
 }

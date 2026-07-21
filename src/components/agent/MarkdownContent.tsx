@@ -13,11 +13,16 @@ export function MarkdownContent({
   // -> "it's not"). Only set for assistant prose: it must never touch code or
   // a user's own text. See repairContractionSpacing.
   repairProse = false,
+  // Wraps prose words in .agent-stream-word spans so each fades in as the
+  // stream reveals it. Only set while a turn is actively streaming: the spans
+  // are presentation-only and the completed turn re-renders as plain text.
+  animateWords = false,
 }: {
   markdown: string;
   highlight?: string;
   activeHighlightIndex?: number;
   repairProse?: boolean;
+  animateWords?: boolean;
 }) {
   const highlightCursor: HighlightCursor = {
     activeIndex: activeHighlightIndex,
@@ -25,7 +30,7 @@ export function MarkdownContent({
   };
   return (
     <div className="agent-markdown">
-      {renderMarkdownBlocks(markdown, highlight, repairProse, highlightCursor)}
+      {renderMarkdownBlocks(markdown, highlight, repairProse, highlightCursor, animateWords)}
     </div>
   );
 }
@@ -74,11 +79,41 @@ export function highlightText(
   return nodes;
 }
 
+/** Splits string nodes into word spans so streaming prose can fade in one
+ * word at a time. Keys are positional within the run: streamed text is
+ * append-only, so earlier words keep their spans across re-renders and only
+ * newly revealed words mount (and animate). Non-string nodes (search <mark>s)
+ * pass through untouched. */
+function wrapStreamWords(nodes: ReactNode[], keyPrefix: string): ReactNode[] {
+  const wrapped: ReactNode[] = [];
+  nodes.forEach((node, nodeIndex) => {
+    if (typeof node !== "string") {
+      wrapped.push(node);
+      return;
+    }
+    for (const [tokenIndex, token] of node.split(/(\s+)/).entries()) {
+      if (!token) continue;
+      if (/^\s+$/.test(token)) {
+        wrapped.push(token);
+      } else {
+        wrapped.push(
+          // biome-ignore lint/suspicious/noArrayIndexKey: the positional key is the mechanism — append-only streaming keeps earlier positions stable so only new words mount and fade.
+          <span key={`${keyPrefix}-w${nodeIndex}-${tokenIndex}`} className="agent-stream-word">
+            {token}
+          </span>,
+        );
+      }
+    }
+  });
+  return wrapped;
+}
+
 function renderMarkdownBlocks(
   markdown: string,
   highlight?: string,
   repairProse = false,
   highlightCursor?: HighlightCursor,
+  animateWords = false,
 ) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
@@ -91,7 +126,7 @@ function renderMarkdownBlocks(
     if (!text) return;
     blocks.push(
       <p key={`p-${key++}`}>
-        {renderInlineMarkdown(text, key, highlight, repairProse, highlightCursor)}
+        {renderInlineMarkdown(text, key, highlight, repairProse, highlightCursor, animateWords)}
       </p>,
     );
   };
@@ -144,7 +179,13 @@ function renderMarkdownBlocks(
       index -= 1;
       blocks.push(
         <blockquote key={`quote-${key++}`}>
-          {renderMarkdownBlocks(quoted.join("\n"), highlight, repairProse, highlightCursor)}
+          {renderMarkdownBlocks(
+            quoted.join("\n"),
+            highlight,
+            repairProse,
+            highlightCursor,
+            animateWords,
+          )}
         </blockquote>,
       );
       continue;
@@ -179,7 +220,14 @@ function renderMarkdownBlocks(
               <tr>
                 {header.map((cell, cellIndex) => (
                   <th key={cellIndex}>
-                    {renderInlineMarkdown(cell, key, highlight, repairProse, highlightCursor)}
+                    {renderInlineMarkdown(
+                      cell,
+                      key,
+                      highlight,
+                      repairProse,
+                      highlightCursor,
+                      animateWords,
+                    )}
                   </th>
                 ))}
               </tr>
@@ -189,7 +237,14 @@ function renderMarkdownBlocks(
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex}>
-                      {renderInlineMarkdown(cell, key, highlight, repairProse, highlightCursor)}
+                      {renderInlineMarkdown(
+                        cell,
+                        key,
+                        highlight,
+                        repairProse,
+                        highlightCursor,
+                        animateWords,
+                      )}
                     </td>
                   ))}
                 </tr>
@@ -211,6 +266,7 @@ function renderMarkdownBlocks(
         highlight,
         repairProse,
         highlightCursor,
+        animateWords,
       );
       blocks.push(
         level === 1 ? <h2 key={`h-${key++}`}>{content}</h2> : <h3 key={`h-${key++}`}>{content}</h3>,
@@ -236,7 +292,14 @@ function renderMarkdownBlocks(
       index -= 1;
       const listItems = items.map((item, itemIndex) => (
         <li key={`li-${key}-${itemIndex}`}>
-          {renderInlineMarkdown(item, key + itemIndex, highlight, repairProse, highlightCursor)}
+          {renderInlineMarkdown(
+            item,
+            key + itemIndex,
+            highlight,
+            repairProse,
+            highlightCursor,
+            animateWords,
+          )}
         </li>
       ));
       blocks.push(
@@ -262,14 +325,18 @@ function renderInlineMarkdown(
   highlight?: string,
   repairProse = false,
   highlightCursor?: HighlightCursor,
+  animateWords = false,
 ): ReactNode[] {
   const nodes: ReactNode[] = [];
   const mark = (value: string, slot: string) =>
     highlightText(value, highlight, `${keySeed}-${slot}`, highlightCursor);
   // Prose runs (plain text, emphasis, link text) get the contraction-spacing
-  // repair; code spans and URLs go through `mark` untouched.
-  const markProse = (value: string, slot: string) =>
-    mark(repairProse ? repairContractionSpacing(value) : value, slot);
+  // repair and the streaming word fade; code spans and URLs go through `mark`
+  // untouched.
+  const markProse = (value: string, slot: string) => {
+    const marked = mark(repairProse ? repairContractionSpacing(value) : value, slot);
+    return animateWords ? wrapStreamWords(marked, `${keySeed}-${slot}`) : marked;
+  };
   const pattern =
     /(\*\*([^*]+)\*\*|\*([^*]+)\*|~~([^~]+)~~|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\))/g;
   let lastIndex = 0;

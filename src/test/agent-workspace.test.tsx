@@ -48,6 +48,11 @@ const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
 );
 
+// Streaming prose renders each word in its own fade-in span, so exact-text
+// queries against a live turn must match on the paragraph's full textContent.
+const streamedText = (text: string) => (_: string, element: Element | null) =>
+  element?.tagName === "P" && element.textContent === text;
+
 const mocks = vi.hoisted(() => ({
   assignSessionToProfile: vi.fn(),
   invoke: vi.fn(),
@@ -7087,7 +7092,7 @@ describe("AgentWorkspace", () => {
         });
       }
     });
-    expect(await screen.findByText("Same live answer")).toBeInTheDocument();
+    expect(await screen.findByText(streamedText("Same live answer"))).toBeInTheDocument();
 
     const pendingPromptTurn = screen.getByText("What is the weather in SF?").closest("article");
     expect(pendingPromptTurn).not.toBeNull();
@@ -7106,7 +7111,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
     expect(screen.getByText("Hi")).toBeInTheDocument();
     expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
-    expect(screen.queryByText("Same live answer")).not.toBeInTheDocument();
+    expect(screen.queryByText(streamedText("Same live answer"))).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("textbox").textContent ?? "").toContain("What is the weather in SF?"),
     );
@@ -7171,9 +7176,9 @@ describe("AgentWorkspace", () => {
         });
       }
     });
-    expect(await screen.findByText("Same live answer")).toBeInTheDocument();
+    expect(await screen.findByText(streamedText("Same live answer"))).toBeInTheDocument();
 
-    const liveAnswerTurn = screen.getByText("Same live answer").closest("article");
+    const liveAnswerTurn = screen.getByText(streamedText("Same live answer")).closest("article");
     expect(liveAnswerTurn).not.toBeNull();
     await user.click(
       within(liveAnswerTurn as HTMLElement).getByRole("button", {
@@ -7190,7 +7195,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
     expect(screen.getByText("Hi")).toBeInTheDocument();
     expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
-    expect(screen.queryByText("Same live answer")).not.toBeInTheDocument();
+    expect(screen.queryByText(streamedText("Same live answer"))).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
     expect(screen.getByRole("textbox").textContent?.trim()).toBe("");
     expect(screen.queryByText("session not found")).not.toBeInTheDocument();
@@ -7787,7 +7792,7 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    expect(screen.getByText("Here is the summary.")).toBeInTheDocument();
+    expect(screen.getByText(streamedText("Here is the summary."))).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
   });
 
@@ -14380,6 +14385,29 @@ describe("AgentWorkspace", () => {
       act(() => void agentGallery(false));
     }
     await waitFor(() => expect(screen.queryByText("Agent response gallery")).toBeNull());
+  });
+
+  it("replays a canned stream with word fade-in via the __streamDemo() dev handle", async () => {
+    const streamDemo = (
+      window as unknown as { __streamDemo: (show?: boolean, charsPerSecond?: number) => string }
+    ).__streamDemo;
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    try {
+      act(() => void streamDemo(true, 400));
+      expect(screen.getByText("Streaming replay")).toBeInTheDocument();
+
+      act(() => vi.advanceTimersByTime(450));
+      // The replayed running part streams through the real word fade-in path.
+      expect(document.querySelectorAll(".agent-stream-word").length).toBeGreaterThan(0);
+    } finally {
+      act(() => void streamDemo(false));
+      vi.useRealTimers();
+    }
+    expect(screen.queryByText("Streaming replay")).toBeNull();
+    expect(document.querySelector(".agent-stream-word")).toBeNull();
   });
 
   it("does not let a stale message fetch erase a newer follow-up", async () => {
