@@ -15,14 +15,22 @@ and the matching open question). Narrowly superseded:
   advanced setting, default on, whose copy discloses that the preview
   transcribes audio twice and may use extra credits. A preview request from a
   build that carries this setting is consented billable usage and settles at
-  the actual computed price.
-- Turning the setting off stops both preview lanes at the capture source: no
-  preview audio leaves the device and nothing is authorized or billed.
+  the computed price clamped to the granted hold.
+- Turning the setting off gates both preview lanes at the capture source, so
+  a recording started with the setting off runs no preview lanes at all: no
+  preview audio leaves the device and nothing is authorized or billed. The
+  setting is also re-read per preview chunk in both lane workers, so turning
+  it off mid-recording stops new preview dispatch (and its billing) promptly
+  - at most one in-flight chunk completes - and turning it back on
+  mid-recording resumes the preview.
 - Wire compatibility is preserved: the desktop adds an optional
   `previewOptedIn` form field to preview transcription requests. June API
-  settles opted-in previews at actual price; requests without the flag (every
-  shipped client that predates the setting) keep the zero-credit settlement
-  from PR #869. No existing field or endpoint changed shape.
+  settles opted-in previews at the computed price clamped to the granted
+  hold cap (same `clamp_to_cap` as the final path, so a partial grant never
+  hard-fails settlement after a successful transcription); requests without
+  the flag (every shipped client that predates the setting) keep the
+  zero-credit settlement from PR #869. No existing field or endpoint changed
+  shape.
 - Preview charges stay distinguishable in the ledger: the preview path keeps
   its `note_transcribe_preview:*` idempotency-key prefix, separate from the
   final `note_transcribe:*` charge for the same recording.

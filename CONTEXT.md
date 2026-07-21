@@ -146,7 +146,9 @@ never written to `transcripts`, never the note's source of truth (see
 [ADR-0002](docs/adr/0002-live-transcript-preview-strategy.md)). The Settings
 control for it is labeled **Live transcription** (default on); its disclosure
 copy is the consent surface that makes previews billable extra usage, and
-turning it off stops the preview lanes entirely (JUN-375, ADR-0002 addendum).
+turning it off stops the preview lanes (gated at capture start and re-checked
+per chunk, so it also takes effect mid-recording) (JUN-375, ADR-0002
+addendum).
 _Avoid_: realtime transcription, live captions, streaming.
 
 **Transcript coverage**:

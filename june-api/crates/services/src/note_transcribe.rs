@@ -233,9 +233,10 @@ impl NoteTranscribeService {
             params.user_id.0, params.note_id, audio_digest
         );
         // Consented previews (disclosed setting, user left it on) bill the
-        // computed price; everything else settles at zero per ADR-0002.
+        // computed price clamped to the authorized hold cap, exactly like the
+        // final path; everything else settles at zero per ADR-0002.
         let settled = if params.preview_opted_in {
-            actual
+            clamp_to_cap(actual, authorization.cap_credits)
         } else {
             Credits(0)
         };
@@ -399,9 +400,9 @@ pub struct NoteTranscribeParams {
     pub preview: bool,
     /// True only when the client build carries the disclosed Live
     /// transcription setting and the user left it enabled: such previews are
-    /// consented billable usage and settle at the computed price. Legacy
-    /// clients never send the flag and keep zero-credit preview settlement
-    /// (JUN-375, ADR-0002 addendum).
+    /// consented billable usage and settle at the computed price clamped to
+    /// the granted hold cap. Legacy clients never send the flag and keep
+    /// zero-credit preview settlement (JUN-375, ADR-0002 addendum).
     pub preview_opted_in: bool,
     pub provider_credentials: ProviderCredentials,
 }
