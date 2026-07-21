@@ -119,3 +119,68 @@ export function saveThinkingLevel(level: ThinkingLevel) {
     // Ignore; worst case the next launch drafts the default again.
   }
 }
+
+/**
+ * Per-session record of each chat's reasoning effort, mirroring
+ * agent-session-modes.ts: machine-local (like the runtime's own session
+ * store) and readable synchronously on render. This is what lets the
+ * composer show the level a session actually runs at — its creation pin, a
+ * pick made while it was open, or the effort its live runtime last reported
+ * via session.info — instead of guessing from the machine-wide draft.
+ */
+
+const SESSION_LEVELS_STORAGE_KEY = "june.agent.sessionThinkingLevels";
+
+function readSessionLevelsStore(): Record<string, ThinkingLevel> {
+  try {
+    const raw = window.localStorage.getItem(SESSION_LEVELS_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const store: Record<string, ThinkingLevel> = {};
+    for (const [sessionId, level] of Object.entries(parsed)) {
+      if (isThinkingLevel(level)) store[sessionId] = level;
+    }
+    return store;
+  } catch {
+    return {};
+  }
+}
+
+function writeSessionLevelsStore(store: Record<string, ThinkingLevel>) {
+  try {
+    if (Object.keys(store).length === 0) {
+      window.localStorage.removeItem(SESSION_LEVELS_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(
+      SESSION_LEVELS_STORAGE_KEY,
+      JSON.stringify(store),
+    );
+  } catch {
+    // Ignore; worst case a session shows the draft until its runtime reports.
+  }
+}
+
+/** Every session's best-known effort, keyed by stored session id. */
+export function loadSessionThinkingLevels(): Record<string, ThinkingLevel> {
+  return readSessionLevelsStore();
+}
+
+export function rememberSessionThinkingLevel(
+  sessionId: string,
+  level: ThinkingLevel,
+) {
+  const store = readSessionLevelsStore();
+  store[sessionId] = level;
+  writeSessionLevelsStore(store);
+}
+
+export function forgetSessionThinkingLevel(sessionId: string) {
+  const store = readSessionLevelsStore();
+  if (!(sessionId in store)) return;
+  delete store[sessionId];
+  writeSessionLevelsStore(store);
+}

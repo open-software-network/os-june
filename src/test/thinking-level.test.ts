@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_THINKING_LEVEL,
+  forgetSessionThinkingLevel,
   isThinkingLevel,
+  loadSessionThinkingLevels,
   loadThinkingLevel,
+  rememberSessionThinkingLevel,
   saveThinkingLevel,
   thinkingEffortForLevel,
   thinkingLevelForEffort,
@@ -84,5 +87,54 @@ describe("thinking level persistence", () => {
     expect(isThinkingLevel("hard")).toBe(true);
     expect(isThinkingLevel("xhigh")).toBe(false);
     expect(isThinkingLevel(null)).toBe(false);
+  });
+});
+
+describe("per-session thinking levels", () => {
+  const SESSIONS_KEY = "june.agent.sessionThinkingLevels";
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("starts empty and round-trips per-session records", () => {
+    expect(loadSessionThinkingLevels()).toEqual({});
+    rememberSessionThinkingLevel("s1", "hard");
+    rememberSessionThinkingLevel("s2", "instant");
+    expect(loadSessionThinkingLevels()).toEqual({
+      s1: "hard",
+      s2: "instant",
+    });
+  });
+
+  it("overwrites a session's level without touching others", () => {
+    rememberSessionThinkingLevel("s1", "hard");
+    rememberSessionThinkingLevel("s2", "medium");
+    rememberSessionThinkingLevel("s1", "instant");
+    expect(loadSessionThinkingLevels()).toEqual({
+      s1: "instant",
+      s2: "medium",
+    });
+  });
+
+  it("forgets a deleted session and drops the key when the map empties", () => {
+    rememberSessionThinkingLevel("s1", "hard");
+    forgetSessionThinkingLevel("s1");
+    expect(loadSessionThinkingLevels()).toEqual({});
+    expect(window.localStorage.getItem(SESSIONS_KEY)).toBeNull();
+    // Forgetting an unknown session is a no-op.
+    rememberSessionThinkingLevel("s2", "medium");
+    forgetSessionThinkingLevel("s3");
+    expect(loadSessionThinkingLevels()).toEqual({ s2: "medium" });
+  });
+
+  it("ignores corrupt stored values", () => {
+    window.localStorage.setItem(SESSIONS_KEY, "not json");
+    expect(loadSessionThinkingLevels()).toEqual({});
+    window.localStorage.setItem(
+      SESSIONS_KEY,
+      JSON.stringify({ s1: "ultra", s2: "hard" }),
+    );
+    expect(loadSessionThinkingLevels()).toEqual({ s2: "hard" });
   });
 });

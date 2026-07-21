@@ -2629,6 +2629,138 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("labels a chat with the effort its runtime reports, not the draft", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    // Send once so the session's listener is attached to its runtime.
+    await user.type(await screen.findByRole("textbox"), "first message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "first message",
+      }),
+    );
+
+    // No local pick was ever made; the runtime reports this session's own
+    // effort (e.g. it was retuned before a relaunch, and the in-memory record
+    // is gone). The composer must show the session's actual level.
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "session.info",
+          session_id: "runtime-session-1",
+          payload: { reasoning_effort: "high" },
+        });
+      }
+    });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    expect(
+      within(dialog).getByRole("button", { name: "Effort Hard" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps another chat on its own level after retuning the current chat", async () => {
+    const secondSession = {
+      ...existingSession,
+      id: "session-2",
+      title: "Second session",
+      preview: "Second preview",
+      last_active: "2026-06-04T12:05:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([
+      existingSession,
+      secondSession,
+    ]);
+    // session-2 runs at Medium (its creation pin, persisted). Retuning
+    // session-1 must not relabel it with the new global draft.
+    window.localStorage.setItem(
+      "june.agent.sessionThinkingLevels",
+      JSON.stringify({ "session-2": "medium" }),
+    );
+    const user = userEvent.setup();
+
+    const { rerender } = render(
+      <AgentWorkspace initialSession={existingSession} />,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Effort Medium" }),
+    );
+    const submenu = await screen.findByRole("group", {
+      name: "Thinking level",
+    });
+    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+
+    rerender(<AgentWorkspace initialSession={secondSession} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    );
+    const dialog2 = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    expect(
+      within(dialog2).getByRole("button", { name: "Effort Medium" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog2).queryByRole("button", { name: "Effort Hard" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("re-asserts a persisted session level on the first send after a reload", async () => {
+    // The session was retuned to Hard before the app restarted: its record
+    // survived (localStorage) but the in-memory ack cache did not, so the
+    // fresh runtime must be retuned before the next prompt runs.
+    window.localStorage.setItem(
+      "june.agent.sessionThinkingLevels",
+      JSON.stringify({ "session-1": "hard" }),
+    );
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Model: GLM 5.2" }),
+    );
+    const dialog = await screen.findByRole("dialog", {
+      name: "Choose text model",
+    });
+    expect(
+      within(dialog).getByRole("button", { name: "Effort Hard" }),
+    ).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+
+    await user.type(await screen.findByRole("textbox"), "hello again");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
+        session_id: "runtime-session-1",
+        key: "reasoning",
+        value: "high",
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-1",
+      text: "hello again",
+    });
+  });
+
   it("switches the text model only for the active chat", async () => {
     // Tool-capable catalog: the picker refuses tool-less models for the
     // agent, so the switch target must support function calling.
