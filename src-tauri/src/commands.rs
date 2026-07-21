@@ -105,15 +105,23 @@ impl CaptureStartupGuard {
     }
 
     fn rollback(&mut self) {
+        self.rollback_with(|session_id| finish_capture(session_id).map(|_| ()));
+    }
+
+    fn rollback_with<F>(&mut self, stop_capture: F)
+    where
+        F: FnOnce(&str) -> Result<(), AppError>,
+    {
         if !self.armed {
             return;
         }
         self.armed = false;
-        if let Err(error) = finish_capture(&self.session_id) {
+        if let Err(error) = stop_capture(&self.session_id) {
             eprintln!(
-                "failed to stop recording {} after startup persistence error: {}",
+                "failed to stop recording {} after startup persistence error; preserving unpublished audio because shutdown was not confirmed: {}",
                 self.session_id, error.message
             );
+            return;
         }
         for path in &self.audio_paths {
             if let Err(error) = self.paths.remove_recording_file(path) {
@@ -3998,7 +4006,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_startup_guard_removes_unpublished_audio_when_scope_exits() {
+    fn capture_startup_guard_removes_unpublished_audio_after_shutdown() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
         let session_dir = paths
@@ -4015,10 +4023,44 @@ mod tests {
         started.sources[0].partial_path = partial_path.clone();
         started.sources[0].final_path = final_path.clone();
 
-        drop(CaptureStartupGuard::new(&paths, &started));
+        let mut guard = CaptureStartupGuard::new(&paths, &started);
+        guard.rollback_with(|session_id| {
+            assert_eq!(session_id, "guard-session");
+            Ok(())
+        });
 
         assert!(!partial_path.exists());
         assert!(!final_path.exists());
+    }
+
+    #[test]
+    fn capture_startup_guard_preserves_audio_when_shutdown_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
+        let session_dir = paths
+            .recording_session_dir("note-1", "guard-session")
+            .expect("session dir");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let partial_path = session_dir.join("microphone.partial.wav");
+        let final_path = session_dir.join("microphone.wav");
+        std::fs::write(&partial_path, b"partial audio").expect("write partial audio");
+        std::fs::write(&final_path, b"final audio").expect("write final audio");
+        let mut started = fake_started_recording("guard-session");
+        started.partial_path = partial_path.clone();
+        started.final_path = final_path.clone();
+        started.sources[0].partial_path = partial_path.clone();
+        started.sources[0].final_path = final_path.clone();
+
+        let mut guard = CaptureStartupGuard::new(&paths, &started);
+        guard.rollback_with(|_| {
+            Err(AppError::new(
+                "recording_stop_failed",
+                "Capture shutdown was not confirmed.",
+            ))
+        });
+
+        assert!(partial_path.exists());
+        assert!(final_path.exists());
     }
 
     #[tokio::test]
