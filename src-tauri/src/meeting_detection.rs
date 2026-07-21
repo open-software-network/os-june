@@ -26,6 +26,7 @@ const ALLOWED_MIC_APPS: &[AllowedMicApp] = &[
     mic_app("com.apple.Safari", "Safari"),
     mic_app("com.brave.Browser", "Brave"),
     mic_app("com.cisco.webexmeetingsapp", "Webex"),
+    mic_app("com.gather.GatherV2", "Gather"),
     mic_app("com.google.Chrome", "Chrome"),
     mic_app("com.hnc.Discord", "Discord"),
     mic_app("com.microsoft.edgemac", "Edge"),
@@ -693,6 +694,11 @@ mod tests {
                 "com.cisco.webexmeetingsapp.helper",
                 "Webex",
             ),
+            (
+                "com.gather.GatherV2",
+                "com.gather.GatherV2.helper",
+                "Gather",
+            ),
             ("com.google.Chrome", "COM.GOOGLE.CHROME.helper", "Chrome"),
             ("com.hnc.Discord", "com.hnc.Discord.helper", "Discord"),
             (
@@ -797,6 +803,7 @@ mod tests {
             input_process(61, "net.whatsapp.WhatsAppBusiness"),
             input_process(62, "org.mozilla.firefoxish"),
             input_process(63, "org.whispersystems.signal-desktopx"),
+            input_process(64, "com.gather.GatherV20"),
         ])
         .is_empty());
     }

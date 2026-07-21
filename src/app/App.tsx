@@ -3666,12 +3666,31 @@ export function App() {
     }
   }, []);
 
+  // The HUD emits this request once and immediately hides, so the listener must
+  // remain registered for the app's lifetime. Keep one pending bit while the
+  // app boots; repeated early requests coalesce and drain through the freshest
+  // handler as soon as recording can start.
+  const pendingMeetingStartRef = useRef(false);
+  const meetingStartHandlerRef = useRef<() => void>(() => {});
+  meetingStartHandlerRef.current = () => {
+    if (appBlocked || !bootstrapped) {
+      pendingMeetingStartRef.current = true;
+      return;
+    }
+    pendingMeetingStartRef.current = false;
+    void handleStartMeetingDetectedRecording();
+  };
+
+  useEffect(() => {
+    if (appBlocked || !bootstrapped || !pendingMeetingStartRef.current) return;
+    meetingStartHandlerRef.current();
+  }, [appBlocked, bootstrapped]);
+
   useEffect(() => {
     let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen(MEETING_START_TRANSCRIPTION_EVENT, () => {
-      if (appBlocked || !bootstrapped) return;
-      void handleStartMeetingDetectedRecording();
+      meetingStartHandlerRef.current();
     }).then((cleanup) => {
       if (aborted) cleanup();
       else unlisten = cleanup;
@@ -3680,7 +3699,7 @@ export function App() {
       aborted = true;
       unlisten?.();
     };
-  }, [appBlocked, bootstrapped, handleStartMeetingDetectedRecording]);
+  }, []);
 
   // The handler closes over frequently-changing state, but the Tauri listener
   // must register exactly once: re-subscribing tears the listener down and

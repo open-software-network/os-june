@@ -181,6 +181,14 @@ function recording(overrides: Partial<RecordingSessionDto> = {}) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver;
+  });
+  return { promise, resolve };
+}
+
 describe("meeting start transcription event", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -245,24 +253,11 @@ describe("meeting start transcription event", () => {
     }));
   });
 
-  // The meeting-start listener silently drops events until the effect
-  // re-subscribes with bootstrapped=true — and that happens in a passive
-  // effect of a commit made outside act (getNote's resolution), so on slow
-  // (coverage) runs the listener in the map can still be a stale closure
-  // when we fire. Re-fire until the live listener takes the event; the
-  // calls-length guard makes a successful start fire exactly once, so this
-  // can never double-start a recording.
-  async function fireMeetingStartUntilRecording() {
-    await waitFor(async () => {
-      if (mocks.startRecording.mock.calls.length === 0) {
-        await act(async () => {
-          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
-      expect(mocks.createNote).toHaveBeenCalledWith(undefined);
-      expect(mocks.startRecording).toHaveBeenCalledWith("note-2", "microphonePlusSystem");
+  async function fireMeetingStart() {
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
     });
   }
 
@@ -281,7 +276,11 @@ describe("meeting start transcription event", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await fireMeetingStartUntilRecording();
+    await fireMeetingStart();
+    await waitFor(() => {
+      expect(mocks.createNote).toHaveBeenCalledWith(undefined);
+      expect(mocks.startRecording).toHaveBeenCalledWith("note-2", "microphonePlusSystem");
+    });
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
   });
@@ -302,8 +301,8 @@ describe("meeting start transcription event", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await fireMeetingStartUntilRecording();
-    expect(mocks.startRecording).toHaveBeenCalledOnce();
+    await fireMeetingStart();
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledOnce());
     expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
 
     await act(async () => {
@@ -313,6 +312,48 @@ describe("meeting start transcription event", () => {
     });
 
     await waitFor(() => expect(screen.getByLabelText("Note title")).toHaveValue("New meeting"));
+  });
+
+  it("queues one meeting start until bootstrap is ready without re-registering", async () => {
+    const first = note();
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    const bootstrap = deferred<BootstrapResponse>();
+    mocks.bootstrapApp.mockReturnValue(bootstrap.promise);
+    mocks.createNote.mockResolvedValue(fresh);
+    mocks.startRecording.mockResolvedValue(recording({ noteId: fresh.id }));
+
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await fireMeetingStart();
+    expect(mocks.createNote).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
+    await act(async () => {
+      bootstrap.resolve({
+        folders: [],
+        notes: [first],
+        activeRecoveries: [],
+        providerConfigured: true,
+      });
+      await bootstrap.promise;
+    });
+
+    await waitFor(() =>
+      expect(mocks.startRecording).toHaveBeenCalledWith(fresh.id, "microphonePlusSystem"),
+    );
+    expect(mocks.createNote).toHaveBeenCalledOnce();
+    expect(mocks.startRecording).toHaveBeenCalledOnce();
+    expect(
+      mocks.listen.mock.calls.filter(
+        ([eventName]) => eventName === MEETING_START_TRANSCRIPTION_EVENT,
+      ),
+    ).toHaveLength(1);
   });
 
   it("cleans up Tauri listeners that resolve after unmount", async () => {

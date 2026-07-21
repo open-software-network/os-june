@@ -382,21 +382,12 @@ describe("notes recording reliability", () => {
     render(<App />);
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    // The meeting-start listener silently drops events until the effect
-    // re-subscribes with bootstrapped=true — and that happens in a passive
-    // effect of a commit made outside act (getNote's resolution), so on slow
-    // (coverage) runs the listener in the map can still be a stale closure
-    // when we fire. Re-fire until the live listener takes the event; the
-    // calls-length guard makes a successful start fire exactly once, so this
-    // can never double-start a recording.
-    await waitFor(async () => {
-      if (mocks.startRecording.mock.calls.length === 0) {
-        await act(async () => {
-          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
+    });
+    await waitFor(() => {
       expect(mocks.startRecording).toHaveBeenCalledWith("note-1", "microphonePlusSystem");
     });
   }
@@ -925,16 +916,12 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await waitFor(() => {
-      if (mocks.createNote.mock.calls.length === 0) {
-        act(() => {
-          void mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
-      expect(mocks.createNote).toHaveBeenCalledTimes(1);
+    act(() => {
+      void mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
     });
+    await waitFor(() => expect(mocks.createNote).toHaveBeenCalledTimes(1));
 
     act(() => {
       void mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
@@ -985,16 +972,12 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await waitFor(async () => {
-      if (mocks.deleteNote.mock.calls.length === 0) {
-        await act(async () => {
-          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
-      expect(mocks.deleteNote).toHaveBeenCalledWith("fresh-note");
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
     });
+    await waitFor(() => expect(mocks.deleteNote).toHaveBeenCalledWith("fresh-note"));
     expect(mocks.listNotes).toHaveBeenCalled();
     expect(mocks.startRecording).not.toHaveBeenCalled();
   });
@@ -1025,28 +1008,20 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await waitFor(async () => {
-      if (mocks.deleteNote.mock.calls.length === 0) {
-        await act(async () => {
-          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
-      expect(mocks.deleteNote).toHaveBeenCalledWith("fresh-note");
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
     });
+    await waitFor(() => expect(mocks.deleteNote).toHaveBeenCalledWith("fresh-note"));
     expect(mocks.startRecording).toHaveBeenCalledTimes(1);
 
-    await waitFor(async () => {
-      if (mocks.startRecording.mock.calls.length < 2) {
-        await act(async () => {
-          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
-      expect(mocks.startRecording).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
     });
+    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledTimes(2));
   });
 
   it("restores the previous meeting selection when cleanup deletion fails", async () => {
@@ -1073,16 +1048,12 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await waitFor(async () => {
-      if (mocks.listNotes.mock.calls.length === 0) {
-        await act(async () => {
-          await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-            payload: undefined,
-          });
-        });
-      }
-      expect(mocks.listNotes).toHaveBeenCalled();
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+        payload: undefined,
+      });
     });
+    await waitFor(() => expect(mocks.listNotes).toHaveBeenCalled());
     expect(warn).toHaveBeenCalledWith(
       "Failed to delete note after recording start failed",
       expect.any(Error),
