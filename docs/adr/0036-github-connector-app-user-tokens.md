@@ -17,11 +17,13 @@ differs from Google's and Linear's in three load-bearing ways:
    and the repositories the user selected when installing the app. There is no
    per-grant way to ask for "read only" the way Google scope URLs or Linear's
    `read`/`write` scopes do.
-2. **GitHub enforces the repository boundary server-side.** A user access
-   token ("user-to-server" token) only reaches repositories in the
-   installation's selection, so June does not need its own repository gate
-   (unlike Linear's selected teams, which exist precisely because Linear has
-   no provider-side team boundary).
+2. **GitHub enforces the repository boundary server-side for PRIVATE
+   repositories only.** A user access token ("user-to-server" token) can
+   implicitly read PUBLIC repositories outside the installation's selection
+   (documented GitHub behaviour). June therefore applies its own repository
+   gate in the proxy layer for every repo-scoped route (amended below;
+   unlike Linear's selected-teams gate, the June gate here is required
+   to uphold the PRD's privacy promise, not merely to reflect a UI choice).
 3. **The app's private key is only needed for installation (server-to-server)
    tokens.** The user-token flow needs the client id and client secret at the
    token endpoint - GitHub does not support PKCE-only public clients - and
@@ -47,13 +49,21 @@ whether installation-token minting needs a TEE signer.
    callback on the registered ports 44751-44753 (GitHub, like Linear, matches
    the callback URL exactly), with a random `state` check; there is no PKCE
    because GitHub does not support it.
-3. **June-side read/write gating via stored grant markers.** Because GitHub
-   has no per-grant scopes, the `connector_accounts.scopes` column stores
-   June-side markers (`read`, `write`) chosen by the user in the connect
-   dialog. The Rust proxy refuses every `/v1/github-actions/*` route unless
-   the account carries `write`. This mirrors the Linear selected-teams
-   precedent: an enforcement boundary that exists only in June's proxy, never
-   claimed to be a provider scope.
+3. **June-side read/write gating AND installed-repository boundary.** Because
+   GitHub has no per-grant scopes, the `connector_accounts.scopes` column
+   stores June-side markers (`read`, `write`) chosen by the user in the
+   connect dialog. The Rust proxy refuses every `/v1/github-actions/*` route
+   unless the account carries `write`. Additionally, every repo-scoped route
+   (reads: `get_issue`, `list_issue_comments`, `get_pull_request`, `read_file`;
+   writes: `create_issue`, `update_issue`, `add_comment`; search routes via
+   post-filtering) checks `{owner}/{repo}` against the connected account's
+   installed-repository set before calling GitHub. The set is cached per
+   account for 300 seconds (populated lazily via `list_repositories`).
+   Truncation policy: when the set is truncated (>500-item cap), June fails
+   open (allows the call with a warning) rather than hard-breaking repos
+   beyond position 500. Search routes (`search_issues`, `search_code`)
+   post-filter results to the installed set when not truncated and include
+   a `filteredOut` count in the response so the model can detect filtering.
 4. **Writes are approval-only; autonomy is deferred.** All
    `june_github_actions` tools park in the ADR-0016 approval registry. No
    `june_github_auto_*` grant servers exist in v1, matching Notion's stance.
@@ -92,5 +102,10 @@ whether installation-token minting needs a TEE signer.
   copy must not imply GitHub granted less.
 - Repository selection is managed on GitHub (the installation), not in June's
   settings; June links out instead of duplicating that UI.
+- The installed-repository boundary is June-side enforcement backed by the
+  `list_repositories` cache (300 s TTL). It upholds the PRD promise of zero
+  successful reads outside the installation selection for non-truncated sets.
+  Accounts with >500 installation repositories trigger fail-open (warning log)
+  per the truncation policy above.
 - A future away-mode or installation-token feature (e.g. acting in repos the
   user cannot) would reopen the private-key question and needs a new ADR.

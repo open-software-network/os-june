@@ -2403,6 +2403,269 @@ pub(crate) async fn apply_runtime_config_change(
 /// interleave their stop/restart cycles.
 static REAPPLY_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+// ----- GitHub installed-repository cache (Finding 1) --------------------------
+//
+// GitHub App user access tokens can implicitly read PUBLIC repositories outside
+// the installation selection (documented GitHub behaviour). Because the PRD
+// promises "Reads outside installation repository selection: 0 successful", June
+// maintains its own boundary check in the proxy layer.
+//
+// The cache stores, per connected account id, the lowercased set of
+// `full_name` strings reachable through the installation plus the `truncated`
+// flag, and the time the entry was fetched. A ~300-second TTL balances freshness
+// against redundant list_repositories calls (which themselves paginate up to 500
+// items via two nested loops). Cache entries are evicted on the next request
+// after the TTL expires and are repopulated lazily.
+//
+// Truncation policy (ADR-0036 amendment):
+//   - NOT truncated: enforce the boundary. A candidate repo NOT in the set gets
+//     a clean `github_repo_not_selected` error pointing the user to the GitHub
+//     installation settings.
+//   - Truncated (>500-item installation): FAIL OPEN - allow the call and log a
+//     warning. Repos beyond position 500 must not be hard-broken.
+
+struct InstalledRepoSet {
+    repos: std::collections::HashSet<String>, // lowercased full_names
+    truncated: bool,
+    fetched_at: Instant,
+}
+
+static INSTALLED_REPO_CACHE: std::sync::OnceLock<Mutex<HashMap<String, InstalledRepoSet>>> =
+    std::sync::OnceLock::new();
+
+const INSTALLED_REPO_CACHE_TTL_SECS: u64 = 300;
+
+fn installed_repo_cache() -> &'static Mutex<HashMap<String, InstalledRepoSet>> {
+    INSTALLED_REPO_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// ----- Pure policy helpers for installed-repo boundary -----------------------
+
+/// Decision returned by [`installed_repo_decision`].
+#[derive(Debug, PartialEq)]
+enum RepoBoundaryDecision {
+    /// Repo is in the known set - allow the call.
+    Allow,
+    /// Repo is NOT in the known set and the set is complete (not truncated) -
+    /// refuse with `github_repo_not_selected`.
+    Refuse,
+    /// Repo is NOT in the known set but the set is truncated (>500 items) -
+    /// fail open with a warning.
+    FailOpen,
+}
+
+/// Pure function: given a candidate `{owner}/{repo}` string (already
+/// lowercased), the known repo set, and the truncation flag, decide what to do.
+/// This is the testable core of the boundary enforcement.
+fn installed_repo_decision(
+    candidate_lower: &str,
+    repos: &std::collections::HashSet<String>,
+    truncated: bool,
+) -> RepoBoundaryDecision {
+    if repos.contains(candidate_lower) {
+        return RepoBoundaryDecision::Allow;
+    }
+    if truncated {
+        RepoBoundaryDecision::FailOpen
+    } else {
+        RepoBoundaryDecision::Refuse
+    }
+}
+
+/// Resolve the installed-repo decision for `{owner}/{repo}` for the given
+/// account. Populates the cache on miss / expiry using `connector_github_call`.
+/// Returns the decision; the caller enforces it.
+async fn check_installed_repo(
+    app: &AppHandle,
+    account_id: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<RepoBoundaryDecision, AppError> {
+    let candidate = format!("{}/{}", owner.to_lowercase(), repo.to_lowercase());
+
+    // --- Try the cache first ---------------------------------------------------
+    {
+        let guard = installed_repo_cache()
+            .lock()
+            .expect("installed_repo_cache lock poisoned");
+        if let Some(entry) = guard.get(account_id) {
+            let age = entry.fetched_at.elapsed();
+            if age.as_secs() < INSTALLED_REPO_CACHE_TTL_SECS {
+                return Ok(installed_repo_decision(
+                    &candidate,
+                    &entry.repos,
+                    entry.truncated,
+                ));
+            }
+        }
+    } // lock released
+
+    // --- Cache miss or expired: fetch the repo list ---------------------------
+    let list = connector_github_call(app, account_id, |token| async move {
+        crate::connectors::github::list_repositories(&token).await
+    })
+    .await?;
+
+    let repos: std::collections::HashSet<String> = list
+        .repositories
+        .iter()
+        .map(|r| r.full_name.to_lowercase())
+        .collect();
+    let truncated = list.truncated;
+    let decision = installed_repo_decision(&candidate, &repos, truncated);
+
+    {
+        let mut guard = installed_repo_cache()
+            .lock()
+            .expect("installed_repo_cache lock poisoned");
+        guard.insert(
+            account_id.to_string(),
+            InstalledRepoSet {
+                repos,
+                truncated,
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    Ok(decision)
+}
+
+/// Enforce the installed-repository boundary for repo-scoped routes. Returns
+/// an error on `Refuse`, logs a warning on `FailOpen`, and is a no-op on
+/// `Allow`.
+async fn require_installed_repo(
+    app: &AppHandle,
+    account_id: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<(), AppError> {
+    match check_installed_repo(app, account_id, owner, repo).await? {
+        RepoBoundaryDecision::Allow => Ok(()),
+        RepoBoundaryDecision::Refuse => Err(AppError::new(
+            "github_repo_not_selected",
+            format!(
+                "Repository '{owner}/{repo}' is not part of the June GitHub App installation. \
+                 To add it, visit GitHub's installation settings and update the repository \
+                 selection for the June app."
+            ),
+        )),
+        RepoBoundaryDecision::FailOpen => {
+            tracing::warn!(
+                account_id,
+                owner,
+                repo,
+                "github installed-repo set is truncated (>500 repos); \
+                 failing open for repo not found in known set"
+            );
+            Ok(())
+        }
+    }
+}
+
+// ----- Search result post-filtering (Finding 1, step 4) ----------------------
+
+/// Result of filtering search results to the installed-repo set.
+struct FilteredSearchResult<T> {
+    items: Vec<T>,
+    filtered_out: usize,
+}
+
+/// Pure function: filter a list of items to those whose `full_name` (lowercased)
+/// is in the installed repo set. When the set is truncated, skips filtering
+/// (fail-open) and returns all items with `filtered_out: 0`.
+fn filter_to_installed_repos<T, F>(
+    items: Vec<T>,
+    repos: &std::collections::HashSet<String>,
+    truncated: bool,
+    get_full_name: F,
+) -> FilteredSearchResult<T>
+where
+    F: Fn(&T) -> &str,
+{
+    if truncated {
+        return FilteredSearchResult {
+            items,
+            filtered_out: 0,
+        };
+    }
+    let mut filtered_out = 0usize;
+    let items: Vec<T> = items
+        .into_iter()
+        .filter(|item| {
+            let lower = get_full_name(item).to_lowercase();
+            let in_set = repos.contains(&lower);
+            if !in_set {
+                filtered_out += 1;
+            }
+            in_set
+        })
+        .collect();
+    FilteredSearchResult {
+        items,
+        filtered_out,
+    }
+}
+
+/// Resolve the installed-repo set for post-filtering search results. Returns
+/// (repos, truncated); on any error, fails open (returns empty set with
+/// truncated=true so filtering is skipped).
+async fn installed_repo_set_for_filter(
+    app: &AppHandle,
+    account_id: &str,
+) -> (std::collections::HashSet<String>, bool) {
+    // Try cache first.
+    {
+        let guard = installed_repo_cache()
+            .lock()
+            .expect("installed_repo_cache lock poisoned");
+        if let Some(entry) = guard.get(account_id) {
+            if entry.fetched_at.elapsed().as_secs() < INSTALLED_REPO_CACHE_TTL_SECS {
+                return (entry.repos.clone(), entry.truncated);
+            }
+        }
+    }
+
+    // Fetch fresh.
+    match connector_github_call(app, account_id, |token| async move {
+        crate::connectors::github::list_repositories(&token).await
+    })
+    .await
+    {
+        Ok(list) => {
+            let repos: std::collections::HashSet<String> = list
+                .repositories
+                .iter()
+                .map(|r| r.full_name.to_lowercase())
+                .collect();
+            let truncated = list.truncated;
+            {
+                let mut guard = installed_repo_cache()
+                    .lock()
+                    .expect("installed_repo_cache lock poisoned");
+                guard.insert(
+                    account_id.to_string(),
+                    InstalledRepoSet {
+                        repos: repos.clone(),
+                        truncated,
+                        fetched_at: Instant::now(),
+                    },
+                );
+            }
+            (repos, truncated)
+        }
+        Err(err) => {
+            tracing::warn!(
+                account_id,
+                error_code = err.code,
+                "github installed-repo fetch for search filter failed; failing open"
+            );
+            // Fail open: return empty set with truncated=true so caller skips filtering.
+            (std::collections::HashSet::new(), true)
+        }
+    }
+}
+
 /// Apply June's native-memory toolset policy without requiring a live bridge
 /// connection. The launchd routine gateway can remain alive after both bridge
 /// modes stop, but it reloads config.yaml before every cron run, so this direct
@@ -13537,9 +13800,10 @@ async fn dispatch_connector_route(
                 }
             }
         }
-        // GitHub reads. Repository access is enforced by the GitHub App
-        // installation server-side; June does not apply a selected-repo grant
-        // check (ADR-0036). Token refresh follows the standard force-refresh-
+        // GitHub reads. GitHub App user access tokens can implicitly read
+        // PUBLIC repositories outside the installation selection, so June
+        // enforces its own repository boundary for every repo-scoped route
+        // (ADR-0036 amended). Token refresh follows the standard force-refresh-
         // once-and-retry pattern via `connector_github_call`.
         "/v1/github/list_repositories" => {
             let list = connector_github_call(app, account_id, |token| async move {
@@ -13562,7 +13826,21 @@ async fn dispatch_connector_route(
                     }
                 })
                 .await?;
-            connector_json(serde_json::json!({ "items": connector_json(results)? }))
+            // Post-filter issue search results to the installed-repo set.
+            // When the set is truncated (>500 repos), skip filtering (fail open).
+            let (installed, truncated) = installed_repo_set_for_filter(app, account_id).await;
+            if truncated {
+                tracing::warn!(
+                    account_id,
+                    "github installed-repo set truncated; skipping search_issues post-filter"
+                );
+            }
+            let filtered =
+                filter_to_installed_repos(results, &installed, truncated, |r| &r.repo_full_name);
+            connector_json(serde_json::json!({
+                "items": connector_json(filtered.items)?,
+                "filteredOut": filtered.filtered_out,
+            }))
         }
         "/v1/github/get_issue" => {
             let owner = require_body_str(body, "owner")?;
@@ -13574,6 +13852,8 @@ async fn dispatch_connector_route(
                 .ok_or_else(|| {
                     AppError::new("connector_invalid_input", "The 'number' field is required.")
                 })?;
+            // June-side installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let issue =
                 connector_github_call(app, account_id, |token| {
                     let owner = owner.clone();
@@ -13596,6 +13876,8 @@ async fn dispatch_connector_route(
                     AppError::new("connector_invalid_input", "The 'number' field is required.")
                 })?;
             let per_page = body_u32(body, "per_page");
+            // June-side installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let comments = connector_github_call(app, account_id, |token| {
                 let owner = owner.clone();
                 let repo = repo.clone();
@@ -13619,6 +13901,8 @@ async fn dispatch_connector_route(
                 .ok_or_else(|| {
                     AppError::new("connector_invalid_input", "The 'number' field is required.")
                 })?;
+            // June-side installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let pr = connector_github_call(app, account_id, |token| {
                 let owner = owner.clone();
                 let repo = repo.clone();
@@ -13634,6 +13918,8 @@ async fn dispatch_connector_route(
             let repo = require_body_str(body, "repo")?;
             let path_str = require_body_str(body, "path")?;
             let git_ref = body_str(body, "ref");
+            // June-side installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let file = connector_github_call(app, account_id, |token| {
                 let owner = owner.clone();
                 let repo = repo.clone();
@@ -13663,7 +13949,21 @@ async fn dispatch_connector_route(
                 }
             })
             .await?;
-            connector_json(serde_json::json!({ "items": connector_json(results)? }))
+            // Post-filter code search results to the installed-repo set.
+            // When the set is truncated (>500 repos), skip filtering (fail open).
+            let (installed, truncated) = installed_repo_set_for_filter(app, account_id).await;
+            if truncated {
+                tracing::warn!(
+                    account_id,
+                    "github installed-repo set truncated; skipping search_code post-filter"
+                );
+            }
+            let filtered =
+                filter_to_installed_repos(results, &installed, truncated, |r| &r.repo_full_name);
+            connector_json(serde_json::json!({
+                "items": connector_json(filtered.items)?,
+                "filteredOut": filtered.filtered_out,
+            }))
         }
         // GitHub writes. Every arm reaches here only AFTER the approval gate
         // in handle_connector_route (the /v1/github-actions/ prefix routes
@@ -13681,6 +13981,8 @@ async fn dispatch_connector_route(
             let owner = require_body_str(body, "owner")?;
             let repo = require_body_str(body, "repo")?;
             let title = require_body_str(body, "title")?;
+            // Defence-in-depth installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let action_id = crate::connectors::mint_action_id();
             crate::connectors::journal_action_pending(
                 app,
@@ -13745,6 +14047,8 @@ async fn dispatch_connector_route(
                 .ok_or_else(|| {
                     AppError::new("connector_invalid_input", "The 'number' field is required.")
                 })?;
+            // Defence-in-depth installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let action_id = crate::connectors::mint_action_id();
             crate::connectors::journal_action_pending(
                 app,
@@ -13807,6 +14111,8 @@ async fn dispatch_connector_route(
                 .ok_or_else(|| {
                     AppError::new("connector_invalid_input", "The 'number' field is required.")
                 })?;
+            // Defence-in-depth installed-repository boundary (ADR-0036 amended).
+            require_installed_repo(app, account_id, &owner, &repo).await?;
             let comment_body = require_body_str(body, "body")?;
             let action_id = crate::connectors::mint_action_id();
             crate::connectors::journal_action_pending(
@@ -24274,5 +24580,141 @@ mcp_servers:
                 .any(|t| t == JUNE_GITHUB_ACTIONS_MCP_SERVER_NAME),
             "june_github_actions must NOT be in cron toolsets"
         );
+    }
+
+    // ----- installed_repo_decision pure-function tests (Finding 1) ------------
+
+    fn make_repo_set(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn installed_repo_decision_allow_when_in_set() {
+        let repos = make_repo_set(&["owner/repo", "org/other"]);
+        assert_eq!(
+            installed_repo_decision("owner/repo", &repos, false),
+            RepoBoundaryDecision::Allow
+        );
+    }
+
+    #[test]
+    fn installed_repo_decision_allow_case_insensitive() {
+        // The set stores lowercased names; the candidate must also be lowercased
+        // before the call (as check_installed_repo does).
+        let repos = make_repo_set(&["owner/repo"]);
+        assert_eq!(
+            installed_repo_decision("owner/repo", &repos, false),
+            RepoBoundaryDecision::Allow
+        );
+    }
+
+    #[test]
+    fn installed_repo_decision_refuse_when_not_in_non_truncated_set() {
+        let repos = make_repo_set(&["owner/other"]);
+        assert_eq!(
+            installed_repo_decision("owner/repo", &repos, false),
+            RepoBoundaryDecision::Refuse
+        );
+    }
+
+    #[test]
+    fn installed_repo_decision_fail_open_when_not_in_truncated_set() {
+        let repos = make_repo_set(&["owner/other"]);
+        assert_eq!(
+            installed_repo_decision("owner/repo", &repos, true),
+            RepoBoundaryDecision::FailOpen
+        );
+    }
+
+    #[test]
+    fn installed_repo_decision_allow_overrides_truncated_when_in_set() {
+        // Even with a truncated set, a repo that IS in the known portion must
+        // get Allow (not FailOpen), because we have positive confirmation.
+        let repos = make_repo_set(&["owner/repo"]);
+        assert_eq!(
+            installed_repo_decision("owner/repo", &repos, true),
+            RepoBoundaryDecision::Allow
+        );
+    }
+
+    // ----- filter_to_installed_repos pure-function tests (Finding 1, step 4) --
+
+    #[derive(Debug, PartialEq)]
+    struct FakeItem {
+        repo: String,
+        value: u32,
+    }
+
+    #[test]
+    fn filter_to_installed_repos_keeps_matching_removes_others() {
+        let repos = make_repo_set(&["owner/a", "owner/b"]);
+        let items = vec![
+            FakeItem {
+                repo: "owner/a".to_string(),
+                value: 1,
+            },
+            FakeItem {
+                repo: "owner/c".to_string(),
+                value: 2,
+            },
+            FakeItem {
+                repo: "owner/b".to_string(),
+                value: 3,
+            },
+        ];
+        let result = filter_to_installed_repos(items, &repos, false, |i| &i.repo);
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.filtered_out, 1);
+        assert!(result.items.iter().all(|i| i.repo != "owner/c"));
+    }
+
+    #[test]
+    fn filter_to_installed_repos_skips_filtering_when_truncated() {
+        let repos = make_repo_set(&["owner/a"]);
+        let items = vec![
+            FakeItem {
+                repo: "owner/a".to_string(),
+                value: 1,
+            },
+            FakeItem {
+                repo: "owner/z".to_string(),
+                value: 2,
+            },
+        ];
+        // truncated=true: all items pass through, filteredOut=0.
+        let result = filter_to_installed_repos(items, &repos, true, |i| &i.repo);
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.filtered_out, 0);
+    }
+
+    #[test]
+    fn filter_to_installed_repos_filtered_out_count_is_accurate() {
+        let repos = make_repo_set(&["owner/keep"]);
+        let items = vec![
+            FakeItem {
+                repo: "owner/keep".to_string(),
+                value: 1,
+            },
+            FakeItem {
+                repo: "owner/drop1".to_string(),
+                value: 2,
+            },
+            FakeItem {
+                repo: "owner/drop2".to_string(),
+                value: 3,
+            },
+        ];
+        let result = filter_to_installed_repos(items, &repos, false, |i| &i.repo);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.filtered_out, 2);
+    }
+
+    #[test]
+    fn filter_to_installed_repos_empty_input_returns_zero_filtered() {
+        let repos = make_repo_set(&["owner/a"]);
+        let items: Vec<FakeItem> = vec![];
+        let result = filter_to_installed_repos(items, &repos, false, |i| &i.repo);
+        assert_eq!(result.items.len(), 0);
+        assert_eq!(result.filtered_out, 0);
     }
 }

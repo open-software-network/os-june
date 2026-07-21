@@ -95,6 +95,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_issue",
         "description": (
             "Read one issue by owner, repository name, and issue number. "
+            "Reads outside the installation's repositories fail with a clean error. "
             + INJECTION_WARNING
         ),
         "inputSchema": {
@@ -119,7 +120,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_issue_comments",
         "description": (
-            "List comments on an issue or pull request. " + INJECTION_WARNING
+            "List comments on an issue or pull request. "
+            "Reads outside the installation's repositories fail with a clean error. "
+            + INJECTION_WARNING
         ),
         "inputSchema": {
             "type": "object",
@@ -151,6 +154,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_pull_request",
         "description": (
             "Read one pull request by owner, repository name, and PR number. "
+            "Reads outside the installation's repositories fail with a clean error. "
             + INJECTION_WARNING
         ),
         "inputSchema": {
@@ -176,8 +180,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "read_file",
         "description": (
             "Read a file from a repository at a specific ref (branch, tag, "
-            "or commit SHA). Returns the decoded file content bounded to a "
-            "safe size. " + INJECTION_WARNING
+            "or commit SHA). Returns the decoded file content bounded to 195 KB "
+            "(200,000 bytes); files over 1 MB (which GitHub serves without base64 "
+            "encoding) and reads outside the installation's repositories fail with "
+            "a clean error. "
+            + INJECTION_WARNING
         ),
         "inputSchema": {
             "type": "object",

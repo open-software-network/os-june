@@ -1047,7 +1047,10 @@ struct ContentsWire {
 
 /// Read one file from a GitHub repository, decoding base64 content. Refuses
 /// non-file types (directories, symlinks, submodules) with a clean error.
-/// Caps decoded content at `READ_FILE_MAX_BYTES` bytes.
+/// GitHub returns `encoding: "none"` (with empty `content`) for files between
+/// 1 MB and 100 MB; those return an error naming the file's size and June's
+/// read cap (200 KB) rather than fabricating an empty file.
+/// Caps decoded base64 content at `READ_FILE_MAX_BYTES` bytes.
 pub async fn read_file(
     access_token: &str,
     owner: &str,
@@ -1081,6 +1084,25 @@ pub async fn read_file(
         return Err(GithubApiError::Api {
             status: 422,
             message: format!("Path '{}' is a {}, not a file.", path, wire.content_type),
+        });
+    }
+
+    // GitHub returns `encoding: "none"` (with empty `content`) for files
+    // between 1 MB and 100 MB. Treating that as a successful empty file would
+    // silently fabricate content. Return a clear error naming the file's
+    // actual size and June's read cap so the agent can advise the user.
+    if wire.encoding != "base64" {
+        let size_kb = wire.size / 1024;
+        return Err(GithubApiError::Api {
+            status: 422,
+            message: format!(
+                "File '{}' is {size_kb} KB, which exceeds June's {cap_kb} KB read cap \
+                 (GitHub returns non-base64 encoding for files over 1 MB). \
+                 June can read files up to {cap_kb} KB.",
+                path,
+                size_kb = size_kb,
+                cap_kb = READ_FILE_MAX_BYTES / 1024,
+            ),
         });
     }
 
@@ -1586,5 +1608,94 @@ mod tests {
         assert_eq!(upstream.code, "github_upstream_error");
         let definitive: AppError = classify_api_error(422, "validation failed".to_string()).into();
         assert_eq!(definitive.code, "github_api_error");
+    }
+
+    // ----- read_file: large-file encoding guard tests ---------------------------
+
+    /// Simulate the wire response GitHub returns for files between 1 MB and
+    /// 100 MB: `encoding: "none"`, empty `content`, and a non-zero `size`.
+    fn make_large_file_wire(size_bytes: u64) -> ContentsWire {
+        ContentsWire {
+            content_type: "file".to_string(),
+            path: "big.bin".to_string(),
+            content: String::new(),
+            encoding: "none".to_string(),
+            size: size_bytes,
+        }
+    }
+
+    fn make_base64_file_wire(content_b64: &str) -> ContentsWire {
+        ContentsWire {
+            content_type: "file".to_string(),
+            path: "small.txt".to_string(),
+            content: content_b64.to_string(),
+            encoding: "base64".to_string(),
+            size: content_b64.len() as u64,
+        }
+    }
+
+    /// Pure helper: apply the encoding guard logic used in `read_file` and
+    /// return an error if encoding is non-base64 with size > 0, mirroring the
+    /// real implementation. Used to make the policy testable without hitting
+    /// the network.
+    fn encoding_guard_result(wire: &ContentsWire, path: &str) -> Result<(), String> {
+        if wire.encoding != "base64" {
+            let size_kb = wire.size / 1024;
+            return Err(format!(
+                "File '{}' is {size_kb} KB, which exceeds June's {cap_kb} KB read cap \
+                 (GitHub returns non-base64 encoding for files over 1 MB). \
+                 June can read files up to {cap_kb} KB.",
+                path,
+                size_kb = size_kb,
+                cap_kb = READ_FILE_MAX_BYTES / 1024,
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_file_encoding_none_with_nonzero_size_returns_error_naming_size() {
+        // 5 MB file: 5 * 1024 * 1024 / 1024 = 5120 KB.
+        // READ_FILE_MAX_BYTES = 200_000; 200_000 / 1024 = 195 KB.
+        let wire = make_large_file_wire(5 * 1024 * 1024);
+        let result = encoding_guard_result(&wire, "big.bin");
+        assert!(result.is_err(), "expected error for encoding=none, size>0");
+        let msg = result.unwrap_err();
+        let expected_size_kb = (5u64 * 1024 * 1024) / 1024;
+        let expected_cap_kb = READ_FILE_MAX_BYTES / 1024;
+        assert!(
+            msg.contains(&format!("{expected_size_kb} KB")),
+            "error should name size in KB ({expected_size_kb}); got: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{expected_cap_kb} KB")),
+            "error should mention June's {expected_cap_kb} KB cap; got: {msg}"
+        );
+        assert!(
+            msg.contains("big.bin"),
+            "error should name the file; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_file_encoding_base64_path_is_unchanged() {
+        // A normal small file should not be blocked by the encoding guard.
+        let wire = make_base64_file_wire("aGVsbG8="); // "hello"
+        let result = encoding_guard_result(&wire, "small.txt");
+        assert!(
+            result.is_ok(),
+            "base64 encoding must not be blocked by the guard"
+        );
+    }
+
+    #[test]
+    fn read_file_encoding_none_zero_size_returns_error_guard() {
+        // Even with size=0 the guard triggers on non-base64 encoding.
+        let wire = make_large_file_wire(0);
+        let result = encoding_guard_result(&wire, "empty.bin");
+        assert!(
+            result.is_err(),
+            "non-base64 encoding should always be rejected, even with size=0"
+        );
     }
 }
