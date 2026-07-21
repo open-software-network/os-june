@@ -918,6 +918,53 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
   });
 
+  it("keeps rapid Home messages in the conversation without showing Up next", async () => {
+    const user = userEvent.setup();
+    let resolveFirst: ((value: { content: string }) => void) | undefined;
+    let resolveSecond: ((value: { content: string }) => void) | undefined;
+    mocks.juneHomeChat
+      .mockReturnValueOnce(
+        new Promise<{ content: string }>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise<{ content: string }>((resolve) => {
+          resolveSecond = resolve;
+        }),
+      );
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "How was your day?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText("How was your day?")).toBeInTheDocument();
+
+    await user.type(composer, "Also, what should we do tomorrow?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Also, what should we do tomorrow?")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Up next")).toBeNull();
+    expect(mocks.juneHomeChat).toHaveBeenCalledTimes(1);
+
+    resolveFirst?.({ content: "Pretty good — thanks for asking." });
+    expect(await screen.findByText("Pretty good — thanks for asking.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.juneHomeChat).toHaveBeenNthCalledWith(2, [
+        { role: "user", content: "How was your day?" },
+        { role: "assistant", content: "Pretty good — thanks for asking." },
+        { role: "user", content: "Also, what should we do tomorrow?" },
+      ]),
+    );
+
+    resolveSecond?.({ content: "Let’s make a simple plan tomorrow morning." });
+    expect(
+      await screen.findByText("Let’s make a simple plan tomorrow morning."),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Up next")).toBeNull();
+  });
+
   it("migrates an existing Home thread to the conversational model default only once", async () => {
     stageSessionModelSelection(existingSession.id, { modelId: "zai-org-glm-5-2" });
 

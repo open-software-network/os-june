@@ -2657,6 +2657,9 @@ export function AgentWorkspace({
     homeMode ? readPersistedHomeDirectTurns(initialSessionId) : [],
   );
   const homeDirectTurnsRef = useRef(homeDirectTurns);
+  const [homeDirectPendingCount, setHomeDirectPendingCount] = useState(0);
+  const homeDirectPendingCountRef = useRef(0);
+  const homeDirectChatChainRef = useRef<Promise<void>>(Promise.resolve());
   const [homeOptimisticTurn, setHomeOptimisticTurn] = useState<AgentChatTurn | null>(null);
   const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
@@ -3874,22 +3877,26 @@ export function AgentWorkspace({
   // the send slot holds Stop and a typed message steers the running turn rather
   // than starting a new one. Drives the steer-send button, the queue-style
   // placeholder, and whether the steer-card stack renders.
-  const composerInSteerState = composerInSteerStateFor({
-    selectedSessionId: selectedHermesSessionId,
-    provisional: selectedHermesSessionIsProvisional,
-    working: selectedHermesSessionId ? workingSessionIds.has(selectedHermesSessionId) : false,
-    submitting,
-    submittingSessionId: submittingHermesSessionId,
-    demo: composerSteerDemo,
-  });
+  const composerInSteerState =
+    !homeMode &&
+    composerInSteerStateFor({
+      selectedSessionId: selectedHermesSessionId,
+      provisional: selectedHermesSessionIsProvisional,
+      working: selectedHermesSessionId ? workingSessionIds.has(selectedHermesSessionId) : false,
+      submitting,
+      submittingSessionId: submittingHermesSessionId,
+      demo: composerSteerDemo,
+    });
   const selectedSteerCards = selectedHermesSessionId
     ? (steerCardsBySessionId[selectedHermesSessionId] ?? [])
     : [];
-  const visibleFollowUpQueueKey = selectedHermesSessionId
-    ? selectedHermesSessionId
-    : heroMode
-      ? NEW_SESSION_RECOVERY_QUEUE_KEY
-      : undefined;
+  const visibleFollowUpQueueKey = homeMode
+    ? undefined
+    : selectedHermesSessionId
+      ? selectedHermesSessionId
+      : heroMode
+        ? NEW_SESSION_RECOVERY_QUEUE_KEY
+        : undefined;
   const selectedQueuedAttachmentFollowUps = visibleFollowUpQueueKey
     ? (queuedAttachmentFollowUps[visibleFollowUpQueueKey] ?? [])
     : [];
@@ -6374,9 +6381,17 @@ export function AgentWorkspace({
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = draft.trim();
+    const canLayerHomeMessage = Boolean(
+      homeMode &&
+        homeDirectPendingCountRef.current > 0 &&
+        selectedHermesSessionIdRef.current &&
+        message &&
+        !attachments.length &&
+        !category,
+    );
     if (
       (!message && !attachments.length) ||
-      submitting ||
+      (submitting && !canLayerHomeMessage) ||
       importingFiles ||
       textActionsDisabledReason ||
       selectedHermesSessionIsProvisional ||
@@ -6426,6 +6441,7 @@ export function AgentWorkspace({
       }
     }
     const attachmentQueueSessionId =
+      !homeMode &&
       attachments.length > 0 &&
       !category &&
       !newSessionModeRef.current &&
@@ -6492,6 +6508,7 @@ export function AgentWorkspace({
     // to an existing session only; attachments, reports, and new-session sends
     // take the full submit path below.
     if (
+      !homeMode &&
       message &&
       !attachments.length &&
       !category &&
@@ -6591,6 +6608,7 @@ export function AgentWorkspace({
     let preparedForRecovery: PreparedComposerSubmission | undefined;
     let optimisticHomeTurnId: string | undefined;
     let homeSubmissionAccepted = false;
+    let homeDirectUserCommitted = false;
     let clearedIssueReportReview:
       | {
           sessionId: string;
@@ -6703,6 +6721,7 @@ export function AgentWorkspace({
         if (!submittedSessionId) {
           throw new Error("June could not create the Home conversation.");
         }
+        const homeSessionId = submittedSessionId;
         const startedAt = Date.now();
         const directTurnId = `${startedAt}:${Math.random().toString(36).slice(2)}`;
         const userTurn: AgentChatTurn = {
@@ -6712,49 +6731,64 @@ export function AgentWorkspace({
           status: "complete",
           parts: [{ type: "text", text: prepared.displayContent, status: "complete" }],
         };
-        const response = await juneHomeChat([
-          ...juneHomeChatMessagesFromTurns([...hermesTurns, ...homeDirectTurnsRef.current]),
-          { role: "user", content: prepared.displayContent },
-        ]);
-        const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
-        const assistantTurn: AgentChatTurn = response.task
-          ? {
-              id: `home:direct:assistant:${directTurnId}`,
-              role: "assistant",
-              createdAt: new Date(startedAt + 1).toISOString(),
-              status: "complete",
-              parts: [
-                {
-                  type: "tool",
-                  id: taskToolCallId,
-                  name: "mcp_june_home_start_task",
-                  text: "",
-                  status: "complete",
-                },
-              ],
-            }
-          : {
-              id: `home:direct:assistant:${directTurnId}`,
-              role: "assistant",
-              createdAt: new Date(startedAt + 1).toISOString(),
-              status: "complete",
-              parts: [
-                {
-                  type: "text",
-                  text: response.content?.trim() || "I’m here.",
-                  status: "complete",
-                },
-              ],
-            };
-        commitHomeDirectTurns(submittedSessionId, [
-          ...homeDirectTurnsRef.current,
-          userTurn,
-          assistantTurn,
-        ]);
+        // A Home send is a chat bubble immediately, never an "Up next" row.
+        // Requests are serialized privately so rapid messages retain one
+        // coherent friend-like conversation context without exposing a queue.
+        commitHomeDirectTurns(homeSessionId, [...homeDirectTurnsRef.current, userTurn]);
+        homeDirectUserCommitted = true;
         homeSubmissionAccepted = true;
         setHomeOptimisticTurn((current) => (current?.id === optimisticHomeTurnId ? null : current));
-        if (response.task && taskToolCallId) {
-          void startHomeTask(response.task, taskToolCallId);
+        changeHomeDirectPendingCount(1);
+        const request = homeDirectChatChainRef.current
+          .catch(() => undefined)
+          .then(async () => {
+            const currentTurns = homeDirectTurnsRef.current;
+            const userIndex = currentTurns.findIndex((turn) => turn.id === userTurn.id);
+            const contextTurns =
+              userIndex < 0 ? currentTurns : currentTurns.slice(0, userIndex + 1);
+            const response = await juneHomeChat(
+              juneHomeChatMessagesFromTurns([...hermesTurns, ...contextTurns]),
+            );
+            const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
+            const assistantTurn: AgentChatTurn = response.task
+              ? {
+                  id: `home:direct:assistant:${directTurnId}`,
+                  role: "assistant",
+                  createdAt: new Date().toISOString(),
+                  status: "complete",
+                  parts: [
+                    {
+                      type: "tool",
+                      id: taskToolCallId,
+                      name: "mcp_june_home_start_task",
+                      text: "",
+                      status: "complete",
+                    },
+                  ],
+                }
+              : {
+                  id: `home:direct:assistant:${directTurnId}`,
+                  role: "assistant",
+                  createdAt: new Date().toISOString(),
+                  status: "complete",
+                  parts: [
+                    {
+                      type: "text",
+                      text: response.content?.trim() || "I’m here.",
+                      status: "complete",
+                    },
+                  ],
+                };
+            insertHomeDirectReply(homeSessionId, userTurn.id, assistantTurn);
+            if (response.task && taskToolCallId) {
+              void startHomeTask(response.task, taskToolCallId);
+            }
+          });
+        homeDirectChatChainRef.current = request.catch(() => undefined);
+        try {
+          await request;
+        } finally {
+          changeHomeDirectPendingCount(-1);
         }
       } else {
         submittedSessionId = await submitHermesSession(runtimeContent, undefined, {
@@ -6795,7 +6829,7 @@ export function AgentWorkspace({
       // to become idle, so the user may already be writing the next draft when
       // it eventually fails. Keep that newer input untouched and retain the
       // failed submission as an explicit, retryable Up next item instead.
-      if (clearedDraft) {
+      if (clearedDraft && !homeDirectUserCommitted) {
         const retainedStoredSessionId = sentModelTarget.targetStoredSessionId;
         const failedQueueKey = sentStartedNewSession
           ? retainedStoredSessionId &&
@@ -7569,6 +7603,27 @@ export function AgentWorkspace({
     homeDirectTurnsRef.current = retained;
     setHomeDirectTurns(retained);
     persistHomeDirectTurns(homeSessionId, retained);
+  }
+
+  function changeHomeDirectPendingCount(delta: number) {
+    const next = Math.max(0, homeDirectPendingCountRef.current + delta);
+    homeDirectPendingCountRef.current = next;
+    setHomeDirectPendingCount(next);
+  }
+
+  function insertHomeDirectReply(
+    homeSessionId: string,
+    userTurnId: string,
+    assistantTurn: AgentChatTurn,
+  ) {
+    const turns = homeDirectTurnsRef.current;
+    const userIndex = turns.findIndex((turn) => turn.id === userTurnId);
+    const insertAt = userIndex < 0 ? turns.length : userIndex + 1;
+    commitHomeDirectTurns(homeSessionId, [
+      ...turns.slice(0, insertAt),
+      assistantTurn,
+      ...turns.slice(insertAt),
+    ]);
   }
 
   function attachHermesSessionEventListener({
@@ -11885,7 +11940,17 @@ export function AgentWorkspace({
                   type="submit"
                   className="agent-composer-send"
                   disabled={
-                    submitting ||
+                    (submitting &&
+                      !(
+                        homeMode &&
+                        homeDirectPendingCount > 0 &&
+                        selectedHermesSessionId &&
+                        !attachments.length &&
+                        !category
+                      )) ||
+                    (homeMode &&
+                      homeDirectPendingCount > 0 &&
+                      (attachments.length > 0 || Boolean(category))) ||
                     importingFiles ||
                     Boolean(textActionsDisabledReason) ||
                     selectedHermesSessionIsProvisional ||
@@ -11903,7 +11968,7 @@ export function AgentWorkspace({
                       : "Start session"
                   }
                 >
-                  {submitting ? <Spinner /> : <IconArrowUp size={18} />}
+                  {submitting && !homeMode ? <Spinner /> : <IconArrowUp size={18} />}
                 </button>
               )}
             </div>
@@ -12387,10 +12452,11 @@ export function AgentWorkspace({
       <AgentThinking
         variant={homeMode ? "typing-bubble" : "label"}
         visible={
-          Boolean(homeOptimisticTurn) ||
-          (Boolean(transcriptSessionId) &&
-            workingSessionIds.has(transcriptSessionId) &&
-            hermesTurns.at(-1)?.role === "user")
+          homeMode
+            ? Boolean(homeOptimisticTurn) || homeDirectPendingCount > 0
+            : Boolean(transcriptSessionId) &&
+              workingSessionIds.has(transcriptSessionId) &&
+              hermesTurns.at(-1)?.role === "user"
         }
       />
     </div>
