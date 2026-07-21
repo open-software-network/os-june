@@ -54,6 +54,7 @@ export type RawHermesEventName =
   | "tool.start"
   | "tool.progress"
   | "tool.complete"
+  | "tool.output_risk"
   // Pending actions (require a user response)
   | "clarify.request"
   | "clarify.response"

@@ -103,6 +103,18 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     case "error":
       return classifyError(sessionId, payload, receivedAt);
 
+    case "tool.output_risk":
+      // Hermes 0.19 metadata, not a tool lifecycle frame. Keeping it out of
+      // the broad tool.* fallback prevents a completed card from reopening as
+      // generic progress until June has a dedicated risk-metadata surface.
+      return {
+        kind: "unsupported",
+        sessionId,
+        rawType: type,
+        sanitizedPayload: payload === undefined ? undefined : sanitizePayload(payload),
+        receivedAt,
+      };
+
     default:
       break;
   }

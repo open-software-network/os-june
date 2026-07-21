@@ -70,7 +70,7 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "54011ceed51ee22662ad1ae7bd72a91155263cc82c0aa1c10d90aac3dbd08829",
+        "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
     ),
     (
         "cron/scheduler.py",
@@ -10256,6 +10256,9 @@ fn render_hermes_config(
 agent:
   max_turns: 90
   disabled_toolsets: [{upstream_disabled_toolsets}]
+approvals:
+  mode: manual
+  cron_mode: deny
 display:
   skin: mono
 platform_toolsets:
@@ -19930,6 +19933,7 @@ mcp_servers:
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
+        assert!(config.contains("approvals:\n  mode: manual\n  cron_mode: deny\n"));
         assert!(config.contains(
             "skills:\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
         ));

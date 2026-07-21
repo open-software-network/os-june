@@ -219,6 +219,22 @@ describe("classifyHermesEvent — reasoning", () => {
 });
 
 describe("classifyHermesEvent — tools", () => {
+  it("keeps Hermes 0.19 output-risk metadata out of tool progress cards", () => {
+    expect(
+      classifyHermesEvent(
+        event("tool.output_risk", {
+          tool_call_id: "tc1",
+          risk: "sensitive-output",
+        }),
+      ),
+    ).toMatchObject({
+      kind: "unsupported",
+      sessionId: "sess-1",
+      rawType: "tool.output_risk",
+      sanitizedPayload: { tool_call_id: "tc1", risk: "sensitive-output" },
+    });
+  });
+
   it("maps tool phases and preserves metadata for tool cards", () => {
     const start = classifyHermesEvent(
       event("tool.start", {

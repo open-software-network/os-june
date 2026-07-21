@@ -221,7 +221,7 @@ const events: HermesCompatibilitySection = {
   toolOutputRisk: {
     status: "planned",
     rationale:
-      "Hermes 0.19 emits tool.output_risk metadata, but June does not yet render the risk disposition on tool cards.",
+      "Hermes 0.19 emits tool.output_risk metadata. June explicitly classifies it as unsupported so metadata cannot reopen or create a tool card until a dedicated risk surface ships.",
     since: CURRENT_PIN,
   },
   approval: {
@@ -343,7 +343,7 @@ const features: HermesCompatibilitySection = {
   smartApprovals: {
     status: "unsupported",
     rationale:
-      "Hermes 0.19 enables model-reviewed approvals by default, but June keeps explicit human approval cards and does not expose automatic approval policy controls.",
+      "Hermes 0.19 enables model-reviewed approvals by default, but June forces approvals.mode=manual and cron_mode=deny in its owned config so every interactive dangerous command reaches an explicit human approval card.",
     since: CURRENT_PIN,
   },
   sessionExport: {

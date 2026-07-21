@@ -47,6 +47,10 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain("tool_call_id = str(_approval_tool_call_id.get()");
     expect(patcher).toContain('if key := session.get("session_key")');
     expect(patcher).toContain('lambda data: _emit("approval.expire", sid, data)');
+    expect(patcher).not.toContain('lambda data: _emit("approval.request", sid, data)');
+    expect(
+      patcher.match(/lambda data: _emit_approval_request\(sid, data\)/g)?.length,
+    ).toBeGreaterThan(3);
     expect(patcher).toContain('disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],');
     expect(patcher).toContain('"disabled_toolsets": (cfg.get("agent") or {}).get');
     expect(patcher).toContain('user_disabled = agent_cfg.get("disabled_toolsets") or []');

@@ -649,10 +649,13 @@ function appendLiveHermesEvents(
           if (interimText) {
             currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
             completeAssistantTextPart(currentAssistant.parts, interimText);
-            currentAssistant.status = "complete";
-            completeRunningParts(currentAssistant.parts);
             lastInterimAssistant = currentAssistant;
-            currentAssistant = null;
+            if (hasActiveNonTextPart(currentAssistant.parts)) {
+              currentAssistant.status = "running";
+            } else {
+              currentAssistant.status = "complete";
+              currentAssistant = null;
+            }
           }
           break;
         }
@@ -666,13 +669,23 @@ function appendLiveHermesEvents(
         const previewText = lastInterimAssistant
           ? assistantTextFromParts(lastInterimAssistant.parts)
           : "";
-        if (
-          !currentAssistant &&
+        const settlesInterimPreview = Boolean(
           event.responsePreviewed &&
-          lastInterimAssistant &&
-          text &&
-          (text.startsWith(previewText) || previewText.startsWith(text))
+            lastInterimAssistant &&
+            text &&
+            (text.startsWith(previewText) || previewText.startsWith(text)),
+        );
+        if (
+          currentAssistant !== null &&
+          currentAssistant === lastInterimAssistant &&
+          !settlesInterimPreview
         ) {
+          currentAssistant.status = hasActiveNonTextPart(currentAssistant.parts)
+            ? "running"
+            : "complete";
+          currentAssistant = null;
+        }
+        if (!currentAssistant && settlesInterimPreview && lastInterimAssistant) {
           currentAssistant = lastInterimAssistant;
         }
         currentAssistant ??= createAssistantTurn(turns, event.receivedAt);
@@ -1235,6 +1248,21 @@ function completeRunningParts(parts: AgentChatPart[]) {
     if (part.type === "sudo" && part.status === "pending") part.status = "resolved";
     if (part.type === "secret" && part.status === "pending") part.status = "resolved";
   }
+}
+
+function hasActiveNonTextPart(parts: AgentChatPart[]) {
+  return parts.some((part) => {
+    if (part.type === "reasoning" || part.type === "tool") return part.status === "running";
+    if (
+      part.type === "approval" ||
+      part.type === "clarify" ||
+      part.type === "sudo" ||
+      part.type === "secret"
+    ) {
+      return part.status === "pending";
+    }
+    return false;
+  });
 }
 
 function upsertToolPart(

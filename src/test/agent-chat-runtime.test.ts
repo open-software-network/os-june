@@ -1223,6 +1223,79 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("keeps active tool and approval cards live while sealing interim text", () => {
+    const turns = buildAgentChatTurns(
+      [],
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.000Z",
+          delta: "Checking this now.",
+        }),
+        toolEvent({
+          key: "tool-1",
+          toolCallId: "tool-1",
+          phase: "start",
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          name: "search",
+        }),
+        pendingActionEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "python verify.py",
+            description: "Run the verification?",
+            allowPermanent: false,
+          },
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.300Z",
+          delta: "Checking this now.",
+          interim: true,
+        }),
+        toolEvent({
+          key: "tool-1",
+          toolCallId: "tool-1",
+          phase: "complete",
+          receivedAt: "2026-07-20T10:00:00.400Z",
+          name: "search",
+          text: "Verified",
+        }),
+        pendingActionResolutionEvent({
+          receivedAt: "2026-07-20T10:00:00.500Z",
+          action: {
+            kind: "approval",
+            requestId: "approval-1",
+            command: "",
+            description: "",
+            allowPermanent: false,
+            choice: "once",
+          },
+        }),
+      ],
+    );
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.parts).toEqual([
+      { type: "text", text: "Checking this now.", status: "complete" },
+      expect.objectContaining({
+        type: "tool",
+        id: "tool-1",
+        text: "Verified",
+        status: "complete",
+      }),
+      expect.objectContaining({
+        type: "approval",
+        id: "approval-1",
+        command: "python verify.py",
+        description: "Run the verification?",
+        choice: "once",
+        status: "resolved",
+      }),
+    ]);
+  });
+
   it("closes a running reasoning turn when only a terminal lifecycle event follows", () => {
     const turns = buildAgentChatTurns(
       [],
