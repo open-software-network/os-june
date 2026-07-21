@@ -34,6 +34,8 @@ export function appendHermesLiveEvent(
     event.kind === "transcript" &&
     !previous.complete &&
     !event.complete &&
+    !previous.interim &&
+    !event.interim &&
     previous.delta !== undefined &&
     event.delta !== undefined &&
     previous.sessionId === event.sessionId &&

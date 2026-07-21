@@ -75,6 +75,27 @@ describe("appendHermesLiveEvent", () => {
 
     expect(events).toEqual([first, tool, second, nextMessage]);
   });
+
+  it("preserves an interim boundary after its streamed delta", () => {
+    const delta = transcriptEvent({
+      messageId: "message-1",
+      delta: "The checks are clean.",
+      receivedAt: "2026-07-20T10:00:00.100Z",
+    });
+    const interim = transcriptEvent({
+      messageId: "message-1",
+      delta: "The checks are clean.",
+      interim: true,
+      receivedAt: "2026-07-20T10:00:00.200Z",
+    });
+
+    const events = [delta, interim].reduce(appendHermesLiveEvent, []);
+
+    expect(events).toEqual([delta, interim]);
+    expect(buildHermesSessionChatTurns([], events)[0]?.parts).toEqual([
+      { type: "text", text: "The checks are clean.", status: "complete" },
+    ]);
+  });
 });
 
 function reasoningEvent(
