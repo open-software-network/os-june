@@ -10260,6 +10260,7 @@ fn render_hermes_config(
   supports_vision: {supports_vision}
 agent:
   max_turns: 90
+  api_max_retries: 3
   disabled_toolsets: [{upstream_disabled_toolsets}]
 approvals:
   mode: manual
@@ -19938,6 +19939,11 @@ mcp_servers:
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
+        // The pinned runtime counts this as three total provider attempts,
+        // with its built-in jittered waits between attempts. June owns the
+        // schedule explicitly so a Hermes default change cannot multiply
+        // agent-chat calls behind shipped clients.
+        assert!(config.contains("agent:\n  max_turns: 90\n  api_max_retries: 3\n"));
         assert!(config.contains("approvals:\n  mode: manual\n  cron_mode: deny\n"));
         assert!(config.contains(
             "skills:\n  external_dirs:\n    - \"/Users/dev/.agents/skills\"\n    - \"/shared/team-skills\"\n"
@@ -20136,8 +20142,9 @@ mcp_servers:
         assert!(config.contains("  june_obsidian:\n"));
         assert!(config.contains("  june_recorder:\n"));
         assert!(config.contains("  june_computer_use:\n"));
-        assert!(config
-            .contains("agent:\n  max_turns: 90\n  disabled_toolsets: [browser, computer_use]\n"));
+        assert!(config.contains(
+            "agent:\n  max_turns: 90\n  api_max_retries: 3\n  disabled_toolsets: [browser, computer_use]\n"
+        ));
         assert!(config.contains("  june_computer_use:\n    enabled: true\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));

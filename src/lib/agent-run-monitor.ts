@@ -245,10 +245,7 @@ function terminalOutcomeFromSession(session: HermesSessionInfo): TerminalOutcome
   if (/(?:fail|error|timeout)/.test(marker)) {
     return { kind: "failed", summary: "June hit a problem." };
   }
-  if (
-    /(?:complete|success|finish|done)/.test(marker) ||
-    Boolean(session.ended_at ?? session.endedAt)
-  ) {
+  if (/(?:complete|success|finish|done)/.test(marker) || (session.ended_at ?? session.endedAt)) {
     return { kind: "succeeded" };
   }
   return undefined;

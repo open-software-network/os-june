@@ -1,4 +1,12 @@
-import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +24,7 @@ import {
 } from "../lib/hermes-session-model-selection";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
+import { UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT } from "../lib/agent-chat-runtime";
 
 const mocks = vi.hoisted(() => ({
   canAttributeUntaggedAgentRun: vi.fn(() => true),
@@ -123,6 +132,7 @@ function noteChat(overrides: Partial<NoteChat> = {}): NoteChat {
     modelSelection: undefined,
     appliedHermesModelId: undefined,
     submit: vi.fn(async () => true),
+    retryUpstreamFailure: vi.fn(async () => true),
     stop: vi.fn(),
     setSessionModel: vi.fn(),
     ...overrides,
@@ -217,6 +227,27 @@ describe("note chat session map", () => {
     // A write over corrupt storage heals it.
     rememberNoteChatSession("note-1", "sess-a");
     expect(noteChatSessionIdFor("note-1")).toBe("sess-a");
+  });
+
+  it("submits an upstream-provider retry in the existing note-chat session", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat" }]);
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.retryUpstreamFailure()).toBe(true);
+    });
+
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+      session_id: "stored-note-chat",
+      cols: 96,
+    });
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-note-chat",
+      text: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+    });
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
   });
 
   it("hydrates the applied model for a legacy chat without a selection entry", async () => {
@@ -456,6 +487,47 @@ describe("note chat session map", () => {
     expect(screen.getByText("What changed?")).toBeInTheDocument();
     expect(screen.queryByText(/June attachment manifest/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Attached files copied/)).not.toBeInTheDocument();
+  });
+
+  it("retries an upstream-provider failure once without clearing the note-chat draft", async () => {
+    const user = userEvent.setup();
+    const retryUpstreamFailure = vi.fn(async () => true);
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat({
+          storedSessionId: "stored-note-chat",
+          retryUpstreamFailure,
+          turns: [
+            {
+              id: "provider-failure-1",
+              role: "assistant",
+              createdAt: "2026-07-21T08:00:00.000Z",
+              status: "complete",
+              parts: [
+                {
+                  type: "notice",
+                  kind: "upstream-provider",
+                  text: "The model service is temporarily unavailable. Your answer is saved.",
+                },
+              ],
+            },
+          ],
+        }),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "Keep this draft");
+    const retry = screen.getByRole("button", { name: "Try again" });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(retryUpstreamFailure).toHaveBeenCalledOnce());
+    expect(retry).toBeDisabled();
+    expect(composer).toHaveTextContent("Keep this draft");
   });
 
   it("shows the Auto billing note in the picker while a Venice key is saved", async () => {
