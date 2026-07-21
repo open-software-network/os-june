@@ -10188,6 +10188,11 @@ fn push_external_skill_dir(dirs: &mut Vec<PathBuf>, dir: PathBuf, relative_base:
     if dir.as_os_str().is_empty() {
         return;
     }
+    // Strip the Windows verbatim path prefix (`\\?\`) so it never leaks into
+    // config.yaml or the UI. `canonicalize()` (and some Tauri path resolvers)
+    // add this prefix on Windows; `dunce::simplified` removes it when it is
+    // safe to do so (a no-op on non-Windows).
+    let dir = dunce::simplified(&dir).to_path_buf();
     let identity = external_skill_dir_identity(&dir, relative_base);
     if dirs
         .iter()

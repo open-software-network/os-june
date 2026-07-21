@@ -56,6 +56,25 @@ describe("external dirs — config read", () => {
     expect(readExternalDirs({ skills: { external_dirs: "~/one" } })).toEqual(["~/one"]);
     expect(readExternalDirs({ skills: { external_dirs: ["ok", 42, "", null] } })).toEqual(["ok"]);
   });
+  it("strips the Windows verbatim path prefix from configured dirs", () => {
+    expect(
+      readExternalDirs({
+        skills: {
+          external_dirs: [
+            "\\\\?\\C:\\Users\\dev\\skills",
+            "\\\\?\\UNC\\server\\share\\skills",
+            "~/normal-skills",
+          ],
+        },
+      }),
+    ).toEqual(["C:\\Users\\dev\\skills", "\\\\server\\share\\skills", "~/normal-skills"]);
+  });
+
+  it("strips the verbatim prefix from a bare-string external_dirs entry", () => {
+    expect(readExternalDirs({ skills: { external_dirs: "\\\\?\\E:\\team-skills" } })).toEqual([
+      "E:\\team-skills",
+    ]);
+  });
 });
 
 describe("external dirs — path expansion display", () => {
