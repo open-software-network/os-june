@@ -1879,6 +1879,44 @@ type HomeTaskHandoff = JuneHomeTaskRequest & {
   error?: string;
 };
 
+// Home should answer like a conversation by default. Auto's lower preference
+// routes quick personal-assistant turns toward the fastest eligible private
+// model. An explicit picker choice still wins for this Home conversation.
+const HOME_CONVERSATIONAL_COST_QUALITY = 20;
+const HOME_CONVERSATIONAL_DEFAULT_MIGRATION_PREFIX = "june.home.conversationalDefaultMigrated.v1:";
+
+function homeConversationalDefaultMigrated(storedSessionId: string) {
+  try {
+    return (
+      window.localStorage.getItem(
+        `${HOME_CONVERSATIONAL_DEFAULT_MIGRATION_PREFIX}${storedSessionId}`,
+      ) === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function rememberHomeConversationalDefaultMigration(storedSessionId: string) {
+  try {
+    window.localStorage.setItem(
+      `${HOME_CONVERSATIONAL_DEFAULT_MIGRATION_PREFIX}${storedSessionId}`,
+      "1",
+    );
+  } catch {
+    // The in-memory selection below still makes this mount conversational.
+  }
+}
+
+function isHomeModelRoutingTurn(turn: AgentChatTurn) {
+  return (
+    turn.role === "system" &&
+    turn.parts.length === 1 &&
+    turn.parts[0]?.type === "text" &&
+    /^Model changed to .+\.$/.test(turn.parts[0].text)
+  );
+}
+
 // Mid-run continuity across remounts. While June is working, a session has
 // state that exists nowhere outside this component: the optimistic list entry
 // (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
@@ -2438,6 +2476,7 @@ export function AgentWorkspace({
     [activeHermesProfile.name],
   );
   const [homeTaskHandoffs, setHomeTaskHandoffs] = useState<HomeTaskHandoff[]>([]);
+  const [homeOptimisticTurn, setHomeOptimisticTurn] = useState<AgentChatTurn | null>(null);
   const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -2555,6 +2594,16 @@ export function AgentWorkspace({
     initialSessionId,
   );
   const selectedHermesSessionIdRef = useRef<string | undefined>(selectedHermesSessionId);
+  useEffect(() => {
+    if (
+      !homeMode ||
+      !selectedHermesSessionId ||
+      isProvisionalHermesSessionId(selectedHermesSessionId)
+    ) {
+      return;
+    }
+    onHomeSessionCreated?.(selectedHermesSessionId);
+  }, [homeMode, onHomeSessionCreated, selectedHermesSessionId]);
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
   const [newSessionMode, setNewSessionMode] = useState(startInNewSessionMode);
   const setError = useCallback(
@@ -2854,6 +2903,29 @@ export function AgentWorkspace({
       }),
     [],
   );
+  useEffect(() => {
+    if (
+      !homeMode ||
+      !selectedHermesSessionId ||
+      isProvisionalHermesSessionId(selectedHermesSessionId) ||
+      homeConversationalDefaultMigrated(selectedHermesSessionId)
+    ) {
+      return;
+    }
+    const existing = sessionModelSelectionsRef.current[selectedHermesSessionId]?.selection;
+    if (
+      existing?.modelId !== AUTO_MODEL_ID ||
+      existing.costQuality !== HOME_CONVERSATIONAL_COST_QUALITY
+    ) {
+      const next = stageSessionModelSelection(selectedHermesSessionId, {
+        modelId: AUTO_MODEL_ID,
+        costQuality: HOME_CONVERSATIONAL_COST_QUALITY,
+      });
+      sessionModelSelectionsRef.current = next;
+      setSessionModelSelections(next);
+    }
+    rememberHomeConversationalDefaultMigration(selectedHermesSessionId);
+  }, [homeMode, selectedHermesSessionId]);
   const [generationModels, setGenerationModels] = useState<VeniceModelDto[]>([]);
   const generationModelsRef = useRef<VeniceModelDto[]>([]);
   // Bring-your-own local text generation. When the global provider is "local"
@@ -3397,8 +3469,16 @@ export function AgentWorkspace({
     localGeneration.modelId.trim().length > 0
       ? localGenerationOptionId(localGeneration.modelId)
       : "";
-  const sessionOrDefaultModelId =
-    selectedHermesSessionId && !newSessionMode
+  const homeSelectionNeedsMigration = Boolean(
+    homeMode &&
+      selectedHermesSessionId &&
+      !homeConversationalDefaultMigrated(selectedHermesSessionId),
+  );
+  const homeUsesConversationalDefault =
+    homeMode && (!selectedSessionModelEntry || homeSelectionNeedsMigration);
+  const sessionOrDefaultModelId = homeUsesConversationalDefault
+    ? AUTO_MODEL_ID
+    : selectedHermesSessionId && !newSessionMode
       ? selectedSessionModelSelection?.modelId || defaultGenerationModelId
       : defaultGenerationModelId;
   const selectedLegacyRawLocalModel = Boolean(
@@ -3415,7 +3495,8 @@ export function AgentWorkspace({
     : sessionOrDefaultModelId;
   const activeGenerationCostQuality =
     activeGenerationModelId === AUTO_MODEL_ID
-      ? (selectedSessionModelSelection?.costQuality ?? generationCostQuality)
+      ? (selectedSessionModelSelection?.costQuality ??
+        (homeUsesConversationalDefault ? HOME_CONVERSATIONAL_COST_QUALITY : generationCostQuality))
       : generationCostQuality;
   // Catalog surfaced in the composer picker: the remote models plus, when a
   // local endpoint is configured, the synthetic local option (even while
@@ -4287,8 +4368,11 @@ export function AgentWorkspace({
     const fallbackModelId = targetStoredSessionId
       ? existingHermesModelId || (inheritsProfileModel ? "" : defaultGenerationModelIdRef.current)
       : defaultGenerationModelIdRef.current;
-    const baseSelection: SessionModelSelection = entry?.selection ??
-      persistedSelection ?? { modelId: fallbackModelId };
+    const baseSelection: SessionModelSelection =
+      entry?.selection ??
+      (homeMode
+        ? { modelId: AUTO_MODEL_ID, costQuality: HOME_CONVERSATIONAL_COST_QUALITY }
+        : (persistedSelection ?? { modelId: fallbackModelId }));
     const selection: SessionModelSelection =
       baseSelection.modelId === AUTO_MODEL_ID &&
       baseSelection.costQuality === undefined &&
@@ -6311,6 +6395,7 @@ export function AgentWorkspace({
     let clearedAttachments = false;
     let submittedAttachments = attachments;
     let preparedForRecovery: PreparedComposerSubmission | undefined;
+    let optimisticHomeTurnId: string | undefined;
     let clearedIssueReportReview:
       | {
           sessionId: string;
@@ -6381,6 +6466,16 @@ export function AgentWorkspace({
           deliveryWasSubmitting:
             submittingIssueReportSessionIdsRef.current.has(reportFollowUpSessionId),
         };
+      }
+      if (homeMode) {
+        optimisticHomeTurnId = `home:optimistic:${Date.now()}`;
+        setHomeOptimisticTurn({
+          id: optimisticHomeTurnId,
+          role: "user",
+          createdAt: new Date().toISOString(),
+          status: "complete",
+          parts: [{ type: "text", text: prepared.displayContent, status: "complete" }],
+        });
       }
       const submittedSessionId = await submitHermesSession(runtimeContent, undefined, {
         displayContent: prepared.displayContent,
@@ -6495,6 +6590,9 @@ export function AgentWorkspace({
         setError(errorMessage);
       }
     } finally {
+      if (optimisticHomeTurnId) {
+        setHomeOptimisticTurn((current) => (current?.id === optimisticHomeTurnId ? null : current));
+      }
       cancelComposerDispatch(sentDispatchReservation);
       setSubmitting(false);
       setSubmittingHermesSessionId(null);
@@ -7755,15 +7853,26 @@ export function AgentWorkspace({
     }
     let runtimeSessionId: string | undefined;
     try {
+      // A terminal Home turn may retire its runtime while the stored
+      // conversation remains valid. Resume Home at every new Send boundary
+      // instead of trusting the last runtime id; focused sessions retain their
+      // existing cached-runtime behavior (including active continuations).
       runtimeSessionId =
         created?.session_id ??
-        runtimeSessionIdsRef.current[storedSessionId] ??
-        (
-          await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
-            session_id: storedSessionId,
-            cols: 96,
-          })
-        ).session_id;
+        (homeMode && targetStoredSessionId
+          ? (
+              await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+                session_id: storedSessionId,
+                cols: 96,
+              })
+            ).session_id
+          : (runtimeSessionIdsRef.current[storedSessionId] ??
+            (
+              await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+                session_id: storedSessionId,
+                cols: 96,
+              })
+            ).session_id));
     } catch (err) {
       activeDispatchReservation.cancel();
       clearQueuedIssueReport();
@@ -7774,7 +7883,7 @@ export function AgentWorkspace({
     }
     if (!runtimeSessionId) {
       clearQueuedIssueReport();
-      rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
+      return rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
     }
     // A thinking level picked while this session's runtime was down (or a
     // live retune that failed) re-asserts here, before the prompt, so the
@@ -7784,6 +7893,7 @@ export function AgentWorkspace({
     if (thinkingSessionLevel) {
       await applyThinkingLevelToSession(storedSessionId, thinkingSessionLevel, runtimeSessionId);
     }
+    const activeRuntimeSessionId = runtimeSessionId;
     const dispatchPreparedSession = async (): Promise<string | undefined> => {
       // Re-read after acquiring the cross-surface lock. NoteChat may have sent
       // this same stored session and changed its live model after this Send was
@@ -7804,7 +7914,7 @@ export function AgentWorkspace({
           await applySessionModelWhenIdle(() =>
             createHermesMethods(gateway).switchActiveSessionModel({
               mode: hermesModeFor(storedSessionId),
-              sessionId: runtimeSessionId,
+              sessionId: activeRuntimeSessionId,
               model: targetSessionModelId,
             }),
           );
@@ -7842,7 +7952,7 @@ export function AgentWorkspace({
         try {
           const updatedAttachments = await attachPendingImages(
             gateway,
-            runtimeSessionId,
+            activeRuntimeSessionId,
             storedSessionId,
             agentRunAttachments,
           );
@@ -7855,7 +7965,7 @@ export function AgentWorkspace({
       const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
       setRuntimeSessionIds((current) => ({
         ...current,
-        [storedSessionId]: runtimeSessionId,
+        [storedSessionId]: activeRuntimeSessionId,
       }));
       if (!optimisticSession) {
         if (!targetStoredSessionId && options?.skipPrompt) {
@@ -7973,7 +8083,7 @@ export function AgentWorkspace({
         rememberComputerUseRun(storedSessionId, computerUseRunLeaseId);
         attachHermesSessionEventListener({
           gateway,
-          runtimeSessionId,
+          runtimeSessionId: activeRuntimeSessionId,
           sessionDisplayTitle,
           storedSessionId,
           computerUseRunLeaseId,
@@ -7986,15 +8096,15 @@ export function AgentWorkspace({
         hermesTraceBuffer.recordOutbound({
           sessionId: storedSessionId,
           method: "prompt.submit",
-          params: { session_id: runtimeSessionId, text: preparedProjectPrompt.text },
+          params: { session_id: activeRuntimeSessionId, text: preparedProjectPrompt.text },
         });
         await gateway.request("prompt.submit", {
-          session_id: runtimeSessionId,
+          session_id: activeRuntimeSessionId,
           text: preparedProjectPrompt.text,
         });
         startAgentRunMonitoring({
           storedSessionId,
-          runtimeSessionId,
+          runtimeSessionId: activeRuntimeSessionId,
           title: sessionDisplayTitle,
           fullMode: sessionUnrestricted(storedSessionId),
           settlementHeld: true,
@@ -10207,6 +10317,7 @@ export function AgentWorkspace({
     sessionId: string,
     messages: HermesSessionMessage[],
   ) {
+    if (homeMode) return;
     hermesSessionMessagesRef.current = {
       ...hermesSessionMessagesRef.current,
       [sessionId]: messages,
@@ -11704,8 +11815,11 @@ export function AgentWorkspace({
     status: "complete",
     parts: [{ type: "text", text: homeCheckIn.text, status: "complete" }],
   };
+  const homeConversationTurns = (
+    homeOptimisticTurn ? [...hermesTurns, homeOptimisticTurn] : hermesTurns
+  ).filter((turn) => !isHomeModelRoutingTurn(turn));
   const visibleHermesTurns = homeMode
-    ? [homeCheckInTurn, ...hermesTurns].sort((left, right) =>
+    ? [homeCheckInTurn, ...homeConversationTurns].sort((left, right) =>
         left.createdAt.localeCompare(right.createdAt),
       )
     : hermesTurns;
@@ -11855,7 +11969,7 @@ export function AgentWorkspace({
           onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
         />
       ))}
-      {homeMode ? (
+      {homeMode && hermesTurns.length === 0 && !homeOptimisticTurn ? (
         <div className="agent-home-nudges" aria-label="Suggestions">
           {["Plan my day", "Catch me up", "What needs attention?"].map((prompt) => (
             <button key={prompt} type="button" onClick={() => prefillHomeNudge(prompt)}>
@@ -11898,9 +12012,10 @@ export function AgentWorkspace({
       {browserApprovalCards}
       <AgentThinking
         visible={
-          Boolean(transcriptSessionId) &&
-          workingSessionIds.has(transcriptSessionId) &&
-          hermesTurns.at(-1)?.role === "user"
+          Boolean(homeOptimisticTurn) ||
+          (Boolean(transcriptSessionId) &&
+            workingSessionIds.has(transcriptSessionId) &&
+            hermesTurns.at(-1)?.role === "user")
         }
       />
     </div>

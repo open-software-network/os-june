@@ -307,7 +307,7 @@ input:focus-visible,
 }
 
 .agent-workspace[data-home="true"]::before {
-  opacity: 0.42;
+  opacity: 0.08;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2259,8 +2259,8 @@ input:focus-visible,
  * asymmetric rhythm of a personal message conversation while preserving the
  * richer session renderer for tools, files, and approvals. */
 .agent-timeline[data-home="true"] {
-  gap: var(--sp-6);
-  padding-top: var(--sp-8);
+  gap: var(--sp-3);
+  padding-top: var(--sp-6);
 }
 
 .agent-timeline[data-home="true"] .agent-assistant-turn,
@@ -2270,7 +2270,7 @@ input:focus-visible,
 
 .agent-timeline[data-home="true"] .agent-assistant-turn-body {
   width: fit-content;
-  max-width: 74%;
+  max-width: 70%;
   gap: var(--sp-3);
   padding: var(--sp-3) var(--sp-4);
   border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-sm);
@@ -2280,11 +2280,55 @@ input:focus-visible,
 }
 
 .agent-timeline[data-home="true"] .agent-user-turn-body {
-  max-width: 74%;
+  max-width: 70%;
   border-radius: var(--r-xl) var(--r-xl) var(--r-sm) var(--r-xl);
-  background: var(--brand-tint);
+  background: color-mix(in oklch, var(--brand) 82%, var(--card));
+  color: var(--on-solid);
   font-size: var(--fs-md);
   line-height: 1.5;
+}
+
+.agent-timeline[data-home="true"] .agent-user-turn-body .agent-markdown,
+.agent-timeline[data-home="true"] .agent-user-turn-body .agent-markdown * {
+  color: inherit;
+}
+
+/* Home is the relationship surface, so private chain-of-thought chrome stays
+ * in focused sessions. The active state becomes a familiar message bubble. */
+.agent-timeline[data-home="true"] .agent-reasoning {
+  display: none;
+}
+
+.agent-timeline[data-home="true"] .agent-thinking {
+  width: fit-content;
+  min-height: var(--control-lg);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-sm);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1;
+}
+
+.agent-timeline[data-home="true"] .agent-thinking-label {
+  position: relative;
+  display: inline-flex;
+  width: var(--sp-8);
+  overflow: hidden;
+  color: transparent;
+  white-space: nowrap;
+  -webkit-text-fill-color: transparent;
+  animation: none;
+}
+
+.agent-timeline[data-home="true"] .agent-thinking-label::after {
+  content: "•••";
+  position: absolute;
+  inset: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  letter-spacing: var(--sp-px);
+  -webkit-text-fill-color: var(--foreground);
 }
 
 .agent-timeline[data-home="true"] .agent-turn-actions {
@@ -18873,6 +18917,7 @@ button.memory-project:hover {
   background: color-mix(in oklch, var(--card) 78%, transparent);
   -webkit-backdrop-filter: saturate(140%) blur(14px);
   backdrop-filter: saturate(140%) blur(14px);
+  justify-content: center;
 }
 
 .agent-home-avatar {
@@ -18910,6 +18955,8 @@ button.memory-project:hover {
 }
 
 .agent-home-presence {
+  position: absolute;
+  right: var(--sp-8);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -18923,6 +18970,53 @@ button.memory-project:hover {
   height: var(--sp-2);
   border-radius: var(--r-pill);
   background: var(--success);
+}
+
+/* Messages keeps its input as one compact row. Preserve June's model and
+ * attachment controls, but let them read as accessories to the conversation
+ * instead of a two-storey agent console. */
+.agent-workspace[data-home="true"] .agent-composer-box {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-1);
+  border-radius: var(--r-pill);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-editor-root {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-editor {
+  max-height: calc(var(--control-xl) * 4);
+  padding-inline: var(--sp-2);
+  font-size: var(--fs-md);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-toolbar {
+  display: contents;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-attach {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-actions {
+  grid-row: 1;
+  grid-column: 3;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-attachments,
+.agent-workspace[data-home="true"] .agent-composer-size-warning {
+  grid-column: 1 / -1;
+}
+
+.agent-workspace[data-home="true"]
+  .agent-composer-box:has(:is(.agent-composer-attachments, .agent-composer-size-warning))
+  :is(.agent-composer-editor-root, .agent-composer-attach, .agent-composer-actions) {
+  grid-row: 2;
 }
 
 .detail-breadcrumb {

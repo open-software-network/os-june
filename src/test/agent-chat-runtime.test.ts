@@ -3282,6 +3282,72 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("folds a failed metering-service message.complete into the same recoverable notice", () => {
+    const meteringFailure = "API call failed after 3 retries: HTTP 503: metering_provider_failed";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: meteringFailure,
+          failed: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "notice",
+        kind: "upstream-provider",
+        text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+      },
+    ]);
+
+    const persisted = buildHermesSessionChatTurns([
+      {
+        id: "metering-failed",
+        role: "assistant",
+        content: meteringFailure,
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+    expect(persisted[0]?.parts).toEqual(turns[0]?.parts);
+  });
+
+  it("folds a provider connection failure into the same recoverable notice", () => {
+    const connectionFailure = "API call failed after 3 retries: Connection error.";
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({
+          receivedAt: "2026-06-04T10:00:01.000Z",
+          complete: true,
+          delta: connectionFailure,
+          failed: true,
+        }),
+      ],
+    );
+
+    expect(turns[0]?.parts).toEqual([
+      {
+        type: "notice",
+        kind: "upstream-provider",
+        text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+      },
+    ]);
+
+    const persisted = buildHermesSessionChatTurns([
+      {
+        id: "connection-failed",
+        role: "assistant",
+        content: connectionFailure,
+        timestamp: "2026-06-04T10:00:01.000Z",
+      },
+    ]);
+    expect(persisted[0]?.parts).toEqual(turns[0]?.parts);
+  });
+
   it("keeps successful prose that mentions upstream_provider_failed as text", () => {
     const prose = "The code upstream_provider_failed is how June API normalizes transport errors.";
     const turns = buildHermesSessionChatTurns(

@@ -12,8 +12,9 @@ contract or an ADR.
 ## Product contract
 
 - Each Hermes profile has at most one stored Home session id on this device.
-- Home uses the normal session-scoped model behavior. The composer keeps the
-  existing model picker, so a model change applies at the next agent-run
+- Home starts on Auto (Lower) so ordinary conversation favors the fastest
+  eligible private model. The composer keeps the existing model picker, and an
+  explicit choice wins for that Home conversation at the next agent-run
   boundary under ADR 0018.
 - Home never appears as a duplicate item in the Sessions list.
 - A concrete task may become a focused agent session without navigating away
@@ -22,7 +23,9 @@ contract or an ADR.
 - A task handoff is shown inline in Home. Selecting it opens the focused
   session with the normal agent-session UI.
 - Home keeps lightweight suggestion nudges above the composer. They prefill the
-  conversation and never run work without the user's Send.
+  empty conversation and never run work without the user's Send.
+- Sending locally echoes the user's bubble and June's typing bubble before the
+  runtime finishes resuming or creating the persisted Home session.
 
 ## Hidden Home context
 

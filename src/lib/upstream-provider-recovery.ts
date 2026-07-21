@@ -1,7 +1,7 @@
 import type { AgentChatTurn } from "./agent-chat-runtime";
 
 export const UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY =
-  "The model service is temporarily unavailable. Your answer is saved.";
+  "June's service is temporarily unavailable. Your message is saved.";
 
 const UPSTREAM_PROVIDER_RECOVERY_OPEN = "[June upstream provider recovery]";
 

@@ -41,7 +41,10 @@ import {
 import { hermesTraceBuffer } from "../lib/hermes-trace-buffer";
 import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
-import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
+import {
+  readSessionModelSelections,
+  stageSessionModelSelection,
+} from "../lib/hermes-session-model-selection";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -772,7 +775,7 @@ describe("AgentWorkspace", () => {
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
         title: "Oaxaca weekend",
         cols: 96,
-        model: "__june_remote_generation__:zai-org-glm-5-2",
+        model: "__june_auto_generation__:20",
       }),
     );
     await waitFor(() =>
@@ -808,6 +811,56 @@ describe("AgentWorkspace", () => {
       cols: 96,
     });
     expect(onHomeSessionCreated).toHaveBeenCalledWith("session-2");
+  });
+
+  it("shows a sent Home message immediately while the runtime resumes", async () => {
+    const user = userEvent.setup();
+    let resolveResume: ((value: { session_id: string }) => void) | undefined;
+    const resume = new Promise<{ session_id: string }>((resolve) => {
+      resolveResume = resolve;
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") return resume;
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Are you there?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(screen.getByText("Are you there?")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+
+    resolveResume?.({ session_id: "runtime-session-1" });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ session_id: "runtime-session-1" }),
+      ),
+    );
+  });
+
+  it("migrates an existing Home thread to the conversational model default only once", async () => {
+    stageSessionModelSelection(existingSession.id, { modelId: "zai-org-glm-5-2" });
+
+    const first = render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    expect(await screen.findByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(readSessionModelSelections()[existingSession.id]?.selection).toEqual({
+        modelId: "open-software/auto",
+        costQuality: 20,
+      }),
+    );
+
+    first.unmount();
+    stageSessionModelSelection(existingSession.id, { modelId: "zai-org-glm-5-2" });
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    expect(await screen.findByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
   });
 
   it("reuses activity projection set identities when membership is unchanged", () => {
@@ -12956,6 +13009,62 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("resumes Home again after a terminal turn instead of reusing a dead runtime id", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "First message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.resume"),
+      ).toHaveLength(1),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-1",
+          payload: { status: "complete", text: "I'm here." },
+        });
+      }
+    });
+
+    await user.type(composer, "Second message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "session.resume"),
+      ).toHaveLength(2),
+    );
+  });
+
+  it("keeps model-routing metadata out of the Home conversation", async () => {
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "model-change",
+        role: "system",
+        content:
+          "[System: The active model for this chat has changed to " +
+          "__june_auto_generation__:20 via provider custom.]",
+        timestamp: "2026-07-21T12:00:00.000Z",
+      },
+      {
+        id: "useful-notice",
+        role: "system",
+        content: "A useful system notice.",
+        timestamp: "2026-07-21T12:00:01.000Z",
+      },
+    ]);
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    expect(await screen.findByText("A useful system notice.")).toBeInTheDocument();
+    expect(screen.queryByText("Model changed to Auto Lower.")).toBeNull();
+  });
+
   it("drops duplicate agent safe-mode consent events while the dialog is open", async () => {
     mockImageSettings({ imageSafeMode: true, imageSafeModePromptDismissed: false });
     render(<AgentWorkspace />);
@@ -14648,9 +14757,7 @@ describe("AgentWorkspace", () => {
     });
 
     expect(
-      await screen.findByText(
-        "The model service is temporarily unavailable. Your answer is saved.",
-      ),
+      await screen.findByText("June's service is temporarily unavailable. Your message is saved."),
     ).toBeInTheDocument();
     expect(screen.queryByText(/upstream_provider_failed/)).toBeNull();
     await user.type(composer, "Keep this draft");
@@ -14876,7 +14983,7 @@ describe("AgentWorkspace", () => {
       const providerSection = screen.getByText("Model service unavailable").closest("section");
       expect(providerSection).not.toBeNull();
       expect(
-        screen.getByText("The model service is temporarily unavailable. Your answer is saved."),
+        screen.getByText("June's service is temporarily unavailable. Your message is saved."),
       ).toBeInTheDocument();
       const providerRetry = within(providerSection as HTMLElement).getByRole("button", {
         name: "Try again",

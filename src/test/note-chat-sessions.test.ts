@@ -508,7 +508,7 @@ describe("note chat session map", () => {
                 {
                   type: "notice",
                   kind: "upstream-provider",
-                  text: "The model service is temporarily unavailable. Your answer is saved.",
+                  text: "June's service is temporarily unavailable. Your message is saved.",
                 },
               ],
             },

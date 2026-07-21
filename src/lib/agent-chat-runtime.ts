@@ -160,13 +160,14 @@ export type AgentChatNoticePart = {
   text: string;
 };
 
-const UPSTREAM_PROVIDER_FAILURE_MARKER = "upstream_provider_failed";
+const RETRYABLE_SERVICE_FAILURE_MARKER =
+  /(?:upstream_provider_failed|metering_provider_failed|server_busy|api call failed after \d+ retries:\s*connection error\.?)/i;
 const PERSISTED_UPSTREAM_PROVIDER_FAILURE =
-  /^\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*$/i;
+  /^\s*(?:error:\s*)?api call failed after \d+ retries:\s*(?:http \d+:\s*(?:upstream_provider_failed|metering_provider_failed|server_busy)|connection error\.?)\s*$/i;
 // Not anchored to the end: the strip must cover the same scope the marker
 // detection does, so a sentinel followed by more prose never renders raw.
 const UPSTREAM_PROVIDER_FAILURE_SENTENCE =
-  /\s*(?:error:\s*)?api call failed after \d+ retries:\s*http \d+:\s*upstream_provider_failed\s*/gi;
+  /\s*(?:error:\s*)?api call failed after \d+ retries:\s*(?:http \d+:\s*(?:upstream_provider_failed|metering_provider_failed|server_busy)|connection error\.?)\s*/gi;
 
 /** A mid-run instruction the user steered into a still-working session (feature
  * 06), rendered as a quiet "Steering" system item so the transcript records
@@ -753,9 +754,7 @@ function appendLiveHermesEvents(
             (event.failed ? contextOverflowNotice(displayText) : undefined))
           : undefined;
         const visibleDisplayText =
-          !notice &&
-          event.failed === true &&
-          displayText.toLowerCase().includes(UPSTREAM_PROVIDER_FAILURE_MARKER)
+          !notice && event.failed === true && RETRYABLE_SERVICE_FAILURE_MARKER.test(displayText)
             ? withoutUpstreamProviderFailureSentinel(displayText)
             : displayText;
         if (notice) {
