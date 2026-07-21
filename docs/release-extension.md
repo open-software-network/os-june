@@ -12,19 +12,19 @@ The architecture and trade-offs are recorded in [ADR 0035](adr/0035-extension-re
 - The publisher account is accessible; its publisher ID goes into the
   `CHROME_WEB_STORE_PUBLISHER_ID` variable (Developer Dashboard -> Publisher
   -> Settings).
-- The publisher has no extension items yet, so the manual `0.1.0` bootstrap
-  below is still required. The Chrome Web Store rejects any uploaded manifest
-  that contains a `key` field ("key field is not allowed in manifest"), so the
-  original plan of forcing the pinned item ID
-  `adckhkfngpnenaapncoipkalcfpjbgcn` through the manifest key cannot work: the
-  store assigns a fresh item ID and keypair on first upload. The pinning
-  direction is therefore reversed - after the bootstrap upload, copy the
-  store-generated public key (item -> Package tab) into
-  `extension/public/manifest.json` `key` and update `EXTENSION_ID` in
-  `src-tauri/src/extension_host.rs` (plus the ID in tests and docs) so local
-  load-unpacked builds share the store item's ID from then on.
-- The bootstrap upload must use a package whose manifest has the `key` field
-  removed; `prepareExtensionRelease` strips it automatically for CI packages.
+- The bootstrap `0.1.0` package was uploaded on 2026-07-21 and is pending
+  review. The store assigned item ID `jfpogffllplkfoooiaibjkojkngbdnik`; its
+  public key (item -> Package tab) is mirrored into
+  `extension/public/manifest.json` `key` and the ID into `EXTENSION_ID` in
+  `src-tauri/src/extension_host.rs`, so load-unpacked builds share the store
+  item's ID. The store owns the keypair - if the item is ever recreated,
+  re-adopt the new key and ID the same way.
+- The Chrome Web Store rejects any uploaded manifest that contains a `key`
+  field ("key field is not allowed in manifest"), which is why the store, not
+  the repo, is the ID authority. `prepareExtensionRelease` strips `key` from
+  CI packages automatically; the manual bootstrap zip had it stripped by hand.
+- The first manual publish (after review) is still required before API
+  publication works.
 - The Google Cloud project, the dedicated service account, and the Workload
   Identity provider do not exist yet; the other two GitHub variables are
   produced by those steps. The pipeline uses keyless GitHub OIDC, so no

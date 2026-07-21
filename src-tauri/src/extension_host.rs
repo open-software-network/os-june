@@ -40,8 +40,11 @@ use crate::domain::types::AppError;
 pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The extension id pinned by the `key` field in `extension/manifest.json`.
-/// Regenerate both together with `node extension/scripts/generate-key.mjs`.
-pub const EXTENSION_ID: &str = "adckhkfngpnenaapncoipkalcfpjbgcn";
+/// Both come from the Chrome Web Store item (Package tab): the store owns the
+/// keypair, and the manifest `key` mirrors its public key so load-unpacked
+/// builds share the store item's id. Update both together if the store item
+/// is ever recreated.
+pub const EXTENSION_ID: &str = "jfpogffllplkfoooiaibjkojkngbdnik";
 
 /// Native messaging host name: the extension connects to this name, and the
 /// host manifest file carries it (Chrome requires the file be named
