@@ -1180,6 +1180,49 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
+  it("settles an interim preview across an interleaved synthetic turn", () => {
+    const turns = buildHermesSessionChatTurns(
+      [],
+      [
+        transcriptEvent({ receivedAt: "2026-07-20T10:00:00.000Z" }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.100Z",
+          delta: "Partial answer",
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.200Z",
+          delta: "Partial answer",
+          interim: true,
+        }),
+        transcriptEvent({
+          receivedAt: "2026-07-20T10:00:00.400Z",
+          delta: "Partial answer with verification.",
+          complete: true,
+          responsePreviewed: true,
+        }),
+      ],
+      [
+        {
+          id: "synthetic-status",
+          role: "system",
+          createdAt: "2026-07-20T10:00:00.300Z",
+          status: "complete",
+          parts: [{ type: "text", text: "Local status", status: "complete" }],
+        },
+      ],
+    );
+
+    const assistantTurns = turns.filter((turn) => turn.role === "assistant");
+    expect(assistantTurns).toHaveLength(1);
+    expect(assistantTurns[0]?.parts).toEqual([
+      {
+        type: "text",
+        text: "Partial answer with verification.",
+        status: "complete",
+      },
+    ]);
+  });
+
   it("closes a running reasoning turn when only a terminal lifecycle event follows", () => {
     const turns = buildAgentChatTurns(
       [],

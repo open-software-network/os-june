@@ -599,7 +599,6 @@ function appendLiveHermesEvents(
       turns.push(syntheticTurn);
       if (syntheticTurn.role !== "assistant") {
         currentAssistant = null;
-        lastInterimAssistant = null;
       }
     }
 

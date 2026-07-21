@@ -375,6 +375,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         obsolete_build_release = threading.Event()
         obsolete_build_closed = threading.Event()
         reset_during_build_calls = 0
+        reset_build_kwargs = []
 
         class ObsoleteHermes:
             def close(self) -> None:
@@ -385,6 +386,7 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         def make_reset_during_obsolete_build(*_args, **_kwargs):
             nonlocal reset_during_build_calls
             reset_during_build_calls += 1
+            reset_build_kwargs.append(_kwargs)
             if reset_during_build_calls == 1:
                 obsolete_build_started.set()
                 assert obsolete_build_release.wait(2), (
@@ -416,6 +418,10 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
             "history_lock": threading.Lock(),
             "history_version": 0,
             "image_counter": 1,
+            "model_override": "selected-model",
+            "create_reasoning_override": {"effort": "high"},
+            "create_service_tier_override": "priority",
+            "one_turn_model_restore": "previous-model",
             "prompt_generation": 0,
             "reset_generation": 0,
             "running": False,
@@ -431,6 +437,10 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
         )
         assert reset_info == {"model": "replacement-model"}
         assert reset_during_build_session["agent"] is replacement_hermes
+        assert reset_build_kwargs[-1]["model_override"] == "selected-model"
+        assert reset_build_kwargs[-1]["reasoning_config_override"] == {"effort": "high"}
+        assert reset_build_kwargs[-1]["service_tier_override"] == "priority"
+        assert "one_turn_model_restore" not in reset_during_build_session
         assert reset_during_build_session["agent_ready"].is_set(), (
             "successful reset did not publish Hermes readiness"
         )

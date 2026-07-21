@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "b562a6c91ce242d0d1d7b268ef9135deb633e4227e3b21c090b0f26e1a9ae923",
+    "tui_gateway/server.py": "54011ceed51ee22662ad1ae7bd72a91155263cc82c0aa1c10d90aac3dbd08829",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -1136,17 +1136,10 @@ def _queue_attached_image(
             # after this lock is released and must not mutate the reset session.
             previous_prompt_generation = int(session.get("prompt_generation", 0))
             previous_reset_generation = int(session.get("reset_generation", 0))
-            runtime_override_keys = (
-                "model_override",
-                "create_reasoning_override",
-                "create_service_tier_override",
-                "one_turn_model_restore",
-            )
-            previous_runtime_overrides = {
-                key: session[key] for key in runtime_override_keys if key in session
-            }
-            for key in runtime_override_keys:
-                session.pop(key, None)
+            # /new starts fresh history but June keeps the session's explicit
+            # model, reasoning, and service-tier selections. Only a one-turn
+            # override expires at this boundary.
+            session.pop("one_turn_model_restore", None)
             session["prompt_generation"] = previous_prompt_generation + 1
             session["reset_generation"] = previous_reset_generation + 1
             tokens = _set_session_context(session["session_key"])
@@ -1156,14 +1149,15 @@ def _queue_attached_image(
                     session["session_key"],
                     session_id=session["session_key"],
                     platform_override=_session_source(session),
+                    model_override=session.get("model_override"),
+                    reasoning_config_override=session.get("create_reasoning_override"),
+                    service_tier_override=session.get("create_service_tier_override"),
                 )
             except Exception:
                 # The original lazy build and prompt still own the session when a
                 # requested reset cannot construct its replacement Hermes instance.
                 session["prompt_generation"] = previous_prompt_generation
                 session["reset_generation"] = previous_reset_generation
-                for key, value in previous_runtime_overrides.items():
-                    session[key] = value
                 raise
             finally:
                 _clear_session_context(tokens)
