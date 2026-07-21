@@ -21,8 +21,8 @@ export function MarkdownContent({
   // a user's own text. See repairContractionSpacing.
   repairProse = false,
   // Wraps prose words in .agent-stream-word spans so each fades in as the
-  // stream reveals it. Only set while a turn is actively streaming: the spans
-  // are presentation-only and the completed turn re-renders as plain text.
+  // stream reveals it. Set while a turn streams and through its trailing
+  // settle window; afterwards and in history, the turn renders as plain text.
   animateWords = false,
   settlingWords = false,
   onWordsSettled,
