@@ -710,6 +710,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn note_transcribe_preview_zero_duration_keeps_a_positive_hold_gate() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            duration_probe: Arc::new(ZeroDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let output = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "zero-duration-preview".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await
+            .expect("zero-duration preview still settles successfully");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert!(matches!(
+            os_accounts.events().as_slice(),
+            [
+                RecordedCall::Authorize { estimate: 1, .. },
+                RecordedCall::Charge { credits: 0, .. }
+            ]
+        ));
+    }
+
+    #[tokio::test]
     async fn note_transcribe_hold_covers_actual_price_above_flat_estimate() {
         // Audio priced above the flat estimate must raise the hold to the
         // already-known price — otherwise the charge is clamped to the flat
@@ -1826,6 +1869,14 @@ mod tests {
     impl AudioDurationProbe for FixedDurationProbe {
         fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
             Ok(Duration::from_millis(1500))
+        }
+    }
+
+    struct ZeroDurationProbe;
+
+    impl AudioDurationProbe for ZeroDurationProbe {
+        fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
+            Ok(Duration::ZERO)
         }
     }
 

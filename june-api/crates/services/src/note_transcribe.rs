@@ -81,11 +81,13 @@ impl NoteTranscribeService {
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
         // Preview is not charged, but its Hold remains an abuse gate sized to
-        // the already-known price. Final note transcription keeps the flat
-        // floor, and raises it when the computed price is higher so settlement
-        // cannot be silently clamped below actual usage.
+        // the already-known price. A valid header-only audio file can probe as
+        // zero seconds, so keep a one-credit minimum that still reserves an OS
+        // Accounts grant. Final note transcription keeps the flat floor, and
+        // raises it when the computed price is higher so settlement cannot be
+        // silently clamped below actual usage.
         let estimate = if params.preview {
-            actual
+            Credits(actual.0.max(1))
         } else {
             Credits(actual.0.max(self.flat_estimate_credits))
         };
