@@ -66,6 +66,13 @@ describe("June Hermes compatibility patch", () => {
       expect(bundler).toContain("--upstream-root");
       expect(bundler).toContain("PATCHSET");
       expect(bundler).toContain("--verify");
+      const dashboardBuild = bundler.indexOf("prebuilding dashboard web UI");
+      const appsPrune = Math.max(
+        bundler.lastIndexOf("$out/hermes-agent/apps"),
+        bundler.lastIndexOf('(Join-Path $agentDir "apps")'),
+      );
+      expect(dashboardBuild).toBeGreaterThan(-1);
+      expect(appsPrune).toBeGreaterThan(dashboardBuild);
     }
   });
 

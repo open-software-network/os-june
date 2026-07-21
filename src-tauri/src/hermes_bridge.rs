@@ -10265,7 +10265,7 @@ skills:
         model = yaml_string(model),
         base_url = yaml_string(base_url),
         provider_proxy_token = yaml_string(provider_proxy_token),
-        upstream_disabled_toolsets = &UPSTREAM_DISABLED_TOOLSETS.join(", "),
+        upstream_disabled_toolsets = UPSTREAM_DISABLED_TOOLSETS.join(", "),
     )
 }
 

@@ -25,6 +25,10 @@ and `messages` database fields June reads remain compatible.
 The upstream installer still has bare `$UV_CMD` calls. June's quoting patch
 remains required for app data paths containing spaces.
 
+The dashboard now imports the `@hermes/shared` workspace from `apps/shared`.
+June's macOS and Windows bundlers retain that workspace until the dashboard
+assets are compiled, then prune the rest of `apps/` from the shipped runtime.
+
 ## Sealed June patch set
 
 Hermes 0.19 moved Telegram into `plugins/platforms/telegram/adapter.py` and
