@@ -7,14 +7,24 @@ exact package, then publishes it after the desktop release succeeds.
 
 The architecture and trade-offs are recorded in [ADR 0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md).
 
-## Current bootstrap state (2026-07-20)
+## Current bootstrap state (2026-07-21)
 
 - The publisher account is accessible; its publisher ID goes into the
   `CHROME_WEB_STORE_PUBLISHER_ID` variable (Developer Dashboard -> Publisher
   -> Settings).
 - The publisher has no extension items yet, so the manual `0.1.0` bootstrap
-  below is still required. The uploaded item must receive the pinned item ID
-  `adckhkfngpnenaapncoipkalcfpjbgcn`; stop if Google assigns a different one.
+  below is still required. The Chrome Web Store rejects any uploaded manifest
+  that contains a `key` field ("key field is not allowed in manifest"), so the
+  original plan of forcing the pinned item ID
+  `adckhkfngpnenaapncoipkalcfpjbgcn` through the manifest key cannot work: the
+  store assigns a fresh item ID and keypair on first upload. The pinning
+  direction is therefore reversed - after the bootstrap upload, copy the
+  store-generated public key (item -> Package tab) into
+  `extension/public/manifest.json` `key` and update `EXTENSION_ID` in
+  `src-tauri/src/extension_host.rs` (plus the ID in tests and docs) so local
+  load-unpacked builds share the store item's ID from then on.
+- The bootstrap upload must use a package whose manifest has the `key` field
+  removed; `prepareExtensionRelease` strips it automatically for CI packages.
 - The Google Cloud project, the dedicated service account, and the Workload
   Identity provider do not exist yet; the other two GitHub variables are
   produced by those steps. The pipeline uses keyless GitHub OIDC, so no
@@ -48,11 +58,16 @@ already out:
 
 1. Register the publisher, build the current extension, and upload its bootstrap
    `0.1.0` package once through the Developer Dashboard to create the June item.
+   The uploaded manifest must not contain a `key` field (strip it from the
+   built `extension/dist/manifest.json` before zipping; the store rejects it).
    Complete the Store listing, Privacy, Distribution, and reviewer instructions,
    then publish that bootstrap once manually. API v2 updates existing items; it
-   does not replace this first-item setup. The resulting item ID must be
-   `adckhkfngpnenaapncoipkalcfpjbgcn`, derived from the pinned `key` in
-   `extension/public/manifest.json`.
+   does not replace this first-item setup. After the upload, adopt the
+   store-assigned identity into the repo: paste the generated public key
+   (item -> Package tab) into `extension/public/manifest.json` `key` and the
+   item ID into `src-tauri/src/extension_host.rs` `EXTENSION_ID`, tests, and
+   docs. The pipeline derives its expected ID from the manifest key, so no
+   other pipeline configuration changes.
 2. Enable two-step verification on the publisher owner account.
 3. Enable Chrome Web Store API v2 in a dedicated Google Cloud project.
 4. Create one dedicated service account for this release pipeline. Do not create

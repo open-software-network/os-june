@@ -237,6 +237,29 @@ describe("extension release metadata", () => {
     expect(result.metadata.extension.version).toBe("2.2.3.5");
   });
 
+  it("strips the manifest key from the packaged payload while deriving the ID from it", async () => {
+    const root = await mkdtemp(join(tmpdir(), "june-extension-keystrip-"));
+    const dist = join(root, "extension", "dist");
+    const output = join(root, "output");
+    await mkdir(dist, { recursive: true });
+    await writeFile(join(dist, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(join(dist, "background.js"), "console.log('keystrip');\n");
+
+    const result = await prepareExtensionRelease({
+      root,
+      desktopVersion: "1.2.3-rc.5",
+      sourceCommit,
+      outputDir: output,
+    });
+
+    expect(result.metadata.release.reason).toBe("changed");
+    expect(result.metadata.extension.id).toBe(extensionId);
+    const packaged = JSON.parse(await readFile(join(dist, "manifest.json"), "utf8"));
+    expect(packaged.key).toBeUndefined();
+    expect(packaged.version).toBe("2.2.3.5");
+    expect(packaged.version_name).toBe("1.2.3");
+  });
+
   it("carries an active correlated RC when the payload returns to stable bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "june-extension-revert-"));
     const dist = join(root, "extension", "dist");
