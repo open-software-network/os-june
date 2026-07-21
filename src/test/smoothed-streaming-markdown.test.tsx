@@ -247,6 +247,15 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.querySelector("blockquote p")?.textContent).toBe("Following prose");
   });
 
+  it("does not stall on a thematic break inside a blockquote", () => {
+    const view = render(
+      <SmoothedStreamingMarkdown markdown={"> ***\n> Following prose"} running />,
+    );
+
+    expect(view.container.querySelector("blockquote hr")).not.toBeNull();
+    expect(view.container.querySelector("blockquote p")?.textContent).toBe("Following prose");
+  });
+
   it("withholds an incomplete trailing construct until it closes, never flashing the syntax", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="" running />);
@@ -416,6 +425,8 @@ describe("holdbackSafeEnd", () => {
       "1. `First item`",
       "- [First item](https://example.com)",
       "***\nFollowing prose",
+      "> ***\n> Following prose",
+      ">> ***\n>> Following prose",
       "***Item",
     ];
 
@@ -439,6 +450,12 @@ describe("holdbackSafeEnd", () => {
     const text = "> | Not a table |\n>\n> Explanation";
 
     expect(holdbackSafeEnd(text)).toBe(text.length);
+  });
+
+  it("recognizes thematic breaks at every blockquote depth", () => {
+    for (const text of ["> ***\n> Following prose", ">> ***\n>> Following prose"]) {
+      expect(holdbackSafeEnd(text), text).toBe(text.length);
+    }
   });
 
   it("keeps an earlier opener active across a completed inner code span", () => {

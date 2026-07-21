@@ -75,8 +75,8 @@ function isBlockLevelStar(segment: string, at: number): boolean {
   const start = lineStartIndex(segment, at);
   let end = segment.indexOf("\n", at);
   if (end < 0) end = segment.length;
-  const line = segment.slice(start, end).trim();
-  if (/^([-*_])\1{2,}$/.test(line)) return true;
+  const { content } = markdownLine(segment.slice(start, end));
+  if (/^([-*_])\1{2,}$/.test(content)) return true;
   const before = segment.slice(start, at);
   const next = segment[at + 1];
   return before.trim() === "" && next !== undefined && /\s/.test(next);
