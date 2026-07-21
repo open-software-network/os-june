@@ -472,8 +472,12 @@ pub struct PageAccumulation {
 /// the page number just fetched (`page`), decide whether to continue to the
 /// next page. Returns `(fetch_next, truncated)`.
 ///
-/// - If `page_len < per_page`, the API has no more items — stop, not truncated.
-/// - If `page == max_pages`, we hit the cap with a full page — stop, truncated.
+/// - If `page_len < per_page`, the API has no more items - stop, not truncated.
+/// - If `page == max_pages`, we hit the cap with a full page - stop, truncated.
+///   `truncated` here means "may be incomplete": a set of exactly
+///   `per_page * max_pages` items also lands in this branch, because knowing
+///   for sure would cost one extra request past the cap. The tool copy
+///   phrases the flag as "capped at 500", never as a definite "incomplete".
 /// - Otherwise, continue to `page + 1`.
 pub fn pagination_next(
     page_len: usize,
@@ -493,8 +497,8 @@ pub fn pagination_next(
 }
 
 /// List of repositories reachable through the user's GitHub App installations,
-/// with a `truncated` flag that is `true` when the safety-cap cut enumeration
-/// short (meaning more items exist beyond what was returned).
+/// with a `truncated` flag that is `true` when the safety cap stopped the
+/// enumeration (the list may be incomplete; see [`pagination_next`]).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubRepositoryList {
