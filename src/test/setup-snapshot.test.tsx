@@ -747,6 +747,51 @@ describe("setup snapshot — import driver", () => {
     ).toBe(false);
   });
 
+  it.each([
+    { label: "manually configured", installed: false, command: "mcp-server-memory" },
+    { label: "edited catalog", installed: true, command: "edited-memory-server" },
+  ])("leaves a same-name $label server untouched during a catalog import", async (scenario) => {
+    const harness = makeAdminHarness({
+      gateway: { gateway_running: true },
+      mcpCatalog: [
+        {
+          name: "memory",
+          transport: "stdio",
+          installed: scenario.installed,
+          command: "mcp-server-memory",
+        },
+      ],
+      mcpServers: [
+        {
+          name: "memory",
+          enabled: false,
+          transport: "stdio",
+          command: scenario.command,
+          include_tools: ["store"],
+        },
+      ],
+    });
+    const snapshot = importableSnapshot();
+    snapshot.skills = [];
+    snapshot.catalogInstalls = [
+      { installName: "memory", enabled: true, requiredEnvKeys: ["MEMORY_KEY"] },
+    ];
+
+    const report = await applySnapshot(harness.client, snapshot, { sleep: instantSleep });
+
+    expect(report.steps.find((step) => step.category === "catalog-install")?.status).toBe(
+      "unsupported",
+    );
+    expect(
+      report.steps
+        .filter((step) => ["mcp-toggle", "tool-filter"].includes(step.category))
+        .every((step) => step.status === "unsupported"),
+    ).toBe(true);
+    expect(
+      harness.server.requestLog.some((entry) => entry.method === "POST" || entry.method === "PUT"),
+    ).toBe(false);
+  });
+
   it("leaves a same-name server with a different definition completely untouched", async () => {
     const harness = makeAdminHarness({
       gateway: { gateway_running: true },

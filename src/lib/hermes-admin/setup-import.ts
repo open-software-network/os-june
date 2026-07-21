@@ -201,6 +201,7 @@ export function buildImportPlan(snapshot: SetupSnapshot, live: ImportInventory):
   const liveSkills = new Map(live.skills.map((skill) => [skill.name, skill]));
   const liveServers = new Map(live.mcpServers.map((server) => [server.name, server]));
   const liveToolsets = new Map(live.toolsets.map((toolset) => [toolset.name, toolset]));
+  const snapshotServers = new Map(snapshot.mcpServers.map((server) => [server.name, server]));
   const catalogNames = new Set(snapshot.catalogInstalls.map((install) => install.installName));
   const installedCatalog = new Set(
     live.catalog.filter((entry) => entry.installed).map((entry) => entry.installName),
@@ -241,7 +242,20 @@ export function buildImportPlan(snapshot: SetupSnapshot, live: ImportInventory):
   }
 
   for (const install of snapshot.catalogInstalls) {
-    if (installedCatalog.has(install.installName) || liveServers.has(install.installName)) {
+    const current = liveServers.get(install.installName);
+    const snapshotServer = snapshotServers.get(install.installName);
+    const installedFromCatalog = installedCatalog.has(install.installName);
+    const differences =
+      current && snapshotServer ? mcpServerDefinitionDifferences(snapshotServer, current) : [];
+    if (current && (!installedFromCatalog || !snapshotServer || differences.length > 0)) {
+      conflictingServers.add(install.installName);
+      const detail = !installedFromCatalog
+        ? "A manually configured server already uses this catalog name. June left it unchanged."
+        : !snapshotServer
+          ? "The snapshot does not include the catalog server definition needed to verify the existing server. June left it unchanged."
+          : `The existing catalog server differs in ${differences.join(", ")}. June left its connection and secrets unchanged.`;
+      steps.push(planStep("catalog-install", install.installName, "unsupported", detail));
+    } else if (installedFromCatalog || current) {
       steps.push(planStep("catalog-install", install.installName, "skip", "Already installed."));
     } else if (!availableCatalog.has(install.installName)) {
       steps.push(
