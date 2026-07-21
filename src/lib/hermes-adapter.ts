@@ -1,4 +1,5 @@
 import { stripProjectContextFromPreview } from "./agent-project-context";
+import { stripJuneHomeContextFromPreview } from "./june-home";
 import { displayedUpstreamProviderRecoveryPreview } from "./upstream-provider-recovery";
 import {
   deleteHermesBridgeSession,
@@ -59,10 +60,17 @@ export function normalizeHermesSessionsResponse(response: unknown) {
   return extractList(response, "sessions")
     .filter(isHermesSessionInfo)
     .filter((session) => !isDelegatedSubagentSession(session))
+    .map(withoutHomeContextPreview)
     .map(withoutProjectContextPreview)
     .map(withoutInternalRecoveryPreview)
     .map(withScheduledRunDisplay)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
+}
+
+function withoutHomeContextPreview(session: HermesSessionInfo): HermesSessionInfo {
+  const preview = stripJuneHomeContextFromPreview(session.preview ?? undefined);
+  if (preview === (session.preview ?? undefined)) return session;
+  return { ...session, preview };
 }
 
 /** Hermes previews snippet the raw prompt text, which for project-filed

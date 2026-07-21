@@ -161,6 +161,9 @@ const JUNE_CONTEXT_MCP_SERVER_NAME: &str = "june_context";
 const JUNE_CONTEXT_MCP_DIR_NAME: &str = "hermes-mcp";
 const JUNE_CONTEXT_MCP_SCRIPT_NAME: &str = "june_context_mcp.py";
 const JUNE_CONTEXT_MCP_SCRIPT: &str = include_str!("hermes/june_context_mcp.py");
+const JUNE_HOME_MCP_SERVER_NAME: &str = "june_home";
+const JUNE_HOME_MCP_SCRIPT_NAME: &str = "june_home_mcp.py";
+const JUNE_HOME_MCP_SCRIPT: &str = include_str!("hermes/june_home_mcp.py");
 /// Environment variable the `june_context` MCP reads its memory-write proxy
 /// token from. Kept out of argv so it does not appear in process listings.
 const JUNE_MEMORY_MCP_TOKEN_ENV: &str = "JUNE_MEMORY_PROXY_TOKEN";
@@ -352,6 +355,10 @@ const JUNE_CHARACTER_MAX_CHARS: usize = 4000;
 const JUNE_SOUL_CONTEXT_MD: &str = r#"
 June context tools: you have access to a local `june_context` MCP toolset for searching the user's June meeting notes, saved note transcripts, and dictation history. Use it when the user asks about prior meetings, calls, recordings, notes, decisions, follow-ups, or dictated text. Query it on demand instead of assuming you already know those entries, and summarize only what the retrieved results support.
 Messages may reference a specific note as `@note:<id>`, usually followed by the note title in quotes. When you see such a reference, call the `june_context` tool `get_meeting_note` with that id to load the note before answering, and rely on what it returns. Ask for the transcript with `include_transcript` only when the note content is not enough. If the tool reports the note was not found, say so instead of guessing.
+"#;
+
+const JUNE_SOUL_HOME_MD: &str = r#"
+Home task handoffs: only when the current prompt contains the `[June home context]` marker, you have a `june_home` MCP toolset with `start_task`. Call `start_task` once for each distinct concrete task that benefits from focused or background work. Do not call it outside Home, and do not call it more than once for the same task. Keep conversation, quick answers, clarifying questions, and preference updates in Home rather than handing them off.
 "#;
 
 /// Appended only while the June memory store is globally enabled. Scope is
@@ -1680,6 +1687,7 @@ async fn start_hermes_bridge_inner(
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(app, bridge, &hermes_home).await?;
     let june_context_mcp = sync_june_context_mcp(app, &command)?;
+    let june_home_mcp = sync_june_home_mcp(app, &command)?;
     let june_web_mcp = sync_june_web_mcp(app, &command)?;
     let june_obsidian_mcp = sync_june_obsidian_mcp(app, &command)?;
     let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
@@ -1730,6 +1738,7 @@ async fn start_hermes_bridge_inner(
         &provider_proxy.obsidian_token,
         supports_vision,
         &june_context_mcp,
+        &june_home_mcp,
         &june_web_mcp,
         &june_obsidian_mcp,
         &june_image_mcp,
@@ -2253,6 +2262,12 @@ struct JuneContextMcpConfig {
     database_path: PathBuf,
     memory_settings_path: PathBuf,
     active_profile_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct JuneHomeMcpConfig {
+    command: String,
+    script_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -9806,6 +9821,26 @@ fn sync_june_context_mcp(
     })
 }
 
+/// Writes the state-free Home handoff MCP script. The desktop client observes
+/// its successful tool result and owns focused-session creation and startup.
+fn sync_june_home_mcp(
+    app: &AppHandle,
+    hermes_command: &str,
+) -> Result<JuneHomeMcpConfig, AppError> {
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("june_home_mcp_failed", error.to_string()))?;
+    let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
+    fs::create_dir_all(&mcp_dir)
+        .map_err(|error| AppError::new("june_home_mcp_failed", error.to_string()))?;
+    let script_path = mcp_dir.join(JUNE_HOME_MCP_SCRIPT_NAME);
+    fs::write(&script_path, JUNE_HOME_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_home_mcp_failed", error.to_string()))?;
+    Ok(JuneHomeMcpConfig {
+        command: hermes_python_command(hermes_command),
+        script_path,
+    })
+}
+
 fn june_memory_enabled(path: &Path) -> bool {
     match fs::read_to_string(path) {
         Ok(settings) => {
@@ -10315,6 +10350,7 @@ fn sync_hermes_config(
     obsidian_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
+    june_home_mcp: &JuneHomeMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_obsidian_mcp: &JuneObsidianMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
@@ -10336,6 +10372,7 @@ fn sync_hermes_config(
         obsidian_proxy_token,
         supports_vision,
         june_context_mcp,
+        june_home_mcp,
         june_web_mcp,
         june_obsidian_mcp,
         june_image_mcp,
@@ -10361,6 +10398,7 @@ fn sync_hermes_config_with_external_dirs(
     obsidian_proxy_token: &str,
     supports_vision: bool,
     june_context_mcp: &JuneContextMcpConfig,
+    june_home_mcp: &JuneHomeMcpConfig,
     june_web_mcp: &JuneWebMcpConfig,
     june_obsidian_mcp: &JuneObsidianMcpConfig,
     june_image_mcp: &JuneImageMcpConfig,
@@ -10380,6 +10418,7 @@ fn sync_hermes_config_with_external_dirs(
     let connector_base = june_connector_mcp.and_then(|configs| configs.base.as_ref());
     let mcp_configs = BuiltinMcpConfigs {
         context: Some(june_context_mcp),
+        home: Some(june_home_mcp),
         web: Some(june_web_mcp),
         obsidian: Some(june_obsidian_mcp),
         image: Some(june_image_mcp),
@@ -11004,6 +11043,7 @@ fn deep_merge_yaml(base: serde_yaml::Value, overlay: serde_yaml::Value) -> serde
 
 struct BuiltinMcpConfigs<'a> {
     context: Option<&'a JuneContextMcpConfig>,
+    home: Option<&'a JuneHomeMcpConfig>,
     web: Option<&'a JuneWebMcpConfig>,
     obsidian: Option<&'a JuneObsidianMcpConfig>,
     image: Option<&'a JuneImageMcpConfig>,
@@ -11299,6 +11339,9 @@ fn render_mcp_servers_config(
             memory_proxy_token,
         ));
     }
+    if let Some(config) = configs.home {
+        entries.push_str(&render_home_mcp_entry(config));
+    }
     if let Some(config) = configs.web {
         entries.push_str(&render_web_mcp_entry(config, base_url, proxy_token));
     }
@@ -11473,6 +11516,24 @@ fn render_context_mcp_entry(
         base_url = yaml_string(base_url),
         token_env = JUNE_MEMORY_MCP_TOKEN_ENV,
         token = yaml_string(memory_proxy_token),
+    )
+}
+
+fn render_home_mcp_entry(config: &JuneHomeMcpConfig) -> String {
+    format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+    env:
+      PYTHONUNBUFFERED: "1"
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_HOME_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.script_path.to_string_lossy()),
     )
 }
 
@@ -12019,10 +12080,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_HOME_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}")
+        format!("{base}{JUNE_SOUL_CONTEXT_MD}{JUNE_SOUL_HOME_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -16962,6 +17023,7 @@ mod tests {
     fn bundled_mcp_scripts_import_cleanly() {
         for (name, script) in [
             ("june_context_mcp.py", JUNE_CONTEXT_MCP_SCRIPT),
+            (JUNE_HOME_MCP_SCRIPT_NAME, JUNE_HOME_MCP_SCRIPT),
             ("june_web_mcp.py", JUNE_WEB_MCP_SCRIPT),
             ("june_image_mcp.py", JUNE_IMAGE_MCP_SCRIPT),
             ("june_video_mcp.py", JUNE_VIDEO_MCP_SCRIPT),
@@ -16991,6 +17053,64 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+    }
+
+    #[test]
+    fn june_home_mcp_schema_and_normalization_match_the_handoff_contract() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(JUNE_HOME_MCP_SCRIPT_NAME);
+        std::fs::write(&path, JUNE_HOME_MCP_SCRIPT).expect("write script");
+        let test = r#"
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("june_home_mcp", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+tool = module.TOOLS[0]
+assert tool["name"] == "start_task"
+schema = tool["inputSchema"]
+assert schema["required"] == ["title", "prompt"]
+assert schema["properties"]["title"]["minLength"] == 1
+assert schema["properties"]["prompt"]["minLength"] == 1
+assert "summary" in schema["properties"]
+
+ok = module.handle_message({
+    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+    "params": {"name": "start_task", "arguments": {
+        "title": "  Research options ",
+        "prompt": "  Compare the two proposals.  ",
+        "summary": "  Background handoff  ",
+    }},
+})
+result = ok["result"]
+assert result["structuredContent"] == {
+    "title": "Research options",
+    "prompt": "Compare the two proposals.",
+    "summary": "Background handoff",
+}
+assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
+
+for arguments in ({}, {"title": " ", "prompt": "work"}, {"title": "task", "prompt": " "}):
+    result = module.handle_message({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "start_task", "arguments": arguments},
+    })["result"]
+    assert result["isError"] is True
+"#;
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(test)
+            .arg(&path)
+            .output()
+            .expect("run python3");
+        assert!(
+            output.status.success(),
+            "june_home MCP contract regression failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -19334,6 +19454,7 @@ assert capped["has_more"] is True, capped
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 image: None,
                 video: None,
@@ -19385,6 +19506,7 @@ assert capped["has_more"] is True, capped
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 image: None,
                 video: None,
@@ -19445,6 +19567,7 @@ assert capped["has_more"] is True, capped
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 image: None,
                 video: None,
@@ -19501,6 +19624,7 @@ assert capped["has_more"] is True, capped
                 &[],
                 BuiltinMcpConfigs {
                     context: None,
+                    home: None,
                     web: None,
                     image: None,
                     video: None,
@@ -20692,6 +20816,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&test_june_context_mcp_config()),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -20783,6 +20908,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 image: None,
                 video: None,
@@ -21201,6 +21327,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&test_june_context_mcp_config()),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -21432,6 +21559,7 @@ mcp_servers:
             "obsidian-proxy-token",
             false,
             &test_june_context_mcp_config(),
+            &test_june_home_mcp_config(),
             &test_june_web_mcp_config(),
             &test_june_obsidian_mcp_config(),
             &test_june_image_mcp_config(),
@@ -21492,6 +21620,7 @@ mcp_servers:
             &dirs,
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -21553,6 +21682,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -21582,6 +21712,13 @@ mcp_servers:
         JuneWebMcpConfig {
             command: "/tmp/hermes/venv/bin/python".to_string(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_web_mcp.py"),
+        }
+    }
+
+    fn test_june_home_mcp_config() -> JuneHomeMcpConfig {
+        JuneHomeMcpConfig {
+            command: "/tmp/hermes/venv/bin/python".to_string(),
+            script_path: PathBuf::from("/tmp/june/hermes-mcp/june_home_mcp.py"),
         }
     }
 
@@ -21654,6 +21791,7 @@ mcp_servers:
     #[test]
     fn render_hermes_config_registers_june_context_mcp_server() {
         let context = test_june_context_mcp_config();
+        let home = test_june_home_mcp_config();
         let web = test_june_web_mcp_config();
         let obsidian = test_june_obsidian_mcp_config();
         let image = test_june_image_mcp_config();
@@ -21695,6 +21833,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: Some(&home),
                 web: Some(&web),
                 obsidian: Some(&obsidian),
                 image: Some(&image),
@@ -21718,6 +21857,7 @@ mcp_servers:
 
         // Built-in servers live under one mcp_servers map.
         assert!(config.contains("mcp_servers:\n  june_context:\n"));
+        assert!(config.contains("  june_home:\n"));
         assert!(config.contains("  june_web:\n"));
         assert!(config.contains("  june_obsidian:\n"));
         assert!(config.contains("  june_recorder:\n"));
@@ -21728,6 +21868,7 @@ mcp_servers:
         assert!(config.contains("  june_computer_use:\n    enabled: true\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_home_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
         assert!(config.contains("      - \"/tmp/june/config/memory-settings.json\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes/active_profile\"\n"));
@@ -21873,6 +22014,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -21922,6 +22064,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: Some(&context),
+                home: None,
                 web: Some(&web),
                 obsidian: None,
                 image: Some(&image),
@@ -21968,6 +22111,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -22014,6 +22158,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -22051,6 +22196,7 @@ mcp_servers:
             &[],
             BuiltinMcpConfigs {
                 context: None,
+                home: None,
                 web: None,
                 obsidian: None,
                 image: None,
@@ -22810,6 +22956,7 @@ mcp_servers:
             "obsidian-proxy-token",
             false,
             &mcp,
+            &test_june_home_mcp_config(),
             &web,
             &test_june_obsidian_mcp_config(),
             &image,
@@ -22888,6 +23035,7 @@ mcp_servers:
         context.memory_settings_path = settings.clone();
         let configs = BuiltinMcpConfigs {
             context: Some(&context),
+            home: None,
             web: None,
             obsidian: None,
             image: None,
@@ -22953,6 +23101,7 @@ mcp_servers:
             "obsidian-proxy-token",
             false,
             &context,
+            &test_june_home_mcp_config(),
             &web,
             &test_june_obsidian_mcp_config(),
             &image,
@@ -23014,6 +23163,7 @@ mcp_servers:
             "obsidian-proxy-token",
             false,
             &context,
+            &test_june_home_mcp_config(),
             &web,
             &test_june_obsidian_mcp_config(),
             &image,
@@ -23183,6 +23333,24 @@ mcp_servers:
         assert!(soul.contains("@note:<id>"));
         assert!(soul.contains("get_meeting_note"));
         assert!(soul.contains("include_transcript"));
+    }
+
+    #[test]
+    fn june_soul_conditions_home_task_handoffs_on_the_home_marker() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false, false, Some(false), true, true, false)
+            .expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("[June home context]"));
+        assert!(soul.contains("june_home"));
+        assert!(soul.contains("start_task"));
+        assert!(soul.contains("once for each distinct concrete task"));
+        assert!(soul.contains("Do not call it outside Home"));
+        assert!(
+            soul.contains("quick answers, clarifying questions, and preference updates in Home")
+        );
     }
 
     #[test]

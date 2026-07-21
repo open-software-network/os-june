@@ -130,6 +130,7 @@ async function fetchSessionProfileMap(): Promise<SessionProfileMap | null> {
 }
 
 export type SidebarView =
+  | "home"
   | "notes"
   | "meetings"
   | "all-notes"
@@ -159,6 +160,8 @@ type SidebarProps = {
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   onNewAgentSession: () => void;
+  /** The persistent Home conversation is not shown among focused sessions. */
+  homeSessionId?: string;
   /** stored session id (not the runtime session id). */
   onRenameAgentSession: (sessionId: string, title: string) => void;
   onSelectAgentSession: (session: HermesSessionInfo) => void;
@@ -411,6 +414,7 @@ export function Sidebar({
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
   onNewAgentSession,
+  homeSessionId,
   onRenameAgentSession,
   onSelectAgentSession,
   sessionFolderIds,
@@ -445,7 +449,6 @@ export function Sidebar({
   const [referralCopyError, setReferralCopyError] = useState<string | null>(null);
   const [referralCopied, setReferralCopied] = useState(false);
   const searchShortcut = primaryShortcutLabel("K");
-  const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
   // Chats belong to the profile they were created under (ADR 0031): the
@@ -464,7 +467,9 @@ export function Sidebar({
   );
   // __emptyStates() preview (dev console): the agent section renders its
   // "No sessions yet" line as a fresh install would, real data untouched.
-  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : profileAgentSessions;
+  const agentSessions = useForcedEmptyStates()
+    ? NO_AGENT_SESSIONS
+    : profileAgentSessions.filter((session) => session.id !== homeSessionId);
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
@@ -686,6 +691,13 @@ export function Sidebar({
       .slice(0, 6);
 
     const quickItems: CommandPromptItem[] = [
+      {
+        id: "quick:home",
+        label: "Go to Home",
+        icon: <JuneMark />,
+        searchText: normalizeCommandQuery("home june personal assistant conversation"),
+        action: () => onChangeView("home"),
+      },
       {
         id: "quick:new-session",
         label: "New session",
@@ -1178,7 +1190,6 @@ export function Sidebar({
     menu?.kind === "agent-session"
       ? agentSessions.find((session) => session.id === menu.sessionId)
       : undefined;
-  const newAgentSessionActive = activeView === "agent" && !selectedAgentSessionId;
 
   return (
     <aside
@@ -1235,17 +1246,14 @@ export function Sidebar({
             <button
               type="button"
               className="sidebar-nav-item"
-              data-active={newAgentSessionActive || undefined}
-              aria-current={newAgentSessionActive ? "page" : undefined}
-              onClick={handleNewAgentSession}
+              data-active={activeView === "home" || undefined}
+              aria-current={activeView === "home" ? "page" : undefined}
+              onClick={() => onChangeView("home")}
             >
-              <span className="sidebar-nav-icon">
-                <IconPlusMedium size={15} />
+              <span className="sidebar-nav-icon sidebar-home-mark" aria-hidden>
+                <JuneMark />
               </span>
-              <span className="sidebar-nav-label">New session</span>
-              <kbd className="sidebar-nav-shortcut" aria-hidden="true">
-                {newSessionShortcut}
-              </kbd>
+              <span className="sidebar-nav-label">Home</span>
             </button>
             <button
               type="button"

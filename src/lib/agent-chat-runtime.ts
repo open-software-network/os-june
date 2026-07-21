@@ -15,6 +15,7 @@ import { displayedSkillInvocationText } from "./skill-slash-commands";
 import type { JuneHermesEvent } from "./hermes-control-plane";
 import { generatedMediaToolKind, toolActivityLabel } from "./agent-tool-labels";
 import { stripProjectContext } from "./agent-project-context";
+import { stripJuneHomeContext } from "./june-home";
 import {
   displayedUpstreamProviderRecoveryText,
   UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
@@ -1646,7 +1647,9 @@ export function displayedComposerUserMessageText(content: string): string {
   const recoveryText = displayedUpstreamProviderRecoveryText(content);
   if (recoveryText !== content) return recoveryText;
   return stripSyntheticImageAttachmentMarker(
-    stripAttachmentPromptBlock(displayedUserPromptText(stripImageAnalysisFailureNotice(content))),
+    stripAttachmentPromptBlock(
+      displayedUserPromptText(stripImageAnalysisFailureNotice(stripJuneHomeContext(content))),
+    ),
   );
 }
 
@@ -2058,7 +2061,7 @@ export function videoPartsFromHermesContent(content: unknown): AgentChatVideoPar
 }
 
 function stripHermesContextMarkers(value: string) {
-  const withoutProjectContext = stripProjectContext(value);
+  const withoutProjectContext = stripProjectContext(stripJuneHomeContext(value));
   const withoutWarnings = withoutProjectContext.replace(/\n*--- Context Warnings ---[\s\S]*$/m, "");
   const marker = withoutWarnings.search(/\n*--- Attached Context ---/m);
   const visible = marker >= 0 ? withoutWarnings.slice(0, marker) : withoutWarnings;

@@ -74,6 +74,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { BackButton } from "../ui/BackButton";
+import { JuneMark } from "../account/AccountGate";
 import { TierMiniCard } from "../account/FundingNotice";
 import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -432,6 +433,13 @@ import {
   upstreamProviderRecoveryIds,
   upstreamProviderRecoveryStore,
 } from "../../lib/upstream-provider-recovery";
+import {
+  isJuneHomeStartTaskTool,
+  juneHomeDailyCheckIn,
+  juneHomeTaskRequestFromPayload,
+  withJuneHomeContext,
+  type JuneHomeTaskRequest,
+} from "../../lib/june-home";
 
 const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
@@ -1827,6 +1835,10 @@ export type AgentWorkspaceOrigin = {
 type AgentWorkspaceProps = {
   initialSession?: HermesSessionInfo;
   initialSessionId?: string;
+  /** Persistent relationship-level conversation, distinct from focused sessions. */
+  homeMode?: boolean;
+  onHomeSessionCreated?: (storedSessionId: string) => void;
+  onOpenHomeTaskSession?: (storedSessionId: string, title: string) => void;
   origin?: AgentWorkspaceOrigin;
   onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
   onTopUp?: () => void | Promise<void>;
@@ -1858,6 +1870,13 @@ type AgentWorkspaceProps = {
       runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
     } | null;
   };
+};
+
+type HomeTaskHandoff = JuneHomeTaskRequest & {
+  id: string;
+  status: "starting" | "running" | "failed";
+  sessionId?: string;
+  error?: string;
 };
 
 // Mid-run continuity across remounts. While June is working, a session has
@@ -2396,6 +2415,9 @@ export function canShareAgentSession(input: {
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
+  homeMode = false,
+  onHomeSessionCreated,
+  onOpenHomeTaskSession,
   origin,
   onSessionSelected,
   onTopUp,
@@ -2411,6 +2433,13 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   const activeHermesProfile = useActiveHermesProfile();
+  const homeCheckIn = useMemo(
+    () => juneHomeDailyCheckIn(activeHermesProfile.name),
+    [activeHermesProfile.name],
+  );
+  const [homeTaskHandoffs, setHomeTaskHandoffs] = useState<HomeTaskHandoff[]>([]);
+  const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
+  const handledHomeTaskToolCallsRef = useRef(new Set<string>());
   // Read once per mount (lazy initializer): the continuity snapshot the
   // previous mount captured on unmount, if any session was still mid-run.
   const [continuity] = useState(() => sessionContinuity);
@@ -2513,14 +2542,14 @@ export function AgentWorkspace({
   // pending project context, while the draft path keeps unsent hero text
   // visible after a view switch or reload.
   const [startInNewSessionMode] = useState(
-    () => !initialSessionId && shouldOpenNewSessionOnMount(),
+    () => !homeMode && !initialSessionId && shouldOpenNewSessionOnMount(),
   );
   // A last-open id is only a restore candidate until the first profile-scoped
   // session load proves that it belongs to the active profile. Keeping it out
   // of selected state prevents the message loader from reading another
   // profile's conversation during that validation window.
   const restoredHermesSessionIdRef = useRef<string | undefined>(
-    initialSessionId || startInNewSessionMode ? undefined : readLastOpenSessionId(),
+    homeMode || initialSessionId || startInNewSessionMode ? undefined : readLastOpenSessionId(),
   );
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<string | undefined>(
     initialSessionId,
@@ -3489,7 +3518,9 @@ export function AgentWorkspace({
     ? sessionComposerDraftKey(selectedHermesSessionId)
     : selectedTask
       ? null
-      : NEW_SESSION_DRAFT_KEY;
+      : homeMode
+        ? `home:${activeHermesProfile.name}`
+        : NEW_SESSION_DRAFT_KEY;
   const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
   composerDraftKeyRef.current = composerDraftKey;
   const restoredComposerDraftKeyRef = useRef<string | null>();
@@ -3565,7 +3596,9 @@ export function AgentWorkspace({
   // fall-through in the render, minus the dev gallery. Computed up here
   // because the composer auto-grow effect below needs it as a dependency.
   const heroMode =
-    !gallerySections && (newSessionMode || (!selectedHermesSessionId && !selectedTask));
+    !homeMode &&
+    !gallerySections &&
+    (newSessionMode || (!selectedHermesSessionId && !selectedTask));
   // Composer steer state: the open session is mid-run (or a send is landing), so
   // the send slot holds Stop and a typed message steers the running turn rather
   // than starting a new one. Drives the steer-send button, the queue-style
@@ -4019,6 +4052,13 @@ export function AgentWorkspace({
         const restoredSessionId = restoredHermesSessionIdRef.current;
         restoredHermesSessionIdRef.current = undefined;
         setSelectedHermesSessionId((current) => {
+          if (homeMode) {
+            const homeSessionStillExists =
+              current !== undefined && sessions.some((session) => session.id === current);
+            const nextHomeSessionId = homeSessionStillExists ? current : undefined;
+            selectedHermesSessionIdRef.current = nextHomeSessionId;
+            return nextHomeSessionId;
+          }
           if (newSessionModeRef.current) {
             selectedHermesSessionIdRef.current = undefined;
             return undefined;
@@ -4079,6 +4119,7 @@ export function AgentWorkspace({
       activeHermesProfile.confirmed,
       activeHermesProfile.name,
       bridge.running,
+      homeMode,
       selectedTask?.hermesSessionId,
     ],
   );
@@ -4587,6 +4628,7 @@ export function AgentWorkspace({
 
   useEffect(() => {
     function handleNewSession(event: Event) {
+      if (homeMode) return;
       const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
       void windowEventHandlersRef.current.startNewTask(detail);
     }
@@ -4606,7 +4648,7 @@ export function AgentWorkspace({
       );
     }
 
-    const pending = pendingNewSessionRequest();
+    const pending = homeMode ? undefined : pendingNewSessionRequest();
     if (pending) {
       void windowEventHandlersRef.current.startNewTask(pending, {
         deferSeed: true,
@@ -4621,7 +4663,7 @@ export function AgentWorkspace({
       window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
       window.removeEventListener(AGENT_SESSION_RENAMED_EVENT, handleRenameSession);
     };
-  }, []);
+  }, [homeMode]);
 
   useEffect(() => {
     if (!bridge.running || !hermesSessionsHydrated || !selectedHermesSessionId) return;
@@ -6085,7 +6127,8 @@ export function AgentWorkspace({
         !newSessionModeRef.current && targetSessionId
           ? projectContextSignaturesBySessionId.get(targetSessionId)
           : undefined;
-      return prepareProjectPrompt(baseContent, projectContext, previousSignature).text;
+      const relationshipAwareContent = homeMode ? withJuneHomeContext(baseContent) : baseContent;
+      return prepareProjectPrompt(relationshipAwareContent, projectContext, previousSignature).text;
     };
     if (message) {
       try {
@@ -6279,9 +6322,12 @@ export function AgentWorkspace({
     try {
       const prepared = await prepareComposerSubmission(message, attachments);
       if (composerDispatchWasInvalidated(sentDispatchReservation)) return;
-      const runtimeContent = reportCategory
+      const preparedRuntimeContent = reportCategory
         ? categoryPrompt(reportCategory, prepared.runtimeContent)
         : prepared.runtimeContent;
+      const runtimeContent = homeMode
+        ? withJuneHomeContext(preparedRuntimeContent)
+        : preparedRuntimeContent;
       preparedForRecovery = { ...prepared, runtimeContent };
       const sizeWarning = oversizedComposerInputWarning({
         content: sizeEstimateContent(runtimeContent, selectedHermesSessionId ?? undefined),
@@ -6336,9 +6382,10 @@ export function AgentWorkspace({
             submittingIssueReportSessionIdsRef.current.has(reportFollowUpSessionId),
         };
       }
-      await submitHermesSession(runtimeContent, undefined, {
+      const submittedSessionId = await submitHermesSession(runtimeContent, undefined, {
         displayContent: prepared.displayContent,
         titleContent: prepared.titleContent,
+        ...(homeMode ? { sessionTitle: "Home" } : {}),
         attachments,
         modelTarget: sentModelTarget,
         dispatchReservation: sentDispatchReservation,
@@ -6347,6 +6394,9 @@ export function AgentWorkspace({
         },
         ...(nextIssueReport ? { issueReport: nextIssueReport } : {}),
       });
+      if (homeMode && sentStartedNewSession && submittedSessionId) {
+        onHomeSessionCreated?.(submittedSessionId);
+      }
       if (composerDispatchWasInvalidated(sentDispatchReservation)) return;
       if (reportFollowUpSessionId) {
         deferredFailedIssueReportDeliverySessionIdsRef.current.delete(reportFollowUpSessionId);
@@ -7095,6 +7145,45 @@ export function AgentWorkspace({
     await Promise.all(leases.map((lease) => computerUseEndRun(lease).catch(() => undefined)));
   }
 
+  async function startHomeTask(request: JuneHomeTaskRequest, toolCallId: string) {
+    if (handledHomeTaskToolCallsRef.current.has(toolCallId)) return;
+    handledHomeTaskToolCallsRef.current.add(toolCallId);
+    const handoffId = `home-task-${toolCallId}`;
+    setHomeTaskHandoffs((current) => [
+      ...current,
+      { ...request, id: handoffId, status: "starting" },
+    ]);
+    try {
+      // Preserve the model choice visible in Home, while explicitly removing
+      // its session target so the focused work gets a new durable session.
+      const modelTarget = captureSessionModelTarget();
+      modelTarget.targetStoredSessionId = null;
+      const sessionId = await submitHermesSession(request.prompt, undefined, {
+        displayContent: request.prompt,
+        titleContent: request.title,
+        sessionTitle: request.title,
+        selectSession: false,
+        modelTarget,
+      });
+      if (!sessionId) throw new Error("June could not create the focused session.");
+      setHomeTaskHandoffs((current) =>
+        current.map((handoff) =>
+          handoff.id === handoffId ? { ...handoff, status: "running", sessionId } : handoff,
+        ),
+      );
+    } catch (err) {
+      setHomeTaskHandoffs((current) =>
+        current.map((handoff) =>
+          handoff.id === handoffId
+            ? { ...handoff, status: "failed", error: messageFromError(err) }
+            : handoff,
+        ),
+      );
+    } finally {
+      homeTaskRequestsByToolCallRef.current.delete(toolCallId);
+    }
+  }
+
   function attachHermesSessionEventListener({
     gateway,
     runtimeSessionId,
@@ -7119,6 +7208,23 @@ export function AgentWorkspace({
       // and the Stage B status helpers below.
       const classified = classifyHermesEvent(liveEvent);
       const storedClassified = withStoredHermesSessionId(classified, storedSessionId);
+      if (classified.kind === "tool") {
+        const toolCallId = classified.toolCallId ?? classified.key;
+        const isHomeTaskTool =
+          isJuneHomeStartTaskTool(classified.name) ||
+          homeTaskRequestsByToolCallRef.current.has(toolCallId);
+        if (homeMode && storedSessionId === selectedHermesSessionIdRef.current && isHomeTaskTool) {
+          const request = juneHomeTaskRequestFromPayload(classified.sanitizedPayload);
+          if (request) homeTaskRequestsByToolCallRef.current.set(toolCallId, request);
+          if (classified.phase === "complete") {
+            const completedRequest =
+              request ?? homeTaskRequestsByToolCallRef.current.get(toolCallId);
+            if (completedRequest) void startHomeTask(completedRequest, toolCallId);
+          } else if (classified.phase === "failed") {
+            homeTaskRequestsByToolCallRef.current.delete(toolCallId);
+          }
+        }
+      }
       // Feature 15: record every inbound frame (raw type + the kind it
       // classified to) into the bounded, sanitized trace buffer so the dev/debug
       // trace panel can reconstruct the session. recordInbound re-classifies and
@@ -7302,6 +7408,8 @@ export function AgentWorkspace({
       issueReport?: PendingIssueReport;
       displayContent?: string;
       titleContent?: string;
+      /** Fixed title for product-owned sessions such as Home and task handoffs. */
+      sessionTitle?: string;
       /** Imported attachments for this turn. Image attachments are sent to the
        * session via the structured image attach flow (feature 19) once the
        * session id is known and before prompt.submit; a failed attach throws to
@@ -7435,9 +7543,11 @@ export function AgentWorkspace({
     const titlePromise =
       targetStoredSessionId || options?.issueReport
         ? undefined
-        : attachmentOnlyTitle
-          ? Promise.resolve(attachmentOnlyTitle)
-          : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
+        : options?.sessionTitle
+          ? Promise.resolve(options.sessionTitle)
+          : attachmentOnlyTitle
+            ? Promise.resolve(attachmentOnlyTitle)
+            : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
     const listedTargetSession = targetStoredSessionId
       ? hermesSessionItemsRef.current.find((session) => session.id === targetStoredSessionId)
       : undefined;
@@ -7449,9 +7559,9 @@ export function AgentWorkspace({
         titleFromPrompt(titleContent)
       : options?.issueReport
         ? "Issue report"
-        : attachmentOnlyTitle || titleFromPrompt(titleContent);
+        : options?.sessionTitle || attachmentOnlyTitle || titleFromPrompt(titleContent);
     const optimisticSession =
-      targetStoredSessionId || options?.skipPrompt
+      targetStoredSessionId || options?.skipPrompt || options?.selectSession === false
         ? undefined
         : startOptimisticHermesSession({
             displayContent,
@@ -7951,7 +8061,7 @@ export function AgentWorkspace({
         });
         throw err;
       }
-      return undefined;
+      return storedSessionId;
     };
 
     return activeDispatchReservation.run(dispatchPreparedSession);
@@ -11198,7 +11308,9 @@ export function AgentWorkspace({
                         "Ask for follow-up changes"
                       : heroMode
                         ? "Ask June anything, run / commands"
-                        : "Send a message"
+                        : homeMode
+                          ? "Message June"
+                          : "Send a message"
             }
             onChange={(text, nextCategory) => {
               draftRef.current = text;
@@ -11362,7 +11474,9 @@ export function AgentWorkspace({
                       : undefined
                   }
                   aria-label={
-                    selectedHermesSessionId || selectedTask ? "Send message" : "Start session"
+                    homeMode || selectedHermesSessionId || selectedTask
+                      ? "Send message"
+                      : "Start session"
                   }
                 >
                   {submitting ? <Spinner /> : <IconArrowUp size={18} />}
@@ -11583,6 +11697,28 @@ export function AgentWorkspace({
     />
   ));
 
+  const homeCheckInTurn: AgentChatTurn = {
+    id: `home-check-in:${homeCheckIn.createdAt}`,
+    role: "assistant",
+    createdAt: homeCheckIn.createdAt,
+    status: "complete",
+    parts: [{ type: "text", text: homeCheckIn.text, status: "complete" }],
+  };
+  const visibleHermesTurns = homeMode
+    ? [homeCheckInTurn, ...hermesTurns].sort((left, right) =>
+        left.createdAt.localeCompare(right.createdAt),
+      )
+    : hermesTurns;
+  const transcriptSessionId = selectedHermesSessionId ?? "";
+
+  function prefillHomeNudge(prompt: string) {
+    draftRef.current = prompt;
+    setDraft(prompt);
+    rememberComposerDraft(composerDraftKeyRef.current, prompt, null, attachmentsRef.current);
+    composerEditorRef.current?.setContent(prompt);
+    window.requestAnimationFrame(() => composerEditorRef.current?.focus());
+  }
+
   const detailContent = gallerySections ? (
     <AgentResponseGallery
       sections={gallerySections}
@@ -11590,41 +11726,43 @@ export function AgentWorkspace({
       fundingTier={fundingTier}
       onClose={() => setGalleryDesired(false)}
     />
-  ) : !newSessionMode && selectedHermesSessionId ? (
-    <div ref={listRef} className="agent-timeline">
-      <UnsupportedEventNotice
-        notice={unsupportedNotice}
-        // Dev/debug context gates the raw-trace affordance. Reuse the same DEV
-        // signal feature 01 used; feature 15 can swap in a richer debug toggle.
-        debugEnabled={import.meta.env.DEV}
-        onOpenRawTrace={(sessionId) => {
-          // Feature 15: open the dev/debug raw trace panel for this session.
-          // The panel itself is dev-gated (renders null in production), so this
-          // is inert in shipped builds even if the affordance were reached.
-          setRawTraceSession(sessionId);
-        }}
-        onStopSession={() => void stopHermesSession(selectedHermesSessionId)}
-        onReportIssue={() => {
-          // The sanitized, secret-free trace bundle for this session is the
-          // payload an issue report should attach (payload previews come from
-          // `sanitizePayload`). This trace affordance is not wired into the
-          // report dialog yet, so keep logging in dev.
-          if (import.meta.env.DEV) {
-            // biome-ignore lint/suspicious/noConsole: dev-only trace-bundle diagnostic
-            console.debug(
-              "[hermes] report issue trace bundle",
-              hermesTraceBuffer.exportSanitizedTrace(selectedHermesSessionId),
-            );
-          }
-        }}
-      />
+  ) : homeMode || (!newSessionMode && selectedHermesSessionId) ? (
+    <div ref={listRef} className="agent-timeline" data-home={homeMode ? "true" : undefined}>
+      {selectedHermesSessionId ? (
+        <UnsupportedEventNotice
+          notice={unsupportedNotice}
+          // Dev/debug context gates the raw-trace affordance. Reuse the same DEV
+          // signal feature 01 used; feature 15 can swap in a richer debug toggle.
+          debugEnabled={import.meta.env.DEV}
+          onOpenRawTrace={(sessionId) => {
+            // Feature 15: open the dev/debug raw trace panel for this session.
+            // The panel itself is dev-gated (renders null in production), so this
+            // is inert in shipped builds even if the affordance were reached.
+            setRawTraceSession(sessionId);
+          }}
+          onStopSession={() => void stopHermesSession(transcriptSessionId)}
+          onReportIssue={() => {
+            // The sanitized, secret-free trace bundle for this session is the
+            // payload an issue report should attach (payload previews come from
+            // `sanitizePayload`). This trace affordance is not wired into the
+            // report dialog yet, so keep logging in dev.
+            if (import.meta.env.DEV) {
+              // biome-ignore lint/suspicious/noConsole: dev-only trace-bundle diagnostic
+              console.debug(
+                "[hermes] report issue trace bundle",
+                hermesTraceBuffer.exportSanitizedTrace(transcriptSessionId),
+              );
+            }
+          }}
+        />
+      ) : null}
       <HermesTracePanel
         buffer={hermesTraceBuffer}
         open={rawTraceSession !== undefined}
         sessionId={rawTraceSession}
         onClose={() => setRawTraceSession(undefined)}
       />
-      {hermesTurns.map((turn) => (
+      {visibleHermesTurns.map((turn) => (
         <AgentChatTurnRow
           key={turn.id}
           turn={turn}
@@ -11651,34 +11789,33 @@ export function AgentWorkspace({
           onDownloadImage={downloadGeneratedImage}
           onOpenImage={openGeneratedImage}
           onRetryImage={(assistantTurnId, part) =>
-            void retryImageSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+            void retryImageSlashTurn(transcriptSessionId, assistantTurnId, part)
           }
           onDownloadVideo={downloadGeneratedVideo}
           onRetryVideo={(assistantTurnId, part) =>
-            void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+            void retryVideoSlashTurn(transcriptSessionId, assistantTurnId, part)
           }
           onRetryUpstreamFailure={(turnId) =>
             void retryUpstreamProviderFailure(
-              selectedHermesSessionId,
+              transcriptSessionId,
               upstreamFailureRecoveryIds.get(turnId),
             )
           }
           upstreamFailureRetryAttempted={upstreamProviderRecoveryStore.attempted(
-            selectedHermesSessionId,
+            transcriptSessionId,
             upstreamFailureRecoveryIds.get(turn.id) ?? "",
           )}
           upstreamFailureRetryDisabled={
-            workingSessionIds.has(selectedHermesSessionId) ||
-            waitingSessionIds.has(selectedHermesSessionId)
+            workingSessionIds.has(transcriptSessionId) || waitingSessionIds.has(transcriptSessionId)
           }
           creditActionsDisabledReason={creditActionsDisabledReason}
           onApproval={(part, choice) =>
             void respondToApproval(
-              selectedHermesSessionId,
-              part.sessionId ?? selectedHermesSessionId,
+              transcriptSessionId,
+              part.sessionId ?? transcriptSessionId,
               part.id,
               choice,
-              sessionUnrestricted(selectedHermesSessionId),
+              sessionUnrestricted(transcriptSessionId),
             )
           }
           onTopUp={handleTopUp}
@@ -11686,46 +11823,84 @@ export function AgentWorkspace({
           fundingTier={fundingTier}
           onClarify={(part, answer) =>
             void respondToClarify(
-              selectedHermesSessionId,
+              transcriptSessionId,
               part.id,
               answer,
-              sessionUnrestricted(selectedHermesSessionId),
+              sessionUnrestricted(transcriptSessionId),
             )
           }
           onSudo={(part, approved) =>
             void respondToSudo(
-              selectedHermesSessionId,
-              part.sessionId ?? selectedHermesSessionId,
+              transcriptSessionId,
+              part.sessionId ?? transcriptSessionId,
               part.id,
               approved,
               part.mode,
-              sessionUnrestricted(selectedHermesSessionId),
+              sessionUnrestricted(transcriptSessionId),
             )
           }
           onSecret={(part, value) =>
             void respondToSecret(
-              selectedHermesSessionId,
-              part.sessionId ?? selectedHermesSessionId,
+              transcriptSessionId,
+              part.sessionId ?? transcriptSessionId,
               part.id,
               value,
-              sessionUnrestricted(selectedHermesSessionId),
+              sessionUnrestricted(transcriptSessionId),
             )
           }
           onBranch={(messageId, sessionId) =>
-            void branchFromMessage(
-              sessionId ?? selectedHermesSessionId,
-              messageId,
-              selectedHermesSessionId,
-            )
+            void branchFromMessage(sessionId ?? transcriptSessionId, messageId, transcriptSessionId)
           }
           branchingMessageId={branchingMessageId}
           onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
         />
       ))}
+      {homeMode ? (
+        <div className="agent-home-nudges" aria-label="Suggestions">
+          {["Plan my day", "Catch me up", "What needs attention?"].map((prompt) => (
+            <button key={prompt} type="button" onClick={() => prefillHomeNudge(prompt)}>
+              {prompt}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {homeMode && homeTaskHandoffs.length > 0 ? (
+        <div className="agent-home-task-list" aria-label="Focused sessions started from Home">
+          {homeTaskHandoffs.map((handoff) => (
+            <article key={handoff.id} className="agent-home-task-card" data-status={handoff.status}>
+              <span className="agent-home-task-icon" aria-hidden>
+                <IconArrowUpRight size={15} />
+              </span>
+              <span className="agent-home-task-copy">
+                <strong>{handoff.title}</strong>
+                <span>
+                  {handoff.status === "starting"
+                    ? "Starting a focused session…"
+                    : handoff.status === "failed"
+                      ? handoff.error || "Could not start this session."
+                      : handoff.summary || "Working in a focused session."}
+                </span>
+              </span>
+              {handoff.sessionId ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenHomeTaskSession?.(handoff.sessionId!, handoff.title)}
+                >
+                  Open session
+                </button>
+              ) : handoff.status === "starting" ? (
+                <DotSpinner />
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
       {browserApprovalCards}
       <AgentThinking
         visible={
-          workingSessionIds.has(selectedHermesSessionId) && hermesTurns.at(-1)?.role === "user"
+          Boolean(transcriptSessionId) &&
+          workingSessionIds.has(transcriptSessionId) &&
+          hermesTurns.at(-1)?.role === "user"
         }
       />
     </div>
@@ -11847,9 +12022,10 @@ export function AgentWorkspace({
   return (
     <section
       className="agent-workspace"
-      aria-label="Session"
+      aria-label={homeMode ? "Home" : "Session"}
       data-artifact-panel={artifactPanel ? "open" : undefined}
       data-hero={heroMode ? "true" : undefined}
+      data-home={homeMode ? "true" : undefined}
     >
       {/* Feature 11: the Agent activity drawer and its toggle. One top-level
           surface so it shows every session's live activity, not
@@ -11895,7 +12071,20 @@ export function AgentWorkspace({
           />
         }
       />
-      {!heroMode && !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
+      {homeMode ? (
+        <header className="agent-home-bar">
+          <span className="agent-home-avatar" aria-hidden>
+            <JuneMark />
+          </span>
+          <span className="agent-home-identity">
+            <strong>June</strong>
+            <span>Your personal assistant</span>
+          </span>
+          <span className="agent-home-presence">
+            <span aria-hidden /> Here with you
+          </span>
+        </header>
+      ) : !heroMode && !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
           origin={origin}
           artifactCount={!newSessionMode ? surfacedArtifacts.length : 0}

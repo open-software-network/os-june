@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
-import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { HERO_GREETINGS, resetAgentSessionContinuity } from "../components/agent/AgentWorkspace";
 import {
   dispatchProfileDataChanged,
   resetActiveHermesProfileForTests,
@@ -15,6 +15,8 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
+import { JUNE_HOME_CONTEXT_OPEN } from "../lib/june-home";
+import { hermesActivityStore } from "../lib/hermes-activity-store";
 import type {
   AccountStatus,
   BootstrapResponse,
@@ -335,6 +337,12 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.removeItem("june:home:session-ids:v1");
+    window.localStorage.removeItem("june:home:check-ins:v1");
+    resetAgentSessionContinuity();
+    for (const sessionId of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
+      hermesActivityStore.clearSession(sessionId);
+    }
     resetActiveHermesProfileForTests();
     setActiveHermesProfileName("default");
     const first = note();
@@ -472,6 +480,40 @@ describe("App shortcuts", () => {
     }
   });
 
+  it("launches in Home and keeps its first message out of focused sessions", async () => {
+    const user = userEvent.setup();
+    const connection = { port: 61234, wsUrl: "ws://127.0.0.1:61234" };
+    mocks.hermesBridgeStatus.mockResolvedValue({ running: true, connection });
+    mocks.startHermesBridge.mockResolvedValue({ running: true, connection });
+
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Help me plan the afternoon");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "session.create",
+        expect.objectContaining({ title: "Home" }),
+      ),
+    );
+    await waitFor(() => {
+      const promptCall = mocks.gatewayRequest.mock.calls.find(
+        ([method]) => method === "prompt.submit",
+      );
+      expect(promptCall?.[1]?.text).toContain(JUNE_HOME_CONTEXT_OPEN);
+      expect(promptCall?.[1]?.text).toContain("Help me plan the afternoon");
+    });
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem("june:home:session-ids:v1") ?? "{}")).toEqual({
+        default: "session-2",
+      }),
+    );
+    expect(screen.getAllByRole("button", { name: "Home" })).toHaveLength(1);
+  });
+
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {
     const user = userEvent.setup();
 
@@ -607,7 +649,7 @@ describe("App shortcuts", () => {
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
     await user.type(composer, "Summarize my notes");
-    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
     expect(
       screen.getAllByText("Your starter credits are used up. Upgrade to keep using June.").length,
     ).toBeGreaterThan(0);
@@ -810,7 +852,7 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+      expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
 
       window.dispatchEvent(
         new CustomEvent(AGENT_NEW_SESSION_EVENT, {
@@ -866,16 +908,12 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+      expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
 
       act(() => {
         window.dispatchEvent(
-          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
-            detail: {
-              sessions: [],
-              selectedSessionId: "session-1",
-              workingSessionIds: [],
-            },
+          new CustomEvent(AGENT_OPEN_EVENT, {
+            detail: { session: { id: "session-1" } },
           }),
         );
       });
@@ -922,7 +960,7 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+      expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
 
       const firstSession = {
         id: "session-1",
@@ -939,6 +977,9 @@ describe("App shortcuts", () => {
               workingSessionIds: [],
             },
           }),
+        );
+        window.dispatchEvent(
+          new CustomEvent(AGENT_OPEN_EVENT, { detail: { session: firstSession } }),
         );
       });
 
@@ -1024,7 +1065,7 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(screen.queryByRole("tab", { name: "New note" })).not.toBeInTheDocument(),
     );
-    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute("data-active", "true");
+    expect(screen.getByRole("tab", { name: "Home" })).toHaveAttribute("data-active", "true");
   });
 
   it("closes the active tab from the native close-tab menu event", async () => {
@@ -1053,7 +1094,7 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(screen.queryByRole("tab", { name: "New note" })).not.toBeInTheDocument(),
     );
-    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute("data-active", "true");
+    expect(screen.getByRole("tab", { name: "Home" })).toHaveAttribute("data-active", "true");
     expect(closeTabListenerCount()).toBe(1);
   });
 
@@ -1500,8 +1541,8 @@ describe("App shortcuts", () => {
     await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
-    // Clearing the gate lands on a fresh agent session, not a new note.
-    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+    // Clearing the gate lands in the persistent June conversation, not a new note.
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
@@ -1556,7 +1597,7 @@ describe("App shortcuts", () => {
       subscription: { subscribed: true, status: "active" },
     });
 
-    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
   });
 
   it("bypasses account gates in dev when account status is unavailable", async () => {
@@ -1564,7 +1605,7 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
     expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
   });

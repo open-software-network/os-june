@@ -306,6 +306,10 @@ input:focus-visible,
   opacity: 1;
 }
 
+.agent-workspace[data-home="true"]::before {
+  opacity: 0.42;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .agent-workspace::before,
   .agent-workspace::after {
@@ -316,7 +320,8 @@ input:focus-visible,
 /* Agent view: stop the card body from scrolling (the breadcrumb would scroll
  * with it) and give the grid row a definite height so .agent-workspace fills
  * the card exactly. Scoped so every other view keeps the shared scroller. */
-.main-panel-body[data-active-view="agent"] {
+.main-panel-body[data-active-view="agent"],
+.main-panel-body[data-active-view="home"] {
   overflow: hidden;
   padding-bottom: 0;
 }
@@ -326,7 +331,8 @@ input:focus-visible,
   padding-bottom: 0;
 }
 
-.main-panel-body[data-active-view="agent"] .workspace {
+.main-panel-body[data-active-view="agent"] .workspace,
+.main-panel-body[data-active-view="home"] .workspace {
   grid-template-rows: minmax(0, 1fr);
   /* The column must be pinned like the row: an auto track can't shrink below
    * the breadcrumb bar's nowrap min-content, so a narrow card would lay the
@@ -346,7 +352,11 @@ input:focus-visible,
   .main-panel-body[data-active-view="agent"] {
     scroll-timeline: none;
   }
-  .main-panel-body[data-active-view="agent"] .agent-scroll {
+  .main-panel-body[data-active-view="home"] {
+    scroll-timeline: none;
+  }
+  .main-panel-body[data-active-view="agent"] .agent-scroll,
+  .main-panel-body[data-active-view="home"] .agent-scroll {
     scroll-timeline: --main-panel-scroll block;
   }
   /* The card-level bottom veil cannot paint beneath the composer — the
@@ -357,7 +367,8 @@ input:focus-visible,
    * it stuck on). The dissolve hangs off the fixed composer instead
    * (.agent-composer::before), inside the workspace context where the
    * composer wins. */
-  .main-panel:has(.main-panel-body[data-active-view="agent"])::after {
+  .main-panel:has(.main-panel-body[data-active-view="agent"])::after,
+  .main-panel:has(.main-panel-body[data-active-view="home"])::after {
     animation: none;
   }
   .main-panel-body[data-note-detail-scroller="true"] {
@@ -2242,6 +2253,139 @@ input:focus-visible,
   color: var(--foreground);
   font-size: var(--fs-lg);
   line-height: 1.55;
+}
+
+/* Home is a relationship thread, so the transcript borrows the compact,
+ * asymmetric rhythm of a personal message conversation while preserving the
+ * richer session renderer for tools, files, and approvals. */
+.agent-timeline[data-home="true"] {
+  gap: var(--sp-6);
+  padding-top: var(--sp-8);
+}
+
+.agent-timeline[data-home="true"] .agent-assistant-turn,
+.agent-timeline[data-home="true"] .agent-user-turn {
+  margin-block: 0;
+}
+
+.agent-timeline[data-home="true"] .agent-assistant-turn-body {
+  width: fit-content;
+  max-width: 74%;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-xl) var(--r-xl) var(--r-xl) var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 72%, var(--card));
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.agent-timeline[data-home="true"] .agent-user-turn-body {
+  max-width: 74%;
+  border-radius: var(--r-xl) var(--r-xl) var(--r-sm) var(--r-xl);
+  background: var(--brand-tint);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.agent-timeline[data-home="true"] .agent-turn-actions {
+  display: none;
+}
+
+.agent-home-nudges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.agent-home-nudges button {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklch, var(--card) 82%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.agent-home-nudges button:hover {
+  border-color: var(--brand-line-strong);
+  background: var(--brand-tint);
+  color: var(--foreground);
+}
+
+.agent-home-task-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.agent-home-task-card {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-xl);
+  background: color-mix(in oklch, var(--card) 90%, var(--brand-tint));
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-home-task-card[data-status="failed"] {
+  border-color: color-mix(in oklch, var(--destructive) 32%, var(--border));
+}
+
+.agent-home-task-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-md);
+  background: var(--brand-tint);
+  color: var(--brand);
+}
+
+.agent-home-task-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.agent-home-task-copy strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-home-task-copy > span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-home-task-card > button {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.agent-home-task-card > button:hover {
+  background: var(--brand-tint-strong);
 }
 
 .agent-user-attachments {
@@ -8953,6 +9097,15 @@ button.agent-user-attachment:hover {
   width: 18px;
   height: 18px;
   color: var(--muted-foreground);
+}
+
+.sidebar-home-mark {
+  color: var(--brand);
+}
+
+.sidebar-home-mark svg {
+  width: 14px;
+  height: 17px;
 }
 
 .sidebar-nav-label {
@@ -18704,6 +18857,72 @@ button.memory-project:hover {
   background: color-mix(in oklch, var(--card) 78%, transparent);
   backdrop-filter: saturate(140%) blur(14px);
   -webkit-backdrop-filter: saturate(140%) blur(14px);
+}
+
+.agent-home-bar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--detail-bar-h);
+  margin: 0 calc(-1 * var(--sp-8));
+  padding: var(--sp-2) var(--sp-8);
+  border-bottom: 1px solid var(--detail-bar-border);
+  background: color-mix(in oklch, var(--card) 78%, transparent);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+  backdrop-filter: saturate(140%) blur(14px);
+}
+
+.agent-home-avatar {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  place-items: center;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--brand-tint);
+  color: var(--brand);
+}
+
+.agent-home-avatar svg {
+  width: 18px;
+  height: 21px;
+}
+
+.agent-home-identity {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.agent-home-identity strong {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.agent-home-identity > span {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-home-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+}
+
+.agent-home-presence > span {
+  width: var(--sp-2);
+  height: var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--success);
 }
 
 .detail-breadcrumb {

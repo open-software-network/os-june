@@ -73,6 +73,7 @@ import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
 import { Spinner } from "../components/ui/Spinner";
+import { readJuneHomeSessionId, writeJuneHomeSessionId } from "../lib/june-home";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -372,6 +373,11 @@ function tabMeta(
   settingsSectionLabel?: string,
 ): { title: string; icon: ReactNode } {
   switch (nav.view) {
+    case "home":
+      return {
+        title: "Home",
+        icon: <JuneMark />,
+      };
     case "meetings": {
       const note = nav.noteId ? notes.find((n) => n.id === nav.noteId) : undefined;
       return {
@@ -442,22 +448,21 @@ export function App() {
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">("none");
   const [bootstrapped, setBootstrapped] = useState(false);
-  // macOS launches on a fresh agent session. The Windows installer does not
+  // macOS launches into the persistent June relationship. The Windows installer does not
   // bundle Hermes yet, so Windows starts on meeting notes instead of promising
   // a turnkey agent runtime.
   const [activeView, setActiveView] = useState<SidebarView>(() => {
     if (!isMacLikePlatform()) return "notes";
-    markAgentNewSessionPending();
-    return "agent";
+    return "home";
   });
   const activeViewRef = useRef<SidebarView>(activeView);
   activeViewRef.current = activeView;
   // Browser-style tabs. Each tab is a saved navigation snapshot; the active tab
   // mirrors live navigation (so a single tab behaves exactly like before),
   // while switching or opening a tab restores its snapshot. The first tab
-  // matches the launch view (agent hero on mac, notes elsewhere).
+  // matches the launch view (Home on mac, notes elsewhere).
   const [tabs, setTabs] = useState<Tab[]>(() => [
-    { id: makeTabId(), nav: { view: isMacLikePlatform() ? "agent" : "notes" } },
+    { id: makeTabId(), nav: { view: isMacLikePlatform() ? "home" : "notes" } },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0]!.id);
   const tabsRef = useRef(tabs);
@@ -470,6 +475,17 @@ export function App() {
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [homeSessionRevision, setHomeSessionRevision] = useState(0);
+  const homeSessionId = useMemo(
+    () => readJuneHomeSessionId(activeHermesProfileName),
+    [activeHermesProfileName, homeSessionRevision],
+  );
+  const homeSessionIdRef = useRef(homeSessionId);
+  homeSessionIdRef.current = homeSessionId;
+  const focusedAgentSessions = useMemo(
+    () => agentSessions.filter((session) => session.id !== homeSessionId),
+    [agentSessions, homeSessionId],
+  );
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
   const activeAgentSessionIdRef = useRef(activeAgentSessionId);
   activeAgentSessionIdRef.current = activeAgentSessionId;
@@ -478,6 +494,29 @@ export function App() {
     setActiveAgentSessionId(session?.id);
     setActiveAgentSessionSeed(session);
   }, []);
+  const rememberHomeSession = useCallback(
+    (sessionId: string) => {
+      writeJuneHomeSessionId(activeHermesProfileName, sessionId);
+      setHomeSessionRevision((revision) => revision + 1);
+    },
+    [activeHermesProfileName],
+  );
+  useEffect(() => {
+    function openFocusedSessionFromHome(event: Event) {
+      if (activeViewRef.current !== "home") return;
+      const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
+      markAgentNewSessionPending(detail?.prompt, {
+        category: detail?.category,
+        noteRef: detail?.noteRef,
+      });
+      pendingSessionProjectRef.current = null;
+      setAgentOrigin(undefined);
+      setActiveAgentSession(undefined);
+      setActiveView("agent");
+    }
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, openFocusedSessionFromHome);
+    return () => window.removeEventListener(AGENT_NEW_SESSION_EVENT, openFocusedSessionFromHome);
+  }, [setActiveAgentSession]);
   const [agentWorkingSessionIds, setAgentWorkingSessionIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -1088,7 +1127,8 @@ export function App() {
         // openable from the native menu bar's recent-session shortcuts
         // (JUN-203 review).
         sessions: agentMenuBarSessionsRef.current.filter(
-          (session) => !completedSessionsRef.current[session.id],
+          (session) =>
+            session.id !== homeSessionIdRef.current && !completedSessionsRef.current[session.id],
         ),
         workingSessionIds: agentMenuBarWorkingSessionIdsRef.current,
         waitingSessionIds: agentMenuBarWaitingSessionIdsRef.current,
@@ -1098,6 +1138,15 @@ export function App() {
       }),
     );
   }, []);
+  // Home is a relationship surface, not a focused-session shortcut. A newly
+  // created Home session can reach the global session event before its id is
+  // persisted, so prune and republish when that id becomes known.
+  useEffect(() => {
+    agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
+      (session) => session.id !== homeSessionId,
+    );
+    publishAgentMenuBarState();
+  }, [homeSessionId, publishAgentMenuBarState]);
   // Keep the menu bar in step with completion changes: marking a session
   // complete (or active again) must add/remove it from the native shortcuts,
   // not just the in-app lists.
@@ -1437,38 +1486,39 @@ export function App() {
     armNewChatLive();
   }
 
-  const closeTab = useCallback(
-    (id: string) => {
-      const currentTabs = tabsRef.current;
-      const currentActiveTabId = activeTabIdRef.current;
+  const closeTab = useCallback((id: string) => {
+    const currentTabs = tabsRef.current;
+    const currentActiveTabId = activeTabIdRef.current;
 
-      if (currentTabs.length <= 1) {
-        // Never leave the strip empty — reset the sole tab to a fresh chat.
-        const fresh = { id: makeTabId(), nav: defaultNav() };
-        tabsRef.current = [fresh];
-        activeTabIdRef.current = fresh.id;
-        setTabs([fresh]);
-        setActiveTabId(fresh.id);
-        armNewChatLive();
-        return;
+    if (currentTabs.length <= 1) {
+      // Never leave the strip empty. Home is the stable landing place on
+      // macOS; Windows stays on notes until it bundles the agent runtime.
+      const fresh = {
+        id: makeTabId(),
+        nav: { view: isMacLikePlatform() ? "home" : "notes" } satisfies TabNav,
+      };
+      tabsRef.current = [fresh];
+      activeTabIdRef.current = fresh.id;
+      setTabs([fresh]);
+      setActiveTabId(fresh.id);
+      applyNavRef.current(fresh.nav);
+      return;
+    }
+    const index = currentTabs.findIndex((tab) => tab.id === id);
+    if (index < 0) return;
+    const next = currentTabs.filter((tab) => tab.id !== id);
+    tabsRef.current = next;
+    setTabs(next);
+    if (id === currentActiveTabId) {
+      // Focus the right neighbor, falling back to the left — browser behavior.
+      const neighbor = next[index] ?? next[index - 1];
+      if (neighbor) {
+        activeTabIdRef.current = neighbor.id;
+        setActiveTabId(neighbor.id);
+        applyNavRef.current(neighbor.nav);
       }
-      const index = currentTabs.findIndex((tab) => tab.id === id);
-      if (index < 0) return;
-      const next = currentTabs.filter((tab) => tab.id !== id);
-      tabsRef.current = next;
-      setTabs(next);
-      if (id === currentActiveTabId) {
-        // Focus the right neighbor, falling back to the left — browser behavior.
-        const neighbor = next[index] ?? next[index - 1];
-        if (neighbor) {
-          activeTabIdRef.current = neighbor.id;
-          setActiveTabId(neighbor.id);
-          applyNavRef.current(neighbor.nav);
-        }
-      }
-    },
-    [armNewChatLive],
-  );
+    }
+  }, []);
 
   // Keep only the given tab, focusing it. From the tab right-click menu.
   function closeOtherTabs(id: string) {
@@ -4173,6 +4223,7 @@ export function App() {
       <Sidebar
         notes={state.notes}
         activeView={activeView}
+        homeSessionId={homeSessionId}
         account={account}
         settingsTab={settingsTab}
         onSettingsTabChange={changeSettingsTab}
@@ -4418,10 +4469,44 @@ export function App() {
                     setActiveView("agent");
                   }}
                 />
+              ) : activeView === "home" ? (
+                <AgentWorkspace
+                  key={`home:${activeHermesProfileName}`}
+                  homeMode
+                  initialSessionId={homeSessionId}
+                  onHomeSessionCreated={rememberHomeSession}
+                  onOpenHomeTaskSession={(sessionId, title) => {
+                    const session = agentSessions.find((item) => item.id === sessionId) ?? {
+                      id: sessionId,
+                      title,
+                    };
+                    setAgentOrigin(undefined);
+                    setActiveAgentSession(session);
+                    setActiveView("agent");
+                  }}
+                  creditActionsDisabledReason={
+                    fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
+                  }
+                  renderFundingNotice={
+                    fundingRequired
+                      ? (textFundingContext) => (
+                          <FundingNotice
+                            account={fundingAccount}
+                            onRefresh={refreshFundingAccount}
+                            textFundingContext={textFundingContext}
+                          />
+                        )
+                      : undefined
+                  }
+                  fundingTier={fundingTierOf(fundingAccount)}
+                  topUpLabel={topUpLabel}
+                  onTopUp={handleTopUp}
+                />
               ) : activeView === "agent" ? (
                 // The origin crumbs render inside the workspace's own sticky
                 // session bar, so they persist while the chat scrolls beneath.
                 <AgentWorkspace
+                  key="agent"
                   initialSession={activeAgentSessionSeed}
                   initialSessionId={activeAgentSessionId}
                   onSessionSelected={setActiveAgentSession}
@@ -4535,7 +4620,7 @@ export function App() {
               ) : activeView === "agent-sessions" ? (
                 <AgentSessionsList
                   ref={agentSessionsListRef}
-                  sessions={agentSessions}
+                  sessions={focusedAgentSessions}
                   folders={state.folders}
                   sessionFolderIds={sessionFolders}
                   completedSessionIds={completedSessions}
@@ -4585,7 +4670,7 @@ export function App() {
                 <FoldersWorkspace
                   folders={state.folders}
                   notes={state.notes}
-                  sessions={agentSessions}
+                  sessions={focusedAgentSessions}
                   sessionFolderIds={sessionFolders}
                   selectedFolderId={state.selectedFolderId}
                   folderBackTarget={

@@ -197,6 +197,21 @@ commit and SHA-verified. June drives it as the chat/agent brain but presents
 as June, never as Hermes (an injected `SOUL.md` asserts the identity).
 _Avoid_: the model, the LLM, the agent (unqualified).
 
+**Home**:
+The persistent, profile-scoped conversation where the user talks to June as a
+personal assistant. Home holds relationship context, quick answers, nudges,
+and proactive check-ins; it is not a disposable new-session screen and its
+stored session stays out of focused-session lists.
+_Avoid_: new session, home session in user-facing copy, dashboard.
+
+**Focused session**:
+A durable agent session for a concrete piece of work. June may start one from
+Home through the built-in `june_home.start_task` handoff, then expose it in the
+sidebar without navigating away from Home. It uses the Home composer's captured
+model choice at the handoff boundary and otherwise follows normal session
+runtime rules.
+_Avoid_: child chat, background chat, spawned conversation.
+
 **Bridge**:
 The Rust layer (`src-tauri/src/hermes_bridge.rs`) that spawns, sandboxes, and
 proxies to Hermes child processes and exposes them as Tauri commands.
