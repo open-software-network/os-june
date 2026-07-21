@@ -1,3 +1,4 @@
+use crate::domain::types::{AppError, NoteDto, RecordingSessionDto};
 use serde::Serialize;
 use std::{
     collections::BTreeSet,
@@ -16,37 +17,210 @@ const MEETING_START_REQUEST_TTL_MS: u64 = 30_000;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingMeetingStartRequest {
+    request_id: String,
+    note_id: String,
     requested_at_ms: u64,
     expired: bool,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum MeetingStartRecordingOutcome {
+    Started {
+        note: Box<NoteDto>,
+        recording: Box<RecordingSessionDto>,
+    },
+    Failed {
+        error: AppError,
+    },
+}
+
+#[derive(Debug)]
+enum MeetingStartRequestPhase {
+    Queued,
+    Starting,
+    Finished(Box<MeetingStartRecordingOutcome>),
+}
+
+#[derive(Debug)]
+struct MeetingStartRequest {
+    request_id: String,
+    note_id: String,
+    requested_at_ms: u64,
+    phase: MeetingStartRequestPhase,
+}
+
+#[derive(Debug, Default)]
+struct MeetingStartRequestMailbox {
+    next_request_id: u64,
+    pending: Option<MeetingStartRequest>,
+}
+
 #[derive(Debug, Default)]
 pub struct MeetingStartRequestState {
-    pending_requested_at_ms: Mutex<Option<u64>>,
+    mailbox: Mutex<MeetingStartRequestMailbox>,
+    start_lock: tokio::sync::Mutex<()>,
 }
 
 impl MeetingStartRequestState {
-    fn queue_at(&self, requested_at_ms: u64) -> Result<(), String> {
-        let mut pending = self
-            .pending_requested_at_ms
+    fn queue_at(&self, requested_at_ms: u64) -> Result<String, String> {
+        let mut mailbox = self
+            .mailbox
             .lock()
             .map_err(|_| "meeting start request state is unavailable".to_string())?;
-        *pending = Some(requested_at_ms);
-        Ok(())
+        if let Some(pending) = mailbox.pending.as_ref() {
+            if matches!(pending.phase, MeetingStartRequestPhase::Starting) {
+                return Ok(pending.request_id.clone());
+            }
+        }
+
+        // Every queued click gets a new generation, even though the one-slot
+        // mailbox still replaces the older intent. An acknowledgement based
+        // on an expired snapshot can therefore never clear a newer click.
+        mailbox.next_request_id = mailbox.next_request_id.saturating_add(1).max(1);
+        let request_id = mailbox.next_request_id.to_string();
+        mailbox.pending = Some(MeetingStartRequest {
+            request_id: request_id.clone(),
+            note_id: uuid::Uuid::new_v4().to_string(),
+            requested_at_ms,
+            phase: MeetingStartRequestPhase::Queued,
+        });
+        Ok(request_id)
     }
 
-    fn take_at(&self, now_ms: u64) -> Result<Option<PendingMeetingStartRequest>, String> {
-        let requested_at_ms = self
-            .pending_requested_at_ms
+    fn peek_at(&self, now_ms: u64) -> Result<Option<PendingMeetingStartRequest>, String> {
+        let mailbox = self
+            .mailbox
             .lock()
-            .map_err(|_| "meeting start request state is unavailable".to_string())?
-            .take();
-        Ok(
-            requested_at_ms.map(|requested_at_ms| PendingMeetingStartRequest {
-                requested_at_ms,
-                expired: now_ms.saturating_sub(requested_at_ms) > MEETING_START_REQUEST_TTL_MS,
-            }),
-        )
+            .map_err(|_| "meeting start request state is unavailable".to_string())?;
+        Ok(mailbox
+            .pending
+            .as_ref()
+            .map(|pending| PendingMeetingStartRequest {
+                request_id: pending.request_id.clone(),
+                note_id: pending.note_id.clone(),
+                requested_at_ms: pending.requested_at_ms,
+                expired: matches!(pending.phase, MeetingStartRequestPhase::Queued)
+                    && now_ms.saturating_sub(pending.requested_at_ms)
+                        > MEETING_START_REQUEST_TTL_MS,
+            }))
+    }
+
+    fn acknowledge(&self, request_id: &str) -> Result<bool, String> {
+        let mut mailbox = self
+            .mailbox
+            .lock()
+            .map_err(|_| "meeting start request state is unavailable".to_string())?;
+        let matches = mailbox.pending.as_ref().is_some_and(|pending| {
+            pending.request_id == request_id
+                && !matches!(pending.phase, MeetingStartRequestPhase::Starting)
+        });
+        if matches {
+            mailbox.pending = None;
+        }
+        Ok(matches)
+    }
+
+    pub async fn lock_start(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.start_lock.lock().await
+    }
+
+    pub fn begin_start_now(&self, request_id: &str) -> Result<String, AppError> {
+        let now_ms = wall_clock_millis()
+            .map_err(|message| AppError::new("meeting_start_unavailable", message))?;
+        self.begin_start(request_id, now_ms)
+    }
+
+    pub fn begin_start(&self, request_id: &str, now_ms: u64) -> Result<String, AppError> {
+        let mut mailbox = self.mailbox.lock().map_err(|_| {
+            AppError::new(
+                "meeting_start_unavailable",
+                "The meeting start request is unavailable.",
+            )
+        })?;
+        let pending = mailbox.pending.as_mut().ok_or_else(|| {
+            AppError::new(
+                "meeting_start_not_found",
+                "The meeting start request was not found.",
+            )
+        })?;
+        if pending.request_id != request_id {
+            return Err(AppError::new(
+                "meeting_start_not_found",
+                "The meeting start request is no longer current.",
+            ));
+        }
+        match &pending.phase {
+            MeetingStartRequestPhase::Queued => {
+                if now_ms.saturating_sub(pending.requested_at_ms) > MEETING_START_REQUEST_TTL_MS {
+                    return Err(AppError::new(
+                        "meeting_start_expired",
+                        "The meeting start request expired before recording began.",
+                    ));
+                }
+                pending.phase = MeetingStartRequestPhase::Starting;
+                Ok(pending.note_id.clone())
+            }
+            MeetingStartRequestPhase::Starting => Err(AppError::new(
+                "meeting_start_in_progress",
+                "The meeting recording is already starting.",
+            )),
+            MeetingStartRequestPhase::Finished(_) => Err(AppError::new(
+                "meeting_start_already_finished",
+                "The meeting start request already finished.",
+            )),
+        }
+    }
+
+    pub fn finished_outcome(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<MeetingStartRecordingOutcome>, AppError> {
+        let mailbox = self.mailbox.lock().map_err(|_| {
+            AppError::new(
+                "meeting_start_unavailable",
+                "The meeting start request is unavailable.",
+            )
+        })?;
+        let Some(pending) = mailbox
+            .pending
+            .as_ref()
+            .filter(|pending| pending.request_id == request_id)
+        else {
+            return Err(AppError::new(
+                "meeting_start_not_found",
+                "The meeting start request was not found.",
+            ));
+        };
+        Ok(match &pending.phase {
+            MeetingStartRequestPhase::Finished(outcome) => Some((**outcome).clone()),
+            _ => None,
+        })
+    }
+
+    pub fn finish_start(
+        &self,
+        request_id: &str,
+        outcome: MeetingStartRecordingOutcome,
+    ) -> Result<(), AppError> {
+        let mut mailbox = self.mailbox.lock().map_err(|_| {
+            AppError::new(
+                "meeting_start_unavailable",
+                "The meeting start request is unavailable.",
+            )
+        })?;
+        let Some(pending) = mailbox
+            .pending
+            .as_mut()
+            .filter(|pending| pending.request_id == request_id)
+        else {
+            return Err(AppError::new(
+                "meeting_start_not_found",
+                "The meeting start request was not found.",
+            ));
+        };
+        pending.phase = MeetingStartRequestPhase::Finished(Box::new(outcome));
+        Ok(())
     }
 }
 
@@ -60,7 +234,7 @@ fn wall_clock_millis() -> Result<u64, String> {
 
 /// Stores the HUD action before emitting the wake event. Tauri events are not
 /// buffered while a webview listener is registering, so the main window also
-/// drains this one-slot mailbox immediately after registration succeeds.
+/// reads this one-slot mailbox after its listener and app bootstrap are ready.
 #[tauri::command]
 pub fn queue_meeting_start_request(
     app: AppHandle,
@@ -72,10 +246,18 @@ pub fn queue_meeting_start_request(
 }
 
 #[tauri::command]
-pub fn take_pending_meeting_start_request(
+pub fn pending_meeting_start_request(
     state: State<'_, MeetingStartRequestState>,
 ) -> Result<Option<PendingMeetingStartRequest>, String> {
-    state.take_at(wall_clock_millis()?)
+    state.peek_at(wall_clock_millis()?)
+}
+
+#[tauri::command]
+pub fn acknowledge_meeting_start_request(
+    state: State<'_, MeetingStartRequestState>,
+    request_id: String,
+) -> Result<bool, String> {
+    state.acknowledge(&request_id)
 }
 
 struct AllowedMicApp {
@@ -699,29 +881,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pending_meeting_start_request_is_taken_exactly_once() {
+    fn pending_meeting_start_request_is_retained_until_matching_ack() {
         let state = MeetingStartRequestState::default();
-        state.queue_at(1_000).expect("queue request");
+        let request_id = state.queue_at(1_000).expect("queue request");
+        let note_id = state
+            .peek_at(1_100)
+            .expect("peek queued request")
+            .expect("queued request")
+            .note_id;
+        let expected = Some(PendingMeetingStartRequest {
+            request_id: request_id.clone(),
+            note_id,
+            requested_at_ms: 1_000,
+            expired: false,
+        });
 
-        assert_eq!(
-            state.take_at(1_100).expect("take request"),
-            Some(PendingMeetingStartRequest {
-                requested_at_ms: 1_000,
-                expired: false,
-            })
-        );
-        assert_eq!(state.take_at(1_100).expect("take empty request"), None);
+        assert_eq!(state.peek_at(1_100).expect("peek request"), expected);
+        assert_eq!(state.peek_at(1_100).expect("peek again"), expected);
+        assert!(!state.acknowledge("stale").expect("reject stale ack"));
+        assert_eq!(state.peek_at(1_100).expect("peek retained"), expected);
+        assert!(state.acknowledge(&request_id).expect("ack request"));
+        assert_eq!(state.peek_at(1_100).expect("peek empty request"), None);
     }
 
     #[test]
-    fn pending_meeting_start_requests_coalesce_to_the_latest_action() {
+    fn newer_queued_action_replaces_the_request_generation() {
         let state = MeetingStartRequestState::default();
-        state.queue_at(1_000).expect("queue first request");
-        state.queue_at(2_000).expect("queue second request");
+        let first_request_id = state.queue_at(1_000).expect("queue first request");
+        let second_request_id = state.queue_at(2_000).expect("queue second request");
+        let note_id = state
+            .peek_at(2_100)
+            .expect("peek queued request")
+            .expect("queued request")
+            .note_id;
 
+        assert_ne!(second_request_id, first_request_id);
         assert_eq!(
-            state.take_at(2_100).expect("take request"),
+            state.peek_at(2_100).expect("peek request"),
             Some(PendingMeetingStartRequest {
+                request_id: second_request_id,
+                note_id,
                 requested_at_ms: 2_000,
                 expired: false,
             })
@@ -731,16 +930,131 @@ mod tests {
     #[test]
     fn pending_meeting_start_request_expires_on_wall_clock_time() {
         let state = MeetingStartRequestState::default();
-        state.queue_at(1_000).expect("queue request");
+        let request_id = state.queue_at(1_000).expect("queue request");
+        let note_id = state
+            .peek_at(1_000)
+            .expect("peek queued request")
+            .expect("queued request")
+            .note_id;
 
         assert_eq!(
             state
-                .take_at(1_000 + MEETING_START_REQUEST_TTL_MS + 1)
-                .expect("take stale request"),
+                .peek_at(1_000 + MEETING_START_REQUEST_TTL_MS + 1)
+                .expect("peek stale request"),
             Some(PendingMeetingStartRequest {
+                request_id: request_id.clone(),
+                note_id,
                 requested_at_ms: 1_000,
                 expired: true,
             })
+        );
+        assert_eq!(
+            state
+                .peek_at(1_000 + MEETING_START_REQUEST_TTL_MS + 1)
+                .expect("peek retained stale request")
+                .as_ref()
+                .map(|request| request.request_id.as_str()),
+            Some(request_id.as_str())
+        );
+    }
+
+    #[test]
+    fn finished_meeting_start_outcome_is_replayed_without_restarting() {
+        let state = MeetingStartRequestState::default();
+        let request_id = state.queue_at(1_000).expect("queue request");
+        let note_id = state
+            .begin_start(&request_id, 1_100)
+            .expect("begin request");
+        assert!(!note_id.is_empty());
+        assert_eq!(
+            state
+                .begin_start(&request_id, 1_100)
+                .expect_err("starting request cannot begin twice")
+                .code,
+            "meeting_start_in_progress"
+        );
+
+        state
+            .finish_start(
+                &request_id,
+                MeetingStartRecordingOutcome::Failed {
+                    error: AppError::new("source_not_ready", "Microphone is not ready."),
+                },
+            )
+            .expect("finish request");
+        for _ in 0..2 {
+            let Some(MeetingStartRecordingOutcome::Failed { error }) =
+                state.finished_outcome(&request_id).expect("read outcome")
+            else {
+                panic!("expected cached failure");
+            };
+            assert_eq!(error.code, "source_not_ready");
+        }
+    }
+
+    #[test]
+    fn stale_ack_cannot_clear_a_newer_request() {
+        let state = MeetingStartRequestState::default();
+        let first_request_id = state.queue_at(1_000).expect("queue first request");
+        let second_request_id = state.queue_at(2_000).expect("queue second request");
+
+        assert_ne!(second_request_id, first_request_id);
+        assert!(!state
+            .acknowledge(&first_request_id)
+            .expect("reject stale ack"));
+        assert_eq!(
+            state
+                .peek_at(2_100)
+                .expect("peek second request")
+                .map(|request| request.request_id),
+            Some(second_request_id)
+        );
+    }
+
+    #[test]
+    fn acknowledgement_cannot_clear_a_request_while_native_start_is_running() {
+        let state = MeetingStartRequestState::default();
+        let request_id = state.queue_at(1_000).expect("queue request");
+        state
+            .begin_start(&request_id, 1_100)
+            .expect("begin request");
+
+        assert!(!state
+            .acknowledge(&request_id)
+            .expect("reject in-progress acknowledgement"));
+        assert_eq!(
+            state
+                .peek_at(1_200)
+                .expect("peek in-progress request")
+                .map(|request| request.request_id),
+            Some(request_id)
+        );
+    }
+
+    #[test]
+    fn starting_action_coalesces_but_finished_action_can_be_replaced() {
+        let state = MeetingStartRequestState::default();
+        let request_id = state.queue_at(1_000).expect("queue request");
+        state
+            .begin_start(&request_id, 1_100)
+            .expect("begin request");
+
+        assert_eq!(
+            state.queue_at(1_200).expect("coalesce starting request"),
+            request_id
+        );
+        state
+            .finish_start(
+                &request_id,
+                MeetingStartRecordingOutcome::Failed {
+                    error: AppError::new("source_not_ready", "Microphone is not ready."),
+                },
+            )
+            .expect("finish request");
+
+        assert_ne!(
+            state.queue_at(2_000).expect("replace finished request"),
+            request_id
         );
     }
 

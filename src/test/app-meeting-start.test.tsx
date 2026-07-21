@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
@@ -8,15 +9,18 @@ type TauriListener = (event: { payload: unknown }) => unknown;
 
 const mocks = vi.hoisted(() => ({
   listeners: new Map<string, TauriListener>(),
-  pendingMeetingStartRequest: undefined as { requestedAtMs: number; expired: boolean } | undefined,
+  pendingMeetingStartRequest: undefined as
+    | { requestId: string; noteId: string; requestedAtMs: number; expired: boolean }
+    | undefined,
   listen: vi.fn((event: string, listener: TauriListener) => {
     mocks.listeners.set(event, listener);
     return Promise.resolve(vi.fn());
   }),
-  takePendingMeetingStartRequest: vi.fn(async () => {
-    const request = mocks.pendingMeetingStartRequest;
+  readPendingMeetingStartRequest: vi.fn(async () => mocks.pendingMeetingStartRequest ?? null),
+  acknowledgeMeetingStartRequest: vi.fn(async (requestId: string) => {
+    if (mocks.pendingMeetingStartRequest?.requestId !== requestId) return false;
     mocks.pendingMeetingStartRequest = undefined;
-    return request ?? null;
+    return true;
   }),
   getCurrentWindow: vi.fn(),
   bootstrapApp: vi.fn(),
@@ -33,9 +37,11 @@ const mocks = vi.hoisted(() => ({
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
+  startMeetingRecording: vi.fn(),
   pauseRecording: vi.fn(),
   resumeRecording: vi.fn(),
   getRecordingStatus: vi.fn(),
+  setRecordingPresenceBounds: vi.fn(async () => undefined),
   finishRecording: vi.fn(),
   retryProcessing: vi.fn(),
   recoverRecording: vi.fn(),
@@ -114,6 +120,7 @@ vi.mock("../lib/tauri", () => ({
   pauseRecording: mocks.pauseRecording,
   resumeRecording: mocks.resumeRecording,
   getRecordingStatus: mocks.getRecordingStatus,
+  setRecordingPresenceBounds: mocks.setRecordingPresenceBounds,
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,
@@ -129,7 +136,9 @@ vi.mock("../lib/tauri", () => ({
   agentHudShow: mocks.agentHudShow,
   agentOpenReady: mocks.agentOpenReady,
   agentHudHide: mocks.agentHudHide,
-  takePendingMeetingStartRequest: mocks.takePendingMeetingStartRequest,
+  pendingMeetingStartRequest: mocks.readPendingMeetingStartRequest,
+  acknowledgeMeetingStartRequest: mocks.acknowledgeMeetingStartRequest,
+  startMeetingRecording: mocks.startMeetingRecording,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
@@ -209,6 +218,14 @@ describe("meeting start transcription event", () => {
     mocks.listeners.clear();
     mocks.pendingMeetingStartRequest = undefined;
     installDefaultListenMock();
+    mocks.readPendingMeetingStartRequest.mockImplementation(
+      async () => mocks.pendingMeetingStartRequest ?? null,
+    );
+    mocks.acknowledgeMeetingStartRequest.mockImplementation(async (requestId: string) => {
+      if (mocks.pendingMeetingStartRequest?.requestId !== requestId) return false;
+      mocks.pendingMeetingStartRequest = undefined;
+      return true;
+    });
 
     const first = note();
     const payload: BootstrapResponse = {
@@ -269,8 +286,13 @@ describe("meeting start transcription event", () => {
     }));
   });
 
-  async function fireMeetingStart() {
-    mocks.pendingMeetingStartRequest = { requestedAtMs: Date.now(), expired: false };
+  async function fireMeetingStart(expired = false) {
+    mocks.pendingMeetingStartRequest = {
+      requestId: "meeting-request-1",
+      noteId: "note-2",
+      requestedAtMs: Date.now(),
+      expired,
+    };
     await act(async () => {
       await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
         payload: undefined,
@@ -285,8 +307,11 @@ describe("meeting start transcription event", () => {
       preview: "",
       generatedContent: undefined,
     });
-    mocks.createNote.mockResolvedValue(fresh);
-    mocks.startRecording.mockResolvedValue(recording({ noteId: "note-2" }));
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: "note-2" }),
+    });
 
     render(<App />);
 
@@ -295,11 +320,70 @@ describe("meeting start transcription event", () => {
 
     await fireMeetingStart();
     await waitFor(() => {
-      expect(mocks.createNote).toHaveBeenCalledWith(undefined);
-      expect(mocks.startRecording).toHaveBeenCalledWith("note-2", "microphonePlusSystem");
+      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+        "meeting-request-1",
+        "microphonePlusSystem",
+      );
     });
+    expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
+  });
+
+  it("keeps calendar enrichment that arrives before native meeting startup resolves", async () => {
+    const staleNote = note({
+      id: "calendar-meeting-note",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    const enrichedNote = note({
+      ...staleNote,
+      title: "Roadmap sync",
+      calendarEvent: {
+        eventId: "calendar-event-1",
+        title: "Roadmap sync",
+        startAt: "2026-07-21T16:00:00Z",
+        endAt: "2026-07-21T16:30:00Z",
+        accountEmail: "calendar-owner@example.com",
+      },
+    });
+    const outcome = {
+      status: "started" as const,
+      note: staleNote,
+      recording: recording({ noteId: staleNote.id }),
+    };
+    const pendingStart = deferred<typeof outcome>();
+    mocks.startMeetingRecording.mockReturnValue(pendingStart.promise);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await waitFor(() =>
+      expect(mocks.listeners.has("note-calendar-context-updated-event")).toBe(true),
+    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+
+    mocks.pendingMeetingStartRequest = {
+      requestId: "calendar-meeting-request",
+      noteId: staleNote.id,
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({ payload: undefined });
+    });
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      await mocks.listeners.get("note-calendar-context-updated-event")?.({
+        payload: enrichedNote,
+      });
+      pendingStart.resolve(outcome);
+      await pendingStart.promise;
+    });
+
+    expect(await screen.findByLabelText("Note title")).toHaveValue("Roadmap sync");
+    expect(screen.getByText("calendar-owner@example.com")).toBeInTheDocument();
   });
 
   it("reopens the recording HUD to the note editor for the active recording", async () => {
@@ -309,8 +393,11 @@ describe("meeting start transcription event", () => {
       preview: "",
       generatedContent: undefined,
     });
-    mocks.createNote.mockResolvedValue(fresh);
-    mocks.startRecording.mockResolvedValue(recording({ noteId: "note-2" }));
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: "note-2" }),
+    });
     mocks.getNote.mockImplementation(async (id: string) => (id === "note-2" ? fresh : note()));
 
     render(<App />);
@@ -319,7 +406,7 @@ describe("meeting start transcription event", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     await fireMeetingStart();
-    await waitFor(() => expect(mocks.startRecording).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
     expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
 
     await act(async () => {
@@ -341,14 +428,17 @@ describe("meeting start transcription event", () => {
     });
     const bootstrap = deferred<BootstrapResponse>();
     mocks.bootstrapApp.mockReturnValue(bootstrap.promise);
-    mocks.createNote.mockResolvedValue(fresh);
-    mocks.startRecording.mockResolvedValue(recording({ noteId: fresh.id }));
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    });
 
     render(<App />);
 
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await fireMeetingStart();
-    expect(mocks.takePendingMeetingStartRequest).not.toHaveBeenCalled();
+    expect(mocks.readPendingMeetingStartRequest).not.toHaveBeenCalled();
     expect(mocks.createNote).not.toHaveBeenCalled();
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
@@ -363,10 +453,12 @@ describe("meeting start transcription event", () => {
     });
 
     await waitFor(() =>
-      expect(mocks.startRecording).toHaveBeenCalledWith(fresh.id, "microphonePlusSystem"),
+      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+        "meeting-request-1",
+        "microphonePlusSystem",
+      ),
     );
-    expect(mocks.createNote).toHaveBeenCalledOnce();
-    expect(mocks.startRecording).toHaveBeenCalledOnce();
+    expect(mocks.startMeetingRecording).toHaveBeenCalledOnce();
     expect(
       mocks.listen.mock.calls.filter(
         ([eventName]) => eventName === MEETING_START_TRANSCRIPTION_EVENT,
@@ -377,40 +469,112 @@ describe("meeting start transcription event", () => {
   it("explains when a queued meeting start expires before recording begins", async () => {
     const first = note();
     const bootstrap = deferred<BootstrapResponse>();
+    const mainWindow = mocks.getCurrentWindow();
     mocks.bootstrapApp.mockReturnValue(bootstrap.promise);
 
     render(<App />);
 
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
-    const queuedAt = Date.now();
-    const now = vi.spyOn(Date, "now").mockReturnValue(queuedAt);
-    const monotonicNow = vi.spyOn(performance, "now").mockReturnValue(1);
-    try {
-      await fireMeetingStart();
-      now.mockReturnValue(queuedAt + 30_001);
+    await fireMeetingStart(true);
 
-      await act(async () => {
-        bootstrap.resolve({
-          folders: [],
-          notes: [first],
-          activeRecoveries: [],
-          providerConfigured: true,
-        });
-        await bootstrap.promise;
+    await act(async () => {
+      bootstrap.resolve({
+        folders: [],
+        notes: [first],
+        activeRecoveries: [],
+        providerConfigured: true,
       });
+      await bootstrap.promise;
+    });
 
-      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(first.id));
-      expect(mocks.createNote).not.toHaveBeenCalled();
-      expect(mocks.startRecording).not.toHaveBeenCalled();
+    await waitFor(() =>
       expect(
         screen.getByText(
           "Recording did not start in time. Open meeting notes and select Record to try again.",
         ),
-      ).toBeInTheDocument();
-    } finally {
-      now.mockRestore();
-      monotonicNow.mockRestore();
-    }
+      ).toBeInTheDocument(),
+    );
+    expect(mocks.startMeetingRecording).not.toHaveBeenCalled();
+    expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
+    expect(mainWindow.show).toHaveBeenCalled();
+    expect(mainWindow.unminimize).toHaveBeenCalled();
+    expect(mainWindow.setFocus).toHaveBeenCalled();
+  });
+
+  it("reveals and focuses the main window when native meeting startup fails", async () => {
+    const first = note();
+    const mainWindow = mocks.getCurrentWindow();
+    mocks.listNotes.mockResolvedValue({ items: [first] });
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "failed",
+      error: {
+        code: "source_not_ready",
+        message: "Microphone is not ready.",
+      },
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(first.id));
+
+    await fireMeetingStart();
+
+    expect(await screen.findByText("Microphone is not ready.")).toBeInTheDocument();
+    expect(mainWindow.show).toHaveBeenCalled();
+    expect(mainWindow.unminimize).toHaveBeenCalled();
+    expect(mainWindow.setFocus).toHaveBeenCalled();
+  });
+
+  it("drains the newer generation when an expired request loses the acknowledgement race", async () => {
+    const expiredRequest = {
+      requestId: "expired-request",
+      noteId: "expired-note",
+      requestedAtMs: Date.now() - 60_000,
+      expired: true,
+    };
+    const newerRequest = {
+      requestId: "newer-request",
+      noteId: "newer-note",
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
+    const fresh = note({ id: newerRequest.noteId, title: "Newer meeting" });
+    mocks.pendingMeetingStartRequest = expiredRequest;
+    mocks.acknowledgeMeetingStartRequest.mockImplementation(async (requestId: string) => {
+      if (requestId === expiredRequest.requestId) {
+        mocks.pendingMeetingStartRequest = newerRequest;
+        return false;
+      }
+      if (mocks.pendingMeetingStartRequest?.requestId !== requestId) return false;
+      mocks.pendingMeetingStartRequest = undefined;
+      return true;
+    });
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    });
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith(expiredRequest.requestId),
+    );
+    await waitFor(
+      () =>
+        expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+          newerRequest.requestId,
+          "microphonePlusSystem",
+        ),
+      { timeout: 2_000 },
+    );
+    expect(mocks.startMeetingRecording).not.toHaveBeenCalledWith(
+      expiredRequest.requestId,
+      expect.anything(),
+    );
+    await waitFor(() =>
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith(newerRequest.requestId),
+    );
   });
 
   it("drains a native request queued before listener registration completes", async () => {
@@ -422,8 +586,11 @@ describe("meeting start transcription event", () => {
     });
     const cleanup = vi.fn();
     let finishMeetingRegistration: (() => void) | undefined;
-    mocks.createNote.mockResolvedValue(fresh);
-    mocks.startRecording.mockResolvedValue(recording({ noteId: fresh.id }));
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    });
     mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
       if (event !== MEETING_START_TRANSCRIPTION_EVENT) {
         mocks.listeners.set(event, listener);
@@ -436,23 +603,31 @@ describe("meeting start transcription event", () => {
         };
       });
     });
-    mocks.pendingMeetingStartRequest = { requestedAtMs: Date.now(), expired: false };
+    mocks.pendingMeetingStartRequest = {
+      requestId: "meeting-request-1",
+      noteId: fresh.id,
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
 
     render(<App />);
 
     await waitFor(() => expect(finishMeetingRegistration).toBeTypeOf("function"));
     expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(false);
-    expect(mocks.takePendingMeetingStartRequest).not.toHaveBeenCalled();
+    expect(mocks.readPendingMeetingStartRequest).not.toHaveBeenCalled();
 
     await act(async () => {
       finishMeetingRegistration?.();
     });
 
     await waitFor(() =>
-      expect(mocks.startRecording).toHaveBeenCalledWith(fresh.id, "microphonePlusSystem"),
+      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+        "meeting-request-1",
+        "microphonePlusSystem",
+      ),
     );
-    expect(mocks.takePendingMeetingStartRequest).toHaveBeenCalledOnce();
-    expect(mocks.startRecording).toHaveBeenCalledOnce();
+    expect(mocks.readPendingMeetingStartRequest).toHaveBeenCalledOnce();
+    expect(mocks.startMeetingRecording).toHaveBeenCalledOnce();
   });
 
   it("retries listener registration after a transient failure", async () => {
@@ -464,8 +639,11 @@ describe("meeting start transcription event", () => {
     });
     let meetingRegistrationAttempts = 0;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    mocks.createNote.mockResolvedValue(fresh);
-    mocks.startRecording.mockResolvedValue(recording({ noteId: fresh.id }));
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    });
     mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
       if (event === MEETING_START_TRANSCRIPTION_EVENT) {
         meetingRegistrationAttempts += 1;
@@ -489,14 +667,246 @@ describe("meeting start transcription event", () => {
     await fireMeetingStart();
 
     await waitFor(() =>
-      expect(mocks.startRecording).toHaveBeenCalledWith(fresh.id, "microphonePlusSystem"),
+      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+        "meeting-request-1",
+        "microphonePlusSystem",
+      ),
     );
-    expect(mocks.startRecording).toHaveBeenCalledOnce();
+    expect(mocks.startMeetingRecording).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(
       "Failed to register the meeting start listener; retrying.",
       expect.any(Error),
     );
     warn.mockRestore();
+  });
+
+  it("retains a request when the webview unmounts before the native read resolves", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    const request = {
+      requestId: "meeting-request-1",
+      noteId: fresh.id,
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
+    const firstRead = deferred<typeof request | null>();
+    let readCount = 0;
+    mocks.pendingMeetingStartRequest = request;
+    mocks.readPendingMeetingStartRequest.mockImplementation(async () => {
+      readCount += 1;
+      return readCount === 1 ? firstRead.promise : (mocks.pendingMeetingStartRequest ?? null);
+    });
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    });
+
+    const firstView = render(<App />);
+    await waitFor(() => expect(mocks.readPendingMeetingStartRequest).toHaveBeenCalledOnce());
+    firstView.unmount();
+    await act(async () => {
+      firstRead.resolve(request);
+      await firstRead.promise;
+    });
+
+    expect(mocks.startMeetingRecording).not.toHaveBeenCalled();
+    expect(mocks.acknowledgeMeetingStartRequest).not.toHaveBeenCalled();
+
+    render(<App />);
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith(request.requestId),
+    );
+  });
+
+  it("replays a native terminal result after reload before acknowledgement", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    const request = {
+      requestId: "meeting-request-1",
+      noteId: fresh.id,
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
+    const outcome = {
+      status: "started" as const,
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    };
+    const firstStart = deferred<typeof outcome>();
+    mocks.pendingMeetingStartRequest = request;
+    mocks.startMeetingRecording
+      .mockImplementationOnce(() => firstStart.promise)
+      .mockResolvedValue(outcome);
+
+    const firstView = render(<App />);
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+    firstView.unmount();
+    await act(async () => {
+      firstStart.resolve(outcome);
+      await firstStart.promise;
+    });
+
+    expect(mocks.acknowledgeMeetingStartRequest).not.toHaveBeenCalled();
+    expect(mocks.pendingMeetingStartRequest).toEqual(request);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith(request.requestId),
+    );
+    expect(mocks.playRecordingSound).toHaveBeenCalledTimes(1);
+  });
+
+  it("hydrates the active recording after reload while acknowledgement is in flight", async () => {
+    const first = note();
+    const fresh = note({
+      id: "note-2",
+      title: "Reloaded meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    const request = {
+      requestId: "meeting-request-1",
+      noteId: fresh.id,
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
+    const outcome = {
+      status: "started" as const,
+      note: fresh,
+      recording: recording({ id: "rec-reloaded", noteId: fresh.id }),
+    };
+    const activeRecording = {
+      sessionId: outcome.recording.id,
+      noteId: fresh.id,
+      sourceMode: "microphonePlusSystem" as const,
+      state: "recording" as const,
+      elapsedMs: 2_000,
+      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+      silenceWarning: false,
+      bytesWritten: 2_048,
+    };
+    const firstStart = deferred<typeof outcome>();
+    const acknowledgement = deferred<boolean>();
+    mocks.pendingMeetingStartRequest = request;
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === fresh.id ? fresh : first,
+    );
+    mocks.startMeetingRecording.mockReturnValue(firstStart.promise);
+    mocks.acknowledgeMeetingStartRequest.mockImplementationOnce(async (requestId: string) => {
+      expect(requestId).toBe(request.requestId);
+      mocks.pendingMeetingStartRequest = undefined;
+      return acknowledgement.promise;
+    });
+
+    const firstView = render(<App />);
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+    await act(async () => {
+      firstStart.resolve(outcome);
+      await firstStart.promise;
+    });
+    await waitFor(() => expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledOnce());
+    expect(mocks.pendingMeetingStartRequest).toBeUndefined();
+    firstView.unmount();
+    await act(async () => {
+      acknowledgement.resolve(true);
+      await acknowledgement.promise;
+    });
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [first, fresh],
+      activeRecoveries: [],
+      activeRecording,
+      providerConfigured: true,
+    });
+    mocks.getRecordingStatus.mockResolvedValue(activeRecording);
+
+    render(<App />);
+
+    const openRecording = await screen.findByRole("button", {
+      name: "Open recording: Reloaded meeting",
+    });
+    await userEvent.click(openRecording);
+    expect(await screen.findByLabelText("Note title")).toHaveValue("Reloaded meeting");
+    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Done" })).toBeEnabled();
+    expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledOnce();
+    expect(mocks.startMeetingRecording).toHaveBeenCalledOnce();
+  });
+
+  it("retains a meeting request while a competing start is provisional and retries after failure", async () => {
+    const pendingReadiness = deferred<{
+      sourceMode: "microphonePlusSystem";
+      sources: Array<
+        | { source: "microphone"; ready: false; message: string }
+        | { source: "system"; ready: true; permissionState: "granted" }
+      >;
+    }>();
+    const fresh = note({ id: "meeting-note", title: "Detected meeting" });
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ noteId: fresh.id }),
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: "First note Preview" }));
+    const recordButton = await screen.findByRole("button", { name: "Record" });
+    await waitFor(() => expect(recordButton).toBeEnabled());
+    mocks.checkRecordingSourceReadiness.mockReturnValueOnce(pendingReadiness.promise);
+    await userEvent.click(recordButton);
+    expect(await screen.findByRole("button", { name: "Starting" })).toBeDisabled();
+
+    mocks.pendingMeetingStartRequest = {
+      requestId: "meeting-request-during-provisional-start",
+      noteId: fresh.id,
+      requestedAtMs: Date.now(),
+      expired: false,
+    };
+    await act(async () => {
+      await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({ payload: undefined });
+    });
+
+    expect(mocks.startMeetingRecording).not.toHaveBeenCalled();
+    expect(mocks.acknowledgeMeetingStartRequest).not.toHaveBeenCalled();
+
+    await act(async () => {
+      pendingReadiness.resolve({
+        sourceMode: "microphonePlusSystem",
+        sources: [
+          { source: "microphone", ready: false, message: "Microphone is not ready." },
+          { source: "system", ready: true, permissionState: "granted" },
+        ],
+      });
+      await pendingReadiness.promise;
+    });
+
+    expect(await screen.findByText("Microphone is not ready.")).toBeInTheDocument();
+    await waitFor(
+      () =>
+        expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+          "meeting-request-during-provisional-start",
+          "microphonePlusSystem",
+        ),
+      { timeout: 2_000 },
+    );
+    await waitFor(() =>
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith(
+        "meeting-request-during-provisional-start",
+      ),
+    );
   });
 
   it("cleans up Tauri listeners that resolve after unmount", async () => {
