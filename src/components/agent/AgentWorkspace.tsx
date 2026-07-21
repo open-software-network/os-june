@@ -6663,6 +6663,10 @@ export function AgentWorkspace({
         };
       }
       if (homeMode) {
+        // Sending is an explicit return to the live edge: even if the user was
+        // reading older Home messages, bring the new bubble and June's typing
+        // indicator into view and keep following the reply that replaces it.
+        transcriptShouldStickToBottomRef.current = true;
         optimisticHomeTurnId = `home:optimistic:${Date.now()}`;
         setHomeOptimisticTurn({
           id: optimisticHomeTurnId,
@@ -11192,7 +11196,11 @@ export function AgentWorkspace({
   // grow text inside an existing turn without changing any count — still keep
   // the scroller pinned to the bottom.
   const renderedTurnsSignature = chatTurnsSignature(
-    selectedHermesSessionId ? hermesTurns : taskTurns,
+    homeMode
+      ? [...hermesTurns, ...homeDirectTurns, ...(homeOptimisticTurn ? [homeOptimisticTurn] : [])]
+      : selectedHermesSessionId
+        ? hermesTurns
+        : taskTurns,
   );
 
   // Which conversation the scroller is already settled in. A switch (and the

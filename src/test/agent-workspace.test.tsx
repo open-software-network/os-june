@@ -8880,6 +8880,52 @@ describe("AgentWorkspace", () => {
     expect(scrollTo).toHaveBeenCalledTimes(1);
   });
 
+  it("returns Home to the live edge when a message is sent from older history", async () => {
+    const user = userEvent.setup();
+    let resolveHomeChat: ((value: { content: string }) => void) | undefined;
+    mocks.juneHomeChat.mockReturnValueOnce(
+      new Promise<{ content: string }>((resolve) => {
+        resolveHomeChat = resolve;
+      }),
+    );
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await waitFor(() => expect(mocks.listHermesSessionMessages).toHaveBeenCalledWith("session-1"));
+
+    const scroller = document.querySelector(".agent-scroll") as HTMLElement;
+    const scrollTo = vi.fn();
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 320,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 240,
+      writable: true,
+    });
+    Object.defineProperty(scroller, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
+    });
+    fireEvent.scroll(scroller);
+    scrollTo.mockClear();
+
+    await user.type(composer, "New live message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("New live message")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 1600, behavior: "smooth" }));
+
+    resolveHomeChat?.({ content: "New live reply" });
+    expect(await screen.findByText("New live reply")).toBeInTheDocument();
+  });
+
   it("explains a pending approval before the user chooses", async () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem(
