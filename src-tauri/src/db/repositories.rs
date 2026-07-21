@@ -2871,6 +2871,42 @@ impl Repositories {
         tx.commit().await
     }
 
+    /// Deletes a deterministic meeting-start draft only while it is still the
+    /// untouched row created by native startup. The conditional update takes
+    /// SQLite's write lock before deletion so a concurrent user edit cannot
+    /// pass the check and then be removed.
+    pub async fn delete_untouched_draft(&self, note_id: &str) -> Result<bool, sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        let claimed = query(
+            "UPDATE notes
+             SET processing_status = 'failed'
+             WHERE id = ?
+               AND processing_status = 'draft'
+               AND updated_at = created_at
+               AND title = ''
+               AND COALESCE(generated_content, '') = ''
+               AND COALESCE(edited_content, '') = ''
+               AND NOT EXISTS (SELECT 1 FROM note_folders WHERE note_id = ?)
+               AND NOT EXISTS (
+                 SELECT 1 FROM share_keys WHERE item_kind = 'note' AND item_id = ?
+               )",
+        )
+        .bind(note_id)
+        .bind(note_id)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        if !claimed {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        delete_note_records(&mut tx, note_id).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn delete_notes(&self, note_ids: &[String]) -> Result<(), sqlx::error::Error> {
         let mut tx = self.pool.begin().await?;
         for note_id in note_ids {
@@ -6077,6 +6113,45 @@ mod tests {
 
         assert_eq!(replay.id, first.id);
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn meeting_start_cleanup_preserves_a_changed_draft() {
+        let repos = test_repositories().await;
+        let untouched = repos
+            .create_note_with_id("default", None, "untouched-meeting-draft")
+            .await
+            .expect("create untouched draft");
+        assert!(repos
+            .delete_untouched_draft(&untouched.id)
+            .await
+            .expect("delete untouched draft"));
+        assert!(repos.get_note(&untouched.id).await.is_err());
+
+        let changed = repos
+            .create_note_with_id("default", None, "changed-meeting-draft")
+            .await
+            .expect("create changed draft");
+        repos
+            .update_note(
+                &changed.id,
+                Some("Keep my meeting note".to_string()),
+                Some("User-authored notes".to_string()),
+                None,
+            )
+            .await
+            .expect("edit meeting draft");
+
+        assert!(!repos
+            .delete_untouched_draft(&changed.id)
+            .await
+            .expect("preserve changed draft"));
+        let preserved = repos.get_note(&changed.id).await.expect("preserved note");
+        assert_eq!(preserved.title, "Keep my meeting note");
+        assert_eq!(
+            preserved.edited_content.as_deref(),
+            Some("User-authored notes")
+        );
     }
 
     #[tokio::test]

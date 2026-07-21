@@ -3804,7 +3804,7 @@ export function App() {
             revealMainWindowForMeetingStartError();
             setError(MEETING_START_REQUEST_EXPIRED_MESSAGE);
             const acknowledged = await acknowledgeMeetingStartRequest(request.requestId);
-            drainAgain ||= !acknowledged;
+            shouldRetry = !acknowledged;
             return;
           }
           const terminal = await meetingStartHandlerRef.current(request.requestId, request.noteId);
@@ -3820,7 +3820,7 @@ export function App() {
             return;
           }
           const acknowledged = await acknowledgeMeetingStartRequest(request.requestId);
-          drainAgain ||= !acknowledged;
+          shouldRetry = !acknowledged;
         } catch {
           shouldRetry = true;
         } finally {

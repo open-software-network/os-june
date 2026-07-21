@@ -222,6 +222,33 @@ impl MeetingStartRequestState {
         pending.phase = MeetingStartRequestPhase::Finished(Box::new(outcome));
         Ok(())
     }
+
+    pub fn fail_start_if_running(&self, request_id: &str) -> Result<bool, AppError> {
+        let mut mailbox = self.mailbox.lock().map_err(|_| {
+            AppError::new(
+                "meeting_start_unavailable",
+                "The meeting start request is unavailable.",
+            )
+        })?;
+        let Some(pending) = mailbox
+            .pending
+            .as_mut()
+            .filter(|pending| pending.request_id == request_id)
+        else {
+            return Ok(false);
+        };
+        if !matches!(pending.phase, MeetingStartRequestPhase::Starting) {
+            return Ok(false);
+        }
+        pending.phase =
+            MeetingStartRequestPhase::Finished(Box::new(MeetingStartRecordingOutcome::Failed {
+                error: AppError::new(
+                    "meeting_start_interrupted",
+                    "Meeting recording stopped before startup completed. Try again.",
+                ),
+            }));
+        Ok(true)
+    }
 }
 
 fn wall_clock_millis() -> Result<u64, String> {
@@ -241,7 +268,8 @@ pub fn queue_meeting_start_request(
     state: State<'_, MeetingStartRequestState>,
 ) -> Result<(), String> {
     state.queue_at(wall_clock_millis()?)?;
-    let _ = app.emit(MEETING_START_REQUEST_EVENT_NAME, ());
+    app.emit(MEETING_START_REQUEST_EVENT_NAME, ())
+        .map_err(|error| format!("failed to wake the meeting-start listener: {error}"))?;
     Ok(())
 }
 
@@ -1029,6 +1057,29 @@ mod tests {
                 .map(|request| request.request_id),
             Some(request_id)
         );
+    }
+
+    #[test]
+    fn interrupted_native_start_becomes_a_replayable_failure() {
+        let state = MeetingStartRequestState::default();
+        let request_id = state.queue_at(1_000).expect("queue request");
+        state
+            .begin_start(&request_id, 1_100)
+            .expect("begin request");
+
+        assert!(state
+            .fail_start_if_running(&request_id)
+            .expect("interrupt request"));
+        let Some(MeetingStartRecordingOutcome::Failed { error }) = state
+            .finished_outcome(&request_id)
+            .expect("read interrupted outcome")
+        else {
+            panic!("expected replayable interrupted outcome");
+        };
+        assert_eq!(error.code, "meeting_start_interrupted");
+        assert!(!state
+            .fail_start_if_running(&request_id)
+            .expect("finished request is unchanged"));
     }
 
     #[test]

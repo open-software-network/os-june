@@ -137,6 +137,42 @@ impl Drop for CaptureStartupGuard {
     }
 }
 
+struct MeetingStartCompletionGuard<'a> {
+    state: &'a MeetingStartRequestState,
+    request_id: String,
+    finished: bool,
+}
+
+impl<'a> MeetingStartCompletionGuard<'a> {
+    fn new(state: &'a MeetingStartRequestState, request_id: String) -> Self {
+        Self {
+            state,
+            request_id,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self, outcome: MeetingStartRecordingOutcome) -> Result<(), AppError> {
+        self.state.finish_start(&self.request_id, outcome)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for MeetingStartCompletionGuard<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if let Err(error) = self.state.fail_start_if_running(&self.request_id) {
+            eprintln!(
+                "failed to mark interrupted meeting start {}: {}",
+                self.request_id, error.message
+            );
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
@@ -1532,6 +1568,8 @@ pub async fn start_meeting_recording(
         }
         Err(error) => return Err(error),
     };
+    let mut completion =
+        MeetingStartCompletionGuard::new(state.inner(), request.request_id.clone());
 
     let outcome =
         match execute_meeting_recording(app, &note_id, request.source_mode.unwrap_or_default())
@@ -1543,7 +1581,7 @@ pub async fn start_meeting_recording(
             },
             Err(error) => MeetingStartRecordingOutcome::Failed { error },
         };
-    state.finish_start(&request.request_id, outcome.clone())?;
+    completion.finish(outcome.clone())?;
     Ok(outcome)
 }
 
@@ -1600,11 +1638,18 @@ async fn execute_meeting_recording(
                 .and_then(|status| status.note_id)
                 .is_some_and(|active_note_id| active_note_id == note.id);
             if !active_capture_owns_note {
-                if let Err(delete_error) = repos.delete_note(&note.id).await {
-                    eprintln!(
-                        "failed to delete meeting-start draft {} after startup error: {}",
-                        note.id, delete_error
-                    );
+                match repos.delete_untouched_draft(&note.id).await {
+                    Ok(true) => {}
+                    Ok(false) => eprintln!(
+                        "preserved changed meeting-start draft {} after startup error",
+                        note.id
+                    ),
+                    Err(delete_error) => {
+                        eprintln!(
+                            "failed to delete meeting-start draft {} after startup error: {}",
+                            note.id, delete_error
+                        );
+                    }
                 }
             }
             Err(error)
@@ -1707,6 +1752,9 @@ async fn start_recording_inner(
         startup_guard.rollback();
         return Err(error.into());
     }
+    // The capture now has all rows required for reload/recovery. Optional
+    // diagnostics below must not roll it back if their future is cancelled.
+    startup_guard.disarm();
     if let Err(error) = repos
         .add_checkpoint(
             &started.session_id,
@@ -1762,7 +1810,6 @@ async fn start_recording_inner(
             );
         }
     }
-    startup_guard.disarm();
     let calendar_repos = repos.clone();
     let calendar_note_id = note.id.clone();
     let expected_title = note.title.clone();
