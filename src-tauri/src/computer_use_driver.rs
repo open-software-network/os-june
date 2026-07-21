@@ -308,10 +308,8 @@ fn process_is_june(pid: libc::pid_t) -> bool {
         .map(PathBuf::from)
         .collect();
     if let (Some(helper_app), Some(outer_app)) = (app_ancestors.first(), app_ancestors.get(1)) {
-        return same_file(
-            &process_path,
-            &outer_app.join("Contents").join("MacOS").join("June"),
-        ) && packaged_signatures_match(outer_app, helper_app);
+        return same_file(&process_path, &packaged_main_executable(outer_app))
+            && packaged_signatures_match(outer_app, helper_app);
     }
 
     // Development builds are not nested yet. Accept only the Cargo binary or
@@ -322,6 +320,11 @@ fn process_is_june(pid: libc::pid_t) -> bool {
             &process_path,
             &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
         )
+}
+
+#[cfg(target_os = "macos")]
+fn packaged_main_executable(outer_app: &std::path::Path) -> PathBuf {
+    outer_app.join("Contents").join("MacOS").join("os-june")
 }
 
 #[cfg(target_os = "macos")]
@@ -790,6 +793,14 @@ mod tests {
         assert!(!development_launcher_name_is_allowed(std::ffi::OsStr::new(
             "June JUN-two Codex"
         )));
+    }
+
+    #[test]
+    fn packaged_peer_uses_the_tauri_bundle_executable_name() {
+        assert_eq!(
+            packaged_main_executable(std::path::Path::new("/Applications/June.app")),
+            std::path::PathBuf::from("/Applications/June.app/Contents/MacOS/os-june")
+        );
     }
 
     #[test]
