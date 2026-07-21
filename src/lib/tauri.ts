@@ -256,6 +256,10 @@ export type ProviderModelSettingsDto = {
   imageSafeMode: boolean;
   /** Whether the user chose "don't ask again" on the safe-mode consent dialog. */
   imageSafeModePromptDismissed: boolean;
+  /** Live transcript preview while recording. On by default; billed as extra
+   * usage and disclosed in Settings, so previews from this build are sent as
+   * consented (JUN-375). Off stops the preview lanes entirely. */
+  liveTranscription: boolean;
 };
 
 export type ProfileModelOverridesDto = {
@@ -2030,6 +2034,14 @@ export async function clearVeniceApiKey() {
 // on, Venice blurs adult content.
 export async function setImageSafeMode(enabled: boolean) {
   return invoke<ProviderModelSettingsDto>("set_image_safe_mode", {
+    request: { enabled },
+  });
+}
+
+// Toggles the live transcript preview while recording. On by default; billed
+// as extra usage when on, no preview audio leaves the device when off.
+export async function setLiveTranscription(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_live_transcription", {
     request: { enabled },
   });
 }

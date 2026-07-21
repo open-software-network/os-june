@@ -618,12 +618,57 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
 
         assert!(matches!(result, Err(ServiceError::InvalidInput { .. })));
         assert_eq!(os_accounts.events(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_opted_in_preview_settles_actual_credits() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let output = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-opted-1".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                preview_opted_in: true,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await
+            .expect("opted-in preview transcription succeeds");
+
+        // Consented preview bills the computed price instead of zero; the
+        // authorization hold is unchanged.
+        assert_eq!(output.receipt.credits_charged.0, 4);
+        assert!(os_accounts.events().iter().any(|event| matches!(
+            event,
+            RecordedCall::Charge { credits: 4, .. }
+        )));
     }
 
     #[tokio::test]
@@ -654,6 +699,7 @@ mod tests {
             language: Some("en".to_string()),
             model_id: ModelId("audio-model".to_string()),
             preview: true,
+            preview_opted_in: false,
             provider_credentials: ProviderCredentials::default(),
         };
         let preview_output = service
@@ -663,6 +709,7 @@ mod tests {
         let final_output = service
             .transcribe(NoteTranscribeParams {
                 preview: false,
+                preview_opted_in: false,
                 ..params
             })
             .await
@@ -741,6 +788,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -801,6 +849,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -853,6 +902,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await
@@ -899,6 +949,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await
@@ -946,6 +997,7 @@ mod tests {
                     language: None,
                     model_id: ModelId("audio-model".to_string()),
                     preview,
+                    preview_opted_in: false,
                     provider_credentials: user_venice_credentials(),
                 })
                 .await
@@ -985,6 +1037,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -1047,6 +1100,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -1098,6 +1152,7 @@ mod tests {
                     language: None,
                     model_id: ModelId("audio-model".to_string()),
                     preview: true,
+                    preview_opted_in: false,
                     provider_credentials: ProviderCredentials::default(),
                 })
                 .await
@@ -1165,6 +1220,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -1211,6 +1267,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;

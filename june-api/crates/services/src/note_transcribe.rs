@@ -234,10 +234,17 @@ impl NoteTranscribeService {
             "note_transcribe_preview:{}:{}:{}",
             params.user_id.0, params.note_id, audio_digest
         );
+        // Consented previews (disclosed setting, user left it on) bill the
+        // computed price; everything else settles at zero per ADR-0002.
+        let settled = if params.preview_opted_in {
+            actual
+        } else {
+            Credits(0)
+        };
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
-            credits: Credits(0),
+            credits: settled,
             idempotency_key,
         })
         .await?;
@@ -247,6 +254,7 @@ impl NoteTranscribeService {
             note_id = %params.note_id,
             model = %params.model_id.0,
             preview = true,
+            preview_opted_in = params.preview_opted_in,
             probed_seconds = seconds,
             computed_credits = actual.0,
             settled_credits = receipt.credits_charged.0,
@@ -357,6 +365,12 @@ pub struct NoteTranscribeParams {
     pub language: Option<String>,
     pub model_id: ModelId,
     pub preview: bool,
+    /// True only when the client build carries the disclosed Live
+    /// transcription setting and the user left it enabled: such previews are
+    /// consented billable usage and settle at the computed price. Legacy
+    /// clients never send the flag and keep zero-credit preview settlement
+    /// (JUN-375, ADR-0002 addendum).
+    pub preview_opted_in: bool,
     pub provider_credentials: ProviderCredentials,
 }
 

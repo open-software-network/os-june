@@ -29,6 +29,7 @@ import {
   setDictationMicrophone,
   setDictationShortcut,
   setImageSafeMode,
+  setLiveTranscription,
   setCostQuality,
   setVeniceApiKey,
   setVeniceModel,
@@ -297,6 +298,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // On by default, matching the Rust providers default.
   imageSafeMode: true,
   imageSafeModePromptDismissed: false,
+  liveTranscription: true,
 };
 
 type ProviderModelSettingsSnapshot = {
@@ -1403,6 +1405,20 @@ export function AppSettings({
     }
   }
 
+  async function toggleLiveTranscription(enabled: boolean) {
+    try {
+      const next = await setLiveTranscription(enabled);
+      setProviderSettings(next);
+      setStatus(
+        enabled
+          ? "Live transcription on: the transcript streams while you record."
+          : "Live transcription off: the transcript appears after the recording ends.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   async function toggleImageSafeMode(enabled: boolean) {
     try {
       const next = await setImageSafeMode(enabled);
@@ -2199,6 +2215,23 @@ export function AppSettings({
                   </button>
                   {showMoreModelOptions ? (
                     <div id="models-more-options-panel" className="settings-more-options-panel">
+                      <div className="settings-row">
+                        <div className="settings-row-info">
+                          <h3 className="settings-row-title">Live transcription</h3>
+                          <p className="settings-row-description">
+                            Show a live transcript while you record. This transcribes audio twice,
+                            so it may use extra credits; turning it off shows the transcript only
+                            after the recording ends.
+                          </p>
+                        </div>
+                        <div className="settings-row-control">
+                          <Switch
+                            checked={providerSettings.liveTranscription}
+                            aria-label="Show a live transcript while recording"
+                            onCheckedChange={toggleLiveTranscription}
+                          />
+                        </div>
+                      </div>
                       <VeniceApiKeyRow
                         configured={providerSettings.veniceApiKeyConfigured}
                         value={veniceApiKeyDraft}

@@ -105,6 +105,12 @@ pub struct ProviderModelSettings {
     /// carry an incidental `false` the user never picked.
     #[serde(default)]
     pub image_safe_mode_set_by_user: bool,
+    /// When true (the default), June streams a live transcript preview while
+    /// recording. On builds that carry this setting the preview is billed as
+    /// extra usage (ADR-0002 addendum, JUN-375); turning it off stops the
+    /// preview lanes entirely, so nothing is sent or billed.
+    #[serde(default = "default_live_transcription")]
+    pub live_transcription: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profile_overrides: BTreeMap<String, ProfileModelOverrides>,
 }
@@ -149,6 +155,7 @@ pub struct ProviderModelSettingsDto {
     pub local_generation: LocalGenerationSettings,
     pub image_safe_mode: bool,
     pub image_safe_mode_prompt_dismissed: bool,
+    pub live_transcription: bool,
 }
 
 impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
@@ -169,6 +176,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             local_generation: settings.local_generation.clone(),
             image_safe_mode: settings.image_safe_mode,
             image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
+            live_transcription: settings.live_transcription,
         }
     }
 }
@@ -398,6 +406,10 @@ pub fn image_safe_mode() -> bool {
 
 pub fn image_safe_mode_prompt_dismissed() -> bool {
     current_settings().image_safe_mode_prompt_dismissed
+}
+
+pub fn live_transcription() -> bool {
+    current_settings().live_transcription
 }
 
 /// Context window (tokens) of the configured generation model, looked up in
@@ -653,6 +665,22 @@ pub fn set_cost_quality(
 #[serde(rename_all = "camelCase")]
 pub struct SetImageSafeModeRequest {
     pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLiveTranscriptionRequest {
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub fn set_live_transcription(
+    state: State<'_, ProviderSettingsState>,
+    request: SetLiveTranscriptionRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings(&state, |settings| {
+        settings.live_transcription = request.enabled;
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -1249,8 +1277,13 @@ fn default_settings() -> ProviderModelSettings {
         image_safe_mode: true,
         image_safe_mode_prompt_dismissed: false,
         image_safe_mode_set_by_user: false,
+        live_transcription: true,
         profile_overrides: BTreeMap::new(),
     }
+}
+
+fn default_live_transcription() -> bool {
+    true
 }
 
 fn default_transcription_provider() -> String {
