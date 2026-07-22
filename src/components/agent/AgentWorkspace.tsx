@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useAgentProfileEvents } from "./use-agent-profile-events";
 import { useComposerMenuDismiss } from "./use-composer-menu-dismiss";
 import { useIssueReportEvents } from "./use-issue-report-events";
 import { useAgentSessionEvents } from "./use-agent-session-events";
@@ -443,10 +444,6 @@ import {
   type AgentWorkspaceErrorOptions,
 } from "./agent-workspace-errors";
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
-
-type AgentDeleteSessionDetail = {
-  sessionId: string;
-};
 
 import {
   AttachBlockedError,
@@ -2855,43 +2852,9 @@ export function AgentWorkspace({
     };
   });
 
-  useEffect(() => {
-    function handleNewSession(event: Event) {
-      const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
-      void windowEventHandlersRef.current.startNewTask(detail);
-    }
-
-    function handleDeleteSession(event: Event) {
-      const detail = (event as CustomEvent<AgentDeleteSessionDetail>).detail;
-      if (!detail?.sessionId) return;
-      windowEventHandlersRef.current.removeHermesSessionLocally(detail.sessionId);
-    }
-
-    function handleRenameSession(event: Event) {
-      const detail = (event as CustomEvent<AgentSessionRenamedDetail>).detail;
-      if (!detail?.sessionId) return;
-      windowEventHandlersRef.current.applyManualHermesSessionTitleLocally(
-        detail.sessionId,
-        detail.title,
-      );
-    }
-
-    const pending = pendingNewSessionRequest();
-    if (pending) {
-      void windowEventHandlersRef.current.startNewTask(pending, {
-        deferSeed: true,
-      });
-    }
-
-    window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-    window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
-    window.addEventListener(AGENT_SESSION_RENAMED_EVENT, handleRenameSession);
-    return () => {
-      window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-      window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
-      window.removeEventListener(AGENT_SESSION_RENAMED_EVENT, handleRenameSession);
-    };
-  }, []);
+  useAgentProfileEvents({
+    windowEventHandlersRef,
+  });
 
   useAgentWindowEvents({
     bridge,

@@ -32,3 +32,7 @@ export type ImageSafeModeConsentEventPayload = {
   source?: string;
   prompt?: string;
 };
+
+export type AgentDeleteSessionDetail = {
+  sessionId: string;
+};
