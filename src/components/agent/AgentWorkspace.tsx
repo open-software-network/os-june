@@ -29,7 +29,6 @@ import {
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
 } from "../../lib/agent-events";
-import { markAgentRunSucceeded } from "../../lib/agent-run-monitor";
 import { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
   createHermesMethods,
@@ -65,6 +64,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createSessionRefreshAction } from "./session-refresh-action";
 import { useAgentGatewayActions } from "./use-agent-gateway-actions";
 import { useAgentViewState } from "./use-agent-view-state";
 import { useAgentChatPresentation } from "./use-agent-chat-presentation";
@@ -186,11 +186,7 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-import {
-  isSessionGoneError,
-  reportableAgentErrorOptions,
-  type AgentWorkspaceError,
-} from "./agent-workspace-errors";
+import { reportableAgentErrorOptions, type AgentWorkspaceError } from "./agent-workspace-errors";
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 import {
@@ -1144,6 +1140,12 @@ export function AgentWorkspace({
     ...args: Parameters<ReturnType<typeof useAgentGatewayActions>["ensureHermesGateway"]>
   ) {
     return ensureHermesGatewayImplementation(...args);
+  }
+  const refreshHermesSessionImplementation = {} as {
+    current: (sessionId: string) => Promise<HermesSessionMessage[] | undefined>;
+  };
+  async function refreshHermesSession(sessionId: string) {
+    return refreshHermesSessionImplementation.current(sessionId);
   }
 
   // Updates the task list without touching the selection — a late poll
@@ -2229,72 +2231,26 @@ export function AgentWorkspace({
     return messages;
   }
 
-  async function refreshHermesSession(sessionId: string) {
-    try {
-      const messages = await listSessionMessagesOrdered(sessionId);
-      if (!messages) return undefined;
-      const retainedPending = retainUnpersistedPendingMessages(
-        pendingHermesMessagesRef.current[sessionId] ?? [],
-        messages,
-      );
-      const combined = [...messages, ...retainedPending];
-      setHermesSessionMessages((current) => {
-        const next = {
-          ...current,
-          [sessionId]: messages,
-        };
-        hermesSessionMessagesRef.current = next;
-        return next;
-      });
-      setPendingHermesMessages((current) => {
-        const next = {
-          ...current,
-          [sessionId]: retainedPending,
-        };
-        pendingHermesMessagesRef.current = next;
-        return next;
-      });
-      void suggestTitleForUntitledSession(sessionId, messages);
-      if (sessionHasAssistantAfterLatestUser(combined)) {
-        promotePendingIssueReportToReview(sessionId, {
-          queueDiagnosisRefresh: false,
-        });
-        const wasActive = sessionHasActiveWork(
-          sessionId,
-          workingSessionIdsRef.current,
-          waitingSessionIdsRef.current,
-          liveEventsRef.current,
-        );
-        const activityCounts = clearSessionActivity(sessionId);
-        if (wasActive) {
-          void releaseAllComputerUseRuns(sessionId);
-          markAgentRunSucceeded(sessionId);
-          dispatchAgentSessionStatus({
-            sessionId,
-            title:
-              hermesSessionItems.find((session) => session.id === sessionId)?.title ??
-              "Agent session",
-            status: "completed",
-            summary: "June finished.",
-            ...activityCounts,
-          });
-          continueAfterCompletedAgentRun(sessionId);
-        }
-        liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
-        setLiveEvents(liveEventsRef.current);
-      }
-      await loadHermesSessions();
-      return combined;
-    } catch (err) {
-      const message = messageFromError(err);
-      // Background refresh racing a just-created session: a transient
-      // "Session not found" 404 resolves on the next poll, so don't surface
-      // it as an error banner (JUN-116).
-      if (isSessionGoneError(message)) return undefined;
-      setError(describeHermesError(err), reportableAgentErrorOptions(err, { sessionId }));
-      return undefined;
-    }
-  }
+  const { refreshHermesSessionImplementationBody } = createSessionRefreshAction({
+    clearSessionActivity,
+    continueAfterCompletedAgentRun,
+    hermesSessionItems,
+    hermesSessionMessagesRef,
+    listSessionMessagesOrdered,
+    liveEventsRef,
+    loadHermesSessions,
+    pendingHermesMessagesRef,
+    promotePendingIssueReportToReview,
+    releaseAllComputerUseRuns,
+    setError,
+    setHermesSessionMessages,
+    setLiveEvents,
+    setPendingHermesMessages,
+    suggestTitleForUntitledSession,
+    waitingSessionIdsRef,
+    workingSessionIdsRef,
+  });
+  refreshHermesSessionImplementation.current = refreshHermesSessionImplementationBody;
 
   const {
     respondToApproval,
@@ -3079,9 +3035,6 @@ import {
   agentActivityCountsFromStore,
   agentStatusFromHermesEvent,
   agentStatusSummaryFromHermesEvent,
-  retainUnpersistedPendingMessages,
-  sessionHasAssistantAfterLatestUser,
-  sessionHasActiveWork,
 } from "./session-state-helpers";
 export {
   projectAgentActivityLevels,
