@@ -6894,6 +6894,12 @@ button.agent-user-attachment:hover {
   max-height: min(45vh, 320px);
 }
 
+.agent-composer-model-root-results,
+.agent-composer-model-root-empty,
+.agent-composer-model-root-control-results {
+  margin-top: var(--sp-1);
+}
+
 /* Model controls pinned above the suggested rows in the root popover: Auto,
  * Preference, and Effort share one inset and one divider before model rows. */
 .agent-composer-model-controls {
@@ -18414,6 +18420,10 @@ button.memory-project:hover {
  * its decorative border transparent in every non-focus state. */
 .model-summary-button:has(.model-summary-logo[data-brand="june"]):not(:focus-visible) {
   border-color: transparent;
+}
+
+.model-summary-logo[data-brand="june"] {
+  background: transparent;
 }
 
 .model-summary-button > svg {

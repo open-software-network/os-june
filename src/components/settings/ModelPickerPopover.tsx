@@ -408,6 +408,20 @@ export function ModelPickerPopover({
   const rootFade = useScrollFade(rootListRef);
   const rootQuery = (rootSearch ?? "").trim().toLowerCase();
   const rootQueryActive = Boolean(rootSearchRef) && Boolean(rootQuery);
+  const rootControlTerms = [
+    ...(onCostQualityChange ? ["auto", "automatic"] : []),
+    ...(onCostQualityChange && autoEnabled && showAutoPreference
+      ? [
+          "preference",
+          AUTO_PREFERENCE_DETAILS.find((option) => option.value === autoPreference)?.label ?? "",
+        ]
+      : []),
+    ...(thinkingLevel && onSelectThinking
+      ? ["effort", thinkingOptionForLevel(thinkingLevel).label]
+      : []),
+  ];
+  const rootControlsMatch =
+    rootQueryActive && rootControlTerms.some((term) => term.toLowerCase().includes(rootQuery));
   const rootMatchingSuggested = rootQueryActive
     ? suggested.filter(({ model: option }) => modelMatchesQuery(option, rootQuery))
     : [];
@@ -600,6 +614,54 @@ export function ModelPickerPopover({
   }
 
   if (!model) return null;
+  const rootResultsList = rootResults.length ? (
+    <div
+      className="agent-composer-model-list-wrap agent-composer-model-root-results scroll-fade"
+      {...rootFade.props}
+    >
+      <div
+        ref={rootListRef}
+        id={rootListId}
+        className="agent-composer-model-list"
+        role="listbox"
+        aria-label="Matching models"
+        onScroll={rootFade.update}
+      >
+        {rootResults.map(({ key, model: option, costQuality: presetCostQuality }, index) => (
+          <button
+            key={key}
+            id={`${rootListId}-option-${index}`}
+            type="button"
+            className="agent-composer-model-row"
+            role="option"
+            tabIndex={-1}
+            aria-selected={
+              option.id === model.id &&
+              (presetCostQuality === undefined || presetCostQuality === costQuality)
+            }
+            data-active={index === resolvedRootActive || undefined}
+            onPointerMove={() => setRootActive(index)}
+            onClick={() => onSelect(option.id, presetCostQuality)}
+          >
+            <ModelPickerOptionText model={option} />
+            {option.id === model.id &&
+            (presetCostQuality === undefined || presetCostQuality === costQuality) ? (
+              <IconCheckmark2Small
+                size={14}
+                aria-hidden
+                className="agent-composer-model-row-check"
+              />
+            ) : null}
+            <ModelRowPrivacyBadge model={option} />
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : rootControlsMatch ? null : (
+    <p className="agent-composer-model-empty agent-composer-model-root-empty">
+      No results match your search.
+    </p>
+  );
   return (
     <div
       ref={popoverRef}
@@ -625,8 +687,8 @@ export function ModelPickerPopover({
             aria-label="Search models"
             role="combobox"
             aria-autocomplete="list"
-            aria-expanded={rootQueryActive}
-            aria-controls={rootQueryActive ? rootListId : undefined}
+            aria-expanded={rootQueryActive && rootResults.length > 0}
+            aria-controls={rootQueryActive && rootResults.length ? rootListId : undefined}
             aria-activedescendant={
               rootQueryActive && rootResults.length
                 ? `${rootListId}-option-${resolvedRootActive}`
@@ -654,57 +716,19 @@ export function ModelPickerPopover({
           />
         </label>
       ) : null}
-      {rootQueryActive ? (
-        <div
-          className="agent-composer-model-list-wrap agent-composer-model-root-results scroll-fade"
-          {...rootFade.props}
-        >
-          <div
-            ref={rootListRef}
-            id={rootListId}
-            className="agent-composer-model-list"
-            role="listbox"
-            aria-label="Matching models"
-            onScroll={rootFade.update}
-          >
-            {rootResults.length ? (
-              rootResults.map(({ key, model: option, costQuality: presetCostQuality }, index) => (
-                <button
-                  key={key}
-                  id={`${rootListId}-option-${index}`}
-                  type="button"
-                  className="agent-composer-model-row"
-                  role="option"
-                  tabIndex={-1}
-                  aria-selected={
-                    option.id === model.id &&
-                    (presetCostQuality === undefined || presetCostQuality === costQuality)
-                  }
-                  data-active={index === resolvedRootActive || undefined}
-                  onPointerMove={() => setRootActive(index)}
-                  onClick={() => onSelect(option.id, presetCostQuality)}
-                >
-                  <ModelPickerOptionText model={option} />
-                  {option.id === model.id &&
-                  (presetCostQuality === undefined || presetCostQuality === costQuality) ? (
-                    <IconCheckmark2Small
-                      size={14}
-                      aria-hidden
-                      className="agent-composer-model-row-check"
-                    />
-                  ) : null}
-                  <ModelRowPrivacyBadge model={option} />
-                </button>
-              ))
-            ) : (
-              <p className="agent-composer-model-empty">No models match your search.</p>
-            )}
-          </div>
-        </div>
+      {rootQueryActive && !rootControlsMatch ? (
+        rootResultsList
       ) : (
         <>
           {onCostQualityChange || (thinkingLevel && onSelectThinking) ? (
-            <div className="agent-composer-model-controls">
+            <div
+              className={[
+                "agent-composer-model-controls",
+                rootQueryActive ? "agent-composer-model-root-control-results" : null,
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            >
               {onCostQualityChange ? (
                 <>
                   <div className="agent-composer-model-filter agent-composer-model-auto-toggle">
@@ -891,93 +915,103 @@ export function ModelPickerPopover({
               ) : null}
             </div>
           ) : null}
-          {/* The title labels the suggested rows, so it sits below the pinned
-           * controls: with search leading the panel, a top "Suggested" would
-           * read as a caption for Auto and Effort. */}
-          <p className="agent-composer-model-title">{title}</p>
-          <div className="agent-composer-model-menu" role="listbox" aria-label={suggestedListLabel}>
-            {suggested.length ? (
-              suggested.map(({ key, model: option, costQuality: presetCostQuality }) => (
-                <button
-                  key={key}
-                  type="button"
-                  className="agent-composer-model-row"
-                  role="option"
-                  aria-selected={
-                    option.id === model.id &&
-                    (presetCostQuality === undefined || presetCostQuality === costQuality)
+          {rootQueryActive ? (
+            rootResultsList
+          ) : (
+            <>
+              {/* The title labels the suggested rows, so it sits below the pinned
+               * controls: with search leading the panel, a top "Suggested" would
+               * read as a caption for Auto and Effort. */}
+              <p className="agent-composer-model-title">{title}</p>
+              <div
+                className="agent-composer-model-menu"
+                role="listbox"
+                aria-label={suggestedListLabel}
+              >
+                {suggested.length ? (
+                  suggested.map(({ key, model: option, costQuality: presetCostQuality }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className="agent-composer-model-row"
+                      role="option"
+                      aria-selected={
+                        option.id === model.id &&
+                        (presetCostQuality === undefined || presetCostQuality === costQuality)
+                      }
+                      data-model-id={key}
+                      data-active={(flyout?.kind === "model" && flyout.id === key) || undefined}
+                      onMouseEnter={() => {
+                        if (modelBridge.isActive()) {
+                          return;
+                        }
+                        const open = () => onFlyoutChange({ kind: "model", id: key });
+                        if (flyout) {
+                          cancelHoverIntent();
+                          open();
+                        } else {
+                          hoverIntent(open);
+                        }
+                      }}
+                      onFocus={() => {
+                        cancelHoverIntent();
+                        onFlyoutChange({ kind: "model", id: key });
+                      }}
+                      onClick={() => onSelect(option.id, presetCostQuality)}
+                    >
+                      <ModelPickerOptionText model={option} />
+                      {option.id === model.id &&
+                      (presetCostQuality === undefined || presetCostQuality === costQuality) ? (
+                        <IconCheckmark2Small
+                          size={14}
+                          aria-hidden
+                          className="agent-composer-model-row-check"
+                        />
+                      ) : null}
+                      <ModelRowPrivacyBadge model={option} />
+                    </button>
+                  ))
+                ) : (
+                  <p className="agent-composer-model-empty">Loading suggested models.</p>
+                )}
+              </div>
+              <button
+                type="button"
+                className="agent-composer-model-row agent-composer-model-all"
+                aria-haspopup="true"
+                aria-expanded={flyout?.kind === "all"}
+                data-active={flyout?.kind === "all" || undefined}
+                onMouseEnter={() => {
+                  if (modelBridge.isActive()) {
+                    return;
                   }
-                  data-model-id={key}
-                  data-active={(flyout?.kind === "model" && flyout.id === key) || undefined}
-                  onMouseEnter={() => {
-                    if (modelBridge.isActive()) {
-                      return;
-                    }
-                    const open = () => onFlyoutChange({ kind: "model", id: key });
-                    if (flyout) {
-                      cancelHoverIntent();
-                      open();
-                    } else {
-                      hoverIntent(open);
-                    }
-                  }}
-                  onFocus={() => {
+                  const open = () => onFlyoutChange({ kind: "all" });
+                  if (flyout) {
                     cancelHoverIntent();
-                    onFlyoutChange({ kind: "model", id: key });
-                  }}
-                  onClick={() => onSelect(option.id, presetCostQuality)}
-                >
-                  <ModelPickerOptionText model={option} />
-                  {option.id === model.id &&
-                  (presetCostQuality === undefined || presetCostQuality === costQuality) ? (
-                    <IconCheckmark2Small
-                      size={14}
-                      aria-hidden
-                      className="agent-composer-model-row-check"
-                    />
-                  ) : null}
-                  <ModelRowPrivacyBadge model={option} />
-                </button>
-              ))
-            ) : (
-              <p className="agent-composer-model-empty">Loading suggested models.</p>
-            )}
-          </div>
-          <button
-            type="button"
-            className="agent-composer-model-row agent-composer-model-all"
-            aria-haspopup="true"
-            aria-expanded={flyout?.kind === "all"}
-            data-active={flyout?.kind === "all" || undefined}
-            onMouseEnter={() => {
-              if (modelBridge.isActive()) {
-                return;
-              }
-              const open = () => onFlyoutChange({ kind: "all" });
-              if (flyout) {
-                cancelHoverIntent();
-                open();
-              } else {
-                hoverIntent(open);
-              }
-            }}
-            onFocus={() => {
-              cancelHoverIntent();
-              onFlyoutChange({ kind: "all" });
-            }}
-            onClick={() => {
-              cancelHoverIntent();
-              onFlyoutChange({ kind: "all" });
-              searchRef.current?.focus();
-            }}
-          >
-            <span className="agent-composer-model-row-name">All models</span>
-            <IconChevronRightSmall
-              size={16}
-              aria-hidden
-              className="agent-composer-model-row-chevron"
-            />
-          </button>
+                    open();
+                  } else {
+                    hoverIntent(open);
+                  }
+                }}
+                onFocus={() => {
+                  cancelHoverIntent();
+                  onFlyoutChange({ kind: "all" });
+                }}
+                onClick={() => {
+                  cancelHoverIntent();
+                  onFlyoutChange({ kind: "all" });
+                  searchRef.current?.focus();
+                }}
+              >
+                <span className="agent-composer-model-row-name">All models</span>
+                <IconChevronRightSmall
+                  size={16}
+                  aria-hidden
+                  className="agent-composer-model-row-chevron"
+                />
+              </button>
+            </>
+          )}
         </>
       )}
       {detail && portalTarget
