@@ -1766,7 +1766,7 @@ async fn start_hermes_bridge_inner(
         agent_cli_access,
         // None (feature-flagged out) renders no browser SOUL section at all;
         // the grant only matters once the feature exists in this build.
-        crate::feature_flags::BROWSER_USE_ENABLED.then_some(browser_access),
+        crate::experimental_settings::browser_use_enabled(app).then_some(browser_access),
         june_memory_enabled(&june_context_mcp.memory_settings_path),
         video_generation_enabled,
         connectors_registered,
@@ -3816,7 +3816,7 @@ pub async fn set_hermes_browser_access(
     bridge: State<'_, HermesBridge>,
     request: SetBrowserAccessRequest,
 ) -> Result<BrowserAccessStatus, AppError> {
-    if request.enabled && !crate::feature_flags::BROWSER_USE_ENABLED {
+    if request.enabled && !crate::experimental_settings::browser_use_enabled(&app) {
         return Err(AppError::new(
             "browser_use_disabled",
             "Browser use is not available in this build.",
@@ -3914,7 +3914,7 @@ pub async fn routine_browser_access_set(
     let repos = crate::commands::repositories(&app).await?;
     let previous = repos.routine_browser_grant(job_id).await?;
     if request.enabled {
-        if !crate::feature_flags::BROWSER_USE_ENABLED {
+        if !crate::experimental_settings::browser_use_enabled(&app) {
             return Err(AppError::new(
                 "browser_use_disabled",
                 "Browser use is not available in this build.",
@@ -9435,7 +9435,7 @@ fn browser_access_flag_path(app: &AppHandle) -> Option<PathBuf> {
 /// disabled regardless of the flag file, so a grant persisted by an earlier
 /// build cannot resurface a hidden capability.
 pub(crate) fn browser_access_enabled(app: &AppHandle) -> bool {
-    crate::feature_flags::BROWSER_USE_ENABLED
+    crate::experimental_settings::browser_use_enabled(app)
         && browser_access_flag_path(app).is_some_and(|path| path.exists())
 }
 
@@ -9951,7 +9951,7 @@ async fn sync_june_browser_mcp(
     // While the Browser use feature flag is off, persisted routine opt-ins
     // stay dormant: no per-routine server is rendered and the broker's grant
     // table is replaced with nothing, so a dev-build opt-in cannot resurface.
-    let routine_grants = if crate::feature_flags::BROWSER_USE_ENABLED {
+    let routine_grants = if crate::experimental_settings::browser_use_enabled(app) {
         crate::commands::repositories(app)
             .await?
             .list_routine_browser_grants()

@@ -256,6 +256,10 @@ export type ProviderModelSettingsDto = {
   imageSafeMode: boolean;
   /** Whether the user chose "don't ask again" on the safe-mode consent dialog. */
   imageSafeModePromptDismissed: boolean;
+  /** Live transcript preview while recording. On by default; billed as extra
+   * usage and disclosed in Settings, so previews from this build are sent as
+   * consented (JUN-375). Off stops the preview lanes entirely. */
+  liveTranscription: boolean;
 };
 
 export type ProfileModelOverridesDto = {
@@ -1316,6 +1320,12 @@ export async function revealPath(path: string) {
   return invoke<void>("reveal_path", { path });
 }
 
+/** Refreshes the bundled load-unpacked Browser use extension in app data and
+ * reveals the destination in the platform file manager. */
+export async function unpackBundledExtension() {
+  return invoke<string>("unpack_bundled_extension");
+}
+
 // Null when the file can't be shown as text (too large or binary) — the
 // caller falls back to a download affordance instead of erroring.
 export async function hermesBridgeFileText(path: string) {
@@ -2066,6 +2076,14 @@ export async function clearVeniceApiKey() {
 // on, Venice blurs adult content.
 export async function setImageSafeMode(enabled: boolean) {
   return invoke<ProviderModelSettingsDto>("set_image_safe_mode", {
+    request: { enabled },
+  });
+}
+
+// Toggles the live transcript preview while recording. On by default; billed
+// as extra usage when on, no preview audio leaves the device when off.
+export async function setLiveTranscription(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_live_transcription", {
     request: { enabled },
   });
 }

@@ -143,7 +143,12 @@ _Avoid_: conversion, resampling (that is one step of it).
 **Live transcript preview**:
 Optional, ephemeral chunked transcription shown while recording. Revisable,
 never written to `transcripts`, never the note's source of truth (see
-[ADR-0002](docs/adr/0002-live-transcript-preview-strategy.md)).
+[ADR-0002](docs/adr/0002-live-transcript-preview-strategy.md)). The Settings
+control for it is labeled **Live transcription** (default on); its disclosure
+copy is the consent surface that makes previews billable extra usage, and
+turning it off stops the preview lanes (gated at capture start and re-checked
+per chunk, so it also takes effect mid-recording) (JUN-375, ADR-0002
+addendum).
 _Avoid_: realtime transcription, live captions, streaming.
 
 **Transcript coverage**:
@@ -255,14 +260,23 @@ _Avoid_: routine browser permission, global routine browsing.
 
 **Computer use**:
 The consent-gated capability (JUN-278 phase 2) that lets the agent operate
-Mac apps in the background - no cursor, focus, or Space theft - via the
-pinned runtime's computer-use toolset and a June-bundled pinned cua-driver.
+Mac apps in the background without moving the user's real pointer, stealing
+keyboard focus, or changing the active Space. It uses the pinned runtime's
+computer-use toolset and a June-bundled pinned cua-driver.
 The first access to each verified target app requires one authorization for
 the current attended task; requires a vision-capable model. Bringing a parked
 window into June's current Stage Manager group is part of that authorized app
 use and does not ask again.
 _Avoid_: desktop automation (vague), computer_use toolset (that is the
 upstream mechanism, not the June capability).
+
+**Computer use cursor**:
+The small, semi-transparent, click-through pointer June shows at Computer use's
+virtual action position while an attended task is active. It follows clicks and
+drags reported by the signed helper but never moves or follows the user's real
+pointer.
+_Avoid_: mouse cursor (ambiguous with the user's real pointer), cursor movement
+(the real pointer does not move).
 
 **Stored session id** vs **runtime session id**:
 The persistent id June keys all UI and history on, versus the live process's

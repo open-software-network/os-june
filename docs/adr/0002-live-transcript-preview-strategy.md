@@ -4,6 +4,40 @@
 
 accepted - Phase 1 microphone preview implemented
 
+## Addendum - 2026-07-21 (JUN-375: disclosed, optional, billed live transcription)
+
+Resolves the billing question this decision deferred ("Do not bill users for
+both preview and final transcription without an explicit product decision",
+and the matching open question). Narrowly superseded:
+
+- The Phase 1 zero-credit preview settlement was the no-consent-surface
+  default, not a permanent stance. June now ships a **Live transcription**
+  advanced setting, default on, whose copy discloses that the preview
+  transcribes audio twice and may use extra credits. A preview request from a
+  build that carries this setting is consented billable usage and settles at
+  the computed price clamped to the granted hold.
+- Turning the setting off gates both preview lanes at the capture source, so
+  a recording started with the setting off runs no preview lanes at all: no
+  preview audio leaves the device and nothing is authorized or billed. The
+  setting is also re-read per preview chunk in both lane workers, so turning
+  it off mid-recording stops new preview dispatch (and its billing) promptly
+  - at most one in-flight chunk completes - and turning it back on
+  mid-recording resumes the preview.
+- Wire compatibility is preserved: the desktop adds an optional
+  `previewOptedIn` form field to preview transcription requests. June API
+  settles opted-in previews at the computed price clamped to the granted
+  hold cap (same `clamp_to_cap` as the final path, so a partial grant never
+  hard-fails settlement after a successful transcription); requests without
+  the flag (every shipped client that predates the setting) keep the
+  zero-credit settlement from PR #869. No existing field or endpoint changed
+  shape.
+- Preview charges stay distinguishable in the ledger: the preview path keeps
+  its `note_transcribe_preview:*` idempotency-key prefix, separate from the
+  final `note_transcribe:*` charge for the same recording.
+
+Preview rate limiting for unconsented legacy clients remains open under
+JUN-372.
+
 ## Context
 
 Users want to see words appear while June is taking meeting notes. The product

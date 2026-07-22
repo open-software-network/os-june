@@ -140,8 +140,16 @@ jobs:
           WORKLOAD_IDENTITY_PROVIDER: ${{ vars.CHROME_WEB_STORE_WORKLOAD_IDENTITY_PROVIDER }}
           SERVICE_ACCOUNT: ${{ vars.CHROME_WEB_STORE_SERVICE_ACCOUNT }}
           PUBLISHER_ID: ${{ vars.CHROME_WEB_STORE_PUBLISHER_ID }}
+          PENDING_REVIEW_HOLD: ${{ vars.CHROME_WEB_STORE_PENDING_REVIEW }}
         run: |
           set -euo pipefail
+          # Manual hold: while the store bootstrap item is in Chrome review,
+          # promoting an RC that froze extension work would touch the store
+          # mid-review. Delete CHROME_WEB_STORE_PENDING_REVIEW to lift it.
+          if [ -n "${PENDING_REVIEW_HOLD:-}" ]; then
+            echo "::error::CHROME_WEB_STORE_PENDING_REVIEW is set; this RC carries an extension submission and cannot promote during the store-review hold: ${PENDING_REVIEW_HOLD}"
+            exit 1
+          fi
           missing=0
           for name in WORKLOAD_IDENTITY_PROVIDER SERVICE_ACCOUNT PUBLISHER_ID; do
             if [ -z "${!name:-}" ]; then

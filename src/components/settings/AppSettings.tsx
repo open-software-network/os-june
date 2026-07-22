@@ -29,9 +29,12 @@ import {
   setDictationMicrophone,
   setDictationShortcut,
   setImageSafeMode,
+  setLiveTranscription,
   setCostQuality,
   setVeniceApiKey,
   setVeniceModel,
+  connectorsApplyRuntime,
+  unpackBundledExtension,
 } from "../../lib/tauri";
 import { LANGUAGE_OPTIONS, languageLabel } from "../../lib/dictation-languages";
 import { autostartEnabled, autostartSupported, setAutostartEnabled } from "../../lib/autostart";
@@ -69,6 +72,7 @@ import { SegmentedControl } from "../ui/SegmentedControl";
 import { InlineNotice } from "../ui/InlineNotice";
 import { Switch } from "../ui/Switch";
 import { HoverTip } from "../ui/HoverTip";
+import { toast } from "../ui/Toaster";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
 import type { ReportCategory } from "../agent/composer/reportCategory";
 import { getStoredTheme, setStoredTheme, type ThemePreference } from "../../lib/theme";
@@ -118,6 +122,12 @@ import {
 } from "./ModelPickerPopover";
 import { DEFAULT_IMAGE_MODEL, imageModelCatalog } from "../../lib/image-models";
 import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
+import {
+  INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE,
+  registerExperimentalUnlockClick,
+  setExperimentalFlags,
+  useExperimentalFlags,
+} from "../../lib/experimental-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ConnectorsSection } from "./ConnectorsSection";
@@ -297,6 +307,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   // On by default, matching the Rust providers default.
   imageSafeMode: true,
   imageSafeModePromptDismissed: false,
+  liveTranscription: true,
 };
 
 type ProviderModelSettingsSnapshot = {
@@ -544,6 +555,19 @@ export function AppSettings({
   const fontScale = useFontScaleId();
   const [dateFormat, setDateFormat] = useState<DateFormatPreference>(() => getStoredDateFormat());
   const [releaseChannel, setReleaseChannelValue] = useState<ReleaseChannel>("stable");
+  const experimentalFlags = useExperimentalFlags();
+  const experimentalUnlockClicksRef = useRef({
+    ...INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE,
+  });
+  const experimentalUnlockingRef = useRef(false);
+  const runtimeFlagBaselineCandidateRef = useRef<boolean | null>(null);
+  const runtimeFlagStatusLoadedRef = useRef(false);
+  const [runtimeBrowserUseBaseline, setRuntimeBrowserUseBaseline] = useState<boolean | null>(null);
+  const [agentRuntimeRunning, setAgentRuntimeRunning] = useState(false);
+  const [experimentalOperation, setExperimentalOperation] = useState<
+    "flags" | "restart" | "unpack"
+  >();
+  const [experimentalError, setExperimentalError] = useState<string>();
   // Set only when a leave-rc switch turns up an installable stable, so the
   // bespoke in-context confirm below the toggle can name the exact version.
   const [reconcileVersion, setReconcileVersion] = useState<string>();
@@ -617,6 +641,28 @@ export function AppSettings({
     capabilities.platform === "windows"
       ? "Shortcut must include Ctrl, Alt, Shift, or Win."
       : MODIFIER_REQUIRED_MESSAGE;
+
+  useEffect(() => {
+    if (!experimentalFlags.loaded || runtimeFlagStatusLoadedRef.current) return;
+    runtimeFlagBaselineCandidateRef.current ??= experimentalFlags.browserUseEnabled;
+    let cancelled = false;
+    const baseline = runtimeFlagBaselineCandidateRef.current;
+    void hermesBridgeStatus()
+      .then((bridge) => {
+        if (cancelled) return;
+        runtimeFlagStatusLoadedRef.current = true;
+        setAgentRuntimeRunning(bridge.running);
+        setRuntimeBrowserUseBaseline(baseline);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        runtimeFlagStatusLoadedRef.current = true;
+        setRuntimeBrowserUseBaseline(baseline);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [experimentalFlags.loaded, experimentalFlags.browserUseEnabled]);
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -1403,6 +1449,20 @@ export function AppSettings({
     }
   }
 
+  async function toggleLiveTranscription(enabled: boolean) {
+    try {
+      const next = await setLiveTranscription(enabled);
+      setProviderSettings(next);
+      setStatus(
+        enabled
+          ? "Live transcription on: the transcript streams while you record."
+          : "Live transcription off: the transcript appears after the recording ends.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   async function toggleImageSafeMode(enabled: boolean) {
     try {
       const next = await setImageSafeMode(enabled);
@@ -1626,6 +1686,77 @@ export function AppSettings({
   function languagePopoverStyle(): CSSProperties {
     return selectPopoverStyle(languagePopoverPlacement, selectedLanguageIndex);
   }
+
+  function handleReleaseVersionClick() {
+    if (
+      !experimentalFlags.loaded ||
+      experimentalFlags.unlocked ||
+      experimentalUnlockingRef.current
+    ) {
+      return;
+    }
+    const next = registerExperimentalUnlockClick(experimentalUnlockClicksRef.current, Date.now());
+    experimentalUnlockClicksRef.current = next.state;
+    if (!next.unlocked) return;
+
+    experimentalUnlockingRef.current = true;
+    setExperimentalError(undefined);
+    void setExperimentalFlags({
+      unlocked: true,
+      browser_use: experimentalFlags.browser_use,
+    })
+      .then(() => toast("Experiments are unlocked"))
+      .catch((error) => setExperimentalError(messageFromError(error)))
+      .finally(() => {
+        experimentalUnlockingRef.current = false;
+      });
+  }
+
+  async function updateExperimentalFlags(update: { unlocked?: boolean; browser_use?: boolean }) {
+    setExperimentalOperation("flags");
+    setExperimentalError(undefined);
+    try {
+      await setExperimentalFlags({
+        unlocked: update.unlocked ?? experimentalFlags.unlocked,
+        browser_use: update.browser_use ?? experimentalFlags.browser_use,
+      });
+    } catch (error) {
+      setExperimentalError(messageFromError(error));
+    } finally {
+      setExperimentalOperation(undefined);
+    }
+  }
+
+  async function restartAgentForExperimentalFlags() {
+    setExperimentalOperation("restart");
+    setExperimentalError(undefined);
+    try {
+      await connectorsApplyRuntime();
+      setRuntimeBrowserUseBaseline(experimentalFlags.browserUseEnabled);
+      setAgentRuntimeRunning((await hermesBridgeStatus()).running);
+    } catch (error) {
+      setExperimentalError(messageFromError(error));
+    } finally {
+      setExperimentalOperation(undefined);
+    }
+  }
+
+  async function unpackExperimentalExtension() {
+    setExperimentalOperation("unpack");
+    setExperimentalError(undefined);
+    try {
+      await unpackBundledExtension();
+    } catch (error) {
+      setExperimentalError(messageFromError(error));
+    } finally {
+      setExperimentalOperation(undefined);
+    }
+  }
+
+  const experimentalRestartNeeded =
+    agentRuntimeRunning &&
+    runtimeBrowserUseBaseline !== null &&
+    runtimeBrowserUseBaseline !== experimentalFlags.browserUseEnabled;
 
   return skillDetailOpen && openSkill ? (
     // Notes-parity drill-in: the detail shell replaces the settings page
@@ -2199,6 +2330,23 @@ export function AppSettings({
                   </button>
                   {showMoreModelOptions ? (
                     <div id="models-more-options-panel" className="settings-more-options-panel">
+                      <div className="settings-row">
+                        <div className="settings-row-info">
+                          <h3 className="settings-row-title">Live transcription</h3>
+                          <p className="settings-row-description">
+                            Show a live transcript while you record. This transcribes audio twice,
+                            so it may use extra credits; turning it off shows the transcript only
+                            after the recording ends.
+                          </p>
+                        </div>
+                        <div className="settings-row-control">
+                          <Switch
+                            checked={providerSettings.liveTranscription}
+                            aria-label="Show a live transcript while recording"
+                            onCheckedChange={toggleLiveTranscription}
+                          />
+                        </div>
+                      </div>
                       <VeniceApiKeyRow
                         configured={providerSettings.veniceApiKeyConfigured}
                         value={veniceApiKeyDraft}
@@ -2545,7 +2693,13 @@ export function AppSettings({
                     <h3 className="settings-row-title settings-meta-label">Release version</h3>
                   </div>
                   <div className="settings-row-control">
-                    <span className="settings-meta-value">{APP_VERSION}</span>
+                    <button
+                      type="button"
+                      className="settings-meta-value settings-meta-unlock-trigger"
+                      onClick={handleReleaseVersionClick}
+                    >
+                      {APP_VERSION}
+                    </button>
                   </div>
                 </div>
 
@@ -2711,6 +2865,100 @@ export function AppSettings({
                 ) : null}
               </div>
             </div>
+
+            {experimentalFlags.unlocked ? (
+              <div className="settings-card experiments-card">
+                <div className="settings-rows">
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Experiments</h3>
+                      <p className="settings-row-description">
+                        Runtime overrides for features that ship dark. They apply to this install
+                        only.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={experimentalOperation !== undefined}
+                        onClick={() => void updateExperimentalFlags({ unlocked: false })}
+                      >
+                        Hide again
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Browser use</h3>
+                      <p className="settings-row-description">
+                        Enable Browser use on this install while the public feature remains off.
+                        Turning it off applies fully after June restarts.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={experimentalFlags.browser_use}
+                        disabled={experimentalOperation !== undefined}
+                        aria-label="Enable experimental Browser use"
+                        onCheckedChange={(browser_use) =>
+                          void updateExperimentalFlags({ browser_use })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  {experimentalRestartNeeded ? (
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <h3 className="settings-row-title">Agent runtime</h3>
+                        <p className="settings-row-description">
+                          Restart the agent to apply the Browser use change.
+                        </p>
+                      </div>
+                      <div className="settings-row-control">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={experimentalOperation === "restart"}
+                          onClick={() => void restartAgentForExperimentalFlags()}
+                        >
+                          {experimentalOperation === "restart" ? "Restarting..." : "Restart agent"}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Browser extension (unpacked)</h3>
+                      <p className="settings-row-description">
+                        Open chrome://extensions, turn on Developer mode, choose Load unpacked, and
+                        select the revealed folder.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        disabled={experimentalOperation === "unpack"}
+                        onClick={() => void unpackExperimentalExtension()}
+                      >
+                        {experimentalOperation === "unpack"
+                          ? "Unpacking..."
+                          : "Unpack and reveal folder"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {experimentalError ? (
+                  <p className="settings-row-error" role="alert">
+                    {experimentalError}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </section>
         ) : null}
       </div>
