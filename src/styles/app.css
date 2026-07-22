@@ -8319,20 +8319,33 @@ button.agent-user-attachment:hover {
   --titlebar-controls-gap: var(--sp-3);
 }
 
-/* Windows-only: let the sidebar toggle ride with the first tab instead of
- * staying pinned at the left edge. Anchored to the animated sidebar edge
- * (minus the toggle width and a gap) so it sits immediately to the left of
- * the first tab in expanded state, and floors at --sp-3 when collapsed.
- * Because --sidebar-w-current is a registered @property whose transition
- * lives on .app-shell, the toggle tweens on the same clock as the grid and
- * the tab strip — no drift mid-snap, and it jumps in sync on button presses
- * (data-sidebar-transition="none"). macOS is untouched: it keeps the fixed
- * 80px left from the rule above. */
-.app-shell[data-platform="windows"] .chrome-sidebar-toggle {
+/* Windows-only: when the sidebar is expanded and in default mode, visually
+ * place the toggle in the sidebar header band — in line with the June logo,
+ * floated to the right edge with space between. The toggle stays position:fixed
+ * (owned by App.tsx) so it never unmounts; this is pure visual placement.
+ *
+ * Vertically: drop below the titlebar into the sidebar header band.
+ * Horizontally: right-align with the header's content edge, riding the
+ * animated --sidebar-w-current so the toggle slides with the sidebar on the
+ * same clock as the grid and tab strip.
+ *
+ * When collapsed or in Settings, this selector stops matching and the toggle
+ * falls back to the base rule (titlebar band, 8px from left) — the collapsed
+ * sidebar is display:none so the header doesn't exist, and Settings has no
+ * sidebar-header. macOS is untouched: no data-platform="windows" attribute. */
+.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"]) > .chrome-sidebar-toggle {
+  top: calc(var(--titlebar-h) + var(--sp-3));
   left: max(
     var(--sp-3),
-    calc(var(--sidebar-w-current) - var(--control-md) - var(--sp-3))
+    calc(var(--sidebar-w-current) - var(--sp-3) - var(--sp-1) - var(--control-md))
   );
+}
+
+/* Reserve the trailing header slot on Windows so the recording indicator
+ * (or the brand when there's no recording) doesn't sit under the fixed
+ * toggle. The gap between the indicator and the toggle is --sp-2. */
+.app-shell[data-platform="windows"] .sidebar[data-mode="default"] .sidebar-header {
+  padding-right: calc(var(--sp-1) + var(--control-md) + var(--sp-2));
 }
 
 .chrome-sidebar-toggle {

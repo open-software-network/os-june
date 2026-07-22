@@ -131,18 +131,33 @@ describe("TabBar", () => {
     expect(rule).not.toContain("--titlebar-controls-nudge");
   });
 
-  it("lets the Windows sidebar toggle ride with the first tab", () => {
-    const rule = cssRuleFor('.app-shell[data-platform="windows"] .chrome-sidebar-toggle');
+  it("places the Windows sidebar toggle in the sidebar header band when expanded", () => {
+    const toggleRule = cssRuleFor(
+      '.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"]) > .chrome-sidebar-toggle',
+    );
 
-    // Anchored to the animated sidebar edge so the toggle sits next to the
-    // first tab when expanded and floors at --sp-3 when collapsed. The shared
-    // --sidebar-w-current clock keeps it in lockstep with the grid + tab strip.
-    expect(rule).toContain("var(--sidebar-w-current)");
-    expect(rule).toContain("var(--control-md)");
-    expect(rule).toContain("var(--sp-3)");
+    // Vertically aligned with the sidebar header (below the titlebar band).
+    expect(toggleRule).toContain("calc(var(--titlebar-h) + var(--sp-3))");
+    // Horizontally rides the animated sidebar edge, floored at --sp-3.
+    expect(toggleRule).toContain("var(--sidebar-w-current)");
+    expect(toggleRule).toContain("var(--control-md)");
+    expect(toggleRule).toContain("var(--sp-3)");
+    expect(toggleRule).toContain("var(--sp-1)");
     // macOS keeps the fixed calc(var(--titlebar-controls-end) + …) left; the
     // Windows override must not reintroduce that token on the toggle.
-    expect(rule).not.toContain("--titlebar-controls-end");
+    expect(toggleRule).not.toContain("--titlebar-controls-end");
+  });
+
+  it("reserves a trailing header slot on Windows for the fixed sidebar toggle", () => {
+    const headerRule = cssRuleFor(
+      '.app-shell[data-platform="windows"] .sidebar[data-mode="default"] .sidebar-header',
+    );
+
+    // The reserved padding accounts for the toggle width + a gap so the
+    // recording indicator (or the brand) doesn't sit under the fixed toggle.
+    expect(headerRule).toContain("var(--control-md)");
+    expect(headerRule).toContain("var(--sp-2)");
+    expect(headerRule).toContain("var(--sp-1)");
   });
 
   it("keeps the tab strip full-width when the files panel is open", () => {
