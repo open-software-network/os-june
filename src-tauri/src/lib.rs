@@ -6,6 +6,7 @@ mod browser_broker;
 pub mod claude_projects;
 pub mod commands;
 pub mod computer_use;
+mod computer_use_cursor;
 mod computer_use_permission_drag;
 pub mod connectors;
 pub mod db;

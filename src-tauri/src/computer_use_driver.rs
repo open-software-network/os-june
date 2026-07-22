@@ -15,7 +15,12 @@ use cua_driver_core::{
 #[cfg(target_os = "macos")]
 use serde_json::{json, Value};
 #[cfg(target_os = "macos")]
-use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    path::PathBuf,
+    sync::Arc,
+};
 #[cfg(target_os = "macos")]
 use tokio::{
     io::{
@@ -28,6 +33,15 @@ use tokio::{
 const UPSTREAM_VERSION: &str = "0.5.0";
 const UPSTREAM_COMMIT: &str = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1";
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
+#[cfg(target_os = "macos")]
+const POINTER_NOTIFICATION_METHOD: &str = "june/pointer";
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScreenshotSize {
+    width: f64,
+    height: f64,
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Debug, PartialEq, Eq)]
@@ -207,6 +221,7 @@ where
     registry.init_self_weak();
     let allowed: HashSet<&'static str> = ALLOWED_TOOLS.iter().copied().collect();
     let mut authenticated = false;
+    let mut screenshot_sizes = HashMap::new();
     let mut reader = BufReader::new(reader);
     let mut stdout = tokio::io::BufWriter::new(writer);
 
@@ -269,9 +284,27 @@ where
                     Response::ok(id, join_current_stage_result(&call.args))
                 }
                 Ok(call) => {
-                    let result = registry.invoke(&call.name, call.args).await;
+                    let notification =
+                        pointer_notification(&call.name, &call.args, &screenshot_sizes);
+                    let tool_name = call.name;
+                    let tool_args = call.args;
+                    let result = registry.invoke(&tool_name, tool_args.clone()).await;
                     match serde_json::to_value(result) {
-                        Ok(result) => Response::ok(id, result),
+                        Ok(result) => {
+                            if let Some(notification) =
+                                pointer_notification_for_result(notification, &result)
+                            {
+                                write_json(&mut stdout, &notification).await?;
+                            }
+                            if tool_name == "get_window_state" {
+                                remember_screenshot_size(
+                                    &mut screenshot_sizes,
+                                    &tool_args,
+                                    &result,
+                                );
+                            }
+                            Response::ok(id, result)
+                        }
                         Err(error) => {
                             Response::error(id, -32603, format!("Serialize error: {error}"))
                         }
@@ -733,6 +766,156 @@ fn arguments_are_narrow(tool: &str, arguments: &Value) -> bool {
 }
 
 #[cfg(target_os = "macos")]
+fn remember_screenshot_size(
+    sizes: &mut HashMap<(i64, u64), ScreenshotSize>,
+    arguments: &Value,
+    result: &Value,
+) {
+    if tool_result_is_error(result) {
+        return;
+    }
+    let Some((pid, window_id)) = action_identity(arguments) else {
+        return;
+    };
+    let Some(structured) = result
+        .get("structuredContent")
+        .or_else(|| result.get("structured_content"))
+    else {
+        return;
+    };
+    let Some(size) = screenshot_size(
+        structured.get("screenshot_width"),
+        structured.get("screenshot_height"),
+    ) else {
+        return;
+    };
+    sizes.insert((pid, window_id), size);
+}
+
+#[cfg(target_os = "macos")]
+fn pointer_notification_for_result(notification: Option<Value>, result: &Value) -> Option<Value> {
+    (!tool_result_is_error(result))
+        .then_some(notification)
+        .flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn tool_result_is_error(result: &Value) -> bool {
+    result.get("isError").and_then(Value::as_bool) == Some(true)
+}
+
+#[cfg(target_os = "macos")]
+fn pointer_notification(
+    tool: &str,
+    arguments: &Value,
+    sizes: &HashMap<(i64, u64), ScreenshotSize>,
+) -> Option<Value> {
+    let (pid, window_id) = action_identity(arguments)?;
+    match tool {
+        "click" | "double_click" | "right_click" => {
+            let (x, y, size) = if let (Some(x), Some(y)) = (
+                json_number(arguments.get("x")),
+                json_number(arguments.get("y")),
+            ) {
+                (x, y, *sizes.get(&(pid, window_id))?)
+            } else {
+                let element_index = arguments
+                    .get("element_index")?
+                    .as_u64()
+                    .and_then(|index| u32::try_from(index).ok())?;
+                let (x, y) = platform_macos::recording_hooks::element_window_local_xy(
+                    window_id,
+                    pid,
+                    element_index,
+                )?;
+                // element_window_local_xy captures internally, so this is a
+                // second capture per element action. Deliberate: the AX
+                // coordinates must be paired with dimensions from the same
+                // moment - reusing the cached get_window_state size could
+                // pair stale dimensions with fresh coordinates and offset
+                // the cursor overlay after a window resize.
+                let png = platform_macos::capture::screenshot_window_bytes(
+                    u32::try_from(window_id).ok()?,
+                )
+                .ok()?;
+                (x, y, png_screenshot_size(&png)?)
+            };
+            Some(json!({
+                "jsonrpc": "2.0",
+                "method": POINTER_NOTIFICATION_METHOD,
+                "params": {
+                    "kind": "point",
+                    "pid": pid,
+                    "window_id": window_id,
+                    "x": x,
+                    "y": y,
+                    "screenshot_width": size.width,
+                    "screenshot_height": size.height,
+                }
+            }))
+        }
+        "drag" => {
+            let size = *sizes.get(&(pid, window_id))?;
+            Some(json!({
+                "jsonrpc": "2.0",
+                "method": POINTER_NOTIFICATION_METHOD,
+                "params": {
+                    "kind": "drag",
+                    "pid": pid,
+                    "window_id": window_id,
+                    "from_x": json_number(arguments.get("from_x"))?,
+                    "from_y": json_number(arguments.get("from_y"))?,
+                    "to_x": json_number(arguments.get("to_x"))?,
+                    "to_y": json_number(arguments.get("to_y"))?,
+                    "screenshot_width": size.width,
+                    "screenshot_height": size.height,
+                    // Mirror the pinned driver's `duration_ms` argument
+                    // (default 500) instead of assuming the default.
+                    "duration_ms": arguments
+                        .get("duration_ms")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(500),
+                }
+            }))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn action_identity(arguments: &Value) -> Option<(i64, u64)> {
+    let pid = arguments.get("pid")?.as_i64().filter(|pid| *pid > 0)?;
+    let window_id = arguments
+        .get("window_id")?
+        .as_u64()
+        .filter(|window_id| *window_id > 0)?;
+    Some((pid, window_id))
+}
+
+#[cfg(target_os = "macos")]
+fn screenshot_size(width: Option<&Value>, height: Option<&Value>) -> Option<ScreenshotSize> {
+    Some(ScreenshotSize {
+        width: json_number(width).filter(|value| *value > 0.0)?,
+        height: json_number(height).filter(|value| *value > 0.0)?,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn json_number(value: Option<&Value>) -> Option<f64> {
+    value?.as_f64().filter(|value| value.is_finite())
+}
+
+#[cfg(target_os = "macos")]
+fn png_screenshot_size(png: &[u8]) -> Option<ScreenshotSize> {
+    if png.len() < 24 || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let width = u32::from_be_bytes(png[16..20].try_into().ok()?) as f64;
+    let height = u32::from_be_bytes(png[20..24].try_into().ok()?) as f64;
+    (width > 0.0 && height > 0.0).then_some(ScreenshotSize { width, height })
+}
+
+#[cfg(target_os = "macos")]
 async fn write_response<W>(
     stdout: &mut tokio::io::BufWriter<W>,
     response: Response,
@@ -740,7 +923,16 @@ async fn write_response<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let mut bytes = serde_json::to_vec(&response)?;
+    write_json(stdout, &response).await
+}
+
+#[cfg(target_os = "macos")]
+async fn write_json<W, T>(stdout: &mut tokio::io::BufWriter<W>, value: &T) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin,
+    T: serde::Serialize + ?Sized,
+{
+    let mut bytes = serde_json::to_vec(value)?;
     bytes.push(b'\n');
     stdout.write_all(&bytes).await?;
     stdout.flush().await?;
@@ -887,5 +1079,150 @@ mod tests {
             "click",
             &json!({ "pid": 1, "window_id": 2, "x": 3, "y": 4, "session": "bypass" }),
         ));
+    }
+
+    #[test]
+    fn successful_capture_dimensions_drive_coordinate_pointer_notifications() {
+        let arguments = json!({ "pid": 42, "window_id": 84, "capture_mode": "both" });
+        let result = json!({
+            "content": [],
+            "structuredContent": {
+                "pid": 42,
+                "window_id": 84,
+                "screenshot_width": 1800,
+                "screenshot_height": 1400,
+            }
+        });
+        let mut sizes = HashMap::new();
+        remember_screenshot_size(&mut sizes, &arguments, &result);
+
+        assert_eq!(
+            sizes.get(&(42, 84)),
+            Some(&ScreenshotSize {
+                width: 1800.0,
+                height: 1400.0,
+            })
+        );
+        assert_eq!(
+            pointer_notification(
+                "click",
+                &json!({ "pid": 42, "window_id": 84, "x": 900, "y": 350 }),
+                &sizes,
+            ),
+            Some(json!({
+                "jsonrpc": "2.0",
+                "method": POINTER_NOTIFICATION_METHOD,
+                "params": {
+                    "kind": "point",
+                    "pid": 42,
+                    "window_id": 84,
+                    "x": 900.0,
+                    "y": 350.0,
+                    "screenshot_width": 1800.0,
+                    "screenshot_height": 1400.0,
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn failed_actions_do_not_publish_pointer_notifications() {
+        let notification = Some(json!({
+            "jsonrpc": "2.0",
+            "method": POINTER_NOTIFICATION_METHOD,
+            "params": { "kind": "point" },
+        }));
+
+        assert_eq!(
+            pointer_notification_for_result(
+                notification.clone(),
+                &json!({ "isError": true, "content": [] }),
+            ),
+            None
+        );
+        assert_eq!(
+            pointer_notification_for_result(notification.clone(), &json!({ "content": [] })),
+            notification
+        );
+    }
+
+    #[test]
+    fn drag_notification_carries_both_endpoints_and_upstream_duration() {
+        let sizes = HashMap::from([(
+            (42, 84),
+            ScreenshotSize {
+                width: 1800.0,
+                height: 1400.0,
+            },
+        )]);
+        let notification = pointer_notification(
+            "drag",
+            &json!({
+                "pid": 42,
+                "window_id": 84,
+                "from_x": 100,
+                "from_y": 200,
+                "to_x": 600,
+                "to_y": 700,
+            }),
+            &sizes,
+        )
+        .expect("drag notification");
+
+        assert_eq!(notification["params"]["kind"], "drag");
+        assert_eq!(notification["params"]["from_x"], 100.0);
+        assert_eq!(notification["params"]["to_y"], 700.0);
+        assert_eq!(notification["params"]["duration_ms"], 500);
+
+        let explicit = pointer_notification(
+            "drag",
+            &json!({
+                "pid": 42,
+                "window_id": 84,
+                "from_x": 100,
+                "from_y": 200,
+                "to_x": 600,
+                "to_y": 700,
+                "duration_ms": 1200,
+            }),
+            &sizes,
+        )
+        .expect("drag notification with explicit duration");
+        assert_eq!(explicit["params"]["duration_ms"], 1200);
+    }
+
+    #[test]
+    fn invalid_or_missing_screenshot_dimensions_fail_closed() {
+        let mut sizes = HashMap::new();
+        remember_screenshot_size(
+            &mut sizes,
+            &json!({ "pid": 42, "window_id": 84 }),
+            &json!({
+                "isError": true,
+                "structuredContent": {
+                    "screenshot_width": 1800,
+                    "screenshot_height": 1400,
+                }
+            }),
+        );
+        assert!(sizes.is_empty());
+        assert!(pointer_notification(
+            "click",
+            &json!({ "pid": 42, "window_id": 84, "x": 1, "y": 2 }),
+            &sizes,
+        )
+        .is_none());
+
+        let mut png = vec![0; 24];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[16..20].copy_from_slice(&1800_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&1400_u32.to_be_bytes());
+        assert_eq!(
+            png_screenshot_size(&png),
+            Some(ScreenshotSize {
+                width: 1800.0,
+                height: 1400.0,
+            })
+        );
     }
 }
