@@ -4,6 +4,7 @@ import {
   clearTerminalLiveTranscriptEvents,
   coalesceLiveTranscriptEventsForDisplay,
   reconcileLiveTranscriptEvents,
+  transcriptFollowLatestKey,
   upsertLiveTranscriptEvent,
 } from "../lib/live-transcript-preview";
 import type { LiveTranscriptEventDto, TranscriptDto } from "../lib/tauri";
@@ -236,5 +237,29 @@ describe("live transcript preview", () => {
         { ...system, recordingSessionId: "session-3" },
       ]),
     ).not.toBe(key);
+  });
+
+  it("keeps the follow-latest key stable across equivalent polling objects", () => {
+    const preview = [liveEvent()];
+    const persisted = [persistedTurn()];
+
+    expect(transcriptFollowLatestKey(preview, persisted)).toBe(
+      transcriptFollowLatestKey(
+        preview.map((event) => ({ ...event })),
+        persisted.map((turn) => ({ ...turn })),
+      ),
+    );
+  });
+
+  it("changes the follow-latest key when visible transcript content changes", () => {
+    const initial = transcriptFollowLatestKey([liveEvent()], []);
+    const revisedPreview = transcriptFollowLatestKey(
+      [liveEvent({ text: "Revised preview words", endMs: 9000 })],
+      [],
+    );
+    const persistedReplacement = transcriptFollowLatestKey([], [persistedTurn()]);
+
+    expect(revisedPreview).not.toBe(initial);
+    expect(persistedReplacement).not.toBe(initial);
   });
 });

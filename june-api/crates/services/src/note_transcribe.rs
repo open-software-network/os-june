@@ -1,7 +1,7 @@
 use crate::{
     charge_flow::{
-        AuthorizeParams, ChargeParams, ReleaseHoldParams, authorize_or_deny, charge, clamp_to_cap,
-        log_settled, release_hold, zero_receipt,
+        AuthorizeParams, ChargeParams, ReleaseHoldOutcome, ReleaseHoldParams, authorize_or_deny,
+        charge, clamp_to_cap, release_hold, zero_receipt,
     },
     error::ServiceError,
     metering::{log_skipped_user_venice_key, uses_user_venice_key_for_model},
@@ -42,6 +42,17 @@ struct PreparedNoteTranscription {
     estimate: Credits,
 }
 
+/// Borrowed identity fields for settling a failed preview, kept separate
+/// because the transcription request takes ownership of the audio fields.
+struct FailedPreviewSettlement<'a> {
+    user_id: &'a UserId,
+    note_id: &'a str,
+    model_id: &'a ModelId,
+    seconds: u64,
+    actual: Credits,
+    action_token: String,
+}
+
 impl NoteTranscribeService {
     pub fn new(deps: NoteTranscribeServiceDeps) -> Self {
         Self {
@@ -66,6 +77,7 @@ impl NoteTranscribeService {
             user_id = %params.user_id.0,
             note_id = %params.note_id,
             model = %params.model_id.0,
+            preview = params.preview,
             audio_bytes = params.audio.len(),
             audio_format = ?format,
             "note_transcribe: handler entered"
@@ -79,11 +91,19 @@ impl NoteTranscribeService {
         let actual = self
             .pricing
             .price_audio_seconds(&params.model_id.0, seconds)?;
-        // The Hold must cover the already-known price: the charge below is
-        // clamped to the Hold's cap, so a flat-only estimate would silently
-        // underbill any audio priced above it. The flat value remains the
-        // floor, keeping short-audio holds exactly as before.
-        let estimate = Credits(actual.0.max(self.flat_estimate_credits));
+        // Preview is not charged, but it still takes an OS Accounts Hold sized
+        // to the already-known price. A valid header-only audio file can probe
+        // as zero seconds, so keep a one-credit minimum that reserves a grant.
+        // This preserves balance and generic open-grant checks; dedicated
+        // preview rate and concurrency limits are a separate control. Final
+        // note transcription keeps the flat floor, and raises it when the
+        // computed price is higher so settlement cannot be silently clamped
+        // below actual usage.
+        let estimate = if params.preview {
+            Credits(actual.0.max(1))
+        } else {
+            Credits(actual.0.max(self.flat_estimate_credits))
+        };
         let prepared = PreparedNoteTranscription {
             params,
             format,
@@ -175,7 +195,9 @@ impl NoteTranscribeService {
         tracing::info!(
             note_id = %params.note_id,
             model = %params.model_id.0,
-            seconds,
+            preview = true,
+            probed_seconds = seconds,
+            computed_credits = actual.0,
             estimate_credits = estimate.0,
             "note_transcribe: preview request authorized"
         );
@@ -194,38 +216,93 @@ impl NoteTranscribeService {
         {
             Ok(transcript) => transcript,
             Err(error) => {
-                // Failed previews used to settle at the full audio price just
-                // to avoid stranding the hold; release bills nothing instead.
-                release_hold(ReleaseHoldParams {
-                    os_accounts: self.os_accounts.as_ref(),
-                    action: ActionSlug::NoteTranscribe,
+                self.release_failed_preview(FailedPreviewSettlement {
+                    user_id: &params.user_id,
+                    note_id: &params.note_id,
+                    model_id: &params.model_id,
+                    seconds,
+                    actual,
                     action_token: authorization.action_token,
                 })
                 .await;
                 return Err(error.into());
             }
         };
-        let charge_credits = clamp_to_cap(actual, authorization.cap_credits);
-        let idempotency_key = format!(
+        // Keep the legacy zero-credit key byte-identical; only consented,
+        // billable previews get a distinct settlement namespace.
+        let mut idempotency_key = format!(
             "note_transcribe_preview:{}:{}:{}",
             params.user_id.0, params.note_id, audio_digest
         );
+        if params.preview_opted_in {
+            idempotency_key.push_str(":opted");
+        }
+        // Consented previews (disclosed setting, user left it on) bill the
+        // computed price clamped to the authorized hold cap, exactly like the
+        // final path; everything else settles at zero per ADR-0002.
+        let settled = if params.preview_opted_in {
+            clamp_to_cap(actual, authorization.cap_credits)
+        } else {
+            Credits(0)
+        };
         let receipt = charge(ChargeParams {
             os_accounts: self.os_accounts.as_ref(),
             action_token: authorization.action_token,
-            credits: charge_credits,
+            credits: settled,
             idempotency_key,
         })
         .await?;
         tracing::info!(
+            user_id = %params.user_id.0,
+            action = ActionSlug::NoteTranscribe.as_str(),
             note_id = %params.note_id,
-            credits_charged = receipt.credits_charged.0,
-            "note_transcribe: preview hold settled"
+            model = %params.model_id.0,
+            preview = true,
+            preview_opted_in = params.preview_opted_in,
+            probed_seconds = seconds,
+            computed_credits = actual.0,
+            settled_credits = receipt.credits_charged.0,
+            idempotent_replay = receipt.idempotent_replay,
+            "settled note transcription"
         );
         Ok(NoteTranscribeOutput {
             transcript,
             receipt,
         })
+    }
+
+    /// Settles a failed preview. Failed previews used to settle at the full
+    /// audio price just to avoid stranding the hold; release bills nothing
+    /// instead.
+    async fn release_failed_preview(&self, settlement: FailedPreviewSettlement<'_>) {
+        let FailedPreviewSettlement {
+            user_id,
+            note_id,
+            model_id,
+            seconds,
+            actual,
+            action_token,
+        } = settlement;
+        let release_outcome = release_hold(ReleaseHoldParams {
+            os_accounts: self.os_accounts.as_ref(),
+            action: ActionSlug::NoteTranscribe,
+            action_token,
+        })
+        .await;
+        if let ReleaseHoldOutcome::Settled(receipt) = release_outcome {
+            tracing::info!(
+                user_id = %user_id.0,
+                action = ActionSlug::NoteTranscribe.as_str(),
+                note_id = %note_id,
+                model = %model_id.0,
+                preview = true,
+                probed_seconds = seconds,
+                computed_credits = actual.0,
+                settled_credits = receipt.credits_charged.0,
+                idempotent_replay = receipt.idempotent_replay,
+                "settled failed note transcription"
+            );
+        }
     }
 
     async fn transcribe_charged(
@@ -296,11 +373,17 @@ impl NoteTranscribeService {
             idempotency_key,
         })
         .await?;
-        log_settled(
-            ActionSlug::NoteTranscribe,
-            &params.user_id,
-            &params.model_id.0,
-            &receipt,
+        tracing::info!(
+            user_id = %params.user_id.0,
+            action = ActionSlug::NoteTranscribe.as_str(),
+            note_id = %params.note_id,
+            model = %params.model_id.0,
+            preview = false,
+            probed_seconds = seconds,
+            computed_credits = actual.0,
+            settled_credits = receipt.credits_charged.0,
+            idempotent_replay = receipt.idempotent_replay,
+            "settled note transcription",
         );
         Ok(NoteTranscribeOutput {
             transcript,
@@ -320,6 +403,12 @@ pub struct NoteTranscribeParams {
     pub language: Option<String>,
     pub model_id: ModelId,
     pub preview: bool,
+    /// True only when the client build carries the disclosed Live
+    /// transcription setting and the user left it enabled: such previews are
+    /// consented billable usage and settle at the computed price clamped to
+    /// the granted hold cap. Legacy clients never send the flag and keep
+    /// zero-credit preview settlement (JUN-375, ADR-0002 addendum).
+    pub preview_opted_in: bool,
     pub provider_credentials: ProviderCredentials,
 }
 

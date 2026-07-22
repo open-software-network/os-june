@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   setVeniceApiKey: vi.fn(),
   clearVeniceApiKey: vi.fn(),
   setImageSafeMode: vi.fn(),
+  setLiveTranscription: vi.fn(),
   setCostQuality: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   setProfileModelOverrides: vi.fn(),
@@ -120,6 +121,7 @@ vi.mock("../lib/tauri", () => ({
   setVeniceApiKey: mocks.setVeniceApiKey,
   clearVeniceApiKey: mocks.clearVeniceApiKey,
   setImageSafeMode: mocks.setImageSafeMode,
+  setLiveTranscription: mocks.setLiveTranscription,
   setCostQuality: mocks.setCostQuality,
   setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   setProfileModelOverrides: mocks.setProfileModelOverrides,
@@ -253,6 +255,7 @@ function buildProviderSettings() {
     },
     imageSafeMode: true,
     imageSafeModePromptDismissed: false,
+    liveTranscription: true,
     costQuality: 50,
   };
 }
@@ -525,6 +528,10 @@ describe("AppSettings", () => {
     mocks.setImageSafeMode.mockImplementation(async (enabled: boolean) => ({
       ...buildProviderSettings(),
       imageSafeMode: enabled,
+    }));
+    mocks.setLiveTranscription.mockImplementation(async (enabled: boolean) => ({
+      ...buildProviderSettings(),
+      liveTranscription: enabled,
     }));
     mocks.setCostQuality.mockImplementation(async (costQuality: number) => ({
       ...buildProviderSettings(),
@@ -3318,6 +3325,47 @@ describe("AppSettings", () => {
     expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
     expect(screen.getByText("Enter a local endpoint and model ID first.")).toBeInTheDocument();
+  });
+
+  it("shows the Live transcription toggle with disclosure copy in More options", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
+
+    // Default on, with the extra-credits disclosure next to it (JUN-375).
+    const toggle = await screen.findByRole("switch", {
+      name: "Show a live transcript while recording",
+    });
+    expect(toggle).toBeChecked();
+    expect(
+      screen.getByText(
+        "Show a live transcript while you record. This transcribes audio twice, so it may use extra credits; turning it off shows the transcript only after the recording ends.",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(mocks.setLiveTranscription).toHaveBeenCalledWith(false);
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(
+      await screen.findByText(
+        "Live transcription off: the transcript appears after the recording ends.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("auto-expands More options when a local model is already enabled", async () => {
