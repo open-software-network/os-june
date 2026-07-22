@@ -1,4 +1,7 @@
-import { hermesModelIdForSelection, type SessionModelSelection } from "../../../lib/hermes-session-model-selection";
+import {
+  hermesModelIdForSelection,
+  type SessionModelSelection,
+} from "../../../lib/hermes-session-model-selection";
 import { AUTO_MODEL_ID } from "../../settings/ModelPickerDialog";
 import type { HermesSessionDispatchReservation } from "../../../lib/hermes-session-dispatch-mutex";
 import type { AgentAttachment } from "../agent-workspace-models";
