@@ -411,6 +411,24 @@ approval_mode = "prompt"
     expect(perTool.entries[0].payload).toBeUndefined();
     expect(perTool.entries[0].error).toMatch(/tool access/i);
   });
+
+  it.each([
+    ['cwd = "/tmp/project"', /cwd/i],
+    ['oauth_resource = "https://example.com"', /oauth_resource/i],
+    ['scopes = ["read", "write"]', /scopes/i],
+    ['env_vars = ["TOKEN"]', /env_vars/i],
+    ["startup_timeout_sec = 30", /startup_timeout_sec/i],
+    ["enabled = false", /disabled in the source app/i],
+  ])("blocks unsupported behavior-changing Codex option %s", (option, message) => {
+    const result = parseExternalMcpConfig(`
+[mcp_servers.behavior]
+command = "example"
+${option}
+`);
+
+    expect(result.entries[0].payload).toBeUndefined();
+    expect(result.entries[0].error).toMatch(message);
+  });
 });
 
 // ---------------------------------------------------------------------------

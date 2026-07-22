@@ -17,6 +17,16 @@ export type McpConfigImportResult = {
 };
 
 const TOOL_POLICY_MARKER = "__june_import_has_tool_policy";
+const UNSUPPORTED_BEHAVIOR_KEYS = [
+  "cwd",
+  "env_vars",
+  "experimental_environment",
+  "startup_timeout_sec",
+  "tool_timeout_sec",
+  "required",
+  "oauth_resource",
+  "scopes",
+] as const;
 
 /**
  * Parses the two MCP configuration families people most often already have:
@@ -212,13 +222,15 @@ function importEntry(name: string, rawConfig: unknown): McpConfigImportEntry {
         "This server references HTTP credentials from environment variables. Add it manually so June can store the credential safely.",
     };
   }
-  if (config.env_vars) {
-    warnings.push(
-      "Forwarded environment variable names are not imported. Add any required values after setup.",
-    );
-  }
-  if (config.enabled === false) {
-    warnings.push("This server was disabled in the source app. June will add it enabled.");
+  const unsupportedBehavior = UNSUPPORTED_BEHAVIOR_KEYS.find((key) => config[key] !== undefined);
+  if (unsupportedBehavior || config.enabled === false) {
+    return {
+      name,
+      warnings,
+      error: unsupportedBehavior
+        ? `This server uses the unsupported ${unsupportedBehavior} option. Add it manually so its behavior is preserved.`
+        : "This server is disabled in the source app. Add it manually if you want to keep it disabled.",
+    };
   }
 
   const validation = validateDraft(draft);
