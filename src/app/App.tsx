@@ -12,7 +12,6 @@ import {
   type AgentSessionRenamedDetail,
 } from "../components/agent/AgentWorkspace";
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
-import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
@@ -27,38 +26,26 @@ import { type SidebarView } from "../components/sidebar/Sidebar";
 import { type TabItem } from "../components/tabs/TabBar";
 import { defaultNav, makeTabId, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
 import { type ReferralNudgeMoment } from "../components/referral/ReferralNudge";
-import { recordDictationFinished } from "../lib/referral-nudge";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Spinner } from "../components/ui/Spinner";
 import {
-  assignNoteToFolder,
-  assignSessionToFolder,
-  bootstrapApp,
   checkRecordingSourceReadiness,
   createFolder,
   createNote,
-  deleteFolder,
-  deleteNote,
-  deleteNotes,
   dictationHelperCommand,
   downloadNoteAudio,
   ensureHermesBridgeSession,
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
-  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
   listCompletedSessions,
-  listNotes,
   listSessionFolders,
   listSessionProfiles,
   openPrivacySettings,
   osAccountsLogout,
-  removeNoteFromFolder,
-  removeSessionFromFolder,
   recoverRecording,
   revealPath,
   renameFolder,
-  setSessionCompleted,
   updateNote,
   agentHudHide,
   agentHudShow,
@@ -66,10 +53,9 @@ import {
 } from "../lib/tauri";
 import { preloadRecordingSounds } from "../lib/recording-sounds";
 import { preloadAgentSounds } from "../lib/agent-sounds";
-import { isMacLikePlatform, isPrimaryShortcut, isWindowsPlatform } from "../lib/platform";
+import { isMacLikePlatform, isWindowsPlatform } from "../lib/platform";
 import {
   AGENT_GALLERY_EVENT,
-  dispatchAgentSessionStatus,
   emitAgentSessionsChanged,
   type AgentGalleryDetail,
   type AgentSessionStatusDetail,
@@ -77,8 +63,7 @@ import {
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { messageFromError } from "../lib/errors";
-import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
-import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
+import { listHermesSessions } from "../lib/hermes-adapter";
 import {
   getActiveHermesProfileName,
   PROFILE_DATA_CHANGED_EVENT,
@@ -107,7 +92,6 @@ import {
   notifyRecordingStillMeetingPrompt,
 } from "../lib/recording-notifications";
 import {
-  CLOSE_TAB_EVENT,
   OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
   emitAgentMenuBarState,
@@ -142,7 +126,7 @@ import {
 } from "../lib/account-gate";
 import { type MaxUpgradeTransport } from "../lib/billing-actions";
 import { type MaxGrantWait } from "../lib/max-upgrade";
-import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
+import { reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
 import {
   PROCESSING_DEMO_NOTE_ID,
   RECORD_NOTICES_DEMO_SESSION_ID,
@@ -151,14 +135,10 @@ import {
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
-  checkForJuneUpdate,
   INITIAL_UPDATE_STATUS_DISPLAY,
-  prepareJuneUpdate,
   startPeriodicJuneUpdateChecks,
   UP_TO_DATE_STATUS,
-  updateCheckShowsStatus,
   updateStatusDisplayReducer,
-  type UpdateCheckMode,
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "./update-decision";
@@ -169,8 +149,6 @@ import {
   isCreateNoteShortcut,
   isMicrophoneRecordingBlocked,
   isNewSessionShortcut,
-  stringPayloadValue,
-  withFakeRecovery,
 } from "./app-helpers";
 export { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "./app-helpers";
 import {
@@ -225,6 +203,8 @@ import { createNoteActions } from "./note-actions";
 import { useDictationEvents } from "./use-dictation-events";
 
 import { useAppBootstrap } from "./use-app-bootstrap";
+
+import { useAppTabEvents } from "./use-app-tab-events";
 
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
@@ -970,116 +950,20 @@ export function App() {
   // Drop tabs whose note was deleted. The active tab is kept regardless: the
   // delete handlers already move its selection on to the next note, and the
   // capture effect reconciles its snapshot — pruning it here would fight that.
-  function pruneDeletedNoteTabs(removedIds: Set<string>) {
-    setTabs((prev) =>
-      prev.filter(
-        (tab) =>
-          tab.id === activeTabId ||
-          !(tab.nav.view === "meetings" && tab.nav.noteId && removedIds.has(tab.nav.noteId)),
-      ),
-    );
-  }
-
-  useEffect(() => {
-    let aborted = false;
-    let unlisten: (() => void) | undefined;
-    void listen(CLOSE_TAB_EVENT, () => {
-      if (document.querySelector('[role="dialog"]')) return;
-      closeTab(activeTabIdRef.current);
-    }).then((cleanup) => {
-      if (aborted) cleanup();
-      else unlisten = cleanup;
-    });
-    return () => {
-      aborted = true;
-      unlisten?.();
-    };
-  }, [closeTab]);
-
-  useEffect(() => {
-    let aborted = false;
-    let unlisten: (() => void) | undefined;
-    void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
-      const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
-      calendarContextNoteProfilesRef.current.delete(event.payload.id);
-      if (noteProfile !== getActiveHermesProfileName()) return;
-      if (pendingCalendarContextAdoptionsRef.current.delete(event.payload.id)) {
-        calendarContextNoteUpdatesRef.current.set(event.payload.id, event.payload);
-      }
-      dispatch({ type: "noteUpdated", note: event.payload });
-    }).then((cleanup) => {
-      if (aborted) cleanup();
-      else unlisten = cleanup;
-    });
-    return () => {
-      aborted = true;
-      unlisten?.();
-    };
-  }, []);
-
-  // Tab keyboard shortcuts: ⌘T new, ⌘W close, ⌘[ / ⌘] cycle, ⌘1-9 jump
-  // (9 = last).
-  // isPrimaryShortcut handles the cross-platform modifier (⌘ on mac, Ctrl on
-  // Windows) and rejects Alt/Shift. No dependency array — re-bound each render
-  // so it closes over current tabs, matching the search/new-note effects below.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (!isPrimaryShortcut(event)) return;
-      if (document.querySelector('[role="dialog"]')) return;
-      const key = event.key;
-      if (key.toLowerCase() === "t") {
-        event.preventDefault();
-        openNewChatTab();
-        return;
-      }
-      if (key.toLowerCase() === "w") {
-        event.preventDefault();
-        closeTab(activeTabId);
-        return;
-      }
-      if (key === "]" || key === "}") {
-        event.preventDefault();
-        cycleTab(1);
-        return;
-      }
-      if (key === "[" || key === "{") {
-        event.preventDefault();
-        cycleTab(-1);
-        return;
-      }
-      if (/^[1-9]$/.test(key)) {
-        event.preventDefault();
-        const n = Number(key);
-        const target = n >= tabs.length ? tabs[tabs.length - 1] : tabs[n - 1];
-        if (target) activateTab(target.id);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+  const { pruneDeletedNoteTabs, takeNewTabIntent } = useAppTabEvents({
+    activateTab,
+    activeTabId,
+    activeTabIdRef,
+    calendarContextNoteProfilesRef,
+    calendarContextNoteUpdatesRef,
+    closeTab,
+    cycleTab,
+    dispatch,
+    openNewChatTab,
+    pendingCalendarContextAdoptionsRef,
+    setTabs,
+    tabs,
   });
-
-  // Modifier state for the click that's about to fire a navigation. A
-  // capture-phase listener records it before React's bubble-phase handlers run,
-  // so any nav surface (sidebar, notes list, command prompt) can open in a new
-  // tab via ⌘/Ctrl-click or middle-click without threading flags through props.
-  const newTabIntentRef = useRef(false);
-  useEffect(() => {
-    const record = (event: MouseEvent) => {
-      newTabIntentRef.current = event.metaKey || event.ctrlKey || event.button === 1;
-    };
-    window.addEventListener("click", record, true);
-    window.addEventListener("auxclick", record, true);
-    return () => {
-      window.removeEventListener("click", record, true);
-      window.removeEventListener("auxclick", record, true);
-    };
-  }, []);
-  // Reads and clears the intent: true when the triggering click wanted a new tab.
-  const takeNewTabIntent = useCallback(() => {
-    const intent = newTabIntentRef.current;
-    newTabIntentRef.current = false;
-    return intent;
-  }, []);
 
   // The label of the active settings section, so a tab parked on the Settings
   // view reads e.g. "MCP servers" instead of the generic "Settings". Only the
