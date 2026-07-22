@@ -1024,7 +1024,6 @@ hud?.addEventListener("pointerenter", () => {
 });
 
 hud?.addEventListener("pointerleave", () => {
-  if (state.menuOpen) closeMenu();
   setHovered(false);
 });
 
@@ -1068,6 +1067,13 @@ menu?.addEventListener("pointerdown", (event) => {
 });
 
 hideHud?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  hideFromMenu();
+});
+
+hideHud?.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
   hideFromMenu();
