@@ -254,6 +254,10 @@ import { SessionUsagePanel } from "./SessionUsagePanel";
 import { useUsagePanelDemo } from "../../lib/usage-panel-demo";
 import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawer";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
+import {
+  buildIssueReportSessionContext,
+  issueReportVisibleMessages,
+} from "../../lib/issue-report-session-context";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
 import { MarkdownContent, highlightText, type HighlightCursor } from "./MarkdownContent";
@@ -970,6 +974,9 @@ export type AgentNewSessionDetail = {
   /** Opens the direct issue report dialog with the category preselected. No
    * model runs, so there is nothing to charge. */
   category?: ReportCategory;
+  /** Session that was open when the report flow started. Its visible chat and
+   * sanitized runtime trace can be included with the report. */
+  reportSession?: { id: string; title?: string };
   /** Seeds the composer with a note chip (and skips auto-submit) so the user
    * lands ready to ask about that note instead of starting an ordinary ask. */
   noteRef?: NoteReferenceInput;
@@ -2535,6 +2542,10 @@ export function AgentWorkspace({
   const [reportDialogAttachments, setReportDialogAttachments] = useState<ReportDialogAttachment[]>(
     [],
   );
+  const [reportDialogSession, setReportDialogSession] = useState<{
+    id: string;
+    title?: string;
+  }>();
   // Bumped when a report is sent; see reportDialogAppendForCurrentGeneration.
   const reportDialogGenerationRef = useRef(0);
   const [hermesSessionItems, setHermesSessionItems] = useState<HermesSessionInfo[]>(() => {
@@ -9628,7 +9639,7 @@ export function AgentWorkspace({
     if (seedCategory) {
       pendingSeedNoteRefRef.current = null;
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
-      openReportDialog(seedCategory);
+      openReportDialog(seedCategory, request?.reportSession);
     } else if (seedNoteRef) {
       clearComposerDraft(NEW_SESSION_DRAFT_KEY);
       seedComposerNoteRef({ defer: options.deferSeed });
@@ -9713,7 +9724,10 @@ export function AgentWorkspace({
     });
   }
 
-  function openReportDialog(categoryToOpen: ReportCategory) {
+  function openReportDialog(
+    categoryToOpen: ReportCategory,
+    explicitSession?: { id: string; title?: string },
+  ) {
     setAttachMenuOpen(false);
     // Every entry-point open is a fresh report intent, so start clean —
     // even when reopening the same category. An abandoned draft (closed
@@ -9727,8 +9741,45 @@ export function AgentWorkspace({
     reportDialogGenerationRef.current += 1;
     setReportDialogDescription("");
     setReportDialogAttachments([]);
+    const selectedSessionId = selectedHermesSessionIdRef.current;
+    const selectedSession = selectedSessionId
+      ? hermesSessionItemsRef.current.find((session) => session.id === selectedSessionId)
+      : undefined;
+    setReportDialogSession(
+      explicitSession ??
+        (selectedSessionId ? { id: selectedSessionId, title: selectedSession?.title } : undefined),
+    );
     setReportDialogCategory(categoryToOpen);
     setReportDialogOpen(true);
+  }
+
+  async function loadReportDialogSessionContext() {
+    const session = reportDialogSession;
+    if (!session) return undefined;
+    const visibleMessages = () =>
+      issueReportVisibleMessages(
+        hermesSessionMessagesRef.current[session.id] ?? [],
+        pendingHermesMessagesRef.current[session.id] ?? [],
+      );
+    let messages = visibleMessages();
+    if (messages.length === 0) {
+      try {
+        const persistedMessages = await listHermesSessionMessages(session.id);
+        // Prefer anything that became visible while the refresh was in flight,
+        // including an optimistic user turn that Hermes has not persisted yet.
+        const latestVisibleMessages = visibleMessages();
+        messages = latestVisibleMessages.length > 0 ? latestVisibleMessages : persistedMessages;
+      } catch {
+        // The already-rendered transcript and sanitized live trace still provide
+        // useful context when Hermes cannot refresh the session on demand.
+        messages = visibleMessages();
+      }
+    }
+    return buildIssueReportSessionContext({
+      title: session.title,
+      messages,
+      trace: hermesTraceBuffer.exportSanitizedTrace(session.id),
+    });
   }
 
   /** Drops appends from imports that were still in flight when the report
@@ -11660,6 +11711,9 @@ export function AgentWorkspace({
             onAddFiles={pickReportDialogAttachments}
             onDropFiles={importReportDialogDroppedFiles}
             onRemoveAttachment={removeReportDialogAttachment}
+            sessionContext={reportDialogSession}
+            loadSessionContext={loadReportDialogSessionContext}
+            onRemoveSessionContext={() => setReportDialogSession(undefined)}
             onClose={() => setReportDialogOpen(false)}
             onSent={handleReportDialogSent}
           />
@@ -18278,13 +18332,18 @@ function writeLastOpenSessionId(sessionId: string) {
 
 export function markAgentNewSessionPending(
   prompt?: string,
-  options?: { category?: ReportCategory; noteRef?: NoteReferenceInput },
+  options?: {
+    category?: ReportCategory;
+    noteRef?: NoteReferenceInput;
+    reportSession?: { id: string; title?: string };
+  },
 ) {
   const payload = JSON.stringify({
     createdAt: Date.now(),
     prompt: prompt?.trim() || undefined,
     category: options?.category,
     noteRef: options?.noteRef,
+    reportSession: options?.reportSession,
   });
   try {
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, payload);
@@ -18341,6 +18400,16 @@ function parsePendingNoteRef(value: unknown): NoteReferenceInput | undefined {
   };
 }
 
+function parsePendingReportSession(value: unknown): AgentNewSessionDetail["reportSession"] {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { id?: unknown; title?: unknown };
+  if (typeof record.id !== "string" || record.id.trim().length === 0) return undefined;
+  return {
+    id: record.id,
+    ...(typeof record.title === "string" ? { title: record.title } : {}),
+  };
+}
+
 export function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {
     const value = readPendingNewSessionPayload();
@@ -18354,6 +18423,7 @@ export function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
         prompt?: string;
         category?: string;
         noteRef?: unknown;
+        reportSession?: unknown;
       };
       if (
         typeof parsed.createdAt !== "number" ||
@@ -18363,9 +18433,11 @@ export function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
       }
       const category = isReportCategory(parsed.category) ? parsed.category : undefined;
       const noteRef = category ? undefined : parsePendingNoteRef(parsed.noteRef);
+      const reportSession = category ? parsePendingReportSession(parsed.reportSession) : undefined;
       return {
         ...(typeof parsed.prompt === "string" ? { prompt: parsed.prompt } : {}),
         ...(category ? { category } : {}),
+        ...(reportSession ? { reportSession } : {}),
         ...(noteRef ? { noteRef } : {}),
       };
     } catch {
