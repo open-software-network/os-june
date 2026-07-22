@@ -254,7 +254,10 @@ import { SessionUsagePanel } from "./SessionUsagePanel";
 import { useUsagePanelDemo } from "../../lib/usage-panel-demo";
 import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawer";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
-import { buildIssueReportSessionContext } from "../../lib/issue-report-session-context";
+import {
+  buildIssueReportSessionContext,
+  issueReportVisibleMessages,
+} from "../../lib/issue-report-session-context";
 import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
 import { HermesTracePanel } from "./HermesTracePanel";
 import { MarkdownContent, highlightText, type HighlightCursor } from "./MarkdownContent";
@@ -9753,12 +9756,24 @@ export function AgentWorkspace({
   async function loadReportDialogSessionContext() {
     const session = reportDialogSession;
     if (!session) return undefined;
-    let messages = hermesSessionMessagesRef.current[session.id] ?? [];
-    try {
-      messages = await listHermesSessionMessages(session.id);
-    } catch {
-      // The already-rendered transcript and sanitized live trace still provide
-      // useful context when Hermes cannot refresh the session on demand.
+    const visibleMessages = () =>
+      issueReportVisibleMessages(
+        hermesSessionMessagesRef.current[session.id] ?? [],
+        pendingHermesMessagesRef.current[session.id] ?? [],
+      );
+    let messages = visibleMessages();
+    if (messages.length === 0) {
+      try {
+        const persistedMessages = await listHermesSessionMessages(session.id);
+        // Prefer anything that became visible while the refresh was in flight,
+        // including an optimistic user turn that Hermes has not persisted yet.
+        const latestVisibleMessages = visibleMessages();
+        messages = latestVisibleMessages.length > 0 ? latestVisibleMessages : persistedMessages;
+      } catch {
+        // The already-rendered transcript and sanitized live trace still provide
+        // useful context when Hermes cannot refresh the session on demand.
+        messages = visibleMessages();
+      }
     }
     return buildIssueReportSessionContext({
       title: session.title,

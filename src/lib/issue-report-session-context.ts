@@ -10,6 +10,13 @@ const TRACE_MAX_CHARS = 8_000;
 // Unicode/counting differences across the TypeScript and Rust boundary.
 const REPORT_DESCRIPTION_SAFE_MAX_CHARS = 19_500;
 
+export function issueReportVisibleMessages(
+  persisted: HermesSessionMessage[],
+  pending: HermesSessionMessage[],
+): HermesSessionMessage[] {
+  return [...persisted, ...pending];
+}
+
 function truncateStart(value: string, maxChars: number): string {
   const characters = Array.from(value);
   if (characters.length <= maxChars) return value;

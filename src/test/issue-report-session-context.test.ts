@@ -3,9 +3,30 @@ import { describe, expect, it } from "vitest";
 import {
   appendIssueReportSessionContext,
   buildIssueReportSessionContext,
+  issueReportVisibleMessages,
 } from "../lib/issue-report-session-context";
 
 describe("issue report session context", () => {
+  it("includes optimistic turns after the persisted conversation", () => {
+    const messages = issueReportVisibleMessages(
+      [{ id: "persisted", role: "assistant", content: "What can I help with?" }],
+      [{ id: "pending", role: "user", content: "This pending prompt failed" }],
+    );
+
+    expect(messages.map((message) => message.id)).toEqual(["persisted", "pending"]);
+    expect(
+      buildIssueReportSessionContext({
+        title: "Pending session",
+        messages,
+        trace: {
+          sessionId: "session-1",
+          exportedAt: "2026-07-22T18:00:00.000Z",
+          entries: [],
+        },
+      }),
+    ).toContain("User: This pending prompt failed");
+  });
+
   it("includes only visible user and assistant conversation plus the sanitized trace", () => {
     const context = buildIssueReportSessionContext({
       title: "Chat greeting",
