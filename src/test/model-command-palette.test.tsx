@@ -1,10 +1,12 @@
 import { createRef, useRef, useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ModelCommandPalette } from "../components/settings/ModelPickerPopover";
+import { DEFAULT_GENERATION_SUGGESTION_ID } from "../lib/suggested-models";
 import type { VeniceModelDto } from "../lib/tauri";
+import type { ThinkingLevel } from "../lib/thinking-level";
 
 const model = (id: string, name: string, privacy: string): VeniceModelDto => ({
   provider: "venice",
@@ -20,10 +22,18 @@ function SearchablePalette({
   model: selected,
   options,
   onSelect = vi.fn(),
+  costQuality,
+  onCostQualityChange,
+  thinkingLevel,
+  onSelectThinking,
 }: {
   model?: VeniceModelDto;
   options: VeniceModelDto[];
-  onSelect?: (modelId: string) => void;
+  onSelect?: (modelId: string, selectOptions?: { keepOpen?: boolean }) => void;
+  costQuality?: number;
+  onCostQualityChange?: (value: number) => void;
+  thinkingLevel?: ThinkingLevel;
+  onSelectThinking?: (level: ThinkingLevel) => void;
 }) {
   const [search, setSearch] = useState("");
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -35,11 +45,24 @@ function SearchablePalette({
       search={search}
       popoverRef={popoverRef}
       searchRef={searchRef}
+      costQuality={costQuality}
+      onCostQualityChange={onCostQualityChange}
+      thinkingLevel={thinkingLevel}
+      onSelectThinking={onSelectThinking}
       onSearchChange={setSearch}
       onSelect={onSelect}
     />
   );
 }
+
+const autoModel = {
+  provider: "venice",
+  id: "open-software/auto",
+  name: "OpenSoftware Auto",
+  modelType: "text",
+  traits: [],
+  capabilities: [],
+} satisfies VeniceModelDto;
 
 describe("ModelCommandPalette", () => {
   it("pins the Auto router as a separate toggle when its catalog entry has no capability flags", async () => {
@@ -79,25 +102,17 @@ describe("ModelCommandPalette", () => {
     expect(screen.queryByRole("group", { name: "Suggested" })).not.toBeInTheDocument();
     expect(screen.queryByText("No private models match your search.")).not.toBeInTheDocument();
     await user.click(autoToggle);
-    expect(onSelect).toHaveBeenCalledWith("open-software/auto");
+    expect(onSelect).toHaveBeenCalledWith("open-software/auto", { keepOpen: true });
   });
 
   it("turns Auto off by selecting the leading concrete suggestion", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
-    const auto = {
-      provider: "venice",
-      id: "open-software/auto",
-      name: "OpenSoftware Auto",
-      modelType: "text",
-      traits: [],
-      capabilities: [],
-    } satisfies VeniceModelDto;
 
     render(
       <SearchablePalette
-        model={auto}
-        options={[auto, model("zai-org-glm-5-2", "GLM 5.2", "private")]}
+        model={autoModel}
+        options={[autoModel, model("zai-org-glm-5-2", "GLM 5.2", "private")]}
         onSelect={onSelect}
       />,
     );
@@ -105,7 +120,93 @@ describe("ModelCommandPalette", () => {
     const autoToggle = screen.getByRole("switch", { name: "Choose the model automatically" });
     expect(autoToggle).toBeChecked();
     await user.click(autoToggle);
-    expect(onSelect).toHaveBeenCalledWith("zai-org-glm-5-2");
+    expect(onSelect).toHaveBeenCalledWith("zai-org-glm-5-2", { keepOpen: true });
+  });
+
+  it("disables Auto off when a loaded catalog has no eligible concrete model", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const toollessConcrete: VeniceModelDto = {
+      ...model("toolless", "Toolless", "private"),
+      capabilities: [],
+    };
+
+    render(
+      <SearchablePalette
+        model={autoModel}
+        options={[autoModel, toollessConcrete]}
+        onSelect={onSelect}
+      />,
+    );
+
+    const autoToggle = screen.getByRole("switch", { name: "Choose the model automatically" });
+    expect(autoToggle).toBeChecked();
+    expect(autoToggle).toBeDisabled();
+    await user.click(autoToggle);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("keeps Auto off actionable on the curated default while the catalog is unloaded", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+
+    render(<SearchablePalette model={autoModel} options={[autoModel]} onSelect={onSelect} />);
+
+    const autoToggle = screen.getByRole("switch", { name: "Choose the model automatically" });
+    expect(autoToggle).toBeChecked();
+    expect(autoToggle).toBeEnabled();
+    await user.click(autoToggle);
+    expect(onSelect).toHaveBeenCalledWith(DEFAULT_GENERATION_SUGGESTION_ID, { keepOpen: true });
+  });
+
+  it("shows inline Preference and Effort rows while Auto is on and hides them during search", async () => {
+    const user = userEvent.setup();
+    const onCostQualityChange = vi.fn();
+    const onSelectThinking = vi.fn();
+
+    render(
+      <SearchablePalette
+        model={autoModel}
+        options={[autoModel, model("zai-org-glm-5-2", "GLM 5.2", "private")]}
+        costQuality={50}
+        onCostQualityChange={onCostQualityChange}
+        thinkingLevel="medium"
+        onSelectThinking={onSelectThinking}
+      />,
+    );
+
+    const preference = screen.getByRole("radiogroup", { name: "Auto preference" });
+    const effort = screen.getByRole("radiogroup", { name: "Thinking level" });
+    expect(within(preference).getByRole("radio", { name: "Balanced" })).toBeChecked();
+    expect(within(effort).getByRole("radio", { name: "Medium" })).toBeChecked();
+    // Each effort chip carries its own meter state for carryover with the
+    // composer trigger.
+    expect(effort.querySelectorAll(".thinking-level-meter")).toHaveLength(3);
+
+    await user.click(within(preference).getByRole("radio", { name: "Quality" }));
+    expect(onCostQualityChange).toHaveBeenCalledWith(100);
+    await user.click(within(effort).getByRole("radio", { name: "High" }));
+    expect(onSelectThinking).toHaveBeenCalledWith("hard");
+
+    await user.type(screen.getByRole("combobox", { name: "Search models" }), "glm");
+    expect(screen.queryByRole("radiogroup", { name: "Auto preference" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "Thinking level" })).not.toBeInTheDocument();
+  });
+
+  it("omits the Preference row while a concrete model is selected", () => {
+    render(
+      <SearchablePalette
+        model={model("zai-org-glm-5-2", "GLM 5.2", "private")}
+        options={[autoModel, model("zai-org-glm-5-2", "GLM 5.2", "private")]}
+        costQuality={50}
+        onCostQualityChange={vi.fn()}
+        thinkingLevel="medium"
+        onSelectThinking={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("radiogroup", { name: "Auto preference" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Thinking level" })).toBeInTheDocument();
   });
 
   it("renders the catalog before a current selection is resolved", () => {

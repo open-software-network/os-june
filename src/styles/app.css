@@ -6843,9 +6843,12 @@ button.agent-user-attachment:hover {
 }
 
 .agent-composer-model-command-list {
+  /* The header-row count is set inline by the palette: search and Private
+   * always, plus whichever pinned control rows (Auto, Preference, Effort)
+   * the current browse state shows. */
   max-height: calc(
     min(50vh, var(--model-command-available-height, 50vh)) -
-    (3 * var(--control-md)) -
+    (var(--model-command-header-rows, 3) * var(--control-md)) -
     var(--sp-2)
   );
   padding: var(--sp-1) 0;
@@ -6857,6 +6860,56 @@ button.agent-user-attachment:hover {
  * mirrors the root picker with a plain pinned switch above the model list. */
 .agent-composer-model-command-filter-with-auto {
   border-bottom: 0;
+}
+
+/* The palette flattens the toolbar picker's Preference and Effort drill-ins
+ * into inline choice rows: it is wide enough to show all three values, so no
+ * second layer. The controls block owns the single hairline before the list;
+ * the rows inside give up their own borders and bleed. */
+.agent-composer-model-command-controls {
+  flex: 0 0 auto;
+  margin: 0 calc(-1 * var(--sp-1));
+  border-bottom: 1px solid color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+.agent-composer-model-command-controls .agent-composer-model-filter {
+  margin: 0;
+  border-bottom: 0;
+}
+
+/* Chips share the quiet-control recipe; the selected chip sits on the muted
+ * surface, matching the popover's checked-row language. */
+.agent-composer-model-command-choices {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.agent-composer-model-command-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--control-sm);
+  padding-inline: var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-composer-model-command-choice:hover {
+  background: var(--surface-subtle);
+  color: var(--foreground);
+}
+
+.agent-composer-model-command-choice[aria-checked="true"] {
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .agent-composer-model-command-section {

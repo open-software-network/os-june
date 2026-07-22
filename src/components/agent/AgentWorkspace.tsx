@@ -11582,10 +11582,17 @@ export function AgentWorkspace({
               search={modelSearch}
               popoverRef={composerModelPopoverRef}
               searchRef={composerModelSearchRef}
+              costQuality={activeGenerationCostQuality}
+              onCostQualityChange={handleCostQualityChange}
+              thinkingLevel={composerThinkingLevel}
+              onSelectThinking={(level) => void handleSelectThinkingLevel(level)}
               onSearchChange={setModelSearch}
-              onSelect={(modelId) => {
-                void handleSelectGenerationModel(modelId);
-                composerEditorRef.current?.focus();
+              onSelect={(modelId, selectOptions) => {
+                void handleSelectGenerationModel(modelId, undefined, selectOptions);
+                // A row pick closes the palette and hands focus back to the
+                // draft; control adjustments keep the palette (and its own
+                // focus) in place.
+                if (!selectOptions?.keepOpen) composerEditorRef.current?.focus();
               }}
             />
           ) : (

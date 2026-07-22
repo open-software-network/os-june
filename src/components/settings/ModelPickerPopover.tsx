@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { RefObject } from "react";
+import type { CSSProperties, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { modelAvailableForMode, modelIsPrivate, modelPrivacyBadge } from "../../lib/model-privacy";
 import { modelMatchesQuery } from "../../lib/model-search";
@@ -348,13 +348,16 @@ export function ModelPickerPopover({
   // suggested pick (the default generation model) so the next step — choosing
   // an explicit model — is right there, one row away.
   // The concrete model toggling Auto off lands on: the leading suggested
-  // pick, else the first selectable catalog model, else the curated default
-  // id — the factory default keeps the switch actionable while the catalog
-  // is empty or unloaded, and is safe to select sight-unseen.
+  // pick, else the first selectable catalog model. The curated default id
+  // steps in only while the catalog is empty or unloaded (safe to select
+  // sight-unseen); a loaded catalog with no eligible concrete model instead
+  // leaves the switch on — there is nothing valid to land on.
   const autoOffTarget =
     suggested.find((item) => item.model.id !== AUTO_MODEL_ID)?.model.id ??
     selectable.find((option) => option.id !== AUTO_MODEL_ID)?.id ??
-    DEFAULT_GENERATION_SUGGESTION_ID;
+    (options.some((option) => option.id !== AUTO_MODEL_ID)
+      ? undefined
+      : DEFAULT_GENERATION_SUGGESTION_ID);
   const toggleAuto = useCallback(
     (on: boolean) => {
       onFlyoutChange(null);
@@ -362,6 +365,7 @@ export function ModelPickerPopover({
         onSelect(AUTO_MODEL_ID, undefined, { keepOpen: true });
         return;
       }
+      if (!autoOffTarget) return;
       onSelect(autoOffTarget, undefined, { keepOpen: true });
     },
     [autoOffTarget, onFlyoutChange, onSelect],
@@ -872,15 +876,21 @@ export function ModelPickerPopover({
 }
 
 /** Single-panel catalog opened by submitting bare `/model` in the composer.
- * It keeps the curated picks pinned above the rest of the searchable catalog,
- * using the same row, provider, privacy, and selection language as the compact
- * toolbar picker. */
+ * It is the toolbar picker stretched wide: the same pinned controls up top
+ * (Auto, then Preference and Effort), the same row, provider, privacy, and
+ * selection language below — but with search leading, and with the drill-in
+ * flyouts flattened into inline choice rows since the palette has the width
+ * to show all three values at once. */
 export function ModelCommandPalette({
   model,
   options,
   search,
   popoverRef,
   searchRef,
+  costQuality,
+  onCostQualityChange,
+  thinkingLevel,
+  onSelectThinking,
   onSearchChange,
   onSelect,
 }: {
@@ -889,8 +899,17 @@ export function ModelCommandPalette({
   search: string;
   popoverRef: RefObject<HTMLDivElement>;
   searchRef: RefObject<HTMLInputElement>;
+  /** Enables the inline Preference row while Auto is the active selection,
+   * mirroring the toolbar picker's drill-in. */
+  costQuality?: number;
+  onCostQualityChange?: (value: number) => void;
+  /** Enables the inline Effort row, mirroring the toolbar picker's drill-in. */
+  thinkingLevel?: ThinkingLevel;
+  onSelectThinking?: (level: ThinkingLevel) => void;
   onSearchChange: (value: string) => void;
-  onSelect: (modelId: string) => void;
+  /** `keepOpen` mirrors the toolbar picker: control adjustments (Auto,
+   * Preference, Effort) keep the palette mounted; a row pick closes it. */
+  onSelect: (modelId: string, selectOptions?: { keepOpen?: boolean }) => void;
 }) {
   const listRef = useRef<HTMLDivElement | null>(null);
   const fade = useScrollFade(listRef);
@@ -927,8 +946,22 @@ export function ModelCommandPalette({
   const suggested = useMemo(() => suggestedModelsForMode("generation", selectable), [selectable]);
   const autoVisible = Boolean(auto && (!query || modelMatchesQuery(auto, query)));
   const autoEnabled = model?.id === AUTO_MODEL_ID;
+  // Same landing rule as the toolbar picker: leading suggestion, else first
+  // selectable model; the curated default only while the catalog is empty or
+  // unloaded. A loaded catalog with no eligible concrete model disables
+  // turning Auto off — there is nothing valid to land on.
   const autoOffTarget =
-    suggested[0]?.model.id ?? selectable[0]?.id ?? DEFAULT_GENERATION_SUGGESTION_ID;
+    suggested[0]?.model.id ??
+    selectable[0]?.id ??
+    (options.some((option) => option.id !== AUTO_MODEL_ID)
+      ? undefined
+      : DEFAULT_GENERATION_SUGGESTION_ID);
+  // The pinned control rows are a browse-state surface; an active query means
+  // the user is filtering models, so the controls yield to results (Auto
+  // already hides itself unless the query matches it).
+  const controlsVisible = !query;
+  const autoPreference =
+    costQuality === undefined ? undefined : autoPreferenceFromCostQuality(costQuality);
   const matchingSuggested = suggested.filter(({ model: option }) =>
     matching.some((candidate) => candidate.id === option.id),
   );
@@ -992,12 +1025,22 @@ export function ModelCommandPalette({
     </button>
   );
 
+  const preferenceRowVisible = controlsVisible && Boolean(onCostQualityChange) && autoEnabled;
+  const effortRowVisible = controlsVisible && Boolean(thinkingLevel && onSelectThinking);
+  const controlsBlockVisible =
+    Boolean(autoVisible && auto) || preferenceRowVisible || effortRowVisible;
+  // Search and Private always render; the pinned control rows come and go
+  // with browse state, so the list's height budget tracks the live count.
+  const headerRows =
+    2 + (autoVisible ? 1 : 0) + (preferenceRowVisible ? 1 : 0) + (effortRowVisible ? 1 : 0);
+
   return (
     <div
       ref={popoverRef}
       className="agent-composer-model-popover agent-composer-model-command-palette"
       role="dialog"
       aria-label="Choose text model"
+      style={{ "--model-command-header-rows": headerRows } as CSSProperties}
     >
       <label className="agent-composer-model-search">
         <input
@@ -1041,7 +1084,7 @@ export function ModelCommandPalette({
       <div
         className={[
           "agent-composer-model-filter",
-          autoVisible ? "agent-composer-model-command-filter-with-auto" : null,
+          controlsBlockVisible ? "agent-composer-model-command-filter-with-auto" : null,
         ]
           .filter(Boolean)
           .join(" ")}
@@ -1053,14 +1096,75 @@ export function ModelCommandPalette({
           aria-label="Only show private models"
         />
       </div>
-      {autoVisible && auto ? (
-        <div className="agent-composer-model-filter agent-composer-model-command-auto">
-          <span>Auto</span>
-          <Switch
-            checked={autoEnabled}
-            onCheckedChange={(on) => onSelect(on ? AUTO_MODEL_ID : autoOffTarget)}
-            aria-label="Choose the model automatically"
-          />
+      {controlsBlockVisible ? (
+        <div className="agent-composer-model-command-controls">
+          {autoVisible && auto ? (
+            <div className="agent-composer-model-filter agent-composer-model-command-auto">
+              <span>Auto</span>
+              <Switch
+                checked={autoEnabled}
+                disabled={autoEnabled && !autoOffTarget}
+                onCheckedChange={(on) => {
+                  if (on) {
+                    onSelect(AUTO_MODEL_ID, { keepOpen: true });
+                    return;
+                  }
+                  if (!autoOffTarget) return;
+                  onSelect(autoOffTarget, { keepOpen: true });
+                }}
+                aria-label="Choose the model automatically"
+              />
+            </div>
+          ) : null}
+          {controlsVisible && onCostQualityChange && autoEnabled ? (
+            <div className="agent-composer-model-filter">
+              <span>Preference</span>
+              <div
+                className="agent-composer-model-command-choices"
+                role="radiogroup"
+                aria-label="Auto preference"
+              >
+                {AUTO_PREFERENCE_DETAILS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={option.value === autoPreference}
+                    className="agent-composer-model-command-choice"
+                    title={option.description}
+                    onClick={() => onCostQualityChange(AUTO_PREFERENCE_VALUES[option.value])}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {controlsVisible && thinkingLevel && onSelectThinking ? (
+            <div className="agent-composer-model-filter">
+              <span>Effort</span>
+              <div
+                className="agent-composer-model-command-choices"
+                role="radiogroup"
+                aria-label="Thinking level"
+              >
+                {THINKING_LEVELS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={option.id === thinkingLevel}
+                    className="agent-composer-model-command-choice"
+                    title={option.blurb}
+                    onClick={() => onSelectThinking(option.id)}
+                  >
+                    <ThinkingLevelMeter level={option.id} />
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
       <div className="agent-composer-model-command-list-wrap scroll-fade" {...fade.props}>
