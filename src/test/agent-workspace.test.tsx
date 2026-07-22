@@ -4327,7 +4327,7 @@ describe("AgentWorkspace", () => {
     const search = within(palette).getByRole("combobox", { name: "Search models" });
     expect(search).toHaveFocus();
     expect(within(palette).getByText("Suggested")).toBeInTheDocument();
-    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /Auto/ })).toBeInTheDocument();
     expect(composer).toHaveTextContent(/^$/);
 
     await user.type(search, "GLM 5.2");
@@ -4368,7 +4368,7 @@ describe("AgentWorkspace", () => {
       within(palette).getByRole("switch", { name: "Only show private models" }),
     ).not.toBeChecked();
     expect(within(palette).getByText("Suggested")).toBeInTheDocument();
-    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(within(palette).getByRole("option", { name: /Auto/ })).toBeInTheDocument();
     expect(composer).toHaveTextContent(/^$/);
 
     await user.type(search, "GLM 5.2");

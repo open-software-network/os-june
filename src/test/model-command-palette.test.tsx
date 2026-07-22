@@ -1,5 +1,5 @@
 import { createRef, useRef, useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -16,23 +16,68 @@ const model = (id: string, name: string, privacy: string): VeniceModelDto => ({
   capabilities: ["supportsFunctionCalling"],
 });
 
-function SearchablePalette({ options }: { options: VeniceModelDto[] }) {
+function SearchablePalette({
+  model: selected,
+  options,
+  onSelect = vi.fn(),
+}: {
+  model?: VeniceModelDto;
+  options: VeniceModelDto[];
+  onSelect?: (modelId: string) => void;
+}) {
   const [search, setSearch] = useState("");
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   return (
     <ModelCommandPalette
+      model={selected}
       options={options}
       search={search}
       popoverRef={popoverRef}
       searchRef={searchRef}
       onSearchChange={setSearch}
-      onSelect={vi.fn()}
+      onSelect={onSelect}
     />
   );
 }
 
 describe("ModelCommandPalette", () => {
+  it("pins the Auto router when its catalog entry has no direct capability flags", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const current = model("zai-org-glm-5-2", "GLM 5.2", "private");
+
+    render(
+      <SearchablePalette
+        model={current}
+        options={[
+          {
+            provider: "venice",
+            id: "open-software/auto",
+            name: "OpenSoftware Auto",
+            modelType: "text",
+            traits: [],
+            capabilities: [],
+          },
+          current,
+        ]}
+        onSelect={onSelect}
+      />,
+    );
+
+    const suggested = screen.getByRole("group", { name: "Suggested" });
+    const auto = within(suggested).getByRole("option", { name: /Auto/ });
+    expect(auto).toHaveTextContent("Chooses a private model for each request");
+    expect(auto.querySelector('svg[aria-label="June"]')).not.toBeNull();
+
+    await user.click(screen.getByRole("switch", { name: "Only show private models" }));
+    expect(within(suggested).getByRole("option", { name: /Auto/ })).toBeInTheDocument();
+
+    await user.type(screen.getByRole("combobox", { name: "Search models" }), "auto");
+    await user.click(screen.getByRole("option", { name: /Auto/ }));
+    expect(onSelect).toHaveBeenCalledWith("open-software/auto");
+  });
+
   it("renders the catalog before a current selection is resolved", () => {
     render(
       <ModelCommandPalette
@@ -78,6 +123,7 @@ describe("ModelCommandPalette", () => {
     expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
     expect(screen.getAllByRole("option", { name: /Kimi K2\.6/ })).toHaveLength(1);
     expect(screen.getByRole("option", { name: /Anonymous Extra/ })).toBeInTheDocument();
+    expect(screen.getByText("All models")).toBeInTheDocument();
 
     const search = screen.getByRole("combobox", { name: "Search models" });
     await user.click(search);

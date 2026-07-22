@@ -865,6 +865,8 @@ export function ModelPickerPopover({
  * It keeps the curated picks pinned above the rest of the searchable catalog,
  * using the same row, provider, privacy, and selection language as the compact
  * toolbar picker. */
+const AUTO_COMMAND_DESCRIPTION = "Chooses a private model for each request using your preference.";
+
 export function ModelCommandPalette({
   model,
   options,
@@ -889,7 +891,16 @@ export function ModelCommandPalette({
   const [activeIndex, setActiveIndex] = useState(0);
   const query = search.trim().toLowerCase();
   const selectable = useMemo(
-    () => options.filter((option) => modelAvailableForMode("generation", option)),
+    () =>
+      options.flatMap((option) => {
+        if (option.id === AUTO_MODEL_ID) {
+          // Auto is June's routing choice, not one direct inference model, so
+          // it has no catalog function-calling flag of its own. Its routing
+          // policy is private; concrete models still use the capability gate.
+          return [{ ...option, name: "Auto", privacy: option.privacy ?? "private" }];
+        }
+        return modelAvailableForMode("generation", option) ? [option] : [];
+      }),
     [options],
   );
   const privacyFiltered = useMemo(
@@ -904,9 +915,16 @@ export function ModelCommandPalette({
     [privacyFiltered, query],
   );
   const suggested = useMemo(() => suggestedModelsForMode("generation", selectable), [selectable]);
-  const matchingSuggested = suggested.filter(({ model: option }) =>
-    matching.some((candidate) => candidate.id === option.id),
-  );
+  const auto = selectable.find((option) => option.id === AUTO_MODEL_ID);
+  const matchingSuggested = [
+    ...(auto && matching.some((candidate) => candidate.id === AUTO_MODEL_ID)
+      ? [{ key: AUTO_MODEL_ID, model: auto, reason: AUTO_COMMAND_DESCRIPTION }]
+      : []),
+    ...suggested.filter(
+      ({ model: option }) =>
+        option.id !== AUTO_MODEL_ID && matching.some((candidate) => candidate.id === option.id),
+    ),
+  ];
   const suggestedIds = new Set(matchingSuggested.map(({ model: option }) => option.id));
   const remaining = matching.filter((option) => !suggestedIds.has(option.id));
   const resultRows = [
