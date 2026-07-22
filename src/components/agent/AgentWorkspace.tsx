@@ -16,13 +16,12 @@ import { IconStopCircle } from "central-icons/IconStopCircle";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { createPortal } from "react-dom";
 import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
-import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
 import { IconDeepSearch } from "central-icons/IconDeepSearch";
 import { IconCheckCircle2 } from "central-icons/IconCheckCircle2";
 import { IconConcise } from "central-icons/IconConcise";
@@ -183,6 +182,7 @@ import {
   hermesModeFor,
   isTerminalHermesEvent,
   isHermesFeatureSupported,
+  type HermesMode,
   type JuneHermesEvent,
 } from "../../lib/hermes-control-plane";
 import {
@@ -13508,186 +13508,7 @@ export {
   branchSourceSessionIdForTurn,
   turnIsConcreteResponse,
 } from "./chat-turns/BranchAndSensitiveActions";
-function AgentThinkingGroup({
-  open,
-  onOpenChange,
-  reasoning,
-  running,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  reasoning: Extract<AgentChatPart, { type: "reasoning" }>[];
-  running: boolean;
-}) {
-  const reduceMotion = useReducedMotion();
-  // Collapsed by default to a short label — "Thinking" while it works, "Thought"
-  // once done (terracotta while live). Expanding reveals only the reasoning
-  // prose; tool/action rows render outside this disclosure.
-  const reasoningText = reasoning
-    .map((part) => part.text)
-    .join("\n\n")
-    .trim();
-  return (
-    <details
-      className="agent-reasoning"
-      data-status={running ? "running" : "completed"}
-      open={open}
-      onToggle={(event) => onOpenChange(event.currentTarget.open)}
-    >
-      <summary aria-label={running ? "Thinking" : "Thought"}>
-        <span className="agent-reasoning-label-swap" aria-hidden="true">
-          <AnimatePresence initial={false}>
-            <motion.span
-              key={running ? "thinking" : "thought"}
-              className={running ? "text-shimmer shimmer" : undefined}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{
-                // Framer Motion takes seconds; these mirror --t-fast/--t-med.
-                duration: reduceMotion ? 0.1 : 0.16,
-                ease: [0.22, 1, 0.36, 1],
-              }}
-            >
-              {running ? "Thinking" : "Thought"}
-            </motion.span>
-          </AnimatePresence>
-        </span>
-        <IconChevronDownSmall size={14} className="agent-disclosure-chevron" />
-      </summary>
-      <div className="agent-reasoning-body">
-        {reasoningText ? <div className="agent-reasoning-text">{reasoningText}</div> : null}
-      </div>
-    </details>
-  );
-}
-
-// Tool activity is collapsed to a single quiet row by default — name + status —
-// so the conversation isn't buried under raw tool output (skill dumps, command
-// logs). The full output is one click away when the row has a body.
-function AgentToolDisclosure({
-  name,
-  status,
-  statusNode,
-  text,
-  redacted,
-}: {
-  name: string;
-  status: string;
-  statusNode: ReactNode;
-  text?: string | null;
-  redacted?: boolean;
-}) {
-  const body = text && text.trim() ? text : null;
-  const summary = (expandable: boolean) => (
-    <>
-      {/* On hover the tool glyph cross-fades to a plain-text affordance —
-       * "+" when closed, "−" when open. Text instead of svg icons: glyphs
-       * render on the text baseline grid, so the swap can't hitch a pixel. */}
-      <span className="agent-tool-icon">
-        <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
-        {expandable ? (
-          <>
-            <span className="agent-tool-icon-expand">+</span>
-            <span className="agent-tool-icon-minimize">−</span>
-          </>
-        ) : null}
-      </span>
-      <span className="agent-tool-name">{name}</span>
-      {statusNode}
-      {redacted ? <span className="agent-redacted">Redacted</span> : null}
-    </>
-  );
-  if (!body) {
-    return (
-      <div className="agent-tool-disclosure agent-tool-disclosure-static" data-status={status}>
-        {summary(false)}
-      </div>
-    );
-  }
-  return (
-    <details className="agent-tool-disclosure" data-status={status}>
-      <summary>{summary(true)}</summary>
-      <div className="agent-tool-output">{body}</div>
-    </details>
-  );
-}
-
-function AgentToolPartRow({ part }: { part: Extract<AgentChatPart, { type: "tool" }> }) {
-  return (
-    <AgentToolDisclosure
-      name={part.name}
-      status={part.status}
-      text={part.text}
-      statusNode={
-        part.status === "running" ? (
-          <span className="agent-tool-spinner" role="status" aria-label="Running" title="Running">
-            <DotSpinner />
-          </span>
-        ) : part.status === "failed" ? (
-          <span className="agent-tool-live-status" data-status="failed">
-            Failed
-          </span>
-        ) : null
-      }
-    />
-  );
-}
-
-// Long tool runs stop growing the transcript a row per call: past this many
-// rows, settled (complete/failed) calls fold behind a single count line while
-// running calls stay visible below it, so what June is doing right now is
-// never hidden and failures are still called out on the fold itself.
-const AGENT_TOOL_STACK_FOLD_THRESHOLD = 3;
-
-function AgentToolStack({ parts }: { parts: Extract<AgentChatPart, { type: "tool" }>[] }) {
-  const settled = parts.filter((part) => part.status !== "running");
-  const folded = parts.length > AGENT_TOOL_STACK_FOLD_THRESHOLD && settled.length >= 2;
-  if (!folded) {
-    return (
-      <div className="agent-tool-stack">
-        {parts.map((tool) => (
-          <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-        ))}
-      </div>
-    );
-  }
-  const running = parts.filter((part) => part.status === "running");
-  const failedCount = settled.filter((part) => part.status === "failed").length;
-  return (
-    <div className="agent-tool-stack">
-      {/* Uncontrolled like the per-row disclosures: the browser owns the open
-       * state, so rows settling into the fold don't snap it shut. */}
-      <details
-        className="agent-tool-disclosure agent-tool-fold"
-        data-status={failedCount > 0 ? "failed" : "complete"}
-      >
-        <summary>
-          <span className="agent-tool-icon">
-            <IconConsoleSimple size={15} className="agent-tool-icon-glyph" />
-            <span className="agent-tool-icon-expand">+</span>
-            <span className="agent-tool-icon-minimize">−</span>
-          </span>
-          <span className="agent-tool-name">{settled.length} actions</span>
-          {failedCount > 0 ? (
-            <span className="agent-tool-live-status" data-status="failed">
-              {failedCount} failed
-            </span>
-          ) : null}
-        </summary>
-        <div className="agent-tool-fold-body">
-          {settled.map((tool) => (
-            <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-          ))}
-        </div>
-      </details>
-      {running.map((tool) => (
-        <AgentToolPartRow key={`tool:${tool.id}`} part={tool} />
-      ))}
-    </div>
-  );
-}
-
+import { AgentThinkingGroup, AgentToolStack } from "./chat-turns/ThinkingAndTools";
 function AgentArtifactList({
   artifacts,
   onDownload,
