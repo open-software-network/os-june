@@ -155,10 +155,7 @@ import {
   routineRunWatchStep,
   saveRoutineRunWatchState,
 } from "../lib/routine-run-notifications";
-import {
-  isPermissionGranted,
-  requestPermission,
-} from "@tauri-apps/plugin-notification";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import {
   getActiveHermesProfileName,
   PROFILE_DATA_CHANGED_EVENT,
