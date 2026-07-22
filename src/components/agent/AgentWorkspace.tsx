@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useComposerMenuDismiss } from "./use-composer-menu-dismiss";
 import { useIssueReportEvents } from "./use-issue-report-events";
 import { useAgentSessionEvents } from "./use-agent-session-events";
 import { useAgentWindowEvents } from "./use-agent-window-events";
@@ -1924,44 +1925,19 @@ export function AgentWorkspace({
     };
   }, [attachMenuOpen]);
 
-  useEffect(() => {
-    if (!composerModelOpen) return;
-    function onPointer(event: MouseEvent) {
-      const target = event.target as Node;
-      if (composerModelPopoverRef.current?.contains(target)) return;
-      if (composerModelTriggerRef.current?.contains(target)) return;
-      // The hover detail cards are portaled to document.body, so a click inside
-      // one (its "Show more" toggle) lands outside the popover — treat it as in.
-      if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
-      setComposerModelOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        // Escape peels one layer at a time: a nested model control or the
-        // all-models panel first, then an active root query, then the popover.
-        if (
-          composerModelFlyout?.kind === "all" ||
-          composerModelFlyout?.kind === "auto" ||
-          composerModelFlyout?.kind === "effort"
-        ) {
-          setComposerModelFlyout(null);
-          setModelSearch("");
-        } else if (modelRootSearch) {
-          setModelRootSearch("");
-        } else {
-          setComposerModelOpen(false);
-          if (composerModelFromSlash) composerEditorRef.current?.focus();
-        }
-      }
-    }
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [composerModelFromSlash, composerModelOpen, composerModelFlyout, modelRootSearch]);
+  useComposerMenuDismiss({
+    composerEditorRef,
+    composerModelFlyout,
+    composerModelFromSlash,
+    composerModelOpen,
+    composerModelPopoverRef,
+    composerModelTriggerRef,
+    modelRootSearch,
+    setComposerModelFlyout,
+    setComposerModelOpen,
+    setModelRootSearch,
+    setModelSearch,
+  });
 
   useLayoutEffect(() => {
     if (!composerModelOpen) return;
