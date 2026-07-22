@@ -247,6 +247,14 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
                 segment_index += 1;
                 continue;
             }
+            // The Live transcription setting is re-read per chunk so turning
+            // it off mid-recording stops new preview requests (and their
+            // billing) promptly; turning it back on resumes the stream.
+            // (JUN-375)
+            if !crate::providers::live_transcription() {
+                segment_index += 1;
+                continue;
+            }
             let segment_id = preview_segment_id(source, segment_index);
             if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                 note_id: &note_id,
@@ -325,6 +333,13 @@ async fn run_system_live_preview_worker(
                         continue;
                     }
 
+                    // Same live setting check as the microphone lane: turning
+                    // Live transcription off mid-recording stops new preview
+                    // requests promptly (JUN-375).
+                    if !crate::providers::live_transcription() {
+                        segment_index += 1;
+                        continue;
+                    }
                     let segment_id = preview_segment_id(RecordingSource::System, segment_index);
                     if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                         note_id: &note_id,
