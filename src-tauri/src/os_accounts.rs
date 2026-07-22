@@ -1053,6 +1053,9 @@ pub fn setup_deep_link(app: &tauri::App) {
         if url.scheme() != "osjune" {
             return;
         }
+        if crate::focus::handle_deep_link(app_handle.clone(), url.as_ref()) {
+            return;
+        }
         // Match on the parsed URL components — `starts_with` would also
         // accept `osjune://auth/callback-extra?...` and similar, letting
         // an unrelated webpage drain the one-shot. CSRF would still reject

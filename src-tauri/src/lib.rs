@@ -15,6 +15,7 @@ pub mod domain;
 pub mod experimental_settings;
 pub mod extension_host;
 pub mod feature_flags;
+pub mod focus;
 pub mod hermes_bridge;
 pub mod image_safety;
 pub mod june_api;
@@ -216,6 +217,23 @@ pub fn run() {
             commands::cancel_agent_task,
             commands::retry_agent_task,
             commands::list_agent_tool_events,
+            focus::focus_start,
+            focus::focus_create_plan,
+            focus::focus_start_plan,
+            focus::focus_list_macos_shortcuts,
+            focus::focus_status,
+            focus::focus_open_ready,
+            focus::focus_error_ready,
+            focus::focus_pause,
+            focus::focus_resume,
+            focus::focus_start_break,
+            focus::focus_finish,
+            focus::focus_abandon,
+            focus::focus_update_completion,
+            focus::focus_update_next_project,
+            focus::focus_split_segment,
+            focus::focus_reassign_segment,
+            focus::focus_history,
             commands::share_create,
             commands::share_list,
             commands::share_get,
@@ -426,6 +444,7 @@ pub fn run() {
             dictation::setup(app);
             agent_hud::setup(app);
             notifications::setup(app);
+            focus::setup(app);
             meeting_detection::setup(app);
             repair_agent_task_statuses_on_app_start(app);
             hermes_bridge::start_on_app_start(app);

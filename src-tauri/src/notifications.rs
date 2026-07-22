@@ -117,6 +117,21 @@ pub fn send_app_notification(
     send_via_plugin(&app, &request)
 }
 
+pub(crate) fn send_focus_notification(app: &AppHandle, title: &str, body: &str) {
+    let request = AppNotificationRequest {
+        title: title.to_string(),
+        body: body.to_string(),
+        sound: None,
+        group: Some("focus".to_string()),
+        session_id: None,
+    };
+    #[cfg(target_os = "macos")]
+    if macos::deliver(&request) {
+        return;
+    }
+    let _ = send_via_plugin(app, &request);
+}
+
 fn send_via_plugin(app: &AppHandle, request: &AppNotificationRequest) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
 

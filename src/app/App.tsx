@@ -25,6 +25,7 @@ import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsL
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
+import { FocusWorkspace } from "../components/focus/FocusWorkspace";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
 import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
@@ -61,6 +62,7 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconZap } from "central-icons/IconZap";
 import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconClock } from "central-icons/IconClock";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
 import { ComputerUseApprovalsTray } from "../components/agent/ComputerUseApprovalsTray";
@@ -88,6 +90,8 @@ import {
   downloadNoteAudio,
   ensureHermesBridgeSession,
   finishRecording,
+  focusErrorReady,
+  focusOpenReady,
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
@@ -294,6 +298,8 @@ const SIDEBAR_MIN_WIDTH = 188;
 const SIDEBAR_MAX_WIDTH = 320;
 const SIDEBAR_COLLAPSE_WIDTH = 160;
 const CHECK_FOR_UPDATES_EVENT = "june://check-for-updates";
+const FOCUS_OPEN_EVENT = "june:focus:open";
+const FOCUS_ERROR_EVENT = "june:focus:error";
 const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
 const AGENT_MENU_BAR_SESSION_LIMIT = 6;
 const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
@@ -421,6 +427,11 @@ function tabMeta(
         title: "Dictation",
         icon: <IconMicrophone size={TAB_ICON_SIZE} />,
       };
+    case "focus":
+      return {
+        title: "Focus",
+        icon: <IconClock size={TAB_ICON_SIZE} />,
+      };
     case "settings":
       return {
         // Surface the active settings section (e.g. "MCP servers") in the tab
@@ -458,6 +469,39 @@ export function App() {
   });
   const activeViewRef = useRef<SidebarView>(activeView);
   activeViewRef.current = activeView;
+
+  useEffect(() => {
+    let disposed = false;
+    let unlistenOpen: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+
+    void (async () => {
+      [unlistenOpen, unlistenError] = await Promise.all([
+        listen(FOCUS_OPEN_EVENT, () => {
+          setActiveView("focus");
+          void focusOpenReady().catch(() => {});
+        }),
+        listen(FOCUS_ERROR_EVENT, (event) => {
+          setError(messageFromError(event.payload));
+          void focusErrorReady().catch(() => {});
+        }),
+      ]);
+      if (disposed) {
+        unlistenOpen();
+        unlistenError();
+        return;
+      }
+      if (await focusOpenReady()) setActiveView("focus");
+      const pendingError = await focusErrorReady();
+      if (pendingError) setError(messageFromError(pendingError));
+    })().catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlistenOpen?.();
+      unlistenError?.();
+    };
+  }, []);
   // Browser-style tabs. Each tab is a saved navigation snapshot; the active tab
   // mirrors live navigation (so a single tab behaves exactly like before),
   // while switching or opening a tab restores its snapshot. The first tab
@@ -4585,6 +4629,8 @@ export function App() {
                     }, 80);
                   }}
                 />
+              ) : activeView === "focus" ? (
+                <FocusWorkspace projects={state.folders} />
               ) : activeView === "routines" ? (
                 <RoutinesView
                   creditActionsDisabledReason={

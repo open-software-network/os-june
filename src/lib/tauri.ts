@@ -38,6 +38,155 @@ export type ClaudeProjectCandidate = {
   alreadyAdded: boolean;
 };
 
+export type FocusStatus =
+  | "planned"
+  | "focusing"
+  | "paused"
+  | "overtime"
+  | "onBreak"
+  | "completed"
+  | "abandoned";
+
+export type FocusIntervalKind = "focus" | "break";
+export type FocusSegmentKind = "focus" | "pause" | "break" | "overtime";
+export type FocusOutcome = "active" | "completed" | "shortened" | "overtime" | "abandoned";
+
+export type FocusIntervalInput = {
+  kind: FocusIntervalKind;
+  durationMinutes: number;
+  projectId?: string;
+};
+
+export type StartFocusRequest = {
+  intention?: string;
+  startShortcutName?: string;
+  projectId?: string;
+  durationMinutes?: number;
+  intervalCount?: number;
+  intervalDurationMinutes?: number;
+  breakDurationMinutes?: number;
+  longBreakDurationMinutes?: number;
+  intervalPlan?: FocusIntervalInput[];
+};
+
+export type FocusIntervalDto = {
+  position: number;
+  kind: FocusIntervalKind;
+  plannedDurationMs: number;
+  projectId?: string;
+  projectName?: string;
+};
+
+export type FocusSegmentDto = {
+  id: string;
+  intervalPosition: number;
+  kind: FocusSegmentKind;
+  startedAt: string;
+  endedAt?: string;
+  durationMs: number;
+  projectId?: string;
+  projectName?: string;
+};
+
+export type FocusSessionDto = {
+  id: string;
+  intention: string;
+  startShortcutName?: string;
+  status: FocusStatus;
+  pausedFrom?: FocusStatus;
+  currentIntervalPosition: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  abandonedAt?: string;
+  reflection?: string;
+  quality?: number;
+  intervals: FocusIntervalDto[];
+  segments: FocusSegmentDto[];
+  plannedFocusMs: number;
+  actualFocusMs: number;
+  actualBreakMs: number;
+  pausedMs: number;
+  currentElapsedMs: number;
+  remainingMs: number;
+  overtimeMs: number;
+  outcome: FocusOutcome;
+};
+
+export async function focusStart(request: StartFocusRequest) {
+  return invoke<FocusSessionDto>("focus_start", { request });
+}
+
+export async function focusCreatePlan(request: StartFocusRequest) {
+  return invoke<FocusSessionDto>("focus_create_plan", { request });
+}
+
+export async function focusStartPlan(sessionId: string) {
+  return invoke<FocusSessionDto>("focus_start_plan", { request: { sessionId } });
+}
+
+export async function focusListMacosShortcuts() {
+  return invoke<string[]>("focus_list_macos_shortcuts");
+}
+
+export async function focusStatus() {
+  return invoke<FocusSessionDto | null>("focus_status");
+}
+
+export async function focusOpenReady() {
+  return invoke<boolean>("focus_open_ready");
+}
+
+export async function focusErrorReady() {
+  return invoke<{ code: string; message: string; details?: unknown } | null>("focus_error_ready");
+}
+
+export async function focusPause(sessionId?: string) {
+  return invoke<FocusSessionDto>("focus_pause", { request: { sessionId } });
+}
+
+export async function focusResume(sessionId?: string) {
+  return invoke<FocusSessionDto>("focus_resume", { request: { sessionId } });
+}
+
+export async function focusStartBreak(sessionId?: string) {
+  return invoke<FocusSessionDto>("focus_start_break", { request: { sessionId } });
+}
+
+export async function focusFinish(sessionId?: string) {
+  return invoke<FocusSessionDto>("focus_finish", { request: { sessionId } });
+}
+
+export async function focusAbandon(sessionId?: string) {
+  return invoke<FocusSessionDto>("focus_abandon", { request: { sessionId } });
+}
+
+export async function focusUpdateCompletion(input: {
+  sessionId: string;
+  reflection?: string;
+  quality?: number;
+}) {
+  return invoke<FocusSessionDto>("focus_update_completion", { request: input });
+}
+
+export async function focusUpdateNextProject(input: { sessionId: string; projectId?: string }) {
+  return invoke<FocusSessionDto>("focus_update_next_project", { request: input });
+}
+
+export async function focusSplitSegment(segmentId: string, splitAt: string) {
+  return invoke<FocusSessionDto>("focus_split_segment", {
+    request: { segmentId, splitAt },
+  });
+}
+
+export async function focusReassignSegment(input: { segmentId: string; projectId?: string }) {
+  return invoke<FocusSessionDto>("focus_reassign_segment", { request: input });
+}
+
+export async function focusHistory(input: { projectId?: string; limit?: number } = {}) {
+  return invoke<FocusSessionDto[]>("focus_history", { request: input });
+}
+
 export type MemoryDto = {
   id: string;
   folderId?: string;

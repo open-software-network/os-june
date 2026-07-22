@@ -14,6 +14,7 @@ import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconColorPalette } from "central-icons/IconColorPalette";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
+import { IconClock } from "central-icons/IconClock";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
@@ -135,6 +136,7 @@ export type SidebarView =
   | "all-notes"
   | "settings"
   | "folders"
+  | "focus"
   | "dictation"
   | "routines"
   | "agent"
@@ -1286,6 +1288,18 @@ export function Sidebar({
                 <IconMicrophone size={16} />
               </span>
               <span className="sidebar-nav-label">Dictation</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "focus"}
+              aria-current={activeView === "focus" ? "page" : undefined}
+              onClick={() => onChangeView("focus")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconClock size={16} />
+              </span>
+              <span className="sidebar-nav-label">Focus</span>
             </button>
             <button
               type="button"

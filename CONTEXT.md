@@ -95,6 +95,36 @@ _Avoid_: the Hermes memory toolset's `memories/` files (the upstream
 mechanism June does not use for this), Biography (the connector-built user
 profile).
 
+### Focus
+
+**Focus**:
+June's local time-intention workspace. It plans bounded work, records what
+actually happened, and keeps a history without requiring June API or an agent
+run. Use **June Focus** only when distinguishing the product surface from the
+operating-system concept of keyboard/window focus.
+_Avoid_: focus mode (reserved for a future policy feature), productivity
+timer, Pomodoro (a Focus plan need not use that pattern).
+
+**Focus session**:
+One intention and its full lifecycle from planned or started through completed
+or abandoned. At most one may be planned or active across the app, agent, and
+deep-link entry points.
+_Avoid_: timer, task, routine.
+
+**Focus plan / Focus interval / Focus segment**:
+A Focus plan is the ordered intended structure; a Focus interval is one
+planned focus or break duration; a Focus segment is one observed timestamped
+span of focus, pause, break, or overtime. Always qualify **Focus segment**
+because `segment` also names a live-preview audio chunk.
+_Avoid_: cycle (for plan), session (for interval), segment (unqualified).
+
+**Blocker profile**:
+A future, local policy describing browser or application restrictions during
+focus, pause, and break phases. It is separate from Projects and from the
+native Focus timeline; the core ships no enforcement profile yet.
+_Avoid_: blocker Project, Focus Project policy, strict mode (unless a shipped
+platform mechanism proves the documented enforcement semantics).
+
 ### Audio & recording
 
 **Recording session**:

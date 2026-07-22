@@ -4,6 +4,8 @@ import {
   downloadNoteAudio,
   ensureHermesBridgeGateway,
   finishRecording,
+  focusErrorReady,
+  focusOpenReady,
   getNote,
   juneOpenCommunityPage,
   recoverRecording,
@@ -112,5 +114,13 @@ describe("Tauri command contracts", () => {
     await juneOpenCommunityPage();
 
     expect(mocks.invoke).toHaveBeenCalledWith("june_open_community_page");
+  });
+
+  it("drains cold-launch Focus open and error handshakes", async () => {
+    await focusOpenReady();
+    await focusErrorReady();
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "focus_open_ready");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "focus_error_ready");
   });
 });

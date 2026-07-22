@@ -205,6 +205,10 @@ const JUNE_VIDEO_MCP_TOKEN_ENV: &str = "JUNE_VIDEO_PROXY_TOKEN";
 const JUNE_RECORDER_MCP_SERVER_NAME: &str = "june_recorder";
 const JUNE_RECORDER_MCP_SCRIPT_NAME: &str = "june_recorder_mcp.py";
 const JUNE_RECORDER_MCP_SCRIPT: &str = include_str!("hermes/june_recorder_mcp.py");
+const JUNE_FOCUS_MCP_SERVER_NAME: &str = "june_focus";
+const JUNE_FOCUS_MCP_SCRIPT_NAME: &str = "june_focus_mcp.py";
+const JUNE_FOCUS_MCP_SCRIPT: &str = include_str!("hermes/june_focus_mcp.py");
+const JUNE_FOCUS_MCP_TOKEN_ENV: &str = "JUNE_FOCUS_PROXY_TOKEN";
 /// Environment variable the `june_recorder` MCP reads its loopback proxy token
 /// from. Kept out of argv so it does not appear in process listings.
 const JUNE_RECORDER_MCP_TOKEN_ENV: &str = "JUNE_RECORDER_PROXY_TOKEN";
@@ -408,6 +412,10 @@ The tool returns a `MEDIA:` reference to the finished video, and June renders it
 const JUNE_SOUL_RECORDER_MD: &str = r#"
 Recording tools: you have a `june_recorder` MCP toolset with `start_recording`, `stop_recording`, and `recording_status`. Only call `start_recording` when the user explicitly asks you to start recording, record a meeting, or begin capture now. Never start recording proactively or because recording might be useful. If the user asks you to stop the current recording, call `stop_recording`.
 When the user asks how to record a meeting, explain the normal UI path accurately: open or create a note, press the Record button in the note editor, and use Recording options if they want to choose microphone-only or meeting mode. While recording is active, June shows the recorder bar on the note and a recorder presence in the sidebar or floating recorder pill when they browse away.
+"#;
+
+const JUNE_SOUL_FOCUS_MD: &str = r#"
+Focus tools: you have a `june_focus` MCP toolset that controls June's local Focus session and reads its local Projects. Call `start_focus` only after the user explicitly asks to begin Focus; discussing productivity is not permission to start. Prefer stable Project ids from `list_focus_projects`. If a Project name is ambiguous, show the returned choices and ask instead of guessing. Focus time is native-owned and survives window closure, sleep, and relaunch.
 "#;
 
 /// Appended to `SOUL.md` only when at least one connector MCP server is
@@ -883,6 +891,7 @@ struct SharedProviderProxy {
     recorder_token: String,
     routine_browser_token: BrowserProxyToken,
     attended_browser_token: BrowserProxyToken,
+    focus_token: String,
     connector_token: String,
     computer_use_token: String,
     obsidian_token: String,
@@ -935,6 +944,9 @@ struct ProviderProxyState {
     /// The browser broker, shared with `HermesBridge`, so `/v1/browser/status`
     /// reads the live Browser access grant and active session count.
     browser_broker: Arc<BrowserBroker>,
+    /// Focus routes have their own secret, handed only to `june_focus`, so a
+    /// local-control MCP cannot cross into microphone control or vice versa.
+    focus_token: String,
     /// Connector routes require this dedicated secret, handed only to the
     /// connector MCP servers: provider data must not be reachable with the
     /// general provider token.
@@ -1689,7 +1701,7 @@ async fn start_hermes_bridge_inner(
     } else {
         None
     };
-    let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
+    let june_recorder_mcp = sync_june_recorder_mcp(app, &command, &provider_proxy.focus_token)?;
     // Read the Browser access grant fresh for the rendered `june_browser`
     // `enabled` leaf. Broker authorization does not use this spawn snapshot: it
     // re-reads the persisted flag for every `/v1/browser/*` request.
@@ -2034,6 +2046,7 @@ async fn ensure_provider_proxy(
                 recorder_token: proxy.recorder_token.clone(),
                 routine_browser_token: proxy.routine_browser_token.current(),
                 attended_browser_token: proxy.attended_browser_token.current(),
+                focus_token: proxy.focus_token.clone(),
                 connector_token: proxy.connector_token.clone(),
                 computer_use_token: proxy.computer_use_token.clone(),
                 obsidian_token: proxy.obsidian_token.clone(),
@@ -2045,6 +2058,7 @@ async fn ensure_provider_proxy(
     let recorder_token = random_token();
     let routine_browser_token = BrowserProxyToken::new(random_token());
     let attended_browser_token = BrowserProxyToken::new(random_token());
+    let focus_token = random_token();
     let connector_token = random_token();
     let computer_use_token = random_token();
     let obsidian_token = random_token();
@@ -2062,6 +2076,7 @@ async fn ensure_provider_proxy(
         routine_browser_token.clone(),
         attended_browser_token.clone(),
         Arc::clone(&bridge.browser_broker),
+        focus_token.clone(),
         connector_token.clone(),
         computer_use_token.clone(),
         obsidian_token.clone(),
@@ -2085,6 +2100,7 @@ async fn ensure_provider_proxy(
         recorder_token: recorder_token.clone(),
         routine_browser_token: routine_browser_token.clone(),
         attended_browser_token: attended_browser_token.clone(),
+        focus_token: focus_token.clone(),
         connector_token: connector_token.clone(),
         computer_use_token: computer_use_token.clone(),
         obsidian_token: obsidian_token.clone(),
@@ -2097,6 +2113,7 @@ async fn ensure_provider_proxy(
         recorder_token,
         routine_browser_token: routine_browser_token.current(),
         attended_browser_token: attended_browser_token.current(),
+        focus_token,
         connector_token,
         computer_use_token,
         obsidian_token,
@@ -2241,6 +2258,7 @@ struct SharedProviderProxyInfo {
     recorder_token: String,
     routine_browser_token: String,
     attended_browser_token: String,
+    focus_token: String,
     connector_token: String,
     computer_use_token: String,
     obsidian_token: String,
@@ -2285,6 +2303,8 @@ struct JuneVideoMcpConfig {
 struct JuneRecorderMcpConfig {
     command: String,
     script_path: PathBuf,
+    focus_script_path: PathBuf,
+    focus_proxy_token: String,
 }
 
 #[derive(Debug, Clone)]
@@ -9913,6 +9933,7 @@ fn sync_june_video_mcp(
 fn sync_june_recorder_mcp(
     app: &AppHandle,
     hermes_command: &str,
+    focus_proxy_token: &str,
 ) -> Result<JuneRecorderMcpConfig, AppError> {
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
@@ -9922,10 +9943,15 @@ fn sync_june_recorder_mcp(
     let script_path = mcp_dir.join(JUNE_RECORDER_MCP_SCRIPT_NAME);
     fs::write(&script_path, JUNE_RECORDER_MCP_SCRIPT)
         .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
+    let focus_script_path = mcp_dir.join(JUNE_FOCUS_MCP_SCRIPT_NAME);
+    fs::write(&focus_script_path, JUNE_FOCUS_MCP_SCRIPT)
+        .map_err(|error| AppError::new("june_focus_mcp_failed", error.to_string()))?;
 
     Ok(JuneRecorderMcpConfig {
         command: hermes_python_command(hermes_command),
         script_path,
+        focus_script_path,
+        focus_proxy_token: focus_proxy_token.to_string(),
     })
 }
 
@@ -11600,7 +11626,7 @@ fn render_recorder_mcp_entry(
     base_url: &str,
     proxy_token: &str,
 ) -> String {
-    format!(
+    let recorder = format!(
         r#"  {server_name}:
     enabled: true
     command: {command}
@@ -11620,7 +11646,28 @@ fn render_recorder_mcp_entry(
         base_url = yaml_string(base_url),
         token_env = JUNE_RECORDER_MCP_TOKEN_ENV,
         token = yaml_string(proxy_token),
-    )
+    );
+    let focus = format!(
+        r#"  {server_name}:
+    enabled: true
+    command: {command}
+    args:
+      - {script_path}
+      - {base_url}
+    env:
+      PYTHONUNBUFFERED: "1"
+      {token_env}: {token}
+    timeout: 30
+    connect_timeout: 10
+"#,
+        server_name = JUNE_FOCUS_MCP_SERVER_NAME,
+        command = yaml_string(&config.command),
+        script_path = yaml_string(&config.focus_script_path.to_string_lossy()),
+        base_url = yaml_string(base_url),
+        token_env = JUNE_FOCUS_MCP_TOKEN_ENV,
+        token = yaml_string(&config.focus_proxy_token),
+    );
+    format!("{recorder}{focus}")
 }
 
 /// The `june_browser` entry is ALWAYS rendered; its `enabled` leaf exactly
@@ -12019,10 +12066,10 @@ fn sync_june_soul(
             JUNE_SOUL_CLI_BLOCKED_MD
         };
         format!(
-            "{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
+            "{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{JUNE_SOUL_FOCUS_MD}{connectors_section}{browser_section}{JUNE_SOUL_SANDBOX_MD}{cli_section}"
         )
     } else {
-        format!("{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}")
+        format!("{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{JUNE_SOUL_FOCUS_MD}{connectors_section}{browser_section}")
     };
     std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
@@ -12247,6 +12294,7 @@ async fn start_june_provider_proxy(
     routine_browser_token: BrowserProxyToken,
     attended_browser_token: BrowserProxyToken,
     browser_broker: Arc<BrowserBroker>,
+    focus_token: String,
     connector_token: String,
     computer_use_token: String,
     obsidian_token: String,
@@ -12285,6 +12333,7 @@ async fn start_june_provider_proxy(
             routine_browser_token,
             attended_browser_token,
             browser_broker,
+            focus_token,
             connector_token,
             computer_use_token,
             obsidian_token,
@@ -12361,6 +12410,7 @@ async fn handle_june_provider_connection(
         &state.memory_token,
         &state.recorder_token,
         &routine_browser_token,
+        &state.focus_token,
         &state.connector_token,
         &state.computer_use_token,
         &state.obsidian_token,
@@ -12612,6 +12662,9 @@ async fn handle_june_provider_connection(
             let result = crate::computer_use::handle_proxy_action(app, body).await;
             write_json_response(&mut stream, 200, result).await?;
         }
+        (method, path) if path.starts_with("/v1/focus/") => {
+            handle_focus_route(&mut stream, &state, method, path, &request.body).await?;
+        }
         ("GET", "/v1/obsidian/vault") => {
             let (status, body) = obsidian_discovery_response(
                 state.app.as_ref().map(crate::obsidian::discovery_for_app),
@@ -12683,6 +12736,196 @@ fn obsidian_discovery_response(
         },
         |body| (200, body),
     )
+}
+
+async fn handle_focus_route(
+    stream: &mut tokio::net::TcpStream,
+    state: &ProviderProxyState,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> io::Result<()> {
+    let Some(app) = state.app.as_ref() else {
+        return write_json_response(
+            stream,
+            503,
+            serde_json::json!({
+                "success": false,
+                "code": "focus_app_unavailable",
+                "message": "June Focus is unavailable outside the desktop app."
+            }),
+        )
+        .await;
+    };
+    let result: Result<serde_json::Value, AppError> = match (method, path) {
+        ("GET", "/v1/focus/projects") => match crate::commands::repositories(app).await {
+            Ok(repos) => repos
+                .list_folders(&crate::commands::active_profile(app))
+                .await
+                .map(|projects| serde_json::json!(projects))
+                .map_err(AppError::from),
+            Err(error) => Err(error),
+        },
+        ("GET", "/v1/focus/status") => crate::focus::focus_status(app.clone())
+            .await
+            .and_then(|session| serde_json::to_value(session).map_err(focus_serialization_error)),
+        ("POST", "/v1/focus/start") => match prepare_focus_start_request(app, body).await {
+            Ok(request) => crate::focus::focus_start(app.clone(), request)
+                .await
+                .and_then(|session| {
+                    serde_json::to_value(session).map_err(focus_serialization_error)
+                }),
+            Err(error) => Err(error),
+        },
+        ("POST", "/v1/focus/pause") => crate::focus::focus_pause(
+            app.clone(),
+            crate::focus::types::FocusActionRequest::default(),
+        )
+        .await
+        .and_then(|session| serde_json::to_value(session).map_err(focus_serialization_error)),
+        ("POST", "/v1/focus/resume") => crate::focus::focus_resume(
+            app.clone(),
+            crate::focus::types::FocusActionRequest::default(),
+        )
+        .await
+        .and_then(|session| serde_json::to_value(session).map_err(focus_serialization_error)),
+        ("POST", "/v1/focus/break") => crate::focus::focus_start_break(
+            app.clone(),
+            crate::focus::types::FocusActionRequest::default(),
+        )
+        .await
+        .and_then(|session| serde_json::to_value(session).map_err(focus_serialization_error)),
+        ("POST", "/v1/focus/finish") => crate::focus::focus_finish(
+            app.clone(),
+            crate::focus::types::FocusActionRequest::default(),
+        )
+        .await
+        .and_then(|session| serde_json::to_value(session).map_err(focus_serialization_error)),
+        ("POST", "/v1/focus/abandon") => crate::focus::focus_abandon(
+            app.clone(),
+            crate::focus::types::FocusActionRequest::default(),
+        )
+        .await
+        .and_then(|session| serde_json::to_value(session).map_err(focus_serialization_error)),
+        _ => {
+            write_not_found_response(stream).await?;
+            return Ok(());
+        }
+    };
+    match result {
+        Ok(data) => {
+            write_json_response(
+                stream,
+                200,
+                serde_json::json!({ "success": true, "data": data }),
+            )
+            .await
+        }
+        Err(error) => {
+            let status = match error.code.as_str() {
+                "focus_already_active" | "focus_invalid_transition" | "focus_session_mismatch" => {
+                    409
+                }
+                "storage_unavailable" | "migration_failed" => 503,
+                _ => 400,
+            };
+            write_json_response(
+                stream,
+                status,
+                serde_json::json!({
+                    "success": false,
+                    "code": error.code,
+                    "message": error.message,
+                    "details": error.details,
+                }),
+            )
+            .await
+        }
+    }
+}
+
+async fn prepare_focus_start_request(
+    app: &AppHandle,
+    body: &[u8],
+) -> Result<crate::focus::types::StartFocusRequest, AppError> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).map_err(|_| {
+        AppError::new(
+            "focus_invalid_request",
+            "Focus start request must be valid JSON.",
+        )
+    })?;
+    let project_name = value
+        .get("projectName")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned);
+    let project_id_present = value
+        .get("projectId")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|id| !id.trim().is_empty());
+    if project_id_present && project_name.is_some() {
+        return Err(AppError::new(
+            "focus_invalid_project_reference",
+            "Use a Project id or Project name, not both.",
+        ));
+    }
+    if let Some(project_name) = project_name {
+        let profile = crate::commands::active_profile(app);
+        let projects = crate::commands::repositories(app)
+            .await?
+            .list_folders(&profile)
+            .await?;
+        value["projectId"] =
+            serde_json::json!(resolve_focus_project_name(&projects, &project_name)?);
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.remove("projectName");
+        object.retain(|_, value| !value.is_null());
+    }
+    serde_json::from_value(value).map_err(|error| {
+        AppError::new(
+            "focus_invalid_request",
+            format!("Focus start request is invalid: {error}"),
+        )
+    })
+}
+
+fn resolve_focus_project_name(
+    projects: &[crate::domain::types::FolderDto],
+    project_name: &str,
+) -> Result<String, AppError> {
+    let matches = projects
+        .iter()
+        .filter(|project| project.name.eq_ignore_ascii_case(project_name))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [project] => Ok(project.id.clone()),
+        [] => Err(AppError::new(
+            "focus_project_not_found",
+            format!("No Project named '{project_name}' was found."),
+        )),
+        choices => {
+            let mut error = AppError::new(
+                "focus_project_ambiguous",
+                "More than one Project has that name. Choose a Project id.",
+            );
+            error.details = Some(serde_json::json!({
+                "projects": choices
+                    .iter()
+                    .map(|project| serde_json::json!({
+                        "id": project.id,
+                        "name": project.name,
+                    }))
+                    .collect::<Vec<_>>()
+            }));
+            Err(error)
+        }
+    }
+}
+
+fn focus_serialization_error(error: serde_json::Error) -> AppError {
+    AppError::new("focus_serialization_failed", error.to_string())
 }
 
 async fn write_not_found_response(stream: &mut tokio::net::TcpStream) -> io::Result<()> {
@@ -15651,18 +15894,21 @@ fn model_catalog_with_fallback(
     }
 }
 
-/// Memory writes, recorder mutations, browser routes, and connector routes each
-/// require their own scoped secret; every other route keeps the general provider
-/// token. Browser routes return the routine token for scope classification here,
-/// but the connection auth path accepts both browser tokens through
-/// `provider_proxy_browser_context` and binds the transport to the one that
-/// matched. Distinct secrets, so none authorizes another's surface.
+/// Memory writes, recorder mutations, Focus local-control routes, browser
+/// routes, and connector routes each require their own scoped secret; every
+/// other route keeps the general provider token. Browser routes return the
+/// routine token for scope classification here, but the connection auth path
+/// accepts both browser tokens through `provider_proxy_browser_context` and
+/// binds the transport to the one that matched. Distinct secrets, so none
+/// authorizes another's surface.
+#[allow(clippy::too_many_arguments)]
 fn provider_proxy_required_token<'a>(
     path: &str,
     provider_token: &'a str,
     memory_token: &'a str,
     recorder_token: &'a str,
     routine_browser_token: &'a str,
+    focus_token: &'a str,
     connector_token: &'a str,
     computer_use_token: &'a str,
     obsidian_token: &'a str,
@@ -15677,6 +15923,8 @@ fn provider_proxy_required_token<'a>(
         routine_browser_token
     } else if path == crate::computer_use::PROXY_PATH {
         computer_use_token
+    } else if path.starts_with("/v1/focus/") {
+        focus_token
     } else if provider_proxy_is_connector_route(path) {
         connector_token
     } else {
@@ -17828,6 +18076,7 @@ assert capped["has_more"] is True, capped
             routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
             attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
             browser_broker: Arc::new(BrowserBroker::default()),
+            focus_token: "focus-token".to_string(),
             connector_token: "connector-token".to_string(),
             computer_use_token: "computer-use-token".to_string(),
             obsidian_token: "obsidian-token".to_string(),
@@ -17925,6 +18174,7 @@ assert capped["has_more"] is True, capped
             token: "proxy-token".to_string(),
             memory_token: "memory-token".to_string(),
             recorder_token: "recorder-token".to_string(),
+            focus_token: "focus-token".to_string(),
             routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
             attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
             browser_broker: Arc::new(BrowserBroker::default()),
@@ -18436,6 +18686,39 @@ assert capped["has_more"] is True, capped
     }
 
     #[test]
+    fn focus_project_names_resolve_only_when_unambiguous() {
+        let project = |id: &str, name: &str| crate::domain::types::FolderDto {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            instructions: None,
+            memory_disabled: false,
+            local_path: None,
+            created_at: "2027-01-15T00:00:00.000Z".to_string(),
+            updated_at: "2027-01-15T00:00:00.000Z".to_string(),
+        };
+        let unique = vec![project("project-1", "Release note")];
+        assert_eq!(
+            resolve_focus_project_name(&unique, "release NOTE").expect("unique Project"),
+            "project-1"
+        );
+
+        let duplicate = vec![
+            project("project-1", "Release note"),
+            project("project-2", "Release note"),
+        ];
+        let error = resolve_focus_project_name(&duplicate, "Release note")
+            .expect_err("duplicate name is ambiguous");
+        assert_eq!(error.code, "focus_project_ambiguous");
+        assert_eq!(
+            error.details.expect("Project choices")["projects"]
+                .as_array()
+                .map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[test]
     fn sensitive_routes_require_their_scoped_token_and_vice_versa() {
         let required = |path| {
             provider_proxy_required_token(
@@ -18444,6 +18727,7 @@ assert capped["has_more"] is True, capped
                 "memory-tok",
                 "recorder-tok",
                 "browser-tok",
+                "focus-tok",
                 "connector-tok",
                 "computer-use-tok",
                 "obsidian-tok",
@@ -18458,6 +18742,9 @@ assert capped["has_more"] is True, capped
             "/v1/recorder/status",
         ] {
             assert_eq!(required(path), "recorder-tok");
+        }
+        for path in ["/v1/focus/start", "/v1/focus/status"] {
+            assert_eq!(required(path), "focus-tok");
         }
         for path in [
             "/v1/models",
@@ -18514,6 +18801,7 @@ assert capped["has_more"] is True, capped
                     "memory-tok",
                     "recorder-tok",
                     "browser-tok",
+                    "focus-tok",
                     "connector-tok",
                     "computer-use-tok",
                     "obsidian-tok"
@@ -18564,6 +18852,7 @@ assert capped["has_more"] is True, capped
             "memory-tok",
             "recorder-tok",
             "browser-tok",
+            "focus-tok",
             "connector-tok",
             "computer-use-tok",
             "obsidian-tok",
@@ -18605,6 +18894,7 @@ assert capped["has_more"] is True, capped
                 "memory-tok",
                 "recorder-tok",
                 "browser-tok",
+                "focus-tok",
                 "connector-tok",
                 "computer-use-tok",
                 "obsidian-tok",
@@ -18725,6 +19015,7 @@ assert capped["has_more"] is True, capped
             recorder_token: "recorder-token".to_string(),
             routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
             attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
+            focus_token: "focus-token".to_string(),
             connector_token: "connector-token".to_string(),
             computer_use_token: "computer-use-token".to_string(),
             obsidian_token: "obsidian-token".to_string(),
@@ -19243,6 +19534,7 @@ assert capped["has_more"] is True, capped
             recorder_token: "recorder-token".to_string(),
             routine_browser_token: BrowserProxyToken::new("browser-token".to_string()),
             attended_browser_token: BrowserProxyToken::new("attended-browser-token".to_string()),
+            focus_token: "focus-token".to_string(),
             connector_token: "connector-token".to_string(),
             computer_use_token: "computer-use-token".to_string(),
             obsidian_token: "obsidian-token".to_string(),
@@ -19702,6 +19994,7 @@ assert capped["has_more"] is True, capped
             "memory-token",
             "recorder-token",
             "browser-token",
+            "focus-token",
             "connector-token",
             "computer-use-token",
             "obsidian-token",
@@ -21612,6 +21905,8 @@ mcp_servers:
         JuneRecorderMcpConfig {
             command: "/tmp/hermes/venv/bin/python".to_string(),
             script_path: PathBuf::from("/tmp/june/hermes-mcp/june_recorder_mcp.py"),
+            focus_script_path: PathBuf::from("/tmp/june/hermes-mcp/june_focus_mcp.py"),
+            focus_proxy_token: "focus-proxy-tok".to_string(),
         }
     }
 
@@ -21722,12 +22017,14 @@ mcp_servers:
         assert!(config.contains("  june_obsidian:\n"));
         assert!(config.contains("  june_recorder:\n"));
         assert!(config.contains("  june_computer_use:\n"));
+        assert!(config.contains("  june_focus:\n"));
         assert!(config.contains(
             "agent:\n  max_turns: 90\n  api_max_retries: 3\n  disabled_toolsets: [browser, computer_use]\n"
         ));
         assert!(config.contains("  june_computer_use:\n    enabled: true\n"));
         assert!(config.contains("    command: \"/tmp/hermes/venv/bin/python\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_context_mcp.py\"\n"));
+        assert!(config.contains("      - \"/tmp/june/hermes-mcp/june_focus_mcp.py\"\n"));
         assert!(config.contains("      - \"/tmp/june/notes.sqlite3\"\n"));
         assert!(config.contains("      - \"/tmp/june/config/memory-settings.json\"\n"));
         assert!(config.contains("      - \"/tmp/june/hermes/active_profile\"\n"));
@@ -21789,6 +22086,8 @@ mcp_servers:
         ));
         assert!(!config.contains("CUA_DRIVER_RS_"));
         assert!(!config.contains("HERMES_CUA_DRIVER"));
+        assert!(config.contains("      JUNE_FOCUS_PROXY_TOKEN: \"focus-proxy-tok\"\n"));
+        assert!(!config.contains("      JUNE_FOCUS_PROXY_TOKEN: \"proxy-tok\"\n"));
         // The Hermes-side tool timeout must sit at the top of the stack
         // (proxy lease < python client < hermes), or Hermes reports failure
         // while June is still honestly waiting on the permission prompt;
@@ -23586,6 +23885,8 @@ mcp_servers:
         assert!(soul.contains("press the Record button"));
         assert!(soul.contains("Recording options"));
         assert!(soul.contains("recorder bar"));
+        assert!(soul.contains("june_focus"));
+        assert!(soul.contains("survives window closure, sleep, and relaunch"));
     }
 
     #[test]

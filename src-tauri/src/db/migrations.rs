@@ -283,6 +283,15 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::error::Error
             query(statement).execute(_pool).await?;
         }
     }
+    for statement in include_str!("../../migrations/023_focus.sql").split(';') {
+        let statement = statement.trim();
+        if !statement.is_empty() {
+            query(statement).execute(_pool).await?;
+        }
+    }
+    // Existing development databases may already have the Focus tables from
+    // an earlier build, so add the optional start-Shortcut column in place.
+    ensure_column(_pool, "focus_sessions", "start_shortcut_name", "TEXT").await?;
     Ok(())
 }
 
