@@ -18437,6 +18437,12 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
+/* June's Auto mark already draws its own filled tile. Keep the shared logo
+ * box for alignment, but do not put a second muted tile behind it. */
+.model-summary-logo[data-brand="june"] {
+  background: transparent;
+}
+
 .model-summary-name {
   grid-area: name;
   align-self: center;

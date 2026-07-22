@@ -4206,6 +4206,46 @@ describe("AppSettings", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps Auto preference in settings instead of duplicating it in the text picker", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+        costQuality: 50,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    expect(await screen.findByRole("group", { name: "Auto preference" })).toBeInTheDocument();
+
+    const trigger = screen.getByRole("button", { name: "Change text model" });
+    expect(trigger.querySelector(".model-summary-logo")).toHaveAttribute("data-brand", "june");
+    await user.click(trigger);
+
+    const picker = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(within(picker).getByText("Suggested")).toBeInTheDocument();
+    expect(within(picker).queryByText("Text model")).not.toBeInTheDocument();
+    expect(
+      within(picker).getByRole("switch", { name: "Choose the model automatically" }),
+    ).toBeChecked();
+    expect(within(picker).queryByRole("button", { name: /Preference/ })).not.toBeInTheDocument();
+  });
+
   it("defaults the model picker to curated suggestions", async () => {
     const user = userEvent.setup();
     render(
@@ -4298,6 +4338,9 @@ describe("AppSettings", () => {
     // like text/voice, shows only the suggested picks up top — the rest of the
     // catalog lives behind the All models flyout.
     await user.click(screen.getByRole("button", { name: "Change image model" }));
+    const imagePicker = await screen.findByRole("dialog", { name: "Choose image model" });
+    expect(within(imagePicker).getByText("Image model")).toBeInTheDocument();
+    expect(within(imagePicker).queryByText("Suggested")).not.toBeInTheDocument();
     const defaultImageOption = await screen.findByRole("option", { name: /Venice SD3\.5/ });
     expect(defaultImageOption).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Z-Image Turbo/ })).toBeInTheDocument();

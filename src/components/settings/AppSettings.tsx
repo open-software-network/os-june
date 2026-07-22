@@ -1244,8 +1244,8 @@ export function AppSettings({
     setModelSearch("");
   }
 
-  // Optimistic apply + persisted save, shared by the Models row's segmented
-  // control and the model picker popover's Auto section.
+  // Optimistic apply + persisted save for the Models row's segmented Auto
+  // preference control.
   function applyCostQuality(costQuality: number) {
     setProviderSettings((current) => ({ ...current, costQuality }));
     saveCostQuality(costQuality);
@@ -3299,7 +3299,11 @@ function ModelRow({
             aria-expanded={readOnly ? false : open}
             disabled={readOnly}
           >
-            <span className="model-summary-logo" aria-hidden>
+            <span
+              className="model-summary-logo"
+              data-brand={model.id === AUTO_MODEL_ID ? "june" : undefined}
+              aria-hidden
+            >
               <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
             </span>
             <span className="model-summary-name">{model.name}</span>
@@ -3318,12 +3322,17 @@ function ModelRow({
             popoverRef={popoverRef}
             searchRef={searchRef}
             className="settings-model-popover"
-            title={modelLabel[0].toUpperCase() + modelLabel.slice(1)}
+            title={
+              modelLabel === "text model"
+                ? undefined
+                : modelLabel[0].toUpperCase() + modelLabel.slice(1)
+            }
             ariaLabel={`Choose ${modelLabel}`}
             onFlyoutChange={onFlyoutChange}
             onSearchChange={onSearchChange}
             onSelect={onSelect}
             onCostQualityChange={onCostQualityChange}
+            showAutoPreference={false}
           />
         ) : null}
       </div>

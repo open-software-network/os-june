@@ -115,6 +115,7 @@ export function ModelPickerPopover({
   onSearchChange,
   onSelect,
   onCostQualityChange,
+  showAutoPreference = true,
   thinkingLevel,
   onSelectThinking,
 }: {
@@ -160,6 +161,10 @@ export function ModelPickerPopover({
    * swaps the selection to/from the Auto router, plus the Preference
    * drill-in writing through this callback while Auto is on. */
   onCostQualityChange?: (value: number) => void;
+  /** Whether Auto's Preference drill-in appears inside the popover. Settings
+   * keeps that preference visible as its own segmented row, so its picker
+   * omits the duplicate while retaining the Auto toggle. */
+  showAutoPreference?: boolean;
   /** Enables the Effort drill-in row (agent surfaces): shows the session's
    * thinking level and opens the three-level submenu. Omitted on surfaces
    * without reasoning effort control (image/video pickers). */
@@ -718,7 +723,7 @@ export function ModelPickerPopover({
                   ) : null}
                 </>
               ) : null}
-              {onCostQualityChange && autoEnabled ? (
+              {onCostQualityChange && autoEnabled && showAutoPreference ? (
                 <button
                   type="button"
                   className="agent-composer-model-row agent-composer-model-control-row"
@@ -761,7 +766,10 @@ export function ModelPickerPopover({
                   />
                 </button>
               ) : null}
-              {onCostQualityChange && autoEnabled && flyout?.kind === "auto" ? (
+              {onCostQualityChange &&
+              autoEnabled &&
+              showAutoPreference &&
+              flyout?.kind === "auto" ? (
                 <div
                   ref={flyoutRef}
                   className="agent-composer-model-flyout agent-composer-model-auto-panel"
