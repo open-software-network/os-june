@@ -1125,9 +1125,10 @@ async fn read_permission_probe(
         .unwrap_or(false);
     Ok(PermissionProbe {
         accessibility,
-        // The helper is a fresh LaunchServices-owned process for every probe,
-        // so this preflight belongs to the same app identity that captures.
-        // Keep accepting the live field for compatibility with older helpers.
+        // The helper is fresh for every probe. macOS evaluates Accessibility
+        // against the nested helper and Screen Recording against its signed
+        // outer June responsible app. Keep accepting the live field for
+        // compatibility with older helpers.
         screen_recording: preflight && capturable,
     })
 }
