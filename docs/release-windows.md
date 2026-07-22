@@ -110,10 +110,11 @@ The installed app is branded as June, but the current Windows binary on disk is
 
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
 the app launches as June, the sign-in copy mentions recording, notes, and
-dictation, the bundled agent starts on a clean VM with no Python installed, and
-Windows dictation can record from the microphone and paste into a normal app.
-Record from the microphone and generate a note against production June API
-before linking the installer publicly.
+dictation, and sign-in lands on the fresh New session hero with the Sessions
+sidebar visible. Confirm the bundled agent starts on a clean VM with no Python
+installed, and Windows dictation can record from the microphone and paste into
+a normal app. Record from the microphone and generate a note against production
+June API before linking the installer publicly.
 
 For updater validation after a second Windows release, install an older
 updater-capable Windows build, run **June -> Check for updates...**, confirm the
