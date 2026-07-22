@@ -63,6 +63,19 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           persist-credentials: true
 
+      - name: Warn when building rc away from main
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          echo "::warning title=RC BUILD FROM NON-MAIN REF::Building an RC from $GITHUB_REF at $GITHUB_SHA. This is allowed for firefights, but stable promotion will require the source commit on main or an emergency override."
+          {
+            echo "### ⚠️ RC built from a non-main ref"
+            echo
+            echo "- Dispatched ref: \`$GITHUB_REF\`"
+            echo "- Source commit: \`$GITHUB_SHA\`"
+            echo "- This is allowed for firefights. Stable promotion requires this commit on \`main\` unless \`allow-non-main\` is enabled."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Setup pnpm
         uses: ./.github/actions/setup-pnpm
 
