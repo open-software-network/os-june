@@ -18,6 +18,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=JUNE_API_URL");
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos") {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
+        link_swift_runtime();
     }
     clean_legacy_helper_bundles();
     build_system_audio_helper();
@@ -28,6 +29,43 @@ fn main() {
     ensure_bundled_extension_dir();
     ensure_nm_shim_placeholder();
     tauri_build::build();
+}
+
+/// Swift-backed dependencies emit their runtime search paths from dependency
+/// build scripts, but those linker arguments do not reach this package's final
+/// binaries. Resolve the active toolchain through `xcrun` so both full Xcode
+/// and Command Line Tools layouts work without runner-specific paths.
+fn link_swift_runtime() {
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+    println!("cargo:rerun-if-env-changed=TOOLCHAINS");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+
+    let Ok(output) = std::process::Command::new("xcrun")
+        .args(["--find", "swiftc"])
+        .output()
+    else {
+        println!("cargo:warning=could not resolve swiftc; Swift runtime rpath is incomplete");
+        return;
+    };
+    if !output.status.success() {
+        println!("cargo:warning=xcrun could not resolve swiftc; Swift runtime rpath is incomplete");
+        return;
+    }
+
+    let swiftc = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let Some(toolchain_usr) = swiftc.parent().and_then(std::path::Path::parent) else {
+        println!(
+            "cargo:warning=swiftc path has no toolchain root; Swift runtime rpath is incomplete"
+        );
+        return;
+    };
+    for relative in ["lib/swift-5.5/macosx", "lib/swift/macosx"] {
+        let runtime = toolchain_usr.join(relative);
+        if runtime.is_dir() {
+            println!("cargo:rustc-link-search=native={}", runtime.display());
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", runtime.display());
+        }
+    }
 }
 
 /// `tauri_build::build()` validates resource source directories during every
