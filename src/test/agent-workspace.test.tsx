@@ -4384,6 +4384,26 @@ describe("AgentWorkspace", () => {
     expect(composer).toHaveFocus();
   });
 
+  it("keeps the root layer in browse mode while searching the All models flyout", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.keyboard("{Enter}");
+
+    const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
+    const flyoutSearch = within(dialog).getByRole("textbox", { name: "Search models" });
+    await user.type(flyoutSearch, "kimi");
+
+    // The two queries are independent: L2's box filters only its own list,
+    // so the root layer stays in browse mode with an empty root query.
+    expect(within(dialog).getByText("Suggested")).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "Search models" })).toHaveValue("");
+  });
+
   it("queues /model in an existing chat and applies it before the next message", async () => {
     const catalog = [
       {

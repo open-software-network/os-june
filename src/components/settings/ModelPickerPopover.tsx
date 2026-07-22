@@ -108,6 +108,8 @@ export function ModelPickerPopover({
   allModelsLabel = `All ${modelModeLabel(mode)} models`,
   veniceApiKeyConfigured = false,
   rootSearchRef,
+  rootSearch,
+  onRootSearchChange,
   onFlyoutChange,
   onSearchChange,
   onSelect,
@@ -136,8 +138,12 @@ export function ModelPickerPopover({
   /** Enables the root-layer search (the /model + composer trigger surface):
    * a field above the pinned controls whose query searches across BOTH
    * layers, suggested picks and the full catalog, as one flat result list.
-   * The All models flyout keeps its own field; they share the same query. */
+   * The All models flyout keeps its own independent field and query: L2's
+   * box filters only the catalog list, and typing there never flips the
+   * root layer into results mode. */
   rootSearchRef?: RefObject<HTMLInputElement>;
+  rootSearch?: string;
+  onRootSearchChange?: (value: string) => void;
   onFlyoutChange: (flyout: ModelPickerFlyout) => void;
   onSearchChange: (value: string) => void;
   /** `keepOpen` asks the host to leave the popover mounted (used by the Auto
@@ -391,9 +397,10 @@ export function ModelPickerPopover({
   const [rootActive, setRootActive] = useState(0);
   const rootListRef = useRef<HTMLDivElement | null>(null);
   const rootFade = useScrollFade(rootListRef);
-  const rootQueryActive = Boolean(rootSearchRef) && Boolean(query);
+  const rootQuery = (rootSearch ?? "").trim().toLowerCase();
+  const rootQueryActive = Boolean(rootSearchRef) && Boolean(rootQuery);
   const rootMatchingSuggested = rootQueryActive
-    ? suggested.filter(({ model: option }) => modelMatchesQuery(option, query))
+    ? suggested.filter(({ model: option }) => modelMatchesQuery(option, rootQuery))
     : [];
   const rootSuggestedIds = new Set(rootMatchingSuggested.map(({ model: option }) => option.id));
   const rootResults = rootQueryActive
@@ -403,15 +410,17 @@ export function ModelPickerPopover({
           model: option,
           costQuality: presetCostQuality,
         })),
-        ...filteredOptions
-          .filter((option) => !rootSuggestedIds.has(option.id))
+        ...selectable
+          .filter(
+            (option) => !rootSuggestedIds.has(option.id) && modelMatchesQuery(option, rootQuery),
+          )
           .map((option) => ({ key: option.id, model: option, costQuality: undefined })),
       ]
     : [];
   const resolvedRootActive = Math.min(rootActive, Math.max(rootResults.length - 1, 0));
   useEffect(() => {
     setRootActive(0);
-  }, [query]);
+  }, [rootQuery]);
   useLayoutEffect(() => {
     if (rootQueryActive) rootFade.update();
   }, [rootQueryActive, rootResults.length, rootFade.update]);
@@ -601,8 +610,8 @@ export function ModelPickerPopover({
         <label className="agent-composer-model-search agent-composer-model-root-search">
           <input
             ref={rootSearchRef}
-            value={search}
-            onChange={(event) => onSearchChange(event.currentTarget.value)}
+            value={rootSearch ?? ""}
+            onChange={(event) => onRootSearchChange?.(event.currentTarget.value)}
             placeholder="Search models"
             aria-label="Search models"
             role="combobox"

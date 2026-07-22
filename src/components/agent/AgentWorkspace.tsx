@@ -2877,6 +2877,10 @@ export function AgentWorkspace({
   // drives search focus on open and Escape returning focus to the draft.
   const [composerModelFromSlash, setComposerModelFromSlash] = useState(false);
   const composerModelRootSearchRef = useRef<HTMLInputElement>(null);
+  // The popover's root-layer query, independent of the All models flyout's
+  // `modelSearch`: L2's box filters only its catalog list, and typing there
+  // never flips the root layer into results mode.
+  const [modelRootSearch, setModelRootSearch] = useState("");
   const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -3846,8 +3850,8 @@ export function AgentWorkspace({
         if (composerModelFlyout?.kind === "all" || composerModelFlyout?.kind === "effort") {
           setComposerModelFlyout(null);
           setModelSearch("");
-        } else if (modelSearch) {
-          setModelSearch("");
+        } else if (modelRootSearch) {
+          setModelRootSearch("");
         } else {
           setComposerModelOpen(false);
           if (composerModelFromSlash) composerEditorRef.current?.focus();
@@ -3860,7 +3864,7 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [composerModelFromSlash, composerModelOpen, composerModelFlyout, modelSearch]);
+  }, [composerModelFromSlash, composerModelOpen, composerModelFlyout, modelRootSearch]);
 
   useLayoutEffect(() => {
     if (!composerModelOpen) return;
@@ -4301,6 +4305,7 @@ export function AgentWorkspace({
   // refreshed in the background on every open, like Settings does.
   function openComposerModelPicker(fromSlash = false) {
     setModelSearch("");
+    setModelRootSearch("");
     setComposerModelFlyout(null);
     setComposerModelFromSlash(fromSlash);
     setComposerModelOpen(true);
@@ -11574,6 +11579,8 @@ export function AgentWorkspace({
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
             rootSearchRef={composerModelRootSearchRef}
+            rootSearch={modelRootSearch}
+            onRootSearchChange={setModelRootSearch}
             onFlyoutChange={setComposerModelFlyout}
             onSearchChange={setModelSearch}
             onSelect={(modelId, costQuality, options) => {
