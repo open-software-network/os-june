@@ -151,6 +151,28 @@ describe("Computer use development restart", () => {
     ]);
   });
 
+  it("throws when the Accessibility helper is not registered with LaunchServices", () => {
+    const helperMiss = {
+      status: 64,
+      stdout: "",
+      stderr:
+        'tccutil: No such bundle identifier "co.opensoftware.june.computer-use-driver.dev.w123456789abc": The operation couldn\u2019t be completed. (OSStatus error -10814.)\n',
+    };
+    const run = vi.fn((_bin, args) => (args[0] === "reset" ? helperMiss : { status: 0 }));
+    const helperBundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
+    const appBundleIdentifier = "co.opensoftware.june";
+    const bundlePath = "/tmp/june-worktree/.tauri-helper/June Computer Use Driver.app";
+
+    expect(() =>
+      resetComputerUseDevGrants({ bundlePath, helperBundleIdentifier, appBundleIdentifier }, run),
+    ).toThrow(`Could not reset Accessibility for ${helperBundleIdentifier}`);
+    expect(run).not.toHaveBeenCalledWith(
+      "/usr/bin/tccutil",
+      ["reset", "ScreenCapture", appBundleIdentifier],
+      { encoding: "utf8" },
+    );
+  });
+
   it("still throws on an unrelated tccutil failure", () => {
     const helperOK = { status: 0, stdout: "", stderr: "" };
     const unrelatedFailure = {

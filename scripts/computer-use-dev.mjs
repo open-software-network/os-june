@@ -78,7 +78,7 @@ export function resetComputerUseDevGrants(
       // the Cargo binary directly, not a .app bundle, so the app identifier may
       // never be known to LaunchServices. There are no TCC grants to reset, so
       // treat it as deferred rather than a hard failure.
-      if (isLaunchServicesMiss(result)) {
+      if (service === "ScreenCapture" && isLaunchServicesMiss(result)) {
         outcomes.push({ service, bundleIdentifier, status: "deferred" });
         continue;
       }
