@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import { AccountGate, AccountStatusFailure } from "../components/account/AccountGate";
 import { FundingChip, FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
@@ -54,12 +54,7 @@ import {
   type TabNav,
 } from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
-import { IconNoteText } from "central-icons/IconNoteText";
-import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconProjects } from "central-icons/IconProjects";
-import { IconZap } from "central-icons/IconZap";
-import { IconMicrophone } from "central-icons/IconMicrophone";
-import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
 import { ComputerUseApprovalsTray } from "../components/agent/ComputerUseApprovalsTray";
 import {
@@ -295,162 +290,35 @@ import {
   withFakeRecovery,
 } from "./app-helpers";
 export { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "./app-helpers";
-
-// "June is up to date." is a confirmation, not a call to action: linger, then
-// hide on its own. Failures persist until dismissed; busy statuses advance
-// when their operation resolves and may also be dismissed while in flight.
-const UP_TO_DATE_DISMISS_MS = 4000;
-// Soft-exit window: the update-popover-out animation runs var(--t-med) (160ms);
-// the status clears just after it finishes.
-const UP_TO_DATE_EXIT_MS = 220;
-
-const SIDEBAR_DEFAULT_WIDTH = 240;
-const SIDEBAR_MIN_WIDTH = 188;
-const SIDEBAR_MAX_WIDTH = 320;
-const SIDEBAR_COLLAPSE_WIDTH = 160;
-const CHECK_FOR_UPDATES_EVENT = "june://check-for-updates";
-const AGENT_MENU_BAR_SESSION_FETCH_LIMIT = 100;
-const AGENT_MENU_BAR_SESSION_LIMIT = 6;
-const AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000, 4000, 8000];
-// Matches the Routines view's run-history cadence; a routine notification a
-// few seconds late is fine, hammering the bridge is not.
-const ROUTINE_RUN_NOTIFY_POLL_MS = 15000;
-const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
-const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
-const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
-const MEETING_START_LISTENER_RETRY_DELAYS_MS = [250, 1_000, 5_000] as const;
-const MEETING_START_REQUEST_EXPIRED_MESSAGE =
-  "Recording did not start in time. Open meeting notes and select Record to try again.";
-const COMPOSER_FUNDING_DISABLED_REASON =
-  "Add credits to send messages or generate images and videos.";
-const RECORDING_FUNDING_DISABLED_REASON =
-  "Add credits before starting a recording. You can still browse and edit.";
-const NOTE_RETRY_FUNDING_DISABLED_REASON = "Add credits before retrying note generation.";
-const RECOVERY_FUNDING_DISABLED_REASON =
-  "Add credits before recovering this recording. Your saved audio will stay available.";
-const ROUTINE_FUNDING_DISABLED_REASON = "Add credits before running a routine.";
-// Floor for the note card so the sidebar can't be dragged wide enough to
-// crush it into a sliver — it always keeps a usable width plus its gutters.
-const MAIN_PANEL_MIN_WIDTH = 420;
-
-function noteHasDownloadableAudio(note: NoteDto): boolean {
-  const audioSources = note.audioSources?.length
-    ? note.audioSources
-    : note.audio
-      ? [note.audio]
-      : [];
-  return audioSources.some((audio) => audio.format === "wav" && audio.sizeBytes > 0);
-}
-
-// Largest the sidebar may grow given the live window width: never past its own
-// cap, and never so far that the main panel drops below its floor. Falls back
-// to the sidebar min on very narrow windows where both can't be satisfied.
-function sidebarMaxWidth() {
-  return Math.max(
-    SIDEBAR_MIN_WIDTH,
-    Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - MAIN_PANEL_MIN_WIDTH),
-  );
-}
-
-const TAB_ICON_SIZE = 14;
-
-type RecordingInactivityPrompt = {
-  sessionId: string;
-  expiresAt: number;
-};
-
-type AgentRecorderRequestPayload = {
-  requestId?: unknown;
-  action?: unknown;
-  sourceMode?: unknown;
-};
-
-function agentSessionTabTitle(session?: HermesSessionInfo): string | undefined {
-  return session?.title?.trim() || session?.preview?.trim() || undefined;
-}
-
-function refreshedTabNav(current: TabNav, live: TabNav): TabNav | undefined {
-  if (!navEquals(current, live)) return live;
-  if (current.view !== "agent" || live.view !== "agent") return undefined;
-
-  const liveTitle = live.agentSessionTitle?.trim();
-  if (!liveTitle || current.agentSessionTitle?.trim() === liveTitle) {
-    return undefined;
-  }
-
-  return { ...current, agentSessionTitle: liveTitle };
-}
-
-// The icon + label a tab shows for a snapshot. Titles for entity views (note,
-// project, agent session) are looked up live from the loaded data, so a tab's
-// label tracks renames. Agent tabs also carry a fallback title so a newly
-// created session is identifiable before the session list hydrates.
-function tabMeta(
-  nav: TabNav,
-  notes: NoteListItemDto[],
-  folders: FolderDto[],
-  sessions: HermesSessionInfo[],
-  settingsSectionLabel?: string,
-): { title: string; icon: ReactNode } {
-  switch (nav.view) {
-    case "meetings": {
-      const note = nav.noteId ? notes.find((n) => n.id === nav.noteId) : undefined;
-      return {
-        title: note?.title?.trim() || "New note",
-        icon: <IconNoteText size={TAB_ICON_SIZE} />,
-      };
-    }
-    case "folders": {
-      const folder = nav.folderId ? folders.find((f) => f.id === nav.folderId) : undefined;
-      return {
-        title: folder?.name?.trim() || "Projects",
-        icon: <IconProjects size={TAB_ICON_SIZE} />,
-      };
-    }
-    case "agent": {
-      const session = nav.agentSessionId
-        ? sessions.find((s) => s.id === nav.agentSessionId)
-        : undefined;
-      return {
-        title: agentSessionTabTitle(session) || nav.agentSessionTitle?.trim() || "New session",
-        icon: <IconBubble3 size={TAB_ICON_SIZE} />,
-      };
-    }
-    case "agent-sessions":
-      return {
-        title: "Sessions",
-        icon: <IconBubble3 size={TAB_ICON_SIZE} />,
-      };
-    case "all-notes":
-      return {
-        title: "All notes",
-        icon: <IconNoteText size={TAB_ICON_SIZE} />,
-      };
-    case "routines":
-      return {
-        title: "Routines",
-        icon: <IconZap size={TAB_ICON_SIZE} />,
-      };
-    case "dictation":
-      return {
-        title: "Dictation",
-        icon: <IconMicrophone size={TAB_ICON_SIZE} />,
-      };
-    case "settings":
-      return {
-        // Surface the active settings section (e.g. "MCP servers") in the tab
-        // strip so the label says what you are looking at, not just "Settings".
-        title: settingsSectionLabel?.trim() || "Settings",
-        icon: <IconSettingsGear4 size={TAB_ICON_SIZE} />,
-      };
-    case "notes":
-    default:
-      return {
-        title: "Notes",
-        icon: <IconNoteText size={TAB_ICON_SIZE} />,
-      };
-  }
-}
+import {
+  ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
+  AGENT_MENU_BAR_SESSION_FETCH_LIMIT,
+  AGENT_MENU_BAR_SESSION_LIMIT,
+  AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS,
+  CHECK_FOR_UPDATES_EVENT,
+  COMPOSER_FUNDING_DISABLED_REASON,
+  MEETING_START_LISTENER_RETRY_DELAYS_MS,
+  MEETING_START_REQUEST_EXPIRED_MESSAGE,
+  NOTE_RETRY_FUNDING_DISABLED_REASON,
+  RECOVERY_FUNDING_DISABLED_REASON,
+  RECORDING_FUNDING_DISABLED_REASON,
+  ROUTINE_FUNDING_DISABLED_REASON,
+  ROUTINE_RUN_NOTIFY_POLL_MS,
+  SIDEBAR_COLLAPSE_WIDTH,
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS,
+  SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS,
+  UP_TO_DATE_DISMISS_MS,
+  UP_TO_DATE_EXIT_MS,
+  agentSessionTabTitle,
+  noteHasDownloadableAudio,
+  refreshedTabNav,
+  sidebarMaxWidth,
+  tabMeta,
+  type AgentRecorderRequestPayload,
+  type RecordingInactivityPrompt,
+} from "./app-shell";
 
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
