@@ -1,73 +1,36 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CSSProperties } from "react";
 import { AccountGate, AccountStatusFailure } from "../components/account/AccountGate";
-import { FundingChip, FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
-  AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_SESSION_RENAMED_EVENT,
-  AGENT_SESSIONS_CHANGED_EVENT,
-  AgentWorkspace,
   markAgentNewSessionPending,
   recordManualAgentSessionTitle,
   type AgentNewSessionDetail,
   type AgentSessionRenamedDetail,
-  type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
-import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
-import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
-import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
-import { RoutinesView } from "../components/routines/RoutinesView";
-import { MoveNoteToFolderDialog } from "../components/folders/MoveNoteToFolderDialog";
-import { MoveSessionToProjectDialog } from "../components/folders/MoveSessionToProjectDialog";
-import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
-import { NoteChatPanel } from "../components/note-chat/NoteChatPanel";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
-import { ShareDialog } from "../components/share/ShareDialog";
-import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
-import { buildNotePayload, noteReadyToShare } from "../lib/share-payload";
-import { GlobalRecorderPill } from "../components/recorder/GlobalRecorderPill";
+import { noteReadyToShare } from "../lib/share-payload";
 import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
 import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
-import { NotesList, type NotesListHandle } from "../components/notes-list/NotesList";
-import { PermissionBanner } from "../components/permissions/PermissionBanner";
-import { AppSettings, SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
-import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
-import { TabBar, type TabItem } from "../components/tabs/TabBar";
-import {
-  defaultNav,
-  invalidateNoteTabs,
-  makeTabId,
-  navEquals,
-  reorderTabs,
-  type Tab,
-  type TabNav,
-} from "./tabs/tabs";
-import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
-import { IconProjects } from "central-icons/IconProjects";
-import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
-import { ComputerUseApprovalsTray } from "../components/agent/ComputerUseApprovalsTray";
-import {
-  OPEN_REFERRAL_DIALOG_EVENT,
-  ReferralNudge,
-  type ReferralNudgeMoment,
-} from "../components/referral/ReferralNudge";
-import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib/referral-nudge";
+import { type NotesListHandle } from "../components/notes-list/NotesList";
+import { SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
+import { type SidebarView } from "../components/sidebar/Sidebar";
+import { type TabItem } from "../components/tabs/TabBar";
+import { defaultNav, makeTabId, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
+import { type ReferralNudgeMoment } from "../components/referral/ReferralNudge";
+import { recordDictationFinished } from "../lib/referral-nudge";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
-import { Dialog } from "../components/ui/Dialog";
 import { Spinner } from "../components/ui/Spinner";
 import {
-  acknowledgeMeetingStartRequest,
   assignNoteToFolder,
   assignSessionToFolder,
   bootstrapApp,
@@ -80,78 +43,42 @@ import {
   dictationHelperCommand,
   downloadNoteAudio,
   ensureHermesBridgeSession,
-  finishRecording,
   getRecordingStatus,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
   listCompletedSessions,
-  listFolders,
   listNotes,
   listSessionFolders,
   listSessionProfiles,
   openPrivacySettings,
   osAccountsLogout,
-  osAccountsOpenPortal,
-  pauseRecording,
-  pendingMeetingStartRequest,
   removeNoteFromFolder,
   removeSessionFromFolder,
   recoverRecording,
   revealPath,
   renameFolder,
-  resolveAgentRecorderRequest,
-  resumeRecording,
-  retryProcessing,
   setSessionCompleted,
-  startMeetingRecording,
-  startRecording,
   updateNote,
   agentHudHide,
   agentHudShow,
-  agentOpenReady,
-  sendAppNotification,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
-import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
+import { preloadRecordingSounds } from "../lib/recording-sounds";
 import { preloadAgentSounds } from "../lib/agent-sounds";
 import { isMacLikePlatform, isPrimaryShortcut, isWindowsPlatform } from "../lib/platform";
-import { mergeSourceReadiness } from "../lib/source-readiness";
-import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_GALLERY_EVENT,
-  AGENT_OPEN_EVENT,
-  AGENT_RUN_SETTLED_EVENT,
-  AGENT_SESSION_STATUS_EVENT,
   dispatchAgentSessionStatus,
   emitAgentSessionsChanged,
   type AgentGalleryDetail,
-  type AgentRunSettledDetail,
   type AgentSessionStatusDetail,
 } from "../lib/agent-events";
 import { selectSessionProjectContext } from "../lib/agent-project-context";
-import {
-  notifyAgentRunSettled,
-  notifyAgentSessionStatus,
-  type AgentAttentionContext,
-} from "../lib/agent-notifications";
-import { getAgentSoundsEnabled } from "../lib/agent-sound-settings";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
-import { errorCode, messageFromError } from "../lib/errors";
+import { messageFromError } from "../lib/errors";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
-import {
-  listHermesSessions,
-  listScheduledRunSessions,
-  titleFromPrompt,
-} from "../lib/hermes-adapter";
-import {
-  createSingleFlight,
-  loadRoutineRunWatchState,
-  markRunsNotified,
-  routineRunWatchStep,
-  saveRoutineRunWatchState,
-} from "../lib/routine-run-notifications";
-import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import {
   getActiveHermesProfileName,
   PROFILE_DATA_CHANGED_EVENT,
@@ -180,9 +107,6 @@ import {
   notifyRecordingStillMeetingPrompt,
 } from "../lib/recording-notifications";
 import {
-  AGENT_MENU_BAR_NEW_SESSION_EVENT,
-  AGENT_MENU_BAR_OPEN_SESSION_EVENT,
-  AGENT_MENU_BAR_SET_AGENT_HUD_EVENT,
   CLOSE_TAB_EVENT,
   OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
@@ -201,11 +125,7 @@ import type {
   AccountStatus,
   HermesSessionInfo,
 } from "../lib/tauri";
-import type {
-  NoteListItemDto,
-  RecordingSourceMode,
-  RecordingSourceReadinessDto,
-} from "../lib/tauri";
+import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { applyAutostartDefaultOnce, retryPendingAutostartDefault } from "../lib/autostart";
 import {
@@ -216,43 +136,12 @@ import {
   shouldReplayOnboarding,
 } from "../lib/onboarding";
 import {
-  depletedBalanceAction,
   depletedBalanceActionLabel,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import {
-  type DepletedBalanceOutcome,
-  type MaxUpgradeTransport,
-  runDepletedBalanceAction,
-} from "../lib/billing-actions";
-import {
-  MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
-  MAX_UPGRADE_BROWSER_STATUS,
-  MAX_UPGRADE_BUSY_LABEL,
-  MAX_UPGRADE_CHARGE_CONFIRM_BODY,
-  MAX_UPGRADE_CONFIRM_BODY,
-  MAX_UPGRADE_CONFIRM_LABEL,
-  MAX_UPGRADE_CONFIRM_TITLE,
-  MAX_UPGRADE_PORTAL_LABEL,
-  MAX_UPGRADE_READY_STATUS,
-  MAX_UPGRADE_STALE_ACTION_NOTICE,
-  MAX_UPGRADE_WAITING_STATUS,
-  type MaxGrantWait,
-  accountLooksPreGrant,
-  beginMaxGrantWait,
-  clearMaxGrantWait,
-  isMaxGrantWaitCurrent,
-  isMaxUpgradeWaitStatus,
-  markMaxGrantWaitSlow,
-  markMaxGrantWaitWaiting,
-  maxGrantLanded,
-  maxGrantWaitForAccount,
-  maxUpgradeSlowStatus,
-  maxUpgradeWaitStatus,
-  pollForMaxGrant,
-} from "../lib/max-upgrade";
-import { ConfirmDialog } from "../components/ui/ConfirmDialog";
+import { type MaxUpgradeTransport } from "../lib/billing-actions";
+import { type MaxGrantWait } from "../lib/max-upgrade";
 import { checkJuneUpdate, reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
 import {
   PROCESSING_DEMO_NOTE_ID,
@@ -261,7 +150,6 @@ import {
 } from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
-import { handleSidebarResizeStart } from "./sidebar-resize";
 import {
   checkForJuneUpdate,
   INITIAL_UPDATE_STATUS_DISPLAY,
@@ -274,18 +162,13 @@ import {
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "./update-decision";
-import { UpdateHub, updateMenuBarSessionStatus } from "./app-effects/update-ui";
 import {
-  SidebarToggleGlyph,
   handleTitlebarPointerDown,
   isAccessibilityBlocked,
   isAppErrorCode,
   isCreateNoteShortcut,
   isMicrophoneRecordingBlocked,
   isNewSessionShortcut,
-  recordingToStatus,
-  revealMainWindowForMeetingStartError,
-  startingRecordingStatus,
   stringPayloadValue,
   withFakeRecovery,
 } from "./app-helpers";
@@ -296,27 +179,14 @@ import {
   AGENT_MENU_BAR_SESSION_LIMIT,
   AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS,
   CHECK_FOR_UPDATES_EVENT,
-  COMPOSER_FUNDING_DISABLED_REASON,
-  MEETING_START_LISTENER_RETRY_DELAYS_MS,
-  MEETING_START_REQUEST_EXPIRED_MESSAGE,
-  NOTE_RETRY_FUNDING_DISABLED_REASON,
   RECOVERY_FUNDING_DISABLED_REASON,
-  RECORDING_FUNDING_DISABLED_REASON,
-  ROUTINE_FUNDING_DISABLED_REASON,
-  ROUTINE_RUN_NOTIFY_POLL_MS,
-  SIDEBAR_COLLAPSE_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
-  SIDEBAR_MIN_WIDTH,
   SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS,
   SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS,
   UP_TO_DATE_DISMISS_MS,
   UP_TO_DATE_EXIT_MS,
-  agentSessionTabTitle,
   noteHasDownloadableAudio,
-  refreshedTabNav,
-  sidebarMaxWidth,
   tabMeta,
-  type AgentRecorderRequestPayload,
   type RecordingInactivityPrompt,
 } from "./app-shell";
 
