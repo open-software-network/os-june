@@ -327,6 +327,12 @@ impl HelperApp {
                 return;
             }
         };
+        // Once the new text owns the clipboard, an older restore must never
+        // remain armed: on any paste failure this dictation is the fallback.
+        let previous_clipboard = backup_for_next_clipboard_restore(
+            previous_clipboard,
+            self.delayed_clipboard_restore.take(),
+        );
         let Some(target) = self.pinned_target.take() else {
             self.writer.emit(error_event(
                 "paste_target_unavailable",
@@ -334,10 +340,17 @@ impl HelperApp {
             ));
             return;
         };
-        if !focus::verify_foreground(target) {
+        if let Err(error) = focus::activate_and_settle(target) {
+            let code = if error.is_target_unavailable() {
+                "paste_target_unavailable"
+            } else {
+                "paste_target_restricted"
+            };
             self.writer.emit(error_event(
-                "paste_target_restricted",
-                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                code,
+                format!(
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
+                ),
             ));
             return;
         }
@@ -350,20 +363,29 @@ impl HelperApp {
                 "activated": true,
             }),
         ));
-        if let Err(error) = focus::send_ctrl_v() {
-            self.writer.emit(error_event(
-                "paste_target_restricted",
-                format!(
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
-                ),
-            ));
-            return;
-        }
-        self.writer.emit(simple_event("paste_completed"));
+        let submission = match focus::submit_ctrl_v_if_foreground(target) {
+            Ok(submission) => submission,
+            Err(error) => {
+                let code = if error.is_target_unavailable() {
+                    "paste_target_unavailable"
+                } else {
+                    "paste_target_restricted"
+                };
+                let guidance = if error.is_incomplete_submission() {
+                    "Automatic paste may be incomplete. Check the target before pasting the full dictation from the clipboard."
+                } else {
+                    "Press Ctrl+V to paste it."
+                };
+                self.writer.emit(error_event(
+                    code,
+                    format!("June copied the dictation to the clipboard. {guidance} ({error})"),
+                ));
+                return;
+            }
+        };
+        self.writer.emit(paste_completed_event(&submission));
         if let Some(backup) = previous_clipboard {
             let now = std::time::Instant::now();
-            let backup =
-                backup_for_next_clipboard_restore(backup, self.delayed_clipboard_restore.take());
             self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
                 deadline: now + CLIPBOARD_RESTORE_DELAY,
                 expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
@@ -527,13 +549,26 @@ fn next_clipboard_restore(
 }
 
 fn backup_for_next_clipboard_restore(
-    backup: clipboard::ClipboardBackup,
+    backup: Option<clipboard::ClipboardBackup>,
     pending: Option<DelayedClipboardRestore>,
-) -> clipboard::ClipboardBackup {
-    match pending {
-        Some(pending) if backup.original_text_is(&pending.text) => pending.backup,
-        _ => backup,
+) -> Option<clipboard::ClipboardBackup> {
+    match (backup, pending) {
+        (Some(backup), Some(pending)) if backup.original_text_is(&pending.text) => {
+            Some(pending.backup)
+        }
+        (backup, _) => backup,
     }
+}
+
+fn paste_completed_event(submission: &focus::InputSubmission) -> serde_json::Value {
+    event(
+        "paste_completed",
+        serde_json::json!({
+            "inputSubmitted": true,
+            "deliveryConfirmed": false,
+            "eventsSubmitted": submission.events_submitted,
+        }),
+    )
 }
 
 impl Drop for HelperApp {
@@ -559,6 +594,18 @@ impl Drop for HelperApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_completed_reports_input_submission_without_claiming_delivery() {
+        let event = paste_completed_event(&focus::InputSubmission {
+            events_submitted: 4,
+        });
+
+        assert_eq!(event["type"], "paste_completed");
+        assert_eq!(event["payload"]["inputSubmitted"], true);
+        assert_eq!(event["payload"]["deliveryConfirmed"], false);
+        assert_eq!(event["payload"]["eventsSubmitted"], 4);
+    }
 
     fn restore_with_expiry(
         now: std::time::Instant,
@@ -600,7 +647,8 @@ mod tests {
         let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
         let second_backup = clipboard::ClipboardBackup::from_text_for_test("dictated text");
 
-        let backup = backup_for_next_clipboard_restore(second_backup, Some(pending));
+        let backup = backup_for_next_clipboard_restore(Some(second_backup), Some(pending))
+            .expect("original clipboard backup");
 
         assert!(backup.original_text_is("previous clipboard"));
     }
@@ -611,9 +659,18 @@ mod tests {
         let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
         let second_backup = clipboard::ClipboardBackup::from_text_for_test("user copied text");
 
-        let backup = backup_for_next_clipboard_restore(second_backup, Some(pending));
+        let backup = backup_for_next_clipboard_restore(Some(second_backup), Some(pending))
+            .expect("new clipboard backup");
 
         assert!(backup.original_text_is("user copied text"));
+    }
+
+    #[test]
+    fn second_paste_without_text_backup_cancels_pending_restore() {
+        let now = std::time::Instant::now();
+        let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+
+        assert!(backup_for_next_clipboard_restore(None, Some(pending)).is_none());
     }
 
     #[test]

@@ -63,6 +63,7 @@ const mocks = vi.hoisted(() => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   createAgentTask: vi.fn(),
+  dictationHelperCommand: vi.fn(),
   editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
@@ -161,6 +162,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: mocks.computerUseEndRun,
   computerUseStop: mocks.computerUseStop,
   createAgentTask: mocks.createAgentTask,
+  dictationHelperCommand: mocks.dictationHelperCommand,
   editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
@@ -943,6 +945,25 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Existing session")).toBeNull();
     expect(screen.queryByText("Existing task")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("focuses the in-session composer before starting dictation", async () => {
+    const user = userEvent.setup();
+    let activeElementWhenListeningStarted: Element | null = null;
+    mocks.dictationHelperCommand.mockImplementationOnce(async () => {
+      activeElementWhenListeningStarted = document.activeElement;
+    });
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.click(screen.getByRole("button", { name: "Dictate" }));
+
+    expect(activeElementWhenListeningStarted).toBe(composer);
+    expect(document.activeElement).toBe(composer);
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "toggle_listening",
+      shortcut: "Dictation",
+    });
   });
 
   it("keeps retrying startup session loads until the API is ready", async () => {

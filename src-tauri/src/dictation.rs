@@ -4987,9 +4987,10 @@ fn sync_capture_mic_duck(event_type: Option<&str>) {
 /// The duck decision for a helper event: `Some(true)` starts a duck (listening
 /// began), `Some(false)` lifts it (listening ended, however it ended),
 /// `None` leaves the current state untouched. The un-duck set is deliberately
-/// broad — every terminal, finalizing, or post-listening event lifts the duck
-/// — because a leaked duck would silently swallow the rest of the meeting's
-/// mic track, and re-lifting an already-lifted duck is a harmless no-op.
+/// broad — every workflow-terminal, finalizing, or post-listening event lifts
+/// the duck — because a leaked duck would silently swallow the rest of the
+/// meeting's mic track, and re-lifting an already-lifted duck is a harmless
+/// no-op.
 /// Intermediate events like `audio_level` return `None` so the duck holds for
 /// the whole listening window. System audio is never touched.
 fn mic_duck_action_for_event(event_type: Option<&str>) -> Option<bool> {
@@ -5080,6 +5081,15 @@ fn dictation_event_log_entry(event_type: &str, event: &serde_json::Value) -> ser
         "pasteTarget": payload
             .and_then(|payload| payload.get("app"))
             .and_then(serde_json::Value::as_str),
+        "inputSubmitted": payload
+            .and_then(|payload| payload.get("inputSubmitted"))
+            .and_then(serde_json::Value::as_bool),
+        "deliveryConfirmed": payload
+            .and_then(|payload| payload.get("deliveryConfirmed"))
+            .and_then(serde_json::Value::as_bool),
+        "eventsSubmitted": payload
+            .and_then(|payload| payload.get("eventsSubmitted"))
+            .and_then(serde_json::Value::as_u64),
         "provider": payload
             .and_then(|payload| payload.get("provider"))
             .and_then(serde_json::Value::as_str),
@@ -7530,6 +7540,24 @@ mod tests {
         assert_eq!(entry["textChars"], 28);
         assert!(entry.to_string().contains("textChars"));
         assert!(!entry.to_string().contains("Sensitive dictated sentence"));
+    }
+
+    #[test]
+    fn dictation_event_log_preserves_unconfirmed_input_submission_details() {
+        let event = serde_json::json!({
+            "type": "paste_completed",
+            "payload": {
+                "inputSubmitted": true,
+                "deliveryConfirmed": false,
+                "eventsSubmitted": 4
+            }
+        });
+
+        let entry = dictation_event_log_entry("paste_completed", &event);
+
+        assert_eq!(entry["inputSubmitted"], true);
+        assert_eq!(entry["deliveryConfirmed"], false);
+        assert_eq!(entry["eventsSubmitted"], 4);
     }
 
     #[test]
