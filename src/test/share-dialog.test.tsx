@@ -236,6 +236,35 @@ describe("ShareDialog", () => {
     expect(screen.getByLabelText("Passcode")).toHaveValue("");
   });
 
+  it("surfaces a reset failure without tearing down the link", async () => {
+    const saltB64 = "AQEBAQEBAQEBAQEBAQEBAQ";
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: saltB64 });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
+    });
+    mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: saltB64 }]);
+    mocks.shareDelete.mockRejectedValueOnce(new Error("delete failed"));
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    await screen.findByRole("textbox", { name: /Share link for/i });
+
+    await user.click(screen.getByRole("button", { name: "reset this link" }));
+    await user.click(screen.getByRole("button", { name: "Reset link" }));
+
+    // The confirm dialog closes so the error notice underneath is visible.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Reset link" })).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(/delete failed/i);
+    // The share was not torn down locally, so the link stays available for retry
+    // and the create form (with its passcode toggle) never appears.
+    expect(screen.getByRole("textbox", { name: /Share link for/i })).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Require a passcode" })).not.toBeInTheDocument();
+  });
+
   it("keeps a created link available when automatic copy fails", async () => {
     mocks.shareCreate.mockResolvedValue({
       shareId: "shr_1",

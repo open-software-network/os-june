@@ -335,24 +335,29 @@ export function ShareDialog({
   }, [clearCopyFeedback, passcode, runClipboardCopy, showCopyFeedback]);
 
   const handleStopSharing = useCallback(async () => {
-    if (!shareId) return;
-    await shareDelete(shareId).catch((stopError) => {
+    if (!shareId) return false;
+    try {
+      await shareDelete(shareId);
+    } catch (stopError) {
+      // Swallow the failure so the confirm dialog can close and the error
+      // notice becomes visible in the share dialog, where Stop/Reset remain
+      // available for retry.
       setError(describeShareError(stopError));
-      throw stopError;
-    });
+      return false;
+    }
     setShareId(null);
     setInviteId(null);
     setLinkMaterialB64(null);
     setPasswordProtected(false);
     setLegacyShare(false);
     clearCopyFeedback();
+    return true;
   }, [clearCopyFeedback, shareId]);
 
   // Resetting is stop-sharing plus intent: the owner wants a fresh link with a
   // fresh passcode, so land them on the create form with the toggle already on.
   const handleResetLink = useCallback(async () => {
-    await handleStopSharing();
-    setRequirePasscode(true);
+    if (await handleStopSharing()) setRequirePasscode(true);
   }, [handleStopSharing]);
 
   const handleClose = useCallback(() => {
