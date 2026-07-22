@@ -257,7 +257,6 @@ import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
   errorCode,
-  isHermesServerError,
   isHermesSessionsStartupRequestError,
   isTopUpRequiresMaxError,
   messageFromError,
@@ -369,22 +368,6 @@ const RESTORED_QUEUED_STEER_BUSY_RECONCILE_DELAY_MS = 3000;
 // June works.
 const SESSION_BUSY_NOTICE = "June is still working on the previous message.";
 
-// Connection-shaped failures get a "Try again" on the error banner — these are
-// all our own strings (hermes-gateway.ts client errors, ensureHermesGateway),
-// so the match is stable. Other errors (downloads, renames…) have no single
-// retryable action, so they only offer dismiss.
-const GATEWAY_CONNECTION_ERROR = /hermes (gateway|bridge)/i;
-
-// A pending request (approval/sudo/secret/clarify) can only be answered by the
-// runtime process that asked for it. When that runtime ends, the session's data
-// still loads, but the gateway answers "Session not found" on respond — the
-// request is now permanently unanswerable. Every respond handler treats this as
-// terminal: it retires the dead-end card and shows SESSION_GONE_MESSAGE rather
-// than leaking the raw "Hermes API returned 404 ... Session not found" error.
-const SESSION_GONE_MESSAGE = "This session has ended, so the request can no longer be answered.";
-const SESSION_NOT_AVAILABLE_MESSAGE =
-  "This session is no longer available. Open another conversation or start a new one.";
-
 function approvalResponseKey(sessionId: string, requestId: string): string {
   return `${sessionId}\u0000${requestId}`;
 }
@@ -405,10 +388,6 @@ const MODEL_SWITCH_TOAST_ID = "agent-model-switch";
 const BRANCH_TOAST_ID = "agent-branch";
 const ISSUE_REPORT_SENT_TOAST_ID = "agent-issue-report-sent";
 const DOWNLOAD_TOAST_ID = "agent-download";
-
-function isSessionGoneError(message: string): boolean {
-  return message.toLowerCase().includes("session not found");
-}
 
 import {
   AGENT_DEV_FILES_EVENT,
@@ -456,44 +435,6 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-function hermesServerErrorIssueReport(err: unknown): PendingIssueReport | undefined {
-  const rawMessage = messageFromError(err).trim();
-  if (!isHermesServerError(rawMessage)) return undefined;
-  return {
-    category: "bug",
-    description: [
-      "June hit a Hermes server error while loading this agent session.",
-      "",
-      "Raw error:",
-      rawMessage,
-    ].join("\n"),
-    followUps: [],
-    attachmentNames: [],
-    attachmentPaths: [],
-  };
-}
-
-function reportableAgentErrorOptions(
-  err: unknown,
-  options: AgentWorkspaceErrorOptions = {},
-): AgentWorkspaceErrorOptions {
-  const issueReport = hermesServerErrorIssueReport(err);
-  if (!issueReport) return options;
-  return { ...options, issueReport };
-}
-
-type AgentWorkspaceError = {
-  message: string;
-  /** Null means the error belongs to the no-session workspace surface. */
-  sessionId: string | null;
-  issueReport?: PendingIssueReport;
-};
-
-type AgentWorkspaceErrorOptions = {
-  sessionId?: string | null;
-  issueReport?: PendingIssueReport;
-};
-
 type ImageSafeModeConsentChoice =
   | { action: "keep"; dontAskAgain: boolean }
   | { action: "turnOff"; dontAskAgain: boolean }
@@ -510,20 +451,17 @@ type ImageSafeModeConsentEventPayload = {
   prompt?: string;
 };
 
-export function agentWorkspaceErrorStateForMessage(
-  message: string,
-  sessionId: string | null,
-  issueReport?: PendingIssueReport,
-): AgentWorkspaceError | null {
-  if (isSessionGoneError(message)) {
-    return {
-      message: SESSION_NOT_AVAILABLE_MESSAGE,
-      sessionId,
-      ...(issueReport ? { issueReport } : {}),
-    };
-  }
-  return { message, sessionId, ...(issueReport ? { issueReport } : {}) };
-}
+import {
+  GATEWAY_CONNECTION_ERROR,
+  SESSION_GONE_MESSAGE,
+  SESSION_NOT_AVAILABLE_MESSAGE,
+  agentWorkspaceErrorStateForMessage,
+  isSessionGoneError,
+  reportableAgentErrorOptions,
+  type AgentWorkspaceError,
+  type AgentWorkspaceErrorOptions,
+} from "./agent-workspace-errors";
+export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 type AgentDeleteSessionDetail = {
   sessionId: string;
