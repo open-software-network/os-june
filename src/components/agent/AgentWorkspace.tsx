@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useAgentDropEvents } from "./use-agent-drop-events";
 import { useAgentProfileEvents } from "./use-agent-profile-events";
 import { useComposerMenuDismiss } from "./use-composer-menu-dismiss";
 import { useIssueReportEvents } from "./use-issue-report-events";
@@ -2980,43 +2981,54 @@ export function AgentWorkspace({
     }
   }, [composerInputSignature, composerSizeWarning]);
 
-  useEffect(() => {
-    let disposed = false;
-    const unlisteners: Array<() => void> = [];
-    const installFileDropListener = async (eventName: string) => {
-      const unlisten = await listen<TauriFileDropPayload>(eventName, (event) => {
-        const paths = event.payload?.paths ?? [];
-        if (paths.length) {
-          void importDroppedFilePaths(paths);
-        }
-      });
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      unlisteners.push(unlisten);
-    };
-    const installImageSafeModeConsentListener = async () => {
-      const unlisten = await listen<ImageSafeModeConsentEventPayload>(
-        "image-safe-mode-consent",
-        (event) => {
-          void handleAgentImageSafeModeConsentEvent(event.payload);
-        },
-      );
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      unlisteners.push(unlisten);
-    };
-    void installFileDropListener("tauri://drag-drop");
-    void installFileDropListener("tauri://file-drop");
-    void installImageSafeModeConsentListener();
-    return () => {
-      disposed = true;
-      for (const unlisten of unlisteners) unlisten();
-    };
-  }, []);
+  const { loadSkillCommands, loadCapabilities, loadMessagingPlatforms, loadFilesystemSnapshot } =
+    createManagementLoaders({
+      ensureHermesGateway,
+      selectedHermesSessionIdRef,
+      setCapabilityLoading,
+      setError,
+      setFilesystemLoading,
+      setFilesystemSnapshot,
+      setMessagingPlatforms,
+      setSelectedMessagingPlatformId,
+      setSkillCommandLoading,
+      setSkills,
+      setToolsets,
+      skillCommandsLoadRef,
+      skills,
+    });
+
+  const {
+    finishImageSlashGeneration,
+    retryImageSlashTurn,
+    requestImageSafeModeConsent,
+    resolveImageSafeModeConsent,
+    handleAgentImageSafeModeConsentEvent,
+    runImageSlashCommand,
+  } = createImageSlashActions({
+    captureSessionModelTarget,
+    clearComposerCommandDraft,
+    composerDispatchWasInvalidated,
+    creditActionsDisabledReason,
+    imageSafeModeConsentRequestRef,
+    imageSlashBaseTurnId,
+    loadFilesystemSnapshot,
+    newSessionModeRef,
+    pendingFastPathImagesRef,
+    setError,
+    setGeneratingImage,
+    setHeroLeaving,
+    setImageSafeModeConsentRequest,
+    setImageTurnsBySession,
+    setImportingFiles,
+    submitHermesSession,
+    updateImageSlashPart,
+  });
+
+  useAgentDropEvents({
+    handleAgentImageSafeModeConsentEvent,
+    importDroppedFilePaths,
+  });
 
   useEffect(() => {
     if (activePanel === "skills" && (!skills || !toolsets)) {
@@ -3235,50 +3247,6 @@ export function AgentWorkspace({
       // quietly heals.
     }
   }
-
-  const { loadSkillCommands, loadCapabilities, loadMessagingPlatforms, loadFilesystemSnapshot } =
-    createManagementLoaders({
-      ensureHermesGateway,
-      selectedHermesSessionIdRef,
-      setCapabilityLoading,
-      setError,
-      setFilesystemLoading,
-      setFilesystemSnapshot,
-      setMessagingPlatforms,
-      setSelectedMessagingPlatformId,
-      setSkillCommandLoading,
-      setSkills,
-      setToolsets,
-      skillCommandsLoadRef,
-      skills,
-    });
-
-  const {
-    finishImageSlashGeneration,
-    retryImageSlashTurn,
-    requestImageSafeModeConsent,
-    resolveImageSafeModeConsent,
-    handleAgentImageSafeModeConsentEvent,
-    runImageSlashCommand,
-  } = createImageSlashActions({
-    captureSessionModelTarget,
-    clearComposerCommandDraft,
-    composerDispatchWasInvalidated,
-    creditActionsDisabledReason,
-    imageSafeModeConsentRequestRef,
-    imageSlashBaseTurnId,
-    loadFilesystemSnapshot,
-    newSessionModeRef,
-    pendingFastPathImagesRef,
-    setError,
-    setGeneratingImage,
-    setHeroLeaving,
-    setImageSafeModeConsentRequest,
-    setImageTurnsBySession,
-    setImportingFiles,
-    submitHermesSession,
-    updateImageSlashPart,
-  });
 
   function updateVideoSlashPart(
     sessionId: string,
