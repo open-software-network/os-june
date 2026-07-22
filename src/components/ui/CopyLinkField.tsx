@@ -7,16 +7,19 @@ export function CopyLinkField({
   copied,
   disabled = false,
   onCopy,
+  id,
 }: {
   value: string;
   label: string;
   copied: boolean;
   disabled?: boolean;
   onCopy: () => void;
+  id?: string;
 }) {
   return (
     <div className="copy-link-field">
       <input
+        id={id}
         className="copy-link-url"
         value={value}
         readOnly
