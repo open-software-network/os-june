@@ -4,6 +4,7 @@ import { type ClipboardEvent, type DragEvent, useId, useMemo, useRef, useState }
 
 import { clipboardImageFiles } from "../../lib/clipboard-files";
 import { messageFromError } from "../../lib/errors";
+import { appendIssueReportSessionContext } from "../../lib/issue-report-session-context";
 import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { submitIssueReport } from "../../lib/tauri";
 import { DotSpinner } from "../DotSpinner";
@@ -38,6 +39,9 @@ type ReportDialogProps = {
   onAddFiles: () => unknown;
   onDropFiles: (files: File[]) => unknown;
   onRemoveAttachment: (id: string) => void;
+  sessionContext?: { id: string; title?: string };
+  loadSessionContext?: () => Promise<string | undefined>;
+  onRemoveSessionContext?: () => void;
   onClose: () => void;
   onSent: () => void;
 };
@@ -52,6 +56,9 @@ export function ReportDialog({
   onAddFiles,
   onDropFiles,
   onRemoveAttachment,
+  sessionContext,
+  loadSessionContext,
+  onRemoveSessionContext,
   onClose,
   onSent,
 }: ReportDialogProps) {
@@ -187,11 +194,16 @@ export function ReportDialog({
     setSubmitting(true);
     setError(null);
     try {
+      const relatedSessionContext = await loadSessionContext?.().catch(() => undefined);
       const response = await submitIssueReport({
         category,
-        description: trimmedDescription || ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
+        description: appendIssueReportSessionContext(
+          trimmedDescription || ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
+          relatedSessionContext,
+        ),
         attachmentNames: attachments.map((attachment) => attachment.name),
         attachmentPaths: attachments.map((attachment) => attachment.path),
+        ...(sessionContext ? { sessionId: sessionContext.id } : {}),
       });
       setSubmitting(false);
       setSkippedAttachmentNames(response?.skippedAttachmentNames ?? []);
@@ -289,6 +301,26 @@ export function ReportDialog({
               }}
             />
           </DialogField>
+          {sessionContext ? (
+            <ul className="report-dialog-file-list" aria-label="Included session context">
+              <li className="report-dialog-file">
+                <span className="report-dialog-file-name">
+                  Visible conversation and sanitized diagnostics from{" "}
+                  {sessionContext.title?.trim() || "this session"}
+                </span>
+                {onRemoveSessionContext ? (
+                  <button
+                    type="button"
+                    aria-label="Remove session context"
+                    disabled={busy}
+                    onClick={onRemoveSessionContext}
+                  >
+                    <IconCrossSmall size={12} aria-hidden />
+                  </button>
+                ) : null}
+              </li>
+            </ul>
+          ) : null}
           {attachments.length ? (
             <ul className="report-dialog-file-list" aria-label="Attached files">
               {attachments.map((attachment) => (

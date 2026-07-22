@@ -3271,15 +3271,22 @@ export function App() {
   // It submits through June API without a model turn, so there is nothing to
   // charge; June API creates the team-facing diagnosis.
   function handleReportIssue(category: ReportCategory = "bug") {
+    const reportSession =
+      activeView === "agent" && activeAgentSessionId
+        ? {
+            id: activeAgentSessionId,
+            title: activeAgentSessionSeed?.title,
+          }
+        : undefined;
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    markAgentNewSessionPending(undefined, { category });
+    markAgentNewSessionPending(undefined, { category, reportSession });
     setActiveAgentSession(undefined);
     setActiveView("agent");
     window.setTimeout(() => {
       window.dispatchEvent(
         new CustomEvent<AgentNewSessionDetail>(AGENT_NEW_SESSION_EVENT, {
-          detail: { category },
+          detail: { category, reportSession },
         }),
       );
     }, 0);

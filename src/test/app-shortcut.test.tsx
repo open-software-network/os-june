@@ -812,6 +812,9 @@ describe("App shortcuts", () => {
       await user.click(screen.getByRole("menuitem", { name: menuItem }));
 
       expect(await screen.findByText(chipLabel)).toBeInTheDocument();
+      expect(
+        screen.getByText("Visible conversation and sanitized diagnostics from Existing session"),
+      ).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
       expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
     }

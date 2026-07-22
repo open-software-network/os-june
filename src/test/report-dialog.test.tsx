@@ -32,6 +32,9 @@ function Harness({
   onDropFiles = vi.fn(),
   onSent = vi.fn(),
   onClose = vi.fn(),
+  sessionContext,
+  loadSessionContext,
+  onRemoveSessionContext,
 }: {
   initialCategory?: ReportCategory;
   initialDescription?: string;
@@ -39,6 +42,9 @@ function Harness({
   onDropFiles?: (files: File[]) => void;
   onSent?: () => void;
   onClose?: () => void;
+  sessionContext?: { id: string; title?: string };
+  loadSessionContext?: () => Promise<string | undefined>;
+  onRemoveSessionContext?: () => void;
 }) {
   const [category, setCategory] = useState(initialCategory);
   const [description, setDescription] = useState(initialDescription);
@@ -57,6 +63,9 @@ function Harness({
       onRemoveAttachment={(id) =>
         setAttachments((current) => current.filter((attachment) => attachment.id !== id))
       }
+      sessionContext={sessionContext}
+      loadSessionContext={loadSessionContext}
+      onRemoveSessionContext={onRemoveSessionContext}
       onClose={onClose}
       onSent={onSent}
     />
@@ -127,6 +136,40 @@ describe("ReportDialog", () => {
     expect(payload).not.toHaveProperty("sessionId");
     expect(payload).not.toHaveProperty("agentDiagnosis");
     expect(onSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes the active session context and identifies the source session", async () => {
+    const user = userEvent.setup();
+    const loadSessionContext = vi
+      .fn()
+      .mockResolvedValue(
+        "Session title: Chat greeting\n\nVisible conversation:\n\nUser: hey june whats up\n\nSanitized runtime trace:\n\ntype=future.event kind=unsupported",
+      );
+    render(
+      <Harness
+        initialDescription="Look at this session and report the bug"
+        sessionContext={{ id: "session-chat-greeting", title: "Chat greeting" }}
+        loadSessionContext={loadSessionContext}
+        onRemoveSessionContext={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("list", { name: "Included session context" })).toHaveTextContent(
+      "Visible conversation and sanitized diagnostics from Chat greeting",
+    );
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description:
+          "Look at this session and report the bug\n\n## Related session context\n\nSession title: Chat greeting\n\nVisible conversation:\n\nUser: hey june whats up\n\nSanitized runtime trace:\n\ntype=future.event kind=unsupported",
+        attachmentNames: [],
+        attachmentPaths: [],
+        sessionId: "session-chat-greeting",
+      }),
+    );
+    expect(loadSessionContext).toHaveBeenCalledTimes(1);
   });
 
   it("shows the confirmation in the dialog after sending and closes via Done", async () => {
