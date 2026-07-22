@@ -306,6 +306,8 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useAgentHeroHandoff } from "./use-agent-hero-handoff";
+import { useAgentHeroRotation } from "./use-agent-hero-rotation";
 import { useAgentTranscriptScroll } from "./use-agent-transcript-scroll";
 import { useAgentDropEvents } from "./use-agent-drop-events";
 import { useAgentProfileEvents } from "./use-agent-profile-events";
@@ -4786,34 +4788,13 @@ export function AgentWorkspace({
   // same wave. Skips a beat instead of yanking targets while the user is
   // hovering the chips, has started typing, or has the window backgrounded;
   // never cycles under reduced motion.
-  useEffect(() => {
-    if (!heroMode) return;
-    // matchMedia is feature-checked for jsdom, which doesn't implement it.
-    if (
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      return;
-    }
-    let swapTimeout: number | undefined;
-    const interval = window.setInterval(() => {
-      if (document.hidden || heroChipsHoverRef.current) return;
-      if (draftRef.current.trim()) return;
-      setHeroChipPhase("out");
-      swapTimeout = window.setTimeout(() => {
-        setHeroDeckStart((start) => (start + HERO_SHORTCUT_COUNT) % AGENT_SHORTCUTS.length);
-        // Two frames so the incoming chips paint hidden (phase still "out")
-        // before the fade-in transition has a start state to run from.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => setHeroChipPhase("in"));
-        });
-      }, HERO_CHIP_SWAP_MS);
-    }, HERO_ROTATE_MS);
-    return () => {
-      window.clearInterval(interval);
-      if (swapTimeout !== undefined) window.clearTimeout(swapTimeout);
-    };
-  }, [heroMode]);
+  useAgentHeroRotation({
+    draftRef,
+    heroChipsHoverRef,
+    heroMode,
+    setHeroChipPhase,
+    setHeroDeckStart,
+  });
 
   const heroShortcuts = useMemo(
     () =>
@@ -4832,70 +4813,13 @@ export function AgentWorkspace({
   // While the hero is up, every render snapshots the box; the first render
   // after leaving measures the docked position and animates the delta.
   const heroExitRectRef = useRef<DOMRect | null>(null);
-  useLayoutEffect(() => {
-    const wasHero = prevHeroModeRef.current;
-    prevHeroModeRef.current = heroMode;
-    const box = composerBoxRef.current;
-    if (!box) return;
-    if (heroMode) {
-      heroExitRectRef.current = box.getBoundingClientRect();
-      // Clear any stale intent while the hero is up so a sidebar dismissal
-      // can't inherit a glide armed by an earlier (failed) submit.
-      heroExitViaThreadRef.current = false;
-      return;
-    }
-    const prev = heroExitRectRef.current;
-    heroExitRectRef.current = null;
-    if (!wasHero || !prev) return;
-    // Only glide when the hero handed over to a fresh thread. Leaving the hero
-    // because the user opened an existing chat should swap in place.
-    const viaThread = heroExitViaThreadRef.current;
-    heroExitViaThreadRef.current = false;
-    if (!viaThread) return;
-    if (
-      typeof box.animate !== "function" ||
-      (typeof window.matchMedia === "function" &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches)
-    ) {
-      return;
-    }
-    // The timeline's rise-and-fade belongs to this same handoff, so it runs
-    // here rather than as a CSS mount animation — as CSS it replayed on every
-    // timeline mount, nudging the conversation upward when merely opening an
-    // existing chat from the hero (or returning from another view).
-    listRef.current?.animate(
-      [
-        { opacity: 0, transform: "translateY(10px)" },
-        { opacity: 1, transform: "translateY(0)" },
-      ],
-      // Backwards fill so a slow frame can't paint the timeline at rest
-      // before the first animation frame applies (the CSS original filled
-      // backwards for the same reason).
-      {
-        duration: 280,
-        easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
-        fill: "backwards",
-      },
-    );
-    const next = box.getBoundingClientRect();
-    const dx = prev.left - next.left;
-    const dy = prev.top - next.top;
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-    box.animate(
-      [
-        {
-          transform: `translate(${dx}px, ${dy}px)`,
-          width: `${prev.width}px`,
-          height: `${prev.height}px`,
-        },
-        {
-          transform: "translate(0, 0)",
-          width: `${next.width}px`,
-          height: `${next.height}px`,
-        },
-      ],
-      { duration: 360, easing: "cubic-bezier(0.32, 0.72, 0, 1)" }, // --ease-spring
-    );
+  useAgentHeroHandoff({
+    composerBoxRef,
+    heroExitRectRef,
+    heroExitViaThreadRef,
+    heroMode,
+    listRef,
+    prevHeroModeRef,
   });
 
   submitImplementation = createSubmitComposer({
