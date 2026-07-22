@@ -1,6 +1,6 @@
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconConcise } from "central-icons/IconConcise";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import {
   displayedComposerUserMessageText,
   stripRenderedMediaReferences,
@@ -47,40 +47,7 @@ import {
 } from "./SessionNotices";
 import { AgentThinkingGroup, AgentToolStack } from "./ThinkingAndTools";
 
-export function AgentChatTurnRow({
-  activeThinkingKey,
-  approvalSubmitting,
-  artifacts,
-  clarifySubmitting,
-  sudoSubmitting,
-  secretSubmitting,
-  cliAccess,
-  browserAccess,
-  thinkingOpen,
-  onApproval,
-  onClarify,
-  onSudo,
-  onSecret,
-  onDownloadArtifact,
-  onOpenArtifact,
-  onDownloadImage,
-  onOpenImage,
-  onRetryImage,
-  onDownloadVideo,
-  onRetryVideo,
-  onRetryUpstreamFailure,
-  upstreamFailureRetryAttempted,
-  upstreamFailureRetryDisabled,
-  creditActionsDisabledReason,
-  onThinkingOpenChange,
-  onTopUp,
-  topUpLabel,
-  fundingTier,
-  onVisibleMarkdownChange,
-  onBranch,
-  branchingMessageId,
-  turn,
-}: {
+export type AgentChatTurnRowProps = {
   activeThinkingKey?: string;
   approvalSubmitting: Partial<Record<string, AgentApprovalChoice>>;
   artifacts?: AgentArtifact[];
@@ -127,7 +94,42 @@ export function AgentChatTurnRow({
    * working/disabled state. */
   branchingMessageId?: string | null;
   turn: AgentChatTurn;
-}) {
+};
+
+export const AgentChatTurnRow = memo(function AgentChatTurnRow({
+  activeThinkingKey,
+  approvalSubmitting,
+  artifacts,
+  clarifySubmitting,
+  sudoSubmitting,
+  secretSubmitting,
+  cliAccess,
+  browserAccess,
+  thinkingOpen,
+  onApproval,
+  onClarify,
+  onSudo,
+  onSecret,
+  onDownloadArtifact,
+  onOpenArtifact,
+  onDownloadImage,
+  onOpenImage,
+  onRetryImage,
+  onDownloadVideo,
+  onRetryVideo,
+  onRetryUpstreamFailure,
+  upstreamFailureRetryAttempted,
+  upstreamFailureRetryDisabled,
+  creditActionsDisabledReason,
+  onThinkingOpenChange,
+  onTopUp,
+  topUpLabel,
+  fundingTier,
+  onVisibleMarkdownChange,
+  onBranch,
+  branchingMessageId,
+  turn,
+}: AgentChatTurnRowProps) {
   const textParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text",
   );
@@ -486,7 +488,7 @@ export function AgentChatTurnRow({
       </div>
     </article>
   );
-}
+});
 
 function AgentUserAttachmentList({
   attachments,

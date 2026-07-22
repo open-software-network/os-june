@@ -20,7 +20,17 @@ import {
   agentActivityCountsFromStore,
   agentStatusSummaryFromHermesEvent,
 } from "./session-state-helpers";
+import { createTrailingMicrobatch } from "../../lib/trailing-microbatch";
 import type { createSessionEventListenerDependencies } from "./session-event-listener-types";
+
+const HERMES_STREAM_STATE_BATCH_INTERVAL_MS = 50;
+
+function isHermesStreamDelta(event: ReturnType<typeof classifyHermesEvent>) {
+  return (
+    (event.kind === "transcript" && !event.complete && event.delta !== undefined) ||
+    (event.kind === "reasoning" && !event.full)
+  );
+}
 
 export function createSessionEventListener(dependencies: createSessionEventListenerDependencies) {
   const {
@@ -59,6 +69,10 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
     let unlisten = () => {};
+    const liveEventsBatch = createTrailingMicrobatch(
+      () => setLiveEvents(liveEventsRef.current),
+      HERMES_STREAM_STATE_BATCH_INTERVAL_MS,
+    );
     const removeListener = gateway.onEvent((event) => {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
@@ -155,7 +169,16 @@ export function createSessionEventListener(dependencies: createSessionEventListe
         ...liveEventsRef.current,
         [storedSessionId]: nextSessionEvents,
       };
-      setLiveEvents(liveEventsRef.current);
+      // The ref remains authoritative for every ingress consumer. Only the
+      // React publication trails rapid text/reasoning deltas, coalescing the
+      // same burst that the streamed-markdown presenter reveals in batches.
+      // Action, lifecycle, and terminal frames still paint immediately and
+      // flush any text already waiting in the batch.
+      if (isHermesStreamDelta(classified)) {
+        liveEventsBatch.schedule();
+      } else {
+        liveEventsBatch.flush();
+      }
       const toolEventPhase = classified.kind === "tool" ? classified.phase : undefined;
       if (toolEventPhase === "complete") {
         // The classifier treats any tool.*complete* subtype as complete, a
@@ -235,6 +258,7 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     });
     unlisten = () => {
       removeListener();
+      liveEventsBatch.cancel();
       if (sessionGatewayUnlistenRef.current.get(storedSessionId) === unlisten) {
         sessionGatewayUnlistenRef.current.delete(storedSessionId);
       }
