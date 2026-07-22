@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useIssueReportEvents } from "./use-issue-report-events";
 import { useAgentSessionEvents } from "./use-agent-session-events";
 import { useAgentWindowEvents } from "./use-agent-window-events";
 import { useAgentStreamDemo } from "./hooks/use-agent-stream-demo";
@@ -1289,50 +1290,14 @@ export function AgentWorkspace({
     setSubmittingIssueReportSessionIds(next);
   }
 
-  useEffect(() => {
-    function onIssueReportDeliverySettled(event: Event) {
-      const detail = (event as CustomEvent<IssueReportDeliverySettledDetail>).detail;
-      if (!detail?.sessionId) return;
-      setIssueReportSubmitting(detail.sessionId, false);
-      if (detail.result.sent) {
-        deferredFailedIssueReportDeliverySessionIdsRef.current.delete(detail.sessionId);
-        if (reviewableIssueReportsRef.current[detail.sessionId] === detail.report) {
-          setReviewableIssueReport(detail.sessionId, null);
-        }
-        return;
-      }
-      if (pendingIssueReportsRef.current.has(detail.sessionId)) {
-        deferredFailedIssueReportDeliverySessionIdsRef.current.add(detail.sessionId);
-      } else if (!reviewableIssueReportsRef.current[detail.sessionId]) {
-        setReviewableIssueReport(detail.sessionId, detail.report);
-      }
-      setError(detail.result.errorMessage, { sessionId: detail.sessionId });
-    }
-
-    function onIssueReportFollowUpSubmitFailed(event: Event) {
-      const detail = (event as CustomEvent<IssueReportFollowUpSubmitFailedDetail>).detail;
-      if (!detail?.sessionId) return;
-      if (pendingIssueReportsRef.current.get(detail.sessionId) === detail.queuedReport) {
-        pendingIssueReportsRef.current.delete(detail.sessionId);
-      }
-      if (detail.restoreReport && !reviewableIssueReportsRef.current[detail.sessionId]) {
-        setReviewableIssueReport(detail.sessionId, detail.restoreReport);
-      }
-    }
-
-    window.addEventListener(ISSUE_REPORT_DELIVERY_SETTLED_EVENT, onIssueReportDeliverySettled);
-    window.addEventListener(
-      ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
-      onIssueReportFollowUpSubmitFailed,
-    );
-    return () => {
-      window.removeEventListener(ISSUE_REPORT_DELIVERY_SETTLED_EVENT, onIssueReportDeliverySettled);
-      window.removeEventListener(
-        ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
-        onIssueReportFollowUpSubmitFailed,
-      );
-    };
-  }, [setError]);
+  useIssueReportEvents({
+    deferredFailedIssueReportDeliverySessionIdsRef,
+    pendingIssueReportsRef,
+    reviewableIssueReportsRef,
+    setError,
+    setIssueReportSubmitting,
+    setReviewableIssueReport,
+  });
 
   useEffect(() => {
     for (const sessionId of diagnosisRefreshIssueReportSessionIdsRef.current) {
