@@ -11,6 +11,7 @@ import {
   modelSupportsTools,
   type ModelPrivacyBadge,
 } from "../../../lib/model-privacy";
+import { modelMatchesQuery } from "../../../lib/model-search";
 import { suggestedModelsForMode } from "../../../lib/suggested-models";
 import type { VeniceModelDto } from "../../../lib/tauri";
 import { useScrollFade } from "../../../lib/use-scroll-fade";
@@ -712,14 +713,6 @@ function ComposerModelOptionText({ model }: { model: VeniceModelDto }) {
       <span className="agent-composer-model-row-name">{model.name}</span>
     </span>
   );
-}
-
-function modelMatchesQuery(model: VeniceModelDto, query: string) {
-  return [model.name, model.id, model.description, model.privacy, ...model.traits]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-    .includes(query);
 }
 
 // The current model's privacy mode as a pill — Private, Anonymous, or E2EE,

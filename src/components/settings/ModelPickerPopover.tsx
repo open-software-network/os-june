@@ -13,6 +13,7 @@ import {
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { modelAvailableForMode, modelIsPrivate, modelPrivacyBadge } from "../../lib/model-privacy";
+import { modelMatchesQuery } from "../../lib/model-search";
 import {
   DEFAULT_GENERATION_SUGGESTION_ID,
   suggestedModelsForMode,
@@ -1183,34 +1184,6 @@ function ModelPickerOptionText({ model }: { model: VeniceModelDto }) {
       </span>
     </>
   );
-}
-
-function modelMatchesQuery(model: VeniceModelDto, query: string) {
-  const queryTokens = searchTokens(query);
-  if (!queryTokens.length) return false;
-
-  // Catalog names and ids mix spaces, dots, and hyphens. Match query tokens
-  // in order so "gpt 5.4" finds "GPT-5.4" and "opus fast" can skip a version.
-  const modelTokens = [
-    model.name,
-    model.id,
-    model.description,
-    model.privacy,
-    ...model.traits,
-  ].flatMap(searchTokens);
-  let modelIndex = 0;
-  return queryTokens.every((queryToken) => {
-    while (modelIndex < modelTokens.length && !modelTokens[modelIndex].includes(queryToken)) {
-      modelIndex += 1;
-    }
-    if (modelIndex === modelTokens.length) return false;
-    modelIndex += 1;
-    return true;
-  });
-}
-
-function searchTokens(value: unknown): string[] {
-  return typeof value === "string" ? (value.toLowerCase().match(/[a-z0-9]+/g) ?? []) : [];
 }
 
 function modelModeLabel(mode: ProviderModelMode) {
