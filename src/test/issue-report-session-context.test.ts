@@ -56,9 +56,15 @@ describe("issue report session context", () => {
 
   it("bounds added context below the server description limit", () => {
     const description = "d".repeat(10_000);
-    const result = appendIssueReportSessionContext(description, "c".repeat(16_000));
+    const newestDiagnostic = "type=future.event kind=unsupported newest=true";
+    const result = appendIssueReportSessionContext(
+      description,
+      `${"older-context\n".repeat(1_500)}${newestDiagnostic}`,
+    );
 
     expect(Array.from(result)).toHaveLength(19_500);
     expect(result).toContain("## Related session context");
+    expect(result).toContain("[Earlier context omitted]");
+    expect(result.endsWith(newestDiagnostic)).toBe(true);
   });
 });

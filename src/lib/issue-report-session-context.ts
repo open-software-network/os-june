@@ -13,7 +13,12 @@ const REPORT_DESCRIPTION_SAFE_MAX_CHARS = 19_500;
 function truncateStart(value: string, maxChars: number): string {
   const characters = Array.from(value);
   if (characters.length <= maxChars) return value;
-  return `[Earlier context omitted]\n${characters.slice(-(maxChars - 27)).join("")}`;
+  const marker = "[Earlier context omitted]\n";
+  const markerCharacters = Array.from(marker);
+  if (maxChars <= markerCharacters.length) {
+    return characters.slice(-maxChars).join("");
+  }
+  return `${marker}${characters.slice(-(maxChars - markerCharacters.length)).join("")}`;
 }
 
 function visibleMessageText(message: HermesSessionMessage): string {
@@ -81,6 +86,9 @@ export function appendIssueReportSessionContext(
     Array.from(trimmedDescription).length -
     Array.from(separator).length;
   if (remaining <= 0) return trimmedDescription;
-  const boundedContext = Array.from(trimmedContext).slice(0, remaining).join("");
+  // The trace is the final context section and is itself ordered oldest to
+  // newest. Keep the tail so a long user description cannot discard the
+  // unsupported event that prompted the report.
+  const boundedContext = truncateStart(trimmedContext, remaining);
   return `${trimmedDescription}${separator}${boundedContext}`;
 }
