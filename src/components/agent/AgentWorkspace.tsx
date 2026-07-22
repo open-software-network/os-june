@@ -409,6 +409,14 @@ export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
 import { capabilityMatches, safeText } from "./agent-workspace-helpers";
 import {
+  compactPath,
+  filterFilesystemEntries,
+  formatBytes,
+  includesQuery,
+  isAbsolutePath,
+  relativeDate,
+} from "./agent-workspace-helpers";
+import {
   envFieldSet,
   fieldLabel,
   messagingTrimEdits,
@@ -16432,20 +16440,6 @@ function isMarkdownPath(path: string) {
   return /\.(md|markdown|mdx)$/i.test(path);
 }
 
-function filterFilesystemEntries(
-  entries: HermesFilesystemEntry[],
-  query: string,
-): HermesFilesystemEntry[] {
-  if (!query) return entries;
-  return entries.flatMap((entry) => {
-    const children = filterFilesystemEntries(entry.children ?? [], query);
-    if (includesQuery(entry.name, query) || includesQuery(entry.path, query) || children.length) {
-      return [{ ...entry, children }];
-    }
-    return [];
-  });
-}
-
 function artifactsFromFilesystemSnapshot(
   snapshot: HermesFilesystemSnapshot | null,
 ): AgentArtifact[] {
@@ -16836,10 +16830,6 @@ function generatedVideoPathAliases(path: string): string[] {
   return name && isGeneratedVideoFilename(name) ? [name.toLowerCase()] : [];
 }
 
-function includesQuery(value: unknown, query: string) {
-  return safeText(value).toLowerCase().includes(query);
-}
-
 function mergeActiveHermesSessions(
   fresh: HermesSessionInfo[],
   current: HermesSessionInfo[],
@@ -17203,29 +17193,6 @@ function stripHermesVisibleContext(value: string) {
   return stripScheduledRunPreamble(visible.trim());
 }
 
-function compactPath(path: string) {
-  return path.replace(/^\/Users\/[^/]+/, "~");
-}
-
-/** Whether a snapshot entry carries an absolute path we can reveal in Finder
- * (posix "/…" or a Windows drive/UNC path). Reveal is hidden otherwise. */
-function isAbsolutePath(path: string | undefined | null): path is string {
-  if (!path) return false;
-  return path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\");
-}
-
-function formatBytes(value: number | null | undefined) {
-  if (!value) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
-}
-
 function ActivityIndicator({
   active,
   large = false,
@@ -17272,17 +17239,6 @@ function ensureDownloadFileExtension(fileName: string, fallbackExtension: string
   if (!trimmed) return `download.${fallbackExtension}`;
   if (/\.[^./\\]+$/.test(trimmed)) return trimmed;
   return `${trimmed}.${fallbackExtension}`;
-}
-
-function relativeDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(date);
 }
 
 // FileReader instead of Blob.arrayBuffer(): same everywhere a drop can land
