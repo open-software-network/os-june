@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
@@ -266,6 +266,35 @@ function deferred<T>() {
     resolve = resolver;
   });
   return { promise, resolve };
+}
+
+function stubNoteDetailScroller(initialScrollTop: number) {
+  const element = document.querySelector<HTMLElement>(".note-detail-scroll");
+  if (!element) throw new Error("Expected the note detail scroller to be mounted");
+  let scrollTop = initialScrollTop;
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, get: () => 1000 },
+    clientHeight: { configurable: true, get: () => 400 },
+    scrollTop: {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value;
+      },
+    },
+  });
+  const scrollTo = vi.fn(({ top }: ScrollToOptions) => {
+    scrollTop = Math.min(Number(top), 600);
+    element.dispatchEvent(new Event("scroll"));
+  });
+  Object.defineProperty(element, "scrollTo", { configurable: true, value: scrollTo });
+  return {
+    element,
+    scrollTo,
+    setScrollTop(value: number) {
+      scrollTop = value;
+    },
+  };
 }
 
 describe("notes recording reliability", () => {
@@ -829,6 +858,51 @@ describe("notes recording reliability", () => {
     expect(screen.getByText("Provisional words survive Stop")).toBeInTheDocument();
   });
 
+  it("follows live transcription until the reader scrolls upward, then resumes at the bottom", async () => {
+    await startRecordingOnFirstNote();
+    await waitFor(() => expect(mocks.listeners.has("live-transcript-event")).toBe(true));
+    const scroller = stubNoteDetailScroller(100);
+
+    await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
+    await waitFor(() =>
+      expect(scroller.scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" }),
+    );
+    scroller.scrollTo.mockClear();
+
+    const emitPreview = async (segmentId: string, text: string, startMs: number) => {
+      await act(async () => {
+        await mocks.listeners.get("live-transcript-event")?.({
+          payload: {
+            noteId: "note-1",
+            sessionId: "rec-1",
+            sourceMode: "microphonePlusSystem",
+            source: "microphone",
+            segmentId,
+            startMs,
+            endMs: startMs + 4000,
+            text,
+            stability: "final",
+          },
+        });
+      });
+    };
+
+    await emitPreview("microphone-0", "First live words", 0);
+    await waitFor(() => expect(scroller.scrollTo).toHaveBeenCalledTimes(1));
+
+    scroller.scrollTo.mockClear();
+    scroller.setScrollTop(100);
+    fireEvent.wheel(scroller.element);
+    fireEvent.scroll(scroller.element);
+    await emitPreview("microphone-1", "Words while reading above", 4000);
+    expect(scroller.scrollTo).not.toHaveBeenCalled();
+
+    scroller.setScrollTop(600);
+    fireEvent.scroll(scroller.element);
+    await emitPreview("microphone-2", "Following resumes", 8000);
+    await waitFor(() => expect(scroller.scrollTo).toHaveBeenCalledTimes(1));
+  });
+
   it("does not clear a newer preview when the note still has queued recordings", async () => {
     mocks.finishRecording.mockResolvedValue({
       note: { ...first, activeTab: "transcription", queuedRecordings: 1 },
@@ -1384,6 +1458,7 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
     await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
     await waitFor(() => expect(screen.getByText("Transcribing audio")).toBeInTheDocument());
+    const scroller = stubNoteDetailScroller(600);
 
     expect(screen.queryByText("The first saved turn is visible.")).not.toBeInTheDocument();
     mocks.getNote.mockClear();
@@ -1413,6 +1488,7 @@ describe("notes recording reliability", () => {
       },
       { timeout: 3_000 },
     );
+    expect(scroller.scrollTo).toHaveBeenCalledTimes(1);
     const transcribingStatus = screen.getByText("Transcribing audio");
     expect(transcribingStatus.closest('[role="status"]')).not.toBeNull();
   });
