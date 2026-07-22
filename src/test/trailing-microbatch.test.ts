@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTrailingMicrobatch } from "../lib/trailing-microbatch";
+import {
+  createLeadingTrailingMicrobatch,
+  createTrailingMicrobatch,
+} from "../lib/trailing-microbatch";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("createTrailingMicrobatch", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
   it("publishes a burst once at the trailing edge", () => {
     vi.useFakeTimers();
     const publish = vi.fn();
@@ -43,5 +46,35 @@ describe("createTrailingMicrobatch", () => {
     vi.runAllTimers();
 
     expect(publish).not.toHaveBeenCalled();
+  });
+});
+
+describe("createLeadingTrailingMicrobatch", () => {
+  it("publishes the first update immediately and coalesces the rest of the burst", () => {
+    vi.useFakeTimers();
+    const publish = vi.fn();
+    const batch = createLeadingTrailingMicrobatch(publish, 50);
+
+    batch.schedule();
+    batch.schedule();
+    batch.schedule();
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(50);
+    expect(publish).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(50);
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts a new burst with an immediate publication after going quiet", () => {
+    vi.useFakeTimers();
+    const publish = vi.fn();
+    const batch = createLeadingTrailingMicrobatch(publish, 50);
+
+    batch.schedule();
+    vi.advanceTimersByTime(50);
+    batch.schedule();
+
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 });

@@ -4,6 +4,8 @@ export type TrailingMicrobatch = {
   cancel: () => void;
 };
 
+export type LeadingTrailingMicrobatch = TrailingMicrobatch;
+
 /**
  * Coalesces a burst of publications behind one short trailing timer. The
  * caller keeps the authoritative value; `publish` reads that latest value
@@ -32,6 +34,48 @@ export function createTrailingMicrobatch(
       timer = undefined;
       publish();
     }, intervalMs);
+  };
+
+  return { schedule, flush, cancel };
+}
+
+/**
+ * Publishes the first update in a burst immediately, then coalesces later
+ * updates behind one publication per interval until the burst goes quiet.
+ */
+export function createLeadingTrailingMicrobatch(
+  publish: () => void,
+  intervalMs: number,
+): LeadingTrailingMicrobatch {
+  let timer: number | undefined;
+  let trailingPublicationPending = false;
+
+  const cancel = () => {
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = undefined;
+    trailingPublicationPending = false;
+  };
+
+  const finishInterval = () => {
+    timer = undefined;
+    if (!trailingPublicationPending) return;
+    trailingPublicationPending = false;
+    publish();
+    timer = window.setTimeout(finishInterval, intervalMs);
+  };
+
+  const flush = () => {
+    cancel();
+    publish();
+  };
+
+  const schedule = () => {
+    if (timer === undefined) {
+      publish();
+      timer = window.setTimeout(finishInterval, intervalMs);
+      return;
+    }
+    trailingPublicationPending = true;
   };
 
   return { schedule, flush, cancel };

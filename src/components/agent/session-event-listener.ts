@@ -20,7 +20,7 @@ import {
   agentActivityCountsFromStore,
   agentStatusSummaryFromHermesEvent,
 } from "./session-state-helpers";
-import { createTrailingMicrobatch } from "../../lib/trailing-microbatch";
+import { createLeadingTrailingMicrobatch } from "../../lib/trailing-microbatch";
 import type { createSessionEventListenerDependencies } from "./session-event-listener-types";
 
 const HERMES_STREAM_STATE_BATCH_INTERVAL_MS = 50;
@@ -69,7 +69,7 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
     let unlisten = () => {};
-    const liveEventsBatch = createTrailingMicrobatch(
+    const liveEventsBatch = createLeadingTrailingMicrobatch(
       () => setLiveEvents(liveEventsRef.current),
       HERMES_STREAM_STATE_BATCH_INTERVAL_MS,
     );
