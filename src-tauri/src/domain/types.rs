@@ -31,6 +31,8 @@ pub struct BootstrapResponse {
     pub folders: Vec<FolderDto>,
     pub notes: Vec<NoteListItemDto>,
     pub active_recoveries: Vec<RecoverableRecordingDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_recording: Option<RecordingStatusDto>,
     pub provider_configured: bool,
 }
 
@@ -378,6 +380,14 @@ pub struct DeleteDictionaryEntryRequest {
 #[serde(rename_all = "camelCase")]
 pub struct StartRecordingRequest {
     pub note_id: String,
+    #[serde(default)]
+    pub source_mode: Option<RecordingSourceMode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartMeetingRecordingRequest {
+    pub request_id: String,
     #[serde(default)]
     pub source_mode: Option<RecordingSourceMode>,
 }

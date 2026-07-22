@@ -285,6 +285,7 @@ pub fn run() {
             commands::june_open_verify_page,
             commands::june_open_community_page,
             commands::june_open_external_url,
+            commands::start_meeting_recording,
             commands::start_recording,
             commands::pause_recording,
             commands::resume_recording,
@@ -320,6 +321,9 @@ pub fn run() {
             agent_hud::agent_hud_open_agent,
             notifications::send_app_notification,
             notifications::agent_open_ready,
+            meeting_detection::queue_meeting_start_request,
+            meeting_detection::pending_meeting_start_request,
+            meeting_detection::acknowledge_meeting_start_request,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             providers::provider_model_settings,
@@ -440,7 +444,7 @@ pub fn run() {
             tauri::RunEvent::Exit => {
                 dictation::stop_helper(app);
                 tauri::async_runtime::block_on(computer_use::shutdown(app));
-                hermes_bridge::shutdown(app);
+                tauri::async_runtime::block_on(hermes_bridge::shutdown(app));
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),

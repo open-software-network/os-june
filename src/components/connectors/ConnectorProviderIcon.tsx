@@ -1,3 +1,4 @@
+import { IconGithub } from "central-icons/IconGithub";
 import { IconGoogle } from "central-icons/IconGoogle";
 import { IconLinear } from "central-icons/IconLinear";
 import { IconNotion } from "central-icons/IconNotion";
@@ -6,6 +7,7 @@ const PROVIDER_ICONS = {
   google: IconGoogle,
   linear: IconLinear,
   notion: IconNotion,
+  github: IconGithub,
 } as const;
 
 /** Brand mark for a connector provider. Central-icons supplies available

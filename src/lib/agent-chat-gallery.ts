@@ -1,4 +1,8 @@
-import type { AgentChatPart, AgentChatTurn } from "./agent-chat-runtime";
+import {
+  type AgentChatPart,
+  type AgentChatTurn,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+} from "./agent-chat-runtime";
 
 // A hand-built catalog of every agent response part type and every status it can
 // render in. Used by the dev-tools response gallery (window.__agentGallery) so we
@@ -35,6 +39,7 @@ const BASE = "2026-06-09T12:00:00.000Z";
 // gallery.
 const ERROR_SECTION_LABEL = "Error";
 const CREDITS_SECTION_LABEL = "Out of credits";
+const UPSTREAM_PROVIDER_SECTION_LABEL = "Model service unavailable";
 
 function userTurn(id: string, text: string): AgentChatTurn {
   return {
@@ -311,6 +316,20 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       ],
     },
     {
+      label: UPSTREAM_PROVIDER_SECTION_LABEL,
+      description:
+        "A provider failure after the runtime's retries becomes a recoverable notice with a one-shot action in the same stored session.",
+      turns: [
+        assistantTurn("upstream-provider", [
+          {
+            type: "notice",
+            kind: "upstream-provider",
+            text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+          },
+        ]),
+      ],
+    },
+    {
       label: "Context compacted",
       description:
         "System summary inserted when earlier turns are compacted. Collapsed to one quiet line; hover swaps the glyph for +/−, expand reveals the summary. Two body variants (LLM summary / deterministic fallback).",
@@ -574,7 +593,11 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
 // filtered to its failure surfaces — one source of truth for the samples. The
 // chrome-level error states (the error banner and the composer busy notice)
 // aren't turns, so the workspace forces those alongside these sections.
-const ERROR_SECTION_LABELS = new Set([ERROR_SECTION_LABEL, CREDITS_SECTION_LABEL]);
+const ERROR_SECTION_LABELS = new Set([
+  ERROR_SECTION_LABEL,
+  CREDITS_SECTION_LABEL,
+  UPSTREAM_PROVIDER_SECTION_LABEL,
+]);
 
 export function buildAgentErrorGallery(): AgentChatGallerySection[] {
   return buildAgentChatGallery().filter((section) => ERROR_SECTION_LABELS.has(section.label));

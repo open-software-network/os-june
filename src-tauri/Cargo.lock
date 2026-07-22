@@ -3338,7 +3338,7 @@ dependencies = [
 
 [[package]]
 name = "os-june"
-version = "0.0.34"
+version = "0.0.35"
 dependencies = [
  "anyhow",
  "apple-metal",
@@ -3348,6 +3348,7 @@ dependencies = [
  "cpal",
  "cua-driver-core",
  "dotenvy",
+ "dunce",
  "hound",
  "keyring",
  "libc",

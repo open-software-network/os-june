@@ -376,15 +376,18 @@ integration (too broad), plugin for a Tauri framework package.
 
 **Connector**:
 A private-by-architecture integration between June and a third-party account
-(shipped: Google Gmail + Calendar and the Notion hosted MCP preview; Linear is
-currently in progress). The user authorizes the provider on their Mac; local
-connector credentials remain in OS credential storage, and Rust owns direct
-provider or hosted MCP calls. MCP servers never hold the credentials. Google
-ships `june_gmail` and `june_gcal` read servers plus their `*_actions`
-counterparts. Notion preview ships `june_notion` for hosted MCP reads and
-`june_notion_actions` for approval-gated page creation and updates. See
-[ADR-0016](docs/adr/0016-private-connectors-local-mode.md) and
-[ADR-0033](docs/adr/0033-notion-hosted-mcp-connect-preview.md).
+(shipped: Google Gmail + Calendar and the Notion hosted MCP preview; Linear
+and GitHub are currently in progress). The user authorizes the provider on
+their Mac; local connector credentials remain in OS credential storage, and
+Rust owns direct provider or hosted MCP calls. MCP servers never hold the
+credentials. Google ships `june_gmail` and `june_gcal` read servers plus their
+`*_actions` counterparts. Notion preview ships `june_notion` for hosted MCP
+reads and `june_notion_actions` for approval-gated page creation and updates.
+GitHub ships `june_github` reads plus approval-only `june_github_actions`
+issue writes through a GitHub App user grant. See
+[ADR-0016](docs/adr/0016-private-connectors-local-mode.md),
+[ADR-0033](docs/adr/0033-notion-hosted-mcp-connect-preview.md), and
+[ADR-0036](docs/adr/0036-github-connector-app-user-tokens.md).
 _Avoid_: integration (unqualified), plugin, the Google API.
 
 **Selected teams** (Linear):

@@ -178,9 +178,11 @@ fn permission_result() -> Value {
         "structuredContent": {
             "accessibility": accessibility,
             "screen_recording": screen_recording,
-            // This fresh LaunchServices process owns both the preflight and
-            // every later capture. Avoid upstream's blocking live probe here;
-            // actual captures remain the authoritative runtime check.
+            // Accessibility belongs to this nested helper. macOS attributes
+            // Screen Recording to the signed outer June app that launched it,
+            // and reports that responsible-app grant through this process.
+            // Avoid upstream's blocking live probe here; actual captures remain
+            // the authoritative runtime check.
             "screen_recording_capturable": screen_recording,
             "source": {
                 "attribution": "driver-app",

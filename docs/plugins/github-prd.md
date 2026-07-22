@@ -50,10 +50,35 @@ user's own permissions remain the authority.
 - Draft/create issues and comments; submit review comments behind approval.
 - Engineering standup, PR risk brief, release note, and decision-to-issue skills.
 
+### V1 connector tool surface
+
+This table owns the tool names (see
+[spec/mcp-tool-naming.md](../../spec/mcp-tool-naming.md)); other documents
+reference them and never coin their own.
+
+| Server | Tool | Purpose |
+| --- | --- | --- |
+| `june_github` | `list_repositories` | Repositories reachable through the app installation for the connected user |
+| `june_github` | `search_issues` | Search issues and pull requests (GitHub search qualifiers) |
+| `june_github` | `get_issue` | Read one issue by owner/repo/number |
+| `june_github` | `list_issue_comments` | Comments on an issue or pull request |
+| `june_github` | `get_pull_request` | Read one pull request by owner/repo/number |
+| `june_github` | `read_file` | Bounded read of one file at a ref |
+| `june_github` | `search_code` | Code search within accessible repositories |
+| `june_github_actions` | `create_issue` | Create an issue (approval-parked) |
+| `june_github_actions` | `update_issue` | Edit an issue's title, body, or labels - never state transitions (close/reopen are launch non-goals) |
+| `june_github_actions` | `add_comment` | Comment on an issue or pull request (approval-parked) |
+
+Every write parks for approval; GitHub actions do not earn autonomy in v1.
+Commits, checks, discussions, pull-request diffs, and review submission are
+deferred to a later slice.
+
 ### Later
 
 - Enterprise Server, organization administration, workflow dispatch, merge,
   branch/file writes, secrets, deployments, and webhook-triggered routines.
+- Read tools for commits, checks, discussions, and pull-request diffs;
+  `submit_review` for review submission.
 
 ## Non-goals
 

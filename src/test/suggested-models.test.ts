@@ -20,17 +20,17 @@ const VISION_TOOLS = ["supportsFunctionCalling", "supportsVision"];
 // ("Claude Fable 5") is what a naive `[0]` fallback would pick — the JUN-165
 // bug. These fixtures put Fable first to prove the preference overrides order.
 const fable = model("claude-fable-5", "Claude Fable 5", VISION_TOOLS);
-const kimi = model("kimi-k2-6", "Kimi K2.6", VISION_TOOLS); // suggested pick
+const kimi = model("kimi-k2-6", "Kimi K2.6", VISION_TOOLS); // private fallback pick
+const kimi3 = model("kimi-k3", "Kimi K3", VISION_TOOLS);
 const glm52 = model("zai-org-glm-5-2", "GLM 5.2", ["supportsFunctionCalling"]);
 
 describe("preferredVisionFallbackModel", () => {
-  it("prefers the suggested vision model (Kimi) over the first vision model", () => {
+  it("prefers the private vision fallback (Kimi) over the first vision model", () => {
     const chosen = preferredVisionFallbackModel([fable, kimi, glm52]);
     expect(chosen?.id).toBe("kimi-k2-6");
   });
 
-  it("never returns a non-vision model, even a suggested one (GLM 5.2)", () => {
-    // GLM 5.2 is the first suggested id but is non-vision; it must be skipped.
+  it("never returns a non-vision model", () => {
     const chosen = preferredVisionFallbackModel([glm52, fable]);
     expect(chosen?.id).toBe("claude-fable-5");
   });
@@ -43,7 +43,7 @@ describe("preferredVisionFallbackModel", () => {
 
   it("requires tool support: a vision model without tools is not eligible", () => {
     // A vision model that can't run tools would brick the agent, so the
-    // suggested Kimi entry here (vision only, no tools) must be skipped.
+    // preferred Kimi entry here (vision only, no tools) must be skipped.
     const kimiNoTools = model("kimi-k2-6", "Kimi K2.6", ["supportsVision"]);
     const chosen = preferredVisionFallbackModel([kimiNoTools, fable]);
     expect(chosen?.id).toBe("claude-fable-5");
@@ -61,10 +61,11 @@ describe("suggestedModelsForMode", () => {
     // Auto is not a suggested row — it lives in the picker's pinned toggle
     // section — so the catalog's Auto entry never surfaces here.
     const auto = model("open-software/auto", "Auto", ["supportsFunctionCalling"]);
-    const suggestions = suggestedModelsForMode("generation", [auto, kimi, glm52]);
+    const suggestions = suggestedModelsForMode("generation", [auto, kimi, kimi3, glm52]);
 
     expect(suggestions.map(({ model: suggestion }) => suggestion.id)).toEqual([
       "zai-org-glm-5-2",
+      "kimi-k3",
       "kimi-k2-6",
     ]);
   });

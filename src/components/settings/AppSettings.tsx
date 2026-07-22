@@ -3078,9 +3078,6 @@ function PermissionsSettingsSection({
               title="System audio"
               description="Record audio from other apps when system audio is enabled."
               status={sourcePermissionStatus(systemReadiness, macLikePlatform)}
-              onManage={onEnableSystemAudio}
-              actionLabel="Open sound settings"
-              actionText="Open"
             />
           ) : null}
         </div>
@@ -3121,15 +3118,17 @@ function PermissionRow({
         >
           <PermissionStatusIcon tone={status.tone} />
         </span>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          disabled={actionDisabled}
-          aria-label={actionLabel ?? `Manage ${title} permission`}
-          onClick={onManage}
-        >
-          {actionText}
-        </button>
+        {onManage ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={actionDisabled}
+            aria-label={actionLabel ?? `Manage ${title} permission`}
+            onClick={onManage}
+          >
+            {actionText}
+          </button>
+        ) : null}
       </div>
     </div>
   );

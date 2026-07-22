@@ -7,7 +7,6 @@ type TauriListener = (event: { payload: unknown }) => unknown;
 const mocks = vi.hoisted(() => ({
   listeners: new Map<string, TauriListener>(),
   hide: vi.fn().mockResolvedValue(undefined),
-  emit: vi.fn().mockResolvedValue(undefined),
   invoke: vi.fn().mockResolvedValue(undefined),
   listen: vi.fn((event: string, listener: TauriListener) => {
     mocks.listeners.set(event, listener);
@@ -21,7 +20,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
-  emit: mocks.emit,
   listen: mocks.listen,
 }));
 
@@ -37,7 +35,6 @@ describe("meeting detection HUD", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mocks.hide.mockResolvedValue(undefined);
-    mocks.emit.mockResolvedValue(undefined);
     mocks.invoke.mockResolvedValue(undefined);
     mocks.startDragging.mockResolvedValue(undefined);
     mocks.listeners.clear();
@@ -143,15 +140,16 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-meeting-app")).toHaveTextContent("Teams");
   });
 
-  it("emits a start transcription request when the button is clicked", async () => {
+  it("durably queues a start transcription request before hiding", async () => {
     vi.useFakeTimers();
     await loadHud();
     await emit("meeting-detection-event", { type: "meeting_detected" });
+    mocks.invoke.mockClear();
 
     document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.click();
 
     await Promise.resolve();
-    expect(mocks.emit).toHaveBeenCalledWith("june://meeting-start-transcription");
+    expect(mocks.invoke).toHaveBeenCalledWith("queue_meeting_start_request");
     // A bounded advance, not runAllTimersAsync: jsdom drives rAF off the
     // faked setTimeout while the alpha ramp measures real time, so running
     // "all" timers re-queues the ramp until sinon's 10000-timer abort.
@@ -159,6 +157,27 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
     expect(document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.disabled).toBe(false);
     vi.useRealTimers();
+  });
+
+  it("keeps the meeting prompt available when queuing fails", async () => {
+    await loadHud();
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "queue_meeting_start_request") {
+        return Promise.reject(new Error("native queue unavailable"));
+      }
+      return Promise.resolve(undefined);
+    });
+    mocks.hide.mockClear();
+
+    document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.click();
+
+    await vi.waitFor(() =>
+      expect(document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.disabled).toBe(false),
+    );
+    expect(hudElement().dataset.state).toBe("meeting");
+    expect(mocks.hide).not.toHaveBeenCalled();
+    await emit("meeting-detection-event", { type: "meeting_cleared" });
   });
 
   it("dismisses the prompt and stays quiet until the meeting clears", async () => {

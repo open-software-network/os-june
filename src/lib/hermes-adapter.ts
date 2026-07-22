@@ -1,4 +1,5 @@
 import { stripProjectContextFromPreview } from "./agent-project-context";
+import { displayedUpstreamProviderRecoveryPreview } from "./upstream-provider-recovery";
 import {
   deleteHermesBridgeSession,
   hermesBridgeSessionMessages,
@@ -59,6 +60,7 @@ export function normalizeHermesSessionsResponse(response: unknown) {
     .filter(isHermesSessionInfo)
     .filter((session) => !isDelegatedSubagentSession(session))
     .map(withoutProjectContextPreview)
+    .map(withoutInternalRecoveryPreview)
     .map(withScheduledRunDisplay)
     .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a)));
 }
@@ -68,6 +70,15 @@ export function normalizeHermesSessionsResponse(response: unknown) {
  * (or the instructions inside it) in session lists. */
 function withoutProjectContextPreview(session: HermesSessionInfo): HermesSessionInfo {
   const preview = stripProjectContextFromPreview(session.preview ?? undefined);
+  if (preview === (session.preview ?? undefined)) return session;
+  return { ...session, preview };
+}
+
+/** A recovery submission persists the private continuation prompt. Normalize
+ * its complete or truncated preview once at the adapter boundary so every
+ * session list, search surface, menu, and notification receives friendly copy. */
+function withoutInternalRecoveryPreview(session: HermesSessionInfo): HermesSessionInfo {
+  const preview = displayedUpstreamProviderRecoveryPreview(session.preview ?? undefined);
   if (preview === (session.preview ?? undefined)) return session;
   return { ...session, preview };
 }

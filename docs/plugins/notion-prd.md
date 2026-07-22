@@ -94,6 +94,24 @@ the product promise above: shipped UI must keep the preview caveat visible,
 disclose the hosted-search scope, and the connector must not claim
 selected-page-only access until the boundary is proven or enforced in Rust.
 
+Preview note, 2026-07-21 (supersedes the "keep the preview caveat visible"
+clause above for the Plugins row only): the two standing disclosure lines
+("Access may extend beyond selected pages." and "Search may include
+Notion-connected sources.") now render behind an info (i) tooltip on the
+Notion plugin row, next to the row title, instead of as always-visible
+subtitle lines. The caveat text itself is unchanged and remains reachable on
+the same row the user connects from, via the same (i) affordance pattern
+Computer use uses for its permission disclosures. The connector still must not
+claim selected-page-only access until the boundary is proven or enforced in
+Rust. A Notion connect dialog now carries both disclosure lines at the moment
+of grant, which is the stronger disclosure point: OAuth does not start until
+the user sees the access-scope and hosted-search caveats and clicks
+"Continue." The Plugins row tooltip is a directory-surface discoverability
+hint; the connect dialog is the consent surface. A visually-hidden copy of
+the disclosure text is associated with the (i) button via aria-describedby so
+screen readers encounter the caveat when navigating the row, before the dialog
+opens.
+
 ## Business model
 
 Local reads and approved publishing are Hobby if the auth design preserves the
