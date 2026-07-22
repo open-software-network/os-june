@@ -45,6 +45,7 @@ import { SettingsPageHeader } from "./AppSettings";
 import { useExperimentalFlags } from "../../lib/experimental-flags";
 import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
+import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 
 // Read-only by default: Google gets mail read and calendar read, Linear gets
 // workspace read, GitHub gets repository read. Write scopes are opt-in
@@ -429,6 +430,7 @@ export function ConnectorsSection({
   const [notionDisconnecting, setNotionDisconnecting] = useState(false);
   const [notionConnectOpen, setNotionConnectOpen] = useState(false);
   const [notionDialogMode, setNotionDialogMode] = useState<"connect" | "reconnect">("connect");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const notionOperationIdRef = useRef(0);
   // Linear team-selection dialog: the account id it's open for (null =
   // closed). Kept separate from the fetched team list/selection so a fetch
@@ -1093,7 +1095,25 @@ export function ConnectorsSection({
               setNotionConnectOpen(true);
             }}
           />
-          <ComputerUseControl onOpenModels={onOpenModels} onOpenBilling={onOpenBilling} />
+          <li className="connectors-advanced-row">
+            <button
+              type="button"
+              className="connectors-advanced-toggle"
+              aria-expanded={advancedOpen}
+              onClick={() => setAdvancedOpen((open) => !open)}
+            >
+              <span>Advanced</span>
+              <IconChevronDownSmall
+                size={14}
+                aria-hidden
+                className="connectors-advanced-chevron"
+                data-open={advancedOpen || undefined}
+              />
+            </button>
+          </li>
+          {advancedOpen ? (
+            <ComputerUseControl onOpenModels={onOpenModels} onOpenBilling={onOpenBilling} />
+          ) : null}
         </ul>
       </div>
 

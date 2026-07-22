@@ -295,12 +295,19 @@ describe("ConnectorsSection", () => {
     expect(within(row).queryByText("Finish setup")).toBeNull();
   });
 
-  it("presents connected services and Computer use together as plugins", async () => {
+  it("hides Computer use under the Advanced toggle", async () => {
     render(<ConnectorsSection />);
 
     expect(screen.getByRole("heading", { name: "Plugins" })).toBeInTheDocument();
-    expect(screen.getByText("Computer use")).toBeInTheDocument();
+    const advanced = screen.getByRole("button", { name: "Advanced" });
+    expect(advanced).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Computer use")).not.toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "Connect Google" })).toBeEnabled();
+
+    await userEvent.click(advanced);
+
+    expect(advanced).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Computer use")).toBeInTheDocument();
   });
 
   it("uses plugin terminology for Obsidian status errors", async () => {
