@@ -361,7 +361,7 @@ const features: HermesCompatibilitySection = {
   reasoningEffortControls: {
     status: "supported",
     rationale:
-      "The composer model menu's Effort submenu exposes three reasoning levels (Instant, Medium, Hard) mapped onto Hermes effort tiers: new sessions pin reasoning_effort on session.create and a live session retunes via config.set (setSessionReasoningEffort); max/ultra tiers and per-model overrides stay unexposed.",
+      "The composer model menu's Effort submenu exposes three reasoning levels (Low, Medium, High) mapped onto Hermes effort tiers: new sessions pin reasoning_effort on session.create and a live session retunes via config.set (setSessionReasoningEffort); max/ultra tiers and per-model overrides stay unexposed.",
     since: CURRENT_PIN,
   },
 };

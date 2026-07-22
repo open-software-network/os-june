@@ -2,7 +2,7 @@ import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 
@@ -11,14 +11,17 @@ import {
   modelSupportsTools,
   type ModelPrivacyBadge,
 } from "../../../lib/model-privacy";
+import { modelMatchesQuery } from "../../../lib/model-search";
 import { suggestedModelsForMode } from "../../../lib/suggested-models";
 import type { VeniceModelDto } from "../../../lib/tauri";
+import { thinkingOptionForLevel, type ThinkingLevel } from "../../../lib/thinking-level";
 import { useScrollFade } from "../../../lib/use-scroll-fade";
 import { rectFromElement, type HoverBridgeRect } from "../../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../../ui/useModelHoverBridge";
 import { HoverTip } from "../../ui/HoverTip";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../../ui/ModelPrivacyChip";
 import { Switch } from "../../ui/Switch";
+import { ThinkingLevelMeter } from "../../ui/ThinkingLevelMeter";
 import { AUTO_MODEL_ID } from "../../settings/ModelPickerDialog";
 import { ModelPickerCardContent } from "../../settings/ModelPickerPopover";
 
@@ -38,30 +41,38 @@ export function ComposerModelPicker({
 }: {
   open: boolean;
   model?: VeniceModelDto;
-  /** Ghosted designation beside the name — the Auto routing preference
-   * ("Auto Higher"), quieter than the model name. */
+  /** Ghosted designation beside the name: the Auto routing preference
+   * ("Auto Quality"), quieter than the model name. */
   detail?: string;
-  /** Ghosted thinking level beside the name ("Medium"), visual only: kept
-   * out of the trigger's aria-label so existing "Model: <name>" queries and
-   * announcements are unchanged; the Effort row in the popover carries the
-   * accessible value. */
-  effort?: string;
+  /** The persisted thinking level, rendered as the segmented meter alone;
+   * the tooltip and aria description carry the level's name. */
+  effort?: ThinkingLevel;
   readOnly?: boolean;
   triggerRef: RefObject<HTMLButtonElement>;
   onToggleOpen: () => void;
 }) {
+  const descriptionId = useId();
   if (!model) return null;
+  const effortOption = effort ? thinkingOptionForLevel(effort) : undefined;
+  const description = [
+    detail ? `Preference: ${detail}.` : null,
+    effortOption ? `Effort: ${effortOption.label}.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const title = [`Model: ${model.name}.`, description].filter(Boolean).join(" ");
+
   if (readOnly) {
     return (
       <div className="agent-composer-model" data-readonly="true">
-        <span className="agent-composer-model-label">
-          <span>{model.name}</span>
-          {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
+        <span className="agent-composer-model-label" title={title}>
           {effort ? (
-            <span className="agent-composer-model-trigger-level" aria-hidden>
-              {effort}
+            <span className="agent-composer-model-trigger-effort">
+              <ThinkingLevelMeter level={effort} />
             </span>
           ) : null}
+          <span className="agent-composer-model-trigger-name">{model.name}</span>
+          {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         </span>
       </div>
     );
@@ -72,20 +83,27 @@ export function ComposerModelPicker({
         ref={triggerRef}
         type="button"
         className="agent-composer-model-trigger"
-        aria-label={`Model: ${model.name}${detail ? ` (${detail})` : ""}`}
+        aria-label={`Model: ${model.name}`}
+        aria-describedby={description ? descriptionId : undefined}
         aria-haspopup="dialog"
         aria-expanded={open}
+        title={title}
         onClick={onToggleOpen}
       >
-        <span>{model.name}</span>
-        {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         {effort ? (
-          <span className="agent-composer-model-trigger-level" aria-hidden>
-            {effort}
+          <span className="agent-composer-model-trigger-effort">
+            <ThinkingLevelMeter level={effort} />
           </span>
         ) : null}
+        <span className="agent-composer-model-trigger-name">{model.name}</span>
+        {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
         <IconChevronDownSmall size={12} aria-hidden />
       </button>
+      {description ? (
+        <span id={descriptionId} className="visually-hidden">
+          {description}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -712,14 +730,6 @@ function ComposerModelOptionText({ model }: { model: VeniceModelDto }) {
       <span className="agent-composer-model-row-name">{model.name}</span>
     </span>
   );
-}
-
-function modelMatchesQuery(model: VeniceModelDto, query: string) {
-  return [model.name, model.id, model.description, model.privacy, ...model.traits]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-    .includes(query);
 }
 
 // The current model's privacy mode as a pill — Private, Anonymous, or E2EE,

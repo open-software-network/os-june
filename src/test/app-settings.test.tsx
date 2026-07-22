@@ -3335,9 +3335,9 @@ describe("AppSettings", () => {
     const preference = await screen.findByRole("group", {
       name: "Auto preference",
     });
-    const lowerCost = within(preference).getByRole("button", { name: "Lower cost" });
+    const lowerCost = within(preference).getByRole("button", { name: "Economy" });
     const balanced = within(preference).getByRole("button", { name: "Balanced" });
-    const higherQuality = within(preference).getByRole("button", { name: "Higher quality" });
+    const higherQuality = within(preference).getByRole("button", { name: "Quality" });
     expect(balanced).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByText("Choose how June balances model quality and usage cost."),
@@ -3394,7 +3394,7 @@ describe("AppSettings", () => {
     fireEvent.click(await screen.findByRole("tab", { name: "Models" }));
     const preference = await screen.findByRole("group", { name: "Auto preference" });
     const balanced = within(preference).getByRole("button", { name: "Balanced" });
-    const higherQuality = within(preference).getByRole("button", { name: "Higher quality" });
+    const higherQuality = within(preference).getByRole("button", { name: "Quality" });
 
     fireEvent.click(higherQuality);
     expect(higherQuality).toHaveAttribute("aria-pressed", "true");

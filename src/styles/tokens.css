@@ -160,6 +160,8 @@
   --control-md: 28px;
   --control-lg: 32px;
   --control-xl: 36px;
+  /* Shared width for the model picker's nested detail and choice panels. */
+  --model-picker-nested-w: 248px;
   /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */

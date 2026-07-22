@@ -312,7 +312,6 @@ import {
   saveThinkingLevel,
   thinkingEffortForLevel,
   thinkingLevelForEffort,
-  thinkingOptionForLevel,
   type ThinkingLevel,
 } from "../../lib/thinking-level";
 import {
@@ -320,11 +319,7 @@ import {
   modelOptions,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import {
-  ModelCommandPalette,
-  ModelPickerPopover,
-  type ModelPickerFlyout,
-} from "../settings/ModelPickerPopover";
+import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
@@ -2878,7 +2873,14 @@ export function AgentWorkspace({
   // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
   const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
-  const [composerModelCommandPalette, setComposerModelCommandPalette] = useState(false);
+  // Whether the open picker was summoned by the /model slash command; it
+  // drives search focus on open and Escape returning focus to the draft.
+  const [composerModelFromSlash, setComposerModelFromSlash] = useState(false);
+  const composerModelRootSearchRef = useRef<HTMLInputElement>(null);
+  // The popover's root-layer query, independent of the All models flyout's
+  // `modelSearch`: L2's box filters only its catalog list, and typing there
+  // never flips the root layer into results mode.
+  const [modelRootSearch, setModelRootSearch] = useState("");
   const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -3843,18 +3845,16 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (composerModelCommandPalette) {
-          setComposerModelOpen(false);
-          composerEditorRef.current?.focus();
-          return;
-        }
         // Escape peels one layer at a time: the all-models panel first,
-        // then the popover itself.
+        // then an active root search query, then the popover itself.
         if (composerModelFlyout?.kind === "all" || composerModelFlyout?.kind === "effort") {
           setComposerModelFlyout(null);
           setModelSearch("");
+        } else if (modelRootSearch) {
+          setModelRootSearch("");
         } else {
           setComposerModelOpen(false);
+          if (composerModelFromSlash) composerEditorRef.current?.focus();
         }
       }
     }
@@ -3864,13 +3864,18 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [composerModelCommandPalette, composerModelOpen, composerModelFlyout]);
+  }, [composerModelFromSlash, composerModelOpen, composerModelFlyout, modelRootSearch]);
 
   useLayoutEffect(() => {
-    if (composerModelOpen && (composerModelCommandPalette || composerModelFlyout?.kind === "all")) {
+    if (!composerModelOpen) return;
+    if (composerModelFlyout?.kind === "all") {
       composerModelSearchRef.current?.focus();
+      return;
     }
-  }, [composerModelCommandPalette, composerModelFlyout, composerModelOpen]);
+    if (composerModelFromSlash) {
+      composerModelRootSearchRef.current?.focus();
+    }
+  }, [composerModelFromSlash, composerModelFlyout, composerModelOpen]);
 
   // The popover lives outside the composer box (whose overflow:hidden would
   // clip it), so CSS alone can only anchor it to the box, leaving the whole
@@ -3885,27 +3890,21 @@ export function AgentWorkspace({
       if (!trigger || !popover || !form) return;
       const triggerRect = trigger.getBoundingClientRect();
       const formRect = form.getBoundingClientRect();
-      if (composerModelCommandPalette) {
-        const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
-        const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
-        popover.style.left = `${composerRect.left - formRect.left}px`;
-        popover.style.right = `${formRect.right - composerRect.right}px`;
-        popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
-        popover.style.setProperty(
-          "--model-command-available-height",
-          `${Math.max(96, composerRect.top - 12)}px`,
-        );
-        return;
-      }
-      popover.style.left = "";
-      popover.style.removeProperty("--model-command-available-height");
       popover.style.right = `${formRect.right - triggerRect.right}px`;
       popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
+      // The popover grows upward, so its tall states (Auto on revealing
+      // Preference) can reach the titlebar strip. Cap it to the room above
+      // the trigger with breathing space; the suggested list is the flex
+      // child that shrinks and scrolls (the popover itself must never clip:
+      // the drill-in flyouts hang outside its box).
+      const titlebarHeight =
+        Number.parseFloat(window.getComputedStyle(popover).getPropertyValue("--titlebar-h")) || 0;
+      popover.style.maxHeight = `${Math.max(160, triggerRect.top - 4 - titlebarHeight - 12)}px`;
     }
     positionPopover();
     window.addEventListener("resize", positionPopover);
     return () => window.removeEventListener("resize", positionPopover);
-  }, [composerModelCommandPalette, composerModelOpen]);
+  }, [composerModelOpen]);
 
   useLayoutEffect(() => {
     if (sandboxMenuOpen) {
@@ -4304,10 +4303,11 @@ export function AgentWorkspace({
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
-  function openComposerModelPicker(commandPalette = false) {
+  function openComposerModelPicker(fromSlash = false) {
     setModelSearch("");
+    setModelRootSearch("");
     setComposerModelFlyout(null);
-    setComposerModelCommandPalette(commandPalette);
+    setComposerModelFromSlash(fromSlash);
     setComposerModelOpen(true);
     setSandboxMenuOpen(false);
     void loadGenerationModel();
@@ -11325,6 +11325,15 @@ export function AgentWorkspace({
               );
             }}
             onSubmit={() => void submit()}
+            onBuiltinSlashCommand={(name) => {
+              if (name !== "model") return false;
+              // The slash row commits on mousedown. Mounting the palette in
+              // that same event lets its window-level outside-click listener
+              // observe the now-removed row and close immediately. Queue the
+              // palette for the next task, after that pointer or keyboard event.
+              window.setTimeout(() => openComposerModelPicker(true), 0);
+              return true;
+            }}
             onReady={(editor) => {
               composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);
@@ -11381,7 +11390,7 @@ export function AgentWorkspace({
                     ? autoPillDesignation(activeGenerationCostQuality)
                     : undefined
                 }
-                effort={thinkingOptionForLevel(composerThinkingLevel).label}
+                effort={composerThinkingLevel}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -11559,44 +11568,37 @@ export function AgentWorkspace({
           />
         ) : null}
         {composerModelOpen ? (
-          composerModelCommandPalette ? (
-            <ModelCommandPalette
-              model={generationModel}
-              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-              search={modelSearch}
-              popoverRef={composerModelPopoverRef}
-              searchRef={composerModelSearchRef}
-              onSearchChange={setModelSearch}
-              onSelect={(modelId) => {
-                void handleSelectGenerationModel(modelId);
-                composerEditorRef.current?.focus();
-              }}
-            />
-          ) : (
-            <ModelPickerPopover
-              mode="generation"
-              flyout={composerModelFlyout}
-              model={generationModel}
-              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-              costQuality={activeGenerationCostQuality}
-              veniceApiKeyConfigured={veniceApiKeyConfigured}
-              search={modelSearch}
-              popoverRef={composerModelPopoverRef}
-              searchRef={composerModelSearchRef}
-              onFlyoutChange={setComposerModelFlyout}
-              onSearchChange={setModelSearch}
-              onSelect={(modelId, costQuality, options) =>
-                void handleSelectGenerationModel(modelId, costQuality, options)
-              }
-              onCostQualityChange={handleCostQualityChange}
-              thinkingLevel={composerThinkingLevel}
-              onSelectThinking={(level) => {
-                setComposerModelFlyout(null);
-                setComposerModelOpen(false);
-                void handleSelectThinkingLevel(level);
-              }}
-            />
-          )
+          <ModelPickerPopover
+            mode="generation"
+            flyout={composerModelFlyout}
+            model={generationModel}
+            options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+            costQuality={activeGenerationCostQuality}
+            veniceApiKeyConfigured={veniceApiKeyConfigured}
+            catalogLoaded={generationModelOptions.length > 0}
+            search={modelSearch}
+            popoverRef={composerModelPopoverRef}
+            searchRef={composerModelSearchRef}
+            rootSearchRef={composerModelRootSearchRef}
+            rootSearch={modelRootSearch}
+            onRootSearchChange={setModelRootSearch}
+            onFlyoutChange={setComposerModelFlyout}
+            onSearchChange={setModelSearch}
+            onSelect={(modelId, costQuality, options) => {
+              void handleSelectGenerationModel(modelId, costQuality, options);
+              // A final pick closes the popover and hands focus back to the
+              // draft; control adjustments (Auto, a keepOpen select) leave
+              // the popover and its focus in place.
+              if (!options?.keepOpen) composerEditorRef.current?.focus();
+            }}
+            onCostQualityChange={handleCostQualityChange}
+            thinkingLevel={composerThinkingLevel}
+            onSelectThinking={(level) => {
+              setComposerModelFlyout(null);
+              setComposerModelOpen(false);
+              void handleSelectThinkingLevel(level);
+            }}
+          />
         ) : null}
         {heroMode && sandboxMenuOpen ? (
           <div

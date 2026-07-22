@@ -77,6 +77,13 @@ export function useModelDetailHoverBridge({
         // the new card opens (when data-active transfers). Otherwise the still-
         // open card's row and the freshly hovered row both read as highlighted
         // during the delay.
+        const flyoutKind = target.dataset.flyoutKind;
+        if (flyoutKind === "auto" || flyoutKind === "effort") {
+          cancelHoverIntent();
+          onFlyoutChange({ kind: flyoutKind });
+          setBridging(false);
+          return;
+        }
         if (target.classList.contains("agent-composer-model-all")) {
           cancelHoverIntent();
           onFlyoutChange({ kind: "all" });

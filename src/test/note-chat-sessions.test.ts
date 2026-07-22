@@ -444,6 +444,41 @@ describe("note chat session map", () => {
     window.removeEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, settingsChanged);
   });
 
+  it("matches natural model queries in the note chat picker", async () => {
+    const gpt54 = {
+      ...currentModel,
+      id: "openai-gpt-54",
+      name: "GPT-5.4",
+      privacy: "anonymized",
+    };
+    const gpt55 = { ...gpt54, id: "openai-gpt-55", name: "GPT-5.5" };
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: currentModel.id,
+      models: [currentModel, autoModel, gpt54, gpt55],
+    });
+    const user = userEvent.setup();
+
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat(),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
+    const picker = screen.getByRole("dialog", { name: "Choose text model" });
+    await user.click(within(picker).getByRole("button", { name: "All models" }));
+    const catalog = within(screen.getByRole("group", { name: "All text models" }));
+    await user.type(catalog.getByLabelText("Search models"), "gpt 5.4");
+
+    expect(catalog.getByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
+    expect(catalog.queryByRole("option", { name: "GPT-5.5" })).not.toBeInTheDocument();
+  });
+
   it("hides attachment manifest metadata in a reloaded note chat user turn", () => {
     render(
       createElement(NoteChatPanel, {
@@ -558,7 +593,11 @@ describe("note chat session map", () => {
       }),
     );
 
-    await user.click(await screen.findByRole("button", { name: /^Model: Auto/ }));
+    const autoTrigger = await screen.findByRole("button", { name: "Model: Auto" });
+    expect(autoTrigger).toHaveTextContent(/Auto\s*Quality/);
+    expect(autoTrigger).toHaveAccessibleDescription("Preference: Quality.");
+    expect(autoTrigger.querySelector(".thinking-level-meter")).toBeNull();
+    await user.click(autoTrigger);
     const picker = screen.getByRole("dialog", { name: "Choose text model" });
     expect(
       within(picker).getByText(

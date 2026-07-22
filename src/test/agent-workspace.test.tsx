@@ -4099,26 +4099,35 @@ describe("AgentWorkspace", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    await user.click(within(dialog).getByRole("button", { name: "Effort Medium" }));
+    const effortRow = within(dialog).getByRole("button", { name: "Effort Medium" });
+    expect(effortRow.querySelector(".thinking-level-meter")).toHaveAttribute("data-segments", "2");
+    const firstSuggestedModel = within(dialog).getByRole("option", { name: /GLM 5\.2/ });
+    expect(
+      effortRow.compareDocumentPosition(firstSuggestedModel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await user.click(effortRow);
 
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    expect(within(submenu).getByRole("option", { name: "Instant" })).toHaveAttribute(
-      "aria-selected",
+    expect(effortRow).toHaveFocus();
+    await user.tab();
+    expect(within(submenu).getByRole("menuitemradio", { name: /^Low / })).toHaveFocus();
+    expect(within(submenu).getByRole("menuitemradio", { name: /^Low / })).toHaveAttribute(
+      "aria-checked",
       "false",
     );
-    expect(within(submenu).getByRole("option", { name: "Medium" })).toHaveAttribute(
-      "aria-selected",
+    expect(within(submenu).getByRole("menuitemradio", { name: /^Medium / })).toHaveAttribute(
+      "aria-checked",
       "true",
     );
-    expect(within(submenu).getByRole("option", { name: "Hard" })).toHaveAttribute(
-      "aria-selected",
+    expect(within(submenu).getByRole("menuitemradio", { name: /^High / })).toHaveAttribute(
+      "aria-checked",
       "false",
     );
-    expect(
-      within(submenu).getByText("Higher effort consumes usage limits faster."),
-    ).toBeInTheDocument();
+    expect(within(submenu).getByText("Faster responses with lower usage.")).toBeVisible();
+    expect(within(submenu).getByText("Balances speed and depth for most tasks.")).toBeVisible();
+    expect(within(submenu).getByText("Deeper reasoning with higher usage.")).toBeVisible();
   });
 
   it("retunes the open session live when the thinking level changes", async () => {
@@ -4145,7 +4154,7 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^High / }));
 
     // The live runtime retunes through config.set (the same surface as the
     // TUI's /reasoning), keyed by the runtime session id.
@@ -4171,7 +4180,7 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    await user.click(within(submenu).getByRole("option", { name: "Instant" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^Low / }));
 
     window.dispatchEvent(
       new CustomEvent(AGENT_NEW_SESSION_EVENT, {
@@ -4224,7 +4233,7 @@ describe("AgentWorkspace", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    expect(within(dialog).getByRole("button", { name: "Effort Hard" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Effort High" })).toBeInTheDocument();
   });
 
   it("keeps another chat on its own level after retuning the current chat", async () => {
@@ -4254,7 +4263,7 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^High / }));
 
     view.rerender(<AgentWorkspace initialSession={secondSession} />);
 
@@ -4263,11 +4272,11 @@ describe("AgentWorkspace", () => {
       name: "Choose text model",
     });
     expect(within(dialog2).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
-    expect(within(dialog2).queryByRole("button", { name: "Effort Hard" })).not.toBeInTheDocument();
+    expect(within(dialog2).queryByRole("button", { name: "Effort High" })).not.toBeInTheDocument();
   });
 
   it("re-asserts a persisted session level on the first send after a reload", async () => {
-    // The session was retuned to Hard before the app restarted: its record
+    // The session was retuned to High before the app restarted: its record
     // survived (localStorage) but the in-memory ack cache did not, so the
     // fresh runtime must be retuned before the next prompt runs.
     window.localStorage.setItem(
@@ -4282,7 +4291,7 @@ describe("AgentWorkspace", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    expect(within(dialog).getByRole("button", { name: "Effort Hard" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Effort High" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
@@ -4302,7 +4311,7 @@ describe("AgentWorkspace", () => {
     });
   });
 
-  it("stages /model from the slash menu, then opens the model palette on Enter", async () => {
+  it("opens the model palette immediately when Model is clicked in the slash menu", async () => {
     const user = userEvent.setup();
 
     render(<AgentWorkspace initialSession={existingSession} />);
@@ -4311,20 +4320,40 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "/");
     await user.click(await screen.findByRole("option", { name: "Model" }));
 
-    expect(composer).toHaveTextContent("/model");
-    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    expect(search).toHaveFocus();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("switch", { name: "Choose the model automatically" }),
+    ).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
 
+    await user.type(search, "GLM 5.2");
+    expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+
+    // Escape peels one layer at a time: the active query first, then the
+    // popover itself (returning focus to the draft for the /model flow).
+    await user.keyboard("{Escape}");
+    expect(search).toHaveValue("");
+    expect(screen.getByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("opens the model palette when the filtered Model command is selected with Enter", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/mode");
     await user.keyboard("{Enter}");
 
     const palette = await screen.findByRole("dialog", { name: "Choose text model" });
     expect(within(palette).getByRole("combobox", { name: "Search models" })).toHaveFocus();
-    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
-    expect(within(palette).getByText("All models")).toBeInTheDocument();
     expect(composer).toHaveTextContent(/^$/);
-
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
-    await waitFor(() => expect(composer).toHaveFocus());
   });
 
   it("searches and keyboard-selects a model when bare /model is submitted", async () => {
@@ -4339,11 +4368,10 @@ describe("AgentWorkspace", () => {
     const palette = await screen.findByRole("dialog", { name: "Choose text model" });
     const search = within(palette).getByRole("combobox", { name: "Search models" });
     expect(search).toBeInTheDocument();
-    expect(
-      within(palette).getByRole("switch", { name: "Only show private models" }),
-    ).not.toBeChecked();
     expect(within(palette).getByText("Suggested")).toBeInTheDocument();
-    expect(within(palette).getByText("All models")).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("switch", { name: "Choose the model automatically" }),
+    ).toBeInTheDocument();
     expect(composer).toHaveTextContent(/^$/);
 
     await user.type(search, "GLM 5.2");
@@ -4354,6 +4382,26 @@ describe("AgentWorkspace", () => {
       expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
     );
     expect(composer).toHaveFocus();
+  });
+
+  it("keeps the root layer in browse mode while searching the All models flyout", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.keyboard("{Enter}");
+
+    const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
+    const flyoutSearch = within(dialog).getByRole("textbox", { name: "Search models" });
+    await user.type(flyoutSearch, "kimi");
+
+    // The two queries are independent: L2's box filters only its own list,
+    // so the root layer stays in browse mode with an empty root query.
+    expect(within(dialog).getByText("Suggested")).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "Search models" })).toHaveValue("");
   });
 
   it("queues /model in an existing chat and applies it before the next message", async () => {
@@ -4773,14 +4821,27 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto"),
     );
-    // The pill ghosts the active preset designation beside the model name.
-    expect(await screen.findByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+    // The preset designation rides beside the model name as plain text; the
+    // effort level shows as the meter alone, named only in the description.
+    const economyTrigger = await screen.findByRole("button", { name: "Model: Auto" });
+    expect(economyTrigger).toHaveTextContent(/Auto\s*Economy/);
+    expect(economyTrigger).not.toHaveTextContent("Medium");
+    expect(within(economyTrigger).getByText("Economy")).toHaveClass(
+      "agent-composer-model-trigger-detail",
+    );
+    expect(economyTrigger.querySelector(".thinking-level-meter")).toHaveAttribute(
+      "data-segments",
+      "2",
+    );
+    expect(economyTrigger).toHaveAccessibleDescription("Preference: Economy. Effort: Medium.");
 
-    // The Preference drill-in persists a new preset and updates the pill.
+    // The Preference drill-in persists a new preset and updates the trigger.
     await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
-    await user.click(await screen.findByRole("menuitemradio", { name: /Higher quality/ }));
+    await user.click(await screen.findByRole("menuitemradio", { name: /Quality/ }));
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledWith(100));
-    expect(await screen.findByRole("button", { name: "Model: Auto (Higher)" })).toBeInTheDocument();
+    const qualityTrigger = await screen.findByRole("button", { name: "Model: Auto" });
+    expect(qualityTrigger).toHaveTextContent(/Auto\s*Quality/);
+    expect(qualityTrigger).toHaveAccessibleDescription("Preference: Quality. Effort: Medium.");
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {
@@ -15086,7 +15147,7 @@ describe("AgentWorkspace", () => {
       );
 
       const composer = await screen.findByRole("textbox", { name: "Message June" });
-      await screen.findByRole("button", { name: "Model: Auto (Higher)" });
+      await screen.findByRole("button", { name: "Model: Auto" });
       await user.type(composer, "Use my Venice key");
       expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
 
@@ -15556,7 +15617,7 @@ describe("AgentWorkspace", () => {
       );
       expect(dialog).toBeInTheDocument();
       await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
-      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Economy/ }));
 
       expect(mocks.setCostQuality).not.toHaveBeenCalled();
       expect(mocks.setVeniceModel).not.toHaveBeenCalled();
@@ -15592,7 +15653,7 @@ describe("AgentWorkspace", () => {
         />,
       );
 
-      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      await user.click(await screen.findByRole("button", { name: "Model: Auto" }));
       const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
       const autoSwitch = within(dialog).getByRole("switch", {
         name: "Choose the model automatically",
@@ -15740,10 +15801,10 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace />);
 
       const composer = await screen.findByRole("textbox", { name: "Message June" });
-      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      await user.click(await screen.findByRole("button", { name: "Model: Auto" }));
       const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
       await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
-      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Economy/ }));
       expect(mocks.setCostQuality).toHaveBeenCalledWith(20);
       expect(finishCostQualitySave).toBeDefined();
       await user.type(composer, "Start with this Auto preference");
