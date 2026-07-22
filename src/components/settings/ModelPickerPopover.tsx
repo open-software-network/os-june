@@ -420,8 +420,16 @@ export function ModelPickerPopover({
       ? ["effort", thinkingOptionForLevel(thinkingLevel).label]
       : []),
   ];
+  const rootControlQueryTerms = rootQuery.split(/\s+/);
   const rootControlsMatch =
-    rootQueryActive && rootControlTerms.some((term) => term.toLowerCase().includes(rootQuery));
+    rootQueryActive &&
+    rootControlQueryTerms.every((queryTerm) =>
+      rootControlTerms.some((term) => term.toLowerCase().includes(queryTerm)),
+    );
+  const rootVisibleControlCount =
+    (onCostQualityChange ? 1 : 0) +
+    (onCostQualityChange && autoEnabled && showAutoPreference ? 1 : 0) +
+    (thinkingLevel && onSelectThinking ? 1 : 0);
   const rootMatchingSuggested = rootQueryActive
     ? suggested.filter(({ model: option }) => modelMatchesQuery(option, rootQuery))
     : [];
@@ -441,6 +449,14 @@ export function ModelPickerPopover({
       ]
     : [];
   const resolvedRootActive = Math.min(rootActive, Math.max(rootResults.length - 1, 0));
+  const rootStatusId = `${rootListId}-status`;
+  const rootSearchStatus = rootControlsMatch
+    ? `${rootVisibleControlCount} ${rootVisibleControlCount === 1 ? "setting" : "settings"} shown. Press Tab to review ${rootVisibleControlCount === 1 ? "it" : "settings"}.${
+        rootResults.length
+          ? ` ${rootResults.length} matching ${rootResults.length === 1 ? "model" : "models"}. Use the arrow keys to review ${rootResults.length === 1 ? "it" : "models"}.`
+          : ""
+      }`
+    : undefined;
   useEffect(() => {
     setRootActive(0);
   }, [rootQuery]);
@@ -689,32 +705,47 @@ export function ModelPickerPopover({
             aria-autocomplete="list"
             aria-expanded={rootQueryActive && rootResults.length > 0}
             aria-controls={rootQueryActive && rootResults.length ? rootListId : undefined}
+            aria-describedby={rootSearchStatus ? rootStatusId : undefined}
             aria-activedescendant={
               rootQueryActive && rootResults.length
                 ? `${rootListId}-option-${resolvedRootActive}`
                 : undefined
             }
             onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (rootQueryActive && rootResults.length) {
+                  const active = rootResults[resolvedRootActive];
+                  onSelect(active.model.id, active.costQuality);
+                }
+                return;
+              }
               if (!rootQueryActive) return;
-              if (event.key === "ArrowDown") {
+              if (event.key === "ArrowDown" && rootResults.length) {
                 event.preventDefault();
                 moveRootActive(1);
                 return;
               }
-              if (event.key === "ArrowUp") {
+              if (event.key === "ArrowUp" && rootResults.length) {
                 event.preventDefault();
                 moveRootActive(-1);
                 return;
               }
-              if (event.key === "Enter" && rootResults.length) {
-                event.preventDefault();
-                event.stopPropagation();
-                const active = rootResults[resolvedRootActive];
-                onSelect(active.model.id, active.costQuality);
-              }
             }}
           />
         </label>
+      ) : null}
+      {rootSearchStatus ? (
+        <span
+          id={rootStatusId}
+          className="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {rootSearchStatus}
+        </span>
       ) : null}
       {rootQueryActive && !rootControlsMatch ? (
         rootResultsList

@@ -4421,6 +4421,13 @@ describe("AgentWorkspace", () => {
 
     const palette = await screen.findByRole("dialog", { name: "Choose text model" });
     const search = within(palette).getByRole("combobox", { name: "Search models" });
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("");
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
     await user.type(search, "auto");
 
     const autoSwitch = within(palette).getByRole("switch", {
@@ -4435,19 +4442,35 @@ describe("AgentWorkspace", () => {
       within(palette).queryByRole("listbox", { name: "Matching models" }),
     ).not.toBeInTheDocument();
     expect(search).toHaveAttribute("aria-expanded", "false");
+    const searchStatus = within(palette).getByRole("status");
+    expect(searchStatus).toHaveTextContent("3 settings shown. Press Tab to review settings.");
+    expect(search).toHaveAttribute("aria-describedby", searchStatus.id);
+
+    // A settings-only query has no active model option. Enter stays within the
+    // search flow instead of bubbling into the surrounding message form.
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("auto");
+    expect(fireEvent.keyDown(search, { key: "ArrowDown" })).toBe(true);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.tab();
+    expect(autoSwitch).toHaveFocus();
 
     await user.clear(search);
-    await user.type(search, "Balanced");
+    await user.type(search, "Preference Balanced");
     expect(
       within(palette).getByRole("button", { name: "Preference Balanced" }),
     ).toBeInTheDocument();
 
     await user.clear(search);
-    await user.type(search, "Medium");
+    await user.type(search, "Effort Medium");
     expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
 
     await user.clear(search);
-    await user.type(search, "auto");
+    await user.type(search, "auto preference");
     await user.click(within(palette).getByRole("button", { name: "Preference Balanced" }));
     expect(within(palette).getByRole("group", { name: "Auto preference" })).toBeInTheDocument();
 
@@ -4455,7 +4478,7 @@ describe("AgentWorkspace", () => {
     expect(
       within(palette).queryByRole("group", { name: "Auto preference" }),
     ).not.toBeInTheDocument();
-    expect(search).toHaveValue("auto");
+    expect(search).toHaveValue("auto preference");
     await user.keyboard("{Escape}");
     expect(search).toHaveValue("");
   });

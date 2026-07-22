@@ -6886,10 +6886,10 @@ button.agent-user-attachment:hover {
   line-height: 1.3;
 }
 
-/* Root-layer search on the composer popover: the field leads the panel; an
- * active query swaps the browse content (title, controls, suggested rows,
- * All models) for one flat result list across both layers, capped so long
- * catalogs scroll inside the popover. */
+/* Root-layer search on the composer popover: the field leads the panel. Model
+ * queries swap browse content for one flat result list across both layers;
+ * setting queries retain the matching control group and may append model
+ * results. Long catalogs scroll inside the popover. */
 .agent-composer-model-root-results .agent-composer-model-list {
   max-height: min(45vh, 320px);
 }
@@ -13663,6 +13663,7 @@ button.agent-user-attachment:hover {
 
 .settings-models-card {
   padding-block: var(--sp-4);
+  border-color: transparent;
 }
 
 .settings-models-profile-note {
@@ -18420,10 +18421,6 @@ button.memory-project:hover {
  * its decorative border transparent in every non-focus state. */
 .model-summary-button:has(.model-summary-logo[data-brand="june"]):not(:focus-visible) {
   border-color: transparent;
-}
-
-.model-summary-logo[data-brand="june"] {
-  background: transparent;
 }
 
 .model-summary-button > svg {
