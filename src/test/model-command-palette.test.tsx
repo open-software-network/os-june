@@ -1,4 +1,4 @@
-import { createRef } from "react";
+import { createRef, useRef, useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -15,6 +15,22 @@ const model = (id: string, name: string, privacy: string): VeniceModelDto => ({
   traits: [],
   capabilities: ["supportsFunctionCalling"],
 });
+
+function SearchablePalette({ options }: { options: VeniceModelDto[] }) {
+  const [search, setSearch] = useState("");
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  return (
+    <ModelCommandPalette
+      options={options}
+      search={search}
+      popoverRef={popoverRef}
+      searchRef={searchRef}
+      onSearchChange={setSearch}
+      onSelect={vi.fn()}
+    />
+  );
+}
 
 describe("ModelCommandPalette", () => {
   it("renders the catalog before a current selection is resolved", () => {
@@ -75,5 +91,29 @@ describe("ModelCommandPalette", () => {
     expect(screen.getByRole("option", { name: /Private Extra/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Kimi K3/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Anonymous Extra/ })).not.toBeInTheDocument();
+  });
+
+  it("matches natural queries across punctuation and separated terms", async () => {
+    const user = userEvent.setup();
+    render(
+      <SearchablePalette
+        options={[
+          model("openai-gpt-54", "GPT-5.4", "anonymized"),
+          model("openai-gpt-55", "GPT-5.5", "anonymized"),
+          model("claude-opus-4-8-fast", "Claude Opus 4.8 Fast", "anonymized"),
+        ]}
+      />,
+    );
+
+    const search = screen.getByRole("combobox", { name: "Search models" });
+    await user.type(search, "gpt 5.4");
+
+    expect(screen.getByRole("option", { name: /GPT-5\.4/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /GPT-5\.5/ })).not.toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "opus fast");
+
+    expect(screen.getByRole("option", { name: /Claude Opus 4\.8 Fast/ })).toBeInTheDocument();
   });
 });
