@@ -105,6 +105,19 @@ describe("ModelCommandPalette", () => {
     expect(onSelect).toHaveBeenCalledWith("open-software/auto", { keepOpen: true });
   });
 
+  it("offers the Auto toggle even when the catalog has no Auto entry", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const current = model("zai-org-glm-5-2", "GLM 5.2", "private");
+
+    render(<SearchablePalette model={current} options={[current]} onSelect={onSelect} />);
+
+    const autoToggle = screen.getByRole("switch", { name: "Choose the model automatically" });
+    expect(autoToggle).not.toBeChecked();
+    await user.click(autoToggle);
+    expect(onSelect).toHaveBeenCalledWith("open-software/auto", { keepOpen: true });
+  });
+
   it("turns Auto off by selecting the leading concrete suggestion", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();

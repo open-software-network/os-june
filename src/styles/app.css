@@ -6856,12 +6856,6 @@ button.agent-user-attachment:hover {
   overscroll-behavior: contain;
 }
 
-/* Auto is a routing mode rather than a concrete model, so the command palette
- * mirrors the root picker with a plain pinned switch above the model list. */
-.agent-composer-model-command-filter-with-auto {
-  border-bottom: 0;
-}
-
 /* The palette flattens the toolbar picker's Preference and Effort drill-ins
  * into inline choice rows: it is wide enough to show all three values, so no
  * second layer. The controls block owns the single hairline before the list;
@@ -7007,6 +7001,13 @@ button.agent-user-attachment:hover {
   color: var(--popover-foreground);
   font-size: var(--fs-md);
   line-height: 1.3;
+}
+
+/* With the pinned control block below it, Private folds into one clean header
+ * stack — the block's own hairline is the only divider before the list. Must
+ * stay AFTER .agent-composer-model-filter: equal specificity, later wins. */
+.agent-composer-model-command-filter-with-auto {
+  border-bottom: 0;
 }
 
 /* Model controls pinned above the suggested rows in the root popover: Auto,

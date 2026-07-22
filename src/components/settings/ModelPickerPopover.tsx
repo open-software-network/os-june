@@ -918,11 +918,20 @@ export function ModelCommandPalette({
   const [activeIndex, setActiveIndex] = useState(0);
   const query = search.trim().toLowerCase();
   const auto = useMemo(() => {
-    const option = options.find((candidate) => candidate.id === AUTO_MODEL_ID);
-    if (!option) return undefined;
     // Auto is June's routing choice, not one direct inference model, so it
-    // has no catalog function-calling flag of its own. Its routing policy is
-    // private; concrete models still use the capability gate below.
+    // has no catalog function-calling flag of its own — and it may not be a
+    // catalog entry at all. Synthesize it when absent so the toggle is always
+    // offered, exactly like the toolbar picker's pinned Auto section. Its
+    // routing policy is private; concrete models still use the capability
+    // gate below.
+    const option = options.find((candidate) => candidate.id === AUTO_MODEL_ID) ?? {
+      provider: "",
+      id: AUTO_MODEL_ID,
+      name: "Auto",
+      modelType: "text",
+      traits: [],
+      capabilities: [],
+    };
     return { ...option, name: "Auto", privacy: option.privacy ?? "private" };
   }, [options]);
   const selectable = useMemo(
