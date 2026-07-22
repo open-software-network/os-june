@@ -376,6 +376,20 @@ bearer_token_env_var = "FIGMA_OAUTH_TOKEN"
     expect(result.entries[0].payload).toBeUndefined();
     expect(result.entries[0].error).toMatch(/credential/i);
   });
+
+  it("preserves escaped quotes and commas inside Codex TOML strings", () => {
+    const result = parseExternalMcpConfig(`
+[mcp_servers.quoted]
+command = "example"
+args = ["say \\"hello, June\\"", "--ok"]
+`);
+
+    expect(result.entries[0].payload).toEqual({
+      name: "quoted",
+      command: "example",
+      args: ['say "hello, June"', "--ok"],
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

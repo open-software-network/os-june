@@ -278,7 +278,18 @@ function splitTomlPath(path: string): string[] {
   const parts: string[] = [];
   let current = "";
   let quote: '"' | "'" | undefined;
+  let escaped = false;
   for (const char of path) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote === '"') {
+      current += char;
+      escaped = true;
+      continue;
+    }
     if (char === '"' || char === "'") {
       quote = quote === char ? undefined : (quote ?? char);
       current += char;
@@ -337,7 +348,18 @@ function splitTomlList(value: string): string[] {
   let current = "";
   let quote: '"' | "'" | undefined;
   let depth = 0;
+  let escaped = false;
   for (const char of value) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote === '"') {
+      current += char;
+      escaped = true;
+      continue;
+    }
     if (char === '"' || char === "'") quote = quote === char ? undefined : (quote ?? char);
     if (!quote && (char === "[" || char === "{")) depth += 1;
     if (!quote && (char === "]" || char === "}")) depth -= 1;
