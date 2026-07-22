@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createCapabilityActions } from "./capability-actions";
 import { createSessionTitleActions } from "./session-title-actions";
 import { createManagementLoaders } from "./management-loaders";
 import { createTaskControlActions } from "./task-control-actions";
@@ -4743,83 +4744,21 @@ export function AgentWorkspace({
     },
   );
 
-  async function setSkillEnabled(skill: HermesSkillInfo, enabled: boolean) {
-    setCapabilitySaving(`skill:${skill.name}`);
-    try {
-      await toggleHermesBridgeSkill({ name: skill.name, enabled });
-      setSkills(
-        (current) =>
-          current?.map((item) => (item.name === skill.name ? { ...item, enabled } : item)) ??
-          current,
-      );
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setCapabilitySaving(null);
-    }
-  }
-
-  async function setToolsetEnabled(toolset: HermesToolsetInfo, enabled: boolean) {
-    setCapabilitySaving(`toolset:${toolset.name}`);
-    try {
-      await toggleHermesBridgeToolset({ name: toolset.name, enabled });
-      setToolsets(
-        (current) =>
-          current?.map((item) => (item.name === toolset.name ? { ...item, enabled } : item)) ??
-          current,
-      );
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setCapabilitySaving(null);
-    }
-  }
-
-  async function setMessagingPlatformEnabled(
-    platform: HermesMessagingPlatformInfo,
-    enabled: boolean,
-  ) {
-    setCapabilitySaving(`messaging:${platform.id}`);
-    try {
-      await updateHermesBridgeMessagingPlatform({
-        platformId: platform.id,
-        enabled,
-      });
-      setMessagingPlatforms(
-        (current) =>
-          current?.map((item) => (item.id === platform.id ? { ...item, enabled } : item)) ??
-          current,
-      );
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setCapabilitySaving(null);
-    }
-  }
-
-  async function saveMessagingPlatformEnv(platform: HermesMessagingPlatformInfo) {
-    const env = Object.fromEntries(
-      Object.entries(messagingEnvEdits)
-        .map(([key, value]) => [key, value.trim()])
-        .filter(([, value]) => value.length > 0),
-    );
-    if (!Object.keys(env).length) {
-      return;
-    }
-    setCapabilitySaving(`env:${platform.id}`);
-    try {
-      await updateHermesBridgeMessagingPlatform({
-        platformId: platform.id,
-        env,
-      });
-      setMessagingEnvEdits({});
-      await loadMessagingPlatforms();
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setCapabilitySaving(null);
-    }
-  }
+  const {
+    setSkillEnabled,
+    setToolsetEnabled,
+    setMessagingPlatformEnabled,
+    saveMessagingPlatformEnv,
+  } = createCapabilityActions({
+    loadMessagingPlatforms,
+    messagingEnvEdits,
+    setCapabilitySaving,
+    setError,
+    setMessagingEnvEdits,
+    setMessagingPlatforms,
+    setSkills,
+    setToolsets,
+  });
 
   // Apply the dev-tools gallery toggle (window.__agentGallery, registered at
   // module scope above): pick up the desired state on mount — the command may
