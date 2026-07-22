@@ -107,6 +107,7 @@ export function ModelPickerPopover({
   suggestedListLabel = `Suggested ${modelModeLabel(mode)} models`,
   allModelsLabel = `All ${modelModeLabel(mode)} models`,
   veniceApiKeyConfigured = false,
+  catalogLoaded,
   rootSearchRef,
   rootSearch,
   onRootSearchChange,
@@ -135,6 +136,12 @@ export function ModelPickerPopover({
    * uses the key. The note keeps that visible at the moment Auto could be
    * switched on (JUN-329). */
   veniceApiKeyConfigured?: boolean;
+  /** Whether the provider catalog behind `options` has actually loaded.
+   * `options` alone cannot say: the host injects a synthetic entry for the
+   * current selection, so it is never empty. Hosts that know their raw
+   * catalog should pass this; without it the popover falls back to treating
+   * "any concrete entry present" as loaded. */
+  catalogLoaded?: boolean;
   /** Enables the root-layer search (the /model + composer trigger surface):
    * a field above the pinned controls whose query searches across BOTH
    * layers, suggested picks and the full catalog, as one flat result list.
@@ -360,19 +367,16 @@ export function ModelPickerPopover({
   // suggested pick (the default generation model) so the next step — choosing
   // an explicit model — is right there, one row away.
   // The concrete model toggling Auto off lands on: the leading suggested
-  // pick, else the first selectable catalog model. When the catalog has
-  // concrete entries but none is eligible, the switch disables instead —
-  // there is nothing valid to land on. The curated default id steps in only
-  // while no concrete entry exists at all, which is the unloaded catalog
-  // (the host always injects a synthetic entry for the current selection,
-  // so an emptiness check cannot tell unloaded apart; a provider catalog
-  // whose only real entry is Auto does not occur).
+  // pick, else the first selectable catalog model. On a LOADED catalog with
+  // no eligible concrete model the switch disables instead — there is
+  // nothing valid to land on. The curated default id steps in only while
+  // the catalog is unloaded (safe to select sight-unseen), preferring the
+  // host's explicit signal and falling back to "no concrete entry present".
+  const treatAsLoaded = catalogLoaded ?? options.some((option) => option.id !== AUTO_MODEL_ID);
   const autoOffTarget =
     suggested.find((item) => item.model.id !== AUTO_MODEL_ID)?.model.id ??
     selectable.find((option) => option.id !== AUTO_MODEL_ID)?.id ??
-    (options.some((option) => option.id !== AUTO_MODEL_ID)
-      ? undefined
-      : DEFAULT_GENERATION_SUGGESTION_ID);
+    (treatAsLoaded ? undefined : DEFAULT_GENERATION_SUGGESTION_ID);
   const toggleAuto = useCallback(
     (on: boolean) => {
       onFlyoutChange(null);

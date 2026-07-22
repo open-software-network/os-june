@@ -11575,6 +11575,7 @@ export function AgentWorkspace({
             options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
             costQuality={activeGenerationCostQuality}
             veniceApiKeyConfigured={veniceApiKeyConfigured}
+            catalogLoaded={generationModelOptions.length > 0}
             search={modelSearch}
             popoverRef={composerModelPopoverRef}
             searchRef={composerModelSearchRef}
