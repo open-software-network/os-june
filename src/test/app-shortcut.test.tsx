@@ -11,6 +11,7 @@ import {
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_OPEN_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../lib/agent-events";
@@ -1494,11 +1495,21 @@ describe("App shortcuts", () => {
     };
     window.localStorage.setItem("june:agent:last-open-session", staleSession.id);
     mocks.listHermesSessions.mockResolvedValue([staleSession]);
+    const sessionStorageSetItem = window.sessionStorage.setItem.bind(window.sessionStorage);
+    const sessionStorageSetItemSpy = vi
+      .spyOn(window.sessionStorage, "setItem")
+      .mockImplementation((key, value) => {
+        if (key === AGENT_NEW_SESSION_PENDING_KEY) {
+          throw new DOMException("Storage unavailable", "QuotaExceededError");
+        }
+        sessionStorageSetItem(key, value);
+      });
 
     try {
       render(<App />);
 
       expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Stored session" })).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
         "data-active",
         "true",
@@ -1514,7 +1525,9 @@ describe("App shortcuts", () => {
       expect(screen.queryByRole("button", { name: "New note" })).not.toBeInTheDocument();
       expect(screen.queryByDisplayValue("First note")).not.toBeInTheDocument();
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(staleSession.id);
     } finally {
+      sessionStorageSetItemSpy.mockRestore();
       window.localStorage.removeItem("june:agent:last-open-session");
       restoreNavigator();
     }

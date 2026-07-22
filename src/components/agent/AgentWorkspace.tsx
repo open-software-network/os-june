@@ -18030,6 +18030,7 @@ function moveRecordKey<T>(record: Record<string, T[]>, from: string, to: string)
 // existing conversation after a relaunch is always safe, unlike the pending
 // new-session marker, which must NOT outlive its navigation.
 const AGENT_LAST_OPEN_SESSION_KEY = "june:agent:last-open-session";
+let inMemoryPendingNewSessionPayload: string | undefined;
 
 // How long a second startNewTask call with the same prompt counts as an echo
 // of the first (marker + window event double-delivery) rather than a new ask.
@@ -18073,17 +18074,30 @@ export function markAgentNewSessionPending(
   prompt?: string,
   options?: { category?: ReportCategory; noteRef?: NoteReferenceInput },
 ) {
+  const payload = JSON.stringify({
+    createdAt: Date.now(),
+    prompt: prompt?.trim() || undefined,
+    category: options?.category,
+    noteRef: options?.noteRef,
+  });
   try {
-    const payload = JSON.stringify({
-      createdAt: Date.now(),
-      prompt: prompt?.trim() || undefined,
-      category: options?.category,
-      noteRef: options?.noteRef,
-    });
     window.sessionStorage.setItem(AGENT_NEW_SESSION_PENDING_KEY, payload);
+    inMemoryPendingNewSessionPayload = undefined;
   } catch {
-    // Session storage can be unavailable in restricted webviews; the event path
-    // still handles already-mounted Agent workspaces.
+    // Preserve the one-shot navigation within this WebView when session storage
+    // is unavailable. Unlike localStorage, this cannot replay after a restart.
+    inMemoryPendingNewSessionPayload = payload;
+  }
+}
+
+function readPendingNewSessionPayload(): string | undefined {
+  if (inMemoryPendingNewSessionPayload !== undefined) {
+    return inMemoryPendingNewSessionPayload;
+  }
+  try {
+    return window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY) ?? undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -18099,7 +18113,7 @@ const AGENT_NEW_SESSION_PENDING_TTL_MS = 15_000;
  * peeking here must not clear it, or the auto-submit prompt would be lost. */
 function hasPendingNewSessionRequest(): boolean {
   try {
-    const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
+    const value = readPendingNewSessionPayload();
     if (value == null) return false;
     const parsed = JSON.parse(value) as { createdAt?: number };
     return (
@@ -18123,7 +18137,7 @@ function parsePendingNoteRef(value: unknown): NoteReferenceInput | undefined {
 
 export function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {
-    const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
+    const value = readPendingNewSessionPayload();
     if (value == null) return undefined;
     // Consume on read so a remount (HMR, rapid view switches) can't re-fire
     // the same request.
@@ -18157,6 +18171,7 @@ export function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
 }
 
 function clearPendingNewSessionRequest() {
+  inMemoryPendingNewSessionPayload = undefined;
   try {
     window.sessionStorage.removeItem(AGENT_NEW_SESSION_PENDING_KEY);
   } catch {
