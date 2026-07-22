@@ -91,9 +91,9 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
       imageSlashBlockedByModel
     )
       return;
-    // This is the user-visible Send boundary. Skill expansion, file reads,
-    // title generation, and session resume can all await; a picker change
-    // during any of them belongs to the following run.
+    // This is the user-visible Send boundary. Skill expansion, file reads, and
+    // session resume can all await; a picker change during any of them belongs
+    // to the following run. Title generation starts here but stays backgrounded.
     const sentModelTarget = captureSessionModelTarget();
     const sentDispatchOrder = ++composerDispatchOrderRef.current;
     const sentDispatchReservation = sentModelTarget.targetStoredSessionId

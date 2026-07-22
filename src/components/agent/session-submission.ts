@@ -60,12 +60,13 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
   const {
     AGENT_TITLE_MAX_CHARS,
     agentSessionTitleForPrompt,
-    applySessionTitleOverrides,
+    applyInitialSessionTitleSuggestion,
     applyThinkingLevelToSession,
     attachHermesSessionEventListener,
     attachPendingImages,
     captureSessionModelTarget,
     clearHeldFastPathImages,
+    clearBackgroundSessionTitleGuard,
     commitSessionModelSelections,
     creditActionsDisabledReason,
     defaultGenerationModelIdRef,
@@ -98,8 +99,6 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
     sessionThinkingAppliedRef,
     sessionThinkingEfforts,
     sessionThinkingEffortsRef,
-    sessionTitleOverridesRef,
-    sessionTitleSourceRef,
     setHermesSessionItems,
     setNewSessionMode,
     setPendingHermesMessages,
@@ -246,14 +245,14 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
       ),
       heldVideoContexts,
     );
-    // Issue reports skip title suggestion: the content is the wrapped
-    // investigation prompt, which would title the session after the wrapper.
-    const titlePromise =
-      targetStoredSessionId || options?.issueReport
+    // Start the AI title request early, but never put it on the prompt's
+    // critical path. The session starts with the deterministic fallback and
+    // the suggestion patches it in the background once a stored id exists.
+    // Issue reports and attachment-only sessions already have suitable titles.
+    const initialTitleSuggestionPromise =
+      targetStoredSessionId || options?.issueReport || attachmentOnlyTitle
         ? undefined
-        : attachmentOnlyTitle
-          ? Promise.resolve(attachmentOnlyTitle)
-          : agentSessionTitleForPrompt(titleContent).then((suggestion) => suggestion.title);
+        : agentSessionTitleForPrompt(titleContent);
     const listedTargetSession = targetStoredSessionId
       ? hermesSessionItemsRef.current.find((session) => session.id === targetStoredSessionId)
       : undefined;
@@ -289,13 +288,12 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
     // session's follow-ups.
     const { created, createdUnderProfile, gateway, sessionTitle, storedSessionId } =
       await (async () => {
-        const [nextGateway, nextSessionTitle] = await Promise.all([
+        const [nextGateway] = await Promise.all([
           ensureHermesGateway(
             targetStoredSessionId
               ? sessionUnrestricted(targetStoredSessionId)
               : fullModeDraftRef.current,
           ),
-          titlePromise ?? Promise.resolve(undefined),
           // Re-read the sticky active profile for every brand-new session so an
           // out-of-band switch (Hermes CLI, upstream dashboard) is honored
           // without a workspace remount. Runs in parallel with gateway setup
@@ -316,7 +314,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         const nextCreated = targetStoredSessionId
           ? undefined
           : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
-              title: nextSessionTitle ?? fallbackSessionTitle,
+              title: fallbackSessionTitle,
               cols: 96,
               // session.create treats `model` as a per-session override.
               // Under a named profile the override would silently bypass the
@@ -338,11 +336,14 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           created: nextCreated,
           createdUnderProfile: underProfile ? nextUnderProfileName : undefined,
           gateway: nextGateway,
-          sessionTitle: nextSessionTitle,
+          sessionTitle: fallbackSessionTitle,
           storedSessionId: nextStoredSessionId,
         };
       })().catch(rollbackOptimisticBeforePrompt);
     storedSessionIdForRollback = storedSessionId;
+    if (created) {
+      clearBackgroundSessionTitleGuard(storedSessionId);
+    }
     if (createdUnderProfile) {
       await assignSessionToProfile(storedSessionId, createdUnderProfile).catch(
         rollbackOptimisticBeforePrompt,
@@ -398,7 +399,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
     if (!targetStoredSessionId) {
       rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
-    const sessionDisplayTitle = sessionTitle || fallbackSessionTitle;
+    const sessionDisplayTitle = sessionTitle;
     const ensureStoredHermesSession = () =>
       ensureHermesBridgeSession({
         sessionId: storedSessionId,
@@ -416,6 +417,9 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         title: sessionDisplayTitle,
         toSessionId: storedSessionId,
       });
+    }
+    if (initialTitleSuggestionPromise) {
+      void applyInitialSessionTitleSuggestion(storedSessionId, initialTitleSuggestionPromise);
     }
     if (!targetStoredSessionId && !options?.skipPrompt && !createdUnderProfile) {
       const latestDefaultSelection: SessionModelSelection = {
@@ -440,21 +444,6 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
       commitSessionModelSelections(
         rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
       );
-    }
-    if (sessionTitle) {
-      sessionTitleOverridesRef.current = {
-        ...sessionTitleOverridesRef.current,
-        [storedSessionId]: sessionTitle,
-      };
-      sessionTitleSourceRef.current = {
-        ...sessionTitleSourceRef.current,
-        [storedSessionId]: "prompt",
-      };
-      // The mount-time session load races this store: when its merge lands
-      // first, the fetched placeholder title is already rendered and nothing
-      // re-reads the override (the post-submit reload can no-op on a stale
-      // bridge closure). Re-map the current list so the order doesn't matter.
-      setHermesSessionItems((current) => applySessionTitleOverrides(current));
     }
     if (!optimisticSession) {
       await withTimeout(ensureStoredHermesSession(), 2500).catch(() => undefined);

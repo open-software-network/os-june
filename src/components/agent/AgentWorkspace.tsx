@@ -1390,6 +1390,8 @@ export function AgentWorkspace({
     renameHermesSession,
     removeHermesSessionLocally,
     deleteSelectedHermesSession,
+    applyInitialSessionTitleSuggestion,
+    clearBackgroundSessionTitleGuard,
     suggestTitleForUntitledSession,
   } = sessionTitleActions;
 
@@ -2096,11 +2098,12 @@ export function AgentWorkspace({
   submitHermesSessionImplementation = createSubmitHermesSession({
     AGENT_TITLE_MAX_CHARS,
     agentSessionTitleForPrompt,
-    applySessionTitleOverrides,
+    applyInitialSessionTitleSuggestion,
     applyThinkingLevelToSession,
     attachHermesSessionEventListener,
     attachPendingImages,
     captureSessionModelTarget,
+    clearBackgroundSessionTitleGuard,
     clearHeldFastPathImages,
     commitSessionModelSelections,
     creditActionsDisabledReason,
@@ -2134,8 +2137,6 @@ export function AgentWorkspace({
     sessionThinkingAppliedRef,
     sessionThinkingEfforts,
     sessionThinkingEffortsRef,
-    sessionTitleOverridesRef,
-    sessionTitleSourceRef,
     setHermesSessionItems,
     setNewSessionMode,
     setPendingHermesMessages,

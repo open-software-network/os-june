@@ -25,7 +25,29 @@ import {
   truncateAgentTitleResponseExcerpt,
 } from "./session-title";
 import { visibleHermesMessageText } from "./session-state-helpers";
+import { omitRecordKey } from "./agent-workspace-support";
 import type { createSessionTitleActionsDependencies } from "./session-title-actions-types";
+
+type BackgroundSessionTitleGuard = {
+  token: symbol;
+  deleting?: true;
+  title?: string;
+};
+
+// Background title requests can outlive an AgentWorkspace mount. Keep their
+// cancellation state at module scope so a delete or rename after remount still
+// invalidates the old closure before it writes to Hermes.
+const backgroundSessionTitleGuards = new Map<string, BackgroundSessionTitleGuard>();
+
+function supersedeBackgroundSessionTitle(sessionId: string, title: string) {
+  backgroundSessionTitleGuards.set(sessionId, { token: Symbol("session-title"), title });
+}
+
+function markBackgroundSessionTitleDeleting(sessionId: string) {
+  const guard = { token: Symbol("session-delete"), deleting: true as const };
+  backgroundSessionTitleGuards.set(sessionId, guard);
+  return guard;
+}
 
 export function createSessionTitleActions(dependencies: createSessionTitleActionsDependencies) {
   const {
@@ -54,6 +76,7 @@ export function createSessionTitleActions(dependencies: createSessionTitleAction
     const next = title.trim();
     if (!next) return null;
     rememberSessionManuallyTitled(sessionId);
+    supersedeBackgroundSessionTitle(sessionId, next);
     titleSuggestionSessionIdsRef.current.add(sessionId);
     sessionTitleOverridesRef.current = {
       ...sessionTitleOverridesRef.current,
@@ -89,6 +112,7 @@ export function createSessionTitleActions(dependencies: createSessionTitleAction
   // clears messages, pending sends, activity-store state, and live events so a
   // running session doesn't linger as phantom "working" work.
   function removeHermesSessionLocally(sessionId: string, selectNext = true) {
+    markBackgroundSessionTitleDeleting(sessionId);
     cancelAgentRunSettlement(sessionId);
     setHermesSessionItems((current) => {
       const next = current.filter((session) => session.id !== sessionId);
@@ -116,14 +140,30 @@ export function createSessionTitleActions(dependencies: createSessionTitleAction
     commitSessionModelSelections(forgetSessionModelSelection(sessionId));
     // Same for the session's thinking-level record.
     forgetSessionThinkingLevel(sessionId);
+    sessionTitleOverridesRef.current = omitRecordKey(sessionTitleOverridesRef.current, sessionId);
+    sessionTitleSourceRef.current = omitRecordKey(sessionTitleSourceRef.current, sessionId);
+    titleSuggestionSessionIdsRef.current.delete(sessionId);
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
+    const previousTitleGuard = backgroundSessionTitleGuards.get(sessionId);
+    const deletionGuard = markBackgroundSessionTitleDeleting(sessionId);
     try {
       await deleteHermesSession(sessionId);
       // Clearing the selection falls the workspace back to empty.
       removeHermesSessionLocally(sessionId, false);
     } catch (err) {
+      if (backgroundSessionTitleGuards.get(sessionId)?.token === deletionGuard.token) {
+        if (previousTitleGuard) {
+          backgroundSessionTitleGuards.set(sessionId, previousTitleGuard);
+        } else {
+          backgroundSessionTitleGuards.delete(sessionId);
+        }
+      }
+      const latestMessages = hermesSessionMessagesRef.current[sessionId];
+      if (latestMessages) {
+        void suggestTitleForUntitledSession(sessionId, latestMessages);
+      }
       setError(messageFromError(err), { sessionId });
     }
   }
@@ -134,6 +174,73 @@ export function createSessionTitleActions(dependencies: createSessionTitleAction
       const title = overrides[session.id];
       return title ? { ...session, title } : session;
     });
+  }
+
+  function clearBackgroundSessionTitleGuard(sessionId: string) {
+    backgroundSessionTitleGuards.delete(sessionId);
+  }
+
+  async function applyInitialSessionTitleSuggestion(
+    sessionId: string,
+    suggestionPromise: ReturnType<typeof agentSessionTitleForPrompt>,
+  ) {
+    const titleGuard = { token: Symbol("initial-session-title") };
+    backgroundSessionTitleGuards.set(sessionId, titleGuard);
+    titleSuggestionInFlightSessionIdsRef.current.add(sessionId);
+    try {
+      const suggestion = await suggestionPromise;
+      if (
+        backgroundSessionTitleGuards.get(sessionId)?.token !== titleGuard.token ||
+        !suggestion.fromModel ||
+        titleSuggestionSessionIdsRef.current.has(sessionId) ||
+        ["manual", "exchange", "rejected-final"].includes(
+          sessionTitleSourceRef.current[sessionId] ?? "",
+        )
+      ) {
+        return;
+      }
+      const title = suggestion.title;
+      sessionTitleOverridesRef.current = {
+        ...sessionTitleOverridesRef.current,
+        [sessionId]: title,
+      };
+      sessionTitleSourceRef.current = {
+        ...sessionTitleSourceRef.current,
+        [sessionId]: "prompt",
+      };
+      const applyTitle = (sessions: HermesSessionInfo[]) =>
+        sessions.map((item) => (item.id === sessionId ? { ...item, title } : item));
+      hermesSessionItemsRef.current = applyTitle(hermesSessionItemsRef.current);
+      setHermesSessionItems((current) => applyTitle(current));
+      await ensureHermesBridgeSession({ sessionId, title }).catch(() => undefined);
+      const latestGuard = backgroundSessionTitleGuards.get(sessionId);
+      if (latestGuard?.token !== titleGuard.token) {
+        if (latestGuard?.deleting) {
+          // The title PATCH raced a successful delete. Remove the session
+          // again in case Hermes handled the late write through its legacy
+          // create-or-update endpoint.
+          await deleteHermesSession(sessionId).catch((err) => {
+            setError(messageFromError(err), { sessionId });
+          });
+        } else if (latestGuard?.title && latestGuard.title !== title) {
+          // A rename or exchange title overtook this request, possibly from a
+          // newer AgentWorkspace mount. Re-assert the shared latest title.
+          await ensureHermesBridgeSession({
+            sessionId,
+            title: latestGuard.title,
+          }).catch(() => undefined);
+        }
+      }
+    } finally {
+      titleSuggestionInFlightSessionIdsRef.current.delete(sessionId);
+      if (backgroundSessionTitleGuards.get(sessionId)?.token === titleGuard.token) {
+        backgroundSessionTitleGuards.delete(sessionId);
+        const latestMessages = hermesSessionMessagesRef.current[sessionId];
+        if (latestMessages) {
+          void suggestTitleForUntitledSession(sessionId, latestMessages);
+        }
+      }
+    }
   }
 
   async function suggestTitleForUntitledSession(
@@ -242,6 +349,7 @@ export function createSessionTitleActions(dependencies: createSessionTitleAction
               ? "rejected-final"
               : "rejected"
             : "prompt";
+      supersedeBackgroundSessionTitle(sessionId, title);
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
         [sessionId]: title,
@@ -292,6 +400,8 @@ export function createSessionTitleActions(dependencies: createSessionTitleAction
     removeHermesSessionLocally,
     deleteSelectedHermesSession,
     applySessionTitleOverrides,
+    applyInitialSessionTitleSuggestion,
+    clearBackgroundSessionTitleGuard,
     suggestTitleForUntitledSession,
   };
 }

@@ -27,7 +27,6 @@ import {
 } from "../../lib/tauri";
 import { type ThinkingLevel } from "../../lib/thinking-level";
 import type { PendingIssueReport } from "./agent-session-continuity";
-import { type AgentSessionTitleSource } from "./agent-session-continuity";
 import type { AgentAttachment } from "./agent-workspace-models";
 import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
 
@@ -37,7 +36,10 @@ export type SubmitHermesSessionDependencies = {
     prompt: string,
     response?: string,
   ) => Promise<{ title: string; fromModel: boolean; rejected: boolean }>;
-  applySessionTitleOverrides: (sessions: HermesSessionInfo[]) => HermesSessionInfo[];
+  applyInitialSessionTitleSuggestion: (
+    sessionId: string,
+    suggestionPromise: Promise<{ title: string; fromModel: boolean; rejected: boolean }>,
+  ) => Promise<void>;
   applyThinkingLevelToSession: (
     sessionId: string,
     level: ThinkingLevel,
@@ -64,6 +66,7 @@ export type SubmitHermesSessionDependencies = {
   ) => Promise<AgentAttachment[]>;
   captureSessionModelTarget: (explicitSession?: HermesSessionInfo) => CapturedSessionModelTarget;
   clearHeldFastPathImages: (sessionId: string, heldImages: AgentAttachment[]) => void;
+  clearBackgroundSessionTitleGuard: (sessionId: string) => void;
   commitSessionModelSelections: (next: SessionModelSelectionMap) => void;
   creditActionsDisabledReason: string | undefined;
   defaultGenerationModelIdRef: React.MutableRefObject<string>;
@@ -119,8 +122,6 @@ export type SubmitHermesSessionDependencies = {
   >;
   sessionThinkingEfforts: () => Record<string, ThinkingLevel>;
   sessionThinkingEffortsRef: React.MutableRefObject<Record<string, ThinkingLevel> | null>;
-  sessionTitleOverridesRef: React.MutableRefObject<Record<string, string>>;
-  sessionTitleSourceRef: React.MutableRefObject<Record<string, AgentSessionTitleSource>>;
   setHermesSessionItems: React.Dispatch<React.SetStateAction<HermesSessionInfo[]>>;
   setNewSessionMode: React.Dispatch<React.SetStateAction<boolean>>;
   setPendingHermesMessages: React.Dispatch<
