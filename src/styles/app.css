@@ -8466,6 +8466,68 @@ button.agent-user-attachment:hover {
   -webkit-app-region: drag;
 }
 
+/* Windows has no traffic-light controls, so the macOS clearance baked into
+ * --titlebar-controls-end (70px for the green button) leaves the sidebar
+ * toggle floating ~86px in with nothing to its left. Override only the two
+ * horizontal geometry tokens on Windows: the toggle's `left` and the tab
+ * strip's `padding-left` both read them, so one override keeps the two
+ * consistent. The vertical nudge token is intentionally untouched — the
+ * defect is horizontal only. */
+.app-shell[data-platform="windows"] {
+  --titlebar-controls-end: 0px;
+  --titlebar-controls-gap: var(--sp-3);
+}
+
+/* Windows has no traffic-light controls, so the titlebar-h (28px) of top
+ * padding baked into .sidebar is dead space above the June logo. Reclaim it
+ * so the sidebar header sits flush at the top. Scoped to default mode only —
+ * Settings keeps the original clearance since it has no sidebar-header and
+ * the toggle falls back to the titlebar band there.
+ *
+ * Instead of raising the sidebar above the drag overlay (which would put it
+ * above session usage overlays at z-index 100), push the drag region's left
+ * edge to the sidebar's right edge so it never covers the sidebar. The drag
+ * region rides --sidebar-w-current so it tracks the sidebar during animation.
+ * macOS is untouched: no data-platform="windows" attribute. */
+.app-shell[data-platform="windows"] .sidebar[data-mode="default"] {
+  padding-top: var(--sp-3);
+}
+
+.app-shell[data-platform="windows"] .titlebar-drag {
+  left: var(--sidebar-w-current);
+}
+
+/* Windows-only: when the sidebar is expanded and in default mode, visually
+ * place the toggle in the sidebar header band — in line with the June logo,
+ * floated to the right edge with space between. The toggle stays position:fixed
+ * (owned by App.tsx) so it never unmounts; this is pure visual placement.
+ *
+ * Vertically: aligned with the sidebar header (now --sp-3 from the top, same
+ * as the horizontal padding).
+ * Horizontally: right-align with the header's content edge, riding the
+ * animated --sidebar-w-current so the toggle slides with the sidebar on the
+ * same clock as the grid and tab strip.
+ *
+ * When collapsed or in Settings, this selector stops matching and the toggle
+ * falls back to the base rule (titlebar band, 8px from left) — the collapsed
+ * sidebar is display:none so the header doesn't exist, and Settings has no
+ * sidebar-header. macOS is untouched: no data-platform="windows" attribute. */
+.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"])
+> .chrome-sidebar-toggle {
+  top: var(--sp-3);
+  left: max(
+    var(--sp-3),
+    calc(var(--sidebar-w-current) - var(--sp-3) - var(--sp-1) - var(--control-md))
+  );
+}
+
+/* Reserve the trailing header slot on Windows so the recording indicator
+ * (or the brand when there's no recording) doesn't sit under the fixed
+ * toggle. The gap between the indicator and the toggle is --sp-2. */
+.app-shell[data-platform="windows"] .sidebar[data-mode="default"] .sidebar-header {
+  padding-right: calc(var(--sp-1) + var(--control-md) + var(--sp-2));
+}
+
 .chrome-sidebar-toggle {
   position: fixed;
   /* Vertically centered in the titlebar, then nudged down a hair to sit level
@@ -16902,6 +16964,158 @@ button.agent-user-attachment:hover {
 
 .mcp-server-skeleton-line + .mcp-server-skeleton-line {
   width: 70%;
+}
+
+/* Guided MCP setup. */
+.mcp-setup-choices {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mcp-setup-choice {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.mcp-setup-choice:hover {
+  border-color: var(--ring);
+  background: var(--secondary);
+}
+
+.mcp-setup-choice:focus-visible {
+  outline: none;
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mcp-setup-choice-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.mcp-setup-choice-copy,
+.mcp-import-entry-copy {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.mcp-setup-choice-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-setup-choice-description,
+.mcp-import-entry-detail,
+.mcp-import-entry-warning,
+.mcp-import-summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.mcp-setup-recommended {
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ring-focus) 18%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.mcp-import-paste,
+.mcp-import-preview {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mcp-import-textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  outline: none;
+}
+
+.mcp-import-textarea:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mcp-import-summary,
+.mcp-import-error {
+  margin: 0;
+}
+
+.mcp-import-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-import-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  cursor: pointer;
+}
+
+.mcp-import-entry[data-unavailable="true"] {
+  background: var(--surface-subtle);
+  cursor: default;
+}
+
+.mcp-import-entry input {
+  margin-top: 3px;
+}
+
+.mcp-import-entry-name {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-import-entry-warning {
+  color: var(--warm-strong);
+}
+
+.mcp-import-error {
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
 }
 
 /* Add-server dialog form. */
