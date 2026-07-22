@@ -285,6 +285,7 @@ export function ShareDialog({
         setInviteId(createdInvite.inviteId);
         setLinkMaterialB64(materialB64);
         setPasswordProtected(Boolean(salt));
+        setRevealPasscode(false);
         try {
           await runClipboardCopy(() =>
             copyExistingLink(

@@ -151,6 +151,7 @@ describe("ShareDialog", () => {
 
     await user.click(await screen.findByRole("switch", { name: "Require a passcode" }));
     await user.type(screen.getByLabelText("Passcode"), "correct horse battery staple");
+    await user.click(screen.getByRole("button", { name: "Show passcode" }));
     await user.click(screen.getByRole("button", { name: "Create link" }));
 
     const linkField = (await screen.findByRole("textbox", {
