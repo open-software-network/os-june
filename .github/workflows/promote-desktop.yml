@@ -13,6 +13,11 @@ on:
         description: "RC version to promote (e.g. 0.0.25-rc.1). Must match the version the rc release currently holds."
         required: true
         type: string
+      allow-non-main:
+        description: "Emergency override: allow promotion when the RC source commit is not on main"
+        required: true
+        default: false
+        type: boolean
       macos-runner:
         description: "Runner for the signed macOS build"
         required: true
@@ -128,6 +133,45 @@ jobs:
             fi
             node scripts/extension-release.mjs "${args[@]}"
           fi
+
+      - name: Require RC source commit on main
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_COMMIT: ${{ steps.rc.outputs.source_commit }}
+          ALLOW_NON_MAIN: ${{ inputs.allow-non-main }}
+          TRIGGERED_BY: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          compare_status="$(gh api \
+            "repos/open-software-network/os-june/compare/${SOURCE_COMMIT}...main" \
+            --jq .status)"
+          if [ "$compare_status" = "ahead" ] || [ "$compare_status" = "identical" ]; then
+            echo "RC source commit $SOURCE_COMMIT is an ancestor of main."
+            exit 0
+          fi
+
+          if [ "$ALLOW_NON_MAIN" = "true" ]; then
+            echo "::warning title=NON-MAIN RC PROMOTION::Emergency override enabled by $TRIGGERED_BY: $SOURCE_COMMIT is not an ancestor of main (compare status: $compare_status)."
+            {
+              echo "## ⚠️ Non-main RC promotion override"
+              echo
+              echo "- Source commit: \`$SOURCE_COMMIT\`"
+              echo "- Compare status against \`main\`: \`$compare_status\`"
+              echo "- Triggered by: \`$TRIGGERED_BY\`"
+              echo "- Promotion is continuing because \`allow-non-main\` was enabled."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "::error title=RC source commit is not on main::$SOURCE_COMMIT is not an ancestor of main (compare status: $compare_status). Merge or backport it to main, then retry promotion."
+          {
+            echo "### Promotion blocked: RC source commit is not on main"
+            echo
+            echo "- Source commit: \`$SOURCE_COMMIT\`"
+            echo "- Compare status against \`main\`: \`$compare_status\`"
+            echo "- Merge or backport the RC source commit to \`main\`, then retry promotion."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       # Configuration is required exactly when the RC froze extension work:
       # promoting a correlated submission without store credentials would
