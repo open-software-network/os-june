@@ -84,7 +84,6 @@ import {
   setVeniceModel,
   startHermesBridge,
   submitIssueReport,
-  suggestAgentSessionTitle,
   toggleHermesBridgeSkill,
   toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform,
@@ -160,7 +159,6 @@ import {
 } from "../../lib/hermes-image-attach";
 import { parseSessionUsage, type SessionUsage } from "../../lib/hermes-session-usage";
 import {
-  isAgentSessionTitleCandidate,
   rememberSessionExchangeTitled,
   rememberSessionManuallyTitled,
   rememberSessionTitleRejected,
@@ -256,7 +254,6 @@ import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPic
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
-  errorCode,
   isHermesSessionsStartupRequestError,
   isTopUpRequiresMaxError,
   messageFromError,
@@ -339,7 +336,6 @@ import type { AgentWorkspaceProps } from "./agent-workspace-types";
 import type { AgentAttachment } from "./agent-workspace-models";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
-import { safeText } from "./agent-workspace-helpers";
 export { SkillsToolsPanel } from "./management/SkillsToolsPanel";
 export {
   envFieldSet,
@@ -353,7 +349,6 @@ import {
 } from "../../lib/upstream-provider-recovery";
 const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
-const AGENT_TITLE_TIMEOUT_MS = 2500;
 const AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS = [250, 500, 1000, 2000];
 const AGENT_WORKSPACE_MAX_SESSION_RETRY_DELAY_MS =
   AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS[AGENT_WORKSPACE_SESSION_RETRY_DELAYS_MS.length - 1] ??
@@ -10500,43 +10495,12 @@ export function AgentWorkspace({
     </section>
   );
 }
-const AGENT_TITLE_MAX_CHARS = 48;
-
-async function agentSessionTitleForPrompt(prompt: string, response?: string) {
-  try {
-    const suggestion = await withTimeout(
-      suggestAgentSessionTitle(prompt, response),
-      AGENT_TITLE_TIMEOUT_MS,
-    );
-    const title = suggestion.title.trim();
-    return isAgentSessionTitleCandidate(title)
-      ? { title, fromModel: true, rejected: false }
-      : { title: titleFromPrompt(prompt), fromModel: false, rejected: true };
-  } catch (error) {
-    return {
-      title: titleFromPrompt(prompt),
-      fromModel: false,
-      rejected: errorCode(error) === "agent_title_empty",
-    };
-  }
-}
-
-function truncateAgentTitleResponseExcerpt(response: string) {
-  return Array.from(response).slice(0, 1200).join("");
-}
-
-function isReplaceableAgentSessionTitle(title: unknown) {
-  const normalized = safeText(title).trim().toLowerCase();
-  return (
-    !normalized ||
-    normalized === "untitled session" ||
-    normalized.endsWith("...") ||
-    normalized.length > 52 ||
-    /^(?:i'm\s+|i\s+(?:want|need)\s+|please\s+|can you\s+|could you\s+|would you\s+|help me\s+|who are you|what can you|what are you|what do you|summarize\s+|set up\s+|test$)/.test(
-      normalized,
-    )
-  );
-}
+import {
+  AGENT_TITLE_MAX_CHARS,
+  agentSessionTitleForPrompt,
+  isReplaceableAgentSessionTitle,
+  truncateAgentTitleResponseExcerpt,
+} from "./session-title";
 
 function PanelTabs({
   activePanel,
