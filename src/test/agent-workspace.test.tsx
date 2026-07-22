@@ -4192,10 +4192,10 @@ describe("AgentWorkspace", () => {
     // session.create, never a profile config write.
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
+        title: "write a project update",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
-        reasoning_effort: "minimal",
+        reasoning_effort: "none",
       }),
     );
   });
@@ -7958,7 +7958,7 @@ describe("AgentWorkspace", () => {
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-      title: "Summarize Current Page",
+      title: "summarize the current page",
       cols: 96,
       reasoning_effort: "medium",
     });
@@ -7969,6 +7969,45 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("submits a new-session prompt before its AI title resolves", async () => {
+    let resolveTitle: ((value: { title: string }) => void) | undefined;
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "inspect startup latency" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect startup latency",
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "inspect startup latency",
+      cols: 96,
+      reasoning_effort: "medium",
+    });
+
+    await act(async () => {
+      resolveTitle?.({ title: "Startup Latency" });
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+        sessionId: "session-2",
+        title: "Startup Latency",
+      }),
+    );
   });
 
   it.each([
@@ -9576,7 +9615,7 @@ describe("AgentWorkspace", () => {
       expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
         storedSessionId: "session-2",
         runtimeSessionId: "runtime-session-2",
-        title: "Summarize Current Page",
+        title: "run the build",
         fullMode: false,
         settlementHeld: true,
       });
@@ -9908,7 +9947,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
+        title: "write a project update",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
         reasoning_effort: "medium",
@@ -9962,7 +10001,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
+        title: "draft a research brief",
         cols: 96,
         // No `model`: the composer's model is June's GLOBAL generation
         // selection, and sending it as the per-session override would bypass
