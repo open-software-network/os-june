@@ -155,6 +155,24 @@ describe("checkForJuneUpdate", () => {
     expect(prompt).not.toHaveBeenCalled();
     expect(reportFailure).toHaveBeenCalledWith("signature mismatch");
   });
+
+  it("uses neutral detail for an unstructured failure", async () => {
+    const reportFailure = vi.fn();
+
+    await checkForJuneUpdate(
+      {
+        check: async () => {
+          throw {};
+        },
+        prompt: vi.fn(),
+        reportNoUpdate: vi.fn(),
+        reportFailure,
+      },
+      "manual",
+    );
+
+    expect(reportFailure).toHaveBeenCalledWith("An unknown error occurred.");
+  });
 });
 
 describe("startPeriodicJuneUpdateChecks", () => {
@@ -238,5 +256,23 @@ describe("prepareJuneUpdate", () => {
       version: "0.2.0",
       notes: "Ready after relaunch.",
     });
+  });
+
+  it("uses neutral detail for an unstructured install failure", async () => {
+    const reportFailure = vi.fn();
+
+    await prepareJuneUpdate({
+      update: {
+        ...update(),
+        downloadAndInstall: async () => {
+          throw {};
+        },
+      },
+      reportProgress: vi.fn(),
+      reportReady: vi.fn(),
+      reportFailure,
+    });
+
+    expect(reportFailure).toHaveBeenCalledWith("An unknown error occurred.");
   });
 });
