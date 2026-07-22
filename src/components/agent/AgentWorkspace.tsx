@@ -2424,6 +2424,12 @@ export function canShareAgentSession(input: {
   );
 }
 
+export function composerModelCommandAvailableHeight(composerTop: number, titlebarHeight: number) {
+  const paletteBottomGap = 4;
+  const titlebarSafeGap = 12;
+  return Math.max(96, composerTop - paletteBottomGap - titlebarHeight - titlebarSafeGap);
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -3887,12 +3893,14 @@ export function AgentWorkspace({
       if (composerModelCommandPalette) {
         const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
         const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
+        const titlebarHeight =
+          Number.parseFloat(window.getComputedStyle(popover).getPropertyValue("--titlebar-h")) || 0;
         popover.style.left = `${composerRect.left - formRect.left}px`;
         popover.style.right = `${formRect.right - composerRect.right}px`;
         popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
         popover.style.setProperty(
           "--model-command-available-height",
-          `${Math.max(96, composerRect.top - 12)}px`,
+          `${composerModelCommandAvailableHeight(composerRect.top, titlebarHeight)}px`,
         );
         return;
       }
@@ -11324,6 +11332,15 @@ export function AgentWorkspace({
               );
             }}
             onSubmit={() => void submit()}
+            onBuiltinSlashCommand={(name) => {
+              if (name !== "model") return false;
+              // The slash row commits on mousedown. Mounting the palette in
+              // that same event lets its window-level outside-click listener
+              // observe the now-removed row and close immediately. Queue the
+              // palette for the next task, after that pointer or keyboard event.
+              window.setTimeout(() => openComposerModelPicker(true), 0);
+              return true;
+            }}
             onReady={(editor) => {
               composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);

@@ -13,6 +13,7 @@ import {
 import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { modelAvailableForMode, modelIsPrivate, modelPrivacyBadge } from "../../lib/model-privacy";
+import { modelMatchesQuery } from "../../lib/model-search";
 import {
   DEFAULT_GENERATION_SUGGESTION_ID,
   suggestedModelsForMode,
@@ -897,8 +898,19 @@ export function ModelCommandPalette({
   const [privateOnly, setPrivateOnly] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const query = search.trim().toLowerCase();
+  const auto = useMemo(() => {
+    const option = options.find((candidate) => candidate.id === AUTO_MODEL_ID);
+    if (!option) return undefined;
+    // Auto is June's routing choice, not one direct inference model, so it
+    // has no catalog function-calling flag of its own. Its routing policy is
+    // private; concrete models still use the capability gate below.
+    return { ...option, name: "Auto", privacy: option.privacy ?? "private" };
+  }, [options]);
   const selectable = useMemo(
-    () => options.filter((option) => modelAvailableForMode("generation", option)),
+    () =>
+      options.filter(
+        (option) => option.id !== AUTO_MODEL_ID && modelAvailableForMode("generation", option),
+      ),
     [options],
   );
   const privacyFiltered = useMemo(
@@ -913,6 +925,10 @@ export function ModelCommandPalette({
     [privacyFiltered, query],
   );
   const suggested = useMemo(() => suggestedModelsForMode("generation", selectable), [selectable]);
+  const autoVisible = Boolean(auto && (!query || modelMatchesQuery(auto, query)));
+  const autoEnabled = model?.id === AUTO_MODEL_ID;
+  const autoOffTarget =
+    suggested[0]?.model.id ?? selectable[0]?.id ?? DEFAULT_GENERATION_SUGGESTION_ID;
   const matchingSuggested = suggested.filter(({ model: option }) =>
     matching.some((candidate) => candidate.id === option.id),
   );
@@ -930,7 +946,7 @@ export function ModelCommandPalette({
 
   useLayoutEffect(() => {
     fade.update();
-  }, [fade.update, matchingSuggested.length, remaining.length]);
+  }, [autoVisible, fade.update, matchingSuggested.length, remaining.length]);
 
   function moveActive(delta: number) {
     if (!resultRows.length) return;
@@ -1012,11 +1028,24 @@ export function ModelCommandPalette({
               event.preventDefault();
               event.stopPropagation();
               onSelect(resultRows[resolvedActiveIndex].option.id);
+              return;
+            }
+            if (event.key === "Enter" && autoVisible && auto) {
+              event.preventDefault();
+              event.stopPropagation();
+              onSelect(auto.id);
             }
           }}
         />
       </label>
-      <div className="agent-composer-model-filter">
+      <div
+        className={[
+          "agent-composer-model-filter",
+          autoVisible ? "agent-composer-model-command-filter-with-auto" : null,
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
         <span>Private</span>
         <Switch
           checked={privateOnly}
@@ -1024,6 +1053,16 @@ export function ModelCommandPalette({
           aria-label="Only show private models"
         />
       </div>
+      {autoVisible && auto ? (
+        <div className="agent-composer-model-filter agent-composer-model-command-auto">
+          <span>Auto</span>
+          <Switch
+            checked={autoEnabled}
+            onCheckedChange={(on) => onSelect(on ? AUTO_MODEL_ID : autoOffTarget)}
+            aria-label="Choose the model automatically"
+          />
+        </div>
+      ) : null}
       <div className="agent-composer-model-command-list-wrap scroll-fade" {...fade.props}>
         <div
           ref={listRef}
@@ -1067,7 +1106,7 @@ export function ModelCommandPalette({
             </div>
           ) : null}
         </div>
-        {!resultRows.length ? (
+        {!resultRows.length && !autoVisible ? (
           <p className="agent-composer-model-empty" role="status">
             {privateOnly
               ? query
@@ -1193,14 +1232,6 @@ function ModelPickerOptionText({ model }: { model: VeniceModelDto }) {
       </span>
     </>
   );
-}
-
-function modelMatchesQuery(model: VeniceModelDto, query: string) {
-  return [model.name, model.id, model.description, model.privacy, ...model.traits]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase()
-    .includes(query);
 }
 
 function modelModeLabel(mode: ProviderModelMode) {
