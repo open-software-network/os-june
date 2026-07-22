@@ -16861,6 +16861,158 @@ button.agent-user-attachment:hover {
   width: 70%;
 }
 
+/* Guided MCP setup. */
+.mcp-setup-choices {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mcp-setup-choice {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.mcp-setup-choice:hover {
+  border-color: var(--ring);
+  background: var(--secondary);
+}
+
+.mcp-setup-choice:focus-visible {
+  outline: none;
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mcp-setup-choice-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.mcp-setup-choice-copy,
+.mcp-import-entry-copy {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.mcp-setup-choice-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-setup-choice-description,
+.mcp-import-entry-detail,
+.mcp-import-entry-warning,
+.mcp-import-summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.mcp-setup-recommended {
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ring-focus) 18%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.mcp-import-paste,
+.mcp-import-preview {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mcp-import-textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  outline: none;
+}
+
+.mcp-import-textarea:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mcp-import-summary,
+.mcp-import-error {
+  margin: 0;
+}
+
+.mcp-import-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-import-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  cursor: pointer;
+}
+
+.mcp-import-entry[data-unavailable="true"] {
+  background: var(--surface-subtle);
+  cursor: default;
+}
+
+.mcp-import-entry input {
+  margin-top: 3px;
+}
+
+.mcp-import-entry-name {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-import-entry-warning {
+  color: var(--warm-strong);
+}
+
+.mcp-import-error {
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
 /* Add-server dialog form. */
 .mcp-add-form {
   display: grid;
