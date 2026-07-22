@@ -56,6 +56,15 @@ function stubNavigatorPlatform(platform: string, userAgent: string) {
 const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   listeners: new Map<string, (event: { payload?: unknown }) => void>(),
+  pendingMeetingStartRequest: undefined as
+    | { requestId: string; noteId: string; requestedAtMs: number; expired: boolean }
+    | undefined,
+  readPendingMeetingStartRequest: vi.fn(async () => mocks.pendingMeetingStartRequest ?? null),
+  acknowledgeMeetingStartRequest: vi.fn(async (requestId: string) => {
+    if (mocks.pendingMeetingStartRequest?.requestId !== requestId) return false;
+    mocks.pendingMeetingStartRequest = undefined;
+    return true;
+  }),
   getCurrentWindow: vi.fn(),
   bootstrapApp: vi.fn(),
   createNote: vi.fn(),
@@ -73,6 +82,7 @@ const mocks = vi.hoisted(() => ({
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
+  startMeetingRecording: vi.fn(),
   pauseRecording: vi.fn(),
   resumeRecording: vi.fn(),
   getRecordingStatus: vi.fn(),
@@ -232,6 +242,9 @@ vi.mock("../lib/tauri", () => ({
   agentHudShow: mocks.agentHudShow,
   agentOpenReady: mocks.agentOpenReady,
   agentHudHide: mocks.agentHudHide,
+  pendingMeetingStartRequest: mocks.readPendingMeetingStartRequest,
+  acknowledgeMeetingStartRequest: mocks.acknowledgeMeetingStartRequest,
+  startMeetingRecording: mocks.startMeetingRecording,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -335,6 +348,15 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.pendingMeetingStartRequest = undefined;
+    mocks.readPendingMeetingStartRequest.mockImplementation(
+      async () => mocks.pendingMeetingStartRequest ?? null,
+    );
+    mocks.acknowledgeMeetingStartRequest.mockImplementation(async (requestId: string) => {
+      if (mocks.pendingMeetingStartRequest?.requestId !== requestId) return false;
+      mocks.pendingMeetingStartRequest = undefined;
+      return true;
+    });
     resetActiveHermesProfileForTests();
     setActiveHermesProfileName("default");
     const first = note();
@@ -355,6 +377,9 @@ describe("App shortcuts", () => {
 
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.getCurrentWindow.mockReturnValue({
+      show: vi.fn().mockResolvedValue(undefined),
+      unminimize: vi.fn().mockResolvedValue(undefined),
+      setFocus: vi.fn().mockResolvedValue(undefined),
       startDragging: vi.fn().mockResolvedValue(undefined),
     });
     mocks.bootstrapApp.mockResolvedValue(payload);
@@ -1350,10 +1375,15 @@ describe("App shortcuts", () => {
       if (systemReadinessCalls === 1) return recordingReadiness(false);
       return pendingProbe;
     });
-    mocks.startRecording.mockImplementation(async (noteId: string, sourceMode: string) =>
-      recordingSession({
-        noteId,
-        sourceMode: sourceMode as RecordingSessionDto["sourceMode"],
+    const meetingNote = note({ id: "meeting-note", title: "" });
+    mocks.startMeetingRecording.mockImplementation(
+      async (_requestId: string, sourceMode: string) => ({
+        status: "started",
+        note: meetingNote,
+        recording: recordingSession({
+          noteId: meetingNote.id,
+          sourceMode: sourceMode as RecordingSessionDto["sourceMode"],
+        }),
       }),
     );
     mocks.getRecordingStatus.mockResolvedValue({
@@ -1392,17 +1422,22 @@ describe("App shortcuts", () => {
 
       await waitFor(() => expect(systemReadinessCalls).toBe(2));
 
-      await waitFor(async () => {
-        if (mocks.startRecording.mock.calls.length === 0) {
-          await act(async () => {
-            await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
-              payload: undefined,
-            });
-          });
-        }
-        expect(mocks.startRecording).toHaveBeenCalled();
+      mocks.pendingMeetingStartRequest = {
+        requestId: "meeting-request-1",
+        noteId: meetingNote.id,
+        requestedAtMs: Date.now(),
+        expired: false,
+      };
+      await act(async () => {
+        await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
+          payload: undefined,
+        });
       });
-      expect(mocks.startRecording).toHaveBeenCalledWith(expect.any(String), "microphoneOnly");
+      await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalled());
+      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+        "meeting-request-1",
+        "microphoneOnly",
+      );
 
       await new Promise((resolve) => window.setTimeout(resolve, 1_200));
 

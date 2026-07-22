@@ -72,6 +72,22 @@ impl ConnectFlow {
             }
         }
     }
+
+    /// Register a cancel sender for an in-flight device-flow poll. Sibling
+    /// modules (e.g. `github`) call this so the shared cancel signal works
+    /// without accessing the private `cancel` field directly.
+    pub(super) fn register_cancel_sender(&self, tx: tokio::sync::oneshot::Sender<()>) {
+        if let Ok(mut slot) = self.cancel.lock() {
+            *slot = Some(tx);
+        }
+    }
+
+    /// Clear the cancel slot after a device-flow poll completes or is aborted.
+    pub(super) fn clear_cancel_sender(&self) {
+        if let Ok(mut slot) = self.cancel.lock() {
+            *slot = None;
+        }
+    }
 }
 
 /// Token endpoint response. Secret fields zeroize on drop.

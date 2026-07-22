@@ -305,11 +305,26 @@ import {
 } from "../../lib/local-generation";
 import { autoPillDesignation, preferredVisionFallbackModel } from "../../lib/suggested-models";
 import {
+  forgetSessionThinkingLevel,
+  loadThinkingLevel,
+  loadSessionThinkingLevels,
+  rememberSessionThinkingLevel,
+  saveThinkingLevel,
+  thinkingEffortForLevel,
+  thinkingLevelForEffort,
+  thinkingOptionForLevel,
+  type ThinkingLevel,
+} from "../../lib/thinking-level";
+import {
   AUTO_MODEL_ID,
   modelOptions,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
+import {
+  ModelCommandPalette,
+  ModelPickerPopover,
+  type ModelPickerFlyout,
+} from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
@@ -392,6 +407,8 @@ import {
   isGeneratedVideoFilename,
   stripRenderedMediaReferences,
   textFromHermesContent,
+  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   USER_ATTACHMENT_PROMPT_MARKER,
   type AgentApprovalChoice,
   type AgentChatPart,
@@ -411,6 +428,10 @@ import {
   type AgentChatGallerySection,
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
+import {
+  upstreamProviderRecoveryIds,
+  upstreamProviderRecoveryStore,
+} from "../../lib/upstream-provider-recovery";
 
 const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
 const POLLED_STATUSES = new Set<AgentTaskStatus>(["queued", "running", "waitingForUser"]);
@@ -2857,11 +2878,38 @@ export function AgentWorkspace({
   // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
   const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
+  const [composerModelCommandPalette, setComposerModelCommandPalette] = useState(false);
   const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
   const composerModelPopoverRef = useRef<HTMLDivElement>(null);
   const composerModelSearchRef = useRef<HTMLInputElement>(null);
+  // Thinking level: how much June reasons before answering. The stored draft
+  // seeds new sessions (session.create's reasoning_effort). The efforts map
+  // records each session's OWN level — its creation pin, a pick made while
+  // the session was open, or the effort its live runtime last reported via
+  // session.info — persisted in localStorage so it survives relaunch; the
+  // composer shows a session's own level, never the machine-wide draft of
+  // whatever chat was retuned last. The applied map remembers which effort
+  // the session's CURRENT runtime is known to be at (acked config.set, the
+  // create pin, or a session.info report) so a turn only re-asserts when
+  // the runtime or the level actually changed (config.set writes the profile
+  // config each call, so it is not something to fire blindly on every send).
+  const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => loadThinkingLevel());
+  const thinkingLevelRef = useRef(thinkingLevel);
+  const sessionThinkingEffortsRef = useRef<Record<string, ThinkingLevel> | null>(null);
+  // Lazy one-time load of the persisted per-session efforts (a ref, not
+  // state: async send/pick closures must read the latest map, not a render
+  // snapshot).
+  function sessionThinkingEfforts(): Record<string, ThinkingLevel> {
+    if (!sessionThinkingEffortsRef.current) {
+      sessionThinkingEffortsRef.current = loadSessionThinkingLevels();
+    }
+    return sessionThinkingEffortsRef.current;
+  }
+  const sessionThinkingAppliedRef = useRef<Record<string, { runtimeId: string; effort: string }>>(
+    {},
+  );
   // Attestation walkthrough URL served by the backend (same page as Settings
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
@@ -2905,6 +2953,13 @@ export function AgentWorkspace({
   // reliably whether Hermes may already have accepted a response.
   const approvalResponsesInFlightRef = useRef(new Map<string, AgentApprovalChoice>());
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
+  // Shared across chat surfaces and component remounts for this app process.
+  // reserve() closes the duplicate-click gap before React commits a render.
+  useSyncExternalStore(
+    upstreamProviderRecoveryStore.subscribe,
+    upstreamProviderRecoveryStore.getVersion,
+    upstreamProviderRecoveryStore.getVersion,
+  );
   // Sudo records which choice (approve/deny) is in flight per request id;
   // secret records only that a submit is in flight (NEVER the value).
   const [sudoSubmitting, setSudoSubmitting] = useState<Record<string, "approve" | "deny">>({});
@@ -3381,8 +3436,16 @@ export function AgentWorkspace({
           selectedModelOption(generationModelOptions, activeGenerationModelId));
   }, [activeGenerationModelId, generationModelOptions]);
   const generationPrivacyBadge = generationModel ? modelPrivacyBadge(generationModel) : undefined;
+  // The control shows the open session's OWN level (its creation pin, a pick
+  // made while it was open, or what its runtime last reported) — never the
+  // draft, which would label every chat with whatever level was picked last
+  // anywhere. The draft only shows for a new session, where it applies.
+  const composerThinkingLevel: ThinkingLevel =
+    selectedHermesSessionId && !newSessionMode
+      ? (sessionThinkingEfforts()[selectedHermesSessionId] ?? thinkingLevel)
+      : thinkingLevel;
   // The model the image-attach banner offers to switch to: a vision + tool
-  // capable model, preferring a curated suggested pick (Kimi K2.6) over the
+  // capable model, preferring a known private vision pick (Kimi K2.6) over the
   // alphabetically-first vision model. See preferredVisionFallbackModel.
   const preferredVisionModel = useMemo(
     () => preferredVisionFallbackModel(generationModels),
@@ -3780,9 +3843,14 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (composerModelCommandPalette) {
+          setComposerModelOpen(false);
+          composerEditorRef.current?.focus();
+          return;
+        }
         // Escape peels one layer at a time: the all-models panel first,
         // then the popover itself.
-        if (composerModelFlyout?.kind === "all") {
+        if (composerModelFlyout?.kind === "all" || composerModelFlyout?.kind === "effort") {
           setComposerModelFlyout(null);
           setModelSearch("");
         } else {
@@ -3796,13 +3864,13 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [composerModelOpen, composerModelFlyout]);
+  }, [composerModelCommandPalette, composerModelOpen, composerModelFlyout]);
 
   useLayoutEffect(() => {
-    if (composerModelOpen && composerModelFlyout?.kind === "all") {
+    if (composerModelOpen && (composerModelCommandPalette || composerModelFlyout?.kind === "all")) {
       composerModelSearchRef.current?.focus();
     }
-  }, [composerModelFlyout, composerModelOpen]);
+  }, [composerModelCommandPalette, composerModelFlyout, composerModelOpen]);
 
   // The popover lives outside the composer box (whose overflow:hidden would
   // clip it), so CSS alone can only anchor it to the box, leaving the whole
@@ -3810,15 +3878,34 @@ export function AgentWorkspace({
   // open and pin the menu right above it instead.
   useLayoutEffect(() => {
     if (!composerModelOpen) return;
-    const trigger = composerModelTriggerRef.current;
-    const popover = composerModelPopoverRef.current;
-    const form = popover?.parentElement;
-    if (!trigger || !popover || !form) return;
-    const triggerRect = trigger.getBoundingClientRect();
-    const formRect = form.getBoundingClientRect();
-    popover.style.right = `${formRect.right - triggerRect.right}px`;
-    popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
-  }, [composerModelOpen]);
+    function positionPopover() {
+      const trigger = composerModelTriggerRef.current;
+      const popover = composerModelPopoverRef.current;
+      const form = popover?.parentElement;
+      if (!trigger || !popover || !form) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const formRect = form.getBoundingClientRect();
+      if (composerModelCommandPalette) {
+        const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
+        const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
+        popover.style.left = `${composerRect.left - formRect.left}px`;
+        popover.style.right = `${formRect.right - composerRect.right}px`;
+        popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
+        popover.style.setProperty(
+          "--model-command-available-height",
+          `${Math.max(96, composerRect.top - 12)}px`,
+        );
+        return;
+      }
+      popover.style.left = "";
+      popover.style.removeProperty("--model-command-available-height");
+      popover.style.right = `${formRect.right - triggerRect.right}px`;
+      popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
+    }
+    positionPopover();
+    window.addEventListener("resize", positionPopover);
+    return () => window.removeEventListener("resize", positionPopover);
+  }, [composerModelCommandPalette, composerModelOpen]);
 
   useLayoutEffect(() => {
     if (sandboxMenuOpen) {
@@ -4217,9 +4304,10 @@ export function AgentWorkspace({
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
-  function openComposerModelPicker() {
+  function openComposerModelPicker(commandPalette = false) {
     setModelSearch("");
     setComposerModelFlyout(null);
+    setComposerModelCommandPalette(commandPalette);
     setComposerModelOpen(true);
     setSandboxMenuOpen(false);
     void loadGenerationModel();
@@ -4997,6 +5085,63 @@ export function AgentWorkspace({
     return assistantTurnId.endsWith(":assistant")
       ? assistantTurnId.slice(0, -":assistant".length)
       : assistantTurnId;
+  }
+
+  // Picking a thinking level always updates the stored draft (the next new
+  // session opens with it). With a session open it ALSO retunes that session:
+  // the level is recorded per chat (persisted, so a relaunch still shows the
+  // session's own level), applied to the live runtime through config.set
+  // (setSessionReasoningEffort), and re-asserted on the next turn if the
+  // runtime is not up right now — see submitHermesSession, which only
+  // re-sends when the current runtime is not already known to be at it.
+  async function handleSelectThinkingLevel(level: ThinkingLevel) {
+    thinkingLevelRef.current = level;
+    setThinkingLevel(level);
+    saveThinkingLevel(level);
+    const sessionId = newSessionModeRef.current ? undefined : selectedHermesSessionIdRef.current;
+    if (!sessionId || isProvisionalHermesSessionId(sessionId)) return;
+    sessionThinkingEffortsRef.current = {
+      ...sessionThinkingEfforts(),
+      [sessionId]: level,
+    };
+    rememberSessionThinkingLevel(sessionId, level);
+    await applyThinkingLevelToSession(sessionId, level);
+  }
+
+  // Best-effort live retune of one session's reasoning effort. Skips the RPC
+  // entirely when the session's CURRENT runtime is already known to be at
+  // this effort — known via an acked config.set, the creation pin, or the
+  // runtime's own session.info report. Keying the skip on the runtime id (not
+  // just the session) keeps a replacement runtime honest: a resumed session
+  // gets re-asserted on its new runtime instead of trusting the old one's ack.
+  async function applyThinkingLevelToSession(
+    sessionId: string,
+    level: ThinkingLevel,
+    explicitRuntimeSessionId?: string,
+  ) {
+    const effort = thinkingEffortForLevel(level);
+    const runtimeSessionId = explicitRuntimeSessionId ?? runtimeSessionIdsRef.current[sessionId];
+    if (!runtimeSessionId) return;
+    const applied = sessionThinkingAppliedRef.current[sessionId];
+    if (applied?.runtimeId === runtimeSessionId && applied.effort === effort) {
+      return;
+    }
+    try {
+      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      await createHermesMethods(gateway).setSessionReasoningEffort({
+        sessionId: runtimeSessionId,
+        effort,
+      });
+      sessionThinkingAppliedRef.current = {
+        ...sessionThinkingAppliedRef.current,
+        [sessionId]: { runtimeId: runtimeSessionId, effort },
+      };
+      setError(null);
+    } catch {
+      // The level is still recorded, so the next turn re-asserts it once
+      // the runtime is reachable; no banner for something the send flow
+      // quietly heals.
+    }
   }
 
   async function finishImageSlashGeneration(input: {
@@ -5801,7 +5946,7 @@ export function AgentWorkspace({
     const query = argument.trim();
     if (!query) {
       clearComposerCommandDraft(commandText);
-      openComposerModelPicker();
+      openComposerModelPicker(true);
       return;
     }
 
@@ -7011,6 +7156,33 @@ export function AgentWorkspace({
       // trace panel can reconstruct the session. recordInbound re-classifies and
       // sanitizes internally; nothing raw is retained.
       hermesTraceBuffer.recordInbound(liveEvent, { storedSessionId });
+      // The runtime's session.info is the source of truth for the effort a
+      // session ACTUALLY runs at (emitted after every build and on every
+      // live retune): hydrate the per-session record from it so the composer
+      // labels this chat with its own level after a relaunch or a change made
+      // outside June, and mark the reporting runtime as known-at that effort
+      // so the send flow never fires a redundant config.set against it.
+      if (event.type === "session.info") {
+        const reportedEffort = (event.payload as { reasoning_effort?: unknown } | undefined)
+          ?.reasoning_effort;
+        const reportedLevel = thinkingLevelForEffort(
+          typeof reportedEffort === "string" ? reportedEffort : undefined,
+        );
+        if (reportedLevel) {
+          sessionThinkingEffortsRef.current = {
+            ...sessionThinkingEfforts(),
+            [storedSessionId]: reportedLevel,
+          };
+          rememberSessionThinkingLevel(storedSessionId, reportedLevel);
+          sessionThinkingAppliedRef.current = {
+            ...sessionThinkingAppliedRef.current,
+            [storedSessionId]: {
+              runtimeId: runtimeSessionId,
+              effort: thinkingEffortForLevel(reportedLevel),
+            },
+          };
+        }
+      }
       if (storedClassified.kind === "unsupported") {
         // Feed the bounded per-session store so the user gets a recoverable
         // notice (when this is the active session) and developers get a
@@ -7365,8 +7537,12 @@ export function AgentWorkspace({
               // session.create treats `model` as a per-session override.
               // Under a named profile the override would silently bypass the
               // profile's own configured text model - the point of profiles -
-              // so it is omitted and the profile's model applies.
+              // so it is omitted and the profile's model applies. The
+              // thinking level's reasoning_effort follows the same rule.
               ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
+              ...(!underProfile
+                ? { reasoning_effort: thinkingEffortForLevel(thinkingLevelRef.current) }
+                : {}),
               ...(underProfile ? { profile: nextUnderProfileName } : {}),
             });
         const nextStoredSessionId =
@@ -7399,6 +7575,26 @@ export function AgentWorkspace({
     // message as an Up next item on the durable session.
     if (!modelTarget.targetStoredSessionId) {
       modelTarget.targetStoredSessionId = storedSessionId;
+    }
+    if (created && !createdUnderProfile) {
+      // Record the new session's level as its own (persisted, so a relaunch
+      // still shows this chat at its level), and mark its runtime as already
+      // at it: the create pinned this effort, so the re-assert path must not
+      // fire a redundant config.set on the session's first turns. Skipped
+      // under a named profile, where the profile's own config applies.
+      const createdLevel = thinkingLevelRef.current;
+      sessionThinkingEffortsRef.current = {
+        ...sessionThinkingEfforts(),
+        [storedSessionId]: createdLevel,
+      };
+      rememberSessionThinkingLevel(storedSessionId, createdLevel);
+      sessionThinkingAppliedRef.current = {
+        ...sessionThinkingAppliedRef.current,
+        [storedSessionId]: {
+          runtimeId: created.session_id ?? "",
+          effort: thinkingEffortForLevel(createdLevel),
+        },
+      };
     }
     const queuedIssueReport = options?.issueReport;
     if (queuedIssueReport && targetStoredSessionId) {
@@ -7501,6 +7697,14 @@ export function AgentWorkspace({
     if (!runtimeSessionId) {
       clearQueuedIssueReport();
       rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
+    }
+    // A thinking level picked while this session's runtime was down (or a
+    // live retune that failed) re-asserts here, before the prompt, so the
+    // turn runs at the level the control shows. No-op when the current
+    // runtime is already known to be at it (see applyThinkingLevelToSession).
+    const thinkingSessionLevel = sessionThinkingEfforts()[storedSessionId];
+    if (thinkingSessionLevel) {
+      await applyThinkingLevelToSession(storedSessionId, thinkingSessionLevel, runtimeSessionId);
     }
     const dispatchPreparedSession = async (): Promise<string | undefined> => {
       // Re-read after acquiring the cross-surface lock. NoteChat may have sent
@@ -7879,6 +8083,47 @@ export function AgentWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
+
+  async function retryUpstreamProviderFailure(
+    storedSessionId: string | undefined,
+    recoveryId: string | undefined,
+  ) {
+    if (!storedSessionId || isProvisionalHermesSessionId(storedSessionId)) return;
+    if (
+      workingSessionIdsRef.current.has(storedSessionId) ||
+      waitingSessionIdsRef.current.has(storedSessionId)
+    ) {
+      return;
+    }
+    if (!recoveryId || !upstreamProviderRecoveryStore.reserve(storedSessionId, recoveryId)) return;
+    const session = hermesSessionItemsRef.current.find((item) => item.id === storedSessionId);
+    if (!session) {
+      upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+      setError(SESSION_NOT_AVAILABLE_MESSAGE, { sessionId: storedSessionId });
+      return;
+    }
+
+    try {
+      // This starts a new agent run in the same stored session and reuses its
+      // runtime session when it is still live. The prompt has an exact
+      // persisted-display mapping to the "Try again" transcript label, so a
+      // later refresh cannot expose the continuation instruction. This path
+      // never reads or clears the composer and never replays clarify.respond.
+      await submitHermesSession(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT, session, {
+        displayContent: "Try again",
+        titleContent: "Try again",
+        modelTarget: captureSessionModelTarget(session),
+        selectSession: false,
+      });
+      setError(null);
+    } catch (err) {
+      // prompt.submit never accepted the recovery, so the same notice may try
+      // again. Once accepted, the key remains spent; a second provider failure
+      // creates a new turn id and its own one-shot action.
+      upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
+      setError(messageFromError(err), { sessionId: storedSessionId });
+    }
+  }
 
   // "Try again" on a connection-shaped error banner: rebuild the bridge +
   // gateway connection and reload sessions, surfacing whatever still fails.
@@ -9858,6 +10103,8 @@ export function AgentWorkspace({
     // id.
     forgetSessionMode(sessionId);
     commitSessionModelSelections(forgetSessionModelSelection(sessionId));
+    // Same for the session's thinking-level record.
+    forgetSessionThinkingLevel(sessionId);
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
@@ -10390,6 +10637,7 @@ export function AgentWorkspace({
         ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
+  const upstreamFailureRecoveryIds = upstreamProviderRecoveryIds(hermesTurns);
   const taskTurns = selectedTask
     ? mergeThinkingTurns(
         buildAgentChatTurns(
@@ -10829,7 +11077,7 @@ export function AgentWorkspace({
         {textActionsDisabledReason
           ? (renderFundingNotice?.({
               ...textFundingContext,
-              onSelectVeniceModel: openComposerModelPicker,
+              onSelectVeniceModel: () => openComposerModelPicker(),
             }) ?? (
               <p className="agent-composer-notice" role="status">
                 {textActionsDisabledReason}
@@ -11133,6 +11381,7 @@ export function AgentWorkspace({
                     ? autoPillDesignation(activeGenerationCostQuality)
                     : undefined
                 }
+                effort={thinkingOptionForLevel(composerThinkingLevel).label}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -11310,23 +11559,44 @@ export function AgentWorkspace({
           />
         ) : null}
         {composerModelOpen ? (
-          <ModelPickerPopover
-            mode="generation"
-            flyout={composerModelFlyout}
-            model={generationModel}
-            options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-            costQuality={activeGenerationCostQuality}
-            veniceApiKeyConfigured={veniceApiKeyConfigured}
-            search={modelSearch}
-            popoverRef={composerModelPopoverRef}
-            searchRef={composerModelSearchRef}
-            onFlyoutChange={setComposerModelFlyout}
-            onSearchChange={setModelSearch}
-            onSelect={(modelId, costQuality, options) =>
-              void handleSelectGenerationModel(modelId, costQuality, options)
-            }
-            onCostQualityChange={handleCostQualityChange}
-          />
+          composerModelCommandPalette ? (
+            <ModelCommandPalette
+              model={generationModel}
+              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+              search={modelSearch}
+              popoverRef={composerModelPopoverRef}
+              searchRef={composerModelSearchRef}
+              onSearchChange={setModelSearch}
+              onSelect={(modelId) => {
+                void handleSelectGenerationModel(modelId);
+                composerEditorRef.current?.focus();
+              }}
+            />
+          ) : (
+            <ModelPickerPopover
+              mode="generation"
+              flyout={composerModelFlyout}
+              model={generationModel}
+              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+              costQuality={activeGenerationCostQuality}
+              veniceApiKeyConfigured={veniceApiKeyConfigured}
+              search={modelSearch}
+              popoverRef={composerModelPopoverRef}
+              searchRef={composerModelSearchRef}
+              onFlyoutChange={setComposerModelFlyout}
+              onSearchChange={setModelSearch}
+              onSelect={(modelId, costQuality, options) =>
+                void handleSelectGenerationModel(modelId, costQuality, options)
+              }
+              onCostQualityChange={handleCostQualityChange}
+              thinkingLevel={composerThinkingLevel}
+              onSelectThinking={(level) => {
+                setComposerModelFlyout(null);
+                setComposerModelOpen(false);
+                void handleSelectThinkingLevel(level);
+              }}
+            />
+          )
         ) : null}
         {heroMode && sandboxMenuOpen ? (
           <div
@@ -11490,6 +11760,20 @@ export function AgentWorkspace({
           onDownloadVideo={downloadGeneratedVideo}
           onRetryVideo={(assistantTurnId, part) =>
             void retryVideoSlashTurn(selectedHermesSessionId, assistantTurnId, part)
+          }
+          onRetryUpstreamFailure={(turnId) =>
+            void retryUpstreamProviderFailure(
+              selectedHermesSessionId,
+              upstreamFailureRecoveryIds.get(turnId),
+            )
+          }
+          upstreamFailureRetryAttempted={upstreamProviderRecoveryStore.attempted(
+            selectedHermesSessionId,
+            upstreamFailureRecoveryIds.get(turn.id) ?? "",
+          )}
+          upstreamFailureRetryDisabled={
+            workingSessionIds.has(selectedHermesSessionId) ||
+            waitingSessionIds.has(selectedHermesSessionId)
           }
           creditActionsDisabledReason={creditActionsDisabledReason}
           onApproval={(part, choice) =>
@@ -13428,6 +13712,9 @@ function AgentResponseGallery({
   onClose: () => void;
 }) {
   const [thinkingOpenByKey, setThinkingOpenByKey] = useState<Record<string, boolean>>({});
+  const [upstreamFailureRetryAttempts, setUpstreamFailureRetryAttempts] = useState<
+    Record<string, true>
+  >({});
   const setThinkingOpen = useCallback((key: string, open: boolean) => {
     setThinkingOpenByKey((current) =>
       current[key] === open ? current : { ...current, [key]: open },
@@ -13477,6 +13764,10 @@ function AgentResponseGallery({
               onSudo={galleryNoop}
               onSecret={galleryNoop}
               onDownloadArtifact={galleryNoop}
+              onRetryUpstreamFailure={(turnId) =>
+                setUpstreamFailureRetryAttempts((current) => ({ ...current, [turnId]: true }))
+              }
+              upstreamFailureRetryAttempted={Boolean(upstreamFailureRetryAttempts[turn.id])}
               onThinkingOpenChange={setThinkingOpen}
               onTopUp={galleryNoop}
               fundingTier={fundingTier}
@@ -13509,6 +13800,9 @@ function AgentChatTurnRow({
   onRetryImage,
   onDownloadVideo,
   onRetryVideo,
+  onRetryUpstreamFailure,
+  upstreamFailureRetryAttempted,
+  upstreamFailureRetryDisabled,
   creditActionsDisabledReason,
   onThinkingOpenChange,
   onTopUp,
@@ -13548,6 +13842,9 @@ function AgentChatTurnRow({
   onRetryImage?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "image" }>) => void;
   onDownloadVideo?: (part: Extract<AgentChatPart, { type: "video" }>) => void;
   onRetryVideo?: (assistantTurnId: string, part: Extract<AgentChatPart, { type: "video" }>) => void;
+  onRetryUpstreamFailure?: (assistantTurnId: string) => void;
+  upstreamFailureRetryAttempted?: boolean;
+  upstreamFailureRetryDisabled?: boolean;
   creditActionsDisabledReason?: string;
   onThinkingOpenChange: (key: string, open: boolean) => void;
   onTopUp?: () => void;
@@ -13869,6 +14166,13 @@ function AgentChatTurnRow({
           ) : part.type === "notice" ? (
             part.kind === "context-overflow" ? (
               <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
+            ) : part.kind === "upstream-provider" ? (
+              <UpstreamProviderFailureNoticePart
+                key={`${turn.id}:notice:${index}`}
+                attempted={upstreamFailureRetryAttempted}
+                disabled={upstreamFailureRetryDisabled}
+                onRetry={onRetryUpstreamFailure ? () => onRetryUpstreamFailure(turn.id) : undefined}
+              />
             ) : (
               <CreditsNoticePart
                 key={`${turn.id}:notice:${index}`}
@@ -14279,6 +14583,38 @@ function CreditsNoticePart({
         onTopUp ? (
           <button type="button" className="btn btn-secondary" onClick={onTopUp}>
             {topUpLabel}
+          </button>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function UpstreamProviderFailureNoticePart({
+  attempted = false,
+  disabled = false,
+  onRetry,
+}: {
+  attempted?: boolean;
+  disabled?: boolean;
+  onRetry?: () => void;
+}) {
+  return (
+    <InlineNotice
+      className="agent-upstream-provider-notice"
+      tone="warning"
+      role="alert"
+      icon={<IconExclamationTriangle size={14} aria-hidden />}
+      body={UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY}
+      actions={
+        onRetry ? (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={attempted || disabled}
+            onClick={onRetry}
+          >
+            Try again
           </button>
         ) : undefined
       }
