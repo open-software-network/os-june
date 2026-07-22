@@ -386,6 +386,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import type { AgentAttachment } from "./agent-workspace-models";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
 import { relativeDate, safeText } from "./agent-workspace-helpers";
@@ -1013,21 +1014,6 @@ export function agentWorkspaceErrorStateForMessage(
 
 type AgentDeleteSessionDetail = {
   sessionId: string;
-};
-
-type AgentAttachment = ImportedHermesFile & {
-  id: string;
-  /** Original `/image` prompt for hidden fast-path context handoff. */
-  sourcePrompt?: string;
-  /** Ephemeral image data for hidden `/image` fast-path holds. Kept out of
-   * visible composer state, artifacts, and traces; cleared with the hold after
-   * the next successful prompt submit. */
-  attachDataUrl?: string;
-  /** Structured attach status (feature 19). Tracks whether this import has been
-   * sent to the model via image.attach_bytes: imported (ready) → attached (acked) →
-   * or failed. Carries file refs only, never the image bytes. Files stay
-   * `imported` (they only ride along as a path in the prompt). */
-  attach: HermesAttachmentState;
 };
 
 type PersistedImageSlashTurn = {
