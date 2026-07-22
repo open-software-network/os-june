@@ -16,7 +16,11 @@ import {
   noteChatSessionIdFor,
   rememberNoteChatSession,
 } from "../components/note-chat/noteChatSessions";
-import { type NoteChat, useNoteChat } from "../components/note-chat/useNoteChat";
+import {
+  type NoteChat,
+  type NoteChatSubmitResult,
+  useNoteChat,
+} from "../components/note-chat/useNoteChat";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 import {
   rememberAppliedSessionModelSelection,
@@ -361,7 +365,10 @@ describe("note chat session map", () => {
     );
 
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
-    let submission: Promise<boolean> = Promise.resolve(false);
+    let submission: Promise<NoteChatSubmitResult> = Promise.resolve({
+      accepted: false,
+      current: false,
+    });
     act(() => {
       submission = result.current.submit("Keep the legacy route.");
     });
@@ -672,7 +679,7 @@ describe("note chat session map", () => {
       selectedModel: autoModel.id,
       models: [autoModel, currentModel],
     });
-    const submit = vi.fn(async () => true);
+    const submit = vi.fn(async () => ({ accepted: true, current: true }));
     const chat = noteChat({
       storedSessionId: "stored-note-chat",
       modelSelection: { modelId: autoModel.id, costQuality: 100 },
@@ -838,7 +845,7 @@ describe("note chat session map", () => {
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     act(() => result.current.setSessionModel({ modelId: "kimi-k2-6" }));
 
-    let accepted = false;
+    let accepted: NoteChatSubmitResult = { accepted: false, current: false };
     await act(async () => {
       accepted = await result.current.submit("What remains blocked?");
     });
@@ -1094,7 +1101,10 @@ describe("note chat session map", () => {
           releaseEarlierSend = resolve;
         }),
     );
-    let noteSubmit: Promise<boolean> = Promise.resolve(false);
+    let noteSubmit: Promise<NoteChatSubmitResult> = Promise.resolve({
+      accepted: false,
+      current: false,
+    });
     act(() => {
       noteSubmit = result.current.submit("Run after the workspace message.");
     });
