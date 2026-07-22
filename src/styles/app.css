@@ -13663,7 +13663,6 @@ button.agent-user-attachment:hover {
 
 .settings-models-card {
   padding-block: var(--sp-4);
-  border-color: transparent;
 }
 
 .settings-models-profile-note {
@@ -18416,13 +18415,6 @@ button.memory-project:hover {
   box-shadow: 0 0 0 4px var(--focus-ring);
 }
 
-/* June's Auto mark is enough affordance on the Models settings row. Keep the
- * shared one-pixel geometry, hover wash, and keyboard focus ring, but leave
- * its decorative border transparent in every non-focus state. */
-.model-summary-button:has(.model-summary-logo[data-brand="june"]):not(:focus-visible) {
-  border-color: transparent;
-}
-
 .model-summary-button > svg {
   grid-area: chev;
   align-self: center;
@@ -18449,6 +18441,10 @@ button.memory-project:hover {
   border-radius: calc(var(--r-md) - var(--sp-1));
   background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
+}
+
+.model-summary-logo[data-brand="june"] {
+  background: transparent;
 }
 
 .model-summary-name {
