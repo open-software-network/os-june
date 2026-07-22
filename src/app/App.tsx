@@ -114,7 +114,6 @@ import {
 import { type MaxUpgradeTransport } from "../lib/billing-actions";
 import { type MaxGrantWait } from "../lib/max-upgrade";
 import { reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
-import { PROCESSING_DEMO_NOTE_ID, shouldPollProcessingStatus } from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
@@ -193,6 +192,8 @@ import { useAppDevDemos } from "./use-app-dev-demos";
 import { useRecordingStatusPoll } from "./use-recording-status-poll";
 
 import { useSessionMetadata } from "./use-session-metadata";
+
+import { useProcessingStatusPoll } from "./use-processing-status-poll";
 
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
@@ -1498,36 +1499,11 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!selectedNote || !shouldPollProcessingStatus(selectedNote.processingStatus)) {
-      return;
-    }
-    // The dev __processingDemo note lives only in the reducer; there is no
-    // backend row to poll, and getNote would clobber its synthetic stage with
-    // a "note not found". Stripped from production via import.meta.env.DEV.
-    if (import.meta.env.DEV && selectedNote.id === PROCESSING_DEMO_NOTE_ID) {
-      return;
-    }
-    const noteId = selectedNote.id;
-    // Drops in-flight responses once this effect is torn down (note switched,
-    // status moved on, note deleted) so a late resolution can't apply a stale
-    // snapshot — or surface a spurious "note not found" error after a delete.
-    let cancelled = false;
-    const interval = window.setInterval(() => {
-      getNote(noteId)
-        .then((note) => {
-          if (cancelled) return;
-          dispatch({ type: "noteUpdated", note });
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) setError(messageFromError(err));
-        });
-    }, 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [selectedNote?.id, selectedNote?.processingStatus]);
+  useProcessingStatusPoll({
+    dispatch,
+    selectedNote,
+    setError,
+  });
 
   const handleCreateNote = useCallback(
     async (folderId?: string | null) => {
