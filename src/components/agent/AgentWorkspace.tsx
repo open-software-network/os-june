@@ -312,7 +312,6 @@ import {
   saveThinkingLevel,
   thinkingEffortForLevel,
   thinkingLevelForEffort,
-  thinkingOptionForLevel,
   type ThinkingLevel,
 } from "../../lib/thinking-level";
 import {
@@ -11381,7 +11380,7 @@ export function AgentWorkspace({
                     ? autoPillDesignation(activeGenerationCostQuality)
                     : undefined
                 }
-                effort={thinkingOptionForLevel(composerThinkingLevel).label}
+                effort={composerThinkingLevel}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {

@@ -8,10 +8,10 @@
  * medium, high, xhigh). June deliberately exposes only three of them so the
  * choice stays a simple speed/depth tradeoff:
  *
- * - Instant -> "minimal": the model barely deliberates, so first tokens
- *   arrive almost immediately.
+ * - Low -> "minimal": the model barely deliberates, so first tokens arrive
+ *   quickly.
  * - Medium -> "medium": Hermes' own default; a balance of speed and depth.
- * - Hard -> "high": substantially more reasoning for harder problems.
+ * - High -> "high": substantially more reasoning for harder problems.
  *
  * The choice rides to Hermes as a PER-SESSION override (`reasoning_effort`
  * on session.create, `config.set` key "reasoning" for a live session), so
@@ -37,8 +37,8 @@ export type ThinkingLevelOption = {
 export const THINKING_LEVELS: readonly ThinkingLevelOption[] = Object.freeze([
   {
     id: "instant",
-    label: "Instant",
-    blurb: "Answers right away, with very little deliberation.",
+    label: "Low",
+    blurb: "Faster responses with lower usage.",
     effort: "minimal",
   },
   {
@@ -49,8 +49,8 @@ export const THINKING_LEVELS: readonly ThinkingLevelOption[] = Object.freeze([
   },
   {
     id: "hard",
-    label: "Hard",
-    blurb: "Spends more time reasoning through hard problems.",
+    label: "High",
+    blurb: "Deeper reasoning with higher usage.",
     effort: "high",
   },
 ]);
@@ -78,8 +78,8 @@ export function thinkingEffortForLevel(level: ThinkingLevel): string {
 }
 
 /** Best-effort reverse mapping from a Hermes effort string (e.g. one reported
- * by session.info) back onto a level. Low collapses into Instant and
- * xhigh into Hard; unknown/empty values return undefined so callers can keep
+ * by session.info) back onto a level. `none`, `minimal`, and `low` display as
+ * Low; `high` and `xhigh` display as High. Unknown/empty values let callers keep
  * their current draft instead of snapping to a stop. */
 export function thinkingLevelForEffort(effort: string | undefined): ThinkingLevel | undefined {
   switch ((effort ?? "").trim().toLowerCase()) {

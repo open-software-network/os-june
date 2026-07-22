@@ -1618,8 +1618,8 @@ function displayNameForHermesModel(modelId: string) {
   if (!auto?.[1]) return modelId.trim();
 
   const qualityPreference = Number(auto[1]);
-  if (qualityPreference >= 67) return "Auto Higher";
-  if (qualityPreference <= 33) return "Auto Lower";
+  if (qualityPreference >= 67) return "Auto Quality";
+  if (qualityPreference <= 33) return "Auto Economy";
   return "Auto Balanced";
 }
 

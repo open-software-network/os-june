@@ -471,14 +471,18 @@ describe("Agent chat runtime", () => {
     ]);
   });
 
-  it("replaces internal Hermes model-change instructions with a short label", () => {
+  it.each([
+    { qualityPreference: 20, label: "Economy" },
+    { qualityPreference: 50, label: "Balanced" },
+    { qualityPreference: 100, label: "Quality" },
+  ])("replaces internal Hermes model-change instructions with the Auto $label label", (preset) => {
     const turns = buildHermesSessionChatTurns([
       {
         id: "model-change-1",
         role: "system",
         content:
           "[System: The active model for this chat has changed to " +
-          "__june_auto_generation__:100 via provider custom. From this point " +
+          `__june_auto_generation__:${preset.qualityPreference} via provider custom. From this point ` +
           "forward, use this runtime metadata when answering questions about " +
           "what model/provider is active.]",
         timestamp: "2026-07-14T22:57:11.000Z",
@@ -490,7 +494,7 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.parts).toEqual([
       {
         type: "text",
-        text: "Model changed to Auto Higher.",
+        text: `Model changed to Auto ${preset.label}.`,
         status: "complete",
       },
     ]);

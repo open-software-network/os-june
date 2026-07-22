@@ -73,12 +73,12 @@ describe("suggestedModelsForMode", () => {
 
 describe("autoPillDesignation", () => {
   it("buckets the persisted cost-to-quality value onto the preset designations", () => {
-    expect(autoPillDesignation(20)).toBe("Lower");
+    expect(autoPillDesignation(20)).toBe("Economy");
     expect(autoPillDesignation(50)).toBe("Balanced");
-    expect(autoPillDesignation(100)).toBe("Higher");
+    expect(autoPillDesignation(100)).toBe("Quality");
     // Off-preset values (a hand-edited settings file) land on the nearest tier.
-    expect(autoPillDesignation(0)).toBe("Lower");
-    expect(autoPillDesignation(67)).toBe("Higher");
+    expect(autoPillDesignation(0)).toBe("Economy");
+    expect(autoPillDesignation(67)).toBe("Quality");
     expect(autoPillDesignation(undefined)).toBeUndefined();
   });
 });

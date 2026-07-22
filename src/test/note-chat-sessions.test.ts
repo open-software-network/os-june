@@ -558,7 +558,11 @@ describe("note chat session map", () => {
       }),
     );
 
-    await user.click(await screen.findByRole("button", { name: /^Model: Auto/ }));
+    const autoTrigger = await screen.findByRole("button", { name: "Model: Auto" });
+    expect(autoTrigger).toHaveTextContent(/Auto\s*Quality/);
+    expect(autoTrigger).toHaveAccessibleDescription("Preference: Quality.");
+    expect(autoTrigger.querySelector(".thinking-level-meter")).toBeNull();
+    await user.click(autoTrigger);
     const picker = screen.getByRole("dialog", { name: "Choose text model" });
     expect(
       within(picker).getByText(

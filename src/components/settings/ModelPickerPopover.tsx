@@ -28,6 +28,7 @@ import { rectFromElement, type HoverBridgeRect } from "../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../ui/useModelHoverBridge";
 import { ModelPrivacyChip, ModelRowPrivacyBadge } from "../ui/ModelPrivacyChip";
 import { Switch } from "../ui/Switch";
+import { ThinkingLevelMeter } from "../ui/ThinkingLevelMeter";
 import { AUTO_MODEL_ID, modelSpecEntries } from "./ModelPickerDialog";
 import { ProviderLogo } from "./ProviderLogo";
 
@@ -67,7 +68,7 @@ const AUTO_PREFERENCE_DETAILS: readonly {
 }[] = [
   {
     value: "cost",
-    label: "Lower cost",
+    label: "Economy",
     description: "Favors cheaper models to stretch your credits.",
   },
   {
@@ -77,7 +78,7 @@ const AUTO_PREFERENCE_DETAILS: readonly {
   },
   {
     value: "quality",
-    label: "Higher quality",
+    label: "Quality",
     description: "Routes to the strongest model for the job.",
   },
 ];
@@ -538,28 +539,33 @@ export function ModelPickerPopover({
       }}
     >
       <p className="agent-composer-model-title">{title}</p>
-      {onCostQualityChange ? (
-        <div className="agent-composer-model-auto">
-          <div className="agent-composer-model-filter agent-composer-model-auto-toggle">
-            <span>Auto</span>
-            <Switch
-              checked={autoEnabled}
-              onCheckedChange={toggleAuto}
-              aria-label="Choose the model automatically"
-            />
-          </div>
-          {veniceApiKeyConfigured ? (
-            <p className="agent-composer-model-auto-note">
-              Auto is billed to June credits and does not use your Venice API key.
-            </p>
+      {onCostQualityChange || (thinkingLevel && onSelectThinking) ? (
+        <div className="agent-composer-model-controls">
+          {onCostQualityChange ? (
+            <>
+              <div className="agent-composer-model-filter agent-composer-model-auto-toggle">
+                <span>Auto</span>
+                <Switch
+                  checked={autoEnabled}
+                  onCheckedChange={toggleAuto}
+                  aria-label="Choose the model automatically"
+                />
+              </div>
+              {veniceApiKeyConfigured ? (
+                <p className="agent-composer-model-auto-note">
+                  Auto is billed to June credits and does not use your Venice API key.
+                </p>
+              ) : null}
+            </>
           ) : null}
-          {autoEnabled ? (
+          {onCostQualityChange && autoEnabled ? (
             <button
               type="button"
-              className="agent-composer-model-row agent-composer-model-auto-row"
+              className="agent-composer-model-row agent-composer-model-control-row"
               aria-haspopup="true"
               aria-expanded={flyout?.kind === "auto"}
               data-active={flyout?.kind === "auto" || undefined}
+              data-flyout-kind="auto"
               onMouseEnter={() => {
                 if (modelBridge.isActive()) {
                   return;
@@ -582,7 +588,7 @@ export function ModelPickerPopover({
               }}
             >
               <span className="agent-composer-model-row-name">Preference</span>
-              <span className="agent-composer-model-auto-value">
+              <span className="agent-composer-model-row-value">
                 {AUTO_PREFERENCE_DETAILS.find((option) => option.value === autoPreference)?.label}
               </span>
               <IconChevronRightSmall
@@ -591,6 +597,124 @@ export function ModelPickerPopover({
                 className="agent-composer-model-row-chevron"
               />
             </button>
+          ) : null}
+          {onCostQualityChange && autoEnabled && flyout?.kind === "auto" ? (
+            <div
+              ref={flyoutRef}
+              className="agent-composer-model-flyout agent-composer-model-auto-panel"
+              role="group"
+              aria-label="Auto preference"
+              onPointerLeave={() => {
+                cancelHoverIntent();
+                setBridging(false);
+              }}
+            >
+              <div className="agent-composer-model-surface">
+                {AUTO_PREFERENCE_DETAILS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className="agent-composer-model-row agent-composer-model-choice-option"
+                    role="menuitemradio"
+                    aria-checked={option.value === autoPreference}
+                    onClick={() => onCostQualityChange(AUTO_PREFERENCE_VALUES[option.value])}
+                  >
+                    <span className="agent-composer-model-choice-copy">
+                      <span className="agent-composer-model-row-name">{option.label}</span>
+                      <span className="agent-composer-model-choice-desc">{option.description}</span>
+                    </span>
+                    {option.value === autoPreference ? (
+                      <IconCheckmark2Small
+                        size={14}
+                        aria-hidden
+                        className="agent-composer-model-row-check"
+                      />
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {thinkingLevel && onSelectThinking ? (
+            <button
+              type="button"
+              className="agent-composer-model-row agent-composer-model-control-row"
+              aria-haspopup="true"
+              aria-expanded={flyout?.kind === "effort"}
+              data-active={flyout?.kind === "effort" || undefined}
+              data-flyout-kind="effort"
+              onMouseEnter={() => {
+                if (modelBridge.isActive()) {
+                  return;
+                }
+                const open = () => onFlyoutChange({ kind: "effort" });
+                if (flyout) {
+                  cancelHoverIntent();
+                  open();
+                } else {
+                  hoverIntent(open);
+                }
+              }}
+              onFocus={() => {
+                cancelHoverIntent();
+                onFlyoutChange({ kind: "effort" });
+              }}
+              onClick={() => {
+                cancelHoverIntent();
+                onFlyoutChange({ kind: "effort" });
+              }}
+            >
+              <span className="agent-composer-model-row-name">Effort</span>
+              <span className="agent-composer-model-row-value">
+                <ThinkingLevelMeter level={thinkingLevel} />
+                {thinkingOptionForLevel(thinkingLevel).label}
+              </span>
+              <IconChevronRightSmall
+                size={16}
+                aria-hidden
+                className="agent-composer-model-row-chevron"
+              />
+            </button>
+          ) : null}
+          {thinkingLevel && onSelectThinking && flyout?.kind === "effort" ? (
+            <div
+              ref={flyoutRef}
+              className="agent-composer-model-flyout agent-composer-model-effort-panel"
+              role="group"
+              aria-label="Thinking level"
+              onPointerLeave={() => {
+                cancelHoverIntent();
+                setBridging(false);
+              }}
+            >
+              <div className="agent-composer-model-surface">
+                {THINKING_LEVELS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className="agent-composer-model-row agent-composer-model-choice-option"
+                    role="menuitemradio"
+                    aria-checked={option.id === thinkingLevel}
+                    onClick={() => onSelectThinking(option.id)}
+                  >
+                    <span className="agent-composer-model-choice-copy">
+                      <span className="agent-composer-model-row-name agent-composer-model-choice-name">
+                        <ThinkingLevelMeter level={option.id} />
+                        {option.label}
+                      </span>
+                      <span className="agent-composer-model-choice-desc">{option.blurb}</span>
+                    </span>
+                    {option.id === thinkingLevel ? (
+                      <IconCheckmark2Small
+                        size={14}
+                        aria-hidden
+                        className="agent-composer-model-row-check"
+                      />
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </div>
           ) : null}
         </div>
       ) : null}
@@ -673,45 +797,6 @@ export function ModelPickerPopover({
         <span className="agent-composer-model-row-name">All models</span>
         <IconChevronRightSmall size={16} aria-hidden className="agent-composer-model-row-chevron" />
       </button>
-      {thinkingLevel && onSelectThinking ? (
-        <button
-          type="button"
-          className="agent-composer-model-row"
-          aria-haspopup="true"
-          aria-expanded={flyout?.kind === "effort"}
-          data-active={flyout?.kind === "effort" || undefined}
-          onMouseEnter={() => {
-            if (modelBridge.isActive()) {
-              return;
-            }
-            const open = () => onFlyoutChange({ kind: "effort" });
-            if (flyout) {
-              cancelHoverIntent();
-              open();
-            } else {
-              hoverIntent(open);
-            }
-          }}
-          onFocus={() => {
-            cancelHoverIntent();
-            onFlyoutChange({ kind: "effort" });
-          }}
-          onClick={() => {
-            cancelHoverIntent();
-            onFlyoutChange({ kind: "effort" });
-          }}
-        >
-          <span className="agent-composer-model-row-name">Effort</span>
-          <span className="agent-composer-model-row-value">
-            {thinkingOptionForLevel(thinkingLevel).label}
-          </span>
-          <IconChevronRightSmall
-            size={16}
-            aria-hidden
-            className="agent-composer-model-row-chevron"
-          />
-        </button>
-      ) : null}
       {detail && portalTarget
         ? createPortal(
             // Portaled to the body and fixed-positioned so no scroll container
@@ -755,81 +840,6 @@ export function ModelPickerPopover({
           }}
         >
           <div className="agent-composer-model-surface">{catalogList(allModelsLabel)}</div>
-        </div>
-      ) : null}
-      {onCostQualityChange && flyout?.kind === "auto" ? (
-        <div
-          ref={flyoutRef}
-          className="agent-composer-model-flyout agent-composer-model-auto-panel"
-          role="group"
-          aria-label="Auto preference"
-          onPointerLeave={() => {
-            cancelHoverIntent();
-            setBridging(false);
-          }}
-        >
-          <div className="agent-composer-model-surface">
-            {AUTO_PREFERENCE_DETAILS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className="agent-composer-model-row agent-composer-model-pref-option"
-                role="menuitemradio"
-                aria-checked={option.value === autoPreference}
-                onClick={() => onCostQualityChange(AUTO_PREFERENCE_VALUES[option.value])}
-              >
-                <span className="agent-composer-model-pref-copy">
-                  <span className="agent-composer-model-row-name">{option.label}</span>
-                  <span className="agent-composer-model-pref-desc">{option.description}</span>
-                </span>
-                {option.value === autoPreference ? (
-                  <IconCheckmark2Small
-                    size={14}
-                    aria-hidden
-                    className="agent-composer-model-row-check"
-                  />
-                ) : null}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      {thinkingLevel && onSelectThinking && flyout?.kind === "effort" ? (
-        <div
-          ref={flyoutRef}
-          className="agent-composer-model-flyout agent-composer-model-effort-panel"
-          role="group"
-          aria-label="Thinking level"
-          onPointerLeave={() => {
-            cancelHoverIntent();
-            setBridging(false);
-          }}
-        >
-          <div className="agent-composer-model-surface">
-            <p className="agent-composer-model-title">Effort</p>
-            <div className="agent-composer-model-menu" role="listbox" aria-label="Thinking level">
-              {THINKING_LEVELS.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  className="agent-composer-model-row"
-                  role="option"
-                  aria-selected={option.id === thinkingLevel}
-                  onClick={() => onSelectThinking(option.id)}
-                >
-                  <span className="agent-composer-model-row-name">{option.label}</span>
-                  {option.id === thinkingLevel ? (
-                    <IconCheckmark2Small
-                      size={14}
-                      aria-hidden
-                      className="agent-composer-model-row-check"
-                    />
-                  ) : null}
-                </button>
-              ))}
-            </div>
-            <p className="agent-composer-model-note">Higher effort consumes usage limits faster.</p>
-          </div>
         </div>
       ) : null}
       {flyout?.kind === "all" && catalogHover && portalTarget

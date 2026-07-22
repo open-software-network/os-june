@@ -18,14 +18,16 @@ const PREFERRED_VISION_FALLBACK_IDS = ["kimi-k2-6"];
 
 /**
  * The composer pill's ghosted designation while Auto is selected ("Auto
- * Higher"): one word, since the pill is a glance surface. The thresholds
+ * Quality"): one word, since the pill is a glance surface. The thresholds
  * bucket any persisted cost-to-quality value onto the nearest of the three
- * suggested presets (20 / 50 / 100).
+ * suggested presets (20 / 50 / 100). Balanced shows too, even though it is
+ * the default: a trigger that only sometimes names the preference reads as
+ * two different controls.
  */
 export function autoPillDesignation(costQuality: number | undefined): string | undefined {
   if (costQuality === undefined) return undefined;
-  if (costQuality < 34) return "Lower";
-  if (costQuality > 66) return "Higher";
+  if (costQuality < 34) return "Economy";
+  if (costQuality > 66) return "Quality";
   return "Balanced";
 }
 
