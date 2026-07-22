@@ -17,15 +17,11 @@ import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { noteReadyToShare } from "../lib/share-payload";
-import type { GlobalRecorderDemoApi } from "../lib/global-recorder-demo";
-import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
-import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import { type NotesListHandle } from "../components/notes-list/NotesList";
 import { SETTINGS_TABS, type SettingsTab } from "../components/settings/AppSettings";
 import { type SidebarView } from "../components/sidebar/Sidebar";
 import { type TabItem } from "../components/tabs/TabBar";
 import { defaultNav, makeTabId, reorderTabs, type Tab, type TabNav } from "./tabs/tabs";
-import { type ReferralNudgeMoment } from "../components/referral/ReferralNudge";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Spinner } from "../components/ui/Spinner";
 import {
@@ -102,13 +98,7 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../lib/agent-hud-settings";
-import type {
-  FolderDto,
-  NoteDto,
-  RecordingStatusDto,
-  AccountStatus,
-  HermesSessionInfo,
-} from "../lib/tauri";
+import type { FolderDto, NoteDto, AccountStatus, HermesSessionInfo } from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { applyAutostartDefaultOnce, retryPendingAutostartDefault } from "../lib/autostart";
@@ -205,6 +195,8 @@ import { useDictationEvents } from "./use-dictation-events";
 import { useAppBootstrap } from "./use-app-bootstrap";
 
 import { useAppTabEvents } from "./use-app-tab-events";
+
+import { useAppDevDemos } from "./use-app-dev-demos";
 
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
@@ -429,176 +421,35 @@ export function App() {
     recordingNoteIdRef.current = noteId;
     setRecordingNoteIdState(noteId);
   }, []);
+  function getSelectedNoteId() {
+    return selectedNoteIdRef.current;
+  }
   // Dev-only synthetic status driving the global recorder pill, set by the
   // window.__globalRecorderPill console hook. When non-null it force-shows the
   // pill (any view, no real recording) so its styling can be inspected.
-  const [demoRecorderStatus, setDemoRecorderStatus] = useState<RecordingStatusDto | null>(null);
-  const demoRecorderRef = useRef<GlobalRecorderDemoApi | null>(null);
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    void import("../lib/global-recorder-demo").then(({ registerGlobalRecorderDemo }) => {
-      if (cancelled) return;
-      demoRecorderRef.current = registerGlobalRecorderDemo({
-        setStatus: setDemoRecorderStatus,
-      });
-    });
-    return () => {
-      cancelled = true;
-      demoRecorderRef.current?.dispose();
-      demoRecorderRef.current = null;
-    };
-  }, []);
-  // Dev-only console driver (window.__processingDemo) that seeds a synthetic
-  // meeting note parked in a transcription-processing stage so the
-  // ProcessingProgressIndicator can be inspected without a real recording.
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void import("../lib/processing-progress-demo").then(({ registerProcessingProgressDemo }) => {
-      if (cancelled) return;
-      ({ dispose } = registerProcessingProgressDemo({
-        seedNote: (note) => {
-          dispatch({ type: "noteLoaded", note });
-          setActiveView("meetings");
-        },
-      }));
-    });
-    return () => {
-      cancelled = true;
-      dispose?.();
-    };
-  }, []);
-  // Dev-only console driver (window.__recordNoticesDemo) that parks the
-  // recorder-area notices (consent reminder, source warning, mic-blocked) on the
-  // selected note without a real recording, so their styling can be inspected.
-  // The synthetic status runs under RECORD_NOTICES_DEMO_SESSION_ID, which the
-  // status poll and the pause/resume/finish handlers skip so no backend call
-  // fires; consent pinning bypasses the recorder bar's reveal/auto-hide timers.
-  const [recordNoticesConsentPinned, setRecordNoticesConsentPinned] = useState(false);
-  const [recordNoticesMicOverride, setRecordNoticesMicOverride] = useState<boolean | null>(null);
-  const recordNoticesDemoRef = useRef<RecordNoticesDemoApi | null>(null);
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    void import("../lib/record-notices-demo").then(({ registerRecordNoticesDemo }) => {
-      if (cancelled) return;
-      recordNoticesDemoRef.current = registerRecordNoticesDemo({
-        seedNote: (note) => {
-          dispatch({ type: "noteLoaded", note });
-          setActiveView("meetings");
-        },
-        setStatus: (status) => {
-          // Defense in depth: never let the demo's synthetic status stomp a real
-          // recording, even if the driver's hasRealRecording check somehow raced.
-          const active = recordingStatusRef.current;
-          if (active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID) return;
-          if (status) {
-            dispatch({ type: "recordingStatusChanged", status });
-            setRecordingNote(status.noteId);
-          } else {
-            dispatch({ type: "recordingStatusCleared" });
-            setRecordingNote(undefined);
-            setLiveTranscriptEvents([]);
-          }
-        },
-        setConsentPinned: setRecordNoticesConsentPinned,
-        setMicOverride: setRecordNoticesMicOverride,
-        getSelectedNoteId: () => selectedNoteIdRef.current,
-        hasRealRecording: () => {
-          const active = recordingStatusRef.current;
-          return !!active && active.sessionId !== RECORD_NOTICES_DEMO_SESSION_ID;
-        },
-      });
-    });
-    return () => {
-      cancelled = true;
-      recordNoticesDemoRef.current?.dispose();
-      recordNoticesDemoRef.current = null;
-    };
-  }, [setRecordingNote]);
-  // The referral delight nudge (bottom-left card). Real shows come from the
-  // trigger layer (useReferralNudgeTriggers below); the dev console driver
-  // (window.__referralNudge) parks the card without touching the persisted
-  // caps, which is why the source is tracked — only trigger-shown cards may
-  // record a click-through.
-  const [referralNudgeMoment, setReferralNudgeMoment] = useState<ReferralNudgeMoment | null>(null);
-  const referralNudgeSourceRef = useRef<"trigger" | "demo">("trigger");
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void import("../lib/referral-nudge-demo").then(({ registerReferralNudgeDemo }) => {
-      if (cancelled) return;
-      ({ dispose } = registerReferralNudgeDemo({
-        setMoment: (moment) => {
-          referralNudgeSourceRef.current = "demo";
-          setReferralNudgeMoment(moment);
-        },
-      }));
-    });
-    return () => {
-      cancelled = true;
-      dispose?.();
-    };
-  }, []);
-  // Dev console driver for the sidebar update cards (window.__updateCard).
-  // Pushes synthetic values into the real update state so each card's styling
-  // can be parked and inspected without a live update.
-  const updateCardDemoRef = useRef<UpdateCardDemoApi | null>(null);
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    void import("../lib/update-card-demo").then(({ registerUpdateCardDemo }) => {
-      if (cancelled) return;
-      updateCardDemoRef.current = registerUpdateCardDemo({
-        setReadyUpdate,
-        setStatus: setUpdateStatus,
-        setRelaunching: setRelaunchingUpdate,
-        setPreparing: setPreparingUpdate,
-        setChecking: setCheckingUpdate,
-        setProgress: setUpdateProgress,
-      });
-    });
-    return () => {
-      cancelled = true;
-      updateCardDemoRef.current?.dispose();
-      updateCardDemoRef.current = null;
-    };
-  }, [setUpdateStatus]);
-  // Dev console driver (window.__toastDemo) that fires each toast variant so
-  // the toast styling can be inspected without walking a real flow.
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void import("../lib/toast-demo").then(({ registerToastDemo }) => {
-      if (cancelled) return;
-      ({ dispose } = registerToastDemo());
-    });
-    return () => {
-      cancelled = true;
-      dispose?.();
-    };
-  }, []);
-  // Dev console driver (window.__juneSounds) for hearing the full recording
-  // and agent sound family without walking each production lifecycle.
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    let cancelled = false;
-    let dispose: (() => void) | undefined;
-    void import("../lib/june-sounds-demo").then(({ registerJuneSoundsDemo }) => {
-      if (cancelled) return;
-      ({ dispose } = registerJuneSoundsDemo());
-    });
-    return () => {
-      cancelled = true;
-      dispose?.();
-    };
-  }, []);
-  // Sessions with a finishRecording call in flight; guards stop double-clicks.
-  const finishingSessionsRef = useRef<Set<string>>(new Set());
+  const {
+    demoRecorderStatus,
+    recordNoticesConsentPinned,
+    recordNoticesMicOverride,
+    recordNoticesDemoRef,
+    referralNudgeMoment,
+    setReferralNudgeMoment,
+    referralNudgeSourceRef,
+    finishingSessionsRef,
+  } = useAppDevDemos({
+    dispatch,
+    getSelectedNoteId,
+    recordingStatusRef,
+    setActiveView,
+    setCheckingUpdate,
+    setLiveTranscriptEvents,
+    setPreparingUpdate,
+    setRecordingNote,
+    setRelaunchingUpdate,
+    setReadyUpdate,
+    setUpdateProgress,
+    setUpdateStatus,
+  });
   // A dev build without the OS Accounts env vars (fresh workspace, no .env)
   // can never complete sign-in, so the account gates would be dead
   // ends — skip them and let account-dependent features surface their own
