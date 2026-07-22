@@ -17,6 +17,12 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
+    pub composer_request_id: Option<String>,
+    #[serde(default)]
+    pub june_process_id: Option<u32>,
+    #[serde(default)]
+    pub inserted: Option<bool>,
+    #[serde(default)]
     pub duration_seconds: Option<u64>,
     #[serde(flatten)]
     pub _extra: serde_json::Map<String, Value>,
@@ -91,6 +97,18 @@ mod tests {
         assert_eq!(shortcut.kind, ShortcutKind::PushToTalk);
         assert_eq!(shortcut.code, "KeyU");
         assert!(shortcut.modifiers.control);
+    }
+
+    #[test]
+    fn composer_delivery_fields_parse() {
+        let command: CommandEnvelope = serde_json::from_str(
+            r#"{"type":"composer_delivery_result","composerRequestId":"request-1","juneProcessId":42,"inserted":true}"#,
+        )
+        .expect("composer acknowledgement parses");
+
+        assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
+        assert_eq!(command.june_process_id, Some(42));
+        assert_eq!(command.inserted, Some(true));
     }
 }
 

@@ -106,3 +106,28 @@ back.
   while Rust is still transcribing, the replacement process has no pin and
   reports `paste_target_unavailable`. The transcript is still on the clipboard
   and in dictation history, so nothing is lost.
+
+## Windows addendum (2026-07-22)
+
+Real Windows QA proved that exact top-level `HWND` activation plus the 180 ms
+settle period is not sufficient to focus a WebView2 DOM editor. The helper can
+successfully submit `Ctrl+V` to June's window while the ProseMirror composer
+receives nothing. External applications still use the exact pinned-window
+activation and `SendInput` path above without change.
+
+Windows therefore has one exact-request exception. A Dictate-button request may
+carry a bounded random request id. Rust validates it and injects June's process
+id; the frontend is never trusted to identify its process. The helper binds
+that metadata only when the command actually starts recording, captures the
+start target, and offers direct composer delivery only when the exact `HWND`
+and process also match the stop target. Toggle commands that stop an existing
+recording cannot retarget it.
+
+For an eligible request, `paste_text` must echo the id and the helper must
+revalidate the exact window and process. It writes the transcript to the
+clipboard, emits a correlated `agent_composer` transcript, and waits up to two
+seconds for June to acknowledge insertion. A matching success permits the
+usual delayed restoration of a previous clipboard backup. Rejection, timeout,
+or any missing, stale, malformed, or mismatched identity leaves the transcript
+on the clipboard with manual-paste guidance. Direct delivery never falls back
+to synthetic `Ctrl+V`; this avoids duplicate or misdirected text.

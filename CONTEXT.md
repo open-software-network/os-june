@@ -180,8 +180,11 @@ _Avoid_: system driver, in-process capture.
 The platform-native helper (`mac-dictation-helper` on macOS,
 `june-dictation-helper.exe` on Windows) that owns push-to-talk **dictation**
 capture and text insertion into the **paste target**. It is the authoritative
-source for helper-owned microphone state and platform paste readiness. On
-macOS it is also authoritative for Accessibility permission state.
+source for helper-owned microphone state, destination selection, and platform
+paste readiness. On Windows, an exact Dictate-button request may be delivered
+to June's composer through acknowledged in-app insertion, but only when the
+helper verifies the same June window and process at recording start and stop.
+On macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
 **Paste target**:
@@ -191,6 +194,10 @@ instant the recording stops and never re-resolved afterwards (see
 because the dictation round trip (capture, then dictation transcription, then
 cleanup) can outlast the user's attention: the frontmost app at paste time is
 often no longer the one they dictated into.
+On Windows, the helper may select acknowledged in-app composer insertion for a
+correlated Dictate-button request whose exact June window and process were
+unchanged from recording start to stop. The helper still owns that decision;
+all other targets retain exact-window activation and synthetic paste.
 _Avoid_: foreground app, frontmost app (both name a live value, not the pin);
 focus target.
 

@@ -159,6 +159,8 @@ import {
   browserApprovalRespond,
   browserApprovalsPending,
 } from "../../lib/tauri";
+import { parseDictationHelperEvent } from "../../lib/dictation-events";
+import { isWindowsPlatform } from "../../lib/platform";
 import {
   deleteHermesSession,
   listHermesSessionMessages,
@@ -3526,6 +3528,10 @@ export function AgentWorkspace({
       : NEW_SESSION_DRAFT_KEY;
   const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
   composerDraftKeyRef.current = composerDraftKey;
+  const composerDictationRequestRef = useRef<{
+    id: string;
+    draftKey: string | null;
+  } | null>(null);
   const restoredComposerDraftKeyRef = useRef<string | null>();
   const chatArtifacts = useMemo(
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
@@ -3592,6 +3598,61 @@ export function AgentWorkspace({
     };
     window.addEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
     return () => window.removeEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
+  }, []);
+
+  useEffect(() => {
+    if (!isWindowsPlatform()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>("dictation-event", (event) => {
+      const helperEvent = parseDictationHelperEvent(event.payload);
+      if (!helperEvent) return;
+      const payload = helperEvent.payload;
+      if (
+        helperEvent.type !== "final_transcript" ||
+        payload?.delivery !== "agent_composer" ||
+        typeof payload.composerRequestId !== "string"
+      ) {
+        if (helperEvent.type === "helper_unavailable") {
+          composerDictationRequestRef.current = null;
+        } else if (
+          (helperEvent.type === "recording_discarded" ||
+            helperEvent.type === "paste_completed" ||
+            helperEvent.type === "error") &&
+          payload?.delivery === "agent_composer" &&
+          typeof payload.composerRequestId === "string" &&
+          composerDictationRequestRef.current?.id === payload.composerRequestId
+        ) {
+          composerDictationRequestRef.current = null;
+        }
+        return;
+      }
+      const armed = composerDictationRequestRef.current;
+      if (!armed || armed.id !== payload.composerRequestId) return;
+      // Consume before dispatch so duplicate helper events cannot insert twice.
+      composerDictationRequestRef.current = null;
+      const editor = composerEditorRef.current;
+      const inserted =
+        typeof payload.text === "string" &&
+        composerDraftKeyRef.current === armed.draftKey &&
+        !!editor &&
+        editor.insertPlainText(payload.text);
+      void dictationHelperCommand({
+        type: "composer_delivery_result",
+        composerRequestId: armed.id,
+        inserted,
+      }).catch(() => {
+        // Insertion is already consumed. Retrying could restore the clipboard
+        // after a stale acknowledgement or encourage duplicate delivery.
+      });
+    }).then((remove) => {
+      if (disposed) remove();
+      else unlisten = remove;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   // New-session hero: greeting + centered composer + suggestion chips, shown
@@ -6676,12 +6737,24 @@ export function AgentWorkspace({
       return;
     }
     composerEditorRef.current?.focus();
+    const existingRequest = composerDictationRequestRef.current;
+    const armedRequest =
+      isWindowsPlatform() && existingRequest
+        ? existingRequest
+        : isWindowsPlatform()
+          ? { id: crypto.randomUUID(), draftKey: composerDraftKeyRef.current }
+          : null;
+    if (armedRequest) composerDictationRequestRef.current = armedRequest;
     try {
       await dictationHelperCommand({
         type: "toggle_listening",
         shortcut: "Dictation",
+        ...(armedRequest ? { composerRequestId: armedRequest.id } : {}),
       });
     } catch (err) {
+      if (!existingRequest && composerDictationRequestRef.current === armedRequest) {
+        composerDictationRequestRef.current = null;
+      }
       setError(messageFromError(err));
     }
   }

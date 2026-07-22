@@ -54,6 +54,25 @@ const HERO_GREETING = new RegExp(
 const streamedText = (text: string) => (_: string, element: Element | null) =>
   element?.tagName === "P" && element.textContent === text;
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) Object.defineProperty(navigator, "platform", ownPlatform);
+    else Reflect.deleteProperty(navigator, "platform");
+    if (ownUserAgent) Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    else Reflect.deleteProperty(navigator, "userAgent");
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   assignSessionToProfile: vi.fn(),
   invoke: vi.fn(),
@@ -964,6 +983,73 @@ describe("AgentWorkspace", () => {
       type: "toggle_listening",
       shortcut: "Dictation",
     });
+  });
+
+  it("inserts one matching Windows dictation directly into the armed composer", async () => {
+    const restorePlatform = stubNavigatorPlatform("Win32", "Windows");
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue("12345678-1234-4234-8234-123456789abc");
+    try {
+      mocks.dictationHelperCommand.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.click(screen.getByRole("button", { name: "Dictate" }));
+
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "toggle_listening",
+        shortcut: "Dictation",
+        composerRequestId: "12345678-1234-4234-8234-123456789abc",
+      });
+      await waitFor(() => expect(mocks.eventHandlers.has("dictation-event")).toBe(true));
+      const emitDirectDictation = async (composerRequestId: string) => {
+        await act(async () => {
+          await mocks.eventHandlers.get("dictation-event")?.({
+            payload: JSON.stringify({
+              type: "final_transcript",
+              payload: {
+                text: "Inserted directly",
+                delivery: "agent_composer",
+                composerRequestId,
+              },
+            }),
+          });
+        });
+      };
+
+      await emitDirectDictation("wrong-request");
+      expect(composer).toHaveTextContent("");
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await mocks.eventHandlers.get("dictation-event")?.({
+          payload: JSON.stringify({
+            type: "paste_completed",
+            payload: {
+              delivery: "agent_composer",
+              composerRequestId: "older-request",
+              deliveryConfirmed: true,
+            },
+          }),
+        });
+      });
+
+      await emitDirectDictation("12345678-1234-4234-8234-123456789abc");
+      expect(composer).toHaveTextContent("Inserted directly");
+      expect(mocks.dictationHelperCommand).toHaveBeenLastCalledWith({
+        type: "composer_delivery_result",
+        composerRequestId: "12345678-1234-4234-8234-123456789abc",
+        inserted: true,
+      });
+
+      await emitDirectDictation("12345678-1234-4234-8234-123456789abc");
+      expect(composer).toHaveTextContent("Inserted directly");
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledTimes(2);
+    } finally {
+      randomUUID.mockRestore();
+      restorePlatform();
+    }
   });
 
   it("keeps retrying startup session loads until the API is ready", async () => {

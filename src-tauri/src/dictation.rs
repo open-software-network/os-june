@@ -1023,6 +1023,31 @@ pub fn dictation_helper_command(
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
+    if let Some(request_id) = command.get("composerRequestId") {
+        let valid = request_id
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|id| !id.is_empty() && id.len() <= 128);
+        if !valid {
+            return Err(AppError::new(
+                "dictation_composer_request_invalid",
+                "The dictation composer request was invalid.",
+            ));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    let command = {
+        let mut command = command;
+        if command.get("composerRequestId").is_some() {
+            if let Some(object) = command.as_object_mut() {
+                object.insert(
+                    "juneProcessId".into(),
+                    serde_json::json!(std::process::id()),
+                );
+            }
+        }
+        command
+    };
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     if helper_command_resets_shortcut_activation(&command) {
         reset_shortcut_activation(&app);
@@ -3365,6 +3390,8 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             // retry handle after recording_ready, so remove it before
             // surfacing the retriable auth error.
             remove_windows_dictation_audio(&recording.audio_path);
+            let state = app.state::<HelperState>();
+            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
             update_shortcut_helper_finalizing(&app, false);
             emit_dictation_event_value(&app, app_error_event(error));
             return;
@@ -3446,6 +3473,11 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
                 Ok(()) => true,
                 Err(error) => {
                     retain_low_speech_evidence_recording(&app, &audio_path, transcript, &error);
+                    let state = app.state::<HelperState>();
+                    let _ = send_helper_command(
+                        &state,
+                        serde_json::json!({ "type": "discard_recording" }),
+                    );
                     return;
                 }
             }
@@ -3462,6 +3494,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         outcome,
         history_already_persisted,
         &history_profile,
+        recording.composer_request_id.as_deref(),
     );
 }
 
@@ -3471,6 +3504,7 @@ fn deliver_dictation_outcome(
     outcome: DictationTranscriptionOutcome,
     history_already_persisted: bool,
     history_profile: &str,
+    composer_request_id: Option<&str>,
 ) {
     // Low-evidence transcripts reach this point only after a successful,
     // awaited history write. Normal transcripts keep the existing best-effort
@@ -3488,8 +3522,20 @@ fn deliver_dictation_outcome(
             );
         }
     }
+    let mut helper_command = outcome.helper_command;
+    if helper_command
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        == Some("paste_text")
+    {
+        if let (Some(request_id), Some(object)) =
+            (composer_request_id, helper_command.as_object_mut())
+        {
+            object.insert("composerRequestId".into(), serde_json::json!(request_id));
+        }
+    }
     let state = app.state::<HelperState>();
-    if let Err(error) = send_helper_command(&state, outcome.helper_command) {
+    if let Err(error) = send_helper_command(&state, helper_command) {
         update_shortcut_helper_finalizing(app, false);
         emit_dictation_event_value(app, app_error_event(error));
         let _ = std::fs::remove_file(audio_path);
@@ -4346,6 +4392,13 @@ fn recording_ready_info_from_event(
             .map(str::trim)
             .filter(|bundle_id| !bundle_id.is_empty())
             .map(str::to_string),
+        composer_request_id: event
+            .get("payload")
+            .and_then(|payload| payload.get("composerRequestId"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && id.len() <= 128)
+            .map(str::to_string),
     })
 }
 
@@ -4413,6 +4466,8 @@ struct RecordingReadyInfo {
     /// stopped: the same app it will paste into once we hand back a
     /// transcript. None with older helper builds that predate the field.
     target_bundle_id: Option<String>,
+    /// Exact in-app delivery request retained by the Windows helper.
+    composer_request_id: Option<String>,
 }
 
 fn recording_has_low_speech_evidence(recording: &RecordingReadyInfo) -> bool {
@@ -7286,6 +7341,28 @@ mod tests {
     }
 
     #[test]
+    fn recording_ready_accepts_only_bounded_non_empty_composer_request_ids() {
+        let event = |request_id: serde_json::Value| {
+            serde_json::json!({
+                "type": "recording_ready",
+                "payload": {
+                    "path": "/tmp/os-june-dictation-test.wav",
+                    "composerRequestId": request_id,
+                }
+            })
+        };
+        let valid = recording_ready_info_from_event(&event(serde_json::json!("request-1")))
+            .expect("recording info");
+        assert_eq!(valid.composer_request_id.as_deref(), Some("request-1"));
+        let empty = recording_ready_info_from_event(&event(serde_json::json!("   ")))
+            .expect("recording info");
+        assert_eq!(empty.composer_request_id, None);
+        let oversized = recording_ready_info_from_event(&event(serde_json::json!("x".repeat(129))))
+            .expect("recording info");
+        assert_eq!(oversized.composer_request_id, None);
+    }
+
+    #[test]
     fn low_speech_evidence_requires_both_low_audio_signals() {
         let info =
             |speech_confidence, speech_analysis_status, observed_audio_level| RecordingReadyInfo {
@@ -7294,6 +7371,7 @@ mod tests {
                 speech_confidence,
                 speech_analysis_status,
                 target_bundle_id: None,
+                composer_request_id: None,
             };
 
         assert!(recording_has_low_speech_evidence(&info(
@@ -7331,6 +7409,7 @@ mod tests {
             speech_confidence,
             speech_analysis_status: Some(status),
             target_bundle_id: None,
+            composer_request_id: None,
         };
 
         assert!(recording_has_low_speech_evidence(&info(
@@ -7343,6 +7422,7 @@ mod tests {
             speech_confidence: None,
             speech_analysis_status: Some(SpeechAnalysisStatus::NoCompleteWindow),
             target_bundle_id: None,
+            composer_request_id: None,
         };
         assert!(recording_has_low_speech_evidence(&loud_short_capture));
         let unmetered_short_capture = RecordingReadyInfo {

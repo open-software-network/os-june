@@ -1,7 +1,8 @@
 import Placeholder from "@tiptap/extension-placeholder";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Fragment, Slice, type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { closeHistory } from "@tiptap/pm/history";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import {
@@ -40,6 +41,8 @@ export type ComposerEditorHandle = {
   /** Inserts a note reference chip at the caret. Multiple references can
    * coexist because they serialize into the prompt text. */
   insertNoteReference: (ref: NoteReferenceInput) => void;
+  /** Replaces the current selection with literal text without changing focus. */
+  insertPlainText: (text: string) => boolean;
   isEmpty: () => boolean;
 };
 
@@ -338,6 +341,22 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         },
         insertNoteReference: (noteReference) => {
           if (editor) insertNoteReference(editor, noteReference);
+        },
+        insertPlainText: (text) => {
+          if (!editor || editor.isDestroyed) return false;
+          const normalized = text.replace(/\r\n?/g, "\n");
+          const content = normalized.split("\n").flatMap((line, index) => {
+            const nodes = [];
+            if (index > 0) nodes.push(editor.schema.nodes.hardBreak.create());
+            if (line) nodes.push(editor.schema.text(line));
+            return nodes;
+          });
+          const transaction = closeHistory(editor.state.tr).replaceSelection(
+            new Slice(Fragment.fromArray(content), 0, 0),
+          );
+          if (!transaction.docChanged) return false;
+          editor.view.dispatch(transaction);
+          return true;
         },
         isEmpty: () => editor?.isEmpty ?? true,
       }),

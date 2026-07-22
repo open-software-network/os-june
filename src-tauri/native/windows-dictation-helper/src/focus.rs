@@ -24,7 +24,7 @@ const ACTIVATION_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const ACTIVATION_SETTLE_DELAY: Duration = Duration::from_millis(180);
 const CTRL_V_EVENT_COUNT: u32 = 4;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PinnedTarget {
     hwnd: HWND,
     pid: u32,
@@ -130,6 +130,13 @@ impl PinnedTarget {
 
     pub fn title(self) -> String {
         window_title(self.hwnd)
+    }
+
+    pub fn has_exact_identity(self) -> bool {
+        matches!(
+            target_observation(self),
+            TargetObservation::NotForeground | TargetObservation::Foreground
+        )
     }
 }
 
