@@ -41,7 +41,7 @@ assertions hold.
 
 ## Updating fixtures when the Hermes pin changes
 
-June pins one Hermes version (`PINNED_HERMES_VERSION`, currently `v2026.6.19`).
+June pins one Hermes version (`PINNED_HERMES_VERSION`, currently `v2026.7.20`).
 When the pin bumps, the contract these fixtures encode must be re-verified
 against the new runtime so a wire change surfaces as a deliberate diff, not a
 silent break for users:

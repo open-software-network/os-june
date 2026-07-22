@@ -27,12 +27,15 @@ user, and the existing approval broker.
   record that credential boundary in an ADR while keeping provider content
   calls on-device.
 
-## Proposed servers
+## Servers
 
-| Server | Tools |
-| --- | --- |
-| `june_github` | `list_repositories`, `search_code`, `read_file`, `list_commits`, `list_issues`, `get_issue`, `list_pull_requests`, `get_pull_request`, `get_pull_request_diff`, `list_checks`, `list_discussions`, `get_discussion` |
-| `june_github_actions` | `create_issue`, `comment_on_issue`, `comment_on_pull_request`, `submit_review` |
+The v1 tool names are owned by the PRD's
+[V1 connector tool surface](github-prd.md#v1-connector-tool-surface) table:
+`june_github` (`list_repositories`, `search_issues`, `get_issue`,
+`list_issue_comments`, `get_pull_request`, `read_file`, `search_code`) and
+`june_github_actions` (`create_issue`, `update_issue`, `add_comment`). The
+commit/check/discussion/diff reads and `submit_review` originally sketched
+here moved to the PRD's Later list.
 
 Each result includes owner, repository, stable node/database id, number or SHA,
 URL, and permission/installation context. Diffs and files are byte/line bounded

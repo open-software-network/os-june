@@ -7,7 +7,7 @@ import {
 } from "../lib/hermes-control-plane/compatibility";
 import { PINNED_HERMES_VERSION } from "../lib/hermes-control-plane/compatibility";
 
-const PIN = "v2026.6.19";
+const PIN = "v2026.7.20";
 
 describe("hermes compatibility matrix — shape and pin", () => {
   it("pins the matrix to the current upstream Hermes version note", () => {
@@ -41,6 +41,13 @@ describe("hermes compatibility matrix — shape and pin", () => {
       }
     }
   });
+
+  it("preserves first-seen provenance across the 0.19 upgrade", () => {
+    expect(hermesCompatibilityMatrix.events.message?.since).toBe("v2026.6.19");
+    expect(hermesCompatibilityMatrix.methods["session.context_breakdown"]?.since).toBe(PIN);
+    expect(hermesCompatibilityMatrix.events.toolOutputRisk?.since).toBe(PIN);
+    expect(hermesCompatibilityMatrix.features.secretSources?.since).toBe(PIN);
+  });
 });
 
 describe("hermes compatibility matrix — required keys", () => {
@@ -52,6 +59,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "session.branch",
       "session.compress",
       "session.usage",
+      "session.context_breakdown",
       "config.set",
       "command.dispatch",
       "subagent.interrupt",
@@ -77,6 +85,7 @@ describe("hermes compatibility matrix — required keys", () => {
       "message",
       "thinking",
       "tool",
+      "toolOutputRisk",
       "approval",
       "clarify",
       "sudo",
@@ -84,6 +93,10 @@ describe("hermes compatibility matrix — required keys", () => {
       "subagent",
       "error",
       "lifecycle",
+      "moa",
+      "reaction",
+      "terminal",
+      "turn",
     ]) {
       expect(eventKeys, `events.${required}`).toContain(required);
     }
@@ -98,6 +111,11 @@ describe("hermes compatibility matrix — required keys", () => {
       "messagingIntegrations",
       "profile-switching",
       "targetedMcpApprovals",
+      "secretSources",
+      "smartApprovals",
+      "sessionExport",
+      "subscriptionManagement",
+      "reasoningEffortControls",
     ]) {
       expect(featureKeys, `features.${required}`).toContain(required);
     }

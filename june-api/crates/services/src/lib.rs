@@ -618,6 +618,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -627,7 +628,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcribe_preview_authorizes_dispatches_asr_and_charges_actual_credits() {
+    async fn note_transcribe_opted_in_preview_settles_actual_credits() {
         let os_accounts = Arc::new(RecordingOsAccounts::default());
         let transcriber = Arc::new(RecordingTranscriber::default());
         let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
@@ -648,19 +649,330 @@ mod tests {
         let output = service
             .transcribe(NoteTranscribeParams {
                 user_id: UserId("usr_123".to_string()),
-                note_id: "live-preview-session-1".to_string(),
+                note_id: "live-preview-opted-1".to_string(),
                 audio: vec![1, 2, 3],
                 filename: "preview.wav".to_string(),
-                context: Some("Previous words".to_string()),
-                language: Some("en".to_string()),
+                context: None,
+                language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: true,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await
-            .expect("preview transcription succeeds");
+            .expect("opted-in preview transcription succeeds");
 
+        // Consented preview bills the computed price instead of zero; the
+        // authorization hold is unchanged.
         assert_eq!(output.receipt.credits_charged.0, 4);
+        assert!(
+            os_accounts
+                .events()
+                .iter()
+                .any(|event| matches!(event, RecordedCall::Charge { credits: 4, .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_opted_in_preview_failure_releases_hold_without_billing() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FailingTranscriber),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-opted-fail".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                preview_opted_in: true,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await;
+
+        // Consent never bills failed work: the hold releases at zero exactly
+        // like an unconsented preview failure.
+        assert!(matches!(result, Err(ServiceError::UpstreamProvider)));
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 4,
+                    hold_ttl: 60,
+                },
+                release_charge_event("note_transcribe"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_opted_in_preview_settlement_clamps_to_granted_cap() {
+        // OS Accounts may grant a hold below the requested estimate; the
+        // opted-in settlement must clamp to the granted cap exactly like the
+        // final path instead of hard-failing the charge after a successful
+        // transcription.
+        let os_accounts = Arc::new(RecordingOsAccounts::with_cap(Some(3)));
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let output = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "live-preview-opted-cap".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                preview_opted_in: true,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await
+            .expect("opted-in preview clamps to the granted cap");
+
+        // Computed price is 4 credits (2s at 2 credits/s); the granted cap
+        // is 3, so settlement clamps to 3.
+        assert_eq!(output.receipt.credits_charged.0, 3);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 4,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 3,
+                    idempotency_key: concat!(
+                        "note_transcribe_preview:usr_123:live-preview-opted-cap:",
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                        ":opted",
+                    )
+                    .to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_settles_zero_and_identical_final_charges_actual_credits() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let params = NoteTranscribeParams {
+            user_id: UserId("usr_123".to_string()),
+            note_id: "live-preview-session-1".to_string(),
+            audio: vec![1, 2, 3],
+            filename: "preview.wav".to_string(),
+            context: Some("Previous words".to_string()),
+            language: Some("en".to_string()),
+            model_id: ModelId("audio-model".to_string()),
+            preview: true,
+            preview_opted_in: false,
+            provider_credentials: ProviderCredentials::default(),
+        };
+        let preview_output = service
+            .transcribe(params.clone())
+            .await
+            .expect("preview transcription succeeds");
+        let final_output = service
+            .transcribe(NoteTranscribeParams {
+                preview: false,
+                preview_opted_in: false,
+                ..params
+            })
+            .await
+            .expect("final transcription succeeds");
+
+        assert_eq!(preview_output.receipt.credits_charged.0, 0);
+        assert_eq!(final_output.receipt.credits_charged.0, 4);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 4,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 0,
+                    idempotency_key: concat!(
+                        "note_transcribe_preview:usr_123:live-preview-session-1:",
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                    )
+                    .to_string(),
+                },
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 1024,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 4,
+                    idempotency_key: "note_transcribe:usr_123:live-preview-session-1".to_string(),
+                },
+            ]
+        );
+        assert_eq!(transcriber.call_count(), 2);
+        assert_eq!(
+            transcriber.last_context(),
+            Some("Previous words".to_string())
+        );
+        assert_eq!(transcriber.last_language(), Some("en".to_string()));
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_charge_failure_propagates_after_transcription() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            fail_charge: true,
+            ..RecordingOsAccounts::default()
+        });
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "preview-settlement-failure".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                preview_opted_in: false,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::MeteringProvider)));
+        assert_eq!(transcriber.call_count(), 1);
+        assert_eq!(
+            os_accounts.events(),
+            vec![
+                RecordedCall::Authorize {
+                    user_id: "usr_123".to_string(),
+                    action: "note_transcribe".to_string(),
+                    estimate: 4,
+                    hold_ttl: 60,
+                },
+                RecordedCall::Charge {
+                    action_token: "agt_test".to_string(),
+                    credits: 0,
+                    idempotency_key: concat!(
+                        "note_transcribe_preview:usr_123:preview-settlement-failure:",
+                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                    )
+                    .to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_final_charge_failure_propagates_after_transcription() {
+        let os_accounts = Arc::new(RecordingOsAccounts {
+            fail_charge: true,
+            ..RecordingOsAccounts::default()
+        });
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: transcriber.clone(),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let result = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "final-settlement-failure".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "recording.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: false,
+                preview_opted_in: false,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await;
+
+        assert!(matches!(result, Err(ServiceError::MeteringProvider)));
+        assert_eq!(transcriber.call_count(), 1);
         assert_eq!(
             os_accounts.events(),
             vec![
@@ -673,20 +985,54 @@ mod tests {
                 RecordedCall::Charge {
                     action_token: "agt_test".to_string(),
                     credits: 4,
-                    idempotency_key: concat!(
-                        "note_transcribe_preview:usr_123:live-preview-session-1:",
-                        "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
-                    )
-                    .to_string(),
+                    idempotency_key: "note_transcribe:usr_123:final-settlement-failure".to_string(),
                 },
             ]
         );
-        assert_eq!(transcriber.call_count(), 1);
-        assert_eq!(
-            transcriber.last_context(),
-            Some("Previous words".to_string())
-        );
-        assert_eq!(transcriber.last_language(), Some("en".to_string()));
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_zero_duration_keeps_a_positive_hold() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            duration_probe: Arc::new(ZeroDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        let output = service
+            .transcribe(NoteTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                note_id: "zero-duration-preview".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "preview.wav".to_string(),
+                context: None,
+                language: None,
+                model_id: ModelId("audio-model".to_string()),
+                preview: true,
+                preview_opted_in: false,
+                provider_credentials: ProviderCredentials::default(),
+            })
+            .await
+            .expect("zero-duration preview still settles successfully");
+
+        assert_eq!(output.receipt.credits_charged.0, 0);
+        assert!(matches!(
+            os_accounts.events().as_slice(),
+            [
+                RecordedCall::Authorize { estimate: 1, .. },
+                RecordedCall::Charge { credits: 0, .. }
+            ]
+        ));
     }
 
     #[tokio::test]
@@ -719,7 +1065,8 @@ mod tests {
                 context: None,
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
-                preview: true,
+                preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await
@@ -767,6 +1114,7 @@ mod tests {
                     language: None,
                     model_id: ModelId("audio-model".to_string()),
                     preview,
+                    preview_opted_in: false,
                     provider_credentials: user_venice_credentials(),
                 })
                 .await
@@ -806,6 +1154,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -819,7 +1168,7 @@ mod tests {
                 RecordedCall::Authorize {
                     user_id: "usr_123".to_string(),
                     action: "note_transcribe".to_string(),
-                    estimate: 1024,
+                    estimate: 4,
                     hold_ttl: 60,
                 },
                 release_charge_event("note_transcribe"),
@@ -868,6 +1217,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: false,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -886,6 +1236,71 @@ mod tests {
                     hold_ttl: 60,
                 },
                 release_charge_event("note_transcribe"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn note_transcribe_preview_idempotency_key_distinguishes_consent_states() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let service = NoteTranscribeService::new(NoteTranscribeServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts: os_accounts.clone(),
+            transcriber: Arc::new(FixedTranscriber),
+            duration_probe: Arc::new(FixedDurationProbe),
+            hold_ttl_seconds: 60,
+            flat_estimate_credits: 1024,
+            preview_max_audio_seconds: 30,
+        });
+
+        for preview_opted_in in [false, true] {
+            service
+                .transcribe(NoteTranscribeParams {
+                    user_id: UserId("usr_123".to_string()),
+                    note_id: "consent-state-preview".to_string(),
+                    audio: vec![1, 2, 3],
+                    filename: "preview.wav".to_string(),
+                    context: None,
+                    language: None,
+                    model_id: ModelId("audio-model".to_string()),
+                    preview: true,
+                    preview_opted_in,
+                    provider_credentials: ProviderCredentials::default(),
+                })
+                .await
+                .expect("preview transcription succeeds");
+        }
+
+        let charge_keys = os_accounts
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                RecordedCall::Charge {
+                    idempotency_key, ..
+                } => Some(idempotency_key),
+                RecordedCall::Authorize { .. } => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            charge_keys,
+            vec![
+                concat!(
+                    "note_transcribe_preview:usr_123:consent-state-preview:",
+                    "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                )
+                .to_string(),
+                concat!(
+                    "note_transcribe_preview:usr_123:consent-state-preview:",
+                    "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+                    ":opted",
+                )
+                .to_string(),
             ]
         );
     }
@@ -919,6 +1334,7 @@ mod tests {
                     language: None,
                     model_id: ModelId("audio-model".to_string()),
                     preview: true,
+                    preview_opted_in: false,
                     provider_credentials: ProviderCredentials::default(),
                 })
                 .await
@@ -986,6 +1402,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -997,7 +1414,7 @@ mod tests {
             vec![RecordedCall::Authorize {
                 user_id: "usr_123".to_string(),
                 action: "note_transcribe".to_string(),
-                estimate: 1024,
+                estimate: 4,
                 hold_ttl: 60,
             }]
         );
@@ -1032,6 +1449,7 @@ mod tests {
                 language: None,
                 model_id: ModelId("audio-model".to_string()),
                 preview: true,
+                preview_opted_in: false,
                 provider_credentials: ProviderCredentials::default(),
             })
             .await;
@@ -1806,6 +2224,14 @@ mod tests {
     impl AudioDurationProbe for FixedDurationProbe {
         fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
             Ok(Duration::from_millis(1500))
+        }
+    }
+
+    struct ZeroDurationProbe;
+
+    impl AudioDurationProbe for ZeroDurationProbe {
+        fn probe(&self, _audio: &[u8]) -> Result<Duration, DomainError> {
+            Ok(Duration::ZERO)
         }
     }
 

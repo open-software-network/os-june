@@ -9,6 +9,7 @@ import { initTheme } from "./lib/theme";
 import { initBrand } from "./lib/brand";
 import { initFontScale, installFontScaleShortcuts } from "./lib/font-scale";
 import { installExternalLinkOpener } from "./lib/external-links";
+import { initializeExperimentalFlags } from "./lib/experimental-flags";
 import "./styles/app.css";
 
 declare global {
@@ -30,6 +31,7 @@ initFontScale();
 installFontScaleShortcuts();
 installExternalLinkOpener();
 installNativeContextMenuGuard();
+await initializeExperimentalFlags();
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.
 // from this window's devtools. Emits on the Tauri bus only, so fake demo

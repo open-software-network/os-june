@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
@@ -17,7 +17,6 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
-import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
@@ -1097,14 +1096,17 @@ meetingStartButton?.addEventListener("click", async (event) => {
   event.stopPropagation();
   if (hud?.dataset.state !== "meeting") return;
 
-  meetingPromptSuppressed = true;
-  clearMeetingPromptTimer();
   meetingStartButton.disabled = true;
   try {
-    await emit(MEETING_START_TRANSCRIPTION_EVENT);
+    await invoke("queue_meeting_start_request");
   } catch {
-    // The main window owns recording errors; the HUD should never block clicks.
+    // The request was not durably queued, so leave the prompt available for
+    // another click instead of hiding a failed action.
+    meetingStartButton.disabled = false;
+    return;
   }
+  meetingPromptSuppressed = true;
+  clearMeetingPromptTimer();
   void hideHud().finally(() => {
     meetingStartButton.disabled = false;
   });

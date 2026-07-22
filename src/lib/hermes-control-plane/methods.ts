@@ -68,6 +68,15 @@ export type InterruptSubagentParams = {
   sessionId: string;
   subagentId: string;
 };
+export type SetSessionReasoningEffortParams = {
+  /** The session's RUNTIME id (not the stored id): config.set looks the
+   * session up in the gateway's live-session map. */
+  sessionId: string;
+  /** A Hermes reasoning-effort string: none, minimal, low, medium, high, or
+   * xhigh. Callers map June's thinking levels onto these in
+   * `thinking-level.ts`; this seam passes the wire value through untouched. */
+  effort: string;
+};
 export type AttachImageParams = {
   sessionId: string;
   mimeType: string;
@@ -91,6 +100,12 @@ export type HermesMethods = {
   respondToSudo(params: RespondToSudoParams): Promise<unknown>;
   respondToSecret(params: RespondToSecretParams): Promise<unknown>;
   interruptSubagent(params: InterruptSubagentParams): Promise<unknown>;
+  /** Changes how much a LIVE session reasons before answering by setting the
+   * gateway's `reasoning` config key (the same surface the TUI's /reasoning
+   * command uses). The gateway applies the new effort to the session's agent
+   * immediately, persists it into the session's stored runtime config (so
+   * resume keeps it), and emits a fresh session.info. */
+  setSessionReasoningEffort(params: SetSessionReasoningEffortParams): Promise<unknown>;
   attachImage(params: AttachImageParams): Promise<unknown>;
 };
 
@@ -156,6 +171,13 @@ export function createHermesMethods(client: HermesRequestLike): HermesMethods {
       return request("subagent.interrupt", {
         session_id: sessionId,
         subagent_id: subagentId,
+      });
+    },
+    setSessionReasoningEffort({ sessionId, effort }) {
+      return request("config.set", {
+        session_id: sessionId,
+        key: "reasoning",
+        value: effort,
       });
     },
     attachImage({ sessionId, mimeType, dataBase64, fileName }) {

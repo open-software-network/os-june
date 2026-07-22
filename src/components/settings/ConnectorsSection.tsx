@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import { ComputerUseControl } from "../plugins/ComputerUseControl";
 import {
@@ -14,6 +15,7 @@ import {
 import { errorCode, messageFromError } from "../../lib/errors";
 import {
   CONNECTORS_CHANGED_EVENT,
+  GITHUB_DEVICE_CODE_EVENT,
   connectorsApplyRuntime,
   connectorsCancelConnect,
   connectorsConnect,
@@ -29,33 +31,40 @@ import {
   type ConnectorAccount,
   type ConnectorProvider,
   type ConnectorScopeBundle,
+  type GitHubDeviceCodePayload,
   type LinearTeam,
   type ObsidianStatus,
 } from "../../lib/tauri";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { Checkbox } from "../ui/Checkbox";
 import { Dialog } from "../ui/Dialog";
 import { InlineNotice } from "../ui/InlineNotice";
+import { HoverTip } from "../ui/HoverTip";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
-import { BROWSER_USE_ENABLED } from "../../lib/feature-flags";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
+import { IconCircleInfo } from "central-icons/IconCircleInfo";
 
 // Read-only by default: Google gets mail read and calendar read, Linear gets
-// workspace read. Write scopes are opt-in checkboxes, so a fresh connect
-// never grants mutation authority the user did not ask for.
-type OAuthConnectorProvider = Extract<ConnectorProvider, "google" | "linear">;
+// workspace read, GitHub gets repository read. Write scopes are opt-in
+// checkboxes, so a fresh connect never grants mutation authority the user
+// did not ask for.
+type OAuthConnectorProvider = Extract<ConnectorProvider, "google" | "linear" | "github">;
 
 const DEFAULT_CONNECT_BUNDLES = {
   google: ["gmail_read", "calendar_read"],
   linear: ["linear_read"],
+  github: ["github_read"],
 } satisfies Record<OAuthConnectorProvider, readonly ConnectorScopeBundle[]>;
 
-const PROVIDER_ORDER = ["google", "linear"] as const;
+const PROVIDER_ORDER = ["google", "linear", "github"] as const;
 
 const PROVIDER_NAMES = {
   google: "Google",
   linear: "Linear",
   notion: "Notion",
+  github: "GitHub",
 } satisfies Record<ConnectorProvider, string>;
 
 /** One-line capability blurb shown while a provider is not connected: what
@@ -63,6 +72,8 @@ const PROVIDER_NAMES = {
 const PROVIDER_BLURBS = {
   google: "Mail and calendar for briefings, triage, and meeting prep.",
   linear: "Projects, cycles, and issues for planning briefs and status updates.",
+  github:
+    "Read issues, pull requests, and code in the repositories chosen when you install the GitHub App. June allows drafting issues and comments with your approval. Repository access is managed on GitHub, not here.",
 } satisfies Record<OAuthConnectorProvider, string>;
 
 const NOTION_CONNECTOR_BLURB =
@@ -76,20 +87,27 @@ const NOTION_SCOPE_DISCLOSURE = "Access may extend beyond selected pages.";
 
 const NOTION_SEARCH_DISCLOSURE = "Search may include Notion-connected sources.";
 
+const NOTION_CONNECT_DIALOG_DESCRIPTION =
+  "You'll sign in to Notion and approve June's access in your browser. June reads pages and workspace content for briefs and search, and creates or updates pages only with your approval.";
+
+const NOTION_CONNECT_DIALOG_TITLE = "Connect Notion";
+
+const NOTION_RECONNECT_DIALOG_TITLE = "Reconnect Notion";
+
 type NotionConnectorRowProps = {
   account: ConnectorAccount | null;
   connecting: boolean;
   disconnecting: boolean;
-  onConnect: () => void;
-  onReconnect: () => void;
   onDisconnect: () => void;
+  onOpenConnectDialog: () => void;
+  onOpenReconnectDialog: () => void;
 };
 
 type NotionConnectorState = "disconnected" | "connected" | "reconnect_required" | "unavailable";
 
 type NotionConnectorActionsProps = Pick<
   NotionConnectorRowProps,
-  "connecting" | "disconnecting" | "onConnect" | "onReconnect" | "onDisconnect"
+  "connecting" | "disconnecting" | "onDisconnect" | "onOpenConnectDialog" | "onOpenReconnectDialog"
 > & {
   state: NotionConnectorState;
 };
@@ -105,9 +123,9 @@ function NotionConnectorActions({
   state,
   connecting,
   disconnecting,
-  onConnect,
-  onReconnect,
   onDisconnect,
+  onOpenConnectDialog,
+  onOpenReconnectDialog,
 }: NotionConnectorActionsProps) {
   const busy = connecting || disconnecting;
   const disconnectButton = (
@@ -133,7 +151,7 @@ function NotionConnectorActions({
           aria-label="Reconnect Notion"
           disabled={busy}
           aria-busy={connecting || undefined}
-          onClick={onReconnect}
+          onClick={onOpenReconnectDialog}
         >
           {connecting ? "Waiting for browser…" : "Reconnect"}
         </button>
@@ -148,7 +166,7 @@ function NotionConnectorActions({
       aria-label="Connect Notion"
       disabled={busy}
       aria-busy={connecting || undefined}
-      onClick={onConnect}
+      onClick={onOpenConnectDialog}
     >
       {connecting ? "Waiting for browser…" : "Connect"}
     </button>
@@ -159,9 +177,9 @@ function NotionConnectorRow({
   account,
   connecting,
   disconnecting,
-  onConnect,
-  onReconnect,
   onDisconnect,
+  onOpenConnectDialog,
+  onOpenReconnectDialog,
 }: NotionConnectorRowProps) {
   const state = notionConnectorState(account);
   const details = {
@@ -190,12 +208,32 @@ function NotionConnectorRow({
         <ConnectorProviderIcon provider="notion" />
       </span>
       <div className="connector-main">
-        <span className="connector-name">Notion</span>
+        <span className="connector-title-line">
+          <span className="connector-name">Notion</span>
+          <HoverTip
+            tip={
+              <>
+                {NOTION_SCOPE_DISCLOSURE} {NOTION_SEARCH_DISCLOSURE}
+              </>
+            }
+            width={360}
+          >
+            <button
+              type="button"
+              className="settings-row-info-affordance"
+              aria-label="Notion privacy and access scope"
+              aria-describedby="notion-scope-disclosure"
+            >
+              <IconCircleInfo size={13} ariaHidden />
+            </button>
+          </HoverTip>
+          <span id="notion-scope-disclosure" className="visually-hidden">
+            {NOTION_SCOPE_DISCLOSURE} {NOTION_SEARCH_DISCLOSURE}
+          </span>
+        </span>
         <p className="connector-subtitle" title={subtitle}>
           {subtitle}
         </p>
-        <p className="connector-disclosure">{NOTION_SCOPE_DISCLOSURE}</p>
-        <p className="connector-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
       </div>
       <div className="connector-actions">
         {statusLabel ? (
@@ -207,9 +245,9 @@ function NotionConnectorRow({
           state={state}
           connecting={connecting}
           disconnecting={disconnecting}
-          onConnect={onConnect}
-          onReconnect={onReconnect}
           onDisconnect={onDisconnect}
+          onOpenConnectDialog={onOpenConnectDialog}
+          onOpenReconnectDialog={onOpenReconnectDialog}
         />
       </div>
     </li>
@@ -219,7 +257,12 @@ function NotionConnectorRow({
 const CONNECT_TITLES = {
   google: { connect: "Connect Google account", add: "Add Google access" },
   linear: { connect: "Connect Linear workspace", add: "Add Linear access" },
-} satisfies Record<OAuthConnectorProvider, { connect: string; add: string }>;
+  github: {
+    connect: "Connect GitHub account",
+    add: "Add GitHub access",
+    reconnect: "Reconnect GitHub account",
+  },
+} satisfies Record<OAuthConnectorProvider, { connect: string; add: string; reconnect?: string }>;
 
 const CONNECT_TOASTS = {
   google: {
@@ -231,6 +274,11 @@ const CONNECT_TOASTS = {
     connect: "Linear workspace connected",
     add: "Linear access updated",
     reconnect: "Linear reconnected",
+  },
+  github: {
+    connect: "GitHub account connected",
+    add: "GitHub access updated",
+    reconnect: "GitHub reconnected",
   },
 } satisfies Record<OAuthConnectorProvider, { connect: string; add: string; reconnect: string }>;
 
@@ -255,11 +303,12 @@ function accountDisplayName(account: ConnectorAccount): string {
   return account.email;
 }
 
-/** The login hint the connect flow escalates on: a Google email, or the
- * Linear workspace's account id (Linear escalates by workspace, not by
- * user email). */
+/** The login hint the connect flow escalates on: a Google email; the Linear
+ * workspace's account id (Linear escalates by workspace, not by user email);
+ * or the GitHub numeric user id (GitHub accounts are keyed by id, not login). */
 function loginHintFor(account: ConnectorAccount): string {
-  return account.provider === "linear" ? account.accountId : account.email;
+  if (account.provider === "linear" || account.provider === "github") return account.accountId;
+  return account.email;
 }
 
 function featureSummary(account: ConnectorAccount): string {
@@ -302,13 +351,19 @@ function connectDescription(
   provider: OAuthConnectorProvider,
   target: ConnectorAccount | null,
 ): string {
-  const isGoogle = provider === "google";
+  const isLinear = provider === "linear";
+  const noun = isLinear ? "workspace" : "account";
   const lead = target
     ? `Add to what June may do with ${accountDisplayName(target)}.`
-    : `Pick what June may do with this ${isGoogle ? "account" : "workspace"}.`;
-  const contentPhrase = isGoogle
-    ? "selected mail or calendar content"
-    : "selected project and issue content";
+    : `Pick what June may do with this ${noun}.`;
+  let contentPhrase: string;
+  if (provider === "google") {
+    contentPhrase = "selected mail or calendar content";
+  } else if (provider === "github") {
+    contentPhrase = "selected repository and issue content";
+  } else {
+    contentPhrase = "selected project and issue content";
+  }
   return `${lead} You approve everything in ${PROVIDER_NAMES[provider]}'s own sign-in, and you can disconnect any time. When a feature uses AI, ${contentPhrase} goes to your chosen model provider. Choose a local model to keep inference on this device.`;
 }
 
@@ -329,6 +384,7 @@ export function ConnectorsSection({
   onOpenModels?: () => void;
   onOpenBilling?: () => void;
 }) {
+  const { browserUseEnabled } = useExperimentalFlags();
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<ConnectorProvider | null>(null);
@@ -343,7 +399,19 @@ export function ConnectorsSection({
   // preselects that account/workspace so the backend's single-account guard
   // passes.
   const [connectTarget, setConnectTarget] = useState<ConnectorAccount | null>(null);
+  // When true, the connect dialog was opened by a GitHub reconnect click. This
+  // changes the dialog title and suppresses the bundle picker (the user already
+  // chose bundles when they first connected; we reuse them as-is).
+  const [connectIsReconnect, setConnectIsReconnect] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  // Device-code payload for an in-flight GitHub connect (null = not in device
+  // flow or no code received yet).
+  const [githubDeviceCode, setGithubDeviceCode] = useState<GitHubDeviceCodePayload | null>(null);
+  const [codeCopied, setCodeCopied] = useState(false);
+  const codeCopiedTimerRef = useRef<number>();
+  // An inline error inside the connect dialog (device-flow specific errors
+  // that keep the dialog open so the user can retry).
+  const [connectError, setConnectError] = useState<string | null>(null);
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectorAccount | null>(null);
   // Revoke defaults ON: disconnecting without it leaves the grant alive at
@@ -359,6 +427,8 @@ export function ConnectorsSection({
   const [obsidianDisconnecting, setObsidianDisconnecting] = useState(false);
   const [notionConnecting, setNotionConnecting] = useState(false);
   const [notionDisconnecting, setNotionDisconnecting] = useState(false);
+  const [notionConnectOpen, setNotionConnectOpen] = useState(false);
+  const [notionDialogMode, setNotionDialogMode] = useState<"connect" | "reconnect">("connect");
   const notionOperationIdRef = useRef(0);
   // Linear team-selection dialog: the account id it's open for (null =
   // closed). Kept separate from the fetched team list/selection so a fetch
@@ -432,6 +502,26 @@ export function ConnectorsSection({
     };
   }, [refresh]);
 
+  // Listen for GitHub device-authorization codes while a GitHub connect is in
+  // flight. The backend may re-emit the event (code renewal); we always render
+  // the latest. We subscribe once for the lifetime of the component rather than
+  // gating on `connecting`, so a code that arrives just before state flips is
+  // never dropped.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen(GITHUB_DEVICE_CODE_EVENT, (event: { payload: GitHubDeviceCodePayload }) => {
+      if (!cancelled) setGithubDeviceCode(event.payload);
+    }).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const loadTeams = useCallback(async (accountId: string) => {
     setTeamsLoading(true);
     setTeamsError(null);
@@ -499,6 +589,8 @@ export function ConnectorsSection({
   async function submitConnect() {
     if (bundles.length === 0 || connecting) return;
     setNotConfigured(null);
+    setConnectError(null);
+    setGithubDeviceCode(null);
     setConnecting(true);
     try {
       const account = await runConnect({
@@ -507,8 +599,12 @@ export function ConnectorsSection({
         loginHint: connectTarget ? loginHintFor(connectTarget) : undefined,
       });
       setConnectOpen(false);
+      setConnectIsReconnect(false);
+      setGithubDeviceCode(null);
       const toasts = CONNECT_TOASTS[connectProvider];
-      toast.success(connectTarget ? toasts.add : toasts.connect);
+      toast.success(
+        connectIsReconnect ? toasts.reconnect : connectTarget ? toasts.add : toasts.connect,
+      );
       // A Linear connect that comes back with no teams yet — always true on a
       // first connect — needs one more step before June can read or write
       // anything in the workspace, so walk straight into team selection.
@@ -516,18 +612,43 @@ export function ConnectorsSection({
         openTeamsDialog(account);
       }
     } catch (err) {
+      const code = errorCode(err);
       if (isConnectorNotConfiguredError(err)) {
         setNotConfigured(connectProvider);
         setConnectOpen(false);
-      } else if (errorCode(err) !== "connector_connect_canceled") {
+      } else if (code === "connector_connect_canceled") {
         // A user-initiated cancel rejects the in-flight connect with this
         // code; that is the expected outcome of clicking Cancel, not an
         // error to surface.
+        setGithubDeviceCode(null);
+      } else if (code === "connector_github_device_expired") {
+        // Code expired — let the user retry from the bundle picker.
+        setGithubDeviceCode(null);
+        setConnectError("The code expired before it was approved. Try again.");
+      } else if (code === "connector_github_device_declined") {
+        setGithubDeviceCode(null);
+        setConnectError("GitHub reported the request was declined.");
+      } else {
+        setGithubDeviceCode(null);
         toast.error(messageFromError(err));
       }
     } finally {
       setConnecting(false);
     }
+  }
+
+  function copyDeviceCode() {
+    if (!githubDeviceCode) return;
+    void navigator.clipboard.writeText(githubDeviceCode.userCode).then(() => {
+      setCodeCopied(true);
+      if (codeCopiedTimerRef.current !== undefined) {
+        window.clearTimeout(codeCopiedTimerRef.current);
+      }
+      codeCopiedTimerRef.current = window.setTimeout(() => {
+        setCodeCopied(false);
+        codeCopiedTimerRef.current = undefined;
+      }, 2000);
+    });
   }
 
   async function connectNotion() {
@@ -537,9 +658,20 @@ export function ConnectorsSection({
     setNotionConnecting(true);
     try {
       await notionConnectorConnect();
+      // OAuth succeeded: tokens are stored. Close the consent dialog now,
+      // before the runtime apply/refresh that can fail independently. A
+      // runtime-apply failure after a successful grant is a transient
+      // infra issue, not a reason to re-prompt for OAuth. The success
+      // toast is deferred until the full chain completes so the user
+      // never sees "connected" followed by an error.
+      if (operationId === notionOperationIdRef.current) {
+        setNotionConnectOpen(false);
+      }
       await connectorsApplyRuntime();
       await refresh();
-      if (operationId === notionOperationIdRef.current) toast.success("Notion connected");
+      if (operationId === notionOperationIdRef.current) {
+        toast.success("Notion connected");
+      }
     } catch (err) {
       if (operationId === notionOperationIdRef.current) toast.error(messageFromError(err));
     } finally {
@@ -568,18 +700,72 @@ export function ConnectorsSection({
     }
   }
 
-  // Dismiss the connect dialog. While a connect is in flight ("Waiting for
-  // browser…") this also aborts the backend's loopback wait, so Cancel and
-  // the close button work during that window instead of being stuck until
-  // the browser handoff resolves or times out.
+  // Dismiss the connect dialog. While a connect is in flight this also aborts
+  // the backend's wait, so Cancel and the close button work during that window
+  // instead of being stuck until the flow resolves or times out.
   function dismissConnect() {
     if (connecting) void connectorsCancelConnect();
     setConnectOpen(false);
+    setGithubDeviceCode(null);
+    setConnectError(null);
+    setConnectIsReconnect(false);
   }
 
   async function reconnect(account: ConnectorAccount) {
     if (account.provider === "notion") return;
     setNotConfigured(null);
+
+    // GitHub uses the device-authorization flow: the device-code panel only
+    // renders inside the connect dialog. Route GitHub reconnects through the
+    // same dialog surface so the user sees the code. The dialog starts the
+    // connect immediately (no extra click needed) using the account's existing
+    // bundles and login hint — the reconnect flag suppresses the bundle picker
+    // and adjusts the title and toast.
+    if (account.provider === "github") {
+      const accountBundles = bundlesFromScopes(account.scopes, account.provider);
+      setConnectProvider("github");
+      setConnectTarget(account);
+      setBundles(accountBundles);
+      setConnectIsReconnect(true);
+      setConnectError(null);
+      setGithubDeviceCode(null);
+      setConnectOpen(true);
+      // Start the connect immediately — the user already clicked Reconnect.
+      setConnecting(true);
+      try {
+        await runConnect({
+          provider: "github",
+          scopes: accountBundles,
+          loginHint: loginHintFor(account),
+        });
+        setConnectOpen(false);
+        setConnectIsReconnect(false);
+        setGithubDeviceCode(null);
+        toast.success(CONNECT_TOASTS.github.reconnect);
+      } catch (err) {
+        const code = errorCode(err);
+        if (isConnectorNotConfiguredError(err)) {
+          setNotConfigured("github");
+          setConnectOpen(false);
+          setConnectIsReconnect(false);
+        } else if (code === "connector_connect_canceled") {
+          setGithubDeviceCode(null);
+        } else if (code === "connector_github_device_expired") {
+          setGithubDeviceCode(null);
+          setConnectError("The code expired before it was approved. Try again.");
+        } else if (code === "connector_github_device_declined") {
+          setGithubDeviceCode(null);
+          setConnectError("GitHub reported the request was declined.");
+        } else {
+          setGithubDeviceCode(null);
+          toast.error(messageFromError(err));
+        }
+      } finally {
+        setConnecting(false);
+      }
+      return;
+    }
+
     setReconnectingId(account.accountId);
     try {
       const updated = await runConnect({
@@ -744,7 +930,7 @@ export function ConnectorsSection({
 
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
-          {BROWSER_USE_ENABLED ? <BrowserUseCapabilityRow /> : null}
+          {browserUseEnabled ? <BrowserUseCapabilityRow /> : null}
           <li className="connector-row">
             <span className="connector-logo" aria-hidden>
               <ConnectorProviderIcon provider="obsidian" />
@@ -790,7 +976,10 @@ export function ConnectorsSection({
             const name = PROVIDER_NAMES[provider];
             const status = account ? accountStatusMeta(account.status, provider) : null;
             const subtitle = account ? accountSubtitle(account) : PROVIDER_BLURBS[provider];
-            const reconnecting = account !== null && reconnectingId === account.accountId;
+            const reconnecting =
+              account !== null &&
+              (reconnectingId === account.accountId ||
+                (provider === "github" && connectIsReconnect && connectOpen));
             // Linear only: a connected workspace with no teams picked yet
             // still needs one more step before June can read or write
             // anything in it.
@@ -845,11 +1034,11 @@ export function ConnectorsSection({
                           type="button"
                           className="btn btn-secondary"
                           aria-label={`Reconnect ${name}`}
-                          disabled={reconnectingId !== null}
+                          disabled={reconnectingId !== null || reconnecting}
                           aria-busy={reconnecting || undefined}
                           onClick={() => void reconnect(account)}
                         >
-                          {reconnecting ? "Waiting for browser…" : "Reconnect"}
+                          {reconnecting ? "Reconnecting…" : "Reconnect"}
                         </button>
                       ) : (
                         <>
@@ -894,9 +1083,15 @@ export function ConnectorsSection({
             account={accounts?.find((entry) => entry.provider === "notion") ?? null}
             connecting={accounts === null || notionConnecting}
             disconnecting={notionDisconnecting}
-            onConnect={() => void connectNotion()}
-            onReconnect={() => void reconnectNotion()}
             onDisconnect={() => void disconnectNotion()}
+            onOpenConnectDialog={() => {
+              setNotionDialogMode("connect");
+              setNotionConnectOpen(true);
+            }}
+            onOpenReconnectDialog={() => {
+              setNotionDialogMode("reconnect");
+              setNotionConnectOpen(true);
+            }}
           />
           <ComputerUseControl onOpenModels={onOpenModels} onOpenBilling={onOpenBilling} />
         </ul>
@@ -906,51 +1101,95 @@ export function ConnectorsSection({
         open={connectOpen}
         onClose={dismissConnect}
         title={
-          connectTarget
-            ? CONNECT_TITLES[connectProvider].add
-            : CONNECT_TITLES[connectProvider].connect
+          connectIsReconnect && connectProvider === "github" && CONNECT_TITLES.github.reconnect
+            ? CONNECT_TITLES.github.reconnect
+            : connectTarget
+              ? CONNECT_TITLES[connectProvider].add
+              : CONNECT_TITLES[connectProvider].connect
         }
-        description={connectDescription(connectProvider, connectTarget)}
+        description={
+          githubDeviceCode && connectProvider === "github"
+            ? undefined
+            : connectDescription(connectProvider, connectTarget)
+        }
         footer={
-          <>
+          githubDeviceCode && connectProvider === "github" ? (
+            // Device-code waiting state: only a cancel affordance. The connect
+            // resolves (or errors) on its own once the user approves on GitHub.
+            // Cancel calls connectorsCancelConnect via dismissConnect.
             <button type="button" className="primary-action" onClick={dismissConnect}>
               Cancel
             </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={bundles.length === 0 || connecting}
-              aria-busy={connecting || undefined}
-              onClick={() => void submitConnect()}
-            >
-              {connecting ? "Waiting for browser…" : "Connect"}
-            </button>
-          </>
+          ) : (
+            <>
+              <button type="button" className="primary-action" onClick={dismissConnect}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-action primary-solid"
+                disabled={bundles.length === 0 || connecting}
+                aria-busy={connecting || undefined}
+                onClick={() => void submitConnect()}
+              >
+                {connecting && connectProvider !== "github" ? "Waiting for browser…" : "Connect"}
+              </button>
+            </>
+          )
         }
       >
-        <div className="connectors-bundle-list">
-          {bundlesForProvider(connectProvider).map((bundle) => {
-            const meta = BUNDLE_META[bundle];
-            return (
-              <label
-                key={bundle}
-                className="connectors-bundle-option"
-                htmlFor={`connectors-bundle-${bundle}`}
+        {githubDeviceCode && connectProvider === "github" ? (
+          // GitHub device-authorization flow: show the user code the user must
+          // enter at github.com/login/device. The backend has already opened
+          // the page; the code display and link are the fallback.
+          <div className="github-device-code-panel">
+            <p className="github-device-code-label">
+              Enter this code at github.com/login/device to approve June
+            </p>
+            <div className="github-device-code-row">
+              <span className="github-device-code-value">{githubDeviceCode.userCode}</span>
+              <button
+                type="button"
+                className="btn btn-secondary github-device-code-copy"
+                aria-label={codeCopied ? "Code copied" : "Copy code"}
+                onClick={copyDeviceCode}
               >
-                <Checkbox
-                  id={`connectors-bundle-${bundle}`}
-                  checked={bundles.includes(bundle)}
-                  disabled={connecting}
-                  onChange={(event) => toggleBundle(bundle, event.currentTarget.checked)}
-                />
-                <span className="connectors-bundle-copy">
-                  <span className="connectors-bundle-label">{meta.label}</span>
-                  <span className="connectors-bundle-description">{meta.description}</span>
-                </span>
-              </label>
-            );
-          })}
-        </div>
+                <CopyStateIcon copied={codeCopied} />
+                Copy code
+              </button>
+            </div>
+            <p className="github-device-code-status">Waiting for approval on GitHub…</p>
+          </div>
+        ) : (
+          <>
+            {connectError ? (
+              <InlineNotice tone="warning" body={connectError} aria-label="Connect error" />
+            ) : null}
+            <div className="connectors-bundle-list">
+              {bundlesForProvider(connectProvider).map((bundle) => {
+                const meta = BUNDLE_META[bundle];
+                return (
+                  <label
+                    key={bundle}
+                    className="connectors-bundle-option"
+                    htmlFor={`connectors-bundle-${bundle}`}
+                  >
+                    <Checkbox
+                      id={`connectors-bundle-${bundle}`}
+                      checked={bundles.includes(bundle)}
+                      disabled={connecting}
+                      onChange={(event) => toggleBundle(bundle, event.currentTarget.checked)}
+                    />
+                    <span className="connectors-bundle-copy">
+                      <span className="connectors-bundle-label">{meta.label}</span>
+                      <span className="connectors-bundle-description">{meta.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </>
+        )}
       </Dialog>
 
       <Dialog
@@ -1092,6 +1331,52 @@ export function ConnectorsSection({
             </div>
           </>
         )}
+      </Dialog>
+      <Dialog
+        open={notionConnectOpen}
+        onClose={() => {
+          if (!notionConnecting) setNotionConnectOpen(false);
+        }}
+        title={
+          notionDialogMode === "reconnect"
+            ? NOTION_RECONNECT_DIALOG_TITLE
+            : NOTION_CONNECT_DIALOG_TITLE
+        }
+        description={NOTION_CONNECT_DIALOG_DESCRIPTION}
+        disableBackdropClose={notionConnecting}
+        closeDisabled={notionConnecting}
+        footer={
+          <Fragment>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={() => setNotionConnectOpen(false)}
+              disabled={notionConnecting}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              disabled={notionConnecting}
+              aria-busy={notionConnecting || undefined}
+              onClick={() => {
+                if (notionDialogMode === "reconnect") {
+                  void reconnectNotion();
+                } else {
+                  void connectNotion();
+                }
+              }}
+            >
+              {notionConnecting ? "Waiting for browser…" : "Continue"}
+            </button>
+          </Fragment>
+        }
+      >
+        <div className="connectors-notion-disclosures">
+          <p className="connectors-notion-disclosure">{NOTION_SCOPE_DISCLOSURE}</p>
+          <p className="connectors-notion-disclosure">{NOTION_SEARCH_DISCLOSURE}</p>
+        </div>
       </Dialog>
     </section>
   );

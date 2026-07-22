@@ -8,7 +8,7 @@
  * gate `isHermesFeatureSupported` consults.
  *
  * Honesty rules this matrix is held to (see the per-pack history in
- * `../README.md` and `docs/hermes-upstream-v2026.6.19.md`):
+ * `../README.md` and `docs/hermes-upstream-v2026.7.20.md`):
  * - `"supported"` means June BOTH understands the surface AND ships UI/flow that
  *   uses it today, with tests. Nothing aspirational.
  * - `"partial"` means the seam exists (e.g. the event is classified, or a
@@ -27,9 +27,9 @@
  */
 
 /** The pinned Hermes version this matrix describes. MUST equal the version in
- * `docs/hermes-upstream-v2026.6.19.md`. Bumping the Hermes pin REQUIRES updating
+ * `docs/hermes-upstream-v2026.7.20.md`. Bumping the Hermes pin REQUIRES updating
  * this constant and re-auditing every entry below (feature 20 checklist). */
-export const PINNED_HERMES_VERSION = "v2026.6.19" as const;
+export const PINNED_HERMES_VERSION = "v2026.7.20" as const;
 
 /**
  * Support status for one matrix entry.
@@ -70,7 +70,8 @@ export type HermesCompatibilityMatrix = {
   features: HermesCompatibilitySection;
 };
 
-const PIN = PINNED_HERMES_VERSION;
+const PIN = "v2026.6.19";
+const CURRENT_PIN = PINNED_HERMES_VERSION;
 
 /**
  * Control-plane methods. Feature 01 (`methods.ts`) provides typed STUBS for the
@@ -139,11 +140,17 @@ const methods: HermesCompatibilitySection = {
       "AgentWorkspace's session menu opens a SessionUsagePanel that calls getSessionUsage and renders normalized tokens, context, and estimated cost; covered by hermes-session-usage tests.",
     since: PIN,
   },
+  "session.context_breakdown": {
+    status: "planned",
+    rationale:
+      "Hermes 0.19 exposes structured context breakdown data, but June has no context inspection UI yet.",
+    since: CURRENT_PIN,
+  },
   "config.set": {
     status: "supported",
     rationale:
-      "Before the next user message, AgentWorkspace applies a queued session model with session-scoped config.set; Hermes rejects the mutation with 4009 while the agent run is active.",
-    since: PIN,
+      "Session-scoped config.set applies a queued session model before the next user message and retunes a live session's reasoning effort from the composer model menu's Effort submenu (setSessionReasoningEffort); covered by hermes-control-plane-methods and agent-workspace tests.",
+    since: CURRENT_PIN,
   },
   "command.dispatch": {
     status: "planned",
@@ -197,7 +204,7 @@ const events: HermesCompatibilitySection = {
   message: {
     status: "supported",
     rationale:
-      "message.start/delta/complete classify to transcript events and render in the chat transcript.",
+      "message.start/delta/interim/complete classify to transcript events and render in the chat transcript.",
     since: PIN,
   },
   thinking: {
@@ -210,6 +217,12 @@ const events: HermesCompatibilitySection = {
     status: "supported",
     rationale: "tool.start/progress/complete classify to tool events and render as tool cards.",
     since: PIN,
+  },
+  toolOutputRisk: {
+    status: "planned",
+    rationale:
+      "Hermes 0.19 emits tool.output_risk metadata. June explicitly classifies it as unsupported so metadata cannot reopen or create a tool card until a dedicated risk surface ships.",
+    since: CURRENT_PIN,
   },
   approval: {
     status: "supported",
@@ -253,11 +266,34 @@ const events: HermesCompatibilitySection = {
       "gateway.ready, session.info, and status/lifecycle frames classify to lifecycle events and drive session status.",
     since: PIN,
   },
+  moa: {
+    status: "planned",
+    rationale:
+      "Hermes 0.19 emits moa.reference and moa.aggregating events, but June has no Mixture of Agents transcript UI.",
+    since: CURRENT_PIN,
+  },
+  reaction: {
+    status: "unsupported",
+    rationale: "Hermes 0.19 emits decorative reaction events, which June deliberately ignores.",
+    since: CURRENT_PIN,
+  },
+  terminal: {
+    status: "unsupported",
+    rationale:
+      "Hermes 0.19 exposes terminal.close events for its desktop terminal, while June does not embed the Hermes terminal surface.",
+    since: CURRENT_PIN,
+  },
+  turn: {
+    status: "planned",
+    rationale:
+      "Hermes 0.19 emits turn.start and turn.error lifecycle events, but June has not mapped them into its session status model yet.",
+    since: CURRENT_PIN,
+  },
 };
 
 /**
  * First-party feature surfaces tracked for the upgrade checklist. The upstream
- * runtime ships the capability (see docs/hermes-upstream-v2026.6.19.md), but
+ * runtime ships the capability (see docs/hermes-upstream-v2026.7.20.md), but
  * June must build the product surface before users can rely on it. These reflect
  * June's UI, not Hermes' capability.
  */
@@ -265,7 +301,7 @@ const features: HermesCompatibilitySection = {
   targetedMcpApprovals: {
     status: "supported",
     rationale:
-      "The checksum-gated june-approval-memory-v13 patch preserves MCP request identity, deduplicates retries, bounds the per-session queue, resolves a targeted approval or denial exactly once, drains timeout or disconnect fail closed, and carries the global disabled-toolset policy into desktop sessions on macOS and Windows.",
+      "The checksum-gated june-approval-memory-v14 patch preserves MCP request identity, deduplicates retries, bounds the per-session queue, resolves a targeted approval or denial exactly once, drains timeout or disconnect fail closed, and carries the global disabled-toolset policy into desktop sessions on macOS and Windows.",
     since: PIN,
   },
   backgroundSubagentWatch: {
@@ -298,6 +334,36 @@ const features: HermesCompatibilitySection = {
       "The Profiles settings surface activates the sticky Hermes profile and fresh AgentWorkspace plus note chat sessions thread that active profile into session.create.",
     since: PIN,
   },
+  secretSources: {
+    status: "planned",
+    rationale:
+      "Hermes 0.19 can resolve secrets from Bitwarden and 1Password, but June has no vault connection or secret provenance UI.",
+    since: CURRENT_PIN,
+  },
+  smartApprovals: {
+    status: "unsupported",
+    rationale:
+      "Hermes 0.19 enables model-reviewed approvals by default, but June forces approvals.mode=manual and cron_mode=deny in its owned config so every interactive dangerous command reaches an explicit human approval card.",
+    since: CURRENT_PIN,
+  },
+  sessionExport: {
+    status: "planned",
+    rationale:
+      "Hermes 0.19 adds multi-format session export and redaction, but June does not expose those surfaces.",
+    since: CURRENT_PIN,
+  },
+  subscriptionManagement: {
+    status: "unsupported",
+    rationale:
+      "Hermes 0.19 adds Nous subscription RPC methods, while June uses Open Software accounts and does not expose Nous billing controls.",
+    since: CURRENT_PIN,
+  },
+  reasoningEffortControls: {
+    status: "supported",
+    rationale:
+      "The composer model menu's Effort submenu exposes three reasoning levels (Instant, Medium, Hard) mapped onto Hermes effort tiers: new sessions pin reasoning_effort on session.create and a live session retunes via config.set (setSessionReasoningEffort); max/ultra tiers and per-model overrides stay unexposed.",
+    since: CURRENT_PIN,
+  },
 };
 
 /**
@@ -306,7 +372,7 @@ const features: HermesCompatibilitySection = {
  * source above, not at runtime.
  */
 export const hermesCompatibilityMatrix: HermesCompatibilityMatrix = Object.freeze({
-  hermesVersion: PIN,
+  hermesVersion: CURRENT_PIN,
   methods: Object.freeze(methods) as HermesCompatibilitySection,
   events: Object.freeze(events) as HermesCompatibilitySection,
   features: Object.freeze(features) as HermesCompatibilitySection,

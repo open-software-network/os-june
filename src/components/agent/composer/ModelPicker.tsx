@@ -31,6 +31,7 @@ export function ComposerModelPicker({
   open,
   model,
   detail,
+  effort,
   readOnly = false,
   triggerRef,
   onToggleOpen,
@@ -40,6 +41,11 @@ export function ComposerModelPicker({
   /** Ghosted designation beside the name — the Auto routing preference
    * ("Auto Higher"), quieter than the model name. */
   detail?: string;
+  /** Ghosted thinking level beside the name ("Medium"), visual only: kept
+   * out of the trigger's aria-label so existing "Model: <name>" queries and
+   * announcements are unchanged; the Effort row in the popover carries the
+   * accessible value. */
+  effort?: string;
   readOnly?: boolean;
   triggerRef: RefObject<HTMLButtonElement>;
   onToggleOpen: () => void;
@@ -51,6 +57,11 @@ export function ComposerModelPicker({
         <span className="agent-composer-model-label">
           <span>{model.name}</span>
           {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
+          {effort ? (
+            <span className="agent-composer-model-trigger-level" aria-hidden>
+              {effort}
+            </span>
+          ) : null}
         </span>
       </div>
     );
@@ -68,6 +79,11 @@ export function ComposerModelPicker({
       >
         <span>{model.name}</span>
         {detail ? <span className="agent-composer-model-trigger-detail">{detail}</span> : null}
+        {effort ? (
+          <span className="agent-composer-model-trigger-level" aria-hidden>
+            {effort}
+          </span>
+        ) : null}
         <IconChevronDownSmall size={12} aria-hidden />
       </button>
     </div>
@@ -84,6 +100,7 @@ export type ComposerModelFlyout =
   | { kind: "model"; id: string }
   | { kind: "all" }
   | { kind: "auto" }
+  | { kind: "effort" }
   | null;
 
 // Row hovers should feel quick while moving through models, but still keep a

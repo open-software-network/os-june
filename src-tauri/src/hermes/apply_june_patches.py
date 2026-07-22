@@ -13,26 +13,26 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v13"
+PATCH_SET = "june-approval-memory-v14"
 
 UPSTREAM_SHA256: Dict[str, str] = {
-    "agent/agent_init.py": "7e90d8202794bec74c05285018a211e596abdf66b75b662d1b6b1618da2a7f7b",
-    "tools/approval.py": "e31abc88357afa28c05f3a4753ea9908b540b0dfef8dab2fa62960ae19a63c85",
-    "tools/mcp_tool.py": "3f0aca90d076a1b0aa5daffd7bb39b0d1a4fee83265f855e68d556e5c8a29d01",
-    "tui_gateway/server.py": "1743cec5c6684651d2b7cb18b7b73a37ea99538a4f56bcd8476700ce23d4f01a",
-    "utils.py": "572b08bcbdf4a37116f49d1fc72d22854897a5fd8968c2d358103a97589c206c",
-    "gateway/platforms/telegram.py": "3943dc748827f81bf4e40a2a6711e4dfb6f65304bff552474ffbc23fd91e23a6",
+    "agent/agent_init.py": "85b7cb13d6e6306e75d5eec46f193433df680425533b7d35ee99e0f7eab9512a",
+    "tools/approval.py": "f35c78aa0b56c82cafe0242bb886c4f9679bf55219776a105131dceba2ce9672",
+    "tools/mcp_tool.py": "a7328f3f3762ae43f6a9426646b0c28c17ec8663aa391506f48d628035ad5460",
+    "tui_gateway/server.py": "5d00832327e4362ac75032f95003e1fa49aead4756cf7927dcfd66447b205a59",
+    "utils.py": "a60c651a682f739c8e7e167de939c5bb060c8c2b049ce28d65f12ff1f649b207",
+    "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
 
 # Filled after applying the transformations to the exact upstream files. These
 # hashes are part of the runtime provenance contract, not best-effort checks.
 PATCHED_SHA256: Dict[str, str] = {
-    "agent/agent_init.py": "58e0f7294cea8d778b15827af4e0a1d5c2d9e0a2db27b2a6697f30811053629e",
-    "tools/approval.py": "56e88034ebcac8cff8c579c56345e4cb3fe2fe597360687d40b68daefd402e3d",
-    "tools/mcp_tool.py": "48a2fddfee5d5a8c33723e27639907e9f2cf062c82e7beeb844f457e6a372cfa",
-    "tui_gateway/server.py": "f375627e61af5e61434592d4d17d39c20e7ba1a7e1280715b0e5a7387a0f26a1",
-    "utils.py": "08a0a0203bdee74eb8bc4f8bc31e97eb7621913deca2d087fb56c722b1304ef5",
-    "gateway/platforms/telegram.py": "fd996e2deaebe3ca2856167876f8ff498735744ff7c884eedd85736a7fd2c318",
+    "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
+    "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
+    "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
+    "tui_gateway/server.py": "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
+    "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
+    "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
 
 # These policy files are not transformed, but their exact bytes are part of
@@ -40,8 +40,8 @@ PATCHED_SHA256: Dict[str, str] = {
 # layering and final deny subtraction to make agent.disabled_toolsets win over
 # every stored per-job allowlist.
 POLICY_SHA256: Dict[str, str] = {
-    "cron/scheduler.py": "2d82e4958494b52bcae27527e8ad64f0b730d22906e725609fda7725b410abfa",
-    "model_tools.py": "d7628473ee72f7ac1395f9f2fe43dc2956523b186545bf6abece1b834ac6892d",
+    "cron/scheduler.py": "ea54407dddebec57a184f1dbdf1076f8abe94f132da1e619c476cbf1266ed239",
+    "model_tools.py": "30a2dcb33685783935f66abef6839d06736c90196a89dd034c91c4e6eb65c2db",
 }
 
 
@@ -49,7 +49,21 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+UPSTREAMED_IN_019 = {
+    "prompt image batch ownership",
+    "prompt image batch handoff",
+    "failed prompt image batch restoration",
+    "prompt image batch consumption",
+    "notification prompt image isolation",
+    "goal continuation image isolation",
+    "completion prompt image isolation",
+    "telegram DM topic config writer",
+}
+
+
 def replace_once(source: str, old: str, new: str, label: str) -> str:
+    if label in UPSTREAMED_IN_019:
+        return source
     count = source.count(old)
     if count != 1:
         raise RuntimeError("%s: expected one match, found %d" % (label, count))
@@ -59,6 +73,8 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
 def replace_count(
     source: str, old: str, new: str, expected: int, label: str
 ) -> str:
+    if label in UPSTREAMED_IN_019:
+        return source
     count = source.count(old)
     if count != expected:
         raise RuntimeError(
@@ -68,6 +84,8 @@ def replace_count(
 
 
 def replace_region(source: str, start: str, end: str, replacement: str, label: str) -> str:
+    if label in UPSTREAMED_IN_019:
+        return source
     start_index = source.find(start)
     if start_index < 0:
         raise RuntimeError("%s: start marker not found" % label)
@@ -1118,6 +1136,10 @@ def _queue_attached_image(
             # after this lock is released and must not mutate the reset session.
             previous_prompt_generation = int(session.get("prompt_generation", 0))
             previous_reset_generation = int(session.get("reset_generation", 0))
+            # /new starts fresh history but June keeps the session's explicit
+            # model, reasoning, and service-tier selections. Only a one-turn
+            # override expires at this boundary.
+            session.pop("one_turn_model_restore", None)
             session["prompt_generation"] = previous_prompt_generation + 1
             session["reset_generation"] = previous_reset_generation + 1
             tokens = _set_session_context(session["session_key"])
@@ -1126,11 +1148,10 @@ def _queue_attached_image(
                     sid,
                     session["session_key"],
                     session_id=session["session_key"],
-                    # Preserve this session's chosen model across /new so a reset
-                    # doesn't silently revert to global config (or to a model another
-                    # session set). See the cross-session-contamination note in
-                    # _apply_model_switch.
+                    platform_override=_session_source(session),
                     model_override=session.get("model_override"),
+                    reasoning_config_override=session.get("create_reasoning_override"),
+                    service_tier_override=session.get("create_service_tier_override"),
                 )
             except Exception:
                 # The original lazy build and prompt still own the session when a
@@ -1207,12 +1228,12 @@ def _queue_attached_image(
     source = replace_once(
         source,
         '''                register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
+                    key, lambda data: _emit_approval_request(sid, data)
                 )
 ''',
         '''                register_gateway_notify(
                     key,
-                    lambda data: _emit("approval.request", sid, data),
+                    lambda data: _emit_approval_request(sid, data),
                     lambda data: _emit("approval.expire", sid, data),
                 )
 ''',
@@ -1222,12 +1243,12 @@ def _queue_attached_image(
         source,
         '''            register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
             )
 ''',
         '''            register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
                 lambda data: _emit("approval.expire", sid, data),
             )
 ''',
@@ -1235,11 +1256,11 @@ def _queue_attached_image(
     )
     source = replace_once(
         source,
-        '''        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        '''        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
 ''',
         '''        register_gateway_notify(
             key,
-            lambda data: _emit("approval.request", sid, data),
+            lambda data: _emit_approval_request(sid, data),
             lambda data: _emit("approval.expire", sid, data),
         )
 ''',
@@ -1682,7 +1703,7 @@ PATCHERS: Dict[str, Callable[[str], str]] = {
     "tools/mcp_tool.py": patch_mcp_tool,
     "tui_gateway/server.py": patch_server,
     "utils.py": patch_utils,
-    "gateway/platforms/telegram.py": patch_telegram,
+    "plugins/platforms/telegram/adapter.py": patch_telegram,
 }
 
 

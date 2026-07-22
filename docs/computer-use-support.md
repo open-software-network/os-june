@@ -59,10 +59,11 @@ from System Settings.
 
 Every macOS `make dev` launch gives the debug Computer use helper a stable
 bundle identifier derived from the current worktree path. The launch registers
-that helper with LaunchServices, clears Accessibility and Screen Recording for
-that exact identifier, and removes stale debug staging copies before Tauri
-copies the signed bundle again. This provides a fresh permission walkthrough
-on every dev restart without changing another worktree's TCC state.
+that helper with LaunchServices, clears Accessibility for the helper identifier,
+clears Screen Recording for the outer June development app identifier, and
+removes stale debug staging copies before Tauri copies the signed bundle again.
+This provides a fresh permission walkthrough on every dev restart without
+resetting Screen Recording for the wrong responsible app.
 
 The Tauri dev runner executes a hard-linked product-name alias of Cargo's
 `os-june` binary. The normal alias is `target/**/June`; supported issue

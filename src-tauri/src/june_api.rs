@@ -334,6 +334,11 @@ pub async fn transcribe_saved_audio(
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
     if request.preview {
         form = form.text("preview", "true");
+        // Builds that carry the Live transcription setting disclose its cost;
+        // a preview request from such a build is therefore consented billable
+        // usage. Legacy clients never send this field and keep zero-credit
+        // preview settlement (JUN-375, ADR-0002 addendum).
+        form = form.text("previewOptedIn", "true");
     }
     if let Some(context) = request
         .context

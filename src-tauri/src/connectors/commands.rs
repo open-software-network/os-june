@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use super::{
-    begin_connect, begin_connect_linear, disconnect, emit_connectors_changed, linear,
-    list_accounts_resilient, list_google_accounts, notion, scopes::ScopeBundle, ConnectFlow,
-    ConnectorAccount, ConnectorAccountStatus, ConnectorProvider, NotionConnectFlow,
+    begin_connect, begin_connect_github, begin_connect_linear, disconnect, emit_connectors_changed,
+    linear, list_accounts_resilient, list_google_accounts, notion, scopes::ScopeBundle,
+    ConnectFlow, ConnectorAccount, ConnectorAccountStatus, ConnectorProvider, NotionConnectFlow,
     SelectedTeamDto,
 };
 
@@ -67,6 +67,9 @@ pub async fn connectors_connect(
         }
         ConnectorProvider::Linear => {
             begin_connect_linear(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+        }
+        ConnectorProvider::Github => {
+            begin_connect_github(&app, &flow, &bundles, request.login_hint.as_deref()).await?
         }
         ConnectorProvider::Notion => {
             return Err(AppError::new(
@@ -418,12 +421,19 @@ async fn grant_server_names(repos: &Repositories, job_id: &str) -> Result<Vec<St
 
 /// The provider whose auto server owns a granted tool, or None for tools
 /// that never need a grant.
+///
+/// GitHub actions (`june_github_actions`) never earn autonomy in v1 (ADR-0036,
+/// PRD launch non-goal). Any tool from that server is explicitly excluded:
+/// returning None means the grant-minting path ignores it, and no
+/// `june_github_auto_*` server is ever created.
 fn provider_for_tool(tool: &str) -> Option<&'static str> {
     if GMAIL_AUTONOMOUS_TOOLS.contains(&tool) {
         Some("gmail")
     } else if GCAL_AUTONOMOUS_TOOLS.contains(&tool) {
         Some("gcal")
     } else {
+        // GitHub tools (create_issue, update_issue, add_comment) and all
+        // unrecognized tools never earn a grant.
         None
     }
 }
@@ -703,6 +713,7 @@ fn parse_provider(value: Option<&str>) -> Result<ConnectorProvider, AppError> {
         Some(value) => match value.trim() {
             "google" => Ok(ConnectorProvider::Google),
             "linear" => Ok(ConnectorProvider::Linear),
+            "github" => Ok(ConnectorProvider::Github),
             _ => Err(AppError::new(
                 "connector_unknown_provider",
                 format!("Unknown connector provider \"{value}\"."),
@@ -823,6 +834,10 @@ mod tests {
             parse_provider(Some("linear")).unwrap(),
             ConnectorProvider::Linear
         );
+        assert_eq!(
+            parse_provider(Some("github")).unwrap(),
+            ConnectorProvider::Github
+        );
         let error = parse_provider(Some("jira")).unwrap_err();
         assert_eq!(error.code, "connector_unknown_provider");
         assert!(error.message.contains("\"jira\""));
@@ -859,6 +874,16 @@ mod tests {
             ConnectorProvider::Linear
         )
         .is_ok());
+        assert!(validate_bundle_providers(
+            &[ScopeBundle::GithubRead, ScopeBundle::GithubWrite],
+            ConnectorProvider::Github
+        )
+        .is_ok());
+        // A GitHub bundle cannot ride a non-GitHub connect.
+        let error =
+            validate_bundle_providers(&[ScopeBundle::GithubRead], ConnectorProvider::Google)
+                .unwrap_err();
+        assert_eq!(error.code, "connector_scope_provider_mismatch");
     }
 
     fn team(id: &str, key: &str, name: &str) -> SelectedTeamDto {
@@ -943,6 +968,12 @@ mod tests {
         // Read-only or unknown tools need no grant.
         assert_eq!(provider_for_tool("read_thread"), None);
         assert_eq!(provider_for_tool("list_events"), None);
+        // GitHub actions never earn autonomy in v1 (ADR-0036).
+        assert_eq!(provider_for_tool("create_issue"), None);
+        assert_eq!(provider_for_tool("update_issue"), None);
+        assert_eq!(provider_for_tool("add_comment"), None);
+        assert_eq!(provider_for_tool("list_repositories"), None);
+        assert_eq!(provider_for_tool("search_issues"), None);
     }
 
     #[test]

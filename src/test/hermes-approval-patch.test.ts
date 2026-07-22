@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import gatewayGotchas from "../../docs/hermes-gateway-gotchas.md?raw";
-import pinNote from "../../docs/hermes-upstream-v2026.6.19.md?raw";
+import pinNote from "../../docs/hermes-upstream-v2026.7.20.md?raw";
 import upgradeChecklist from "../../docs/hermes-upgrade-checklist.md?raw";
 import macBundler from "../../scripts/bundle-hermes-runtime.sh?raw";
 import windowsBundler from "../../scripts/bundle-hermes-runtime-windows.ps1?raw";
@@ -18,7 +18,7 @@ describe("June Hermes compatibility patch", () => {
       "tools/mcp_tool.py",
       "tui_gateway/server.py",
       "utils.py",
-      "gateway/platforms/telegram.py",
+      "plugins/platforms/telegram/adapter.py",
     ]) {
       const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(2);
@@ -28,7 +28,7 @@ describe("June Hermes compatibility patch", () => {
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(1);
       expect(bridge).toContain(`"${path}",`);
     }
-    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v13"');
+    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v14"');
     for (const provenanceSource of [
       bridge,
       compatibilityMatrix,
@@ -36,7 +36,7 @@ describe("June Hermes compatibility patch", () => {
       pinNote,
       upgradeChecklist,
     ]) {
-      expect(provenanceSource).toContain("june-approval-memory-v13");
+      expect(provenanceSource).toContain("june-approval-memory-v14");
     }
     expect(patcher).toContain("session, err = _sess_nowait(params, rid)");
     expect(patcher).toContain('upstream_request_id = getattr(context, "request_id", None)');
@@ -47,6 +47,10 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain("tool_call_id = str(_approval_tool_call_id.get()");
     expect(patcher).toContain('if key := session.get("session_key")');
     expect(patcher).toContain('lambda data: _emit("approval.expire", sid, data)');
+    expect(patcher).not.toContain('lambda data: _emit("approval.request", sid, data)');
+    expect(
+      patcher.match(/lambda data: _emit_approval_request\(sid, data\)/g)?.length,
+    ).toBeGreaterThan(3);
     expect(patcher).toContain('disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],');
     expect(patcher).toContain('"disabled_toolsets": (cfg.get("agent") or {}).get');
     expect(patcher).toContain('user_disabled = agent_cfg.get("disabled_toolsets") or []');
@@ -66,11 +70,18 @@ describe("June Hermes compatibility patch", () => {
       expect(bundler).toContain("--upstream-root");
       expect(bundler).toContain("PATCHSET");
       expect(bundler).toContain("--verify");
+      const dashboardBuild = bundler.indexOf("prebuilding dashboard web UI");
+      const appsPrune = Math.max(
+        bundler.lastIndexOf("$out/hermes-agent/apps"),
+        bundler.lastIndexOf('(Join-Path $agentDir "apps")'),
+      );
+      expect(dashboardBuild).toBeGreaterThan(-1);
+      expect(appsPrune).toBeGreaterThan(dashboardBuild);
     }
   });
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
-    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v13"');
+    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14"');
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
     expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
     for (const mapName of ["PATCHED_SHA256", "POLICY_SHA256"]) {

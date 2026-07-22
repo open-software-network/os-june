@@ -90,8 +90,19 @@ pub struct ComputerUseState {
     attended_generation: AtomicU64,
     cleanup_in_progress: AtomicU32,
     epoch: AtomicU64,
+    cursor: crate::computer_use_cursor::ComputerUseCursorState,
     capture_generation: AtomicU64,
     runtime_ready_state: AtomicU32,
+}
+
+impl ComputerUseState {
+    pub(crate) fn current_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn cursor(&self) -> &crate::computer_use_cursor::ComputerUseCursorState {
+        &self.cursor
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +115,7 @@ struct TargetContext {
     capture_path: Option<String>,
     capture_sha256: Option<String>,
     capture_generation: u64,
+    bounds: crate::computer_use_cursor::ScreenRect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -364,6 +376,7 @@ impl DriverClient {
             pid,
             socket_dir,
         };
+        let mut ignore_notification = |_: &Value| {};
         client
             .request(
                 "initialize",
@@ -374,6 +387,7 @@ impl DriverClient {
                     },
                     "clientInfo": { "name": "June", "version": env!("CARGO_PKG_VERSION") }
                 }),
+                &mut ignore_notification,
             )
             .await?;
         client
@@ -395,7 +409,12 @@ impl DriverClient {
         }
     }
 
-    async fn request(&mut self, method: &str, params: Value) -> Result<Value, AppError> {
+    async fn request(
+        &mut self,
+        method: &str,
+        params: Value,
+        on_notification: &mut (dyn FnMut(&Value) + Send),
+    ) -> Result<Value, AppError> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
         self.write_message(json!({
@@ -405,15 +424,16 @@ impl DriverClient {
             "params": params,
         }))
         .await?;
-        let response = tokio::time::timeout(DRIVER_CALL_TIMEOUT, self.read_response(id))
-            .await
-            .map_err(|_| {
-                self.terminate();
-                AppError::new(
-                    "computer_use_driver_timeout",
-                    "The Computer use driver did not respond in time.",
-                )
-            })??;
+        let response =
+            tokio::time::timeout(DRIVER_CALL_TIMEOUT, self.read_response(id, on_notification))
+                .await
+                .map_err(|_| {
+                    self.terminate();
+                    AppError::new(
+                        "computer_use_driver_timeout",
+                        "The Computer use driver did not respond in time.",
+                    )
+                })??;
         if let Some(error) = response.get("error") {
             return Err(AppError::new(
                 "computer_use_driver_failed",
@@ -423,11 +443,17 @@ impl DriverClient {
         Ok(response)
     }
 
-    async fn call_tool(&mut self, name: &str, arguments: Value) -> Result<Value, AppError> {
+    async fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        on_notification: &mut (dyn FnMut(&Value) + Send),
+    ) -> Result<Value, AppError> {
         let response = self
             .request(
                 "tools/call",
                 json!({ "name": name, "arguments": arguments }),
+                on_notification,
             )
             .await?;
         let result = response.get("result").cloned().ok_or_else(|| {
@@ -470,7 +496,11 @@ impl DriverClient {
             .map_err(|error| AppError::new("computer_use_driver_write_failed", error.to_string()))
     }
 
-    async fn read_response(&mut self, id: u64) -> Result<Value, AppError> {
+    async fn read_response(
+        &mut self,
+        id: u64,
+        on_notification: &mut (dyn FnMut(&Value) + Send),
+    ) -> Result<Value, AppError> {
         loop {
             let line = match read_bounded_line(&mut self.stdout, DRIVER_MAX_LINE_BYTES)
                 .await
@@ -495,6 +525,10 @@ impl DriverClient {
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
+            if value.get("id").is_none() && value.get("method").is_some() {
+                on_notification(&value);
+                continue;
+            }
             if value.get("id").and_then(Value::as_u64) == Some(id) {
                 return Ok(value);
             }
@@ -535,14 +569,24 @@ impl DriverClient {
         0
     }
 
-    async fn request(&mut self, _method: &str, _params: Value) -> Result<Value, AppError> {
+    async fn request(
+        &mut self,
+        _method: &str,
+        _params: Value,
+        _on_notification: &mut (dyn FnMut(&Value) + Send),
+    ) -> Result<Value, AppError> {
         Err(AppError::new(
             "computer_use_unsupported",
             "Computer use is available on macOS only.",
         ))
     }
 
-    async fn call_tool(&mut self, _name: &str, _arguments: Value) -> Result<Value, AppError> {
+    async fn call_tool(
+        &mut self,
+        _name: &str,
+        _arguments: Value,
+        _on_notification: &mut (dyn FnMut(&Value) + Send),
+    ) -> Result<Value, AppError> {
         Err(AppError::new(
             "computer_use_unsupported",
             "Computer use is available on macOS only.",
@@ -619,14 +663,20 @@ pub async fn run_release_self_test_host(
                     "serverInfo": {"name": "June Computer Use Release Self-Test", "version": env!("CARGO_PKG_VERSION")}
                 }
             }),
-            "tools/list" => match driver.request("tools/list", json!({})).await {
-                Ok(driver_response) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": driver_response.get("result").cloned().unwrap_or_else(|| json!({"tools": []}))
-                }),
-                Err(error) => release_self_test_error(id, -32000, &error.message),
-            },
+            "tools/list" => {
+                let mut ignore_notification = |_: &Value| {};
+                match driver
+                    .request("tools/list", json!({}), &mut ignore_notification)
+                    .await
+                {
+                    Ok(driver_response) => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": driver_response.get("result").cloned().unwrap_or_else(|| json!({"tools": []}))
+                    }),
+                    Err(error) => release_self_test_error(id, -32000, &error.message),
+                }
+            }
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let arguments = params
@@ -640,7 +690,11 @@ pub async fn run_release_self_test_host(
                         "Release self-test calls are limited to June's disposable fixtures.",
                     )
                 } else {
-                    match driver.call_tool(name, arguments.clone()).await {
+                    let mut ignore_notification = |_: &Value| {};
+                    match driver
+                        .call_tool(name, arguments.clone(), &mut ignore_notification)
+                        .await
+                    {
                         Ok(result) => {
                             match sanitize_release_self_test_result(name, &arguments, result) {
                                 Some(result) => {
@@ -1115,8 +1169,13 @@ async fn read_permission_probe(
     permission_prompt: Option<DriverPermissionPrompt>,
 ) -> Result<PermissionProbe, AppError> {
     let mut client = DriverClient::start(path, permission_prompt).await?;
+    let mut ignore_notification = |_: &Value| {};
     let result = client
-        .call_tool("check_permissions", json!({ "prompt": false }))
+        .call_tool(
+            "check_permissions",
+            json!({ "prompt": false }),
+            &mut ignore_notification,
+        )
         .await;
     client.stop().await;
     let result = result?;
@@ -1675,6 +1734,7 @@ async fn stop_inner(app: &AppHandle, state: &ComputerUseState) {
         runs.clear();
     }
     state.epoch.fetch_add(1, Ordering::SeqCst);
+    crate::computer_use_cursor::hide(app);
     cancel_pending(app, state);
     force_stop_pid(state.driver_pid.swap(0, Ordering::SeqCst));
     if let Some(driver) = state.driver.lock().await.take() {
@@ -1700,6 +1760,7 @@ async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64
         return;
     }
     state.epoch.fetch_add(1, Ordering::SeqCst);
+    crate::computer_use_cursor::hide(app);
     cancel_pending(app, state);
     force_stop_pid(state.driver_pid.swap(0, Ordering::SeqCst));
     if let Some(driver) = state.driver.lock().await.take() {
@@ -1782,6 +1843,28 @@ async fn handle_action(
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
+    if !matches!(
+        action.as_str(),
+        "capture"
+            | "list_apps"
+            | "wait"
+            | "open_app"
+            | "focus_app"
+            | "click"
+            | "double_click"
+            | "right_click"
+            | "drag"
+            | "scroll"
+            | "type"
+            | "key"
+            | "set_value"
+    ) {
+        return Err(AppError::new(
+            "computer_use_action_invalid",
+            "Computer use received an unknown action.",
+        ));
+    }
+    crate::computer_use_cursor::show(app, epoch);
     match action.as_str() {
         "capture" => capture(app, state, &arguments, Some(epoch), task_generation).await,
         "list_apps" => list_apps(app, state, Some(epoch)).await,
@@ -1803,6 +1886,8 @@ async fn handle_action(
         "focus_app" => focus_app(app, state, &arguments, epoch, task_generation).await,
         "click" | "double_click" | "right_click" | "drag" | "scroll" | "type" | "key"
         | "set_value" => mutate(app, state, &action, &arguments, epoch, task_generation).await,
+        // The allowlist above should make this unreachable; if the two ever
+        // drift, fail the action instead of panicking an attended task.
         _ => Err(AppError::new(
             "computer_use_action_invalid",
             "Computer use received an unknown action.",
@@ -1895,10 +1980,28 @@ async fn driver_call(
     }
     ensure_epoch_current(state, expected_epoch)?;
     ensure_attended_run(state)?;
+    let notification_app = app.clone();
+    let mut handle_notification = move |notification: &Value| {
+        let Some(expected_epoch) = expected_epoch else {
+            return;
+        };
+        let state = notification_app.state::<ComputerUseState>();
+        let Some(target) = state.target.lock().ok().and_then(|target| target.clone()) else {
+            return;
+        };
+        crate::computer_use_cursor::apply_driver_notification(
+            &notification_app,
+            expected_epoch,
+            notification,
+            target.pid,
+            target.window_id,
+            target.bounds,
+        );
+    };
     let result = driver
         .as_mut()
         .expect("driver inserted above")
-        .call_tool(tool, arguments)
+        .call_tool(tool, arguments, &mut handle_notification)
         .await;
     if result.is_err() {
         state.driver_pid.store(0, Ordering::SeqCst);
@@ -1930,6 +2033,8 @@ struct WindowTarget {
     identity: AppIdentity,
     title: String,
     z_index: i64,
+    x: f64,
+    y: f64,
     width: f64,
     height: f64,
     is_on_screen: bool,
@@ -1980,14 +2085,14 @@ async fn windows(
                     .get("z_index")
                     .and_then(Value::as_i64)
                     .unwrap_or(i64::MAX),
-                width: window
-                    .pointer("/bounds/width")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
-                height: window
-                    .pointer("/bounds/height")
-                    .and_then(Value::as_f64)
-                    .unwrap_or_default(),
+                // Bounds are guaranteed by the pinned helper schema; treat a
+                // missing field as drift and drop the window (fail closed, as
+                // with identity above) rather than defaulting the origin to
+                // (0, 0) and silently misplacing the cursor overlay.
+                x: window.pointer("/bounds/x").and_then(Value::as_f64)?,
+                y: window.pointer("/bounds/y").and_then(Value::as_f64)?,
+                width: window.pointer("/bounds/width").and_then(Value::as_f64)?,
+                height: window.pointer("/bounds/height").and_then(Value::as_f64)?,
                 is_on_screen: window
                     .get("is_on_screen")
                     .and_then(Value::as_bool)
@@ -2433,6 +2538,12 @@ async fn capture(
         capture_path: capture_path.clone(),
         capture_sha256,
         capture_generation: generation,
+        bounds: crate::computer_use_cursor::ScreenRect {
+            x: target.x,
+            y: target.y,
+            width: target.width,
+            height: target.height,
+        },
     };
     let previous_capture = match (|| -> Result<Option<String>, AppError> {
         let mut current = state
@@ -2496,7 +2607,12 @@ async fn list_apps(
             "pid": window.pid,
             "window_id": window.window_id,
             "title": sanitize_line(&window.title),
-            "bounds": { "width": window.width, "height": window.height },
+            "bounds": {
+                "x": window.x,
+                "y": window.y,
+                "width": window.width,
+                "height": window.height,
+            },
             "is_on_screen": window.is_on_screen,
             "on_current_space": window.on_current_space,
             "needs_restore": window_needs_restore(&window),
@@ -2640,6 +2756,12 @@ fn store_target_selection(state: &ComputerUseState, target: &WindowTarget) -> Re
                 capture_path: None,
                 capture_sha256: None,
                 capture_generation: state.capture_generation.load(Ordering::SeqCst),
+                bounds: crate::computer_use_cursor::ScreenRect {
+                    x: target.x,
+                    y: target.y,
+                    width: target.width,
+                    height: target.height,
+                },
             })
             .and_then(|previous| previous.capture_path)
     };
@@ -2774,7 +2896,12 @@ async fn open_app(
             json!({
                 "window_id": window.window_id,
                 "title": sanitize_line(&window.title),
-                "bounds": { "width": window.width, "height": window.height },
+                "bounds": {
+                    "x": window.x,
+                    "y": window.y,
+                    "width": window.width,
+                    "height": window.height,
+                },
                 "is_on_screen": window.is_on_screen,
                 "needs_restore": window_needs_restore(window),
             })
@@ -2948,19 +3075,17 @@ async fn revalidate_target(
         return Err(stale_target_error());
     }
 
-    let still_open = windows(app, state, Some(epoch))
+    let live_window = windows(app, state, Some(epoch))
         .await?
         .into_iter()
-        .any(|window| {
+        .find(|window| {
             window.pid == approved.pid
                 && window.window_id == approved.window_id
                 && window.app_name == approved.app_name
                 && window.identity == approved.identity
                 && !blocked_target(&window.app_name, &window.identity)
         });
-    if !still_open {
-        return Err(stale_target_error());
-    }
+    let live_window = live_window.ok_or_else(stale_target_error)?;
 
     // Approval can sit for minutes while the user changes the target app.
     // Re-capture privately at the broker immediately before execution. For
@@ -2994,6 +3119,24 @@ async fn revalidate_target(
             .and_then(Value::as_str)
             .unwrap_or("");
         validate_element_references(approved, &parse_elements(tree, MAX_ELEMENTS), &references)?;
+    }
+    let mut current = state
+        .target
+        .lock()
+        .map_err(|_| AppError::new("computer_use_unavailable", "Target lock failed."))?;
+    if !current
+        .as_ref()
+        .is_some_and(|current| same_target_capture(current, approved))
+    {
+        return Err(stale_target_error());
+    }
+    if let Some(current) = current.as_mut() {
+        current.bounds = crate::computer_use_cursor::ScreenRect {
+            x: live_window.x,
+            y: live_window.y,
+            width: live_window.width,
+            height: live_window.height,
+        };
     }
     Ok(())
 }
@@ -4214,6 +4357,12 @@ mod tests {
             capture_path: Some("/tmp/capture.png".to_string()),
             capture_sha256: Some("abc".to_string()),
             capture_generation: 1,
+            bounds: crate::computer_use_cursor::ScreenRect {
+                x: 100.0,
+                y: 200.0,
+                width: 900.0,
+                height: 700.0,
+            },
         }
     }
 
@@ -4229,6 +4378,8 @@ mod tests {
                 ),
                 title: "First note".to_string(),
                 z_index: 1,
+                x: 100.0,
+                y: 200.0,
                 width: 900.0,
                 height: 700.0,
                 is_on_screen: true,
@@ -4244,6 +4395,8 @@ mod tests {
                 ),
                 title: "Second note".to_string(),
                 z_index: 2,
+                x: 110.0,
+                y: 210.0,
                 width: 900.0,
                 height: 700.0,
                 is_on_screen: true,
@@ -4259,6 +4412,8 @@ mod tests {
                 ),
                 title: "Document".to_string(),
                 z_index: 3,
+                x: -900.0,
+                y: 100.0,
                 width: 900.0,
                 height: 700.0,
                 is_on_screen: true,
@@ -4546,6 +4701,12 @@ mod tests {
             capture_path: None,
             capture_sha256: None,
             capture_generation: 1,
+            bounds: crate::computer_use_cursor::ScreenRect {
+                x: 0.0,
+                y: 0.0,
+                width: 800.0,
+                height: 600.0,
+            },
         };
         assert!(ensure_element_not_sensitive(&target, 1).is_ok());
         assert!(ensure_element_not_sensitive(&target, 2).is_err());
@@ -4902,6 +5063,12 @@ mod tests {
             capture_path: Some("/tmp/capture.png".to_string()),
             capture_sha256: Some("abc".to_string()),
             capture_generation: 4,
+            bounds: crate::computer_use_cursor::ScreenRect {
+                x: 50.0,
+                y: 75.0,
+                width: 800.0,
+                height: 600.0,
+            },
         };
         let mut replacement = approved.clone();
         assert!(same_target_capture(&approved, &replacement));
@@ -5060,6 +5227,8 @@ mod tests {
             identity: second.clone(),
             title: "Other note".to_string(),
             z_index: 4,
+            x: 120.0,
+            y: 220.0,
             width: 900.0,
             height: 700.0,
             is_on_screen: true,

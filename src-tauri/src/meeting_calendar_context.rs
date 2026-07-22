@@ -92,7 +92,7 @@ pub async fn enrich_note_for_recording(
                 else {
                     continue;
                 };
-                let is_better = best.as_ref().is_none_or(|current| {
+                let is_better = best.as_ref().map_or(true, |current| {
                     (candidate.distance_ms, candidate.start_distance_ms)
                         < (current.distance_ms, current.start_distance_ms)
                 });

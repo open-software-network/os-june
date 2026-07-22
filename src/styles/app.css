@@ -2461,6 +2461,49 @@ button.agent-user-attachment:hover {
   overflow-wrap: anywhere;
 }
 
+/* While a turn streams, each newly revealed word mounts as a span and fades
+ * in over a deliberately long window: a quick rise to ~30% ink so new words
+ * are readable at once, then a slow linear crawl to full. Because the crawl
+ * far outlasts the gap between chunks, the last second-or-so of prose reads
+ * as a soft ink gradient trailing the reveal — SmoothedStreamingMarkdown
+ * batches deltas so words that arrived together mount together and settle
+ * together. Opacity-only on purpose: batches land several times a second and
+ * blur/transform here would churn compositor layers in WKWebView. The
+ * settle clock below derives from the same duration token and keeps the spans
+ * mounted after completion so the tail finishes settling instead of popping
+ * to full ink; reduced motion never mounts them. */
+.agent-markdown .agent-stream-word {
+  animation: agent-stream-word-in var(--stream-word-fade-dur) var(--ease-linear) both;
+}
+
+@keyframes agent-stream-word-in {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Completion starts one root-level clock after the final stream flush. Its
+ * duration is derived from the word-fade token plus a small scheduling guard,
+ * so React can unwrap the presentation spans on animationend without a second
+ * hard-coded timer drifting out of sync with CSS. */
+.agent-markdown.agent-stream-settling {
+  animation: agent-stream-settle-clock calc(var(--stream-word-fade-dur) + var(--t-fast))
+    var(--ease-linear) both;
+}
+
+@keyframes agent-stream-settle-clock {
+  from,
+  to {
+    opacity: 1;
+  }
+}
+
 .agent-markdown > :first-child {
   margin-top: 0;
 }
@@ -6160,6 +6203,18 @@ button.agent-user-attachment:hover {
   border: 0;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .agent-follow-up-actions {
   display: flex;
   align-items: center;
@@ -6728,6 +6783,74 @@ button.agent-user-attachment:hover {
   padding: var(--sp-1);
 }
 
+/* Bare `/model` opens one command-result palette rather than the toolbar
+ * picker's two-layer drill-in. It aligns to the composer box, leads with
+ * search, keeps curated suggestions first, and continues into the remaining
+ * catalog below a divider. */
+.agent-composer-model-command-palette {
+  gap: 0;
+  width: auto;
+  max-height: min(50vh, var(--model-command-available-height, 50vh));
+  padding: var(--sp-1);
+  overflow: hidden;
+}
+
+.agent-composer-model-command-list-wrap {
+  min-height: 0;
+  overflow: hidden;
+  contain: paint;
+  --scroll-fade-size: var(--sp-4);
+}
+
+.agent-composer-model-command-list {
+  max-height: calc(
+    min(50vh, var(--model-command-available-height, 50vh)) -
+    (2 * var(--control-md)) -
+    var(--sp-2)
+  );
+  padding: var(--sp-1) 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.agent-composer-model-command-section {
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.agent-composer-model-command-section-label {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-2) var(--sp-1);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.2;
+}
+
+.agent-composer-model-command-divider {
+  height: var(--sp-px);
+  margin: var(--sp-1) var(--sp-2);
+  border: 0;
+  background: color-mix(in oklch, var(--border-subtle) 50%, transparent);
+}
+
+.agent-composer-model-command-row .agent-composer-model-row-copy {
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+}
+
+.agent-composer-model-command-description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-composer-model-search {
   display: flex;
   align-items: center;
@@ -6897,6 +7020,42 @@ button.agent-user-attachment:hover {
 .agent-composer-model-empty {
   margin: 0;
   padding: var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+/* The composer model pill also carries the current thinking level, dimmed
+ * like a secondary value next to the model name. */
+.agent-composer-model-trigger-level {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+/* The Effort submenu row inside the model popover: label on the left,
+ * current level + chevron on the right, like the upstream desktop's model
+ * menu. */
+.agent-composer-model-row-value {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+/* The effort submenu itself: a compact flyout with plain level rows and a
+ * muted cost note under them. */
+.agent-composer-model-effort-panel {
+  width: 180px;
+}
+
+.agent-composer-model-effort-panel .agent-composer-model-surface {
+  gap: var(--sp-1);
+  max-height: inherit;
+  padding: var(--sp-1);
+}
+
+.agent-composer-model-note {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
 }
@@ -8305,6 +8464,68 @@ button.agent-user-attachment:hover {
   z-index: 100;
   background: transparent;
   -webkit-app-region: drag;
+}
+
+/* Windows has no traffic-light controls, so the macOS clearance baked into
+ * --titlebar-controls-end (70px for the green button) leaves the sidebar
+ * toggle floating ~86px in with nothing to its left. Override only the two
+ * horizontal geometry tokens on Windows: the toggle's `left` and the tab
+ * strip's `padding-left` both read them, so one override keeps the two
+ * consistent. The vertical nudge token is intentionally untouched — the
+ * defect is horizontal only. */
+.app-shell[data-platform="windows"] {
+  --titlebar-controls-end: 0px;
+  --titlebar-controls-gap: var(--sp-3);
+}
+
+/* Windows has no traffic-light controls, so the titlebar-h (28px) of top
+ * padding baked into .sidebar is dead space above the June logo. Reclaim it
+ * so the sidebar header sits flush at the top. Scoped to default mode only —
+ * Settings keeps the original clearance since it has no sidebar-header and
+ * the toggle falls back to the titlebar band there.
+ *
+ * Instead of raising the sidebar above the drag overlay (which would put it
+ * above session usage overlays at z-index 100), push the drag region's left
+ * edge to the sidebar's right edge so it never covers the sidebar. The drag
+ * region rides --sidebar-w-current so it tracks the sidebar during animation.
+ * macOS is untouched: no data-platform="windows" attribute. */
+.app-shell[data-platform="windows"] .sidebar[data-mode="default"] {
+  padding-top: var(--sp-3);
+}
+
+.app-shell[data-platform="windows"] .titlebar-drag {
+  left: var(--sidebar-w-current);
+}
+
+/* Windows-only: when the sidebar is expanded and in default mode, visually
+ * place the toggle in the sidebar header band — in line with the June logo,
+ * floated to the right edge with space between. The toggle stays position:fixed
+ * (owned by App.tsx) so it never unmounts; this is pure visual placement.
+ *
+ * Vertically: aligned with the sidebar header (now --sp-3 from the top, same
+ * as the horizontal padding).
+ * Horizontally: right-align with the header's content edge, riding the
+ * animated --sidebar-w-current so the toggle slides with the sidebar on the
+ * same clock as the grid and tab strip.
+ *
+ * When collapsed or in Settings, this selector stops matching and the toggle
+ * falls back to the base rule (titlebar band, 8px from left) — the collapsed
+ * sidebar is display:none so the header doesn't exist, and Settings has no
+ * sidebar-header. macOS is untouched: no data-platform="windows" attribute. */
+.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"])
+> .chrome-sidebar-toggle {
+  top: var(--sp-3);
+  left: max(
+    var(--sp-3),
+    calc(var(--sidebar-w-current) - var(--sp-3) - var(--sp-1) - var(--control-md))
+  );
+}
+
+/* Reserve the trailing header slot on Windows so the recording indicator
+ * (or the brand when there's no recording) doesn't sit under the fixed
+ * toggle. The gap between the indicator and the toggle is --sp-2. */
+.app-shell[data-platform="windows"] .sidebar[data-mode="default"] .sidebar-header {
+  padding-right: calc(var(--sp-1) + var(--control-md) + var(--sp-2));
 }
 
 .chrome-sidebar-toggle {
@@ -13259,8 +13480,30 @@ button.agent-user-attachment:hover {
   font-size: var(--fs-md);
 }
 
+.settings-meta-unlock-trigger {
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  line-height: inherit;
+  cursor: default;
+}
+
+.settings-meta-unlock-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 var(--sp-px) var(--ring);
+}
+
 .settings-meta-value-mono {
   font-family: var(--font-mono);
+}
+
+.experiments-card .settings-row-error {
+  margin-top: var(--sp-3);
 }
 
 /* Billing card — plan identity stacked over a labeled usage meter,
@@ -16743,6 +16986,158 @@ button.agent-user-attachment:hover {
 
 .mcp-server-skeleton-line + .mcp-server-skeleton-line {
   width: 70%;
+}
+
+/* Guided MCP setup. */
+.mcp-setup-choices {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mcp-setup-choice {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+
+.mcp-setup-choice:hover {
+  border-color: var(--ring);
+  background: var(--secondary);
+}
+
+.mcp-setup-choice:focus-visible {
+  outline: none;
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mcp-setup-choice-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+}
+
+.mcp-setup-choice-copy,
+.mcp-import-entry-copy {
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-px);
+}
+
+.mcp-setup-choice-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-setup-choice-description,
+.mcp-import-entry-detail,
+.mcp-import-entry-warning,
+.mcp-import-summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.mcp-setup-recommended {
+  padding: 1px var(--sp-2);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--ring-focus) 18%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-xs);
+  font-weight: 400;
+}
+
+.mcp-import-paste,
+.mcp-import-preview {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mcp-import-textarea {
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  outline: none;
+}
+
+.mcp-import-textarea:focus-visible {
+  border-color: var(--ring-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mcp-import-summary,
+.mcp-import-error {
+  margin: 0;
+}
+
+.mcp-import-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.mcp-import-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--card);
+  cursor: pointer;
+}
+
+.mcp-import-entry[data-unavailable="true"] {
+  background: var(--surface-subtle);
+  cursor: default;
+}
+
+.mcp-import-entry input {
+  margin-top: 3px;
+}
+
+.mcp-import-entry-name {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.mcp-import-entry-warning {
+  color: var(--warm-strong);
+}
+
+.mcp-import-error {
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
 }
 
 /* Add-server dialog form. */
@@ -22052,6 +22447,11 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
+.dialog-close:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .dialog-description {
   margin: calc(-1 * var(--sp-3)) 0 0;
   color: var(--muted-foreground);
@@ -26983,14 +27383,23 @@ button.memory-project:hover {
   line-height: 1.4;
 }
 
-.connector-disclosure {
+.connector-title-line {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connectors-notion-disclosures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.connectors-notion-disclosure {
   margin: 0;
-  overflow: hidden;
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
 .connector-actions {
@@ -27523,6 +27932,13 @@ button.connector-approvals-info {
   cursor: default;
 }
 
+.github-device-code-value {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xl);
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+
 /* PDF export uses the platform print sheet. Strip the application chrome and
  * release every viewport-bound scroller so the full formatted note paginates. */
 @media print {
@@ -27633,7 +28049,8 @@ button.connector-approvals-info {
 
 /* ---- Share dialog (JUN-308) -------------------------------------------- */
 /* Owner-side private sharing: a settings-style passcode option before the link
- * exists, then one quiet link field directly in the dialog once it does. */
+ * exists, then the link field (plus a one-time passcode field while the
+ * passcode is still in memory) directly in the dialog once it does. */
 
 .share-dialog-body {
   display: flex;
@@ -27712,28 +28129,35 @@ button.connector-approvals-info {
   gap: var(--sp-3);
 }
 
-.share-link-copy-passcode-tip {
-  align-self: flex-start;
-  display: inline-flex;
+/* One-time passcode field, right after link creation: the same field recipe as
+ * the link above it so the two secrets read as one pair. Masked by default —
+ * the share dialog is often open mid-meeting with the screen visible — with
+ * the same reveal toggle as the passcode input that preceded it. */
+.share-passcode-field .share-passcode-value {
+  font-family: var(--font-mono);
 }
 
-.share-link-copy-passcode {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-height: var(--control-xs);
-  padding: 0 var(--sp-2);
+.share-passcode-field-reveal {
+  flex: 0 0 auto;
+}
+
+/* Inline action inside the reopened-dialog caption: same quiet underline
+ * recipe as .settings-row-action, flowing with the sentence around it. */
+.share-passcode-reset {
+  padding: 0;
   border: 0;
-  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: var(--fs-md);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  text-underline-offset: 3px;
   cursor: pointer;
 }
 
-.share-link-copy-passcode:hover {
-  background: var(--muted);
+.share-passcode-reset:hover:not(:disabled) {
+  color: var(--foreground);
+  text-decoration-color: var(--foreground);
 }
 
 .share-unshare {

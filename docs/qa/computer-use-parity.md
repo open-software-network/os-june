@@ -1,7 +1,7 @@
 # Computer use parity and acceptance matrix
 
 Date: 2026-07-16
-Scope: JUN-278 phase 2, JUN-288, JUN-293, JUN-296
+Scope: JUN-278 phase 2, JUN-288, JUN-293, JUN-296, JUN-356
 Baseline: the attended macOS Computer Use experience documented for Codex on
 2026-07-15.
 
@@ -23,13 +23,13 @@ policy where the PRD requires it.
 | Open a missing app | June asks once to use the installed app for the current task, opens it by display name, then returns only verified app/window identity. Opening the same already-approved running identity does not produce a second display-name alias prompt; ambiguous same-name identities fail closed. Paths, URLs, launch arguments, environment, debug ports, and forced new processes are unavailable. | Helper schema/argument tests; broker authorization-alias, blocked-name, and post-launch identity checks; live TextEdit walkthrough. |
 | Restore a parked window | Window bounds and visibility are returned. June collapses a full-size hidden window plus its small shelf proxy to the real Accessibility window. After app authorization, it automatically raises that window into June's current Stage Manager group without a second decision or pointer movement, then re-lists and verifies it. | Stage Manager duplicate-collapse and classification tests, exact-PID/window helper contract, task-scoped authorization test, manual Stage Manager walkthrough. |
 | Capture a bounded target | Capture addresses one exact process/window and returns a bounded AX tree plus the selected window image. Only the latest local capture remains, with private filesystem permissions. | Broker capture parsing, size/type/digest tests; signed live fixture. |
-| Work in the background | Element actions use AX/background delivery; coordinates are window-local and posted to the target. The real pointer and frontmost app must not change. | Driver contract fixture; signed target/observer release test. Active-Space behavior is also checked in the manual support matrix. |
+| Work in the background | Element actions use AX/background delivery; coordinates are window-local and posted to the target. A semi-transparent, click-through Computer use cursor shows the virtual click or drag position, including on scaled and negatively positioned displays. The real pointer and frontmost app must not change. | Driver pointer-notification and coordinate-normalization tests; signed target/observer release test. Active-Space behavior is also checked in the manual support matrix. |
 | Act across Mac apps | A task can recapture and retarget multiple allowed apps. The first access to each verified app requires its own authorization; later actions in the same app do not ask again during that task. | Broker authorization-key and stale-target tests; manual two-app walkthrough. |
 | See app access before it begins | The always-mounted chat tray names the target app, explains the current-task scope, shows expiry, and offers Deny or Allow for this task before the first capture or action. | Authorization registry and `ComputerUseApprovalsTray` component tests. |
 | Keep approval native | The agent invokes the requested operation instead of asking for `yes` in chat. The first blocked call resumes from the native Allow for this task or Deny result. Product-facing copy calls the capability Computer use and does not expose its transport. | Agent schema contract self-test and approval tray test. |
 | Approve or deny once per app | Each verified app has one task-scoped decision. There is no cross-task, approve-all, allow-always, or autonomous option. | UI tests and Rust app-authorization registry. |
 | Prevent approval races | After approval, the exact window must still exist. Numbered controls must retain role and label; coordinate/key targets must retain the screenshot digest. | Stale capture and element tests. |
-| Stop or take over | Stop immediately increments the task epoch, denies parked actions, kills the private driver child, clears the target/captures, and leaves the grant available for a later attended task. | Native stop semantics and live driver-exit test. |
+| Stop or take over | Stop immediately increments the task epoch, hides the Computer use cursor before teardown, denies parked actions, kills the private driver child, clears the target/captures, and leaves the grant available for a later attended task. Queued cursor updates from the old epoch cannot show it again. | Native stop and cursor epoch tests plus the live driver-exit test. |
 | Stay attended | Only a turn submitted from visible June chat receives both the loopback token and a unique native run lease. A routine, manually named MCP server, restored background process, or task after Stop has no lease. | Hermes config tests, routine sanitization tests, native lease gate, app lifecycle integration. |
 | Revoke | Turning the shared grant off performs the same stop path and removes the MCP server from the usable runtime. The UI explains that macOS TCC grants remain until removed in System Settings. | Shared grant integration and component tests. |
 | Recover from permission/model changes | The UI polls while setup is incomplete. A real readiness transition reconfigures Hermes once; loss of readiness also stops active work. | Native runtime-readiness transition and UI polling behavior. |
@@ -97,14 +97,17 @@ without a batch or persistent-authorization path.
 6. Put TextEdit in the Stage Manager shelf. Verify its thumbnail is marked as
    needing restore, then verify June adds TextEdit to June's current group and
    captures the full document window without a second decision.
-7. Click, type, scroll, and recapture TextEdit. Verify none asks again and the
-   real pointer and active Space do not change.
+7. Click, drag, type, scroll, and recapture TextEdit. Verify the Computer use
+   cursor follows each virtual click and drag without intercepting input, while
+   the real pointer and active Space do not change.
 8. Retarget another allowed app. Deny its first-use authorization and verify the
    app is not captured or changed.
 9. End the task, start a new one, and target TextEdit again. Verify June asks
    once again before access.
-10. Park an app authorization and press Stop. Verify the card disappears, the
-    child exits, the action does not run, and captures are removed.
+10. Park an app authorization and press Stop. Verify the card and Computer use
+    cursor disappear promptly, the child exits, the action does not run, and
+    captures are removed. Verify a delayed pointer update cannot show the
+    cursor again.
 11. Revoke the June grant during an active task. Verify the same stop behavior
    and that macOS permissions remain independently removable.
 12. Repeat model mismatch, driver mismatch, helper crash, app quit, multiple

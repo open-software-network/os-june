@@ -256,6 +256,10 @@ export type ProviderModelSettingsDto = {
   imageSafeMode: boolean;
   /** Whether the user chose "don't ask again" on the safe-mode consent dialog. */
   imageSafeModePromptDismissed: boolean;
+  /** Live transcript preview while recording. On by default; billed as extra
+   * usage and disclosed in Settings, so previews from this build are sent as
+   * consented (JUN-375). Off stops the preview lanes entirely. */
+  liveTranscription: boolean;
 };
 
 export type ProfileModelOverridesDto = {
@@ -744,6 +748,7 @@ export type BootstrapResponse = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
   activeRecoveries: RecoverableRecordingDto[];
+  activeRecording?: RecordingStatusDto;
   providerConfigured: boolean;
 };
 
@@ -1044,6 +1049,21 @@ export async function agentOpenReady() {
   return invoke<string | null>("agent_open_ready");
 }
 
+export type PendingMeetingStartRequest = {
+  requestId: string;
+  noteId: string;
+  requestedAtMs: number;
+  expired: boolean;
+};
+
+export async function pendingMeetingStartRequest() {
+  return invoke<PendingMeetingStartRequest | null>("pending_meeting_start_request");
+}
+
+export async function acknowledgeMeetingStartRequest(requestId: string) {
+  return invoke<boolean>("acknowledge_meeting_start_request", { requestId });
+}
+
 export async function createAgentTask(input: {
   prompt: string;
   title?: string;
@@ -1298,6 +1318,12 @@ export async function hermesBridgeImageDataUrl(path: string) {
 /** Reveals an absolute path in the OS file manager (Finder on macOS). */
 export async function revealPath(path: string) {
   return invoke<void>("reveal_path", { path });
+}
+
+/** Refreshes the bundled load-unpacked Browser use extension in app data and
+ * reveals the destination in the platform file manager. */
+export async function unpackBundledExtension() {
+  return invoke<string>("unpack_bundled_extension");
 }
 
 // Null when the file can't be shown as text (too large or binary) — the
@@ -1752,6 +1778,26 @@ export async function startRecording(
   });
 }
 
+export type MeetingStartRecordingOutcome =
+  | {
+      status: "started";
+      note: NoteDto;
+      recording: RecordingSessionDto;
+    }
+  | {
+      status: "failed";
+      error: { code: string; message: string };
+    };
+
+export async function startMeetingRecording(
+  requestId: string,
+  sourceMode: RecordingSourceMode = "microphoneOnly",
+) {
+  return invoke<MeetingStartRecordingOutcome>("start_meeting_recording", {
+    request: { requestId, sourceMode },
+  });
+}
+
 export async function pauseRecording(sessionId: string) {
   return invoke<RecordingStatusDto>("pause_recording", {
     request: { sessionId },
@@ -2034,6 +2080,14 @@ export async function setImageSafeMode(enabled: boolean) {
   });
 }
 
+// Toggles the live transcript preview while recording. On by default; billed
+// as extra usage when on, no preview audio leaves the device when off.
+export async function setLiveTranscription(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_live_transcription", {
+    request: { enabled },
+  });
+}
+
 export async function setImageSafeModePromptDismissed(dismissed: boolean) {
   return invoke<ProviderModelSettingsDto>("set_image_safe_mode_prompt_dismissed", {
     request: { dismissed },
@@ -2259,11 +2313,13 @@ export type ConnectorScopeBundle =
   | "calendar_read"
   | "calendar_events"
   | "linear_read"
-  | "linear_write";
+  | "linear_write"
+  | "github_read"
+  | "github_write";
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required" | "unavailable";
 
-export type ConnectorProvider = "google" | "linear" | "notion";
+export type ConnectorProvider = "google" | "linear" | "notion" | "github";
 
 /** One Linear team: the granularity June's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once
@@ -2394,6 +2450,20 @@ export type PendingComputerUseApprovalDto = {
  * a reconnect_required transition). Payload carries no account data; listeners
  * re-fetch via connectorsList(). */
 export const CONNECTORS_CHANGED_EVENT = "june://connectors-changed";
+
+/** Payload emitted by `june://connectors-github-device-code` while a GitHub
+ * device-flow connect is in progress. May be emitted more than once (a
+ * restarted poll re-emits the latest code). The backend opens the
+ * verification page itself; the UI still shows the code as a fallback. */
+export type GitHubDeviceCodePayload = {
+  userCode: string;
+  verificationUri: string;
+  expiresInSeconds: number;
+};
+
+/** Tauri event: a GitHub device-authorization code is ready to display.
+ * Emitted while `connectors_connect` is pending for provider "github". */
+export const GITHUB_DEVICE_CODE_EVENT = "june://connectors-github-device-code";
 
 /** Tauri event: the pending connector-approval set changed.
  * Payload: `{ pendingCount: number }`. */

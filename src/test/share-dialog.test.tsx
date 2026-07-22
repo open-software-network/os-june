@@ -151,6 +151,7 @@ describe("ShareDialog", () => {
 
     await user.click(await screen.findByRole("switch", { name: "Require a passcode" }));
     await user.type(screen.getByLabelText("Passcode"), "correct horse battery staple");
+    await user.click(screen.getByRole("button", { name: "Show passcode" }));
     await user.click(screen.getByRole("button", { name: "Create link" }));
 
     const linkField = (await screen.findByRole("textbox", {
@@ -162,6 +163,19 @@ describe("ShareDialog", () => {
     expect(mocks.shareInviteKeySave.mock.calls[0][0].inviteKeyB64).toBe(fragment[3]);
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith(linkField.value));
     expect(screen.getByText(/June never stores the passcode/i)).toBeInTheDocument();
+    expect(screen.getByText(/only time the passcode is shown/i)).toBeInTheDocument();
+
+    expect(screen.getByText("Link")).toBeInTheDocument();
+    const passcodeField = screen.getByLabelText("Passcode") as HTMLInputElement;
+    expect(passcodeField).toHaveAttribute("readonly");
+    expect(passcodeField).toHaveAttribute("type", "password");
+    expect(passcodeField.value).toBe("correct horse battery staple");
+    expect(passcodeField.closest(".copy-link-field")).not.toBeNull();
+    expect(passcodeField.closest(".dialog-field")).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Show passcode" }));
+    expect(passcodeField).toHaveAttribute("type", "text");
+    await user.click(screen.getByRole("button", { name: "Hide passcode" }));
+    expect(passcodeField).toHaveAttribute("type", "password");
 
     let finishPasscodeCopy: () => void = () => {};
     clipboard.mockImplementationOnce(
@@ -179,10 +193,77 @@ describe("ShareDialog", () => {
     await waitFor(() => expect(clipboard).toHaveBeenLastCalledWith("correct horse battery staple"));
     const copiedPasscodeButton = screen.getByRole("button", { name: "Passcode copied" });
     expect(copiedPasscodeButton).toBeEnabled();
-    expect(copiedPasscodeButton).toHaveTextContent("Copy passcode");
+    expect(copiedPasscodeButton).toHaveTextContent("");
     expect(copiedPasscodeButton.querySelector(".t-icon-swap")).toHaveAttribute("data-state", "b");
     fireEvent.focus(copiedPasscodeButton);
     expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");
+  });
+
+  it("explains a reopened passcode link without pretending to have the passcode", async () => {
+    // A 16-byte stored material marks the link as passcode-protected; the
+    // passcode itself was never stored, so the dialog can only explain that.
+    const saltB64 = "AQEBAQEBAQEBAQEBAQEBAQ";
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: saltB64 });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
+    });
+    mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: saltB64 }]);
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    const linkField = (await screen.findByRole("textbox", {
+      name: /Share link for/i,
+    })) as HTMLInputElement;
+    expect(linkField.value).toContain("#link.shi_link.pass.");
+    expect(screen.getByText("Link")).toBeInTheDocument();
+    expect(screen.getByText(/link and passcode/i)).toBeInTheDocument();
+    expect(screen.getByText(/The passcode can't be shown again/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Passcode")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy passcode" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/only time the passcode is shown/i)).not.toBeInTheDocument();
+
+    // The caption's inline action resets the link: confirm, stop the old
+    // share, and land on the create form with the passcode toggle pre-armed.
+    await user.click(screen.getByRole("button", { name: "reset this link" }));
+    expect(
+      screen.getByText(/You can then create a new link with a new passcode/i),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Reset link" }));
+    await waitFor(() => expect(mocks.shareDelete).toHaveBeenCalledWith("shr_1"));
+    expect(await screen.findByRole("button", { name: "Create link" })).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Require a passcode" })).toBeChecked();
+    expect(screen.getByLabelText("Passcode")).toHaveValue("");
+  });
+
+  it("surfaces a reset failure without tearing down the link", async () => {
+    const saltB64 = "AQEBAQEBAQEBAQEBAQEBAQ";
+    mocks.shareKeyGet.mockResolvedValue({ shareId: "shr_1", contentKeyB64: saltB64 });
+    mocks.shareGet.mockResolvedValue({
+      shareId: "shr_1",
+      kind: "note",
+      invites: [{ inviteId: "shi_link", email: "link@share.invalid", state: "pending" }],
+    });
+    mocks.shareInviteKeysGet.mockResolvedValue([{ inviteId: "shi_link", inviteKeyB64: saltB64 }]);
+    mocks.shareDelete.mockRejectedValueOnce(new Error("delete failed"));
+    const user = userEvent.setup();
+    render(<ShareDialog open onClose={vi.fn()} item={noteItem()} />);
+
+    await screen.findByRole("textbox", { name: /Share link for/i });
+
+    await user.click(screen.getByRole("button", { name: "reset this link" }));
+    await user.click(screen.getByRole("button", { name: "Reset link" }));
+
+    // The confirm dialog closes so the error notice underneath is visible.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Reset link" })).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(/delete failed/i);
+    // The share was not torn down locally, so the link stays available for retry
+    // and the create form (with its passcode toggle) never appears.
+    expect(screen.getByRole("textbox", { name: /Share link for/i })).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Require a passcode" })).not.toBeInTheDocument();
   });
 
   it("keeps a created link available when automatic copy fails", async () => {
