@@ -2393,6 +2393,12 @@ export function canShareAgentSession(input: {
   );
 }
 
+export function composerModelCommandAvailableHeight(composerTop: number, titlebarHeight: number) {
+  const paletteBottomGap = 4;
+  const titlebarSafeGap = 12;
+  return Math.max(96, composerTop - paletteBottomGap - titlebarHeight - titlebarSafeGap);
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
@@ -3856,12 +3862,14 @@ export function AgentWorkspace({
       if (composerModelCommandPalette) {
         const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
         const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
+        const titlebarHeight =
+          Number.parseFloat(window.getComputedStyle(popover).getPropertyValue("--titlebar-h")) || 0;
         popover.style.left = `${composerRect.left - formRect.left}px`;
         popover.style.right = `${formRect.right - composerRect.right}px`;
         popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
         popover.style.setProperty(
           "--model-command-available-height",
-          `${Math.max(96, composerRect.top - 12)}px`,
+          `${composerModelCommandAvailableHeight(composerRect.top, titlebarHeight)}px`,
         );
         return;
       }

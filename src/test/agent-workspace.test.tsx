@@ -12,6 +12,7 @@ import {
   HERO_GREETINGS,
   SkillsToolsPanel,
   canShareAgentSession,
+  composerModelCommandAvailableHeight,
   composerInSteerStateFor,
   generatedImagePathAliases,
   projectAgentActivityLevels,
@@ -48,6 +49,17 @@ import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mut
 const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
 );
+
+describe("composer model command layout", () => {
+  it("keeps the command palette below the titlebar", () => {
+    const composerTop = 300;
+    const titlebarHeight = 28;
+    const paletteBottomGap = 4;
+    const availableHeight = composerModelCommandAvailableHeight(composerTop, titlebarHeight);
+
+    expect(composerTop - paletteBottomGap - availableHeight).toBe(titlebarHeight + 12);
+  });
+});
 
 const mocks = vi.hoisted(() => ({
   assignSessionToProfile: vi.fn(),

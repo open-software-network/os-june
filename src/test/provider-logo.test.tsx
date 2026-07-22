@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import { ProviderLogo } from "../components/settings/ProviderLogo";
 
 describe("ProviderLogo", () => {
-  it("uses the OpenSoftware mark for Auto regardless of its routing provider", () => {
+  it("uses the June mark for Auto regardless of its routing provider", () => {
     render(<ProviderLogo provider="venice" id="open-software/auto" name="Auto" />);
 
-    expect(screen.getByLabelText("OpenSoftware")).toBeInTheDocument();
+    const juneMark = screen.getByRole("img", { name: "June" });
+    expect(juneMark).toBeInTheDocument();
+    expect(juneMark.querySelector("rect")).toHaveAttribute("fill", "var(--brand)");
+    expect(screen.queryByLabelText("OpenSoftware")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Venice")).not.toBeInTheDocument();
   });
 
