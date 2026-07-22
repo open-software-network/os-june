@@ -1,8 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AccountGate, AccountStatusFailure } from "../components/account/AccountGate";
-import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_SESSION_RENAMED_EVENT,
@@ -20,7 +18,6 @@ import { SETTINGS_TABS } from "../components/settings/AppSettings";
 import { type TabItem } from "../components/tabs/TabBar";
 import { reorderTabs } from "./tabs/tabs";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
-import { Spinner } from "../components/ui/Spinner";
 import {
   checkRecordingSourceReadiness,
   createFolder,
@@ -85,13 +82,8 @@ import {
 } from "../lib/agent-hud-settings";
 import type { FolderDto, AccountStatus, HermesSessionInfo } from "../lib/tauri";
 import type { RecordingSourceMode } from "../lib/tauri";
-import { applyAutostartDefaultOnce, retryPendingAutostartDefault } from "../lib/autostart";
-import {
-  applyOnboardingReplayFlag,
-  hasCompletedAnyOnboardingVersion,
-  isOnboardingComplete,
-  markOnboardingComplete,
-} from "../lib/onboarding";
+import { retryPendingAutostartDefault } from "../lib/autostart";
+import { applyOnboardingReplayFlag, isOnboardingComplete } from "../lib/onboarding";
 import {
   depletedBalanceActionLabel,
   shouldBlockOnFunding,
@@ -107,7 +99,6 @@ import {
   type UpdatePromptPayload,
 } from "./update-decision";
 import {
-  handleTitlebarPointerDown,
   isAccessibilityBlocked,
   isCreateNoteShortcut,
   isMicrophoneRecordingBlocked,
@@ -176,6 +167,7 @@ import { useSessionMetadata } from "./use-session-metadata";
 import { useProcessingStatusPoll } from "./use-processing-status-poll";
 
 import { useAppState } from "./use-app-state";
+import { renderAppAccountGate } from "./app-account-gates";
 
 export function App() {
   const {
@@ -1825,83 +1817,18 @@ export function App() {
     ? Math.max(0, Math.ceil((recordingInactivityPrompt.expiresAt - recordingInactivityNow) / 1000))
     : 0;
 
-  if (accountLoading) {
-    return (
-      <main className="account-gate-shell">
-        <div
-          className="titlebar-drag"
-          aria-hidden
-          data-tauri-drag-region
-          onPointerDown={handleTitlebarPointerDown}
-        />
-        <div className="welcome-screen welcome-screen-loading">
-          <Spinner size="lg" aria-label="Starting June" />
-          <p>Starting June...</p>
-        </div>
-      </main>
-    );
-  }
-
-  if (accountError && !account.signedIn && !devAccountsUnconfigured) {
-    return (
-      <main className="account-gate-shell">
-        <div
-          className="titlebar-drag"
-          aria-hidden
-          data-tauri-drag-region
-          onPointerDown={handleTitlebarPointerDown}
-        />
-        <AccountStatusFailure message={accountError} onRetry={refreshAccount} />
-      </main>
-    );
-  }
-
-  if (onboardingRequired) {
-    return (
-      <main className="account-gate-shell">
-        <div
-          className="titlebar-drag"
-          aria-hidden
-          data-tauri-drag-region
-          onPointerDown={handleTitlebarPointerDown}
-        />
-        <OnboardingFlow
-          account={account}
-          onAccountChanged={handleAccountChanged}
-          onComplete={() => {
-            // Read before marking complete: marking writes the completion
-            // key that distinguishes a fresh install from a wizard replay.
-            const firstOnboardingCompletion = !hasCompletedAnyOnboardingVersion();
-            markOnboardingComplete();
-            // A background assistant only works while it runs; make sure a
-            // fresh install starts at login. One-shot and first-run only: a
-            // user who later turns the login item off stays off, and wizard
-            // replays never re-enroll existing users.
-            void applyAutostartDefaultOnce({ firstOnboardingCompletion });
-            setOnboardingDone(true);
-          }}
-        />
-      </main>
-    );
-  }
-
-  if (signInRequired) {
-    return (
-      <main className="account-gate-shell">
-        <div
-          className="titlebar-drag"
-          aria-hidden
-          data-tauri-drag-region
-          onPointerDown={handleTitlebarPointerDown}
-        />
-        <AccountGate
-          account={account}
-          loading={accountLoading}
-          onAccountChanged={handleAccountChanged}
-        />
-      </main>
-    );
-  }
+  const accountGate = renderAppAccountGate({
+    account,
+    accountError,
+    accountLoading,
+    devAccountsUnconfigured,
+    handleAccountChanged,
+    onboardingRequired,
+    refreshAccount,
+    setOnboardingDone,
+    signInRequired,
+  });
+  if (accountGate) return accountGate;
 
   // The in-note RecorderBar covers the recording while you're looking at its
   // note. Elsewhere, the sidebar header carries a tiny recording presence; the
