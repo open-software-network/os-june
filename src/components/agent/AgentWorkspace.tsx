@@ -60,10 +60,6 @@ import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
-import {
-  reserveHermesSessionDispatch,
-  type HermesSessionDispatchReservation,
-} from "../../lib/hermes-session-dispatch-mutex";
 import { localGenerationOptionId } from "../../lib/local-generation";
 import {
   rememberSessionThinkingLevel,
@@ -102,6 +98,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createComposerDispatchActions } from "./composer-dispatch-actions";
 import { createIssueReportStateActions } from "./issue-report-state-actions";
 import { createAttachmentImportActions } from "./attachment-import-actions";
 import { createQueuedFollowUpRenderers } from "./queued-follow-up-renderers";
@@ -236,10 +233,7 @@ import {
   storedVideoSlashTurns,
   videoSlashTurnsBySessionFromStored,
 } from "./composer/media-slash-persistence";
-import {
-  type CapturedSessionModelTarget,
-  type PendingAttachmentPreparation,
-} from "./composer/follow-up-queue";
+import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
 
 import {
   persistedReviewableIssueReports,
@@ -1368,6 +1362,26 @@ export function AgentWorkspace({
   const applySessionTitleOverrides: ReturnType<
     typeof createSessionTitleActions
   >["applySessionTitleOverrides"] = (...args) => applySessionTitleOverridesImplementation(...args);
+  let composerDispatchActionsImplementation: ReturnType<typeof createComposerDispatchActions>;
+  function cancelComposerDispatch(
+    ...args: Parameters<ReturnType<typeof createComposerDispatchActions>["cancelComposerDispatch"]>
+  ) {
+    return composerDispatchActionsImplementation.cancelComposerDispatch(...args);
+  }
+  function composerDispatchWasInvalidated(
+    ...args: Parameters<
+      ReturnType<typeof createComposerDispatchActions>["composerDispatchWasInvalidated"]
+    >
+  ) {
+    return composerDispatchActionsImplementation.composerDispatchWasInvalidated(...args);
+  }
+  function invalidateSessionComposerDispatches(
+    ...args: Parameters<
+      ReturnType<typeof createComposerDispatchActions>["invalidateSessionComposerDispatches"]
+    >
+  ) {
+    return composerDispatchActionsImplementation.invalidateSessionComposerDispatches(...args);
+  }
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
@@ -2273,79 +2287,21 @@ export function AgentWorkspace({
     rememberComposerDraft(composerDraftKeyRef.current, "", null, attachmentsRef.current);
   }
 
-  function reserveComposerDispatch(storedSessionId: string) {
-    const reservation = reserveHermesSessionDispatch(storedSessionId);
-    activeComposerDispatchReservationsRef.current.set(reservation, storedSessionId);
-    return reservation;
-  }
-
-  function forgetComposerDispatch(reservation: HermesSessionDispatchReservation | undefined) {
-    if (reservation) activeComposerDispatchReservationsRef.current.delete(reservation);
-  }
-
-  function cancelComposerDispatch(reservation: HermesSessionDispatchReservation | undefined) {
-    reservation?.cancel();
-    forgetComposerDispatch(reservation);
-  }
-
-  function composerDispatchWasInvalidated(
-    reservation: HermesSessionDispatchReservation | undefined,
-  ) {
-    return Boolean(
-      reservation && invalidatedComposerDispatchReservationsRef.current.has(reservation),
-    );
-  }
-
-  function invalidateSessionComposerDispatches(storedSessionId: string) {
-    for (const [
-      reservation,
-      ownerStoredSessionId,
-    ] of activeComposerDispatchReservationsRef.current) {
-      if (ownerStoredSessionId !== storedSessionId) continue;
-      invalidatedComposerDispatchReservationsRef.current.add(reservation);
-      reservation.cancel();
-      activeComposerDispatchReservationsRef.current.delete(reservation);
-      const consentRequest = imageSafeModeConsentRequestRef.current;
-      if (consentRequest?.ownerDispatchReservation === reservation) {
-        resolveImageSafeModeConsent({ action: "dismiss" });
-      }
-    }
-  }
-
-  function beginAttachmentPreparation(
-    storedSessionId: string,
-    dispatchOrder: number,
-    dispatchReservation?: HermesSessionDispatchReservation,
-  ) {
-    const preparation: PendingAttachmentPreparation = {
-      dispatchOrder,
-      dispatchReservation,
-      cancelled: false,
-    };
-    const pendingPreparations =
-      pendingAttachmentPreparationsRef.current[storedSessionId] ??
-      new Map<number, PendingAttachmentPreparation>();
-    pendingPreparations.set(dispatchOrder, preparation);
-    pendingAttachmentPreparationsRef.current[storedSessionId] = pendingPreparations;
-    return preparation;
-  }
-
-  function finishAttachmentPreparation(
-    storedSessionId: string,
-    preparation: PendingAttachmentPreparation,
-  ) {
-    const pendingPreparations = pendingAttachmentPreparationsRef.current[storedSessionId];
-    if (pendingPreparations?.get(preparation.dispatchOrder) === preparation) {
-      pendingPreparations.delete(preparation.dispatchOrder);
-    }
-    if (pendingPreparations?.size === 0) {
-      delete pendingAttachmentPreparationsRef.current[storedSessionId];
-    }
-    if (preparation.cancelled) return;
-    if (completedAgentRunAwaitingAttachmentPreparationRef.current.delete(storedSessionId)) {
-      continueAfterCompletedAgentRun(storedSessionId, Symbol("prepared follow-up"));
-    }
-  }
+  composerDispatchActionsImplementation = createComposerDispatchActions({
+    activeComposerDispatchReservationsRef,
+    completedAgentRunAwaitingAttachmentPreparationRef,
+    continueAfterCompletedAgentRun,
+    imageSafeModeConsentRequestRef,
+    invalidatedComposerDispatchReservationsRef,
+    pendingAttachmentPreparationsRef,
+    resolveImageSafeModeConsent,
+  });
+  const {
+    reserveComposerDispatch,
+    forgetComposerDispatch,
+    beginAttachmentPreparation,
+    finishAttachmentPreparation,
+  } = composerDispatchActionsImplementation;
 
   let submitImplementation: (event?: FormEvent) => Promise<void>;
   async function submit(event?: FormEvent) {
