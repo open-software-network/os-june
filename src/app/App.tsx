@@ -122,7 +122,7 @@ import {
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { preloadAgentSounds } from "../lib/agent-sounds";
-import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
+import { isMacLikePlatform, isPrimaryShortcut, isWindowsPlatform } from "../lib/platform";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
@@ -4324,6 +4324,7 @@ export function App() {
   return (
     <main
       className="app-shell"
+      data-platform={isWindowsPlatform() ? "windows" : undefined}
       data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
       data-sidebar-resizing={sidebarResizing ? "true" : "false"}
       data-sidebar-transition={sidebarTransition}
