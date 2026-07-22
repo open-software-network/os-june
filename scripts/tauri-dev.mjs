@@ -55,8 +55,15 @@ if (process.platform === "darwin") {
     helperBundleIdentifier,
     appBundleIdentifier: devAppIdentity.identifier,
   });
+  const tccSummary = reset
+    .map((r) =>
+      r.status === "reset"
+        ? `reset ${r.service} for ${r.bundleIdentifier}`
+        : `deferred ${r.service} for ${r.bundleIdentifier} (bundle not yet registered with LaunchServices)`,
+    )
+    .join("; ");
   console.error(
-    `Reset Computer use ${reset[0]} for ${helperBundleIdentifier} and ${reset[1]} for ${devAppIdentity.identifier}; removed ${removed.length} stale staged bundle${removed.length === 1 ? "" : "s"}.`,
+    `Computer use TCC: ${tccSummary}; removed ${removed.length} stale staged bundle${removed.length === 1 ? "" : "s"}.`,
   );
 }
 

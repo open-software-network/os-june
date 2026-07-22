@@ -18,6 +18,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=JUNE_API_URL");
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos") {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
+        link_swift_runtime();
     }
     clean_legacy_helper_bundles();
     build_system_audio_helper();
@@ -28,6 +29,48 @@ fn main() {
     ensure_bundled_extension_dir();
     ensure_nm_shim_placeholder();
     tauri_build::build();
+}
+
+/// Swift-backed dependencies emit their runtime search paths from dependency
+/// build scripts, but those linker arguments do not reach this package's final
+/// binaries. Resolve the active toolchain through `xcrun` so both full Xcode
+/// and Command Line Tools layouts work without runner-specific paths.
+fn link_swift_runtime() {
+    println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
+    println!("cargo:rerun-if-env-changed=TOOLCHAINS");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+
+    let output = std::process::Command::new("xcrun")
+        .args(["--find", "swiftc"])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!("failed to run `xcrun --find swiftc`; Swift runtime rpath is required: {error}")
+        });
+    assert!(
+        output.status.success(),
+        "`xcrun --find swiftc` failed; Swift runtime rpath is required: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    let swiftc = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let toolchain_usr = swiftc
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap_or_else(|| panic!("swiftc path has no toolchain root: {}", swiftc.display()));
+    let mut linked_runtime = false;
+    for relative in ["lib/swift-5.5/macosx", "lib/swift/macosx"] {
+        let runtime = toolchain_usr.join(relative);
+        if runtime.is_dir() {
+            linked_runtime = true;
+            println!("cargo:rustc-link-search=native={}", runtime.display());
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", runtime.display());
+        }
+    }
+    assert!(
+        linked_runtime,
+        "active Swift toolchain has no supported macOS runtime directory: {}",
+        toolchain_usr.display()
+    );
 }
 
 /// `tauri_build::build()` validates resource source directories during every

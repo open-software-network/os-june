@@ -65,6 +65,14 @@ removes stale debug staging copies before Tauri copies the signed bundle again.
 This provides a fresh permission walkthrough on every dev restart without
 resetting Screen Recording for the wrong responsible app.
 
+The Screen Recording reset is deferred (not treated as a failure) when the app
+bundle identifier is not yet registered with LaunchServices. This is expected on
+a clean worktree where `tauri dev` runs the Cargo binary directly instead of a
+packaged `.app` bundle. In that state there are no TCC grants to clear, so the
+launch proceeds normally. Once a June app with that identifier has been built
+and run at least once, LaunchServices knows the bundle and subsequent resets
+succeed.
+
 The Tauri dev runner executes a hard-linked product-name alias of Cargo's
 `os-june` binary. The normal alias is `target/**/June`; supported issue
 worktrees use a visible name such as `target/**/June JUN-278 Codex`. The
@@ -82,7 +90,10 @@ node scripts/computer-use-self-test.mjs --permissions-only \
 The launch log prints the effective identifier and reset result. The production
 helper always keeps `co.opensoftware.june.computer-use-driver`; release builds
 never run the automatic reset. A successful reset removes prior grants but does
-not grant either permission or bypass the explanatory Continue action.
+not grant either permission or bypass the explanatory Continue action. A
+deferred Screen Recording reset means the app bundle was not known to
+LaunchServices; macOS will prompt for Screen Recording on first capture as if
+no prior grant existed.
 
 ## Build and release diagnosis
 

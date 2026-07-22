@@ -440,6 +440,7 @@ function tabMeta(
 export function App() {
   const replayOnboarding = shouldReplayOnboarding();
   const activeHermesProfileName = useActiveHermesProfileName();
+  const startsOnAgent = isMacLikePlatform() || isWindowsPlatform();
   const [profileDataRefreshRevision, setProfileDataRefreshRevision] = useState(0);
   const [state, dispatch] = useReducer(notesReducer, undefined, createInitialState);
   const [error, setError] = useState<string | null>(null);
@@ -448,11 +449,10 @@ export function App() {
   const [sidebarResizing, setSidebarResizing] = useState(false);
   const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">("none");
   const [bootstrapped, setBootstrapped] = useState(false);
-  // macOS launches on a fresh agent session. The Windows installer does not
-  // bundle Hermes yet, so Windows starts on meeting notes instead of promising
-  // a turnkey agent runtime.
+  // Supported release platforms launch on a fresh agent session. Keep Linux's
+  // existing Notes default until it becomes a supported desktop target.
   const [activeView, setActiveView] = useState<SidebarView>(() => {
-    if (!isMacLikePlatform()) return "notes";
+    if (!startsOnAgent) return "notes";
     markAgentNewSessionPending();
     return "agent";
   });
@@ -461,9 +461,9 @@ export function App() {
   // Browser-style tabs. Each tab is a saved navigation snapshot; the active tab
   // mirrors live navigation (so a single tab behaves exactly like before),
   // while switching or opening a tab restores its snapshot. The first tab
-  // matches the launch view (agent hero on mac, notes elsewhere).
+  // matches the launch view.
   const [tabs, setTabs] = useState<Tab[]>(() => [
-    { id: makeTabId(), nav: { view: isMacLikePlatform() ? "agent" : "notes" } },
+    { id: makeTabId(), nav: startsOnAgent ? defaultNav() : { view: "notes" } },
   ]);
   const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0]!.id);
   const tabsRef = useRef(tabs);

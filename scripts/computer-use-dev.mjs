@@ -65,18 +65,38 @@ export function resetComputerUseDevGrants(
     ["Accessibility", helperBundleIdentifier],
     ["ScreenCapture", appBundleIdentifier],
   ];
+  const outcomes = [];
   for (const [service, bundleIdentifier] of grants) {
     const result = run("/usr/bin/tccutil", ["reset", service, bundleIdentifier], {
       encoding: "utf8",
     });
     if (result.status !== 0) {
       const reason = `${result.stderr || result.stdout || ""}`.trim();
+      // tccutil exits with status 64 and OSStatus -10814 ("No such bundle
+      // identifier") when the bundle isn't registered with LaunchServices. For
+      // the app bundle this is expected on a clean worktree: `tauri dev` runs
+      // the Cargo binary directly, not a .app bundle, so the app identifier may
+      // never be known to LaunchServices. There are no TCC grants to reset, so
+      // treat it as deferred rather than a hard failure.
+      if (service === "ScreenCapture" && isLaunchServicesMiss(result)) {
+        outcomes.push({ service, bundleIdentifier, status: "deferred" });
+        continue;
+      }
       throw new Error(
         `Could not reset ${service} for ${bundleIdentifier}${reason ? `: ${reason}` : ""}`,
       );
     }
+    outcomes.push({ service, bundleIdentifier, status: "reset" });
   }
-  return grants.map(([service]) => service);
+  return outcomes;
+}
+
+function isLaunchServicesMiss(result) {
+  const output = `${result.stderr || result.stdout || ""}`;
+  return (
+    result.status === 64 &&
+    (output.includes("OSStatus error -10814") || output.includes("No such bundle identifier"))
+  );
 }
 
 export function registerComputerUseBundle(bundlePath, run = spawnSync) {
