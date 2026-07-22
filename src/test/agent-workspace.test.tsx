@@ -12,7 +12,6 @@ import {
   HERO_GREETINGS,
   SkillsToolsPanel,
   canShareAgentSession,
-  composerModelCommandAvailableHeight,
   composerInSteerStateFor,
   generatedImagePathAliases,
   projectAgentActivityLevels,
@@ -49,17 +48,6 @@ import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mut
 const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
 );
-
-describe("composer model command layout", () => {
-  it("keeps the command palette below the titlebar", () => {
-    const composerTop = 300;
-    const titlebarHeight = 28;
-    const paletteBottomGap = 4;
-    const availableHeight = composerModelCommandAvailableHeight(composerTop, titlebarHeight);
-
-    expect(composerTop - paletteBottomGap - availableHeight).toBe(titlebarHeight + 12);
-  });
-});
 
 // Streaming prose renders each word in its own fade-in span, so exact-text
 // queries against a live turn must match on the paragraph's full textContent.
@@ -4344,6 +4332,11 @@ describe("AgentWorkspace", () => {
     await user.type(search, "GLM 5.2");
     expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
 
+    // Escape peels one layer at a time: the active query first, then the
+    // popover itself (returning focus to the draft for the /model flow).
+    await user.keyboard("{Escape}");
+    expect(search).toHaveValue("");
+    expect(screen.getByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
     await waitFor(() => expect(composer).toHaveFocus());
@@ -4375,9 +4368,6 @@ describe("AgentWorkspace", () => {
     const palette = await screen.findByRole("dialog", { name: "Choose text model" });
     const search = within(palette).getByRole("combobox", { name: "Search models" });
     expect(search).toBeInTheDocument();
-    expect(
-      within(palette).getByRole("switch", { name: "Only show private models" }),
-    ).not.toBeChecked();
     expect(within(palette).getByText("Suggested")).toBeInTheDocument();
     expect(
       within(palette).getByRole("switch", { name: "Choose the model automatically" }),
