@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
-const TCC_SERVICES = ["Accessibility", "ScreenCapture"];
 const LSREGISTER =
   "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
@@ -57,9 +56,16 @@ export function stagedComputerUseBundlePaths({ targetDir, bundleName }) {
   return candidates;
 }
 
-export function resetComputerUseGrants(bundleIdentifier, run = spawnSync) {
-  const resetServices = [];
-  for (const service of TCC_SERVICES) {
+export function resetComputerUseDevGrants(
+  { bundlePath, helperBundleIdentifier, appBundleIdentifier },
+  run = spawnSync,
+) {
+  registerComputerUseBundle(bundlePath, run);
+  const grants = [
+    ["Accessibility", helperBundleIdentifier],
+    ["ScreenCapture", appBundleIdentifier],
+  ];
+  for (const [service, bundleIdentifier] of grants) {
     const result = run("/usr/bin/tccutil", ["reset", service, bundleIdentifier], {
       encoding: "utf8",
     });
@@ -69,14 +75,8 @@ export function resetComputerUseGrants(bundleIdentifier, run = spawnSync) {
         `Could not reset ${service} for ${bundleIdentifier}${reason ? `: ${reason}` : ""}`,
       );
     }
-    resetServices.push(service);
   }
-  return resetServices;
-}
-
-export function resetComputerUseDevGrants({ bundlePath, bundleIdentifier }, run = spawnSync) {
-  registerComputerUseBundle(bundlePath, run);
-  return resetComputerUseGrants(bundleIdentifier, run);
+  return grants.map(([service]) => service);
 }
 
 export function registerComputerUseBundle(bundlePath, run = spawnSync) {

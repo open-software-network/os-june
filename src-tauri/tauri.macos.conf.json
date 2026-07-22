@@ -11,6 +11,7 @@
       "../.tauri-helper/june-nm-shim": "native/bin/june-nm-shim",
       "../.tauri-helper/June Computer Use Driver.app": "native/bin/June Computer Use Driver.app",
       "../.tauri-hermes/hermes": "native/hermes",
+      "../extension/dist": "native/extension",
       "resources/hermes-skills": "native/hermes-skills"
     },
     "macOS": {

@@ -1,4 +1,5 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
+import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCircleX } from "central-icons/IconCircleX";
@@ -28,6 +29,7 @@ import {
   oauthStateFor,
   oauthStatusMeta,
   planServerEdit,
+  parseExternalMcpConfig,
   restartHermesRuntime,
   redactedEnv,
   redactedHeaders,
@@ -42,6 +44,7 @@ import {
   usesOauth,
   validateDraft,
   type HermesAdminMode,
+  type HermesAddMcpServerPayload,
   type HermesMcpServerInfo,
   type McpEditWrite,
   type McpFilteringState,
@@ -263,7 +266,8 @@ export function McpServersView({
 }) {
   const [query, setQuery] = useState("");
   const [refreshSpins, setRefreshSpins] = useState(0);
-  const [addOpen, setAddOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [manualTransport, setManualTransport] = useState<McpServerDraft["transport"]>();
   const [toDelete, setToDelete] = useState<HermesMcpServerInfo | undefined>();
   // The server whose connection-field edit dialog is open, or undefined.
   const [toEdit, setToEdit] = useState<HermesMcpServerInfo | undefined>();
@@ -358,10 +362,10 @@ export function McpServersView({
           type="button"
           className="btn btn-secondary mcp-servers-add"
           disabled={isUnavailable}
-          onClick={() => setAddOpen(true)}
+          onClick={() => setSetupOpen(true)}
         >
           <IconPlusMedium size={14} ariaHidden />
-          Add MCP server
+          Set up MCP
         </button>
       </div>
 
@@ -391,8 +395,17 @@ export function McpServersView({
           ) : !hasServers ? (
             <EmptyState
               className="empty-state-compact"
-              title="No MCP servers"
-              description="Add a server to connect external tools. Local (stdio) servers run as subprocesses; remote servers connect over HTTP."
+              title="Connect your first tool"
+              description="Bring in an existing Claude, Cursor, or Codex configuration, or set up a server with a few guided steps."
+              action={
+                <button
+                  type="button"
+                  className="btn btn-secondary mcp-servers-add"
+                  onClick={() => setSetupOpen(true)}
+                >
+                  Start setup
+                </button>
+              }
             />
           ) : visible.length === 0 ? (
             <EmptyState
@@ -422,14 +435,26 @@ export function McpServersView({
         </div>
       </div>
 
+      <McpSetupDialog
+        open={setupOpen}
+        existingNames={state.servers.map((server) => server.name)}
+        onClose={() => setSetupOpen(false)}
+        onManual={(transport) => {
+          setSetupOpen(false);
+          setManualTransport(transport);
+        }}
+        onAdd={state.add}
+      />
+
       <AddServerDialog
-        open={addOpen}
+        open={manualTransport !== undefined}
+        initialTransport={manualTransport ?? "stdio"}
         adding={state.adding}
         existingNames={state.servers.map((server) => server.name)}
-        onClose={() => setAddOpen(false)}
+        onClose={() => setManualTransport(undefined)}
         onAdd={async (payload) => {
           const ok = await state.add(payload);
-          if (ok) setAddOpen(false);
+          if (ok) setManualTransport(undefined);
           return ok;
         }}
       />
@@ -813,8 +838,269 @@ function formatCommand(command: string | undefined, args: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
-// Add-server dialog
+// Guided setup and add-server dialogs
 // ---------------------------------------------------------------------------
+
+function McpSetupDialog({
+  open,
+  existingNames,
+  onClose,
+  onManual,
+  onAdd,
+}: {
+  open: boolean;
+  existingNames: string[];
+  onClose: () => void;
+  onManual: (transport: McpServerDraft["transport"]) => void;
+  onAdd: (payload: HermesAddMcpServerPayload) => Promise<boolean>;
+}) {
+  const [step, setStep] = useState<"choose" | "import">("choose");
+  const [raw, setRaw] = useState("");
+  const [preview, setPreview] = useState<ReturnType<typeof parseExternalMcpConfig>>();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string>();
+
+  function reset() {
+    setStep("choose");
+    setRaw("");
+    setPreview(undefined);
+    setSelected(new Set());
+    setImportError(undefined);
+  }
+
+  function handleClose() {
+    if (importing) return;
+    reset();
+    onClose();
+  }
+
+  function previewImport() {
+    const result = parseExternalMcpConfig(raw);
+    setPreview(result);
+    setImportError(undefined);
+    setSelected(
+      new Set(
+        result.entries
+          .filter((entry) => entry.payload && !existingNames.includes(entry.name))
+          .map((entry) => entry.name),
+      ),
+    );
+  }
+
+  async function applyImport() {
+    if (!preview || importing) return;
+    const entries = preview.entries.filter(
+      (entry) => selected.has(entry.name) && entry.payload && !existingNames.includes(entry.name),
+    );
+    if (entries.length === 0) return;
+
+    setImporting(true);
+    const failed = new Set<string>();
+    for (const entry of entries) {
+      if (entry.payload && !(await onAdd(entry.payload))) failed.add(entry.name);
+    }
+    setImporting(false);
+    if (failed.size > 0) {
+      setSelected(failed);
+      setImportError(
+        failed.size === 1
+          ? "One server could not be added. Review it and try again."
+          : `${failed.size} servers could not be added. Review them and try again.`,
+      );
+      return;
+    }
+    reset();
+    onClose();
+  }
+
+  const selectedCount = preview?.entries.filter(
+    (entry) => selected.has(entry.name) && entry.payload && !existingNames.includes(entry.name),
+  ).length;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={handleClose}
+      title={step === "choose" ? "Set up MCP" : "Import MCP configuration"}
+      description={
+        step === "choose"
+          ? "Choose the quickest way to connect tools and data to June."
+          : "Paste a Claude, Cursor, or Codex MCP configuration. You can review every server before anything is added."
+      }
+      width={600}
+      className="mcp-add-dialog mcp-setup-dialog"
+      footer={
+        step === "choose" ? (
+          <button type="button" className="primary-action" onClick={handleClose}>
+            Cancel
+          </button>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              disabled={importing}
+              onClick={() => {
+                if (preview) {
+                  setPreview(undefined);
+                  setSelected(new Set());
+                  setImportError(undefined);
+                } else {
+                  setStep("choose");
+                }
+              }}
+            >
+              Back
+            </button>
+            {preview ? (
+              <button
+                type="button"
+                className="primary-action primary-solid"
+                disabled={!selectedCount || importing}
+                onClick={() => void applyImport()}
+              >
+                {importing
+                  ? "Importing"
+                  : `Import ${selectedCount ?? 0} ${selectedCount === 1 ? "server" : "servers"}`}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="primary-action primary-solid"
+                disabled={!raw.trim()}
+                onClick={previewImport}
+              >
+                Preview servers
+              </button>
+            )}
+          </>
+        )
+      }
+    >
+      {step === "choose" ? (
+        <div className="mcp-setup-choices">
+          <button type="button" className="mcp-setup-choice" onClick={() => setStep("import")}>
+            <span className="mcp-setup-choice-icon">
+              <IconArrowInbox size={18} ariaHidden />
+            </span>
+            <span className="mcp-setup-choice-copy">
+              <span className="mcp-setup-choice-title">
+                Import from another app
+                <span className="mcp-setup-recommended">Recommended</span>
+              </span>
+              <span className="mcp-setup-choice-description">
+                Bring over servers from Claude, Cursor, or Codex in one pass.
+              </span>
+            </span>
+          </button>
+          <button type="button" className="mcp-setup-choice" onClick={() => onManual("http")}>
+            <span className="mcp-setup-choice-icon">
+              <IconCloud size={18} ariaHidden />
+            </span>
+            <span className="mcp-setup-choice-copy">
+              <span className="mcp-setup-choice-title">Connect a remote server</span>
+              <span className="mcp-setup-choice-description">
+                Add a hosted MCP endpoint and sign in if it uses OAuth.
+              </span>
+            </span>
+          </button>
+          <button type="button" className="mcp-setup-choice" onClick={() => onManual("stdio")}>
+            <span className="mcp-setup-choice-icon">
+              <IconSettingsGear4 size={18} ariaHidden />
+            </span>
+            <span className="mcp-setup-choice-copy">
+              <span className="mcp-setup-choice-title">Run a local server</span>
+              <span className="mcp-setup-choice-description">
+                Configure a command, its arguments, and environment values.
+              </span>
+            </span>
+          </button>
+        </div>
+      ) : preview ? (
+        <div className="mcp-import-preview">
+          {preview.error ? <p className="mcp-import-error">{preview.error}</p> : null}
+          {!preview.error ? (
+            <p className="mcp-import-summary">
+              Found {preview.entries.length} {preview.entries.length === 1 ? "server" : "servers"}{" "}
+              in your {preview.source} configuration.
+            </p>
+          ) : null}
+          <div className="mcp-import-list">
+            {preview.entries.map((entry) => {
+              const duplicate = existingNames.includes(entry.name);
+              const unavailable = Boolean(entry.error || duplicate || !entry.payload);
+              return (
+                <label
+                  key={entry.name}
+                  className="mcp-import-entry"
+                  data-unavailable={unavailable || undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(entry.name)}
+                    disabled={unavailable || importing}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      setSelected((current) => {
+                        const next = new Set(current);
+                        if (checked) next.add(entry.name);
+                        else next.delete(entry.name);
+                        return next;
+                      });
+                    }}
+                  />
+                  <span className="mcp-import-entry-copy">
+                    <span className="mcp-import-entry-name">{entry.name}</span>
+                    <span className="mcp-import-entry-detail">
+                      {duplicate
+                        ? "Already connected"
+                        : (entry.error ??
+                          (entry.payload?.command
+                            ? `Local command: ${entry.payload.command}`
+                            : `Remote server: ${entry.payload?.url}`))}
+                    </span>
+                    {entry.warnings.map((warning) => (
+                      <span key={warning} className="mcp-import-entry-warning">
+                        {warning}
+                      </span>
+                    ))}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {importError ? <p className="mcp-import-error">{importError}</p> : null}
+        </div>
+      ) : (
+        <div className="mcp-import-paste">
+          <label className="mcp-add-label" htmlFor="mcp-import-config">
+            Configuration
+          </label>
+          <textarea
+            id="mcp-import-config"
+            className="mcp-import-textarea"
+            rows={12}
+            value={raw}
+            spellCheck={false}
+            placeholder={
+              '{\n  "mcpServers": {\n    "example": { "command": "npx", "args": ["server"] }\n  }\n}'
+            }
+            onChange={(event) => {
+              setRaw(event.currentTarget.value);
+              setImportError(undefined);
+            }}
+          />
+          <p className="mcp-add-note">
+            <IconShield size={13} ariaHidden />
+            June reads only MCP server entries. Other app settings are ignored, and nothing is added
+            until you approve the preview.
+          </p>
+        </div>
+      )}
+    </Dialog>
+  );
+}
 
 /** A stable, monotonic id for an editor row. Rows are added and removed in the
  * middle of a list, so a positional React key would let React reuse a row's
@@ -878,22 +1164,30 @@ function toValidationDraft(draft: EditableDraft): McpServerDraft {
 
 function AddServerDialog({
   open,
+  initialTransport,
   adding,
   existingNames,
   onClose,
   onAdd,
 }: {
   open: boolean;
+  initialTransport: McpServerDraft["transport"];
   adding: boolean;
   existingNames: string[];
   onClose: () => void;
   onAdd: (payload: import("../../lib/hermes-admin").HermesAddMcpServerPayload) => Promise<boolean>;
 }) {
-  const [draft, setDraft] = useState<EditableDraft>(() => emptyEditableDraft());
+  const [draft, setDraft] = useState<EditableDraft>(() => emptyEditableDraft(initialTransport));
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  useEffect(() => {
+    if (!open) return;
+    setDraft(emptyEditableDraft(initialTransport));
+    setErrors({});
+  }, [open, initialTransport]);
+
   function reset() {
-    setDraft(emptyEditableDraft());
+    setDraft(emptyEditableDraft(initialTransport));
     setErrors({});
   }
 
@@ -1760,10 +2054,12 @@ function EmptyState({
   title,
   description,
   className,
+  action,
 }: {
   title: string;
   description: string;
   className?: string;
+  action?: ReactNode;
 }) {
   return (
     <EmptyStateSurface
@@ -1771,6 +2067,7 @@ function EmptyState({
       title={title}
       description={description}
       className={className}
+      action={action}
     />
   );
 }

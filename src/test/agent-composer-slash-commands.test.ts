@@ -18,6 +18,10 @@ import {
 
 describe("agent composer built-in slash commands", () => {
   it("parses reserved model and file commands", () => {
+    expect(parseBuiltinComposerSlashCommand("/model")).toEqual({
+      name: "model",
+      argument: "",
+    });
     expect(parseBuiltinComposerSlashCommand("/model kimi")).toEqual({
       name: "model",
       argument: "kimi",

@@ -92,6 +92,46 @@ export function authoritativeTranscriptCoverageKey(persisted: TranscriptDto[]) {
   return JSON.stringify(spans);
 }
 
+/**
+ * Stable dependency key for changes that can alter the visible transcription.
+ * App polling reconstructs DTO objects, so React effects must depend on values,
+ * not array identity.
+ */
+export function transcriptFollowLatestKey(
+  live: LiveTranscriptEventDto[],
+  persisted: TranscriptDto[],
+) {
+  return JSON.stringify({
+    live: live.map((event) => [
+      event.noteId,
+      event.sessionId,
+      event.sourceMode,
+      event.source,
+      event.segmentId,
+      event.startMs,
+      event.endMs,
+      event.text,
+      event.language ?? null,
+      event.stability,
+    ]),
+    persisted: persisted.map((turn) => [
+      turn.id,
+      turn.recordingSessionId ?? null,
+      turn.spanId ?? null,
+      turn.sourceMode ?? null,
+      turn.source ?? null,
+      turn.startMs ?? null,
+      turn.endMs ?? null,
+      turn.turnIndex ?? null,
+      turn.text,
+      turn.language ?? null,
+      turn.status,
+      turn.lastError ?? null,
+      turn.recordedSilence ?? false,
+    ]),
+  });
+}
+
 function preserveReferenceWhenUnchanged(
   current: LiveTranscriptEventDto[],
   filtered: LiveTranscriptEventDto[],

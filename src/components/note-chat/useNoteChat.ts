@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   buildHermesSessionChatTurns,
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   USER_ATTACHMENT_PROMPT_MARKER,
   type AgentChatTurn,
 } from "../../lib/agent-chat-runtime";
@@ -277,6 +278,9 @@ export type NoteChat = {
    * accepted (the caller can clear its composer), false on failure (the
    * caller keeps the draft and chips so the user can retry). */
   submit: (text: string, attachments?: NoteChatAttachment[]) => Promise<boolean>;
+  /** Starts one continuation in this chat's existing session without reading
+   * or clearing the composer. */
+  retryUpstreamFailure: () => Promise<boolean>;
   /** Interrupts the running agent run. The UI reads stopped immediately; the
    * interrupt RPC follows best-effort, like the workspace's stop. */
   stop: () => void;
@@ -519,8 +523,12 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     });
   }, [noteTitle, refreshTranscript]);
 
-  const submit = useCallback(
-    async (rawText: string, attachments: NoteChatAttachment[] = []): Promise<boolean> => {
+  const submitPrompt = useCallback(
+    async (
+      rawText: string,
+      attachments: NoteChatAttachment[] = [],
+      displayText?: string,
+    ): Promise<boolean> => {
       const question = rawText.trim();
       if ((!question && !attachments.length) || !noteId) return false;
       // Reject a second send that races the first before setWorking(true)
@@ -563,7 +571,11 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         createdAt: new Date().toISOString(),
         status: "complete",
         parts: [
-          { type: "text", text: question || "Use the attached file(s).", status: "complete" },
+          {
+            type: "text",
+            text: displayText?.trim() || question || "Use the attached file(s).",
+            status: "complete",
+          },
         ],
       };
       setPendingUserTurns((current) => [...current, optimistic]);
@@ -769,6 +781,16 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     [noteId, noteTitle],
   );
 
+  const submit = useCallback(
+    (text: string, attachments: NoteChatAttachment[] = []) => submitPrompt(text, attachments),
+    [submitPrompt],
+  );
+
+  const retryUpstreamFailure = useCallback(() => {
+    if (!storedSessionIdRef.current) return Promise.resolve(false);
+    return submitPrompt(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT, [], "Try again");
+  }, [submitPrompt]);
+
   const stop = useCallback(() => {
     // Stopped is a UI-first state, mirroring the workspace: the moment the
     // user clicks, the turn reads as over; the interrupt follows best-effort.
@@ -825,6 +847,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     modelSelection,
     appliedHermesModelId,
     submit,
+    retryUpstreamFailure,
     stop,
     setSessionModel,
   };

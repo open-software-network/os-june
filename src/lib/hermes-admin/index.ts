@@ -72,6 +72,7 @@ export * from "./use-mcp-filtering";
 export * from "./mcp-security-view";
 export * from "./use-mcp-security";
 export * from "./mcp-catalog-view";
+export * from "./mcp-config-import";
 export * from "./use-mcp-catalog";
 export * from "./hub-search-view";
 export * from "./skill-install-review";

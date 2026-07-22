@@ -90,6 +90,20 @@ export const BUNDLE_META: Readonly<Record<ConnectorScopeBundle, ConnectorBundleM
       scopeUrls: ["write"],
       feature: "create and update issues",
     },
+    github_read: {
+      label: "Read repositories, issues, and pull requests",
+      description:
+        "Read code, issues, pull requests, and comments in the repositories chosen during GitHub App installation.",
+      scopeUrls: ["read"],
+      feature: "read your GitHub repositories",
+    },
+    github_write: {
+      label: "Create and update issues and comments",
+      description:
+        "June allows drafting issues and comments on your behalf. Every write asks for your approval before it runs.",
+      scopeUrls: ["write"],
+      feature: "create and update issues",
+    },
   });
 
 /** The six Google feature bundles, in the order the connect dialog lists
@@ -110,10 +124,19 @@ export const LINEAR_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.free
   "linear_write",
 ]);
 
+/** The two GitHub feature bundles, in the order the connect dialog lists
+ * them. */
+export const GITHUB_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+  "github_read",
+  "github_write",
+]);
+
 /** The feature bundles a provider's connect dialog offers, in display
  * order. */
 export function bundlesForProvider(provider: ConnectorProvider): readonly ConnectorScopeBundle[] {
-  return provider === "linear" ? LINEAR_SCOPE_BUNDLES : GOOGLE_SCOPE_BUNDLES;
+  if (provider === "linear") return LINEAR_SCOPE_BUNDLES;
+  if (provider === "github") return GITHUB_SCOPE_BUNDLES;
+  return GOOGLE_SCOPE_BUNDLES;
 }
 
 /** A granted Google scope implies these narrower scope needs: a write scope
@@ -203,6 +226,7 @@ const RECONNECT_BLURB: Readonly<Record<ConnectorProvider, string>> = Object.free
   google: "Google needs you to sign in again before June can use this account.",
   linear: "Linear needs you to sign in again before June can use this workspace.",
   notion: "Notion needs you to connect again before June can use its hosted MCP tools.",
+  github: "GitHub needs you to sign in again before June can use this account.",
 });
 const UNAVAILABLE_BLURB = "June could not confirm the Notion connection. Try again in a moment.";
 
@@ -328,18 +352,27 @@ export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
  * are team-enforced in Rust (the proxy checks the caller's selected-team
  * grant on every team-scoped route), so `june_linear` is safe to grant
  * ambiently just like the Google read servers rather than gating it behind
- * trust mode. */
-export const CONNECTOR_READ_TOOLSETS = ["june_gmail", "june_gcal", "june_linear", "june_notion"];
+ * trust mode. GitHub reads are similarly gated by the installation's
+ * repository selection on GitHub's side, so `june_github` is safe to grant
+ * ambiently too. */
+export const CONNECTOR_READ_TOOLSETS = [
+  "june_gmail",
+  "june_gcal",
+  "june_linear",
+  "june_notion",
+  "june_github",
+];
 
 /** Action connector MCP servers: every mutating call parks for approval in
- * the Rust proxy. Linear has no autonomous mode in v1 (see `grantable` on
- * `ConnectorActionTool`), but its actions server still parks for approval
- * like the Google ones, so it belongs in this list too. */
+ * the Rust proxy. Linear and GitHub have no autonomous mode in v1 (see
+ * `grantable` on `ConnectorActionTool`), but their action servers still park
+ * for approval like the Google ones, so they belong in this list too. */
 export const CONNECTOR_ACTION_TOOLSETS = [
   "june_gmail_actions",
   "june_gcal_actions",
   "june_linear_actions",
   "june_notion_actions",
+  "june_github_actions",
 ];
 
 /** One connector action tool, for the approvals-surface label lookup
@@ -403,6 +436,24 @@ export const CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.fre
     label: "Update Notion pages",
     grantable: false,
   },
+  {
+    id: "create_issue",
+    server: "june_github_actions",
+    label: "Create issue",
+    grantable: false,
+  },
+  {
+    id: "update_issue",
+    server: "june_github_actions",
+    label: "Update issue",
+    grantable: false,
+  },
+  {
+    id: "add_comment",
+    server: "june_github_actions",
+    label: "Add comment",
+    grantable: false,
+  },
 ]);
 
 /** The connector action tools eligible for the earned-autonomy grant
@@ -413,8 +464,19 @@ export const GRANTABLE_CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = 
   CONNECTOR_ACTION_TOOLS.filter((tool) => tool.grantable),
 );
 
+/** Labels keyed `server:id`, with an id-only fallback for callers that have
+ * no server context. Tool ids collide across providers (Linear and GitHub
+ * both ship create_issue / update_issue / add_comment), so the fallback keeps
+ * the first registration instead of letting a later provider shadow an
+ * earlier one. */
 const ACTION_TOOL_LABELS: Readonly<Record<string, string>> = Object.freeze(
-  Object.fromEntries(CONNECTOR_ACTION_TOOLS.map((tool) => [tool.id, tool.label])),
+  CONNECTOR_ACTION_TOOLS.reduce<Record<string, string>>((labels, tool) => {
+    labels[`${tool.server}:${tool.id}`] = tool.label;
+    if (!(tool.id in labels)) {
+      labels[tool.id] = tool.label;
+    }
+    return labels;
+  }, {}),
 );
 
 /** A scheduled run that counts toward earned autonomy: one the routine
@@ -436,17 +498,28 @@ export function isCreditableRun(run: {
 }
 
 /** A human label for a connector action tool id, for the approvals surface.
- * Falls back to a spaced form of the raw name for any unmapped tool. */
-export function actionToolLabel(tool: string): string {
+ * Pass the originating server when known: colliding ids resolve to that
+ * provider's label. Falls back to a spaced form of the raw name for any
+ * unmapped tool. */
+export function actionToolLabel(tool: string, server?: string): string {
+  if (server) {
+    const qualified = ACTION_TOOL_LABELS[`${server}:${tool}`];
+    if (qualified) {
+      return qualified;
+    }
+  }
   return ACTION_TOOL_LABELS[tool] ?? tool.replace(/_/g, " ");
 }
 
 /** The provider behind a connector MCP server name, for provider marks on the
  * approvals surface. Null for non-connector servers. */
-export function providerFromServer(server: string): "google" | "linear" | "notion" | null {
+export function providerFromServer(
+  server: string,
+): "google" | "linear" | "notion" | "github" | null {
   if (server.startsWith("june_gmail") || server.startsWith("june_gcal")) return "google";
   if (server.startsWith("june_linear")) return "linear";
   if (server.startsWith("june_notion")) return "notion";
+  if (server.startsWith("june_github")) return "github";
   return null;
 }
 

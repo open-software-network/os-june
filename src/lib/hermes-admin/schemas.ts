@@ -1413,7 +1413,34 @@ export const EXTERNAL_DIRS_CONFIG_PATH = ["skills", "external_dirs"] as const;
  * `skills.external_dirs` is a list of raw path strings (which may contain `~`
  * and `${VAR}`). Tolerates the key being absent, a bare string (single dir), or
  * a list; non-string entries are dropped. Returns the raw configured strings in
- * declared order — resolution/expansion happens June-side, never here. */
+ * declared order — resolution/expansion happens June-side, never here. The
+ * Windows `\\?\` verbatim prefix is stripped so it never reaches the UI. */
+
+/** Strips the Windows verbatim path prefix (`\\?\`) when it is safe to do so:
+ * only the drive-letter form (`\\?\X:\…` → `X:\…`) and the UNC form
+ * (`\\?\UNC\server\share` → `\\server\share`), matched case-insensitively.
+ * Other verbatim namespaces (`\\?\GLOBALROOT\…`, `\\?\Volume{…}\…`) are left
+ * unchanged because stripping the prefix can change whether the path works.
+ * Non-Windows paths are returned unchanged (the prefixes are Windows-only). */
+export function stripWindowsVerbatimPrefix(path: string): string {
+  const lower = path.toLowerCase();
+  // `\\?\UNC\server\share` → `\\server\share` (check UNC first since it also
+  // starts with `\\?\`). Case-insensitive: Windows treats `\\?\unc\` the same.
+  if (lower.startsWith("\\\\?\\unc\\")) {
+    return `\\\\${path.slice(8)}`;
+  }
+  // `\\?\X:\path` → `X:\path` — drive-letter form only. Leaves
+  // `\\?\GLOBALROOT`, `\\?\Volume{…}`, and other non-drive verbatim paths
+  // unchanged so they remain operable.
+  if (lower.startsWith("\\\\?\\")) {
+    const rest = path.slice(4);
+    if (/^[a-z]:\\/i.test(rest)) {
+      return rest;
+    }
+  }
+  return path;
+}
+
 export function readExternalDirs(config: Record<string, unknown>): string[] {
   let cursor: unknown = config;
   for (const segment of EXTERNAL_DIRS_CONFIG_PATH) {
@@ -1423,13 +1450,13 @@ export function readExternalDirs(config: Record<string, unknown>): string[] {
   }
   if (typeof cursor === "string") {
     const single = cursor.trim();
-    return single.length > 0 ? [single] : [];
+    return single.length > 0 ? [stripWindowsVerbatimPrefix(single)] : [];
   }
   if (!Array.isArray(cursor)) return [];
   const out: string[] = [];
   for (const entry of cursor) {
     const str = nonEmptyString(entry);
-    if (str) out.push(str);
+    if (str) out.push(stripWindowsVerbatimPrefix(str));
   }
   return out;
 }

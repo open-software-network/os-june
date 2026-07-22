@@ -7,6 +7,7 @@ import {
   CONNECTOR_ACTION_TOOLS,
   CONNECTOR_ACTION_TOOLSETS,
   CONNECTOR_READ_TOOLSETS,
+  GITHUB_SCOPE_BUNDLES,
   GOOGLE_SCOPE_BUNDLES,
   GRANTABLE_CONNECTOR_ACTION_TOOLS,
   LINEAR_SCOPE_BUNDLES,
@@ -53,9 +54,17 @@ describe("scope bundles", () => {
     expect(BUNDLE_META.linear_write.label).toBe("Create and update issues");
   });
 
+  it("maps every GitHub bundle to its June-side scope marker", () => {
+    expect(BUNDLE_META.github_read.scopeUrls).toEqual(["read"]);
+    expect(BUNDLE_META.github_write.scopeUrls).toEqual(["write"]);
+    expect(BUNDLE_META.github_read.label).toBe("Read repositories, issues, and pull requests");
+    expect(BUNDLE_META.github_write.label).toBe("Create and update issues and comments");
+  });
+
   it("lists bundles per provider with no cross-provider bundles", () => {
     expect(bundlesForProvider("google")).toEqual(GOOGLE_SCOPE_BUNDLES);
     expect(bundlesForProvider("linear")).toEqual(LINEAR_SCOPE_BUNDLES);
+    expect(bundlesForProvider("github")).toEqual(GITHUB_SCOPE_BUNDLES);
     expect(GOOGLE_SCOPE_BUNDLES).not.toEqual(
       expect.arrayContaining(["linear_read", "linear_write"]),
     );
@@ -69,6 +78,7 @@ describe("scope bundles", () => {
         "calendar_events",
       ]),
     );
+    expect(GITHUB_SCOPE_BUNDLES).not.toEqual(expect.arrayContaining(["gmail_read", "linear_read"]));
   });
 
   it("recovers bundles from granted scope URLs, ignoring identity scopes", () => {
@@ -125,7 +135,11 @@ describe("scope bundles", () => {
   });
 
   it("keeps bundle copy sentence case with no typographic dashes", () => {
-    for (const bundle of [...GOOGLE_SCOPE_BUNDLES, ...LINEAR_SCOPE_BUNDLES]) {
+    for (const bundle of [
+      ...GOOGLE_SCOPE_BUNDLES,
+      ...LINEAR_SCOPE_BUNDLES,
+      ...GITHUB_SCOPE_BUNDLES,
+    ]) {
       const meta = BUNDLE_META[bundle];
       for (const text of [meta.label, meta.description, meta.feature]) {
         expect(text).not.toMatch(/[–—]/);
@@ -133,6 +147,14 @@ describe("scope bundles", () => {
       // Sentence case: no shouting labels.
       expect(meta.label).not.toMatch(/^[A-Z\s]+$/);
     }
+  });
+
+  it("scopes bundlesFromScopes to GitHub, never cross-matching with Linear scopes", () => {
+    // Both providers use "read"/"write" as scope markers but bundlesFromScopes
+    // is provider-scoped and must never cross-match.
+    expect(bundlesFromScopes(["read"], "github")).toEqual(["github_read"]);
+    expect(bundlesFromScopes(["read", "write"], "github")).toEqual(["github_read", "github_write"]);
+    expect(bundlesFromScopes(["read"], "linear")).toEqual(["linear_read"]);
   });
 });
 
@@ -251,8 +273,10 @@ describe("routineToolsetsFor", () => {
     expect(toolsets).toContain("june_gcal");
     expect(toolsets).toContain("june_linear");
     expect(toolsets).toContain("june_notion");
+    expect(toolsets).toContain("june_github");
     expect(toolsets).not.toContain("june_gmail_actions");
     expect(toolsets).not.toContain("june_notion_actions");
+    expect(toolsets).not.toContain("june_github_actions");
   });
 
   it("approval: adds the actions servers on top of the read servers", () => {
@@ -261,8 +285,10 @@ describe("routineToolsetsFor", () => {
     expect(toolsets).toContain("june_gcal_actions");
     expect(toolsets).toContain("june_linear_actions");
     expect(toolsets).toContain("june_notion_actions");
+    expect(toolsets).toContain("june_github_actions");
     expect(toolsets).toContain("june_gmail");
     expect(toolsets).toContain("june_notion");
+    expect(toolsets).toContain("june_github");
   });
 
   it("autonomous: swaps actions servers for the per-job auto servers", () => {
@@ -274,8 +300,10 @@ describe("routineToolsetsFor", () => {
     expect(toolsets).not.toContain("june_gmail_actions");
     expect(toolsets).not.toContain("june_gcal_actions");
     expect(toolsets).not.toContain("june_notion_actions");
+    expect(toolsets).not.toContain("june_github_actions");
     expect(toolsets).toContain("june_gmail");
     expect(toolsets).toContain("june_notion");
+    expect(toolsets).toContain("june_github");
   });
 
   it("dedupes and stays stable with no auto servers granted", () => {
@@ -372,46 +400,79 @@ describe("providerFromServer", () => {
     expect(providerFromServer("june_linear")).toBe("linear");
     expect(providerFromServer("june_linear_auto_xyz")).toBe("linear");
     expect(providerFromServer("june_linear_actions")).toBe("linear");
+    expect(providerFromServer("june_github")).toBe("github");
+    expect(providerFromServer("june_github_actions")).toBe("github");
     expect(providerFromServer("web")).toBeNull();
   });
 });
 
 describe("connector action tools", () => {
-  it("registers june_linear_actions as an action toolset", () => {
+  it("registers all provider action toolsets", () => {
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_linear_actions");
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_gmail_actions");
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_gcal_actions");
     expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_notion_actions");
+    expect(CONNECTOR_ACTION_TOOLSETS).toContain("june_github_actions");
   });
 
-  it("labels the four Linear action tools for the approvals surface", () => {
-    expect(actionToolLabel("create_issue")).toBe("Create issues");
-    expect(actionToolLabel("update_issue")).toBe("Update issues");
-    expect(actionToolLabel("add_comment")).toBe("Comment on issues");
+  it("labels connector action tools for the approvals surface", () => {
+    // Linear-only tool (create_project_update has no GitHub equivalent)
     expect(actionToolLabel("create_project_update")).toBe("Post project updates");
+    // Notion tools
     expect(actionToolLabel("notion-create-pages")).toBe("Create Notion pages");
     expect(actionToolLabel("notion-update-page")).toBe("Update Notion pages");
   });
 
-  it("marks only Google action tools grantable", () => {
-    const google = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server.startsWith("june_g"));
-    const linear = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_linear_actions");
-    const notion = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_notion_actions");
-    expect(google.length).toBeGreaterThan(0);
-    expect(linear).toHaveLength(4);
-    expect(notion).toHaveLength(2);
-    for (const tool of google) {
-      expect(tool.grantable).toBe(true);
-    }
-    for (const tool of [...linear, ...notion]) {
+  it("resolves colliding tool ids by server, keeping the first registration as fallback", () => {
+    // create_issue / update_issue / add_comment exist in both Linear and
+    // GitHub. With a server the lookup is exact; without one it must keep the
+    // first-registered (Linear) label rather than letting GitHub shadow it.
+    expect(actionToolLabel("add_comment", "june_linear_actions")).toBe("Comment on issues");
+    expect(actionToolLabel("add_comment", "june_github_actions")).toBe("Add comment");
+    expect(actionToolLabel("create_issue", "june_github_actions")).toBe("Create issue");
+    expect(actionToolLabel("update_issue", "june_github_actions")).toBe("Update issue");
+    expect(actionToolLabel("create_issue")).toBe("Create issues");
+    expect(actionToolLabel("update_issue")).toBe("Update issues");
+    expect(actionToolLabel("add_comment")).toBe("Comment on issues");
+    // Unmapped tools still fall back to a spaced form, with or without server.
+    expect(actionToolLabel("do_thing", "june_github_actions")).toBe("do thing");
+  });
+
+  it("labels the three GitHub action tools for the approvals surface", () => {
+    const github = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_github_actions");
+    expect(github).toHaveLength(3);
+    const labels = github.map((tool) => tool.label);
+    expect(labels).toContain("Create issue");
+    expect(labels).toContain("Update issue");
+    expect(labels).toContain("Add comment");
+    for (const tool of github) {
       expect(tool.grantable).toBe(false);
     }
   });
 
-  it("excludes Linear and Notion tools from earned autonomy while keeping Google tools", () => {
+  it("marks only Google (gmail/gcal) action tools grantable", () => {
+    const google = CONNECTOR_ACTION_TOOLS.filter(
+      (tool) => tool.server === "june_gmail_actions" || tool.server === "june_gcal_actions",
+    );
+    const linear = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_linear_actions");
+    const notion = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_notion_actions");
+    const github = CONNECTOR_ACTION_TOOLS.filter((tool) => tool.server === "june_github_actions");
+    expect(google.length).toBeGreaterThan(0);
+    expect(linear).toHaveLength(4);
+    expect(notion).toHaveLength(2);
+    expect(github).toHaveLength(3);
+    for (const tool of google) {
+      expect(tool.grantable).toBe(true);
+    }
+    for (const tool of [...linear, ...notion, ...github]) {
+      expect(tool.grantable).toBe(false);
+    }
+  });
+
+  it("excludes Linear, Notion, and GitHub tools from earned autonomy while keeping Google tools", () => {
     // The grant-checklist consumer must read GRANTABLE_CONNECTOR_ACTION_TOOLS
-    // (not CONNECTOR_ACTION_TOOLS directly) so Linear and Notion actions never
-    // appear as grantable.
+    // (not CONNECTOR_ACTION_TOOLS directly) so Linear, Notion, and GitHub actions
+    // never appear as grantable.
     const ids = GRANTABLE_CONNECTOR_ACTION_TOOLS.map((tool) => tool.id);
     expect(ids).toEqual(
       expect.arrayContaining([

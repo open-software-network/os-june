@@ -86,6 +86,9 @@ const CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events";
 const TEAM_ENG: LinearTeam = { id: "team-eng", key: "ENG", name: "Engineering" };
 const TEAM_DESIGN: LinearTeam = { id: "team-design", key: "DES", name: "Design" };
 let connectorsChangedListener: (() => void) | null = null;
+// Map from event name to its handler so device-code events can be fired
+// independently of the connectors-changed event.
+const eventHandlers = new Map<string, (event: { payload: unknown }) => void>();
 
 function account(overrides: Partial<ConnectorAccount> = {}): ConnectorAccount {
   const email = overrides.email ?? "alex@example.com";
@@ -119,6 +122,7 @@ function linearAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAcco
 beforeEach(() => {
   vi.clearAllMocks();
   connectorsChangedListener = null;
+  eventHandlers.clear();
   mocks.connectorsList.mockResolvedValue([]);
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
@@ -148,10 +152,18 @@ beforeEach(() => {
   });
   mocks.obsidianDisconnect.mockResolvedValue({ connected: false });
   mocks.openFileDialog.mockResolvedValue(null);
-  mocks.listen.mockImplementation(async (_event: string, handler: () => void) => {
-    connectorsChangedListener = handler;
-    return () => {};
-  });
+  mocks.listen.mockImplementation(
+    async (event: string, handler: (e: { payload: unknown }) => void) => {
+      // Store every handler by event name so tests can fire specific events.
+      eventHandlers.set(event, handler);
+      // Backward-compat: keep the single-listener reference for legacy tests
+      // that only care about the connectors-changed event.
+      if (event === "june://connectors-changed") {
+        connectorsChangedListener = () => handler({ payload: undefined });
+      }
+      return () => {};
+    },
+  );
   mocks.notionConnectorConnect.mockResolvedValue({
     accountId: "notion-hosted-mcp",
     endpoint: "https://mcp.notion.com/mcp",
@@ -415,13 +427,55 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText(/Pages and workspace content for briefs, search, and approved updates/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
-    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
 
     await userEvent.click(connect);
 
+    expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Connect Notion" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/You'll sign in to Notion and approve June's access/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Access may extend beyond selected pages/i).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText(/Search may include Notion-connected sources/i).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    // The (i) button's aria-describedby must resolve to exactly one element
+    // containing both disclosure strings, so screen readers encounter the
+    // caveat when navigating the row.
+    const infoButton = screen.getByRole("button", { name: "Notion privacy and access scope" });
+    const describedById = infoButton.getAttribute("aria-describedby");
+    expect(describedById).toBe("notion-scope-disclosure");
+    const describedByTarget = document.getElementById("notion-scope-disclosure");
+    expect(describedByTarget).not.toBeNull();
+    expect(describedByTarget).toHaveTextContent(/Access may extend beyond selected pages/i);
+    expect(describedByTarget).toHaveTextContent(/Search may include Notion-connected sources/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
     expect(mocks.connectorsConnect).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Notion dialog open and shows an error when OAuth fails", async () => {
+    mocks.notionConnectorConnect.mockRejectedValue(new Error("OAuth rejected"));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect Notion"));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
+    // Dialog stays open after an OAuth failure so the user can retry.
+    expect(screen.getByRole("dialog", { name: "Connect Notion" })).toBeInTheDocument();
   });
 
   it("shows connected Notion preview state and disconnects locally", async () => {
@@ -441,8 +495,13 @@ describe("ConnectorsSection", () => {
 
     expect(await screen.findByText("Connected")).toBeInTheDocument();
     expect(screen.getByText(/Pages, search, and approved updates/i)).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
-    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
 
     mocks.connectorsList.mockResolvedValue([]);
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
@@ -470,9 +529,27 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText(/Reconnect Notion to restore pages, search, and approved updates/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
-    expect(screen.getByText(/Search may include Notion-connected sources/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Notion" }));
+    expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Reconnect Notion" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/You'll sign in to Notion and approve June's access/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText(/Access may extend beyond selected pages/i).length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      screen.getAllByText(/Search may include Notion-connected sources/i).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(mocks.notionConnectorConnect).toHaveBeenCalled());
   });
 
@@ -495,7 +572,13 @@ describe("ConnectorsSection", () => {
     expect(
       screen.getByText("June could not confirm the Notion connection. Try again in a moment."),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Access may extend beyond selected pages/i)).toBeInTheDocument();
+    await userEvent.hover(screen.getByRole("button", { name: "Notion privacy and access scope" }));
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      /Access may extend beyond selected pages/i,
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      /Search may include Notion-connected sources/i,
+    );
     expect(screen.queryByRole("button", { name: "Connect Notion" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reconnect Notion" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
@@ -523,6 +606,8 @@ describe("ConnectorsSection", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Reconnect Notion" }));
 
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Reconnect Notion" })).toBeDisabled(),
     );
@@ -546,6 +631,7 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Reconnect Notion" }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
 
     expect(mocks.notionConnectorDisconnect).not.toHaveBeenCalled();
@@ -954,5 +1040,427 @@ describe("ConnectorsSection — Linear", () => {
     // A reconnect goes through the same runConnect path as a fresh connect,
     // so it applies the runtime too.
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+  });
+});
+
+function githubAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAccount {
+  return {
+    accountId: "12345678",
+    provider: "github",
+    email: "octocat",
+    scopes: ["read"],
+    status: "connected",
+    workspaceName: null,
+    workspaceUrlKey: null,
+    selectedTeams: [],
+    ...overrides,
+  };
+}
+
+describe("ConnectorsSection — GitHub", () => {
+  it("renders GitHub in the provider directory with its capability blurb", async () => {
+    render(<ConnectorsSection />);
+    await findEnabledConnect("Connect GitHub");
+
+    expect(screen.getByText("GitHub")).toBeInTheDocument();
+    expect(screen.getByText(/read issues, pull requests, and code/i)).toBeInTheDocument();
+  });
+
+  it("connects with github_read by default and applies the runtime", async () => {
+    mocks.connectorsConnect.mockResolvedValue(githubAccount());
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    expect(
+      within(dialog).getByRole("checkbox", {
+        name: /read repositories, issues, and pull requests/i,
+      }),
+    ).toBeChecked();
+    expect(
+      within(dialog).getByRole("checkbox", { name: /create and update issues and comments/i }),
+    ).not.toBeChecked();
+
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read"],
+        loginHint: undefined,
+        provider: "github",
+      }),
+    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+  });
+
+  it("adds github_write when the write checkbox is checked", async () => {
+    mocks.connectorsConnect.mockResolvedValue(githubAccount({ scopes: ["read", "write"] }));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    await userEvent.click(
+      within(dialog).getByRole("checkbox", { name: /create and update issues and comments/i }),
+    );
+
+    mocks.connectorsList.mockResolvedValue([githubAccount({ scopes: ["read", "write"] })]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read", "github_write"],
+        loginHint: undefined,
+        provider: "github",
+      }),
+    );
+  });
+
+  it("shows a connected GitHub account with the login as identity", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText(/octocat/)).toBeInTheDocument();
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+  });
+
+  it("shows read and write state in the connected account subtitle", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ scopes: ["read", "write"] })]);
+    render(<ConnectorsSection />);
+
+    // The subtitle includes feature labels from grantedFeatureLabels
+    expect(await screen.findByText(/octocat/)).toBeInTheDocument();
+    // Both read and write bundles are shown in the subtitle
+    expect(
+      screen.getByText(/read repositories, issues, and pull requests.*create and update issues/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows reconnect_required state for a lapsed GitHub account", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ status: "reconnect_required" })]);
+    render(<ConnectorsSection />);
+
+    expect(await screen.findByText("Reconnect needed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reconnect GitHub" })).toBeInTheDocument();
+  });
+
+  it("reconnects using the numeric account id as the login hint", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ status: "reconnect_required" })]);
+    mocks.connectorsConnect.mockResolvedValue(githubAccount());
+    render(<ConnectorsSection />);
+    await screen.findByText("Reconnect needed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect GitHub" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read"],
+        loginHint: "12345678",
+        provider: "github",
+      }),
+    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+  });
+
+  it("GitHub reconnect opens the dialog and device-code panel is visible when the event fires", async () => {
+    // The regression test: device-code panel must render inside the dialog that
+    // opens when the user clicks Reconnect — not outside it, and not only via
+    // the manual Connect path.
+    mocks.connectorsList.mockResolvedValue([githubAccount({ status: "reconnect_required" })]);
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+    await screen.findByText("Reconnect needed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect GitHub" }));
+
+    // The dialog opens immediately (before the user has to click anything else).
+    const dialog = await screen.findByRole("dialog", { name: "Reconnect GitHub account" });
+    // connectorsConnect is called automatically with the account's existing bundles and login hint.
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["github_read"],
+        loginHint: "12345678",
+        provider: "github",
+      }),
+    );
+
+    // Fire the device-code event from the backend.
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "RECON-5678",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+
+    // The device-code panel is visible INSIDE the dialog (regression guard).
+    expect(await within(dialog).findByText("RECON-5678")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/enter this code at github\.com\/login\/device to approve June/i),
+    ).toBeInTheDocument();
+  });
+
+  it("GitHub reconnect + connector_github_device_expired shows retry copy inside the dialog", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount({ status: "reconnect_required" })]);
+    let rejectConnect: (reason: unknown) => void = () => {};
+    mocks.connectorsConnect.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectConnect = reject;
+      }),
+    );
+    render(<ConnectorsSection />);
+    await screen.findByText("Reconnect needed");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect GitHub" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Reconnect GitHub account" });
+
+    // Simulate backend rejecting with expired code.
+    act(() => rejectConnect({ code: "connector_github_device_expired", message: "expired" }));
+
+    // The retry error notice appears inside the dialog.
+    expect(
+      await within(dialog).findByText(/the code expired before it was approved\. try again\./i),
+    ).toBeInTheDocument();
+    // The Connect button reappears for a retry.
+    expect(within(dialog).getByRole("button", { name: "Connect" })).toBeEnabled();
+  });
+
+  it("Linear reconnect does NOT open the connect dialog", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      linearAccount({ status: "reconnect_required", selectedTeams: [TEAM_ENG] }),
+    ]);
+    mocks.connectorsConnect.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
+    render(<ConnectorsSection />);
+    await screen.findByText(/Acme/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect Linear" }));
+
+    // No connect dialog should open for Linear reconnect.
+    await waitFor(() => expect(mocks.connectorsConnect).toHaveBeenCalled());
+    expect(screen.queryByRole("dialog", { name: /reconnect/i })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: /connect linear/i })).toBeNull();
+  });
+
+  it("shows no team management UI for GitHub", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    render(<ConnectorsSection />);
+    await screen.findByText(/octocat/);
+
+    expect(screen.queryByRole("button", { name: "Select teams" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Manage teams" })).toBeNull();
+    expect(screen.queryByText("Select teams to finish setup")).toBeNull();
+  });
+
+  it("disconnects a GitHub account with revoke and applies the runtime", async () => {
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    render(<ConnectorsSection />);
+    await screen.findByText(/octocat/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect GitHub" }));
+    const dialog = await screen.findByRole("dialog", { name: /Disconnect octocat/ });
+    expect(
+      within(dialog).getByRole("checkbox", { name: /revoke June's access with GitHub/i }),
+    ).toBeChecked();
+
+    mocks.connectorsList.mockResolvedValue([]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsDisconnect).toHaveBeenCalledWith({
+        accountId: "12345678",
+        revoke: true,
+      }),
+    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+    expect(await findEnabledConnect("Connect GitHub")).toBeInTheDocument();
+  });
+
+  it("shows the device code, verification link text, and copy button when the device-code event arrives", async () => {
+    // Hold the connect pending so the device-code panel can be shown.
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    // Fire the device-code event from the backend.
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "ABCD-1234",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+
+    // The device-code panel replaces the bundle picker.
+    expect(await screen.findByText("ABCD-1234")).toBeInTheDocument();
+    expect(
+      screen.getByText(/enter this code at github\.com\/login\/device to approve June/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/waiting for approval on GitHub/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy code/i })).toBeInTheDocument();
+    // The bundle checkboxes must not be visible.
+    expect(screen.queryByRole("checkbox", { name: /read repositories/i })).toBeNull();
+  });
+
+  it("replaces the first device code with a second one when the event fires again", async () => {
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "FIRST-111",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+    expect(await screen.findByText("FIRST-111")).toBeInTheDocument();
+
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "SECOND-222",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+
+    expect(await screen.findByText("SECOND-222")).toBeInTheDocument();
+    expect(screen.queryByText("FIRST-111")).toBeNull();
+  });
+
+  it("swaps to the connected toast path when connectorsConnect resolves", async () => {
+    let resolveConnect: (value: ReturnType<typeof githubAccount>) => void = () => {};
+    mocks.connectorsConnect.mockReturnValue(
+      new Promise((resolve) => {
+        resolveConnect = resolve;
+      }),
+    );
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    // Fire device code so the panel shows up.
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "ABCD-9999",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+    expect(await screen.findByText("ABCD-9999")).toBeInTheDocument();
+
+    // Now approve — resolve the connect.
+    mocks.connectorsList.mockResolvedValue([githubAccount()]);
+    act(() => resolveConnect(githubAccount()));
+
+    // Dialog closes and a success toast fires.
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith("GitHub account connected"),
+    );
+    expect(screen.queryByRole("dialog", { name: "Connect GitHub account" })).toBeNull();
+    expect(await screen.findByText(/octocat/)).toBeInTheDocument();
+  });
+
+  it("shows expired-code retry copy when connectorsConnect rejects with connector_github_device_expired", async () => {
+    let rejectConnect: (reason: unknown) => void = () => {};
+    mocks.connectorsConnect.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectConnect = reject;
+      }),
+    );
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect GitHub"));
+    const dialog = screen.getByRole("dialog", { name: "Connect GitHub account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "EXPIRING-1",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+    expect(await screen.findByText("EXPIRING-1")).toBeInTheDocument();
+
+    act(() => rejectConnect({ code: "connector_github_device_expired", message: "expired" }));
+
+    // Bundle picker reappears with the retry error notice.
+    expect(
+      await screen.findByText(/the code expired before it was approved\. try again\./i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("EXPIRING-1")).toBeNull();
+    // The Connect button is available again for retry.
+    expect(within(dialog).getByRole("button", { name: "Connect" })).toBeEnabled();
+  });
+
+  it("never renders the device-code panel in the Google connect dialog", async () => {
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect Google"));
+    const dialog = screen.getByRole("dialog", { name: "Connect Google account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    // Fire a device-code event — must be silently ignored for Google.
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "SHOULD-NOT-SHOW",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+
+    // The Google dialog body keeps the bundle checkboxes; no device code.
+    await waitFor(() =>
+      expect(within(dialog).getByRole("checkbox", { name: /read mail/i })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("SHOULD-NOT-SHOW")).toBeNull();
+  });
+
+  it("never renders the device-code panel in the Linear connect dialog", async () => {
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+
+    await userEvent.click(await findEnabledConnect("Connect Linear"));
+    const dialog = screen.getByRole("dialog", { name: "Connect Linear workspace" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    act(() => {
+      eventHandlers.get("june://connectors-github-device-code")?.({
+        payload: {
+          userCode: "SHOULD-NOT-SHOW",
+          verificationUri: "https://github.com/login/device",
+          expiresInSeconds: 900,
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole("checkbox", { name: /read workspace/i })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("SHOULD-NOT-SHOW")).toBeNull();
   });
 });
