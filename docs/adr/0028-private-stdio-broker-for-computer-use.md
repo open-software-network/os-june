@@ -270,10 +270,9 @@ but macOS attributes Screen Recording to the signed outer June app that launches
 the helper. The helper's preflight observes that responsible-app grant, and its
 native request creates the outer June entry in System Settings.
 
-June therefore opens the matching privacy pane before requesting the next
-missing grant. Opening first gives immediate feedback while the helper starts
-and probes TCC in the background. Accessibility setup names and, when needed,
-offers the nested helper as a drag source. Screen Recording setup names the
-outer June app and never tells the user to add the helper to that list. The
-private transport, helper parent authentication, capture execution, and
-app-owned broker policy are unchanged.
+June therefore requests the next missing grant before opening its matching
+privacy pane. Accessibility setup names and, when needed, offers the nested
+helper as a drag source. Screen Recording setup names and offers the signed
+outer June app as its separate drag source; it never tells the user to add the
+helper to that list. The private transport, helper parent authentication,
+capture execution, and app-owned broker policy are unchanged.

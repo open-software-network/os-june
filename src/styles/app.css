@@ -6306,10 +6306,12 @@ button.agent-user-attachment:hover {
 }
 
 .agent-composer-model-trigger {
-  /* A touch above the toolbar's resting grey: the pill names the active
-   * model, so it reads as content, not chrome. Hover still lifts it to full
-   * foreground. */
-  color: color-mix(in oklch, var(--foreground) 40%, var(--muted-foreground));
+  /* Well above the toolbar's resting grey: the pill names the active model,
+   * and the name has to read a full tier darker than the muted preference
+   * and effort spans beside it. Hover still lifts it to full foreground.
+   * (Contrast lives on this side: the muted tier already sits at the AA
+   * floor, so the quiet spans never get lighter than --muted-foreground.) */
+  color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -6335,12 +6337,50 @@ button.agent-user-attachment:hover {
   white-space: nowrap;
 }
 
-/* The Auto preference designation beside the pill's model name ("Auto
- * Higher"): one step quieter than the name in every state — it stays at
- * muted while hover lifts the name to full foreground. */
+/* The model is the only flexible value in the compact trigger. Preference and
+ * Effort keep their complete one-word labels while a long model name yields. */
+.agent-composer-model-trigger-name {
+  flex: 1 1 auto;
+}
+
+/* Preference rides along in the same quiet voice as the rest of the trigger:
+ * plain text, no chip, so "Auto Cost" reads as one label rather than a value
+ * boxed off from its neighbors. */
 .agent-composer-model-trigger-detail {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   color: var(--muted-foreground);
+}
+
+/* The compact trigger shows only the meter, leading the pill; the level's
+ * name lives in the trigger's tooltip and aria description and on the menu's
+ * Effort row. The extra right margin (on top of the trigger's gap) keeps the
+ * meter from reading as part of the model name. */
+.agent-composer-model-trigger-effort {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-right: var(--sp-px);
+  color: var(--muted-foreground);
+}
+
+/* The meter's bars are drawn in the component (widths, gaps, corner radii);
+ * here only the fill logic: active bars carry currentColor while the rest
+ * stay a quiet silhouette, so the full scale is always visible. The 1px lift
+ * is optical: flex-centering the icon box leaves the bar bottoms hanging
+ * below the adjacent text baseline. */
+.thinking-level-meter {
+  flex: 0 0 auto;
+  transform: translateY(-1px);
+}
+
+.thinking-level-meter rect {
+  opacity: 0.24;
+}
+
+.thinking-level-meter[data-segments="1"] rect:nth-child(1),
+.thinking-level-meter[data-segments="2"] rect:nth-child(-n + 2),
+.thinking-level-meter[data-segments="3"] rect {
+  opacity: 1;
 }
 
 .agent-composer-model-popover {
@@ -6379,6 +6419,10 @@ button.agent-user-attachment:hover {
   display: flex;
   flex-direction: column;
   gap: var(--sp-px);
+  /* The one flexible child when the popover hits its height cap: the rows
+   * shrink and scroll while the pinned controls and All models stay put. */
+  min-height: 0;
+  overflow-y: auto;
   padding-bottom: 0;
 }
 
@@ -6556,7 +6600,7 @@ button.agent-user-attachment:hover {
 
 .agent-composer-model-detail .agent-composer-model-surface {
   gap: var(--sp-2);
-  width: 248px;
+  width: var(--model-picker-nested-w);
   padding: var(--sp-3);
 }
 
@@ -6775,80 +6819,12 @@ button.agent-user-attachment:hover {
 }
 
 .agent-composer-model-all-panel .agent-composer-model-surface {
-  /* Tight: the search and filter rows sit flush; the filter's full-bleed
-   * hairline (below) does the separating, not whitespace. */
+  /* Keep blanket layout gaps off so the filter can retain its full-bleed
+   * hairline; scoped margins below separate search, filter, and list. */
   gap: 0;
   width: min(280px, calc(100vw - 48px));
   max-height: inherit;
-  padding: var(--sp-1);
-}
-
-/* Bare `/model` opens one command-result palette rather than the toolbar
- * picker's two-layer drill-in. It aligns to the composer box, leads with
- * search, keeps curated suggestions first, and continues into the remaining
- * catalog below a divider. */
-.agent-composer-model-command-palette {
-  gap: 0;
-  width: auto;
-  max-height: min(50vh, var(--model-command-available-height, 50vh));
-  padding: var(--sp-1);
-  overflow: hidden;
-}
-
-.agent-composer-model-command-list-wrap {
-  min-height: 0;
-  overflow: hidden;
-  contain: paint;
-  --scroll-fade-size: var(--sp-4);
-}
-
-.agent-composer-model-command-list {
-  max-height: calc(
-    min(50vh, var(--model-command-available-height, 50vh)) -
-    (2 * var(--control-md)) -
-    var(--sp-2)
-  );
-  padding: var(--sp-1) 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.agent-composer-model-command-section {
-  display: grid;
-  gap: var(--sp-px);
-}
-
-.agent-composer-model-command-section-label {
-  margin: 0;
-  padding: var(--sp-2) var(--sp-2) var(--sp-1);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.2;
-}
-
-.agent-composer-model-command-divider {
-  height: var(--sp-px);
-  margin: var(--sp-1) var(--sp-2);
-  border: 0;
-  background: color-mix(in oklch, var(--border-subtle) 50%, transparent);
-}
-
-.agent-composer-model-command-row .agent-composer-model-row-copy {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
-  align-items: center;
-  gap: var(--sp-3);
-  width: 100%;
-}
-
-.agent-composer-model-command-description {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.25;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: var(--sp-2);
 }
 
 .agent-composer-model-search {
@@ -6910,11 +6886,17 @@ button.agent-user-attachment:hover {
   line-height: 1.3;
 }
 
-/* Automatic-routing section pinned above the suggested rows in the root
- * popover: the Auto label + switch on the shared content gutter, and the
- * Preference drill-in row underneath while Auto is on. The hairline splits
- * the section from the model list, running the popover's full width. */
-.agent-composer-model-auto {
+/* Root-layer search on the composer popover: the field leads the panel; an
+ * active query swaps the browse content (title, controls, suggested rows,
+ * All models) for one flat result list across both layers, capped so long
+ * catalogs scroll inside the popover. */
+.agent-composer-model-root-results .agent-composer-model-list {
+  max-height: min(45vh, 320px);
+}
+
+/* Model controls pinned above the suggested rows in the root popover: Auto,
+ * Preference, and Effort share one inset and one divider before model rows. */
+.agent-composer-model-controls {
   display: flex;
   flex-direction: column;
   margin: 0 calc(-1 * var(--sp-2)) var(--sp-1);
@@ -6926,7 +6908,7 @@ button.agent-user-attachment:hover {
  * the toggle row on the root popover's gutter (title text at --sp-3, switch on
  * the rows' --sp-2 inset) and drop the recipe's own hairline — the section
  * draws one for the whole block. */
-.agent-composer-model-auto .agent-composer-model-auto-toggle {
+.agent-composer-model-controls .agent-composer-model-auto-toggle {
   margin: 0;
   padding: 0 var(--sp-2) 0 var(--sp-3);
   border-bottom: 0;
@@ -6943,46 +6925,63 @@ button.agent-user-attachment:hover {
   line-height: 1.4;
 }
 
-/* The Preference drill-in row while Auto is on: label left, the active preset
- * as a quiet value beside the chevron. The auto margin sits on the value, so
- * the chevron's own auto margin has to stand down or the pair splits apart. */
-.agent-composer-model-auto-value {
+/* Preference and Effort use the same drill-in row: align their labels with
+ * the title and Auto row, then keep the quiet value beside the chevron. */
+.agent-composer-model-control-row {
+  padding-left: var(--sp-3);
+}
+
+/* The value inherits the row's size (only the muted color sets it apart from
+ * the label), so "Preference Balanced" reads as one line, not label + caption. */
+.agent-composer-model-row-value {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: var(--sp-1);
   min-width: 0;
   margin-left: auto;
   overflow: hidden;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.agent-composer-model-auto-row .agent-composer-model-row-chevron {
+.agent-composer-model-control-row .agent-composer-model-row-chevron {
   margin-left: 0;
 }
 
-/* The preference flyout hangs off the popover's top edge (its trigger row
- * lives in the pinned Auto section) instead of the bottom like the catalog. */
-.agent-composer-model-flyout.agent-composer-model-auto-panel {
+/* Preference and Effort hang off the popover's top edge because their trigger
+ * rows live together in the pinned controls section. */
+.agent-composer-model-flyout.agent-composer-model-auto-panel,
+.agent-composer-model-flyout.agent-composer-model-effort-panel {
   top: -1px;
   bottom: auto;
-  width: 248px;
+  width: var(--model-picker-nested-w);
 }
 
-/* Same inset as the catalog panel: an --sp-1 gutter between the surface
- * border and the option rows, so hover fills never touch the edge. */
-.agent-composer-model-auto-panel .agent-composer-model-surface {
+/* Both choice panels use the same compact two-line option recipe. */
+.agent-composer-model-auto-panel .agent-composer-model-surface,
+.agent-composer-model-effort-panel .agent-composer-model-surface {
   gap: 0;
-  width: 248px;
-  padding: var(--sp-1);
+  width: var(--model-picker-nested-w);
+  padding: var(--sp-2);
 }
 
-.agent-composer-model-pref-copy {
+.agent-composer-model-choice-copy {
   display: grid;
-  gap: 2px;
+  gap: var(--sp-px);
   min-width: 0;
 }
 
-.agent-composer-model-pref-desc {
+/* Effort options lead with their own meter state, so the drill-in rows echo
+ * the icon the trigger and the Effort row show for the same level. */
+.agent-composer-model-choice-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.agent-composer-model-choice-desc {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.35;
@@ -7008,6 +7007,15 @@ button.agent-user-attachment:hover {
   margin-top: var(--sp-1);
 }
 
+/* Match the root panel's total content inset: surface + row padding resolves
+ * to --sp-5 in both layers. The filter bleeds back through the larger L2
+ * surface inset, then restores that same content gutter inside. Its extra
+ * bottom --sp-px leaves a little more air before the divider. */
+.agent-composer-model-all-panel .agent-composer-model-filter {
+  margin: var(--sp-1) calc(-1 * var(--sp-2)) 0;
+  padding: var(--sp-2) calc(var(--sp-2) + var(--sp-2)) var(--sp-3);
+}
+
 .agent-composer-model-list {
   display: flex;
   flex: 1 1 auto;
@@ -7020,42 +7028,6 @@ button.agent-user-attachment:hover {
 .agent-composer-model-empty {
   margin: 0;
   padding: var(--sp-3);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-/* The composer model pill also carries the current thinking level, dimmed
- * like a secondary value next to the model name. */
-.agent-composer-model-trigger-level {
-  flex: 0 0 auto;
-  color: var(--muted-foreground);
-}
-
-/* The Effort submenu row inside the model popover: label on the left,
- * current level + chevron on the right, like the upstream desktop's model
- * menu. */
-.agent-composer-model-row-value {
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-/* The effort submenu itself: a compact flyout with plain level rows and a
- * muted cost note under them. */
-.agent-composer-model-effort-panel {
-  width: 180px;
-}
-
-.agent-composer-model-effort-panel .agent-composer-model-surface {
-  gap: var(--sp-1);
-  max-height: inherit;
-  padding: var(--sp-1);
-}
-
-.agent-composer-model-note {
-  margin: 0;
-  padding: var(--sp-1) var(--sp-2) var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
 }

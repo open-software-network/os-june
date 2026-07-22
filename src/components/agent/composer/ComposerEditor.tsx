@@ -20,6 +20,7 @@ import {
 } from "./noteReference";
 import type { ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
+import type { BuiltinComposerSlashCommandName } from "../../../lib/agent-composer-slash-commands";
 
 export type ComposerEditorHandle = {
   focus: () => void;
@@ -47,6 +48,9 @@ type ComposerEditorProps = {
   skills?: HermesSkillInfo[] | null;
   onChange: (text: string, category: ReportCategory | null) => void;
   onSubmit: () => void;
+  /** Returns true when the host handles the selected command as an immediate
+   * action instead of inserting its slash text into the draft. */
+  onBuiltinSlashCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
   /** Hands the live editor up to the parent (e.g. so the composer box can read
    * its DOM element for layout). */
   onReady?: (editor: Editor) => void;
@@ -148,20 +152,22 @@ export function buildDoc(
 }
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
-  ({ placeholder, skills, onChange, onSubmit, onReady }, ref) => {
+  ({ placeholder, skills, onChange, onSubmit, onBuiltinSlashCommand, onReady }, ref) => {
     const frameRef = useRef<HTMLDivElement | null>(null);
     const skillsRef = useRef(skills);
     // Latest callbacks behind refs so the editor (created once) never closes
     // over a stale handler.
     const onChangeRef = useRef(onChange);
     const onSubmitRef = useRef(onSubmit);
+    const onBuiltinSlashCommandRef = useRef(onBuiltinSlashCommand);
     const onReadyRef = useRef(onReady);
     useEffect(() => {
       onChangeRef.current = onChange;
       onSubmitRef.current = onSubmit;
+      onBuiltinSlashCommandRef.current = onBuiltinSlashCommand;
       onReadyRef.current = onReady;
       skillsRef.current = skills;
-    }, [onChange, onSubmit, onReady, skills]);
+    }, [onChange, onSubmit, onBuiltinSlashCommand, onReady, skills]);
 
     useEffect(() => {
       document.querySelectorAll(".agent-category-menu-host").forEach((host) => {
@@ -219,7 +225,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           trailingNode: false,
         }),
         Placeholder.configure({ placeholder }),
-        createCategoryChip({ skills: () => skillsRef.current }),
+        createCategoryChip({
+          skills: () => skillsRef.current,
+          onBuiltinCommand: (name) => onBuiltinSlashCommandRef.current?.(name) ?? false,
+        }),
         createNoteReference(),
       ],
       editorProps: {

@@ -54,7 +54,7 @@ if [[ "${#apps[@]}" -ne 1 ]]; then
 fi
 
 helper="${apps[0]}/Contents/Resources/native/bin/June Computer Use Driver.app"
-host="${apps[0]}/Contents/MacOS/June"
+host="${apps[0]}/Contents/MacOS/os-june"
 args=(--bundle "$helper" --host "$host" --require-developer-id)
 if [[ "$live" == true ]]; then
   args+=(--live)

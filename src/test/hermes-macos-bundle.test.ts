@@ -5,6 +5,7 @@ import architectureAudit from "../../scripts/audit-hermes-runtime.sh?raw";
 import signedDmgBuilder from "../../scripts/build-signed-dmg.sh?raw";
 import macBundler from "../../scripts/bundle-hermes-runtime.sh?raw";
 import nativeImportSmoke from "../../scripts/hermes-native-import-smoke.py?raw";
+import computerUseReleaseSelfTest from "../../scripts/computer-use-release-self-test.sh?raw";
 import tauriBuild from "../../src-tauri/build.rs?raw";
 
 function expectInOrder(source: string, needles: string[]) {
@@ -79,6 +80,8 @@ describe("macOS Hermes universal runtime bundle", () => {
     expect(signedDmgBuilder).not.toContain('--target universal-apple-darwin "$@"');
     expect(signedDmgBuilder).toContain("audit-hermes-runtime.sh");
     expect(signedDmgBuilder).toContain("--require-signed");
+    expect(computerUseReleaseSelfTest).toContain("Contents/MacOS/os-june");
+    expect(computerUseReleaseSelfTest).not.toContain('Contents/MacOS/June"');
   });
 
   it("validates notarization only after stapling the published DMG", () => {

@@ -232,9 +232,9 @@ const AUTO_PREFERENCE_OPTIONS: readonly {
   value: AutoPreference;
   label: ReactNode;
 }[] = [
-  { value: "cost", label: "Lower cost" },
+  { value: "cost", label: "Economy" },
   { value: "balanced", label: "Balanced" },
-  { value: "quality", label: "Higher quality" },
+  { value: "quality", label: "Quality" },
 ];
 
 const EMPTY_MODIFIERS: DictationShortcutModifiers = {

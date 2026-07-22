@@ -1082,7 +1082,15 @@ fn driver_stamp_matches(executable: &Path, pin: &DriverPin) -> bool {
         && value.get("sourceCommit").and_then(Value::as_str) == Some(pin.source_commit.as_str())
 }
 
-fn permission_drag_bundle_path(executable: &Path) -> Option<PathBuf> {
+fn permission_drag_bundle_path(
+    target: crate::computer_use_permission_drag::PermissionDragTarget,
+    driver_executable: &Path,
+    host_executable: &Path,
+) -> Option<PathBuf> {
+    let executable = match target {
+        crate::computer_use_permission_drag::PermissionDragTarget::Helper => driver_executable,
+        crate::computer_use_permission_drag::PermissionDragTarget::Host => host_executable,
+    };
     crate::computer_use_permission_drag::app_bundle_path(executable).map(Path::to_path_buf)
 }
 
@@ -1092,10 +1100,16 @@ pub(crate) unsafe fn begin_permission_drag(
     window: &objc2::runtime::AnyObject,
     event: *mut objc2::runtime::AnyObject,
 ) -> bool {
+    let Some(target) = crate::computer_use_permission_drag::permission_drag_target() else {
+        return false;
+    };
     let Ok(executable) = bundled_driver_executable(app) else {
         return false;
     };
-    let Some(bundle) = permission_drag_bundle_path(&executable) else {
+    let Ok(host_executable) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(bundle) = permission_drag_bundle_path(target, &executable, &host_executable) else {
         return false;
     };
     // SAFETY: The main NSWindow sendEvent: bridge forwards the active window
@@ -2677,6 +2691,30 @@ fn app_is_authorized(
         .contains(key))
 }
 
+fn authorized_running_identity_for_name(
+    state: &ComputerUseState,
+    windows: &[WindowTarget],
+    requested_name: &str,
+) -> Result<Option<AppIdentity>, AppError> {
+    let requested_name = requested_name.trim();
+    let authorized_apps = state
+        .authorized_apps
+        .lock()
+        .map_err(|_| AppError::new("computer_use_unavailable", "App authorization lock failed."))?;
+    let mut matches = windows
+        .iter()
+        .filter(|window| window.app_name.eq_ignore_ascii_case(requested_name))
+        .map(|window| window.identity.clone());
+    let first = matches.next();
+    if first
+        .as_ref()
+        .is_some_and(|identity| matches.any(|candidate| candidate != *identity))
+    {
+        return Ok(None);
+    }
+    Ok(first.filter(|identity| authorized_apps.contains(&identity_app_authorization(identity))))
+}
+
 async fn ensure_app_authorized(
     app: &AppHandle,
     state: &ComputerUseState,
@@ -2741,15 +2779,28 @@ async fn open_app(
     task_generation: u64,
 ) -> Result<Value, AppError> {
     let requested_name = open_app_name(arguments)?;
-    ensure_app_authorized(
-        app,
-        state,
-        requested_app_authorization(&requested_name),
-        &requested_name,
-        epoch,
-        task_generation,
-    )
-    .await?;
+    let requested_key = requested_app_authorization(&requested_name);
+    let requested_name_authorized = app_is_authorized(state, &requested_key)?;
+    let running_authorized_identity = if requested_name_authorized {
+        None
+    } else {
+        let available = windows(app, state, Some(epoch)).await?;
+        authorized_running_identity_for_name(state, &available, &requested_name)?
+    };
+    let authorized_by_name = if running_authorized_identity.is_some() {
+        false
+    } else {
+        ensure_app_authorized(
+            app,
+            state,
+            requested_key,
+            &requested_name,
+            epoch,
+            task_generation,
+        )
+        .await?;
+        true
+    };
     ensure_task_generation_current(state, task_generation)?;
     let result = driver_call(
         app,
@@ -2790,7 +2841,24 @@ async fn open_app(
     }
     ensure_task_generation_current(state, task_generation)?;
     let identity_key = identity_app_authorization(&identity);
-    remember_app_authorization(state, identity_key.clone())?;
+    if !app_is_authorized(state, &identity_key)? {
+        if authorized_by_name || requested_name_authorized {
+            remember_app_authorization(state, identity_key.clone())?;
+        } else {
+            // A previously approved running app was expected, but LaunchServices
+            // resolved the display name to a different identity. Do not let the
+            // display-name alias widen the user's approval to that other app.
+            ensure_app_authorized(
+                app,
+                state,
+                identity_key.clone(),
+                reported_name,
+                epoch,
+                task_generation,
+            )
+            .await?;
+        }
+    }
     if let Err(error) = ensure_task_generation_current(state, task_generation) {
         if let Ok(mut authorized_apps) = state.authorized_apps.lock() {
             authorized_apps.remove(&identity_key);
@@ -4189,12 +4257,25 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn permission_drag_publishes_the_real_helper_app_bundle() {
-        let executable =
+    fn permission_drag_publishes_the_bundle_owned_by_each_permission() {
+        let driver =
             Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/june-computer-use-driver");
+        let host = Path::new("/Applications/June.app/Contents/MacOS/os-june");
         assert_eq!(
-            permission_drag_bundle_path(executable),
+            permission_drag_bundle_path(
+                crate::computer_use_permission_drag::PermissionDragTarget::Helper,
+                driver,
+                host,
+            ),
             Some(PathBuf::from("/tmp/June Computer Use Driver.app"))
+        );
+        assert_eq!(
+            permission_drag_bundle_path(
+                crate::computer_use_permission_drag::PermissionDragTarget::Host,
+                driver,
+                host,
+            ),
+            Some(PathBuf::from("/Applications/June.app"))
         );
     }
 
@@ -5109,6 +5190,56 @@ mod tests {
                 .expect_err("new task must invalidate old authorization")
                 .code,
             "computer_use_task_changed"
+        );
+    }
+
+    #[test]
+    fn approved_running_identity_satisfies_the_same_display_name_only() {
+        let state = ComputerUseState::default();
+        let windows = fixture_windows();
+        let text_edit = windows[0].identity.clone();
+        remember_app_authorization(&state, identity_app_authorization(&text_edit))
+            .expect("remember TextEdit");
+
+        assert_eq!(
+            authorized_running_identity_for_name(&state, &windows, "textedit").expect("lookup"),
+            Some(text_edit)
+        );
+        assert_eq!(
+            authorized_running_identity_for_name(&state, &windows, "Preview").expect("lookup"),
+            None
+        );
+    }
+
+    #[test]
+    fn ambiguous_same_name_identities_never_reuse_an_authorization() {
+        let state = ComputerUseState::default();
+        let mut windows = fixture_windows();
+        let first = windows[0].identity.clone();
+        let second = fixture_identity(
+            "com.example.OtherTextEdit",
+            "/Applications/Other TextEdit.app/Contents/MacOS/TextEdit",
+        );
+        windows.push(WindowTarget {
+            pid: 30,
+            window_id: 300,
+            app_name: "TextEdit".to_string(),
+            identity: second.clone(),
+            title: "Other note".to_string(),
+            z_index: 4,
+            x: 120.0,
+            y: 220.0,
+            width: 900.0,
+            height: 700.0,
+            is_on_screen: true,
+            on_current_space: Some(true),
+        });
+        remember_app_authorization(&state, identity_app_authorization(&first))
+            .expect("remember first");
+
+        assert_eq!(
+            authorized_running_identity_for_name(&state, &windows, "TextEdit").expect("lookup"),
+            None
         );
     }
 
