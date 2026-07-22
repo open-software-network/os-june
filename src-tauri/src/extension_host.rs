@@ -28,6 +28,7 @@ use rand::distributions::Alphanumeric;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -40,8 +41,51 @@ use crate::domain::types::AppError;
 pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The extension id pinned by the `key` field in `extension/manifest.json`.
-/// Regenerate both together with `node extension/scripts/generate-key.mjs`.
-pub const EXTENSION_ID: &str = "adckhkfngpnenaapncoipkalcfpjbgcn";
+/// Both come from the Chrome Web Store item (Package tab): the store owns the
+/// keypair, and the manifest `key` mirrors its public key so load-unpacked
+/// builds share the store item's id. Update both together if the store item
+/// is ever recreated.
+pub const EXTENSION_ID: &str = "jfpogffllplkfoooiaibjkojkngbdnik";
+
+pub(crate) fn validate_extension_manifest(path: &std::path::Path) -> Result<(), AppError> {
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(path)
+            .map_err(|error| AppError::new("bundled_extension_invalid", error.to_string()))?,
+    )
+    .map_err(|error| AppError::new("bundled_extension_invalid", error.to_string()))?;
+    let key = manifest.get("key").and_then(Value::as_str).ok_or_else(|| {
+        AppError::new(
+            "bundled_extension_invalid",
+            "The bundled extension manifest is missing its pinned key.",
+        )
+    })?;
+    let derived = extension_id_from_manifest_key(key)?;
+    if derived != EXTENSION_ID {
+        return Err(AppError::new(
+            "bundled_extension_invalid",
+            "The bundled extension manifest does not match June's extension id.",
+        ));
+    }
+    Ok(())
+}
+
+fn extension_id_from_manifest_key(key: &str) -> Result<String, AppError> {
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(key)
+        .map_err(|error| AppError::new("bundled_extension_invalid", error.to_string()))?;
+    if der.is_empty() {
+        return Err(AppError::new(
+            "bundled_extension_invalid",
+            "The bundled extension manifest key is empty.",
+        ));
+    }
+    let digest = Sha256::digest(&der);
+    Ok(digest[..16]
+        .iter()
+        .flat_map(|byte| [byte >> 4, byte & 0x0f])
+        .map(|nibble| char::from(b'a' + nibble))
+        .collect())
+}
 
 /// Native messaging host name: the extension connects to this name, and the
 /// host manifest file carries it (Chrome requires the file be named
@@ -343,6 +387,7 @@ pub struct PairingStatus {
 #[derive(Default)]
 struct HostShared {
     listener_running: bool,
+    listener_starting: bool,
     next_connection_id: u64,
     /// The connection whose `hello` currently backs `paired`. Pairing follows
     /// the newest successful hello; it clears only when that same connection
@@ -384,10 +429,18 @@ impl ExtensionHost {
     }
 
     fn set_listener_running(&self, running: bool) {
-        self.shared
-            .lock()
-            .expect("extension host state poisoned")
-            .listener_running = running;
+        let mut shared = self.shared.lock().expect("extension host state poisoned");
+        shared.listener_running = running;
+        shared.listener_starting = false;
+    }
+
+    fn claim_listener_start(&self) -> bool {
+        let mut shared = self.shared.lock().expect("extension host state poisoned");
+        if shared.listener_running || shared.listener_starting {
+            return false;
+        }
+        shared.listener_starting = true;
+        true
     }
 
     fn begin_connection(&self) -> u64 {
@@ -617,12 +670,25 @@ pub fn setup(app: &mut tauri::App) {
     // exist at all: no loopback listener, no descriptor file, nothing for a
     // side-loaded extension to probe or pair with. The pairing commands then
     // refuse cleanly (no listener, and an explicit flag check below).
-    if !crate::feature_flags::BROWSER_USE_ENABLED {
+    if !crate::experimental_settings::browser_use_enabled(app.handle()) {
         return;
     }
-    let handle = app.handle().clone();
+    ensure_listener_started(app.handle().clone());
+}
+
+pub fn ensure_listener_started(app: AppHandle) {
+    let Some(host) = app
+        .try_state::<ExtensionHost>()
+        .map(|state| state.inner().clone())
+    else {
+        return;
+    };
+    if !host.claim_listener_start() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
-        if let Err(error) = start_listener(handle).await {
+        if let Err(error) = start_listener(app).await {
+            host.set_listener_running(false);
             tracing::warn!(code = %error.code, message = %error.message, "extension host listener failed to start");
         }
     });
@@ -884,7 +950,7 @@ pub fn register_browser_extension_host(
     // Registering the native-messaging host manifest is what lets an installed
     // extension pair; while the feature flag is off that surface must not be
     // creatable at all.
-    if !crate::feature_flags::BROWSER_USE_ENABLED {
+    if !crate::experimental_settings::browser_use_enabled(&app) {
         return Err(AppError::new(
             "browser_use_disabled",
             "Browser use is not available in this build.",
@@ -1155,24 +1221,13 @@ mod tests {
     /// public key, hex-mapped onto a-p.
     #[test]
     fn extension_id_matches_the_pinned_manifest_key() {
-        use base64::Engine as _;
-        use sha2::{Digest, Sha256};
-
         let manifest_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../extension/public/manifest.json");
         let manifest: Value =
             serde_json::from_slice(&std::fs::read(manifest_path).expect("manifest read"))
                 .expect("manifest json");
         let key = manifest["key"].as_str().expect("manifest key");
-        let der = base64::engine::general_purpose::STANDARD
-            .decode(key)
-            .expect("key base64");
-        let digest = Sha256::digest(&der);
-        let derived: String = digest[..16]
-            .iter()
-            .flat_map(|byte| [byte >> 4, byte & 0x0f])
-            .map(|nibble| char::from(b'a' + nibble))
-            .collect();
+        let derived = extension_id_from_manifest_key(key).expect("derive extension id");
         assert_eq!(derived, EXTENSION_ID);
     }
 

@@ -1320,6 +1320,12 @@ export async function revealPath(path: string) {
   return invoke<void>("reveal_path", { path });
 }
 
+/** Refreshes the bundled load-unpacked Browser use extension in app data and
+ * reveals the destination in the platform file manager. */
+export async function unpackBundledExtension() {
+  return invoke<string>("unpack_bundled_extension");
+}
+
 // Null when the file can't be shown as text (too large or binary) — the
 // caller falls back to a download affordance instead of erroring.
 export async function hermesBridgeFileText(path: string) {

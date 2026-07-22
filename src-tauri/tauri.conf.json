@@ -5,7 +5,7 @@
   "identifier": "co.opensoftware.june",
   "build": {
     "beforeDevCommand": "node ./scripts/tauri-before-dev.mjs",
-    "beforeBuildCommand": "pnpm run computer-use:prepare -- --release && pnpm run build",
+    "beforeBuildCommand": "pnpm run extension:build && node ./scripts/validate-extension-id.mjs && pnpm run computer-use:prepare -- --release && pnpm run build",
     "devUrl": "http://127.0.0.1:1421",
     "frontendDist": "../dist"
   },
@@ -129,6 +129,7 @@
     ],
     "resources": {
       "../.tauri-hermes/hermes": "native/hermes",
+      "../extension/dist": "native/extension",
       "resources/hermes-skills": "native/hermes-skills"
     }
   }
