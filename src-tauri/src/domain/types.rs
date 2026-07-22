@@ -528,6 +528,55 @@ pub struct RecordingStatusDto {
     pub warnings: Vec<SourceWarningDto>,
 }
 
+/// High-frequency recording data shared by the main renderer and meeting HUD.
+/// Stable session metadata, byte counters, and artifact details stay on the
+/// command DTOs so this event remains cheap to serialize and deliver.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingTelemetryDto {
+    pub session_id: String,
+    pub state: RecordingState,
+    pub elapsed_ms: i64,
+    pub level: AudioLevelDto,
+    pub silence_warning: bool,
+    pub sources: Vec<RecordingSourceTelemetryDto>,
+    pub warnings: Vec<SourceWarningDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSourceTelemetryDto {
+    pub source: RecordingSource,
+    pub state: SourceState,
+    pub elapsed_ms: i64,
+    pub level: AudioLevelDto,
+    pub silence_warning: bool,
+}
+
+impl From<&RecordingStatusDto> for RecordingTelemetryDto {
+    fn from(status: &RecordingStatusDto) -> Self {
+        Self {
+            session_id: status.session_id.clone(),
+            state: status.state,
+            elapsed_ms: status.elapsed_ms,
+            level: status.level.clone(),
+            silence_warning: status.silence_warning,
+            sources: status
+                .sources
+                .iter()
+                .map(|source| RecordingSourceTelemetryDto {
+                    source: source.source,
+                    state: source.state,
+                    elapsed_ms: source.elapsed_ms,
+                    level: source.level.clone(),
+                    silence_warning: source.silence_warning,
+                })
+                .collect(),
+            warnings: status.warnings.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioArtifactDto {

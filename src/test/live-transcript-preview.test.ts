@@ -3,6 +3,7 @@ import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
   coalesceLiveTranscriptEventsForDisplay,
+  LIVE_TRANSCRIPT_MAX_EVENTS_PER_SESSION,
   reconcileLiveTranscriptEvents,
   transcriptFollowLatestKey,
   upsertLiveTranscriptEvent,
@@ -64,7 +65,7 @@ describe("live transcript preview", () => {
     ]);
   });
 
-  it("does not truncate a long meeting's provisional segments", () => {
+  it("keeps an ordinary long meeting's provisional segments", () => {
     const events = Array.from({ length: 300 }, (_, index) =>
       liveEvent({
         segmentId: `microphone-${index}`,
@@ -77,6 +78,35 @@ describe("live transcript preview", () => {
     expect(events).toHaveLength(300);
     expect(events.at(0)?.segmentId).toBe("microphone-0");
     expect(events.at(-1)?.segmentId).toBe("microphone-299");
+  });
+
+  it("bounds provisional segments for an exceptionally long session", () => {
+    const eventCount = LIVE_TRANSCRIPT_MAX_EVENTS_PER_SESSION + 20;
+    const events = Array.from({ length: eventCount }, (_, index) =>
+      liveEvent({
+        segmentId: `microphone-${index.toString().padStart(4, "0")}`,
+        startMs: index * 1000,
+        endMs: (index + 1) * 1000,
+        text: `Chunk ${index}`,
+      }),
+    ).reduce(upsertLiveTranscriptEvent, [] as LiveTranscriptEventDto[]);
+
+    expect(events).toHaveLength(LIVE_TRANSCRIPT_MAX_EVENTS_PER_SESSION);
+    expect(events.at(0)?.segmentId).toBe("microphone-0020");
+    expect(events.at(-1)?.segmentId).toBe(`microphone-${eventCount - 1}`);
+  });
+
+  it("windows provisional segments to the latest two hours", () => {
+    const events = [
+      liveEvent({ segmentId: "old", startMs: 0, endMs: 1000 }),
+      liveEvent({
+        segmentId: "recent",
+        startMs: 2 * 60 * 60 * 1000 + 2000,
+        endMs: 2 * 60 * 60 * 1000 + 3000,
+      }),
+    ].reduce(upsertLiveTranscriptEvent, [] as LiveTranscriptEventDto[]);
+
+    expect(events.map((event) => event.segmentId)).toEqual(["recent"]);
   });
 
   it("keeps same-source chunks separated across a material time gap", () => {

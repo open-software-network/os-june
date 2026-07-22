@@ -54,7 +54,7 @@ fn capture_start_abandoned(handshake: &CaptureStartHandshake) -> bool {
         .map(|state| *state == CaptureStartState::Abandoned)
         .unwrap_or(false)
 }
-const RECOVERY_SNAPSHOT_INTERVAL_MS: i64 = 500;
+pub const RECOVERY_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(500);
 const MICROPHONE_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
     "Microphone input stopped unexpectedly. Audio after this point may be missing.";
@@ -100,6 +100,15 @@ pub struct FinishedSource {
 pub struct CaptureRecoverySnapshot {
     pub status: RecordingStatusDto,
     pub should_persist: bool,
+}
+
+/// Minimal durable checkpoint data collected independently from UI telemetry.
+/// It deliberately excludes capture levels so recovery never needs the stats
+/// lock merely to advance elapsed time in SQLite.
+pub struct RecordingRecoveryCheckpoint {
+    pub session_id: String,
+    pub state: RecordingState,
+    pub elapsed_ms: i64,
 }
 
 struct ActiveRecording {
@@ -743,10 +752,12 @@ pub fn capture_status(session_id: &str) -> Result<RecordingStatusDto, AppError> 
     Ok(recording.status())
 }
 
-pub fn capture_status_for_recovery(session_id: &str) -> Result<CaptureRecoverySnapshot, AppError> {
+pub fn capture_recovery_checkpoint(
+    session_id: &str,
+) -> Result<Option<RecordingRecoveryCheckpoint>, AppError> {
     let mut active = lock_active()?;
     let recording = active_for_session(active.as_mut(), session_id)?;
-    Ok(recording.recovery_snapshot(RecoverySnapshotMode::Throttled))
+    Ok(recording.recovery_checkpoint(RecoverySnapshotMode::Throttled))
 }
 
 pub fn is_capture_active() -> bool {
@@ -1097,21 +1108,39 @@ impl ActiveRecording {
 
     fn recovery_snapshot(&mut self, mode: RecoverySnapshotMode) -> CaptureRecoverySnapshot {
         let status = self.status();
-        let should_persist = match mode {
-            RecoverySnapshotMode::Force => true,
-            RecoverySnapshotMode::Throttled => {
-                status.elapsed_ms - self.last_recovery_snapshot_elapsed_ms
-                    >= RECOVERY_SNAPSHOT_INTERVAL_MS
-            }
-        };
-        if should_persist {
-            self.last_recovery_snapshot_elapsed_ms = status.elapsed_ms;
-            flush_microphone_writer_for_recovery(&self.writer);
-        }
+        let should_persist = self.recovery_checkpoint(mode).is_some();
         CaptureRecoverySnapshot {
             status,
             should_persist,
         }
+    }
+
+    fn recovery_checkpoint(
+        &mut self,
+        mode: RecoverySnapshotMode,
+    ) -> Option<RecordingRecoveryCheckpoint> {
+        let elapsed_ms = self.elapsed().as_millis().min(i64::MAX as u128) as i64;
+        let should_persist = match mode {
+            RecoverySnapshotMode::Force => true,
+            RecoverySnapshotMode::Throttled => {
+                elapsed_ms - self.last_recovery_snapshot_elapsed_ms
+                    >= RECOVERY_SNAPSHOT_INTERVAL.as_millis() as i64
+            }
+        };
+        if !should_persist {
+            return None;
+        }
+        self.last_recovery_snapshot_elapsed_ms = elapsed_ms;
+        flush_microphone_writer_for_recovery(&self.writer);
+        Some(RecordingRecoveryCheckpoint {
+            session_id: self.session_id.clone(),
+            state: if self.paused {
+                RecordingState::Paused
+            } else {
+                RecordingState::Recording
+            },
+            elapsed_ms,
+        })
     }
 }
 

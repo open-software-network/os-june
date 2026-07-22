@@ -30,6 +30,16 @@ preview).
    prepared lazily when a Source is materially incomplete and atomically
    replace that Source's partial rows only after the replacement succeeds.
 
+While capture is active, the native meeting-HUD supervisor samples capture at
+10 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
+payload carries the recording session id, state, elapsed time, audio levels,
+and live warnings; both the main renderer and meeting HUD subscribe to that
+single stream. Stable metadata still comes from the recording commands, and
+`get_recording_status` remains available as a read-only compatibility command.
+Recovery durability is independent of telemetry: a recording-scoped worker
+flushes and checkpoints elapsed time every 500 ms after the recording rows are
+created.
+
 ## Key files
 
 - `src-tauri/src/audio/capture.rs` — mic capture, `CaptureStats`, the single
@@ -45,7 +55,8 @@ preview).
 
 Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 `get_recording_status`, `finish_recording`, `check_recording_source_readiness`,
-`recover_recording`, `get_microphone_permission_state`.
+`recover_recording`, `get_microphone_permission_state`. Event:
+`recording-telemetry`.
 
 ## System-audio helper IPC contract
 

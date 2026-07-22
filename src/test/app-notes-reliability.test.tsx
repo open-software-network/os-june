@@ -19,7 +19,6 @@ import type {
   NoteDto,
   RecoverableRecordingDto,
   RecordingSessionDto,
-  RecordingStatusDto,
 } from "../lib/tauri";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
@@ -137,6 +136,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  RECORDING_TELEMETRY_EVENT: "recording-telemetry",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "june://note-calendar-context-updated",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
@@ -961,41 +961,44 @@ describe("notes recording reliability", () => {
     );
   });
 
-  it("does not overlap active recording status polls", async () => {
-    const pendingStatus = deferred<RecordingStatusDto>();
-    const resumedStatus = deferred<RecordingStatusDto>();
-    mocks.getRecordingStatus
-      .mockReturnValueOnce(pendingStatus.promise)
-      .mockReturnValue(resumedStatus.promise);
-
+  it("updates recording status from native telemetry without polling", async () => {
     await startRecordingOnFirstNote();
     await screen.findByRole("button", { name: "Done" });
-    await waitFor(() => expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(1));
-
-    await new Promise((resolve) => window.setTimeout(resolve, 180));
-
-    expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.listeners.has("recording-telemetry")).toBe(true));
+    expect(mocks.getRecordingStatus).not.toHaveBeenCalled();
 
     await act(async () => {
-      pendingStatus.resolve({
-        sessionId: "rec-1",
-        state: "recording",
-        elapsedMs: 500,
-        level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
-        silenceWarning: false,
-        bytesWritten: 2048,
+      await mocks.listeners.get("recording-telemetry")?.({
+        payload: {
+          sessionId: "rec-1",
+          state: "recording",
+          elapsedMs: 1500,
+          level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
+          silenceWarning: false,
+          sources: [],
+          warnings: [],
+        },
       });
-      await pendingStatus.promise;
     });
-    await waitFor(() => expect(mocks.getRecordingStatus).toHaveBeenCalledTimes(2));
-    resumedStatus.resolve({
-      sessionId: "rec-1",
-      state: "recording",
-      elapsedMs: 550,
-      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
-      silenceWarning: false,
-      bytesWritten: 2048,
+    expect(await screen.findByText("00:01")).toBeInTheDocument();
+    expect(mocks.getRecordingStatus).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await mocks.listeners.get("recording-telemetry")?.({
+        payload: {
+          sessionId: "rec-1",
+          state: "idle",
+          elapsedMs: 1500,
+          level: { peak: 0, rms: 0, recentPeaks: [] },
+          silenceWarning: false,
+          sources: [],
+          warnings: [],
+        },
+      });
     });
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument(),
+    );
   });
 
   it("ignores meeting-start signals while a recording is already live", async () => {

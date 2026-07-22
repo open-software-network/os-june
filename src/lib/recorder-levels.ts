@@ -33,7 +33,9 @@ export function combineAudioLevels(levels: Array<AudioLevelDto | undefined>): Au
   return { peak, rms, recentPeaks };
 }
 
-export function combineSourceAudioLevels(sources: SourceStatusDto[]): AudioLevelDto {
+type SourceLevel = Pick<SourceStatusDto, "source" | "level">;
+
+export function combineSourceAudioLevels<T extends SourceLevel>(sources: T[]): AudioLevelDto {
   return combineAudioLevels(
     sources.map((source) => scaleAudioLevel(source.level, SOURCE_VISUAL_GAIN[source.source])),
   );
@@ -60,9 +62,9 @@ export function scaleAudioLevel(level: AudioLevelDto, gain: number): AudioLevelD
 
 // Convenience for callers that have a RecordingStatus-shaped object: prefer the
 // per-source mix when both mic + system are present, else the mic-only level.
-export function meterLevelForSources(
+export function meterLevelForSources<T extends SourceLevel>(
   level: AudioLevelDto,
-  sources?: SourceStatusDto[],
+  sources?: T[],
 ): AudioLevelDto {
   return sources && sources.length > 0 ? combineSourceAudioLevels(sources) : level;
 }
