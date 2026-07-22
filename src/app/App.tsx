@@ -133,8 +133,10 @@ import { listHermesSessions, titleFromPrompt } from "../lib/hermes-adapter";
 import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
+  transcriptFollowLatestKey,
   upsertLiveTranscriptEvent,
 } from "../lib/live-transcript-preview";
+import { useFollowLatestScroll } from "../lib/use-follow-latest-scroll";
 import {
   RECORDING_INACTIVITY_RESPONSE_MS,
   RECORDING_INACTIVITY_SNOOZE_MS,
@@ -1039,10 +1041,22 @@ export function App() {
     });
   }, []);
   const selectedNote = state.selectedNote;
+  const selectedNoteId = selectedNote?.id;
+  const selectedNoteLiveTranscript = useMemo(
+    () => liveTranscriptEvents.filter((event) => event.noteId === selectedNoteId),
+    [liveTranscriptEvents, selectedNoteId],
+  );
   const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
     selectedNote?.sourceTranscripts ?? [],
   );
-  const selectedNoteId = selectedNote?.id;
+  const selectedNoteTranscriptContentKey = useMemo(
+    () =>
+      transcriptFollowLatestKey(
+        selectedNoteLiveTranscript,
+        selectedNote?.sourceTranscripts ?? [],
+      ),
+    [selectedNote?.sourceTranscripts, selectedNoteLiveTranscript],
+  );
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
   // open note changes (below) so it never flies out onto a different or
@@ -1147,6 +1161,19 @@ export function App() {
   const recoverableNoteIds = useMemo(() => new Set(recoveriesByNote.keys()), [recoveriesByNote]);
   const selectedRecovery = selectedNote ? recoveriesByNote.get(selectedNote.id) : undefined;
   const noteDetailScrollerActive = activeView === "meetings" && !!selectedNote;
+  const transcriptionFollowLatestActive =
+    noteDetailScrollerActive && selectedNote?.activeTab === "transcription";
+  const recordingSelectedNote =
+    selectedNoteId !== undefined &&
+    selectedNoteId === recordingNoteId &&
+    state.recordingStatus !== undefined;
+  useFollowLatestScroll({
+    scrollRef: noteDetailScrollRef,
+    active: transcriptionFollowLatestActive,
+    contentKey: selectedNoteTranscriptContentKey,
+    scopeKey: selectedNoteId ?? "",
+    followOnActivate: recordingSelectedNote,
+  });
   const detailScrollerActive = activeView === "folders" && !!state.selectedFolderId;
   // A settings drill-in (e.g. a skill detail) that pins its own frosted
   // breadcrumb bar at the top of the panel and scrolls its content beneath —
@@ -4286,9 +4313,7 @@ export function App() {
                       recoveryBlockedReason={
                         fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
-                      liveTranscript={liveTranscriptEvents.filter(
-                        (event) => event.noteId === selectedNoteId,
-                      )}
+                      liveTranscript={selectedNoteLiveTranscript}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
