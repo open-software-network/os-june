@@ -409,6 +409,7 @@ import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
+import { capabilityMatches, safeText } from "./agent-workspace-helpers";
 import {
   envFieldSet,
   fieldLabel,
@@ -16694,25 +16695,6 @@ function isMarkdownPath(path: string) {
   return /\.(md|markdown|mdx)$/i.test(path);
 }
 
-function capabilityMatches(
-  item: HermesSkillInfo | HermesToolsetInfo | HermesMessagingPlatformInfo,
-  query: string,
-) {
-  if (!query) return true;
-  const values = [
-    "name" in item ? item.name : "",
-    "label" in item ? item.label : "",
-    "description" in item ? item.description : "",
-    "category" in item ? item.category : "",
-    "provider" in item ? item.provider : "",
-    "state" in item ? item.state : "",
-  ];
-  if ("tools" in item && Array.isArray(item.tools)) {
-    values.push(...item.tools);
-  }
-  return values.some((value) => safeText(value).toLowerCase().includes(query));
-}
-
 function filterFilesystemEntries(
   entries: HermesFilesystemEntry[],
   query: string,
@@ -17507,9 +17489,6 @@ function formatBytes(value: number | null | undefined) {
   return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
 }
 
-function safeText(value: unknown) {
-  return typeof value === "string" ? value : "";
-}
 function ActivityIndicator({
   active,
   large = false,
