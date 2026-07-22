@@ -21,7 +21,6 @@ import {
 } from "react";
 import { toast } from "../ui/Toaster";
 import {
-  listSessionProfiles,
   computerUseStop,
   dictationHelperCommand,
   getAgentTask,
@@ -30,22 +29,15 @@ import {
   importHermesBridgeFile,
   importHermesBridgeFileBytes,
   listVeniceModels,
-  listAgentTasks,
   downloadHermesBridgeFile,
   providerModelSettings,
   revealPath,
-  type AgentTaskDto,
   type AgentTaskStatus,
   type ImportedHermesFile,
   type HermesSessionMessage,
   type ProviderModelSettingsDto,
 } from "../../lib/tauri";
-import { listHermesSessionMessages, listHermesSessions } from "../../lib/hermes-adapter";
-import {
-  filterAgentSessionsForProfile,
-  sessionMatchesProfile,
-  sessionProfileMap,
-} from "../../lib/session-profile-filter";
+import { listHermesSessionMessages } from "../../lib/hermes-adapter";
 import {
   AGENT_GALLERY_EVENT,
   dispatchAgentSessionsChanged,
@@ -92,7 +84,6 @@ import {
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
-  isHermesSessionsStartupRequestError,
   messageFromError,
 } from "../../lib/errors";
 import {
@@ -122,6 +113,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useAgentSessionLoading } from "./use-agent-session-loading";
 import { useAgentSelection } from "./use-agent-selection";
 import { useAgentRuntimeState } from "./use-agent-runtime-state";
 import { useAgentCoreState } from "./use-agent-core-state";
@@ -1440,150 +1432,40 @@ export function AgentWorkspace({
     };
   }, [activePanel, heroMode, selectedFollowUpCount, steerQueueOpen]);
 
+  let applySessionTitleOverridesImplementation: ReturnType<
+    typeof createSessionTitleActions
+  >["applySessionTitleOverrides"];
+  const applySessionTitleOverrides: ReturnType<
+    typeof createSessionTitleActions
+  >["applySessionTitleOverrides"] = (...args) => applySessionTitleOverridesImplementation(...args);
+
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
   // Selection changes only where user intent exists (load, explicit click).
-  const upsertTask = useCallback((task: AgentTaskDto) => {
-    setTasks((prev) => {
-      const rest = prev.filter((item) => item.id !== task.id);
-      return [task, ...rest].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    });
-  }, []);
-
-  const loadTasks = useCallback(async () => {
-    try {
-      const response = await listAgentTasks();
-      setTasks(response.items);
-      setSelectedTaskId((current) =>
-        newSessionModeRef.current ? undefined : (current ?? response.items[0]?.id),
-      );
-      setError(null);
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const loadHermesSessions = useCallback(
-    async (
-      options: { suppressStartupRequestError?: boolean; suppressSessionGoneError?: boolean } = {},
-    ) => {
-      if (!bridge.running || !activeHermesProfile.confirmed) return "skipped";
-      let keepLoading = false;
-      setHermesSessionsLoading(true);
-      try {
-        const [listedSessions, assignments] = await Promise.all([
-          listHermesSessions(),
-          listSessionProfiles(),
-        ]);
-        const profiles = sessionProfileMap(assignments);
-        const activeProfile = activeHermesProfile.name;
-        const sessions = applySessionTitleOverrides(
-          filterAgentSessionsForProfile(listedSessions, profiles, activeProfile),
-        );
-        profileOwnedSessionIdsRef.current = new Set(
-          activeProfile === "default"
-            ? []
-            : assignments
-                .filter((assignment) => assignment.profile === activeProfile)
-                .map((assignment) => assignment.sessionId),
-        );
-        hermesSessionsHydratedRef.current = true;
-        setHermesSessionsHydrated(true);
-        const pendingMessages = pendingHermesMessagesRef.current;
-        const selectedSessionId = selectedHermesSessionIdRef.current;
-        const selectedProfileSessionId =
-          selectedSessionId &&
-          sessionMatchesProfile({ id: selectedSessionId }, profiles, activeProfile)
-            ? selectedSessionId
-            : undefined;
-        const workingSessions = workingSessionIdsRef.current;
-        const waitingSessions = waitingSessionIdsRef.current;
-        const currentProfileSessionIds = new Set(
-          hermesSessionItemsRef.current
-            .filter((session) => sessionMatchesProfile(session, profiles, activeProfile))
-            .map((session) => session.id),
-        );
-        setHermesSessionItems((current) =>
-          mergeActiveHermesSessions(
-            sessions,
-            current.filter((session) => sessionMatchesProfile(session, profiles, activeProfile)),
-            {
-              selectedSessionId: selectedProfileSessionId,
-              workingSessionIds: workingSessions,
-              waitingSessionIds: waitingSessions,
-              pendingMessages,
-              defaultModelId: defaultGenerationModelIdRef.current,
-            },
-          ),
-        );
-        const restoredSessionId = restoredHermesSessionIdRef.current;
-        restoredHermesSessionIdRef.current = undefined;
-        setSelectedHermesSessionId((current) => {
-          if (newSessionModeRef.current) {
-            selectedHermesSessionIdRef.current = undefined;
-            return undefined;
-          }
-          let candidate = current ?? restoredSessionId;
-          const candidateIsCurrent = candidate !== undefined && candidate === current;
-          if (candidate && !sessionMatchesProfile({ id: candidate }, profiles, activeProfile)) {
-            forgetLastOpenSessionId(candidate);
-            candidate = undefined;
-          }
-          if (
-            candidate &&
-            (sessions.some((session) => session.id === candidate) ||
-              candidateIsCurrent ||
-              currentProfileSessionIds.has(candidate))
-          ) {
-            selectedHermesSessionIdRef.current = candidate;
-            return candidate;
-          }
-          if (restoredSessionId && candidate === restoredSessionId) {
-            forgetLastOpenSessionId(restoredSessionId);
-          }
-          const taskSession = selectedTask?.hermesSessionId;
-          if (taskSession && sessions.some((session) => session.id === taskSession)) {
-            selectedHermesSessionIdRef.current = taskSession;
-            return taskSession;
-          }
-          const nextSessionId = sessions[0]?.id;
-          selectedHermesSessionIdRef.current = nextSessionId;
-          return nextSessionId;
-        });
-        // Deliberately no setError(null) here: this runs from background polls,
-        // so a success would wipe an unrelated banner (e.g. a failed send)
-        // moments after it appeared. The banner is dismissable instead.
-        return "loaded";
-      } catch (err) {
-        const message = messageFromError(err);
-        if (
-          options.suppressStartupRequestError &&
-          !hermesSessionsHydratedRef.current &&
-          isHermesSessionsStartupRequestError(err)
-        ) {
-          keepLoading = true;
-          return "transient-startup-error";
-        }
-        if (options.suppressSessionGoneError && isSessionGoneError(message)) {
-          return "failed";
-        }
-        setError(describeHermesError(err), reportableAgentErrorOptions(err));
-        return "failed";
-      } finally {
-        if (!keepLoading) {
-          setHermesSessionsLoading(false);
-        }
-      }
-    },
-    [
-      activeHermesProfile.confirmed,
-      activeHermesProfile.name,
-      bridge.running,
-      selectedTask?.hermesSessionId,
-    ],
-  );
+  const { upsertTask, loadTasks, loadHermesSessions } = useAgentSessionLoading({
+    activeHermesProfile,
+    applySessionTitleOverrides,
+    bridge,
+    defaultGenerationModelIdRef,
+    hermesSessionItemsRef,
+    hermesSessionsHydratedRef,
+    newSessionModeRef,
+    pendingHermesMessagesRef,
+    profileOwnedSessionIdsRef,
+    restoredHermesSessionIdRef,
+    selectedHermesSessionIdRef,
+    selectedTask,
+    setError,
+    setHermesSessionItems,
+    setHermesSessionsHydrated,
+    setHermesSessionsLoading,
+    setLoading,
+    setSelectedHermesSessionId,
+    setSelectedTaskId,
+    setTasks,
+    waitingSessionIdsRef,
+    workingSessionIdsRef,
+  });
 
   useEffect(() => {
     void loadTasks();
@@ -1891,14 +1773,7 @@ export function AgentWorkspace({
   // Manual rename. Records an override (same channel the auto-suggested titles
   // use) and marks the session so the suggester won't clobber the user's name.
   // The sessions-changed effect propagates it to the sidebar.
-  const {
-    applyManualHermesSessionTitleLocally,
-    renameHermesSession,
-    removeHermesSessionLocally,
-    deleteSelectedHermesSession,
-    applySessionTitleOverrides,
-    suggestTitleForUntitledSession,
-  } = createSessionTitleActions({
+  const sessionTitleActions = createSessionTitleActions({
     cancelAgentRunSettlement,
     clearSubmittedSteers,
     commitSessionModelSelections,
@@ -1919,6 +1794,14 @@ export function AgentWorkspace({
     titleSuggestionInFlightSessionIdsRef,
     titleSuggestionSessionIdsRef,
   });
+  applySessionTitleOverridesImplementation = sessionTitleActions.applySessionTitleOverrides;
+  const {
+    applyManualHermesSessionTitleLocally,
+    renameHermesSession,
+    removeHermesSessionLocally,
+    deleteSelectedHermesSession,
+    suggestTitleForUntitledSession,
+  } = sessionTitleActions;
 
   const {
     clearComposerDraft,
@@ -4087,7 +3970,6 @@ import {
   agentActivityCountsFromStore,
   agentStatusFromHermesEvent,
   agentStatusSummaryFromHermesEvent,
-  mergeActiveHermesSessions,
   retainUnpersistedPendingMessages,
   sessionHasAssistantAfterLatestUser,
   sessionHasActiveWork,
