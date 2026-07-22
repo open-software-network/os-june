@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createRuntimeReconciliation } from "./runtime-reconciliation";
 import { createGatewayRecoveryActions } from "./gateway-recovery-actions";
 import { createSessionEventListener } from "./session-event-listener";
 import { createOptimisticSessionActions } from "./optimistic-session-actions";
@@ -3956,80 +3957,6 @@ export function AgentWorkspace({
     setSelectedTaskId,
   });
 
-  const { attachHermesSessionEventListener } = createSessionEventListener({
-    cancelAgentRunSettlement,
-    clearSessionActivity,
-    clearSubmittedSteers,
-    continueAfterCompletedAgentRun,
-    liveEventsRef,
-    pendingSteerBySessionIdRef,
-    promotePendingIssueReportToReview,
-    recordHermesActivityAndDeriveStatus,
-    refreshHermesSession,
-    releaseAllComputerUseRuns,
-    releaseComputerUseRun,
-    sessionGatewayUnlistenRef,
-    sessionThinkingAppliedRef,
-    sessionThinkingEfforts,
-    sessionThinkingEffortsRef,
-    setLiveEvents,
-    withStoredHermesSessionId,
-  });
-
-  submitHermesSessionImplementation = createSubmitHermesSession({
-    AGENT_TITLE_MAX_CHARS,
-    agentSessionTitleForPrompt,
-    applySessionTitleOverrides,
-    applyThinkingLevelToSession,
-    attachHermesSessionEventListener,
-    attachPendingImages,
-    captureSessionModelTarget,
-    clearHeldFastPathImages,
-    commitSessionModelSelections,
-    creditActionsDisabledReason,
-    defaultGenerationModelIdRef,
-    ensureHermesGateway,
-    fullModeDraftRef,
-    generationCostQualityRef,
-    generationModelsRef,
-    generationSelectionIntentRevisionRef,
-    hermesSessionItemsRef,
-    hermesSessionsHydratedRef,
-    loadHermesSessions,
-    migrateOptimisticHermesSession,
-    newSessionModeRef,
-    pendingFastPathImagesRef,
-    pendingHermesMessagesRef,
-    pendingIssueReportsRef,
-    profileOwnedSessionIdsRef,
-    projectContext,
-    projectContextSignaturesBySessionId,
-    recordSessionErrorActivity,
-    recordSessionRunningActivity,
-    releaseComputerUseRun,
-    rememberComputerUseRun,
-    removeOptimisticHermesSession,
-    resolveSessionProjectContext,
-    runtimeSessionIdsRef,
-    selectedHermesSessionIdRef,
-    sessionGatewayUnlistenRef,
-    sessionModelSelectionsRef,
-    sessionThinkingAppliedRef,
-    sessionThinkingEfforts,
-    sessionThinkingEffortsRef,
-    sessionTitleOverridesRef,
-    sessionTitleSourceRef,
-    setHermesSessionItems,
-    setNewSessionMode,
-    setPendingHermesMessages,
-    setRuntimeSessionIds,
-    setSelectedHermesSessionId,
-    setSelectedTaskId,
-    startOptimisticHermesSession,
-    thinkingLevelRef,
-    veniceApiKeyConfiguredRef,
-  });
-
   // Returns the gateway for the given write-access mode, starting that
   // mode's runtime process if it isn't up. The two modes run side by side
   // (the sandbox is applied at spawn and can't change on a live process, so
@@ -4125,6 +4052,110 @@ export function AgentWorkspace({
     [],
   );
 
+  // Message-based reconciliation above can only END a run when an assistant
+  // reply eventually persists. A run that died without one (provider failure,
+  // gateway drop, app quit mid-turn) — or a session wrongly resumed as
+  // working from a trailing user message — would otherwise stay "working"
+  // forever, leaving the menu bar stuck on "Working…". The gateway's
+  // session.active_list is ground truth for what is actually running, so any
+  // locally-working session absent from it (or sitting idle) for two
+  // consecutive polls gets its activity cleared. Two misses, not one: a
+  // just-submitted prompt can race the runtime session registering.
+  const {
+    liveRuntimeSessionsForModes,
+    runtimeSnapshotHasSession,
+    cancelAgentRunSettlement,
+    hasAutomaticContinuation,
+    watchCompletedAgentRunSettle,
+    reconcileWorkingSessionsAgainstRuntime,
+  } = createRuntimeReconciliation({
+    ensureHermesGateway,
+    hermesSessionItems,
+    pendingAttachmentPreparationsRef,
+    pendingSteerBySessionIdRef,
+    queuedAttachmentFollowUpsRef,
+    recordSessionErrorActivity,
+    refreshHermesSession,
+    runtimeSessionIdsRef,
+    setError,
+    workingReconcileMissesRef,
+    workingSessionIdsRef,
+  });
+
+  const { attachHermesSessionEventListener } = createSessionEventListener({
+    cancelAgentRunSettlement,
+    clearSessionActivity,
+    clearSubmittedSteers,
+    continueAfterCompletedAgentRun,
+    liveEventsRef,
+    pendingSteerBySessionIdRef,
+    promotePendingIssueReportToReview,
+    recordHermesActivityAndDeriveStatus,
+    refreshHermesSession,
+    releaseAllComputerUseRuns,
+    releaseComputerUseRun,
+    sessionGatewayUnlistenRef,
+    sessionThinkingAppliedRef,
+    sessionThinkingEfforts,
+    sessionThinkingEffortsRef,
+    setLiveEvents,
+    withStoredHermesSessionId,
+  });
+
+  submitHermesSessionImplementation = createSubmitHermesSession({
+    AGENT_TITLE_MAX_CHARS,
+    agentSessionTitleForPrompt,
+    applySessionTitleOverrides,
+    applyThinkingLevelToSession,
+    attachHermesSessionEventListener,
+    attachPendingImages,
+    captureSessionModelTarget,
+    clearHeldFastPathImages,
+    commitSessionModelSelections,
+    creditActionsDisabledReason,
+    defaultGenerationModelIdRef,
+    ensureHermesGateway,
+    fullModeDraftRef,
+    generationCostQualityRef,
+    generationModelsRef,
+    generationSelectionIntentRevisionRef,
+    hermesSessionItemsRef,
+    hermesSessionsHydratedRef,
+    loadHermesSessions,
+    migrateOptimisticHermesSession,
+    newSessionModeRef,
+    pendingFastPathImagesRef,
+    pendingHermesMessagesRef,
+    pendingIssueReportsRef,
+    profileOwnedSessionIdsRef,
+    projectContext,
+    projectContextSignaturesBySessionId,
+    recordSessionErrorActivity,
+    recordSessionRunningActivity,
+    releaseComputerUseRun,
+    rememberComputerUseRun,
+    removeOptimisticHermesSession,
+    resolveSessionProjectContext,
+    runtimeSessionIdsRef,
+    selectedHermesSessionIdRef,
+    sessionGatewayUnlistenRef,
+    sessionModelSelectionsRef,
+    sessionThinkingAppliedRef,
+    sessionThinkingEfforts,
+    sessionThinkingEffortsRef,
+    sessionTitleOverridesRef,
+    sessionTitleSourceRef,
+    setHermesSessionItems,
+    setNewSessionMode,
+    setPendingHermesMessages,
+    setRuntimeSessionIds,
+    setSelectedHermesSessionId,
+    setSelectedTaskId,
+    startOptimisticHermesSession,
+    thinkingLevelRef,
+    veniceApiKeyConfiguredRef,
+  });
+
   const {
     retryUpstreamProviderFailure,
     retryGatewayConnection,
@@ -4152,123 +4183,6 @@ export function AgentWorkspace({
     waitingSessionIdsRef,
     workingSessionIdsRef,
   });
-
-  // Message-based reconciliation above can only END a run when an assistant
-  // reply eventually persists. A run that died without one (provider failure,
-  // gateway drop, app quit mid-turn) — or a session wrongly resumed as
-  // working from a trailing user message — would otherwise stay "working"
-  // forever, leaving the menu bar stuck on "Working…". The gateway's
-  // session.active_list is ground truth for what is actually running, so any
-  // locally-working session absent from it (or sitting idle) for two
-  // consecutive polls gets its activity cleared. Two misses, not one: a
-  // just-submitted prompt can race the runtime session registering.
-  async function liveRuntimeSessionsForModes(modes: boolean[]) {
-    let rows: Array<{ id?: string; session_key?: string; status?: string }> = [];
-    const reachableModes = new Set<boolean>();
-    for (const mode of modes) {
-      try {
-        const gateway = await ensureHermesGateway(mode);
-        const response = await gateway.request<{
-          sessions?: Array<{
-            id?: string;
-            session_key?: string;
-            status?: string;
-          }>;
-        }>("session.active_list", {});
-        rows = rows.concat(Array.isArray(response?.sessions) ? response.sessions : []);
-        reachableModes.add(mode);
-      } catch {
-        // Can't reach this runtime — keep ITS sessions' current state rather
-        // than guess, while the reachable mode still reconciles below.
-      }
-    }
-    const live = new Set<string>();
-    for (const row of rows) {
-      // "idle" means the runtime session exists but isn't processing a turn.
-      if (!row || row.status === "idle") continue;
-      if (row.session_key) live.add(String(row.session_key));
-      if (row.id) live.add(String(row.id));
-    }
-    return { live, reachableModes };
-  }
-
-  function runtimeSnapshotHasSession(snapshot: { live: Set<string> }, sessionId: string) {
-    const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
-    return (
-      snapshot.live.has(sessionId) ||
-      Boolean(runtimeSessionId && snapshot.live.has(runtimeSessionId))
-    );
-  }
-
-  function cancelAgentRunSettlement(storedSessionId: string) {
-    cancelAgentRunMonitoring(storedSessionId);
-  }
-
-  function hasAutomaticContinuation(storedSessionId: string) {
-    if (pendingAttachmentPreparationsRef.current[storedSessionId]?.size) return true;
-    if (pendingSteerBySessionIdRef.current[storedSessionId]?.length) return true;
-    // A failed row is still unresolved continuation work: announcing "ready"
-    // after its delivery error would contradict the needs-input alert and the
-    // visible Retry action.
-    return (queuedAttachmentFollowUpsRef.current[storedSessionId] ?? []).length > 0;
-  }
-
-  function watchCompletedAgentRunSettle(storedSessionId: string) {
-    if (hasAutomaticContinuation(storedSessionId)) return;
-    releaseAgentRunSettlement(storedSessionId);
-  }
-
-  async function reconcileWorkingSessionsAgainstRuntime() {
-    const working = Array.from(workingSessionIdsRef.current);
-    const misses = workingReconcileMissesRef.current;
-    for (const sessionId of misses.keys()) {
-      if (!working.includes(sessionId)) misses.delete(sessionId);
-    }
-    if (working.length === 0) return;
-    // Working sessions may span both runtime processes; ask each mode that
-    // has one and union the answers. A mode we can't reach keeps its
-    // sessions' current state rather than guessing — so a one-gateway
-    // failure must not mark the other mode's sessions dead either.
-    const modes = Array.from(new Set(working.map((sessionId) => sessionUnrestricted(sessionId))));
-    const snapshot = await liveRuntimeSessionsForModes(modes);
-    if (snapshot.reachableModes.size === 0) return;
-    for (const sessionId of working) {
-      // Sessions of an unreachable mode were not in any answer we got;
-      // counting them as misses would mark live work dead.
-      if (!snapshot.reachableModes.has(sessionUnrestricted(sessionId))) continue;
-      if (runtimeSnapshotHasSession(snapshot, sessionId)) {
-        misses.delete(sessionId);
-        continue;
-      }
-      const seen = (misses.get(sessionId) ?? 0) + 1;
-      if (seen < 2) {
-        misses.set(sessionId, seen);
-        continue;
-      }
-      misses.delete(sessionId);
-      const freshMessages = await refreshHermesSession(sessionId);
-      if (!freshMessages) continue;
-      if (sessionHasAssistantAfterLatestUser(freshMessages)) {
-        // refreshHermesSession already saw the assistant reply while this
-        // session still counted as active, so it dispatched the terminal
-        // "June finished." status and cleared activity — dispatching a
-        // second completed status here would overwrite that summary.
-        continue;
-      }
-      const title =
-        hermesSessionItems.find((session) => session.id === sessionId)?.title ?? "Agent session";
-      const summary = "June stopped before replying.";
-      recordSessionErrorActivity(sessionId, summary);
-      setError(summary, { sessionId });
-      dispatchAgentSessionStatus({
-        sessionId,
-        title,
-        status: "failed",
-        summary,
-        ...agentActivityCountsFromStore(),
-      });
-    }
-  }
 
   // Message fetches for one session can overlap: the selection effect, the
   // 2.5s working poll, and the terminal-event refresh all call
