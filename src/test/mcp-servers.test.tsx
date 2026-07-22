@@ -20,6 +20,7 @@ import {
   isLocalSubprocess,
   isValidHttpUrl,
   parseMcpServer,
+  parseExternalMcpConfig,
   planServerEdit,
   redactedEnv,
   redactedHeaders,
@@ -295,6 +296,85 @@ describe("mcp servers — add-server validation", () => {
     const result = validateDraft(stdioDraft({ env: [{ key: "", value: "" }] }));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.payload.env).toBeUndefined();
+  });
+});
+
+describe("mcp servers — configuration import", () => {
+  it("imports Claude and Cursor JSON without changing unrelated settings", () => {
+    const result = parseExternalMcpConfig(
+      JSON.stringify({
+        theme: "dark",
+        mcpServers: {
+          filesystem: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            env: { FILESYSTEM_KEY: "secret" },
+          },
+          linear: { url: "https://mcp.linear.app/mcp", auth: "oauth" },
+        },
+      }),
+    );
+
+    expect(result.source).toBe("Claude or Cursor");
+    expect(result.entries.map((entry) => entry.payload)).toEqual([
+      {
+        name: "filesystem",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        env: { FILESYSTEM_KEY: "secret" },
+      },
+      { name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth" },
+    ]);
+  });
+
+  it("imports current Codex MCP TOML tables and nested environment values", () => {
+    const result = parseExternalMcpConfig(`
+model = "gpt-5.6"
+
+[mcp_servers.context7]
+command = "npx"
+args = [
+  "-y",
+  "@upstash/context7-mcp",
+]
+
+[mcp_servers.context7.env]
+CONTEXT7_KEY = "secret"
+
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+auth = "oauth"
+http_headers = {
+  "X-Figma-Region" = "us-east-1",
+}
+`);
+
+    expect(result.source).toBe("Codex");
+    expect(result.entries.map((entry) => entry.payload)).toEqual([
+      {
+        name: "context7",
+        command: "npx",
+        args: ["-y", "@upstash/context7-mcp"],
+        env: { CONTEXT7_KEY: "secret" },
+      },
+      {
+        name: "figma",
+        url: "https://mcp.figma.com/mcp",
+        auth: "oauth",
+        headers: { "X-Figma-Region": "us-east-1" },
+      },
+    ]);
+  });
+
+  it("blocks Codex environment-backed HTTP credentials from an unsafe partial import", () => {
+    const result = parseExternalMcpConfig(`
+[mcp_servers.figma]
+url = "https://mcp.figma.com/mcp"
+bearer_token_env_var = "FIGMA_OAUTH_TOKEN"
+`);
+
+    expect(result.entries[0].payload).toBeUndefined();
+    expect(result.entries[0].error).toMatch(/credential/i);
   });
 });
 
@@ -950,7 +1030,8 @@ describe("McpServersView — component", () => {
   it("opens the add-server dialog and validates before sending", async () => {
     const add = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ add })} />);
-    fireEvent.click(screen.getByRole("button", { name: /add mcp server/i }));
+    fireEvent.click(screen.getByRole("button", { name: /set up mcp/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /run a local server/i }));
 
     await waitFor(() =>
       expect(screen.getByRole("dialog", { name: "Add MCP server" })).toBeInTheDocument(),
@@ -962,6 +1043,44 @@ describe("McpServersView — component", () => {
     expect(screen.getByText(/enter a name/i)).toBeInTheDocument();
   });
 
+  it("previews and imports servers from another app through guided setup", async () => {
+    const add = vi.fn(() => Promise.resolve(true));
+    render(<McpServersView state={stubState({ add })} />);
+    fireEvent.click(screen.getAllByRole("button", { name: /set up mcp/i })[0]);
+    fireEvent.click(await screen.findByRole("button", { name: /import from another app/i }));
+
+    fireEvent.change(screen.getByLabelText("Configuration"), {
+      target: {
+        value: JSON.stringify({
+          mcpServers: {
+            filesystem: { command: "npx", args: ["-y", "filesystem-mcp"] },
+            linear: { url: "https://mcp.linear.app/mcp", auth: "oauth" },
+          },
+        }),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /preview servers/i }));
+
+    expect(screen.getByText(/found 2 servers/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /import 2 servers/i }));
+    await waitFor(() => expect(add).toHaveBeenCalledTimes(2));
+    expect(add).toHaveBeenNthCalledWith(1, {
+      name: "filesystem",
+      command: "npx",
+      args: ["-y", "filesystem-mcp"],
+    });
+    expect(add).toHaveBeenNthCalledWith(2, {
+      name: "linear",
+      url: "https://mcp.linear.app/mcp",
+      auth: "oauth",
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /import mcp configuration/i }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   // Regression: the add-form field handlers must read event.currentTarget.value
   // synchronously, not inside the setDraft updater (React nulls currentTarget
   // after the handler returns, which blanked the whole app). Typing into the
@@ -969,7 +1088,8 @@ describe("McpServersView — component", () => {
   it("accepts a typed stdio server without crashing (currentTarget)", async () => {
     const add = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ add })} />);
-    fireEvent.click(screen.getByRole("button", { name: /add mcp server/i }));
+    fireEvent.click(screen.getByRole("button", { name: /set up mcp/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /run a local server/i }));
     await waitFor(() =>
       expect(screen.getByRole("dialog", { name: "Add MCP server" })).toBeInTheDocument(),
     );
@@ -993,12 +1113,12 @@ describe("McpServersView — component", () => {
   it("accepts a typed http server with an auth header without crashing", async () => {
     const add = vi.fn(() => Promise.resolve(true));
     render(<McpServersView state={stubState({ add })} />);
-    fireEvent.click(screen.getByRole("button", { name: /add mcp server/i }));
+    fireEvent.click(screen.getByRole("button", { name: /set up mcp/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /connect a remote server/i }));
     await waitFor(() =>
       expect(screen.getByRole("dialog", { name: "Add MCP server" })).toBeInTheDocument(),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /streamable http/i }));
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "linear" },
     });
@@ -1037,7 +1157,7 @@ describe("McpServersView — component", () => {
 
   it("shows the no-servers empty state for an empty ready list", () => {
     render(<McpServersView state={stubState({ servers: [] })} />);
-    expect(screen.getByText("No MCP servers")).toBeInTheDocument();
+    expect(screen.getByText("Connect your first tool")).toBeInTheDocument();
   });
 
   it("does not show internal June MCP servers in the section", () => {
@@ -1056,7 +1176,7 @@ describe("McpServersView — component", () => {
       />,
     );
 
-    expect(screen.getByText("No MCP servers")).toBeInTheDocument();
+    expect(screen.getByText("Connect your first tool")).toBeInTheDocument();
     for (const name of INTERNAL_MCP_SERVER_NAMES) {
       expect(screen.queryByText(name)).not.toBeInTheDocument();
     }
