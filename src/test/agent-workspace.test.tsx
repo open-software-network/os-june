@@ -4384,6 +4384,105 @@ describe("AgentWorkspace", () => {
     expect(composer).toHaveFocus();
   });
 
+  it("returns Auto, Preference, and Effort when searching the root model palette", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "open-software/auto",
+        costQuality: 50,
+      },
+    });
+    // Auto is a first-class control, not a catalog row. Keep it out of the
+    // mocked catalog to prove L1 search does not depend on a provider result.
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "open-software/auto",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.keyboard("{Enter}");
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("");
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.type(search, "auto");
+
+    const autoSwitch = within(palette).getByRole("switch", {
+      name: "Choose the model automatically",
+    });
+    expect(autoSwitch).toBeChecked();
+    expect(
+      within(palette).getByRole("button", { name: "Preference Balanced" }),
+    ).toBeInTheDocument();
+    expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+    expect(
+      within(palette).queryByRole("listbox", { name: "Matching models" }),
+    ).not.toBeInTheDocument();
+    expect(search).toHaveAttribute("aria-expanded", "false");
+    const searchStatus = within(palette).getByRole("status");
+    expect(searchStatus).toHaveTextContent("3 settings shown. Press Tab to review settings.");
+    expect(search).toHaveAttribute("aria-describedby", searchStatus.id);
+
+    // A settings-only query has no active model option. Enter stays within the
+    // search flow instead of bubbling into the surrounding message form.
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("auto");
+    expect(fireEvent.keyDown(search, { key: "ArrowDown" })).toBe(true);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.tab();
+    expect(autoSwitch).toHaveFocus();
+
+    await user.clear(search);
+    await user.type(search, "Preference Balanced");
+    expect(
+      within(palette).getByRole("button", { name: "Preference Balanced" }),
+    ).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "Effort Medium");
+    expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "auto preference");
+    await user.click(within(palette).getByRole("button", { name: "Preference Balanced" }));
+    expect(within(palette).getByRole("group", { name: "Auto preference" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(
+      within(palette).queryByRole("group", { name: "Auto preference" }),
+    ).not.toBeInTheDocument();
+    expect(search).toHaveValue("auto preference");
+    await user.keyboard("{Escape}");
+    expect(search).toHaveValue("");
+  });
+
   it("keeps the root layer in browse mode while searching the All models flyout", async () => {
     const user = userEvent.setup();
 

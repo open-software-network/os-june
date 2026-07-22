@@ -3265,26 +3265,42 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    const modelsSection = screen.getByRole("heading", { name: "AI models" }).closest("section");
-    expect(modelsSection).not.toBeNull();
-    const scopedModels = within(modelsSection as HTMLElement);
+    const voiceSection = screen
+      .getByRole("heading", { name: "Voice", level: 2 })
+      .closest("section");
+    expect(voiceSection).not.toBeNull();
+    const scopedVoice = within(voiceSection as HTMLElement);
+    const textSection = screen.getByRole("heading", { name: "Text", level: 2 }).closest("section");
+    expect(textSection).not.toBeNull();
+    const scopedText = within(textSection as HTMLElement);
     const mediaSection = screen
-      .getByRole("heading", { name: "Image and video" })
+      .getByRole("heading", { name: "Image and video", level: 2 })
       .closest("section");
     expect(mediaSection).not.toBeNull();
     const scopedMedia = within(mediaSection as HTMLElement);
 
+    expect(
+      (voiceSection as HTMLElement).compareDocumentPosition(textSection as HTMLElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      (textSection as HTMLElement).compareDocumentPosition(mediaSection as HTMLElement) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
     const profileNote =
       "Showing models for the active profile: writing. Switch to the default profile to edit global models.";
 
-    // AI models section: transcription + text follow the profile, read-only.
-    expect(await scopedModels.findByText("GPT-4o Transcribe")).toBeInTheDocument();
-    expect(await scopedModels.findByText("Kimi K2.6")).toBeInTheDocument();
-    expect(scopedModels.queryByText("Parakeet")).not.toBeInTheDocument();
-    expect(scopedModels.queryByText("GLM 5.2")).not.toBeInTheDocument();
-    expect(scopedModels.getByText(profileNote)).toBeInTheDocument();
-    expect(scopedModels.getByRole("button", { name: "Change transcription model" })).toBeDisabled();
-    expect(scopedModels.getByRole("button", { name: "Change text model" })).toBeDisabled();
+    // Voice and text follow the active profile independently and stay read-only.
+    expect(await scopedVoice.findByText("GPT-4o Transcribe")).toBeInTheDocument();
+    expect(scopedVoice.queryByText("Parakeet")).not.toBeInTheDocument();
+    expect(scopedVoice.getByText(profileNote)).toBeInTheDocument();
+    expect(scopedVoice.getByRole("button", { name: "Change transcription model" })).toBeDisabled();
+
+    expect(await scopedText.findByText("Kimi K2.6")).toBeInTheDocument();
+    expect(scopedText.queryByText("GLM 5.2")).not.toBeInTheDocument();
+    expect(scopedText.getByText(profileNote)).toBeInTheDocument();
+    expect(scopedText.getByRole("button", { name: "Change text model" })).toBeDisabled();
 
     // Image and video section: both media models follow the profile, read-only.
     expect(await scopedMedia.findByText("FLUX 2 Pro")).toBeInTheDocument();
@@ -3422,7 +3438,7 @@ describe("AppSettings", () => {
 
     // The primary pickers are visible, but advanced local controls are hidden
     // behind a collapsed "More options" disclosure by default.
-    const trigger = await screen.findByRole("button", { name: "More options for AI models" });
+    const trigger = await screen.findByRole("button", { name: "More options for text" });
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("switch", { name: "Use local text model" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Base URL")).not.toBeInTheDocument();
@@ -3458,12 +3474,19 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
+    const voiceSection = screen
+      .getByRole("heading", { name: "Voice", level: 2 })
+      .closest("section");
+    expect(voiceSection).not.toBeNull();
+    await user.click(
+      within(voiceSection as HTMLElement).getByRole("button", { name: "More options for voice" }),
+    );
 
     // Default on, with the extra-credits disclosure next to it (JUN-375).
     const toggle = await screen.findByRole("switch", {
       name: "Show a live transcript while recording",
     });
+    expect(voiceSection).toContainElement(toggle);
     expect(toggle).toBeChecked();
     expect(
       screen.getByText(
@@ -3525,7 +3548,7 @@ describe("AppSettings", () => {
     expect(await screen.findByRole("switch", { name: "Use local text model" })).toBeInTheDocument();
     expect(screen.getByLabelText("Base URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Model ID")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "More options for AI models" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "More options for text" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
@@ -3552,7 +3575,7 @@ describe("AppSettings", () => {
 
       await user.click(await screen.findByRole("tab", { name: "Models" }));
       // The local model config lives behind the "More options" disclosure.
-      await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
+      await user.click(await screen.findByRole("button", { name: "More options for text" }));
       await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
       await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
       await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
@@ -3875,7 +3898,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
-    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
+    await user.click(await screen.findByRole("button", { name: "More options for text" }));
     await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "http://localhost:11434/v1");
     await user.click(screen.getByRole("button", { name: "Test connection" }));
@@ -3910,7 +3933,7 @@ describe("AppSettings", () => {
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
     // The local model config lives behind the "More options" disclosure.
-    await user.click(await screen.findByRole("button", { name: "More options for AI models" }));
+    await user.click(await screen.findByRole("button", { name: "More options for text" }));
     await user.click(await screen.findByRole("switch", { name: "Use local text model" }));
     await user.type(await screen.findByLabelText("Base URL"), "https://models.example.com/v1");
     await user.type(screen.getByLabelText("Model ID"), "llama3.1:8b");
@@ -3964,7 +3987,7 @@ describe("AppSettings", () => {
     // The Venice API key lives behind "More options" so the average user never
     // has to reason about it. It should be hidden until the row is expanded.
     expect(screen.queryByLabelText("Venice API key")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.click(screen.getByRole("button", { name: "More options for text" }));
 
     const input = await screen.findByLabelText("Venice API key");
     await user.type(input, "  vc_test_key  ");
@@ -4043,7 +4066,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.click(screen.getByRole("button", { name: "More options for text" }));
     await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -4090,7 +4113,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.click(screen.getByRole("button", { name: "More options for text" }));
     await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -4137,7 +4160,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.click(screen.getByRole("button", { name: "More options for text" }));
     await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -4166,7 +4189,7 @@ describe("AppSettings", () => {
     );
 
     await user.click(await screen.findByRole("tab", { name: "Models" }));
-    await user.click(screen.getByRole("button", { name: "More options for AI models" }));
+    await user.click(screen.getByRole("button", { name: "More options for text" }));
     await user.type(await screen.findByLabelText("Venice API key"), "vc_test_key");
     await user.click(screen.getByRole("button", { name: "Save" }));
 
@@ -4204,6 +4227,46 @@ describe("AppSettings", () => {
         "Auto is billed to June credits and does not use your Venice API key.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("keeps Auto preference in settings instead of duplicating it in the text picker", async () => {
+    const user = userEvent.setup();
+    mocks.providerModelSettings.mockResolvedValueOnce({
+      settings: {
+        ...buildProviderSettings(),
+        generationModel: "open-software/auto",
+        remoteGenerationModel: "open-software/auto",
+        costQuality: 50,
+      },
+    });
+
+    render(
+      <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByRole("tab", { name: "Models" }));
+    expect(await screen.findByRole("group", { name: "Auto preference" })).toBeInTheDocument();
+
+    const trigger = screen.getByRole("button", { name: "Change text model" });
+    expect(trigger.querySelector(".model-summary-logo")).toHaveAttribute("data-brand", "june");
+    await user.click(trigger);
+
+    const picker = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(within(picker).getByText("Suggested")).toBeInTheDocument();
+    expect(within(picker).queryByText("Text model")).not.toBeInTheDocument();
+    expect(
+      within(picker).getByRole("switch", { name: "Choose the model automatically" }),
+    ).toBeChecked();
+    expect(within(picker).queryByRole("button", { name: /Preference/ })).not.toBeInTheDocument();
   });
 
   it("defaults the model picker to curated suggestions", async () => {
@@ -4298,6 +4361,9 @@ describe("AppSettings", () => {
     // like text/voice, shows only the suggested picks up top — the rest of the
     // catalog lives behind the All models flyout.
     await user.click(screen.getByRole("button", { name: "Change image model" }));
+    const imagePicker = await screen.findByRole("dialog", { name: "Choose image model" });
+    expect(within(imagePicker).getByText("Image model")).toBeInTheDocument();
+    expect(within(imagePicker).queryByText("Suggested")).not.toBeInTheDocument();
     const defaultImageOption = await screen.findByRole("option", { name: /Venice SD3\.5/ });
     expect(defaultImageOption).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Z-Image Turbo/ })).toBeInTheDocument();

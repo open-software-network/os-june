@@ -3845,9 +3845,13 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        // Escape peels one layer at a time: the all-models panel first,
-        // then an active root search query, then the popover itself.
-        if (composerModelFlyout?.kind === "all" || composerModelFlyout?.kind === "effort") {
+        // Escape peels one layer at a time: a nested model control or the
+        // all-models panel first, then an active root query, then the popover.
+        if (
+          composerModelFlyout?.kind === "all" ||
+          composerModelFlyout?.kind === "auto" ||
+          composerModelFlyout?.kind === "effort"
+        ) {
           setComposerModelFlyout(null);
           setModelSearch("");
         } else if (modelRootSearch) {
@@ -11581,7 +11585,10 @@ export function AgentWorkspace({
             searchRef={composerModelSearchRef}
             rootSearchRef={composerModelRootSearchRef}
             rootSearch={modelRootSearch}
-            onRootSearchChange={setModelRootSearch}
+            onRootSearchChange={(value) => {
+              setComposerModelFlyout(null);
+              setModelRootSearch(value);
+            }}
             onFlyoutChange={setComposerModelFlyout}
             onSearchChange={setModelSearch}
             onSelect={(modelId, costQuality, options) => {
