@@ -1051,10 +1051,7 @@ export function App() {
   );
   const selectedNoteTranscriptContentKey = useMemo(
     () =>
-      transcriptFollowLatestKey(
-        selectedNoteLiveTranscript,
-        selectedNote?.sourceTranscripts ?? [],
-      ),
+      transcriptFollowLatestKey(selectedNoteLiveTranscript, selectedNote?.sourceTranscripts ?? []),
     [selectedNote?.sourceTranscripts, selectedNoteLiveTranscript],
   );
   // The contextual Ask June panel next to the open note. Scoped to one note:

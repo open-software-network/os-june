@@ -96,7 +96,7 @@ export function useFollowLatestScroll({
       }
       clearProgrammaticScroll();
     };
-  }, [active, clearProgrammaticScroll, scopeKey, scrollRef]);
+  }, [active, clearProgrammaticScroll, scrollRef]);
 
   useEffect(() => {
     const scroller = scrollRef.current;

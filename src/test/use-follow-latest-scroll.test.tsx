@@ -47,10 +47,7 @@ function createScroller(initialScrollTop = 600) {
   };
 }
 
-function renderFollowLatest(
-  scroller: ReturnType<typeof createScroller>,
-  initialProps: HookProps,
-) {
+function renderFollowLatest(scroller: ReturnType<typeof createScroller>, initialProps: HookProps) {
   return renderHook(
     (props: HookProps) =>
       useFollowLatestScroll({
