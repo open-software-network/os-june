@@ -28,6 +28,28 @@ export type ReportDialogAttachment = {
 
 const REPORT_DIALOG_DOM_DROP_MAX_BYTES = 50 * 1024 * 1024;
 const REPORT_DIALOG_MAX_ATTACHMENTS = 20;
+const REPORT_SESSION_CONTEXT_LOAD_TIMEOUT_MS = 1_000;
+
+async function loadSessionContextBestEffort(
+  loader: (() => Promise<string | undefined>) | undefined,
+): Promise<string | undefined> {
+  if (!loader) return undefined;
+  let load: Promise<string | undefined>;
+  try {
+    load = Promise.resolve(loader()).catch(() => undefined);
+  } catch {
+    return undefined;
+  }
+  let timeoutId: number | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timeoutId = window.setTimeout(resolve, REPORT_SESSION_CONTEXT_LOAD_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([load, timeout]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
 
 type ReportDialogProps = {
   category: ReportCategory;
@@ -194,7 +216,7 @@ export function ReportDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const relatedSessionContext = await loadSessionContext?.().catch(() => undefined);
+      const relatedSessionContext = await loadSessionContextBestEffort(loadSessionContext);
       const response = await submitIssueReport({
         category,
         description: appendIssueReportSessionContext(

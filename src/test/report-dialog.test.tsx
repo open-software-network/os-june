@@ -172,6 +172,32 @@ describe("ReportDialog", () => {
     expect(loadSessionContext).toHaveBeenCalledTimes(1);
   });
 
+  it("sends promptly when active session context cannot finish loading", async () => {
+    const user = userEvent.setup();
+    const loadSessionContext = vi.fn(() => new Promise<string | undefined>(() => undefined));
+    render(
+      <Harness
+        initialDescription="The active session is stuck"
+        sessionContext={{ id: "session-stuck", title: "Stuck session" }}
+        loadSessionContext={loadSessionContext}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(
+      () =>
+        expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+          category: "bug",
+          description: "The active session is stuck",
+          attachmentNames: [],
+          attachmentPaths: [],
+          sessionId: "session-stuck",
+        }),
+      { timeout: 2_000 },
+    );
+  });
+
   it("shows the confirmation in the dialog after sending and closes via Done", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
