@@ -23,11 +23,7 @@ import {
   type ProviderModelSettingsDto,
 } from "../../lib/tauri";
 import { listHermesSessionMessages } from "../../lib/hermes-adapter";
-import {
-  AGENT_GALLERY_EVENT,
-  dispatchAgentSessionStatus,
-  type AgentGalleryDetail,
-} from "../../lib/agent-events";
+import { dispatchAgentSessionStatus } from "../../lib/agent-events";
 import { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
   createHermesMethods,
@@ -56,13 +52,10 @@ import { type NoteReferenceInput } from "./composer/noteReference";
 import { sessionUnrestricted } from "../../lib/agent-session-modes";
 import { type AgentChatPart, type AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { ProjectContextSignatureStore } from "../../lib/agent-project-context";
-import {
-  buildAgentChatGallery,
-  buildAgentErrorGallery,
-  type AgentChatGallerySection,
-} from "../../lib/agent-chat-gallery";
+import { type AgentChatGallerySection } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useAgentGalleryEvents } from "./use-agent-gallery-events";
 import { useTaskHydration } from "./use-task-hydration";
 import { useSessionListBroadcast } from "./use-session-list-broadcast";
 import { createSessionRefreshAction } from "./session-refresh-action";
@@ -163,7 +156,6 @@ import {
   COMPOSER_STEER_DEMO_EVENT,
   buildSampleArtifactFiles,
   composerSteerDemoDesired,
-  galleryDesired,
 } from "./agent-dev-tools";
 import {
   HERO_SHORTCUT_COUNT,
@@ -2421,22 +2413,10 @@ export function AgentWorkspace({
   // module scope above): pick up the desired state on mount — the command may
   // have been issued from another view before this workspace existed — and
   // follow live toggles via the window event.
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    const apply = (show: boolean, errors: boolean) => {
-      setGallerySections(
-        show ? (errors ? buildAgentErrorGallery() : buildAgentChatGallery()) : null,
-      );
-      setGalleryErrors(show && errors);
-    };
-    apply(Boolean(galleryDesired), galleryDesired === "errors");
-    const onGallery = (event: Event) => {
-      const detail = (event as CustomEvent<AgentGalleryDetail>).detail;
-      apply(Boolean(detail?.show), Boolean(detail?.errors));
-    };
-    window.addEventListener(AGENT_GALLERY_EVENT, onGallery);
-    return () => window.removeEventListener(AGENT_GALLERY_EVENT, onGallery);
-  }, []);
+  useAgentGalleryEvents({
+    setGalleryErrors,
+    setGallerySections,
+  });
 
   // Dev-only streaming replay (window.__streamDemo, registered at module
   // scope): pick up the desired state on mount and follow live toggles via the
