@@ -366,8 +366,12 @@ pub fn start_capture_with_cancel(
     let last_callback_for_callback = Arc::clone(&last_callback_at);
     let paused_for_callback = Arc::clone(&paused_flag);
     let mic_duck_for_callback = Arc::clone(&mic_duck_flag);
-    let live_preview_available =
-        crate::june_api::configured() && crate::os_accounts::cached_signed_in();
+    // The user's Live transcription setting gates both preview lanes at the
+    // source: when off, no preview audio leaves the device and nothing is
+    // billed (JUN-375).
+    let live_preview_available = crate::june_api::configured()
+        && crate::os_accounts::cached_signed_in()
+        && crate::providers::live_transcription();
     let live_preview = if live_preview_available {
         Some(start_live_transcript_preview(
             app.clone(),

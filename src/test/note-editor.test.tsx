@@ -416,6 +416,53 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
   });
 
+  it("keeps following when the source filter reveals additional turns", async () => {
+    const scroller = document.createElement("div");
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => 1000 },
+      clientHeight: { configurable: true, get: () => 400 },
+      scrollTop: { configurable: true, get: () => 600 },
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(scroller, "scrollTo", { configurable: true, value: scrollTo });
+
+    render(
+      <NoteEditor
+        {...props}
+        transcriptScrollRef={{ current: scroller }}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "Microphone response",
+              source: "microphone",
+              startMs: 1000,
+              endMs: 2500,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+            {
+              id: "turn-2",
+              text: "System playback text",
+              source: "system",
+              startMs: 3000,
+              endMs: 4500,
+              turnIndex: 1,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Microphone" }));
+    scrollTo.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "All" }));
+
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" });
+  });
+
   it("shows live transcript preview turns while recording", () => {
     render(
       <NoteEditor

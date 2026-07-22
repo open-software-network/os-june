@@ -66,6 +66,11 @@ pub(crate) async fn transcribe(
     // live-preview semantics; NoteTranscribeService still probes duration,
     // enforces the preview cap, and gates ASR through OS Accounts.
     let preview = parse_preview_flag(form.optional_text("preview").as_deref());
+    // Sent only by builds whose Live transcription setting discloses preview
+    // cost; absence keeps the legacy zero-credit preview settlement. Not an
+    // authorization decision - billing still flows through OS Accounts.
+    let preview_opted_in =
+        preview && parse_preview_flag(form.optional_text("previewOptedIn").as_deref());
     let note_id = form.required_text("noteId")?;
     validation::validate_text_len("note_id", &note_id, validation::MAX_ID_CHARS)?;
     let filename = form
@@ -82,6 +87,7 @@ pub(crate) async fn transcribe(
             language,
             model_id: ModelId(model_id),
             preview,
+            preview_opted_in,
             provider_credentials,
         })
         .await?;

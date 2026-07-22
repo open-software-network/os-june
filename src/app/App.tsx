@@ -1150,10 +1150,14 @@ export function App() {
     });
   }, []);
   const selectedNote = state.selectedNote;
+  const selectedNoteId = selectedNote?.id;
+  const selectedNoteLiveTranscript = useMemo(
+    () => liveTranscriptEvents.filter((event) => event.noteId === selectedNoteId),
+    [liveTranscriptEvents, selectedNoteId],
+  );
   const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
     selectedNote?.sourceTranscripts ?? [],
   );
-  const selectedNoteId = selectedNote?.id;
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
   // open note changes (below) so it never flies out onto a different or
@@ -4931,6 +4935,7 @@ export function App() {
                   >
                     <NoteEditor
                       note={selectedNote}
+                      transcriptScrollRef={noteDetailScrollRef}
                       folders={state.folders}
                       recordingStatus={
                         selectedNoteId === recordingNoteId ? state.recordingStatus : undefined
@@ -4956,9 +4961,7 @@ export function App() {
                       recoveryBlockedReason={
                         fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
-                      liveTranscript={liveTranscriptEvents.filter(
-                        (event) => event.noteId === selectedNoteId,
-                      )}
+                      liveTranscript={selectedNoteLiveTranscript}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}

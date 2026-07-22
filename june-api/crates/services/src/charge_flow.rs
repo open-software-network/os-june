@@ -144,6 +144,11 @@ pub(crate) struct ReleaseHoldParams<'a> {
     pub action_token: String,
 }
 
+pub(crate) enum ReleaseHoldOutcome {
+    Settled(Receipt),
+    DeferredToTtl,
+}
+
 /// Best-effort release of a Hold whose metered work failed: settles the grant
 /// at zero credits (os-accounts ADR-0032) so it stops counting against the
 /// user's concurrency cap and available balance. Before the release primitive,
@@ -152,7 +157,7 @@ pub(crate) struct ReleaseHoldParams<'a> {
 /// (the 2026-07-14 lost-transcript incident). Errors are logged, never
 /// propagated: the caller is already returning the provider failure, and an
 /// unreleased hold degrades to the old TTL-expiry behavior.
-pub(crate) async fn release_hold(params: ReleaseHoldParams<'_>) {
+pub(crate) async fn release_hold(params: ReleaseHoldParams<'_>) -> ReleaseHoldOutcome {
     // Grant-scoped key (token digest): a release can never collide with a
     // later charge of the same logical work under a fresh grant, and a
     // replayed release of the same grant settles idempotently.
@@ -169,15 +174,21 @@ pub(crate) async fn release_hold(params: ReleaseHoldParams<'_>) {
     })
     .await
     {
-        Ok(_) => tracing::info!(
-            action = params.action.as_str(),
-            "released unused hold after failed metered work"
-        ),
-        Err(error) => tracing::warn!(
-            %error,
-            action = params.action.as_str(),
-            "failed to release unused hold; it expires via TTL"
-        ),
+        Ok(receipt) => {
+            tracing::info!(
+                action = params.action.as_str(),
+                "released unused hold after failed metered work"
+            );
+            ReleaseHoldOutcome::Settled(receipt)
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                action = params.action.as_str(),
+                "failed to release unused hold; it expires via TTL"
+            );
+            ReleaseHoldOutcome::DeferredToTtl
+        }
     }
 }
 

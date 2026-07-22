@@ -245,6 +245,23 @@ hard link after every build. A copied or independently built executable with
 an allowed-looking name is rejected. Packaged helper verification remains
 unchanged.
 
+## Addendum - virtual action cursor (2026-07-21)
+
+This addendum clarifies the earlier no-cursor wording: Computer use must never
+move or follow the user's real pointer. Once an attended task sends its first
+valid, eligible Computer use action, June may show a separate, semi-transparent
+Computer use cursor at the virtual action position. The cursor is a
+nonactivating, click-through panel and does not change the background input,
+focus, or active-Space invariants above.
+
+The signed helper remains the only process that resolves Accessibility element
+centers. It sends June a private pointer notification for click positions and
+drag endpoints; the main process converts the screenshot-local coordinates to
+screen coordinates using the selected window's complete bounds. Every show and
+move is bound to the current task epoch. Stop increments that epoch and hides
+the panel before helper teardown so queued notifications cannot make an old
+cursor reappear.
+
 ## Addendum - macOS Screen Recording responsible app (2026-07-21)
 
 This addendum corrects the earlier statement that both TCC grants attach to the
@@ -253,10 +270,9 @@ but macOS attributes Screen Recording to the signed outer June app that launches
 the helper. The helper's preflight observes that responsible-app grant, and its
 native request creates the outer June entry in System Settings.
 
-June therefore opens the matching privacy pane before requesting the next
-missing grant. Opening first gives immediate feedback while the helper starts
-and probes TCC in the background. Accessibility setup names and, when needed,
-offers the nested helper as a drag source. Screen Recording setup names the
-outer June app and never tells the user to add the helper to that list. The
-private transport, helper parent authentication, capture execution, and
-app-owned broker policy are unchanged.
+June therefore requests the next missing grant before opening its matching
+privacy pane. Accessibility setup names and, when needed, offers the nested
+helper as a drag source. Screen Recording setup names and offers the signed
+outer June app as its separate drag source; it never tells the user to add the
+helper to that list. The private transport, helper parent authentication,
+capture execution, and app-owned broker policy are unchanged.

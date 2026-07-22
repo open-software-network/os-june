@@ -6,11 +6,13 @@ mod browser_broker;
 pub mod claude_projects;
 pub mod commands;
 pub mod computer_use;
+mod computer_use_cursor;
 mod computer_use_permission_drag;
 pub mod connectors;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+pub mod experimental_settings;
 pub mod extension_host;
 pub mod feature_flags;
 pub mod hermes_bridge;
@@ -161,6 +163,8 @@ pub fn run() {
             theme_icon::set_dock_icon,
             print_current_webview,
             commands::bootstrap_app,
+            commands::experimental_flags_get,
+            commands::experimental_flags_set,
             commands::create_note,
             commands::list_notes,
             commands::get_note,
@@ -278,6 +282,7 @@ pub fn run() {
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
             commands::reveal_path,
+            commands::unpack_bundled_extension,
             commands::june_open_verify_page,
             commands::june_open_community_page,
             commands::june_open_external_url,
@@ -332,6 +337,7 @@ pub fn run() {
             providers::set_venice_api_key,
             providers::clear_venice_api_key,
             providers::set_image_safe_mode,
+            providers::set_live_transcription,
             providers::set_image_safe_mode_prompt_dismissed,
             image_safety::image_prompt_may_be_explicit,
             providers::generate_image,
@@ -411,6 +417,7 @@ pub fn run() {
             browser::setup_on_app_start();
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
+            experimental_settings::setup(app)?;
             providers::setup(app);
             setup_video_asset_scope(app);
             setup_computer_use_asset_scope(app);

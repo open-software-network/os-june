@@ -40,7 +40,7 @@ pnpm --filter june-extension typecheck
 Load it unpacked: run the June app once (dev build is fine), click "Set up
 browser extension" in Settings -> Agent, then open `chrome://extensions`,
 enable Developer mode, choose "Load unpacked", and select `extension/dist`.
-The manifest's pinned `key` keeps the id stable (`adckhkfngpnenaapncoipkalcfpjbgcn`),
+The manifest's pinned `key` keeps the id stable (`jfpogffllplkfoooiaibjkojkngbdnik`),
 so the registered host manifest matches every local build.
 
 ## Release
