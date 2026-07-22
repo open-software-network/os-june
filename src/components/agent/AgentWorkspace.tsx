@@ -1,34 +1,16 @@
 import { listen } from "@tauri-apps/api/event";
 import type { Editor as TiptapEditor } from "@tiptap/react";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
-import { IconBolt } from "central-icons/IconBolt";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
-import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
-import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
-import { IconShieldCheck } from "central-icons/IconShieldCheck";
-import { IconStopCircle } from "central-icons/IconStopCircle";
 import { IconToolbox } from "central-icons/IconToolbox";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { AnimatePresence, motion } from "framer-motion";
-import { createPortal } from "react-dom";
 import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
 import { IconArrowUp } from "central-icons/IconArrowUp";
-import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconFiles } from "central-icons/IconFiles";
-import { IconFileText } from "central-icons/IconFileText";
-import { IconMicrophone } from "central-icons/IconMicrophone";
-import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPencil } from "central-icons/IconPencil";
-import { IconPlusMedium } from "central-icons/IconPlusMedium";
-import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
-import { IconStop } from "central-icons/IconStop";
-import { DotSpinner } from "../DotSpinner";
 import {
-  type CSSProperties,
-  type ClipboardEvent,
-  type DragEvent,
   type FormEvent,
   useCallback,
   useEffect,
@@ -38,50 +20,23 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { Dialog } from "../ui/Dialog";
 import { toast } from "../ui/Toaster";
-import { Spinner } from "../ui/Spinner";
 import {
-  assignSessionToProfile,
   listSessionProfiles,
-  cancelAgentTask,
-  computerUseEndRun,
   computerUseStop,
   dictationHelperCommand,
-  finalizeHermesBridgeBranch,
   getAgentTask,
-  getHermesBridgeSkill,
-  ensureHermesBridgeSession,
-  hermesBridgeFilesystemSnapshot,
-  hermesBridgeImageDataUrl,
-  hermesBridgeMessagingPlatforms,
   hermesAgentCliAccess,
   hermesBrowserAccess,
-  hermesBridgeSkills,
   primeGeneratedVideoDir,
-  hermesBridgeStatus,
-  hermesBridgeToolsets,
   importHermesBridgeFile,
   importHermesBridgeFileBytes,
   listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
-  openHermesTuiDebug,
   osAccountsUpgrade,
   providerModelSettings,
-  registerBrowserExtensionHost,
-  retryAgentTask,
   revealPath,
-  setHermesAgentCliAccess,
-  setHermesBrowserAccess,
-  setLocalGenerationEnabled,
-  setCostQuality,
-  setVeniceModel,
-  startHermesBridge,
-  submitIssueReport,
-  toggleHermesBridgeSkill,
-  toggleHermesBridgeToolset,
-  updateHermesBridgeMessagingPlatform,
   type AgentTaskDto,
   type AgentTaskStatus,
   type HermesBridgeStatus,
@@ -99,15 +54,9 @@ import {
   browserApprovalRespond,
   browserApprovalsPending,
 } from "../../lib/tauri";
-import {
-  deleteHermesSession,
-  listHermesSessionMessages,
-  listHermesSessions,
-  titleFromPrompt,
-} from "../../lib/hermes-adapter";
+import { listHermesSessionMessages, listHermesSessions } from "../../lib/hermes-adapter";
 import {
   getActiveHermesProfileName,
-  refreshActiveHermesProfile,
   useActiveHermesProfile,
 } from "../../lib/active-hermes-profile";
 import {
@@ -116,55 +65,25 @@ import {
   sessionProfileMap,
 } from "../../lib/session-profile-filter";
 import {
-  AGENT_DELETE_SESSION_EVENT,
   AGENT_GALLERY_EVENT,
-  AGENT_NEW_SESSION_EVENT,
   dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
-  type AgentSessionStatusKind,
 } from "../../lib/agent-events";
+import { markAgentRunSucceeded } from "../../lib/agent-run-monitor";
+import { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
-  cancelAgentRunMonitoring,
-  markAgentRunSucceeded,
-  releaseAgentRunSettlement,
-} from "../../lib/agent-run-monitor";
-import { HermesGatewayClient, type HermesGatewayEvent } from "../../lib/hermes-gateway";
-import {
-  classifyHermesEvent,
   createHermesMethods,
   hermesModeFor,
-  isTerminalHermesEvent,
-  isHermesFeatureSupported,
-  type HermesMode,
   type JuneHermesEvent,
 } from "../../lib/hermes-control-plane";
-import {
-  attachImageToSession,
-  attachmentStateFrom,
-  pendingImageAttachments,
-  type HermesAttachmentState,
-} from "../../lib/hermes-image-attach";
+import { pendingImageAttachments } from "../../lib/hermes-image-attach";
 import { parseSessionUsage, type SessionUsage } from "../../lib/hermes-session-usage";
-import {
-  rememberSessionExchangeTitled,
-  rememberSessionManuallyTitled,
-  rememberSessionTitleRejected,
-  sessionSettledTitleKind,
-} from "../../lib/agent-session-titles";
 import {
   parseCompressSessionResult,
   type CompressSessionResult,
 } from "../../lib/hermes-session-compress";
-import {
-  isBranchableMessageId,
-  parseBranchSessionResult,
-  type BranchSessionResult,
-} from "../../lib/hermes-session-branch";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
-import { buildSessionPayload } from "../../lib/share-payload";
-import { ShareDialog } from "../share/ShareDialog";
-import { recordPositiveFeedbackSent } from "../../lib/referral-nudge";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
@@ -176,66 +95,39 @@ import {
   // `AgentArtifact` (the file-viewer card), so alias it.
   type AgentArtifact as TimelineArtifact,
 } from "../../lib/hermes-artifact-store";
-import { AgentThinking } from "./AgentThinking";
-import { SessionUsagePanel } from "./SessionUsagePanel";
 import { useUsagePanelDemo } from "../../lib/usage-panel-demo";
-import { AgentActivityDrawer, AgentArtifactsSection } from "./AgentActivityDrawer";
-import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
-import { UnsupportedEventNotice } from "./UnsupportedEventNotice";
-import { HermesTracePanel } from "./HermesTracePanel";
-import { ComposerModelPicker, PrivacyModeBadge, heroPrivacyFootnote } from "./composer/ModelPicker";
 import {
   PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
-  dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
   modelSupportsImageInput,
-  modelSupportsTools,
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
-import {
-  MODEL_SWITCH_NEXT_MESSAGE_NOTICE,
-  MODEL_SWITCH_DEFAULT_ONLY_NOTICE,
-} from "../../lib/hermes-model-switch";
 import {
   reserveHermesSessionDispatch,
   type HermesSessionDispatchReservation,
 } from "../../lib/hermes-session-dispatch-mutex";
 import {
   decodeHermesModelSelection,
-  forgetSessionModelSelection,
-  hasPendingSessionModelSelection,
-  hermesModelIdForSelection,
-  migrateSessionModelSelection,
   readSessionModelSelections,
-  stageSessionModelSelection,
   subscribeSessionModelSelections,
-  type SessionModelSelection,
   type SessionModelSelectionMap,
 } from "../../lib/hermes-session-model-selection";
 import {
-  LOCAL_GENERATION_OPTION_ID_PREFIX,
-  isLoopbackUrl,
   localGenerationOptionId,
   unavailableLocalGenerationOption,
   withLocalGenerationOption,
 } from "../../lib/local-generation";
-import { autoPillDesignation, preferredVisionFallbackModel } from "../../lib/suggested-models";
+import { preferredVisionFallbackModel } from "../../lib/suggested-models";
 import {
-  forgetSessionThinkingLevel,
   loadThinkingLevel,
   loadSessionThinkingLevels,
   rememberSessionThinkingLevel,
   saveThinkingLevel,
   thinkingEffortForLevel,
-  thinkingLevelForEffort,
   type ThinkingLevel,
 } from "../../lib/thinking-level";
-import {
-  AUTO_MODEL_ID,
-  modelOptions,
-  selectedModel as selectedModelOption,
-} from "../settings/ModelPickerDialog";
-import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
+import { AUTO_MODEL_ID, selectedModel as selectedModelOption } from "../settings/ModelPickerDialog";
+import { type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
@@ -243,54 +135,22 @@ import {
   isTopUpRequiresMaxError,
   messageFromError,
 } from "../../lib/errors";
-import { clipboardImageFiles } from "../../lib/clipboard-files";
-import { withTimeout } from "../../lib/async-timeout";
 import {
-  MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
-  MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
-} from "../../lib/hermes-messaging";
-import {
-  explicitSkillInvocationPrompt,
-  isPathLikeSlashToken,
-  parseSkillSlashCommands,
-  parseSkillSlashCommandTokens,
-  resolveSkillSlashCommands,
-  skillDocumentLookupName,
-  skillSlashResolutionError,
-} from "../../lib/skill-slash-commands";
-import {
-  isBuiltinComposerSlashCommand,
   parseBuiltinComposerSlashCommand,
   parseSlashFileArguments,
   resolveSlashModel,
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
-import { IMAGE_GENERATION_ENABLED, VIDEO_GENERATION_ENABLED } from "../../lib/feature-flags";
-import { ImageSafeModeConsentDialog } from "./ImageSafeModeConsentDialog";
-import { VideoSafeModeConsentDialog } from "./VideoSafeModeConsentDialog";
-import {
-  ComposerEditor,
-  type ComposerEditorHandle,
-  stripPlaceholder,
-} from "./composer/ComposerEditor";
-import { noteReferenceToken, type NoteReferenceInput } from "./composer/noteReference";
-import { CategoryIcon } from "./composer/CategoryIcon";
-import { REPORT_CATEGORIES, type ReportCategory } from "./composer/reportCategory";
-import { ReportDialog, type ReportDialogAttachment } from "./ReportDialog";
+import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
+import { type ComposerEditorHandle, stripPlaceholder } from "./composer/ComposerEditor";
+import { type NoteReferenceInput } from "./composer/noteReference";
+import { type ReportCategory } from "./composer/reportCategory";
+import { type ReportDialogAttachment } from "./ReportDialog";
 import { hermesConnectionForMode } from "../../lib/hermes-connection";
+import { sessionUnrestricted } from "../../lib/agent-session-modes";
 import {
-  forgetSessionMode,
-  rememberSessionMode,
-  sessionUnrestricted,
-} from "../../lib/agent-session-modes";
-import { hermesTuiDebugAvailable } from "../../lib/hermes-tui-debug";
-import { AGENT_CLI_ACCESS_ENABLED_MESSAGE } from "../../lib/agent-cli-access";
-import { BROWSER_ACCESS_ENABLED_MESSAGE } from "../../lib/browser-access";
-import {
-  appendHermesLiveEvent,
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
-  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   type AgentApprovalChoice,
   type AgentChatPart,
   type AgentChatTurn,
@@ -345,7 +205,6 @@ import type { SubmitHermesSession } from "./session-submission-types";
 import { createSubmitComposer } from "./composer/submit-composer";
 import type { AgentAttachment } from "./agent-workspace-models";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
-import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
 export { SkillsToolsPanel } from "./management/SkillsToolsPanel";
 export {
   envFieldSet,
@@ -396,34 +255,17 @@ const DOWNLOAD_TOAST_ID = "agent-download";
 
 import {
   AGENT_DEV_FILES_EVENT,
-  AGENT_STREAM_DEMO_EVENT,
   COMPOSER_STEER_DEMO_EVENT,
-  SAMPLE_MARKDOWN,
-  STREAM_DEMO_SECTION_LABEL,
   buildSampleArtifactFiles,
   composerSteerDemoDesired,
   galleryDesired,
-  sampleImageDataUrl,
-  setComposerSteerDemoDesired,
-  setGalleryDesired,
-  streamDemoDesired,
-  type AgentStreamDemoDetail,
 } from "./agent-dev-tools";
 import {
-  AGENT_SHORTCUTS,
-  AGENT_SESSION_RENAMED_EVENT,
-  HERO_CHIP_SWAP_MS,
-  HERO_ROTATE_MS,
   HERO_SHORTCUT_COUNT,
-  SANDBOX_OPTIONS,
   advanceHeroGreeting,
   isProvisionalHermesSessionId,
-  makeProvisionalHermesSessionId,
-  rememberUnrestrictedAcknowledged,
   shuffleAgentShortcuts,
-  unrestrictedAcknowledged,
   type AgentPanel,
-  type AgentSessionRenamedDetail,
   type AgentShortcut,
 } from "./agent-workspace-config";
 export {
@@ -440,15 +282,10 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-import type {
-  ImageSafeModeConsentEventPayload,
-  ImageSafeModeConsentRequest,
-} from "./agent-workspace-models";
+import type { ImageSafeModeConsentRequest } from "./agent-workspace-models";
 
 import {
   GATEWAY_CONNECTION_ERROR,
-  SESSION_GONE_MESSAGE,
-  SESSION_NOT_AVAILABLE_MESSAGE,
   agentWorkspaceErrorStateForMessage,
   isSessionGoneError,
   reportableAgentErrorOptions,
@@ -458,53 +295,31 @@ import {
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 import {
-  AttachBlockedError,
   imageSlashTurnsBySessionFromStored,
-  markStoredImageSlashTurnsAttached,
   removeStoredImageSlashSession,
   removeStoredVideoSlashSession,
-  runningImageSlashTurns,
   storedVideoSlashTurns,
   videoSlashTurnsBySessionFromStored,
 } from "./composer/media-slash-persistence";
 import {
-  buildUpNextDemoFollowUps,
   type CapturedSessionModelTarget,
   type PendingAttachmentPreparation,
   type PendingSteer,
-  type PreparedComposerSubmission,
   type QueuedAttachmentFollowUp,
 } from "./composer/follow-up-queue";
 
 import {
-  captureSessionContinuity,
-  clearAgentSessionContinuity,
-  dispatchIssueReportDeliverySettled,
-  issueReportDescription,
-  issueReportSentMessage,
-  messageAfterIssueReportDiagnosisBoundary,
-  moveComposerDraft,
-  forgetComposerDraft,
   persistReviewableIssueReports,
   persistedReviewableIssueReports,
   readAgentSessionContinuity,
-  readComposerDraft,
   rememberComposerDraft,
   sessionComposerDraftKey,
   shouldOpenNewSessionOnMount,
-  writeAgentSessionContinuity,
-  ISSUE_REPORT_DELIVERY_SETTLED_EVENT,
-  ISSUE_REPORT_DIAGNOSIS_REFRESH_TIMEOUT_MS,
-  ISSUE_REPORT_FOLLOW_UP_SUBMIT_FAILED_EVENT,
   NEW_SESSION_DRAFT_KEY,
   NEW_SESSION_RECOVERY_QUEUE_KEY,
   type AgentSessionTitleSource,
   type FileBytesImportOptions,
   type HermesRuntimeSessionResponse,
-  type IssueReportDeliverySettledDetail,
-  type IssueReportDeliveryResult,
-  type IssueReportFollowUpSubmitFailedDetail,
-  type TauriFileDropPayload,
 } from "./agent-session-continuity";
 export {
   recordManualAgentSessionTitle,
@@ -4606,12 +4421,7 @@ export function AgentWorkspace({
     workingSessionIds,
   });
 }
-import {
-  AGENT_TITLE_MAX_CHARS,
-  agentSessionTitleForPrompt,
-  isReplaceableAgentSessionTitle,
-  truncateAgentTitleResponseExcerpt,
-} from "./session-title";
+import { AGENT_TITLE_MAX_CHARS, agentSessionTitleForPrompt } from "./session-title";
 
 function PanelTabs({
   activePanel,
@@ -4653,37 +4463,14 @@ export {
   MessagingPlatformDetail,
 } from "./management/MessagingFilesystemPanels";
 import {
-  AgentResponseGallery,
-  AgentScrollToLatestButton,
   agentComposerClearance,
   chatTurnsSignature,
-  galleryNoop,
-  isAgentTranscriptNearBottom,
   mergeThinkingTurns,
 } from "./chat-turns/TranscriptViews";
 export {
   AgentScrollToLatestButton,
   agentComposerClearance,
 } from "./chat-turns/TranscriptViews";
-import { AgentChatTurnRow, copyableTextForTurn } from "./chat-turns/AgentChatTurnRow";
-/**
- * Confirmation + result dialog for session context compaction (feature 08).
- *
- * Decoupled from the gateway like {@link SessionUsagePanel}: it takes a
- * `compress(sessionId)` that already calls the typed `session.compress` wrapper
- * and returns a normalized {@link CompressSessionResult}. That keeps the dialog
- * trivially testable and lets AgentWorkspace own the gateway plumbing.
- *
- * The flow is three honest phases:
- * - `idle`: explain what compaction does. The copy never claims the original
- *   transcript is kept verbatim; it warns "Older messages may be summarized."
- * - `working`: the compress call is in flight; the action shows a busy label.
- * - `done` / `error`: on success, a "Context compacted" item (plus token
- *   savings when the result reports before/after). On failure, a clear message
- *   — and a busy-specific one when Hermes rejects mid-run with 4009 — with a
- *   "Try again". Nothing crashes and no savings are invented.
- */
-import { AgentErrorBanner, SessionCompactDialog } from "./chat-turns/SessionNotices";
 export { SessionCompactDialog } from "./chat-turns/SessionNotices";
 function visibleAgentWorkspaceError(
   error: AgentWorkspaceError | null,
@@ -4709,11 +4496,6 @@ export {
   ClarifyPart,
 } from "./chat-turns/AgentActionCards";
 import { BrowserApprovalCard } from "./chat-turns/AgentActionCards";
-import {
-  isLiveAssistantTurnId,
-  liveAssistantBranchPointIndex,
-  previousBranchableMessageIndex,
-} from "./chat-turns/BranchAndSensitiveActions";
 export {
   BranchFromHereAction,
   SecretPart,
@@ -4721,17 +4503,11 @@ export {
   branchSourceSessionIdForTurn,
   turnIsConcreteResponse,
 } from "./chat-turns/BranchAndSensitiveActions";
-import {
-  AgentArtifactPanel,
-  type AgentArtifact,
-  type AgentArtifactPanelState,
-} from "./chat-turns/AgentArtifactPanel";
+import { type AgentArtifact, type AgentArtifactPanelState } from "./chat-turns/AgentArtifactPanel";
 import {
   artifactsFromFilesystemSnapshot,
   assignArtifactsToTurns,
   composerInputSignatureFor,
-  formatComposerTokenCount,
-  promptWithAttachments,
   surfacedArtifactsFromTurns,
   type ComposerInputSizeWarning,
 } from "./composer/composer-input-helpers";
@@ -4745,8 +4521,6 @@ import {
   retainUnpersistedPendingMessages,
   sessionHasAssistantAfterLatestUser,
   sessionHasActiveWork,
-  shouldResumeSessionActivity,
-  visibleHermesMessageText,
   type AgentActivityLevelProjection,
 } from "./session-state-helpers";
 export {
@@ -4754,24 +4528,16 @@ export {
   type AgentActivityLevelProjection,
 } from "./session-state-helpers";
 import {
-  ActivityIndicator,
   AgentAttachmentTile,
   DownloadToastMessage,
-  commandTokensForResolutions,
   ensureDownloadFileExtension,
-  isResolvedSkillSlashResolution,
-  moveRecordKey,
   omitRecordKey,
   readFileBytes,
 } from "./agent-workspace-support";
 import {
-  AUTO_SUBMIT_ECHO_WINDOW_MS,
-  clearPendingNewSessionRequest,
   forgetLastOpenSessionId,
-  pendingNewSessionRequest,
   readLastOpenSessionId,
   writeLastOpenSessionId,
-  type AgentNewSessionDetail,
 } from "./session-persistence";
 export {
   markAgentNewSessionPending,
