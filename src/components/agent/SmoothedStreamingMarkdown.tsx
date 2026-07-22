@@ -44,6 +44,23 @@ function markdownLine(line: string): { content: string; quoteDepth: number } {
   return { content, quoteDepth };
 }
 
+// Return the raw-string offset after the last newline-terminated line that
+// the renderer treats as blank. Scanning the original text preserves offsets
+// across CRLF, while markdownLine also recognizes blank lines inside quotes.
+// An unterminated whitespace-only tail stays editable and is not yet stable.
+function lastStableBlankLineEnd(text: string): number {
+  let lastBoundary = 0;
+  let lineStart = 0;
+  for (;;) {
+    const newline = text.indexOf("\n", lineStart);
+    if (newline < 0) return lastBoundary;
+    if (markdownLine(text.slice(lineStart, newline)).content === "") {
+      lastBoundary = newline + 1;
+    }
+    lineStart = newline + 1;
+  }
+}
+
 // A bare block prefix can still become a heading, list, quote, or thematic
 // break when the next delta arrives. Keep only that editable final line back;
 // once content follows, the renderer's block branch is stable.
@@ -265,11 +282,10 @@ function holdbackDecision(text: string): HoldbackDecision {
   const fences = fenceState(text);
   if (fences.open) return { safeEnd: text.length, disableWordFade: false };
 
-  // Only the tail after the last blank line can still be open — earlier
+  // Only the tail after the last stable blank line can still be open — earlier
   // paragraphs are already flushed and parsed. A completed fence is also a
   // hard block boundary, even when following prose starts on the next line.
-  const lastBreak = text.lastIndexOf("\n\n");
-  const segmentStart = Math.max(lastBreak < 0 ? 0 : lastBreak + 2, fences.afterLastClosed);
+  const segmentStart = Math.max(lastStableBlankLineEnd(text), fences.afterLastClosed);
   const segment = text.slice(segmentStart);
 
   const blockAt = pendingBlockPrefixStart(segment);

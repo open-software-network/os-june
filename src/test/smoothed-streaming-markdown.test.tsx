@@ -267,6 +267,15 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.querySelector("blockquote p")?.textContent).toBe("Following prose");
   });
 
+  it("reveals later paragraphs across renderer-recognized blank lines", () => {
+    const markdown = "before *open\r\n \t\r\nNext paragraph";
+    const view = render(<SmoothedStreamingMarkdown markdown={markdown} running />);
+
+    expect(
+      [...view.container.querySelectorAll("p")].map((paragraph) => paragraph.textContent),
+    ).toEqual(["before *open", "Next paragraph"]);
+  });
+
   it("withholds an incomplete trailing construct until it closes, never flashing the syntax", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="" running />);
@@ -439,6 +448,10 @@ describe("holdbackSafeEnd", () => {
       "> ***\n> Following prose",
       ">> ***\n>> Following prose",
       "***Item",
+      "before *open\r\n\r\nNext paragraph",
+      "before *open\n \t \nNext paragraph",
+      "> before *open\n>\n> Next paragraph",
+      ">> before *open\n>> \t\n>> Next paragraph",
     ];
 
     for (const target of targets) {
@@ -449,6 +462,28 @@ describe("holdbackSafeEnd", () => {
         previous = current;
       }
     }
+  });
+
+  it.each([
+    ["CRLF", "before *open\r\n\r\nNext paragraph"],
+    ["whitespace-only", "before *open\n \t \nNext paragraph"],
+    ["quoted", "> before *open\n>\n> Next paragraph"],
+    ["nested quoted", ">> before *open\n>> \t\n>> Next paragraph"],
+  ])("reveals unmatched inline openers before a %s blank line", (_label, text) => {
+    expect(holdbackSafeEnd(text)).toBe(text.length);
+  });
+
+  it("preserves raw offsets after a CRLF whitespace-only blank line", () => {
+    const stablePrefix = "before *open\r\n \t\r\nAfter ";
+    const text = `${stablePrefix}\`open`;
+
+    expect(holdbackSafeEnd(text)).toBe(stablePrefix.length);
+  });
+
+  it("does not treat an unterminated whitespace-only tail as a stable blank line", () => {
+    const text = "before *open\n \t";
+
+    expect(holdbackSafeEnd(text)).toBe("before ".length);
   });
 
   it("holds ambiguous block prefixes on the editable final line", () => {
