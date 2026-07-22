@@ -29,6 +29,16 @@ pub const CALENDAR_EVENTS: &str = "https://www.googleapis.com/auth/calendar.even
 pub const LINEAR_READ: &str = "read";
 pub const LINEAR_WRITE: &str = "write";
 
+/// GitHub June-side grant markers. These are NOT provider OAuth scopes —
+/// GitHub App user tokens carry no per-grant scope; what a token can do is
+/// determined by the app's configured permissions and the installation's
+/// repository selection, not by scopes requested at authorization. These
+/// markers are stored in `connector_accounts.scopes` as June-side enforcement
+/// signals: the proxy uses them to gate write-capable routes, mirroring how
+/// Linear's selected-teams grant is a June-internal enforcement boundary.
+pub const GITHUB_READ: &str = "read";
+pub const GITHUB_WRITE: &str = "write";
+
 pub const BASELINE_SCOPES: &[&str] = &[OPENID, EMAIL];
 
 /// Feature bundle a connect (or scope escalation) request asks for. Wire
@@ -46,6 +56,8 @@ pub enum ScopeBundle {
     CalendarEvents,
     LinearRead,
     LinearWrite,
+    GithubRead,
+    GithubWrite,
 }
 
 impl ScopeBundle {
@@ -61,6 +73,10 @@ impl ScopeBundle {
             ScopeBundle::CalendarEvents => &[CALENDAR_EVENTS],
             ScopeBundle::LinearRead => &[LINEAR_READ],
             ScopeBundle::LinearWrite => &[LINEAR_WRITE],
+            // GitHub June-side markers (not provider OAuth scopes — see the
+            // GITHUB_READ / GITHUB_WRITE constants above).
+            ScopeBundle::GithubRead => &[GITHUB_READ],
+            ScopeBundle::GithubWrite => &[GITHUB_WRITE],
         }
     }
 
@@ -75,6 +91,8 @@ impl ScopeBundle {
             ScopeBundle::CalendarEvents => "calendar_events",
             ScopeBundle::LinearRead => "linear_read",
             ScopeBundle::LinearWrite => "linear_write",
+            ScopeBundle::GithubRead => "github_read",
+            ScopeBundle::GithubWrite => "github_write",
         }
     }
 
@@ -88,6 +106,8 @@ impl ScopeBundle {
             "calendar_events" => Some(ScopeBundle::CalendarEvents),
             "linear_read" => Some(ScopeBundle::LinearRead),
             "linear_write" => Some(ScopeBundle::LinearWrite),
+            "github_read" => Some(ScopeBundle::GithubRead),
+            "github_write" => Some(ScopeBundle::GithubWrite),
             _ => None,
         }
     }
@@ -104,6 +124,7 @@ impl ScopeBundle {
             | ScopeBundle::CalendarRead
             | ScopeBundle::CalendarEvents => ConnectorProvider::Google,
             ScopeBundle::LinearRead | ScopeBundle::LinearWrite => ConnectorProvider::Linear,
+            ScopeBundle::GithubRead | ScopeBundle::GithubWrite => ConnectorProvider::Github,
         }
     }
 }
@@ -135,6 +156,23 @@ pub fn requested_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
 /// baseline - identity comes from a GraphQL viewer query, not OIDC.
 pub fn requested_linear_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
     let mut scopes: Vec<&'static str> = vec![LINEAR_READ];
+    for bundle in bundles {
+        for scope in bundle.scopes() {
+            if !scopes.contains(scope) {
+                scopes.push(scope);
+            }
+        }
+    }
+    scopes
+}
+
+/// Full scope set to store as June-side grant markers for a GitHub connect.
+/// `read` always leads (read access is implicit in every GitHub App install);
+/// `write` is added when a GithubWrite bundle is present. These are
+/// June-internal markers only — no provider OAuth scopes are requested on the
+/// GitHub authorize URL (GitHub Apps ignore scope parameters).
+pub fn requested_github_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
+    let mut scopes: Vec<&'static str> = vec![GITHUB_READ];
     for bundle in bundles {
         for scope in bundle.scopes() {
             if !scopes.contains(scope) {
@@ -323,11 +361,14 @@ mod tests {
             ScopeBundle::CalendarEvents,
             ScopeBundle::LinearRead,
             ScopeBundle::LinearWrite,
+            ScopeBundle::GithubRead,
+            ScopeBundle::GithubWrite,
         ] {
             assert_eq!(ScopeBundle::from_name(bundle.name()), Some(bundle));
         }
         assert_eq!(ScopeBundle::from_name("gmail"), None);
         assert_eq!(ScopeBundle::from_name("linear"), None);
+        assert_eq!(ScopeBundle::from_name("github"), None);
     }
 
     #[test]
@@ -345,6 +386,43 @@ mod tests {
         for bundle in [ScopeBundle::LinearRead, ScopeBundle::LinearWrite] {
             assert_eq!(bundle.provider(), ConnectorProvider::Linear);
         }
+        for bundle in [ScopeBundle::GithubRead, ScopeBundle::GithubWrite] {
+            assert_eq!(bundle.provider(), ConnectorProvider::Github);
+        }
+    }
+
+    #[test]
+    fn requested_github_scopes_always_lead_with_read() {
+        // Read-only: just read.
+        assert_eq!(
+            requested_github_scopes(&[ScopeBundle::GithubRead]),
+            vec![GITHUB_READ]
+        );
+        // Write-only request: read leads, write follows.
+        assert_eq!(
+            requested_github_scopes(&[ScopeBundle::GithubWrite]),
+            vec![GITHUB_READ, GITHUB_WRITE]
+        );
+        // Both: deduped, read first.
+        assert_eq!(
+            requested_github_scopes(&[ScopeBundle::GithubRead, ScopeBundle::GithubWrite]),
+            vec![GITHUB_READ, GITHUB_WRITE]
+        );
+        // Empty bundles: still leads with read.
+        assert_eq!(requested_github_scopes(&[]), vec![GITHUB_READ]);
+    }
+
+    #[test]
+    fn github_write_escalation_keeps_read_marker() {
+        // Adding write to an account that already has read must union them,
+        // not replace read. The grant markers use the same string values as
+        // LINEAR_READ/LINEAR_WRITE ("read"/"write") but are for the github
+        // provider.
+        let existing = owned(&[GITHUB_READ]);
+        let requested = requested_github_scopes(&[ScopeBundle::GithubWrite]);
+        let resolved = resolve_granted_scopes(None, &requested, Some(&existing));
+        assert!(resolved.contains(&GITHUB_READ.to_string()));
+        assert!(resolved.contains(&GITHUB_WRITE.to_string()));
     }
 
     #[test]

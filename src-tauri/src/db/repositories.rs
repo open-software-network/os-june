@@ -1621,15 +1621,24 @@ impl Repositories {
         profile: &str,
         folder_id: Option<String>,
     ) -> Result<NoteDto, sqlx::error::Error> {
-        let now = timestamp();
         let id = Uuid::new_v4().to_string();
+        self.create_note_with_id(profile, folder_id, &id).await
+    }
+
+    pub async fn create_note_with_id(
+        &self,
+        profile: &str,
+        folder_id: Option<String>,
+        id: &str,
+    ) -> Result<NoteDto, sqlx::error::Error> {
+        let now = timestamp();
 
         let mut tx = self.pool.begin().await?;
         query(
-            "INSERT INTO notes (id, title, processing_status, profile, created_at, updated_at)
+            "INSERT OR IGNORE INTO notes (id, title, processing_status, profile, created_at, updated_at)
              VALUES (?, '', 'draft', ?, ?, ?)",
         )
-        .bind(&id)
+        .bind(id)
         .bind(profile)
         .bind(&now)
         .bind(&now)
@@ -1647,7 +1656,7 @@ impl Repositories {
                  SELECT ?, id, ? FROM folders
                  WHERE id = ? AND profile = ? AND deleted_at IS NULL",
             )
-            .bind(&id)
+            .bind(id)
             .bind(&now)
             .bind(folder_id)
             .bind(profile)
@@ -1656,7 +1665,7 @@ impl Repositories {
         }
 
         tx.commit().await?;
-        self.get_note(&id).await
+        self.get_note(id).await
     }
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
@@ -2862,6 +2871,42 @@ impl Repositories {
         tx.commit().await
     }
 
+    /// Deletes a deterministic meeting-start draft only while it is still the
+    /// untouched row created by native startup. The conditional update takes
+    /// SQLite's write lock before deletion so a concurrent user edit cannot
+    /// pass the check and then be removed.
+    pub async fn delete_untouched_draft(&self, note_id: &str) -> Result<bool, sqlx::error::Error> {
+        let mut tx = self.pool.begin().await?;
+        let claimed = query(
+            "UPDATE notes
+             SET processing_status = 'failed'
+             WHERE id = ?
+               AND processing_status = 'draft'
+               AND updated_at = created_at
+               AND title = ''
+               AND COALESCE(generated_content, '') = ''
+               AND COALESCE(edited_content, '') = ''
+               AND NOT EXISTS (SELECT 1 FROM note_folders WHERE note_id = ?)
+               AND NOT EXISTS (
+                 SELECT 1 FROM share_keys WHERE item_kind = 'note' AND item_id = ?
+               )",
+        )
+        .bind(note_id)
+        .bind(note_id)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            == 1;
+        if !claimed {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        delete_note_records(&mut tx, note_id).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn delete_notes(&self, note_ids: &[String]) -> Result<(), sqlx::error::Error> {
         let mut tx = self.pool.begin().await?;
         for note_id in note_ids {
@@ -3289,6 +3334,73 @@ impl Repositories {
             );
         }
         Ok(())
+    }
+
+    /// Publishes every row required to recover a newly started capture in one
+    /// transaction. Capture itself is already live when this runs, so callers
+    /// must stop it if this transaction fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_recording_start(
+        &self,
+        note_id: &str,
+        session_id: &str,
+        source_mode: RecordingSourceMode,
+        partial_path: &str,
+        final_path: &str,
+        device_label: Option<String>,
+        sources: &[(String, String, String)],
+    ) -> Result<(), sqlx::error::Error> {
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        query(
+            "INSERT INTO recording_sessions (id, note_id, source_mode, status, started_at, expected_elapsed_ms, device_label, permission_state, partial_path, final_path)
+             VALUES (?, ?, ?, 'recording', ?, 0, ?, 'granted', ?, ?)",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .bind(source_mode.as_db())
+        .bind(&now)
+        .bind(device_label)
+        .bind(partial_path)
+        .bind(final_path)
+        .execute(&mut *tx)
+        .await?;
+        query(
+            "UPDATE notes
+             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             WHERE id = ?
+               AND processing_status NOT IN ('transcribing', 'generating')",
+        )
+        .bind(&now)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+        query(
+            "INSERT INTO recording_checkpoints (id, recording_session_id, kind, created_at, details)
+             VALUES (?, ?, 'start', ?, NULL)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(session_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        for (source, source_partial_path, source_final_path) in sources {
+            query(
+                "INSERT INTO audio_artifacts
+                 (id, note_id, recording_session_id, source, partial_path, path, format, duration_ms, size_bytes, checksum, status, expected_duration_ms, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 'wav', 0, 0, '', 'recording', 0, ?)",
+            )
+            .bind(Uuid::new_v4().to_string())
+            .bind(note_id)
+            .bind(session_id)
+            .bind(source)
+            .bind(source_partial_path)
+            .bind(source_final_path)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await
     }
 
     pub async fn recording_session_source_mode(
@@ -5981,6 +6093,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_note_with_id_replays_the_same_note() {
+        let repos = test_repositories().await;
+
+        let first = repos
+            .create_note_with_id("default", None, "meeting-note-1")
+            .await
+            .expect("create deterministic note");
+        let replay = repos
+            .create_note_with_id("default", None, "meeting-note-1")
+            .await
+            .expect("replay deterministic note");
+        let count: i64 = query("SELECT COUNT(*) AS count FROM notes WHERE id = ?")
+            .bind("meeting-note-1")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count deterministic notes")
+            .get("count");
+
+        assert_eq!(replay.id, first.id);
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn meeting_start_cleanup_preserves_a_changed_draft() {
+        let repos = test_repositories().await;
+        let untouched = repos
+            .create_note_with_id("default", None, "untouched-meeting-draft")
+            .await
+            .expect("create untouched draft");
+        assert!(repos
+            .delete_untouched_draft(&untouched.id)
+            .await
+            .expect("delete untouched draft"));
+        assert!(repos.get_note(&untouched.id).await.is_err());
+
+        let changed = repos
+            .create_note_with_id("default", None, "changed-meeting-draft")
+            .await
+            .expect("create changed draft");
+        repos
+            .update_note(
+                &changed.id,
+                Some("Keep my meeting note".to_string()),
+                Some("User-authored notes".to_string()),
+                None,
+            )
+            .await
+            .expect("edit meeting draft");
+
+        assert!(!repos
+            .delete_untouched_draft(&changed.id)
+            .await
+            .expect("preserve changed draft"));
+        let preserved = repos.get_note(&changed.id).await.expect("preserved note");
+        assert_eq!(preserved.title, "Keep my meeting note");
+        assert_eq!(
+            preserved.edited_content.as_deref(),
+            Some("User-authored notes")
+        );
+    }
+
+    #[tokio::test]
     async fn calendar_event_titles_only_untouched_notes_and_hydrates_context() {
         let repos = test_repositories().await;
         let untouched = repos.create_note("default", None).await.expect("note");
@@ -6171,6 +6345,182 @@ mod tests {
             pipeline_version: "pipeline-v1".to_string(),
             configuration_fingerprint: "config-v1".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn recording_start_atomically_creates_recovery_state() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        let sources = vec![
+            (
+                "microphone".to_string(),
+                "/tmp/microphone.partial.wav".to_string(),
+                "/tmp/microphone.wav".to_string(),
+            ),
+            (
+                "system".to_string(),
+                "/tmp/system.partial.wav".to_string(),
+                "/tmp/system.wav".to_string(),
+            ),
+        ];
+
+        repos
+            .create_recording_start(
+                &note.id,
+                "atomic-session",
+                RecordingSourceMode::MicrophonePlusSystem,
+                "/tmp/combined.partial.wav",
+                "/tmp/combined.wav",
+                Some("Studio microphone".to_string()),
+                &sources,
+            )
+            .await
+            .expect("create recording recovery state");
+
+        let session = query(
+            "SELECT note_id, source_mode, status, device_label, partial_path, final_path
+             FROM recording_sessions WHERE id = ?",
+        )
+        .bind("atomic-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("recording session");
+        assert_eq!(session.get::<String, _>("note_id"), note.id);
+        assert_eq!(
+            session.get::<String, _>("source_mode"),
+            "microphone_plus_system"
+        );
+        assert_eq!(session.get::<String, _>("status"), "recording");
+        assert_eq!(
+            session.get::<Option<String>, _>("device_label").as_deref(),
+            Some("Studio microphone")
+        );
+        assert_eq!(
+            session.get::<Option<String>, _>("partial_path").as_deref(),
+            Some("/tmp/combined.partial.wav")
+        );
+        assert_eq!(
+            session.get::<Option<String>, _>("final_path").as_deref(),
+            Some("/tmp/combined.wav")
+        );
+
+        let checkpoints = query(
+            "SELECT kind FROM recording_checkpoints
+             WHERE recording_session_id = ? ORDER BY created_at, id",
+        )
+        .bind("atomic-session")
+        .fetch_all(&repos.pool)
+        .await
+        .expect("recording checkpoints");
+        assert_eq!(checkpoints.len(), 1);
+        assert_eq!(checkpoints[0].get::<String, _>("kind"), "start");
+
+        let artifacts = query(
+            "SELECT source, partial_path, path, status FROM audio_artifacts
+             WHERE recording_session_id = ? ORDER BY source",
+        )
+        .bind("atomic-session")
+        .fetch_all(&repos.pool)
+        .await
+        .expect("source artifacts");
+        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts[0].get::<String, _>("source"), "microphone");
+        assert_eq!(
+            artifacts[0]
+                .get::<Option<String>, _>("partial_path")
+                .as_deref(),
+            Some("/tmp/microphone.partial.wav")
+        );
+        assert_eq!(artifacts[0].get::<String, _>("path"), "/tmp/microphone.wav");
+        assert_eq!(artifacts[0].get::<String, _>("status"), "recording");
+        assert_eq!(artifacts[1].get::<String, _>("source"), "system");
+        assert_eq!(
+            artifacts[1]
+                .get::<Option<String>, _>("partial_path")
+                .as_deref(),
+            Some("/tmp/system.partial.wav")
+        );
+        assert_eq!(artifacts[1].get::<String, _>("path"), "/tmp/system.wav");
+        assert_eq!(artifacts[1].get::<String, _>("status"), "recording");
+
+        let updated_note = repos.get_note(&note.id).await.expect("updated note");
+        assert_eq!(updated_note.processing_status, ProcessingStatus::Recording);
+        assert_eq!(updated_note.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn recording_start_rolls_back_every_row_when_a_source_insert_fails() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        let existing_error = "Keep this note state after rollback";
+        repos
+            .set_note_status(
+                &note.id,
+                ProcessingStatus::Failed,
+                Some(existing_error.to_string()),
+            )
+            .await
+            .expect("set initial note state");
+        query(
+            "CREATE TRIGGER reject_system_recording_start
+             BEFORE INSERT ON audio_artifacts
+             WHEN NEW.source = 'system'
+             BEGIN SELECT RAISE(ABORT, 'rejected system artifact for test'); END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("create rejection trigger");
+        let sources = vec![
+            (
+                "microphone".to_string(),
+                "/tmp/microphone.partial.wav".to_string(),
+                "/tmp/microphone.wav".to_string(),
+            ),
+            (
+                "system".to_string(),
+                "/tmp/system.partial.wav".to_string(),
+                "/tmp/system.wav".to_string(),
+            ),
+        ];
+
+        let result = repos
+            .create_recording_start(
+                &note.id,
+                "rolled-back-session",
+                RecordingSourceMode::MicrophonePlusSystem,
+                "/tmp/combined.partial.wav",
+                "/tmp/combined.wav",
+                None,
+                &sources,
+            )
+            .await;
+
+        let error = result.expect_err("system artifact trigger should abort the transaction");
+        assert!(error
+            .to_string()
+            .contains("rejected system artifact for test"));
+        let session_count: i64 =
+            query("SELECT COUNT(*) AS count FROM recording_sessions WHERE id = ?")
+                .bind("rolled-back-session")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("count rolled-back recording sessions")
+                .get("count");
+        assert_eq!(session_count, 0, "recording session should be rolled back");
+        for table in ["recording_checkpoints", "audio_artifacts"] {
+            let statement =
+                format!("SELECT COUNT(*) AS count FROM {table} WHERE recording_session_id = ?");
+            let count: i64 = query(&statement)
+                .bind("rolled-back-session")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("count rolled-back rows")
+                .get("count");
+            assert_eq!(count, 0, "{table} rows should be rolled back");
+        }
+        let unchanged_note = repos.get_note(&note.id).await.expect("unchanged note");
+        assert_eq!(unchanged_note.processing_status, ProcessingStatus::Failed);
+        assert_eq!(unchanged_note.last_error.as_deref(), Some(existing_error));
     }
 
     #[tokio::test]

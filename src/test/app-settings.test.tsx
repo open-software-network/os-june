@@ -428,14 +428,28 @@ describe("AppSettings", () => {
                 id: "kimi-k2-6",
                 name: "Kimi K2.6",
                 modelType: "text",
-                description: "Open-weights model built for long tool-driven tasks.",
+                description: "Private multimodal model built for long tool-driven tasks.",
                 privacy: "private",
                 priceUnit: "tokens",
                 inputCreditsPerMillionTokens: 850,
                 outputCreditsPerMillionTokens: 4660,
                 contextTokens: 256000,
                 traits: [],
-                capabilities: ["supportsFunctionCalling"],
+                capabilities: ["supportsFunctionCalling", "supportsVision"],
+              },
+              {
+                provider: "venice",
+                id: "kimi-k3",
+                name: "Kimi K3",
+                modelType: "text",
+                description: "Multimodal reasoning model built for long tool-driven tasks.",
+                privacy: "anonymized",
+                priceUnit: "tokens",
+                inputCreditsPerMillionTokens: 3750,
+                outputCreditsPerMillionTokens: 18750,
+                contextTokens: 1000000,
+                traits: [],
+                capabilities: ["supportsFunctionCalling", "supportsVision"],
               },
               {
                 provider: "venice",
@@ -2518,12 +2532,10 @@ describe("AppSettings", () => {
       const systemAudioRow = screen.getByText("System audio").closest(".settings-row");
       expect(systemAudioRow).not.toBeNull();
       expect(within(systemAudioRow as HTMLElement).getByLabelText("Available")).toBeInTheDocument();
-      await userEvent.click(
-        within(systemAudioRow as HTMLElement).getByRole("button", {
-          name: "Open sound settings",
-        }),
-      );
-      expect(onEnableSystemAudio).toHaveBeenCalledTimes(1);
+      // Windows has no per-app system-audio permission to grant, so the row
+      // is informational only: the "Open sound settings" action is not rendered.
+      expect(within(systemAudioRow as HTMLElement).queryByRole("button")).not.toBeInTheDocument();
+      expect(onEnableSystemAudio).not.toHaveBeenCalled();
 
       await userEvent.click(screen.getByRole("tab", { name: "Audio" }));
       await userEvent.click(
@@ -4055,6 +4067,7 @@ describe("AppSettings", () => {
     // section, not the suggested rows.
     expect(await screen.findByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /GLM 5\.1/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Kimi K3/ })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Kimi K2\.6/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Auto/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /Venice Uncensored/ })).not.toBeInTheDocument();

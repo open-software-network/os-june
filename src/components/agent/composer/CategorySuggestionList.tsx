@@ -7,9 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { Icon3dBoxTop } from "central-icons/Icon3dBoxTop";
 import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
-import { IconConsoleSimple } from "central-icons/IconConsoleSimple";
+import { IconCat } from "central-icons/IconCat";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconVideoClip } from "central-icons/IconVideoClip";
 
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandDef } from "../../../lib/agent-composer-slash-commands";
@@ -308,9 +310,14 @@ function commandItemDetailDescription(item: ComposerSlashCommandItem) {
 }
 
 function commandItemIcon(item: Extract<ComposerSlashCommandItem, { kind: "builtin" }>) {
-  return item.command.name === "file" ? (
-    <IconFileText size={16} aria-hidden />
-  ) : (
-    <IconConsoleSimple size={16} aria-hidden />
-  );
+  switch (item.command.name) {
+    case "model":
+      return <Icon3dBoxTop size={16} aria-hidden />;
+    case "file":
+      return <IconFileText size={16} aria-hidden />;
+    case "image":
+      return <IconCat size={16} aria-hidden />;
+    case "video":
+      return <IconVideoClip size={16} aria-hidden />;
+  }
 }

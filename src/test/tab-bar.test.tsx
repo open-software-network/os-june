@@ -118,6 +118,71 @@ describe("TabBar", () => {
     expect(appCss).not.toContain("var(--control-md) + var(--sp-2) -");
   });
 
+  it("overrides the titlebar control clearance on Windows so the toggle sits at the left edge", () => {
+    const rule = cssRuleFor('.app-shell[data-platform="windows"]');
+
+    // Windows has no traffic lights — the macOS 70px clearance must be zeroed
+    // so the toggle's `left` (and the collapsed tab strip's `padding-left`,
+    // which reads the same tokens) moves to the left edge together.
+    expect(rule).toContain("--titlebar-controls-end: 0px;");
+    expect(rule).toContain("--titlebar-controls-gap: var(--sp-3);");
+    // The vertical nudge is a macOS-specific tweak and must not be overridden
+    // here — the defect is horizontal only.
+    expect(rule).not.toContain("--titlebar-controls-nudge");
+  });
+
+  it("places the Windows sidebar toggle in the sidebar header band when expanded", () => {
+    const toggleRule = cssRuleFor(
+      '.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"])\n> .chrome-sidebar-toggle',
+    );
+
+    // Vertically aligned with the sidebar header (flush at the top, --sp-3).
+    expect(toggleRule).toContain("top: var(--sp-3)");
+    // Horizontally rides the animated sidebar edge, floored at --sp-3.
+    expect(toggleRule).toContain("var(--sidebar-w-current)");
+    expect(toggleRule).toContain("var(--control-md)");
+    expect(toggleRule).toContain("var(--sp-3)");
+    expect(toggleRule).toContain("var(--sp-1)");
+    // macOS keeps the fixed calc(var(--titlebar-controls-end) + …) left; the
+    // Windows override must not reintroduce that token on the toggle.
+    expect(toggleRule).not.toContain("--titlebar-controls-end");
+  });
+
+  it("reclaims the titlebar top padding on Windows so the sidebar sits flush", () => {
+    const sidebarRule = cssRuleFor(
+      '.app-shell[data-platform="windows"] .sidebar[data-mode="default"]',
+    );
+
+    // No traffic lights on Windows — the 28px titlebar-h top padding is dead
+    // space. Override to --sp-3 so the header sits flush at the top.
+    expect(sidebarRule).toContain("padding-top: var(--sp-3)");
+    // Must not create a stacking context — raising the sidebar above
+    // z-index:100 would put it above session usage overlays.
+    expect(sidebarRule).not.toContain("z-index");
+    expect(sidebarRule).not.toContain("position: relative");
+  });
+
+  it("pushes the titlebar drag region past the sidebar on Windows", () => {
+    const dragRule = cssRuleFor('.app-shell[data-platform="windows"] .titlebar-drag');
+
+    // The drag region's left edge rides the animated sidebar width so it never
+    // covers the sidebar (keeping the logo link and recording indicator
+    // interactive) without raising the sidebar's z-index above overlays.
+    expect(dragRule).toContain("left: var(--sidebar-w-current)");
+  });
+
+  it("reserves a trailing header slot on Windows for the fixed sidebar toggle", () => {
+    const headerRule = cssRuleFor(
+      '.app-shell[data-platform="windows"] .sidebar[data-mode="default"] .sidebar-header',
+    );
+
+    // The reserved padding accounts for the toggle width + a gap so the
+    // recording indicator (or the brand) doesn't sit under the fixed toggle.
+    expect(headerRule).toContain("var(--control-md)");
+    expect(headerRule).toContain("var(--sp-2)");
+    expect(headerRule).toContain("var(--sp-1)");
+  });
+
   it("keeps the tab strip full-width when the files panel is open", () => {
     const panelRule = cssRuleFor(
       '.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel',

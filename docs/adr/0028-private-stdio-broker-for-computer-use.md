@@ -261,3 +261,19 @@ screen coordinates using the selected window's complete bounds. Every show and
 move is bound to the current task epoch. Stop increments that epoch and hides
 the panel before helper teardown so queued notifications cannot make an old
 cursor reappear.
+
+## Addendum - macOS Screen Recording responsible app (2026-07-21)
+
+This addendum corrects the earlier statement that both TCC grants attach to the
+nested helper identity. Accessibility attaches to `June Computer Use Driver`,
+but macOS attributes Screen Recording to the signed outer June app that launches
+the helper. The helper's preflight observes that responsible-app grant, and its
+native request creates the outer June entry in System Settings.
+
+June therefore opens the matching privacy pane before requesting the next
+missing grant. Opening first gives immediate feedback while the helper starts
+and probes TCC in the background. Accessibility setup names and, when needed,
+offers the nested helper as a drag source. Screen Recording setup names the
+outer June app and never tells the user to add the helper to that list. The
+private transport, helper parent authentication, capture execution, and
+app-owned broker policy are unchanged.

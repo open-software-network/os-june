@@ -4,11 +4,11 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_start_timeout_error, capture_status_for_recovery, finish_active_capture,
-            finish_capture, is_capture_active, microphone_device_available, microphone_device_hint,
-            microphone_permission_state, pause_capture, resume_capture, start_capture_with_cancel,
-            CaptureRecoverySnapshot, CaptureStartHandshake, CaptureStartState, StartedRecording,
-            CAPTURE_START_TIMEOUT,
+            capture_start_timeout_error, capture_status_for_recovery, current_status,
+            finish_active_capture, finish_capture, is_capture_active, microphone_device_available,
+            microphone_device_hint, microphone_permission_state, pause_capture, resume_capture,
+            start_capture_with_cancel, CaptureRecoverySnapshot, CaptureStartHandshake,
+            CaptureStartState, StartedRecording, CAPTURE_START_TIMEOUT,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -44,11 +44,13 @@ use crate::{
             ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest,
             ShareInviteKeyDto, ShareInviteKeySaveRequest, ShareInviteKeysGetRequest,
             ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest,
-            ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto, StartRecordingRequest,
-            SubmitIssueReportRequest, SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto,
+            StartMeetingRecordingRequest, StartRecordingRequest, SubmitIssueReportRequest,
+            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
+    meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},
 };
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -64,7 +66,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{sync::OnceCell, time::sleep};
 
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
@@ -75,6 +77,109 @@ static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_
 // once per native process or a second bootstrap could reset a genuinely live
 // job from running back to pending.
 static TRANSCRIPTION_STARTUP_REPAIR: OnceCell<()> = OnceCell::const_new();
+
+/// Owns a newly published capture until every required database row exists.
+/// If startup returns early or its future is cancelled, dropping this guard
+/// stops the capture and removes its unpublished audio files. This prevents a
+/// persistence error from leaving an invisible microphone stream running.
+struct CaptureStartupGuard {
+    session_id: String,
+    paths: AppPaths,
+    audio_paths: Vec<PathBuf>,
+    armed: bool,
+}
+
+impl CaptureStartupGuard {
+    fn new(paths: &AppPaths, started: &StartedRecording) -> Self {
+        let mut audio_paths = vec![started.partial_path.clone(), started.final_path.clone()];
+        for source in &started.sources {
+            audio_paths.push(source.partial_path.clone());
+            audio_paths.push(source.final_path.clone());
+        }
+        Self {
+            session_id: started.session_id.clone(),
+            paths: paths.clone(),
+            audio_paths,
+            armed: true,
+        }
+    }
+
+    fn rollback(&mut self) {
+        self.rollback_with(|session_id| finish_capture(session_id).map(|_| ()));
+    }
+
+    fn rollback_with<F>(&mut self, stop_capture: F)
+    where
+        F: FnOnce(&str) -> Result<(), AppError>,
+    {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        if let Err(error) = stop_capture(&self.session_id) {
+            eprintln!(
+                "failed to stop recording {} after startup persistence error; preserving unpublished audio because shutdown was not confirmed: {}",
+                self.session_id, error.message
+            );
+            return;
+        }
+        for path in &self.audio_paths {
+            if let Err(error) = self.paths.remove_recording_file(path) {
+                eprintln!(
+                    "failed to remove unpublished recording audio {}: {}",
+                    path.display(),
+                    error
+                );
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CaptureStartupGuard {
+    fn drop(&mut self) {
+        self.rollback();
+    }
+}
+
+struct MeetingStartCompletionGuard<'a> {
+    state: &'a MeetingStartRequestState,
+    request_id: String,
+    finished: bool,
+}
+
+impl<'a> MeetingStartCompletionGuard<'a> {
+    fn new(state: &'a MeetingStartRequestState, request_id: String) -> Self {
+        Self {
+            state,
+            request_id,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self, outcome: MeetingStartRecordingOutcome) -> Result<(), AppError> {
+        self.state.finish_start(&self.request_id, outcome)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for MeetingStartCompletionGuard<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        if let Err(error) = self.state.fail_start_if_running(&self.request_id) {
+            eprintln!(
+                "failed to mark interrupted meeting start {}: {}",
+                self.request_id, error.message
+            );
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
@@ -91,9 +196,13 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
     // tasks, so it must run before they are flipped to paused.
     repos.complete_agent_tasks_with_assistant_messages().await?;
     repos.pause_running_agent_tasks_on_launch().await?;
-    let active_recoveries = scan_recoverable_recordings(&repos.pool)
+    let active_recording = current_status();
+    let mut active_recoveries = scan_recoverable_recordings(&repos.pool)
         .await
         .map_err(|error| AppError::new("recovery_scan_failed", error.to_string()))?;
+    if let Some(active) = &active_recording {
+        active_recoveries.retain(|recovery| recovery.session_id != active.session_id);
+    }
     for recovery in &active_recoveries {
         repos
             .mark_recording_recoverable(&recovery.session_id, &recovery.note_id)
@@ -112,6 +221,7 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
         folders,
         notes,
         active_recoveries,
+        active_recording,
         provider_configured: crate::providers::provider_configured(),
     })
 }
@@ -1444,9 +1554,129 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn start_meeting_recording(
+    app: AppHandle,
+    state: State<'_, MeetingStartRequestState>,
+    request: StartMeetingRecordingRequest,
+) -> Result<MeetingStartRecordingOutcome, AppError> {
+    // The guard spans the full native operation. A second webview invocation
+    // for the same retained request waits for the first one, then reads its
+    // cached terminal outcome instead of touching the active capture.
+    let _start_guard = state.lock_start().await;
+    if let Some(outcome) = state.finished_outcome(&request.request_id)? {
+        return Ok(outcome);
+    }
+
+    let note_id = match state.begin_start_now(&request.request_id) {
+        Ok(note_id) => note_id,
+        Err(error) if error.code == "meeting_start_expired" => {
+            let outcome = MeetingStartRecordingOutcome::Failed { error };
+            state.finish_start(&request.request_id, outcome.clone())?;
+            return Ok(outcome);
+        }
+        Err(error) => return Err(error),
+    };
+    let mut completion =
+        MeetingStartCompletionGuard::new(state.inner(), request.request_id.clone());
+
+    let outcome =
+        match execute_meeting_recording(app, &note_id, request.source_mode.unwrap_or_default())
+            .await
+        {
+            Ok((note, recording)) => MeetingStartRecordingOutcome::Started {
+                note: Box::new(note),
+                recording: Box::new(recording),
+            },
+            Err(error) => MeetingStartRecordingOutcome::Failed { error },
+        };
+    completion.finish(outcome.clone())?;
+    Ok(outcome)
+}
+
+async fn execute_meeting_recording(
+    app: AppHandle,
+    note_id: &str,
+    requested_source_mode: RecordingSourceMode,
+) -> Result<(NoteDto, RecordingSessionDto), AppError> {
+    let repos = repositories(&app).await?;
+    let profile = active_profile(&app);
+    let note = repos
+        .create_note_with_id(&profile, None, note_id)
+        .await
+        .map_err(AppError::from)?;
+
+    let result = async {
+        // Match the ordinary recorder's graceful fallback: system audio is an
+        // enhancement, while the microphone remains the required source.
+        let readiness =
+            tokio::task::spawn_blocking(move || recording_source_readiness(requested_source_mode))
+                .await
+                .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))?;
+        let system_ready = readiness
+            .sources
+            .iter()
+            .find(|source| source.source == RecordingSource::System)
+            .map_or(true, |source| source.ready);
+        let source_mode = if requested_source_mode == RecordingSourceMode::MicrophonePlusSystem
+            && !system_ready
+        {
+            RecordingSourceMode::MicrophoneOnly
+        } else {
+            requested_source_mode
+        };
+
+        start_recording_inner(
+            app,
+            StartRecordingRequest {
+                note_id: note.id.clone(),
+                source_mode: Some(source_mode),
+            },
+            false,
+        )
+        .await
+    }
+    .await;
+    match result {
+        Ok(recording) => Ok((note, recording)),
+        Err(error) => {
+            // The startup guard stops any partially published capture before
+            // returning an error. Keep the ownership check defensive so a
+            // future recoverable outcome can never delete real user data.
+            let active_capture_owns_note = current_status()
+                .and_then(|status| status.note_id)
+                .is_some_and(|active_note_id| active_note_id == note.id);
+            if !active_capture_owns_note {
+                match repos.delete_untouched_draft(&note.id).await {
+                    Ok(true) => {}
+                    Ok(false) => eprintln!(
+                        "preserved changed meeting-start draft {} after startup error",
+                        note.id
+                    ),
+                    Err(delete_error) => {
+                        eprintln!(
+                            "failed to delete meeting-start draft {} after startup error: {}",
+                            note.id, delete_error
+                        );
+                    }
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
 pub async fn start_recording(
     app: AppHandle,
     request: StartRecordingRequest,
+) -> Result<RecordingSessionDto, AppError> {
+    start_recording_inner(app, request, true).await
+}
+
+async fn start_recording_inner(
+    app: AppHandle,
+    request: StartRecordingRequest,
+    finish_existing_capture: bool,
 ) -> Result<RecordingSessionDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
@@ -1488,7 +1718,14 @@ pub async fn start_recording(
             ));
         }
     }
-    finish_active_capture_before_start(&repos).await?;
+    if finish_existing_capture {
+        finish_active_capture_before_start(&repos).await?;
+    } else if is_capture_active() {
+        return Err(AppError::new(
+            "recording_already_active",
+            "Another recording is already running.",
+        ));
+    }
     let capture_paths = paths.clone();
     let capture_note_id = note.id.clone();
     let calendar_app = app.clone();
@@ -1496,49 +1733,36 @@ pub async fn start_recording(
         start_capture_with_cancel(app, &capture_paths, capture_note_id, source_mode, abandoned)
     })
     .await?;
-    repos
-        .create_recording_session(
+    let mut startup_guard = CaptureStartupGuard::new(&paths, &started);
+    let source_rows = started
+        .sources
+        .iter()
+        .map(|source| {
+            (
+                source.source.as_db().to_string(),
+                source.partial_path.to_string_lossy().into_owned(),
+                source.final_path.to_string_lossy().into_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if let Err(error) = repos
+        .create_recording_start(
             &note.id,
             &started.session_id,
             source_mode,
             &started.partial_path.to_string_lossy(),
             &started.final_path.to_string_lossy(),
             started.device_label.clone(),
+            &source_rows,
         )
-        .await?;
-    let calendar_repos = repos.clone();
-    let calendar_note_id = note.id.clone();
-    let expected_title = note.title.clone();
-    let recording_started_at = Utc::now();
-    tokio::spawn(async move {
-        let enrichment = crate::meeting_calendar_context::enrich_note_for_recording(
-            &calendar_app,
-            calendar_repos.clone(),
-            calendar_note_id.clone(),
-            expected_title,
-            recording_started_at,
-        )
-        .await;
-        match enrichment {
-            Ok(true) => match calendar_repos.get_note(&calendar_note_id).await {
-                Ok(mut note) => {
-                    note.queued_recordings = processing_queue::queued_behind(&calendar_note_id);
-                    let _ = calendar_app.emit(
-                        crate::meeting_calendar_context::NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
-                        note,
-                    );
-                }
-                Err(error) => {
-                    eprintln!("calendar context was saved but could not be reloaded: {error}")
-                }
-            },
-            Ok(false) => {}
-            Err(error) => eprintln!(
-                "calendar context lookup failed without interrupting recording: {}: {}",
-                error.code, error.message
-            ),
-        }
-    });
+        .await
+    {
+        startup_guard.rollback();
+        return Err(error.into());
+    }
+    // The capture now has all rows required for reload/recovery. Optional
+    // diagnostics below must not roll it back if their future is cancelled.
+    startup_guard.disarm();
     if let Err(error) = repos
         .add_checkpoint(
             &started.session_id,
@@ -1594,17 +1818,39 @@ pub async fn start_recording(
             );
         }
     }
-    for source in &started.sources {
-        repos
-            .create_pending_source_artifact(
-                &note.id,
-                &started.session_id,
-                source.source.as_db(),
-                &source.partial_path.to_string_lossy(),
-                &source.final_path.to_string_lossy(),
-            )
-            .await?;
-    }
+    let calendar_repos = repos.clone();
+    let calendar_note_id = note.id.clone();
+    let expected_title = note.title.clone();
+    let recording_started_at = Utc::now();
+    tokio::spawn(async move {
+        let enrichment = crate::meeting_calendar_context::enrich_note_for_recording(
+            &calendar_app,
+            calendar_repos.clone(),
+            calendar_note_id.clone(),
+            expected_title,
+            recording_started_at,
+        )
+        .await;
+        match enrichment {
+            Ok(true) => match calendar_repos.get_note(&calendar_note_id).await {
+                Ok(mut note) => {
+                    note.queued_recordings = processing_queue::queued_behind(&calendar_note_id);
+                    let _ = calendar_app.emit(
+                        crate::meeting_calendar_context::NOTE_CALENDAR_CONTEXT_UPDATED_EVENT,
+                        note,
+                    );
+                }
+                Err(error) => {
+                    eprintln!("calendar context was saved but could not be reloaded: {error}")
+                }
+            },
+            Ok(false) => {}
+            Err(error) => eprintln!(
+                "calendar context lookup failed without interrupting recording: {}: {}",
+                error.code, error.message
+            ),
+        }
+    });
     Ok(RecordingSessionDto {
         id: started.session_id,
         note_id: note.id,
@@ -3255,7 +3501,8 @@ mod tests {
         delete_profile_records_with_share_revoker, is_share_not_found, load_memory_settings,
         persist_memory_settings, recovery_validation_expected_duration_ms,
         should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
-        update_memory_with_settings, validated_folder_instructions, MEMORY_SETTINGS_LOCK,
+        update_memory_with_settings, validated_folder_instructions, CaptureStartupGuard,
+        MEMORY_SETTINGS_LOCK,
     };
 
     #[test]
@@ -3274,6 +3521,7 @@ mod tests {
         )));
     }
     use crate::{
+        app_paths::AppPaths,
         audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
         db::repositories::{Repositories, ShareKeyRecord},
         domain::types::{
@@ -3755,6 +4003,64 @@ mod tests {
 
         let started = result.expect("published capture is a success, not a timeout");
         assert_eq!(started.session_id, "published-session");
+    }
+
+    #[test]
+    fn capture_startup_guard_removes_unpublished_audio_after_shutdown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
+        let session_dir = paths
+            .recording_session_dir("note-1", "guard-session")
+            .expect("session dir");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let partial_path = session_dir.join("microphone.partial.wav");
+        let final_path = session_dir.join("microphone.wav");
+        std::fs::write(&partial_path, b"partial audio").expect("write partial audio");
+        std::fs::write(&final_path, b"final audio").expect("write final audio");
+        let mut started = fake_started_recording("guard-session");
+        started.partial_path = partial_path.clone();
+        started.final_path = final_path.clone();
+        started.sources[0].partial_path = partial_path.clone();
+        started.sources[0].final_path = final_path.clone();
+
+        let mut guard = CaptureStartupGuard::new(&paths, &started);
+        guard.rollback_with(|session_id| {
+            assert_eq!(session_id, "guard-session");
+            Ok(())
+        });
+
+        assert!(!partial_path.exists());
+        assert!(!final_path.exists());
+    }
+
+    #[test]
+    fn capture_startup_guard_preserves_audio_when_shutdown_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_data_dir(temp.path().join("data")).expect("app paths");
+        let session_dir = paths
+            .recording_session_dir("note-1", "guard-session")
+            .expect("session dir");
+        std::fs::create_dir_all(&session_dir).expect("create session dir");
+        let partial_path = session_dir.join("microphone.partial.wav");
+        let final_path = session_dir.join("microphone.wav");
+        std::fs::write(&partial_path, b"partial audio").expect("write partial audio");
+        std::fs::write(&final_path, b"final audio").expect("write final audio");
+        let mut started = fake_started_recording("guard-session");
+        started.partial_path = partial_path.clone();
+        started.final_path = final_path.clone();
+        started.sources[0].partial_path = partial_path.clone();
+        started.sources[0].final_path = final_path.clone();
+
+        let mut guard = CaptureStartupGuard::new(&paths, &started);
+        guard.rollback_with(|_| {
+            Err(AppError::new(
+                "recording_stop_failed",
+                "Capture shutdown was not confirmed.",
+            ))
+        });
+
+        assert!(partial_path.exists());
+        assert!(final_path.exists());
     }
 
     #[tokio::test]

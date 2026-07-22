@@ -74,6 +74,7 @@ import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
 import { Spinner } from "../components/ui/Spinner";
 import {
+  acknowledgeMeetingStartRequest,
   assignNoteToFolder,
   assignSessionToFolder,
   bootstrapApp,
@@ -100,6 +101,7 @@ import {
   osAccountsLogout,
   osAccountsOpenPortal,
   pauseRecording,
+  pendingMeetingStartRequest,
   removeNoteFromFolder,
   removeSessionFromFolder,
   recoverRecording,
@@ -109,6 +111,7 @@ import {
   resumeRecording,
   retryProcessing,
   setSessionCompleted,
+  startMeetingRecording,
   startRecording,
   updateNote,
   agentHudHide,
@@ -119,7 +122,7 @@ import {
 } from "../lib/tauri";
 import { playRecordingSound, preloadRecordingSounds } from "../lib/recording-sounds";
 import { preloadAgentSounds } from "../lib/agent-sounds";
-import { isMacLikePlatform, isPrimaryShortcut } from "../lib/platform";
+import { isMacLikePlatform, isPrimaryShortcut, isWindowsPlatform } from "../lib/platform";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
@@ -300,6 +303,9 @@ const ROUTINE_RUN_NOTIFY_POLL_MS = 15000;
 const ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS = 1000;
 const SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS = 120_000;
+const MEETING_START_LISTENER_RETRY_DELAYS_MS = [250, 1_000, 5_000] as const;
+const MEETING_START_REQUEST_EXPIRED_MESSAGE =
+  "Recording did not start in time. Open meeting notes and select Record to try again.";
 const COMPOSER_FUNDING_DISABLED_REASON =
   "Add credits to send messages or generate images and videos.";
 const RECORDING_FUNDING_DISABLED_REASON =
@@ -630,6 +636,8 @@ export function App() {
   // Remember which profile started each lookup so a late result cannot upsert
   // an old-profile note into whichever profile is visible when it arrives.
   const calendarContextNoteProfilesRef = useRef(new Map<string, string>());
+  const calendarContextNoteUpdatesRef = useRef(new Map<string, NoteDto>());
+  const pendingCalendarContextAdoptionsRef = useRef(new Set<string>());
   // Reactive mirror of recordingNoteIdRef. The ref serves the async finish/HUD
   // paths that need the latest value synchronously; this state drives render
   // decisions — which note shows the in-note RecorderBar, and whether the
@@ -1142,10 +1150,14 @@ export function App() {
     });
   }, []);
   const selectedNote = state.selectedNote;
+  const selectedNoteId = selectedNote?.id;
+  const selectedNoteLiveTranscript = useMemo(
+    () => liveTranscriptEvents.filter((event) => event.noteId === selectedNoteId),
+    [liveTranscriptEvents, selectedNoteId],
+  );
   const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
     selectedNote?.sourceTranscripts ?? [],
   );
-  const selectedNoteId = selectedNote?.id;
   // The contextual Ask June panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
   // open note changes (below) so it never flies out onto a different or
@@ -1531,6 +1543,9 @@ export function App() {
       const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
       calendarContextNoteProfilesRef.current.delete(event.payload.id);
       if (noteProfile !== getActiveHermesProfileName()) return;
+      if (pendingCalendarContextAdoptionsRef.current.delete(event.payload.id)) {
+        calendarContextNoteUpdatesRef.current.set(event.payload.id, event.payload);
+      }
       dispatch({ type: "noteUpdated", note: event.payload });
     }).then((cleanup) => {
       if (aborted) cleanup();
@@ -2510,6 +2525,20 @@ export function App() {
       .then(async (payload) => {
         const seeded = withFakeRecovery(payload);
         dispatch({ type: "bootstrapLoaded", payload: seeded.payload });
+        const activeRecording = seeded.payload.activeRecording;
+        const activeRecordingNoteId = activeRecording?.noteId;
+        if (activeRecording) {
+          recordingStatusRef.current = activeRecording;
+          dispatch({ type: "recordingStatusChanged", status: activeRecording });
+          if (activeRecordingNoteId) {
+            calendarContextNoteProfilesRef.current.set(
+              activeRecordingNoteId,
+              getActiveHermesProfileName(),
+            );
+            pendingCalendarContextAdoptionsRef.current.add(activeRecordingNoteId);
+            setRecordingNote(activeRecordingNoteId);
+          }
+        }
         if (seeded.fakeNote) {
           dispatch({ type: "noteLoaded", note: seeded.fakeNote });
           // The fake-recovery dev flow inspects the notes list, so it skips
@@ -2518,19 +2547,22 @@ export function App() {
           setBootstrapped(true);
           return;
         }
-        // The app lands on the agent view, but a note is still selected
-        // up-front: the menu-bar meeting-start event records into the
-        // selected note without any further user input.
-        if (seeded.payload.notes.length === 0) {
+        // The app lands on the agent view, but a note is still selected up
+        // front. After a webview reload, a live native capture takes priority
+        // so its recorder controls and note association are restored.
+        if (seeded.payload.notes.length === 0 && !activeRecordingNoteId) {
           const note = await createNote(undefined);
           dispatch({ type: "noteLoaded", note });
           setBootstrapped(true);
           return;
         }
-        const firstNoteId = seeded.payload.notes[0]?.id;
+        const firstNoteId = activeRecordingNoteId ?? seeded.payload.notes[0]?.id;
         if (firstNoteId) {
           const note = await getNote(firstNoteId);
-          dispatch({ type: "noteLoaded", note });
+          const calendarUpdate = calendarContextNoteUpdatesRef.current.get(firstNoteId);
+          calendarContextNoteUpdatesRef.current.delete(firstNoteId);
+          pendingCalendarContextAdoptionsRef.current.delete(firstNoteId);
+          dispatch({ type: "noteLoaded", note: calendarUpdate ?? note });
         }
         setBootstrapped(true);
       })
@@ -3541,50 +3573,108 @@ export function App() {
     await handleStartRecordingForNote(selectedNoteId);
   }, [handleStartRecordingForNote, selectedNoteId]);
 
-  const handleStartMeetingDetectedRecording = useCallback(async () => {
-    if (fundingRequired) {
-      setError(RECORDING_FUNDING_DISABLED_REASON);
-      return;
-    }
-    if (recordingStartInFlightRef.current || recordingStatusRef.current) return;
-    recordingStartInFlightRef.current = true;
-    const previousNoteId = selectedNoteId;
-    let handedStartClaimToRecorder = false;
-    try {
-      const note = await createNote(undefined);
-      dispatch({ type: "noteLoaded", note });
-      setOriginFolderId(undefined);
-      setOriginAllNotes(false);
-      setActiveView("meetings");
-      handedStartClaimToRecorder = true;
-      const started = await handleStartRecordingForNote(note.id, {
-        startAlreadyClaimed: true,
-      });
-      if (started) return;
+  const meetingStartReadyRef = useRef(false);
+  const meetingStartListenerRegisteredRef = useRef(false);
+  const drainPendingMeetingStartRef = useRef<() => void>(() => {});
+  meetingStartReadyRef.current = !appBlocked && bootstrapped;
 
+  const handleStartMeetingDetectedRecording = useCallback(
+    async (requestId: string, noteId: string) => {
+      if (fundingRequired) {
+        revealMainWindowForMeetingStartError();
+        setError(RECORDING_FUNDING_DISABLED_REASON);
+        return true;
+      }
+      const competingRecording = recordingStatusRef.current;
+      if (recordingStartInFlightRef.current || competingRecording?.state === "starting") {
+        return false;
+      }
+      if (competingRecording) return true;
+      calendarContextNoteProfilesRef.current.set(noteId, getActiveHermesProfileName());
+      pendingCalendarContextAdoptionsRef.current.add(noteId);
+      recordingStartInFlightRef.current = true;
+      setCheckingSourceReadiness(true);
       try {
-        await deleteNote(note.id);
-      } catch (deleteErr) {
-        console.warn("Failed to delete note after recording start failed", deleteErr);
-      }
-      const response = await listNotes();
-      dispatch({ type: "notesLoaded", notes: response.items });
-      const restoreNoteId =
-        previousNoteId && previousNoteId !== note.id ? previousNoteId : response.items[0]?.id;
-      if (restoreNoteId) {
-        const restored = await getNote(restoreNoteId);
-        dispatch({ type: "noteLoaded", note: restored });
-      } else {
-        handleEmptyNotesAfterDelete();
-      }
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      if (!handedStartClaimToRecorder) {
+        const outcome = await startMeetingRecording(requestId, sourceMode);
+        if (!meetingStartReadyRef.current || !meetingStartListenerRegisteredRef.current) {
+          return false;
+        }
+        if (outcome.status === "failed") {
+          calendarContextNoteProfilesRef.current.delete(noteId);
+          pendingCalendarContextAdoptionsRef.current.delete(noteId);
+          calendarContextNoteUpdatesRef.current.delete(noteId);
+          revealMainWindowForMeetingStartError();
+          if (outcome.error.code === "meeting_start_expired") {
+            setError(MEETING_START_REQUEST_EXPIRED_MESSAGE);
+          } else {
+            setError(messageFromError(outcome.error));
+          }
+          if (outcome.error.code === "microphone_permission_missing") {
+            void checkRecordingSourceReadiness(sourceMode)
+              .then((readiness) =>
+                setSourceReadiness((previous) => mergeSourceReadiness(previous, readiness)),
+              )
+              .catch(() => undefined);
+          }
+          // A reload can briefly bootstrap the deterministic draft while the
+          // native start is still running. Refresh after a terminal failure so
+          // native cleanup cannot leave that now-deleted draft visible.
+          try {
+            const previousNoteId = selectedNoteIdRef.current;
+            const response = await listNotes();
+            dispatch({ type: "notesLoaded", notes: response.items });
+            const restoreNoteId = response.items.some((note) => note.id === previousNoteId)
+              ? previousNoteId
+              : response.items[0]?.id;
+            if (restoreNoteId) {
+              const restored = await getNote(restoreNoteId);
+              dispatch({ type: "noteLoaded", note: restored });
+            } else {
+              const currentView = activeViewRef.current;
+              if (
+                currentView === "meetings" ||
+                currentView === "notes" ||
+                currentView === "all-notes"
+              ) {
+                setActiveView("notes");
+              }
+              setOriginFolderId(undefined);
+              setOriginAllNotes(false);
+              setFolderReturnTarget(undefined);
+            }
+          } catch {
+            // The terminal error is already visible and native owns cleanup;
+            // a later notes refresh will reconcile this best-effort view.
+          }
+          return true;
+        }
+
+        const { note, recording } = outcome;
+        const calendarUpdate = calendarContextNoteUpdatesRef.current.get(note.id);
+        calendarContextNoteUpdatesRef.current.delete(note.id);
+        pendingCalendarContextAdoptionsRef.current.delete(note.id);
+        dispatch({ type: "noteLoaded", note: calendarUpdate ?? note });
+        setOriginFolderId(undefined);
+        setOriginAllNotes(false);
+        setActiveView("meetings");
+        setRecordingNote(note.id);
+        const status = recordingToStatus(recording);
+        recordingStatusRef.current = status;
+        dispatch({
+          type: "recordingStatusChanged",
+          status,
+        });
+        playRecordingSound("start");
+        return true;
+      } catch {
+        return false;
+      } finally {
         recordingStartInFlightRef.current = false;
+        setCheckingSourceReadiness(false);
       }
-    }
-  }, [fundingRequired, handleStartRecordingForNote, selectedNoteId]);
+    },
+    [fundingRequired, setRecordingNote, sourceMode],
+  );
 
   const handleStartAgentRecording = useCallback(
     async (requestedSourceMode: RecordingSourceMode) => {
@@ -3666,21 +3756,124 @@ export function App() {
     }
   }, []);
 
+  // Native retains the request and its terminal result until this webview
+  // explicitly acknowledges it. Reloads can therefore replay the same token
+  // without creating a second note or restarting an active capture.
+  const meetingStartHandlerRef = useRef<(requestId: string, noteId: string) => Promise<boolean>>(
+    async () => false,
+  );
+  meetingStartHandlerRef.current = handleStartMeetingDetectedRecording;
+
+  useEffect(() => {
+    if (appBlocked || !bootstrapped) return;
+    drainPendingMeetingStartRef.current();
+  }, [appBlocked, bootstrapped]);
+
   useEffect(() => {
     let aborted = false;
     let unlisten: (() => void) | undefined;
-    void listen(MEETING_START_TRANSCRIPTION_EVENT, () => {
-      if (appBlocked || !bootstrapped) return;
-      void handleStartMeetingDetectedRecording();
-    }).then((cleanup) => {
-      if (aborted) cleanup();
-      else unlisten = cleanup;
-    });
+    let listenerRetryTimer: number | undefined;
+    let drainRetryTimer: number | undefined;
+    let drainRunning = false;
+    let drainAgain = false;
+
+    const scheduleDrainRetry = () => {
+      if (aborted || drainRetryTimer !== undefined) return;
+      drainRetryTimer = window.setTimeout(() => {
+        drainRetryTimer = undefined;
+        drainPendingRequest();
+      }, 500);
+    };
+
+    function drainPendingRequest() {
+      if (!meetingStartReadyRef.current || !meetingStartListenerRegisteredRef.current) return;
+      if (drainRunning) {
+        drainAgain = true;
+        return;
+      }
+      drainRunning = true;
+      void (async () => {
+        let shouldRetry = false;
+        try {
+          const request = await pendingMeetingStartRequest();
+          if (
+            aborted ||
+            !meetingStartReadyRef.current ||
+            !meetingStartListenerRegisteredRef.current ||
+            !request
+          ) {
+            return;
+          }
+          if (request.expired) {
+            revealMainWindowForMeetingStartError();
+            setError(MEETING_START_REQUEST_EXPIRED_MESSAGE);
+            const acknowledged = await acknowledgeMeetingStartRequest(request.requestId);
+            shouldRetry = !acknowledged;
+            return;
+          }
+          const terminal = await meetingStartHandlerRef.current(request.requestId, request.noteId);
+          if (
+            aborted ||
+            !meetingStartReadyRef.current ||
+            !meetingStartListenerRegisteredRef.current
+          ) {
+            return;
+          }
+          if (!terminal) {
+            shouldRetry = true;
+            return;
+          }
+          const acknowledged = await acknowledgeMeetingStartRequest(request.requestId);
+          shouldRetry = !acknowledged;
+        } catch {
+          shouldRetry = true;
+        } finally {
+          drainRunning = false;
+          if (!aborted) {
+            if (drainAgain) {
+              drainAgain = false;
+              drainPendingRequest();
+            } else if (shouldRetry) {
+              scheduleDrainRetry();
+            }
+          }
+        }
+      })();
+    }
+    drainPendingMeetingStartRef.current = drainPendingRequest;
+
+    const register = (attempt = 0) => {
+      void listen(MEETING_START_TRANSCRIPTION_EVENT, drainPendingRequest)
+        .then((cleanup) => {
+          if (aborted) {
+            cleanup();
+            return;
+          }
+          unlisten = cleanup;
+          meetingStartListenerRegisteredRef.current = true;
+          drainPendingRequest();
+        })
+        .catch((error) => {
+          if (!aborted) {
+            console.warn("Failed to register the meeting start listener; retrying.", error);
+            const retryDelay =
+              MEETING_START_LISTENER_RETRY_DELAYS_MS[
+                Math.min(attempt, MEETING_START_LISTENER_RETRY_DELAYS_MS.length - 1)
+              ];
+            listenerRetryTimer = window.setTimeout(() => register(attempt + 1), retryDelay);
+          }
+        });
+    };
+
+    register();
     return () => {
       aborted = true;
+      meetingStartListenerRegisteredRef.current = false;
+      if (listenerRetryTimer !== undefined) window.clearTimeout(listenerRetryTimer);
+      if (drainRetryTimer !== undefined) window.clearTimeout(drainRetryTimer);
       unlisten?.();
     };
-  }, [appBlocked, bootstrapped, handleStartMeetingDetectedRecording]);
+  }, []);
 
   // The handler closes over frequently-changing state, but the Tauri listener
   // must register exactly once: re-subscribing tears the listener down and
@@ -4135,6 +4328,7 @@ export function App() {
   return (
     <main
       className="app-shell"
+      data-platform={isWindowsPlatform() ? "windows" : undefined}
       data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
       data-sidebar-resizing={sidebarResizing ? "true" : "false"}
       data-sidebar-transition={sidebarTransition}
@@ -4741,6 +4935,7 @@ export function App() {
                   >
                     <NoteEditor
                       note={selectedNote}
+                      transcriptScrollRef={noteDetailScrollRef}
                       folders={state.folders}
                       recordingStatus={
                         selectedNoteId === recordingNoteId ? state.recordingStatus : undefined
@@ -4766,9 +4961,7 @@ export function App() {
                       recoveryBlockedReason={
                         fundingRequired ? RECOVERY_FUNDING_DISABLED_REASON : undefined
                       }
-                      liveTranscript={liveTranscriptEvents.filter(
-                        (event) => event.noteId === selectedNoteId,
-                      )}
+                      liveTranscript={selectedNoteLiveTranscript}
                       sourceMode={sourceMode}
                       sourceReadiness={sourceReadiness}
                       recovery={selectedRecovery}
@@ -5305,6 +5498,11 @@ function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     .startDragging()
     // biome-ignore lint/suspicious/noConsole: surfacing a drag failure is a deliberate diagnostic
     .catch((error: unknown) => console.warn("Failed to start window drag", error));
+}
+
+function revealMainWindowForMeetingStartError() {
+  const main = getCurrentWindow();
+  void Promise.allSettled([main.show(), main.unminimize(), main.setFocus()]);
 }
 
 function isDeniedPermission(state?: string) {
