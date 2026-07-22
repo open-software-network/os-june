@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createComposerPreparation } from "./composer/composer-preparation";
 import { renderAgentWorkspaceLayout } from "./AgentWorkspaceLayout";
 import { renderAgentDetailContent } from "./AgentDetailContent";
 import { renderAgentComposer } from "./composer/AgentComposer";
@@ -3068,108 +3069,6 @@ export function AgentWorkspace({
     toast.dismiss(SESSION_BUSY_TOAST_ID);
   }, [selectedHermesSessionId, workingSessionIds]);
 
-  async function prepareComposerSubmission(
-    message: string,
-    messageAttachments: AgentAttachment[],
-  ): Promise<PreparedComposerSubmission> {
-    const parsed = parseSkillSlashCommands(message);
-    const commandTokens = commandTokensForResolutions(
-      parsed.commandNames,
-      parseSkillSlashCommandTokens(message),
-    );
-    if (!parsed.commandNames.length) {
-      const content = promptWithAttachments(message, messageAttachments);
-      return {
-        displayContent: content,
-        runtimeContent: content,
-        titleContent: message,
-        typedMessage: message,
-      };
-    }
-
-    const availableSkills = await loadSkillCommands();
-    const resolutions = resolveSkillSlashCommands(parsed.commandNames, availableSkills);
-    const pathLikePromptIndex = resolutions.findIndex(
-      (resolution, index) =>
-        resolution.status !== "resolved" && isPathLikeSlashToken(commandTokens[index]?.name ?? ""),
-    );
-    if (pathLikePromptIndex === 0) {
-      const content = promptWithAttachments(message, messageAttachments);
-      return {
-        displayContent: content,
-        runtimeContent: content,
-        titleContent: message,
-        typedMessage: message,
-      };
-    }
-
-    const skillResolutions =
-      pathLikePromptIndex === -1 ? resolutions : resolutions.slice(0, pathLikePromptIndex);
-    const problem = skillResolutions.find((resolution) => resolution.status !== "resolved");
-    if (problem) {
-      throw new Error(skillSlashResolutionError(problem) ?? "Skill command failed.");
-    }
-
-    const typedMessage =
-      pathLikePromptIndex === -1
-        ? parsed.prompt.trim()
-        : message.slice(commandTokens[pathLikePromptIndex].from).trimStart();
-    if (!typedMessage && !messageAttachments.length) {
-      throw new Error("Add a request after the skill command.");
-    }
-
-    const resolved = skillResolutions.filter(isResolvedSkillSlashResolution);
-    const documents = await Promise.all(
-      resolved.map(async (resolution) => ({
-        ...(await getHermesBridgeSkill(skillDocumentLookupName(resolution.skill.name))),
-        name: resolution.skill.name,
-      })),
-    );
-    const displayContent = promptWithAttachments(typedMessage, messageAttachments);
-    return {
-      displayContent,
-      runtimeContent: explicitSkillInvocationPrompt(documents, displayContent),
-      titleContent: typedMessage,
-      typedMessage,
-    };
-  }
-
-  async function handleBuiltinComposerSlashCommand(
-    commandText: string,
-    modelTarget?: CapturedSessionModelTarget,
-    dispatchReservation?: HermesSessionDispatchReservation,
-  ) {
-    if (categoryRef.current) return false;
-    const parsed = parseBuiltinComposerSlashCommand(commandText);
-    if (!parsed) return false;
-
-    if (parsed.name === "model") {
-      await runModelSlashCommand(parsed.argument, commandText, modelTarget);
-      return true;
-    }
-
-    if (parsed.name === "image") {
-      if (!IMAGE_GENERATION_ENABLED) {
-        setError("Image generation is not available.");
-        return true;
-      }
-      await runImageSlashCommand(parsed.argument, commandText, modelTarget, dispatchReservation);
-      return true;
-    }
-
-    if (parsed.name === "video") {
-      if (!VIDEO_GENERATION_ENABLED) {
-        setError("Video generation is not available.");
-        return true;
-      }
-      await runVideoSlashCommand(parsed.argument, commandText, modelTarget, dispatchReservation);
-      return true;
-    }
-
-    await runFileSlashCommand(parsed.argument, commandText);
-    return true;
-  }
-
   function updateImageSlashPart(
     sessionId: string,
     assistantTurnId: string,
@@ -3304,6 +3203,17 @@ export function AgentWorkspace({
     updateVideoSlashPart,
     videoSlashBaseTurnId,
   });
+
+  const { prepareComposerSubmission, handleBuiltinComposerSlashCommand } =
+    createComposerPreparation({
+      categoryRef,
+      loadSkillCommands,
+      runFileSlashCommand,
+      runImageSlashCommand,
+      runModelSlashCommand,
+      runVideoSlashCommand,
+      setError,
+    });
 
   if (testOnlySlashCommandEntriesRef) {
     testOnlySlashCommandEntriesRef.current = {
