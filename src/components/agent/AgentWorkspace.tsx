@@ -11233,9 +11233,9 @@ export function AgentWorkspace({
               if (name !== "model") return false;
               // The slash row commits on mousedown. Mounting the palette in
               // that same event lets its window-level outside-click listener
-              // observe the now-removed row and close immediately. Let the
-              // originating pointer or keyboard event finish first.
-              window.requestAnimationFrame(() => openComposerModelPicker(true));
+              // observe the now-removed row and close immediately. Queue the
+              // palette for the next task, after that pointer or keyboard event.
+              window.setTimeout(() => openComposerModelPicker(true), 0);
               return true;
             }}
             onReady={(editor) => {
