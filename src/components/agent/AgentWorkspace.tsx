@@ -11221,6 +11221,15 @@ export function AgentWorkspace({
               );
             }}
             onSubmit={() => void submit()}
+            onBuiltinSlashCommand={(name) => {
+              if (name !== "model") return false;
+              // The slash row commits on mousedown. Mounting the palette in
+              // that same event lets its window-level outside-click listener
+              // observe the now-removed row and close immediately. Let the
+              // originating pointer or keyboard event finish first.
+              window.requestAnimationFrame(() => openComposerModelPicker(true));
+              return true;
+            }}
             onReady={(editor) => {
               composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);
