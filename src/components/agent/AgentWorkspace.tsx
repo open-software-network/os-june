@@ -25,7 +25,6 @@ import {
 import { listHermesSessionMessages } from "../../lib/hermes-adapter";
 import {
   AGENT_GALLERY_EVENT,
-  dispatchAgentSessionsChanged,
   dispatchAgentSessionStatus,
   type AgentGalleryDetail,
 } from "../../lib/agent-events";
@@ -64,6 +63,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useSessionListBroadcast } from "./use-session-list-broadcast";
 import { createSessionRefreshAction } from "./session-refresh-action";
 import { useAgentGatewayActions } from "./use-agent-gateway-actions";
 import { useAgentViewState } from "./use-agent-view-state";
@@ -1285,31 +1285,13 @@ export function AgentWorkspace({
     }
   }, [selectedHermesSessionId]);
 
-  useEffect(() => {
-    // The sidebar and App replace their session lists wholesale with this
-    // payload, so an unhydrated broadcast (mount seed only) would collapse
-    // the list they already fetched themselves and flicker it back once the
-    // real fetch lands.
-    if (!hermesSessionsHydrated) return;
-    dispatchAgentSessionsChanged({
-      sessions: hermesSessionItems.filter((session) => !isProvisionalHermesSessionId(session.id)),
-      selectedSessionId: isProvisionalHermesSessionId(selectedHermesSessionId)
-        ? undefined
-        : selectedHermesSessionId,
-      workingSessionIds: Array.from(workingSessionIds).filter(
-        (sessionId) => !isProvisionalHermesSessionId(sessionId),
-      ),
-      waitingSessionIds: Array.from(waitingSessionIds).filter(
-        (sessionId) => !isProvisionalHermesSessionId(sessionId),
-      ),
-    });
-  }, [
-    hermesSessionsHydrated,
+  useSessionListBroadcast({
     hermesSessionItems,
+    hermesSessionsHydrated,
     selectedHermesSessionId,
     waitingSessionIds,
     workingSessionIds,
-  ]);
+  });
 
   // Message-based reconciliation above can only END a run when an assistant
   // reply eventually persists. A run that died without one (provider failure,
