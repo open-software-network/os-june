@@ -306,6 +306,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createManagementLoaders } from "./management-loaders";
 import { createTaskControlActions } from "./task-control-actions";
 import { createComposerDraftActions } from "./composer-draft-actions";
 import { createTaskSubmissionAction } from "./task-submission-action";
@@ -3330,6 +3331,23 @@ export function AgentWorkspace({
     }
   }
 
+  const { loadSkillCommands, loadCapabilities, loadMessagingPlatforms, loadFilesystemSnapshot } =
+    createManagementLoaders({
+      ensureHermesGateway,
+      selectedHermesSessionIdRef,
+      setCapabilityLoading,
+      setError,
+      setFilesystemLoading,
+      setFilesystemSnapshot,
+      setMessagingPlatforms,
+      setSelectedMessagingPlatformId,
+      setSkillCommandLoading,
+      setSkills,
+      setToolsets,
+      skillCommandsLoadRef,
+      skills,
+    });
+
   const {
     finishImageSlashGeneration,
     retryImageSlashTurn,
@@ -4691,96 +4709,6 @@ export function AgentWorkspace({
       upsertTask,
     },
   );
-
-  async function loadSkillCommands(options?: { silent?: boolean }) {
-    if (skills) return skills;
-    let loadPromise = skillCommandsLoadRef.current;
-    if (!loadPromise) {
-      setSkillCommandLoading(true);
-      loadPromise = (async () => {
-        await ensureHermesGateway();
-        const nextSkills = await hermesBridgeSkills();
-        setSkills(nextSkills);
-        return nextSkills;
-      })();
-      skillCommandsLoadRef.current = loadPromise;
-    }
-
-    try {
-      return await loadPromise;
-    } catch (err) {
-      if (!options?.silent) {
-        throw new Error(`Skill commands are unavailable. ${messageFromError(err)}`);
-      }
-      return [];
-    } finally {
-      if (skillCommandsLoadRef.current === loadPromise) {
-        skillCommandsLoadRef.current = null;
-        setSkillCommandLoading(false);
-      }
-    }
-  }
-
-  async function loadCapabilities() {
-    setCapabilityLoading(true);
-    try {
-      await ensureHermesGateway();
-      const [nextSkills, nextToolsets] = await Promise.all([
-        hermesBridgeSkills(),
-        hermesBridgeToolsets(),
-      ]);
-      setSkills(nextSkills);
-      setToolsets(nextToolsets);
-      setError(null);
-    } catch (err) {
-      setError(messageFromError(err));
-    } finally {
-      setCapabilityLoading(false);
-    }
-  }
-
-  async function loadMessagingPlatforms() {
-    setCapabilityLoading(true);
-    try {
-      await ensureHermesGateway();
-      const response = await withTimeout(
-        hermesBridgeMessagingPlatforms(),
-        MESSAGING_PLATFORMS_LOAD_TIMEOUT_MS,
-        MESSAGING_PLATFORMS_LOAD_TIMEOUT_MESSAGE,
-      );
-      setMessagingPlatforms(response.platforms);
-      setSelectedMessagingPlatformId((current) => {
-        if (current && response.platforms.some((item) => item.id === current)) {
-          return current;
-        }
-        return response.platforms[0]?.id;
-      });
-      setError(null);
-    } catch (err) {
-      setMessagingPlatforms((current) => current ?? []);
-      setError(messageFromError(err));
-    } finally {
-      setCapabilityLoading(false);
-    }
-  }
-
-  async function loadFilesystemSnapshot() {
-    const sessionId = selectedHermesSessionIdRef.current ?? null;
-    setFilesystemLoading(true);
-    try {
-      await ensureHermesGateway();
-      setFilesystemSnapshot(await hermesBridgeFilesystemSnapshot());
-      // No setError(null): this refires in the background on message-count
-      // changes, so a success would wipe an unrelated banner (e.g. a failed
-      // send). The banner is dismissable instead.
-    } catch (err) {
-      const message = messageFromError(err);
-      if (isSessionGoneError(message)) return;
-      setError(message, { sessionId });
-    } finally {
-      setFilesystemLoading(false);
-    }
-  }
 
   // Manual rename. Records an override (same channel the auto-suggested titles
   // use) and marks the session so the suggester won't clobber the user's name.
