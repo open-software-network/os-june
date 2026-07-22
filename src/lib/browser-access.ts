@@ -1,4 +1,4 @@
-import { BROWSER_USE_ENABLED } from "./feature-flags";
+import { experimentalBrowserUseEnabled } from "./experimental-flags";
 
 /** The literal token June's soul tells it to emit when a task needs Browser
  * use while the Browser access grant is off (JUNE_SOUL_BROWSER_BLOCKED_MD in
@@ -13,7 +13,7 @@ export const BROWSER_ACCESS_REQUEST_TOKEN = "[REQUEST:BROWSER_ACCESS]";
  * it would enable is hidden), but the strip below still runs so a stray
  * token never shows as literal text. */
 export function hasBrowserAccessRequest(text: string) {
-  return BROWSER_USE_ENABLED && text.includes(BROWSER_ACCESS_REQUEST_TOKEN);
+  return experimentalBrowserUseEnabled() && text.includes(BROWSER_ACCESS_REQUEST_TOKEN);
 }
 
 /** Removes the request token (and the blank line it sat on) from display

@@ -42,7 +42,7 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { HoverTip } from "../ui/HoverTip";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
-import { BROWSER_USE_ENABLED } from "../../lib/feature-flags";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 
@@ -384,6 +384,7 @@ export function ConnectorsSection({
   onOpenModels?: () => void;
   onOpenBilling?: () => void;
 }) {
+  const { browserUseEnabled } = useExperimentalFlags();
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<ConnectorProvider | null>(null);
@@ -929,7 +930,7 @@ export function ConnectorsSection({
 
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
-          {BROWSER_USE_ENABLED ? <BrowserUseCapabilityRow /> : null}
+          {browserUseEnabled ? <BrowserUseCapabilityRow /> : null}
           <li className="connector-row">
             <span className="connector-logo" aria-hidden>
               <ConnectorProviderIcon provider="obsidian" />

@@ -318,6 +318,10 @@ export async function prepareExtensionRelease({
     // the automated-release offset. Users see the clean desktop version because
     // this exact reviewed package becomes stable.
     manifest.version_name = baseVersion;
+    // The Chrome Web Store rejects uploads whose manifest contains `key`
+    // ("key field is not allowed in manifest"). The key stays in the source
+    // manifest to pin the load-unpacked ID; the store item carries its own.
+    delete manifest.key;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     await packageDist(distDir, packagePath);
     const packageSha256 = await hashFile(packagePath);
