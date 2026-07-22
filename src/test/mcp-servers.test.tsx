@@ -390,6 +390,27 @@ args = ["say \\"hello, June\\"", "--ok"]
       args: ['say "hello, June"', "--ok"],
     });
   });
+
+  it("blocks imports that would silently broaden Codex tool access", () => {
+    const filtered = parseExternalMcpConfig(`
+[mcp_servers.filtered]
+command = "example"
+enabled_tools = ["read"]
+disabled_tools = ["delete"]
+`);
+    const perTool = parseExternalMcpConfig(`
+[mcp_servers.per_tool]
+url = "https://example.com/mcp"
+
+[mcp_servers.per_tool.tools.delete]
+approval_mode = "prompt"
+`);
+
+    expect(filtered.entries[0].payload).toBeUndefined();
+    expect(filtered.entries[0].error).toMatch(/tool access/i);
+    expect(perTool.entries[0].payload).toBeUndefined();
+    expect(perTool.entries[0].error).toMatch(/tool access/i);
+  });
 });
 
 // ---------------------------------------------------------------------------

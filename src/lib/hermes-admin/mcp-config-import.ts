@@ -16,6 +16,8 @@ export type McpConfigImportResult = {
   error?: string;
 };
 
+const TOOL_POLICY_MARKER = "__june_import_has_tool_policy";
+
 /**
  * Parses the two MCP configuration families people most often already have:
  * Claude/Cursor JSON (`mcpServers`) and Codex TOML (`mcp_servers`). The TOML
@@ -71,6 +73,12 @@ function parseCodexToml(text: string): McpConfigImportResult {
     if (table) {
       const path = splitTomlPath(table[1]);
       const name = path[0];
+      if (name && path[1] === "tools") {
+        servers[name] ??= {};
+        servers[name][TOOL_POLICY_MARKER] = true;
+        current = undefined;
+        continue;
+      }
       if (!name || path.length > 2 || (path[1] && path[1] !== "env")) {
         current = undefined;
         continue;
@@ -180,6 +188,20 @@ function importEntry(name: string, rawConfig: unknown): McpConfigImportEntry {
       name,
       warnings,
       error: "This entry has both a command and URL, so June cannot choose a transport safely.",
+    };
+  }
+  if (
+    config.enabled_tools !== undefined ||
+    config.disabled_tools !== undefined ||
+    config.default_tools_approval_mode !== undefined ||
+    config.tools !== undefined ||
+    config[TOOL_POLICY_MARKER] === true
+  ) {
+    return {
+      name,
+      warnings,
+      error:
+        "This server limits tool access. Add it manually, then reapply its tool access rules before enabling it.",
     };
   }
   if (config.bearer_token_env_var || config.env_http_headers) {
