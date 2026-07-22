@@ -8010,6 +8010,43 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("discards a pending AI title when its new session is deleted", async () => {
+    const user = userEvent.setup();
+    let resolveTitle: ((value: { title: string }) => void) | undefined;
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "inspect startup latency" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect startup latency",
+      }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([]);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
+    await waitFor(() => expect(mocks.deleteHermesSession).toHaveBeenCalledWith("session-2"));
+
+    await act(async () => {
+      resolveTitle?.({ title: "Startup Latency" });
+      await Promise.resolve();
+    });
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-2",
+      title: "Startup Latency",
+    });
+  });
+
   it.each([
     ["routine description", "Set up a weekday summary of my unread notes"],
     ["bundle chat", "/release-check prepare this repository for release"],
