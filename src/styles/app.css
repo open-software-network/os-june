@@ -8321,15 +8321,21 @@ button.agent-user-attachment:hover {
 
 /* Windows has no traffic-light controls, so the titlebar-h (28px) of top
  * padding baked into .sidebar is dead space above the June logo. Reclaim it
- * so the sidebar header sits flush at the top. Raise the sidebar above the
- * fixed titlebar-drag overlay (z-index 100) so the logo link and recording
- * indicator remain interactive — same z-index as .tab-bar (101). position:
- * relative doesn't affect grid layout, just creates a stacking context.
+ * so the sidebar header sits flush at the top. Scoped to default mode only —
+ * Settings keeps the original clearance since it has no sidebar-header and
+ * the toggle falls back to the titlebar band there.
+ *
+ * Instead of raising the sidebar above the drag overlay (which would put it
+ * above session usage overlays at z-index 100), push the drag region's left
+ * edge to the sidebar's right edge so it never covers the sidebar. The drag
+ * region rides --sidebar-w-current so it tracks the sidebar during animation.
  * macOS is untouched: no data-platform="windows" attribute. */
-.app-shell[data-platform="windows"] .sidebar {
+.app-shell[data-platform="windows"] .sidebar[data-mode="default"] {
   padding-top: var(--sp-3);
-  position: relative;
-  z-index: 101;
+}
+
+.app-shell[data-platform="windows"] .titlebar-drag {
+  left: var(--sidebar-w-current);
 }
 
 /* Windows-only: when the sidebar is expanded and in default mode, visually

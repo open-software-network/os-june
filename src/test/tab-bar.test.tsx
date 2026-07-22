@@ -149,15 +149,26 @@ describe("TabBar", () => {
   });
 
   it("reclaims the titlebar top padding on Windows so the sidebar sits flush", () => {
-    const sidebarRule = cssRuleFor('.app-shell[data-platform="windows"] .sidebar');
+    const sidebarRule = cssRuleFor(
+      '.app-shell[data-platform="windows"] .sidebar[data-mode="default"]',
+    );
 
     // No traffic lights on Windows — the 28px titlebar-h top padding is dead
     // space. Override to --sp-3 so the header sits flush at the top.
     expect(sidebarRule).toContain("padding-top: var(--sp-3)");
-    // Raise above the fixed titlebar-drag overlay (z-index 100) so the logo
-    // link and recording indicator remain interactive.
-    expect(sidebarRule).toContain("position: relative");
-    expect(sidebarRule).toContain("z-index: 101");
+    // Must not create a stacking context — raising the sidebar above
+    // z-index:100 would put it above session usage overlays.
+    expect(sidebarRule).not.toContain("z-index");
+    expect(sidebarRule).not.toContain("position: relative");
+  });
+
+  it("pushes the titlebar drag region past the sidebar on Windows", () => {
+    const dragRule = cssRuleFor('.app-shell[data-platform="windows"] .titlebar-drag');
+
+    // The drag region's left edge rides the animated sidebar width so it never
+    // covers the sidebar (keeping the logo link and recording indicator
+    // interactive) without raising the sidebar's z-index above overlays.
+    expect(dragRule).toContain("left: var(--sidebar-w-current)");
   });
 
   it("reserves a trailing header slot on Windows for the fixed sidebar toggle", () => {
