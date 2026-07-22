@@ -27984,7 +27984,8 @@ button.connector-approvals-info {
 
 /* ---- Share dialog (JUN-308) -------------------------------------------- */
 /* Owner-side private sharing: a settings-style passcode option before the link
- * exists, then one quiet link field directly in the dialog once it does. */
+ * exists, then the link field (plus a one-time passcode field while the
+ * passcode is still in memory) directly in the dialog once it does. */
 
 .share-dialog-body {
   display: flex;
@@ -28063,28 +28064,35 @@ button.connector-approvals-info {
   gap: var(--sp-3);
 }
 
-.share-link-copy-passcode-tip {
-  align-self: flex-start;
-  display: inline-flex;
+/* One-time passcode field, right after link creation: the same field recipe as
+ * the link above it so the two secrets read as one pair. Masked by default —
+ * the share dialog is often open mid-meeting with the screen visible — with
+ * the same reveal toggle as the passcode input that preceded it. */
+.share-passcode-field .share-passcode-value {
+  font-family: var(--font-mono);
 }
 
-.share-link-copy-passcode {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-height: var(--control-xs);
-  padding: 0 var(--sp-2);
+.share-passcode-field-reveal {
+  flex: 0 0 auto;
+}
+
+/* Inline action inside the reopened-dialog caption: same quiet underline
+ * recipe as .settings-row-action, flowing with the sentence around it. */
+.share-passcode-reset {
+  padding: 0;
   border: 0;
-  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: var(--fs-md);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  text-underline-offset: 3px;
   cursor: pointer;
 }
 
-.share-link-copy-passcode:hover {
-  background: var(--muted);
+.share-passcode-reset:hover:not(:disabled) {
+  color: var(--foreground);
+  text-decoration-color: var(--foreground);
 }
 
 .share-unshare {
