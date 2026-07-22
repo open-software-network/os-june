@@ -1,14 +1,8 @@
 import type { Editor as TiptapEditor } from "@tiptap/react";
-import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconToolbox } from "central-icons/IconToolbox";
-import { IconTrashCan } from "central-icons/IconTrashCan";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { IconArrowCornerDownRight } from "central-icons/IconArrowCornerDownRight";
-import { IconArrowUp } from "central-icons/IconArrowUp";
-import { IconFiles } from "central-icons/IconFiles";
-import { IconPencil } from "central-icons/IconPencil";
 import {
   type FormEvent,
   useCallback,
@@ -113,6 +107,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { createQueuedFollowUpRenderers } from "./queued-follow-up-renderers";
 import { useAgentSessionLoading } from "./use-agent-session-loading";
 import { useAgentSelection } from "./use-agent-selection";
 import { useAgentRuntimeState } from "./use-agent-runtime-state";
@@ -248,7 +243,6 @@ import {
 import {
   type CapturedSessionModelTarget,
   type PendingAttachmentPreparation,
-  type QueuedAttachmentFollowUp,
 } from "./composer/follow-up-queue";
 
 import {
@@ -3061,152 +3055,19 @@ export function AgentWorkspace({
   // Submitted text and locally waiting attachment messages share one compact
   // follow-up system. session.steer has no recall primitive, so submitted text
   // remains read-only; transport state stays out of the visual scan line.
-  function renderSteerCard(card: { id: string; text: string }) {
-    return (
-      <div key={card.id} className="agent-follow-up-row" data-kind="steer">
-        <span className="agent-follow-up-icon" aria-hidden>
-          <IconArrowCornerDownRight size={13} />
-        </span>
-        <span className="agent-follow-up-copy">
-          <span className="agent-follow-up-text" title={card.text}>
-            {card.text}
-          </span>
-        </span>
-      </div>
-    );
-  }
-
-  function renderQueuedAttachmentFollowUp(
-    queueKey: string,
-    item: QueuedAttachmentFollowUp,
-    options: { demo?: boolean } = {},
-  ) {
-    const sessionWorking =
-      options.demo ||
-      (queueKey !== NEW_SESSION_RECOVERY_QUEUE_KEY && workingSessionIds.has(queueKey));
-    const firstInQueue = queuedAttachmentFollowUpsRef.current[queueKey]?.[0]?.id === item.id;
-    const hasAttachedImage = item.attachments.some(
-      (attachment) => attachment.attach.kind === "image" && attachment.attach.status === "attached",
-    );
-    const locallyEditable = item.status !== "sending" && !hasAttachedImage;
-    const editable = locallyEditable && !draft.trim() && attachments.length === 0;
-    const statusLabel =
-      item.status === "sending"
-        ? "Sending"
-        : item.status === "failed"
-          ? hasAttachedImage
-            ? "Image attached; message not sent"
-            : "Couldn't send"
-          : sessionWorking
-            ? "Waiting for June to finish"
-            : "Ready to send";
-    return (
-      <div
-        key={item.id}
-        className="agent-follow-up-row"
-        data-kind="attachment"
-        data-status={item.status}
-        title={item.error ?? undefined}
-      >
-        {item.attachments.length ? (
-          <div className="agent-follow-up-attachments">
-            {item.attachments.length > 1 ? (
-              <span className="agent-attachment-chip" data-kind="file" aria-hidden>
-                <span className="agent-attachment-file-icon">
-                  <IconFiles size={14} />
-                </span>
-              </span>
-            ) : (
-              item.attachments
-                .slice(0, 1)
-                .map((attachment) => (
-                  <AgentAttachmentTile key={attachment.id} attachment={attachment} />
-                ))
-            )}
-          </div>
-        ) : (
-          <span className="agent-follow-up-icon" aria-hidden>
-            <IconArrowCornerDownRight size={13} />
-          </span>
-        )}
-        <div className="agent-follow-up-copy">
-          <span className="agent-follow-up-text">{item.prepared.typedMessage || "Attachment"}</span>
-          <span className="agent-follow-up-announcement" aria-live="polite">
-            {statusLabel}
-          </span>
-          {item.error ? <span className="agent-follow-up-announcement">{item.error}</span> : null}
-        </div>
-        {item.status === "sending" ? null : (
-          <div className="agent-follow-up-actions">
-            {item.status === "failed" && firstInQueue ? (
-              <button
-                type="button"
-                aria-label="Retry queued message"
-                title="Retry"
-                disabled={sessionWorking}
-                onClick={() => void deliverQueuedAttachmentFollowUp(queueKey, item.id)}
-              >
-                <IconArrowRotateClockwise size={14} />
-              </button>
-            ) : !sessionWorking && firstInQueue ? (
-              <button
-                type="button"
-                aria-label="Send queued message"
-                title="Send now"
-                onClick={() => void deliverQueuedAttachmentFollowUp(queueKey, item.id)}
-              >
-                <IconArrowUp size={14} />
-              </button>
-            ) : null}
-            {locallyEditable ? (
-              <>
-                <button
-                  type="button"
-                  aria-label="Edit queued message"
-                  title={editable ? "Edit" : "Clear the composer before editing"}
-                  disabled={!editable}
-                  onClick={() => {
-                    if (options.demo) {
-                      setUpNextDemoFollowUpsBySessionId((current) => ({
-                        ...current,
-                        [queueKey]: (current[queueKey] ?? []).filter(
-                          (followUp) => followUp.id !== item.id,
-                        ),
-                      }));
-                      draftRef.current = item.prepared.typedMessage;
-                      setDraft(item.prepared.typedMessage);
-                      composerEditorRef.current?.setContent(item.prepared.typedMessage);
-                      return;
-                    }
-                    editQueuedAttachmentFollowUp(queueKey, item.id);
-                  }}
-                >
-                  <IconPencil size={14} />
-                </button>
-                <button
-                  type="button"
-                  aria-label="Remove queued message"
-                  title="Remove"
-                  onClick={() =>
-                    options.demo
-                      ? setUpNextDemoFollowUpsBySessionId((current) => ({
-                          ...current,
-                          [queueKey]: (current[queueKey] ?? []).filter(
-                            (followUp) => followUp.id !== item.id,
-                          ),
-                        }))
-                      : removeQueuedAttachmentFollowUp(queueKey, item.id)
-                  }
-                >
-                  <IconTrashCan size={14} />
-                </button>
-              </>
-            ) : null}
-          </div>
-        )}
-      </div>
-    );
-  }
+  const { renderSteerCard, renderQueuedAttachmentFollowUp } = createQueuedFollowUpRenderers({
+    attachments,
+    composerEditorRef,
+    deliverQueuedAttachmentFollowUp,
+    draft,
+    draftRef,
+    editQueuedAttachmentFollowUp,
+    queuedAttachmentFollowUpsRef,
+    removeQueuedAttachmentFollowUp,
+    setDraft,
+    setUpNextDemoFollowUpsBySessionId,
+    workingSessionIds,
+  });
 
   function runShortcut(shortcut: AgentShortcut) {
     if (shortcut.action === "attach") {
@@ -3979,7 +3840,6 @@ export {
   type AgentActivityLevelProjection,
 } from "./session-state-helpers";
 import {
-  AgentAttachmentTile,
   DownloadToastMessage,
   ensureDownloadFileExtension,
   omitRecordKey,
