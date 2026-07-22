@@ -41,8 +41,11 @@ import { CreateFolderDialog } from "./CreateFolderDialog";
 import { EditFolderDialog } from "./EditFolderDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 import { ImportClaudeProjectsDialog } from "./ImportClaudeProjectsDialog";
+import { buildFolderItemIndex } from "./folder-item-index";
 
 const NO_FOLDERS: FolderDto[] = [];
+const NO_FOLDER_NOTES: readonly NoteListItemDto[] = [];
+const NO_FOLDER_SESSIONS: readonly HermesSessionInfo[] = [];
 
 type FoldersWorkspaceProps = {
   folders: FolderDto[];
@@ -169,6 +172,10 @@ function FolderList({
       }
     });
   }, [folders, normalizedQuery, sort]);
+  const folderItems = useMemo(
+    () => buildFolderItemIndex(notes, sessions, sessionFolderIds),
+    [notes, sessions, sessionFolderIds],
+  );
 
   const content: ReactNode =
     sortedAndFiltered.length > 0 ? (
@@ -177,9 +184,8 @@ function FolderList({
           <FolderCard
             key={folder.id}
             folder={folder}
-            notes={notes}
-            sessions={sessions}
-            sessionFolderIds={sessionFolderIds}
+            notes={folderItems.notesByFolderId.get(folder.id) ?? NO_FOLDER_NOTES}
+            sessions={folderItems.sessionsByFolderId.get(folder.id) ?? NO_FOLDER_SESSIONS}
             menuOpen={menu?.folderId === folder.id}
             onOpen={() => onSelectFolder(folder.id)}
             onDropNote={(noteId) => {
@@ -384,16 +390,14 @@ function FolderCard({
   folder,
   notes,
   sessions,
-  sessionFolderIds,
   menuOpen,
   onOpen,
   onOpenMenu,
   onDropNote,
 }: {
   folder: FolderDto;
-  notes: NoteListItemDto[];
-  sessions: HermesSessionInfo[];
-  sessionFolderIds: Record<string, string[]>;
+  notes: readonly NoteListItemDto[];
+  sessions: readonly HermesSessionInfo[];
   menuOpen: boolean;
   onOpen: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
@@ -402,11 +406,7 @@ function FolderCard({
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const dragDepth = useRef(0);
   const [dropActive, setDropActive] = useState(false);
-  const folderNotes = notes.filter((note) => note.folderIds.includes(folder.id));
-  const folderSessions = sessions.filter((session) =>
-    (sessionFolderIds[session.id] ?? []).includes(folder.id),
-  );
-  const lastUpdated = folderNotes[0]?.updatedAt ?? folder.updatedAt;
+  const lastUpdated = notes[0]?.updatedAt ?? folder.updatedAt;
 
   function hasNoteData(event: DragEvent<HTMLElement>) {
     const types = event.dataTransfer.types;
@@ -492,16 +492,16 @@ function FolderCard({
             <span className="folder-card-footer-icon" aria-hidden>
               <IconNoteText size={11} />
             </span>
-            {folderNotes.length} {folderNotes.length === 1 ? "meeting note" : "meeting notes"}
+            {notes.length} {notes.length === 1 ? "meeting note" : "meeting notes"}
           </span>
-          {folderSessions.length > 0 ? (
+          {sessions.length > 0 ? (
             <>
               <span className="metadata-dot" aria-hidden />
               <span className="folder-card-footer-item">
                 <span className="folder-card-footer-icon" aria-hidden>
                   <IconBubble3 size={11} />
                 </span>
-                {folderSessions.length} {folderSessions.length === 1 ? "session" : "sessions"}
+                {sessions.length} {sessions.length === 1 ? "session" : "sessions"}
               </span>
             </>
           ) : null}
