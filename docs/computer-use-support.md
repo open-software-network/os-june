@@ -28,8 +28,10 @@ are enabled.
    identifier `co.opensoftware.june.computer-use-driver`. A packaged helper
    also requires the signed outer June app with the same Developer ID team.
 3. In System Settings > Privacy & Security, inspect Accessibility and Screen
-   Recording separately. Removing a macOS grant may require June to be quit and
-   reopened before macOS reports the new state.
+   Recording separately. Accessibility names `June Computer Use Driver`;
+   Screen Recording names the outer `June` app because macOS assigns capture to
+   the responsible launcher. Removing a macOS grant may require June to be quit
+   and reopened before macOS reports the new state.
 4. Return to June. The setup page polls while incomplete and reconfigures the
    runtime when the signed helper becomes capturable.
 5. If the driver crashed, Stop clears its private child and the next eligible
@@ -53,10 +55,11 @@ from System Settings.
 
 Every macOS `make dev` launch gives the debug Computer use helper a stable
 bundle identifier derived from the current worktree path. The launch registers
-that helper with LaunchServices, clears Accessibility and Screen Recording for
-that exact identifier, and removes stale debug staging copies before Tauri
-copies the signed bundle again. This provides a fresh permission walkthrough
-on every dev restart without changing another worktree's TCC state.
+that helper with LaunchServices, clears Accessibility for the helper identifier,
+clears Screen Recording for the outer June development app identifier, and
+removes stale debug staging copies before Tauri copies the signed bundle again.
+This provides a fresh permission walkthrough on every dev restart without
+resetting Screen Recording for the wrong responsible app.
 
 The Tauri dev runner executes a hard-linked product-name alias of Cargo's
 `os-june` binary. The normal alias is `target/**/June`; supported issue

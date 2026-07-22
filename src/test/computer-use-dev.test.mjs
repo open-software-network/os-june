@@ -101,23 +101,27 @@ describe("Computer use development restart", () => {
     expect(() => writeFileSync(path.join(releaseBundle, "still-present"), "test")).not.toThrow();
   });
 
-  it("registers the helper before resetting both grants for one worktree", () => {
+  it("registers the helper and resets each grant for its responsible app", () => {
     const run = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
-    const bundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
+    const helperBundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
+    const appBundleIdentifier = "co.opensoftware.june.codex.jun278";
     const bundlePath = "/tmp/june-worktree/.tauri-helper/June Computer Use Driver.app";
 
-    expect(resetComputerUseDevGrants({ bundlePath, bundleIdentifier }, run)).toEqual([
-      "Accessibility",
-      "ScreenCapture",
-    ]);
+    expect(
+      resetComputerUseDevGrants({ bundlePath, helperBundleIdentifier, appBundleIdentifier }, run),
+    ).toEqual(["Accessibility", "ScreenCapture"]);
     expect(run.mock.calls).toEqual([
       [
         "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
         ["-f", bundlePath],
         { encoding: "utf8" },
       ],
-      ["/usr/bin/tccutil", ["reset", "Accessibility", bundleIdentifier], { encoding: "utf8" }],
-      ["/usr/bin/tccutil", ["reset", "ScreenCapture", bundleIdentifier], { encoding: "utf8" }],
+      [
+        "/usr/bin/tccutil",
+        ["reset", "Accessibility", helperBundleIdentifier],
+        { encoding: "utf8" },
+      ],
+      ["/usr/bin/tccutil", ["reset", "ScreenCapture", appBundleIdentifier], { encoding: "utf8" }],
     ]);
   });
 });
