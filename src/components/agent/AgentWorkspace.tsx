@@ -45,7 +45,7 @@ import {
   thinkingEffortForLevel,
   type ThinkingLevel,
 } from "../../lib/thinking-level";
-import { describeHermesError, messageFromError } from "../../lib/errors";
+import { messageFromError } from "../../lib/errors";
 import {
   parseSlashFileArguments,
   resolveSlashModel,
@@ -63,6 +63,7 @@ import {
 } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
+import { useTaskHydration } from "./use-task-hydration";
 import { useSessionListBroadcast } from "./use-session-list-broadcast";
 import { createSessionRefreshAction } from "./session-refresh-action";
 import { useAgentGatewayActions } from "./use-agent-gateway-actions";
@@ -186,7 +187,7 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-import { reportableAgentErrorOptions, type AgentWorkspaceError } from "./agent-workspace-errors";
+import { type AgentWorkspaceError } from "./agent-workspace-errors";
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 import {
@@ -1544,27 +1545,14 @@ export function AgentWorkspace({
     selectedHermesMessages.length,
   ]);
 
-  useEffect(() => {
-    if (!selectedTaskId) return;
-    const task = tasks.find((item) => item.id === selectedTaskId);
-    if (!task || task.messages.length || task.toolEvents.length) return;
-    if (hydratedTaskIdsRef.current.has(selectedTaskId)) return;
-    hydratedTaskIdsRef.current.add(selectedTaskId);
-    let cancelled = false;
-    getAgentTask(selectedTaskId)
-      .then((fullTask) => {
-        if (!cancelled) {
-          taskHistoryLoadedIdsRef.current.add(fullTask.id);
-          setTasks((current) => current.map((item) => (item.id === fullTask.id ? fullTask : item)));
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(describeHermesError(err), reportableAgentErrorOptions(err));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedTaskId, tasks]);
+  useTaskHydration({
+    hydratedTaskIdsRef,
+    selectedTaskId,
+    setError,
+    setTasks,
+    taskHistoryLoadedIdsRef,
+    tasks,
+  });
 
   useAgentSessionEvents({
     activeComposerDispatchReservationsRef,
