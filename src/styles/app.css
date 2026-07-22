@@ -6805,12 +6805,18 @@ button.agent-user-attachment:hover {
 .agent-composer-model-command-list {
   max-height: calc(
     min(50vh, var(--model-command-available-height, 50vh)) -
-    (2 * var(--control-md)) -
+    (3 * var(--control-md)) -
     var(--sp-2)
   );
   padding: var(--sp-1) 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* Auto is a routing mode rather than a concrete model, so the command palette
+ * mirrors the root picker with a plain pinned switch above the model list. */
+.agent-composer-model-command-filter-with-auto {
+  border-bottom: 0;
 }
 
 .agent-composer-model-command-section {

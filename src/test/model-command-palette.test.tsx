@@ -1,5 +1,5 @@
 import { createRef, useRef, useState } from "react";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -42,7 +42,7 @@ function SearchablePalette({
 }
 
 describe("ModelCommandPalette", () => {
-  it("pins the Auto router when its catalog entry has no direct capability flags", async () => {
+  it("pins the Auto router as a separate toggle when its catalog entry has no capability flags", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     const current = model("zai-org-glm-5-2", "GLM 5.2", "private");
@@ -65,17 +65,47 @@ describe("ModelCommandPalette", () => {
       />,
     );
 
-    const suggested = screen.getByRole("group", { name: "Suggested" });
-    const auto = within(suggested).getByRole("option", { name: /Auto/ });
-    expect(auto).toHaveTextContent("Chooses a private model for each request");
-    expect(auto.querySelector('svg[aria-label="June"]')).not.toBeNull();
+    const autoToggle = screen.getByRole("switch", { name: "Choose the model automatically" });
+    const autoSection = autoToggle.closest(".agent-composer-model-command-auto");
+    expect(autoToggle).not.toBeChecked();
+    expect(autoSection).toHaveTextContent(/^Auto$/);
+    expect(autoSection?.querySelector("svg")).toBeNull();
+    expect(screen.getByRole("group", { name: "Suggested" })).not.toHaveTextContent("Auto");
 
     await user.click(screen.getByRole("switch", { name: "Only show private models" }));
-    expect(within(suggested).getByRole("option", { name: /Auto/ })).toBeInTheDocument();
+    expect(autoToggle).toBeInTheDocument();
 
     await user.type(screen.getByRole("combobox", { name: "Search models" }), "auto");
-    await user.click(screen.getByRole("option", { name: /Auto/ }));
+    expect(screen.queryByRole("group", { name: "Suggested" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No private models match your search.")).not.toBeInTheDocument();
+    await user.click(autoToggle);
     expect(onSelect).toHaveBeenCalledWith("open-software/auto");
+  });
+
+  it("turns Auto off by selecting the leading concrete suggestion", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    const auto = {
+      provider: "venice",
+      id: "open-software/auto",
+      name: "OpenSoftware Auto",
+      modelType: "text",
+      traits: [],
+      capabilities: [],
+    } satisfies VeniceModelDto;
+
+    render(
+      <SearchablePalette
+        model={auto}
+        options={[auto, model("zai-org-glm-5-2", "GLM 5.2", "private")]}
+        onSelect={onSelect}
+      />,
+    );
+
+    const autoToggle = screen.getByRole("switch", { name: "Choose the model automatically" });
+    expect(autoToggle).toBeChecked();
+    await user.click(autoToggle);
+    expect(onSelect).toHaveBeenCalledWith("zai-org-glm-5-2");
   });
 
   it("renders the catalog before a current selection is resolved", () => {

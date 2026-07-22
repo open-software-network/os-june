@@ -865,8 +865,6 @@ export function ModelPickerPopover({
  * It keeps the curated picks pinned above the rest of the searchable catalog,
  * using the same row, provider, privacy, and selection language as the compact
  * toolbar picker. */
-const AUTO_COMMAND_DESCRIPTION = "Chooses a private model for each request using your preference.";
-
 export function ModelCommandPalette({
   model,
   options,
@@ -890,17 +888,19 @@ export function ModelCommandPalette({
   const [privateOnly, setPrivateOnly] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const query = search.trim().toLowerCase();
+  const auto = useMemo(() => {
+    const option = options.find((candidate) => candidate.id === AUTO_MODEL_ID);
+    if (!option) return undefined;
+    // Auto is June's routing choice, not one direct inference model, so it
+    // has no catalog function-calling flag of its own. Its routing policy is
+    // private; concrete models still use the capability gate below.
+    return { ...option, name: "Auto", privacy: option.privacy ?? "private" };
+  }, [options]);
   const selectable = useMemo(
     () =>
-      options.flatMap((option) => {
-        if (option.id === AUTO_MODEL_ID) {
-          // Auto is June's routing choice, not one direct inference model, so
-          // it has no catalog function-calling flag of its own. Its routing
-          // policy is private; concrete models still use the capability gate.
-          return [{ ...option, name: "Auto", privacy: option.privacy ?? "private" }];
-        }
-        return modelAvailableForMode("generation", option) ? [option] : [];
-      }),
+      options.filter(
+        (option) => option.id !== AUTO_MODEL_ID && modelAvailableForMode("generation", option),
+      ),
     [options],
   );
   const privacyFiltered = useMemo(
@@ -915,16 +915,13 @@ export function ModelCommandPalette({
     [privacyFiltered, query],
   );
   const suggested = useMemo(() => suggestedModelsForMode("generation", selectable), [selectable]);
-  const auto = selectable.find((option) => option.id === AUTO_MODEL_ID);
-  const matchingSuggested = [
-    ...(auto && matching.some((candidate) => candidate.id === AUTO_MODEL_ID)
-      ? [{ key: AUTO_MODEL_ID, model: auto, reason: AUTO_COMMAND_DESCRIPTION }]
-      : []),
-    ...suggested.filter(
-      ({ model: option }) =>
-        option.id !== AUTO_MODEL_ID && matching.some((candidate) => candidate.id === option.id),
-    ),
-  ];
+  const autoVisible = Boolean(auto && (!query || modelMatchesQuery(auto, query)));
+  const autoEnabled = model?.id === AUTO_MODEL_ID;
+  const autoOffTarget =
+    suggested[0]?.model.id ?? selectable[0]?.id ?? DEFAULT_GENERATION_SUGGESTION_ID;
+  const matchingSuggested = suggested.filter(({ model: option }) =>
+    matching.some((candidate) => candidate.id === option.id),
+  );
   const suggestedIds = new Set(matchingSuggested.map(({ model: option }) => option.id));
   const remaining = matching.filter((option) => !suggestedIds.has(option.id));
   const resultRows = [
@@ -939,7 +936,7 @@ export function ModelCommandPalette({
 
   useLayoutEffect(() => {
     fade.update();
-  }, [fade.update, matchingSuggested.length, remaining.length]);
+  }, [autoVisible, fade.update, matchingSuggested.length, remaining.length]);
 
   function moveActive(delta: number) {
     if (!resultRows.length) return;
@@ -1021,11 +1018,24 @@ export function ModelCommandPalette({
               event.preventDefault();
               event.stopPropagation();
               onSelect(resultRows[resolvedActiveIndex].option.id);
+              return;
+            }
+            if (event.key === "Enter" && autoVisible && auto) {
+              event.preventDefault();
+              event.stopPropagation();
+              onSelect(auto.id);
             }
           }}
         />
       </label>
-      <div className="agent-composer-model-filter">
+      <div
+        className={[
+          "agent-composer-model-filter",
+          autoVisible ? "agent-composer-model-command-filter-with-auto" : null,
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
         <span>Private</span>
         <Switch
           checked={privateOnly}
@@ -1033,6 +1043,16 @@ export function ModelCommandPalette({
           aria-label="Only show private models"
         />
       </div>
+      {autoVisible && auto ? (
+        <div className="agent-composer-model-filter agent-composer-model-command-auto">
+          <span>Auto</span>
+          <Switch
+            checked={autoEnabled}
+            onCheckedChange={(on) => onSelect(on ? AUTO_MODEL_ID : autoOffTarget)}
+            aria-label="Choose the model automatically"
+          />
+        </div>
+      ) : null}
       <div className="agent-composer-model-command-list-wrap scroll-fade" {...fade.props}>
         <div
           ref={listRef}
@@ -1076,7 +1096,7 @@ export function ModelCommandPalette({
             </div>
           ) : null}
         </div>
-        {!resultRows.length ? (
+        {!resultRows.length && !autoVisible ? (
           <p className="agent-composer-model-empty" role="status">
             {privateOnly
               ? query
