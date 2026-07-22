@@ -1,5 +1,6 @@
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
+import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
 import { IconEyeOpen } from "central-icons/IconEyeOpen";
 import { IconEyeSlash } from "central-icons/IconEyeSlash";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -31,7 +32,7 @@ import {
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { CopyLinkField } from "../ui/CopyLinkField";
 import { CopyStateIcon } from "../ui/CopyStateIcon";
-import { Dialog } from "../ui/Dialog";
+import { Dialog, DialogField } from "../ui/Dialog";
 import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { Switch } from "../ui/Switch";
@@ -73,7 +74,7 @@ export function ShareDialog({
   const [legacyShare, setLegacyShare] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadVersion, setLoadVersion] = useState(0);
-  const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<"stop" | "reset" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const busyRef = useRef(false);
   const copyingRef = useRef(false);
@@ -132,7 +133,7 @@ export function ShareDialog({
     clearCopyFeedback();
     setLegacyShare(false);
     setLoadFailed(false);
-    setConfirmStop(false);
+    setConfirmAction(null);
     setError(null);
 
     void (async () => {
@@ -284,6 +285,7 @@ export function ShareDialog({
         setInviteId(createdInvite.inviteId);
         setLinkMaterialB64(materialB64);
         setPasswordProtected(Boolean(salt));
+        setRevealPasscode(false);
         try {
           await runClipboardCopy(() =>
             copyExistingLink(
@@ -334,18 +336,30 @@ export function ShareDialog({
   }, [clearCopyFeedback, passcode, runClipboardCopy, showCopyFeedback]);
 
   const handleStopSharing = useCallback(async () => {
-    if (!shareId) return;
-    await shareDelete(shareId).catch((stopError) => {
+    if (!shareId) return false;
+    try {
+      await shareDelete(shareId);
+    } catch (stopError) {
+      // Swallow the failure so the confirm dialog can close and the error
+      // notice becomes visible in the share dialog, where Stop/Reset remain
+      // available for retry.
       setError(describeShareError(stopError));
-      throw stopError;
-    });
+      return false;
+    }
     setShareId(null);
     setInviteId(null);
     setLinkMaterialB64(null);
     setPasswordProtected(false);
     setLegacyShare(false);
     clearCopyFeedback();
+    return true;
   }, [clearCopyFeedback, shareId]);
+
+  // Resetting is stop-sharing plus intent: the owner wants a fresh link with a
+  // fresh passcode, so land them on the create form with the toggle already on.
+  const handleResetLink = useCallback(async () => {
+    if (await handleStopSharing()) setRequirePasscode(true);
+  }, [handleStopSharing]);
 
   const handleClose = useCallback(() => {
     if (!busyRef.current) onClose();
@@ -383,7 +397,7 @@ export function ShareDialog({
               type="button"
               className="primary-action share-unshare"
               disabled={busy}
-              onClick={() => setConfirmStop(true)}
+              onClick={() => setConfirmAction("stop")}
             >
               Stop sharing
             </button>
@@ -462,34 +476,89 @@ export function ShareDialog({
           ) : null}
           {hasLink && shareUrl ? (
             <div className="share-link-block">
-              <CopyLinkField
-                value={shareUrl}
-                label={`Share link for ${item.title || `Untitled ${itemNoun}`}`}
-                copied={copied === "link"}
-                disabled={busy || copying}
-                onCopy={() => void handleCopyLink()}
-              />
+              {passwordProtected ? (
+                <DialogField label="Link" htmlFor="share-link-url">
+                  <CopyLinkField
+                    id="share-link-url"
+                    value={shareUrl}
+                    label={`Share link for ${item.title || `Untitled ${itemNoun}`}`}
+                    copied={copied === "link"}
+                    disabled={busy || copying}
+                    onCopy={() => void handleCopyLink()}
+                  />
+                </DialogField>
+              ) : (
+                <CopyLinkField
+                  value={shareUrl}
+                  label={`Share link for ${item.title || `Untitled ${itemNoun}`}`}
+                  copied={copied === "link"}
+                  disabled={busy || copying}
+                  onCopy={() => void handleCopyLink()}
+                />
+              )}
               {passwordProtected && passcode ? (
-                <HoverTip
-                  compact
-                  width={112}
-                  tip={copied === "passcode" ? "Copied" : "Copy passcode"}
-                  forceOpen={copied === "passcode"}
-                  suppressed={busy || copying}
-                  className="share-link-copy-passcode-tip"
-                >
+                <DialogField label="Passcode" htmlFor="share-passcode-view">
+                  <div className="copy-link-field share-passcode-field">
+                    <input
+                      id="share-passcode-view"
+                      className="copy-link-url share-passcode-value"
+                      type={revealPasscode ? "text" : "password"}
+                      value={passcode}
+                      readOnly
+                      onFocus={(event) => event.currentTarget.select()}
+                    />
+                    <button
+                      type="button"
+                      className="icon-button share-passcode-field-reveal"
+                      aria-label={revealPasscode ? "Hide passcode" : "Show passcode"}
+                      aria-pressed={revealPasscode}
+                      onClick={() => setRevealPasscode((value) => !value)}
+                    >
+                      {revealPasscode ? <IconEyeSlash size={16} /> : <IconEyeOpen size={16} />}
+                    </button>
+                    <HoverTip
+                      compact
+                      width={112}
+                      tip={copied === "passcode" ? "Copied" : "Copy passcode"}
+                      forceOpen={copied === "passcode"}
+                      suppressed={busy || copying}
+                      className="copy-link-action-tip"
+                    >
+                      <button
+                        type="button"
+                        className="copy-link-action"
+                        aria-label={copied === "passcode" ? "Passcode copied" : "Copy passcode"}
+                        data-copied={copied === "passcode" ? "true" : undefined}
+                        disabled={busy || copying}
+                        onClick={() => void handleCopyPasscode()}
+                      >
+                        <CopyStateIcon copied={copied === "passcode"} />
+                      </button>
+                    </HoverTip>
+                  </div>
+                </DialogField>
+              ) : null}
+              {passwordProtected && passcode ? (
+                <InlineNotice
+                  tone="warning"
+                  aria-label="One-time passcode notice"
+                  icon={<IconExclamationTriangle size={14} aria-hidden />}
+                  body="This is the only time the passcode is shown. Copy it now and send it separately from the link."
+                />
+              ) : null}
+              {passwordProtected && !passcode ? (
+                <p className="share-dialog-caption">
+                  The passcode can't be shown again. To set a new one,{" "}
                   <button
                     type="button"
-                    className="share-link-copy-passcode"
-                    aria-label={copied === "passcode" ? "Passcode copied" : "Copy passcode"}
-                    data-copied={copied === "passcode" ? "true" : undefined}
-                    disabled={busy || copying}
-                    onClick={() => void handleCopyPasscode()}
+                    className="share-passcode-reset"
+                    disabled={busy}
+                    onClick={() => setConfirmAction("reset")}
                   >
-                    <CopyStateIcon copied={copied === "passcode"} />
-                    Copy passcode
+                    reset this link
                   </button>
-                </HoverTip>
+                  .
+                </p>
               ) : null}
             </div>
           ) : null}
@@ -505,13 +574,17 @@ export function ShareDialog({
         </div>
       </Dialog>
       <ConfirmDialog
-        open={confirmStop}
-        onClose={() => setConfirmStop(false)}
-        onConfirm={handleStopSharing}
-        title="Stop sharing"
-        description={`This shared ${itemNoun} will stop opening for everyone. This cannot erase content people already viewed or copied.`}
-        confirmLabel="Stop sharing"
-        confirmBusyLabel="Stopping..."
+        open={confirmAction !== null}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={confirmAction === "reset" ? handleResetLink : handleStopSharing}
+        title={confirmAction === "reset" ? "Reset link" : "Stop sharing"}
+        description={
+          confirmAction === "reset"
+            ? "The current link will stop opening for everyone. You can then create a new link with a new passcode."
+            : `This shared ${itemNoun} will stop opening for everyone. This cannot erase content people already viewed or copied.`
+        }
+        confirmLabel={confirmAction === "reset" ? "Reset link" : "Stop sharing"}
+        confirmBusyLabel={confirmAction === "reset" ? "Resetting..." : "Stopping..."}
         destructive
       />
     </>

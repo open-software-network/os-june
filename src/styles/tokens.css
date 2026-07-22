@@ -364,6 +364,7 @@
   --scrim: color-mix(in oklch, var(--foreground) 12%, transparent);
 
   /* Motion ----------------------------------------------------------- */
+  --ease-linear: linear;
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
@@ -371,6 +372,7 @@
   --t-fast: 100ms;
   --t-med: 160ms;
   --t-slow: 240ms;
+  --stream-word-fade-dur: 1500ms;
   --icon-swap-dur: 250ms;
   --icon-swap-blur: 2px;
   --icon-swap-start-scale: 0.25;

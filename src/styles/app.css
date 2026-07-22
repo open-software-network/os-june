@@ -2461,6 +2461,49 @@ button.agent-user-attachment:hover {
   overflow-wrap: anywhere;
 }
 
+/* While a turn streams, each newly revealed word mounts as a span and fades
+ * in over a deliberately long window: a quick rise to ~30% ink so new words
+ * are readable at once, then a slow linear crawl to full. Because the crawl
+ * far outlasts the gap between chunks, the last second-or-so of prose reads
+ * as a soft ink gradient trailing the reveal — SmoothedStreamingMarkdown
+ * batches deltas so words that arrived together mount together and settle
+ * together. Opacity-only on purpose: batches land several times a second and
+ * blur/transform here would churn compositor layers in WKWebView. The
+ * settle clock below derives from the same duration token and keeps the spans
+ * mounted after completion so the tail finishes settling instead of popping
+ * to full ink; reduced motion never mounts them. */
+.agent-markdown .agent-stream-word {
+  animation: agent-stream-word-in var(--stream-word-fade-dur) var(--ease-linear) both;
+}
+
+@keyframes agent-stream-word-in {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Completion starts one root-level clock after the final stream flush. Its
+ * duration is derived from the word-fade token plus a small scheduling guard,
+ * so React can unwrap the presentation spans on animationend without a second
+ * hard-coded timer drifting out of sync with CSS. */
+.agent-markdown.agent-stream-settling {
+  animation: agent-stream-settle-clock calc(var(--stream-word-fade-dur) + var(--t-fast))
+    var(--ease-linear) both;
+}
+
+@keyframes agent-stream-settle-clock {
+  from,
+  to {
+    opacity: 1;
+  }
+}
+
 .agent-markdown > :first-child {
   margin-top: 0;
 }
@@ -27984,7 +28027,8 @@ button.connector-approvals-info {
 
 /* ---- Share dialog (JUN-308) -------------------------------------------- */
 /* Owner-side private sharing: a settings-style passcode option before the link
- * exists, then one quiet link field directly in the dialog once it does. */
+ * exists, then the link field (plus a one-time passcode field while the
+ * passcode is still in memory) directly in the dialog once it does. */
 
 .share-dialog-body {
   display: flex;
@@ -28063,28 +28107,35 @@ button.connector-approvals-info {
   gap: var(--sp-3);
 }
 
-.share-link-copy-passcode-tip {
-  align-self: flex-start;
-  display: inline-flex;
+/* One-time passcode field, right after link creation: the same field recipe as
+ * the link above it so the two secrets read as one pair. Masked by default —
+ * the share dialog is often open mid-meeting with the screen visible — with
+ * the same reveal toggle as the passcode input that preceded it. */
+.share-passcode-field .share-passcode-value {
+  font-family: var(--font-mono);
 }
 
-.share-link-copy-passcode {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  min-height: var(--control-xs);
-  padding: 0 var(--sp-2);
+.share-passcode-field-reveal {
+  flex: 0 0 auto;
+}
+
+/* Inline action inside the reopened-dialog caption: same quiet underline
+ * recipe as .settings-row-action, flowing with the sentence around it. */
+.share-passcode-reset {
+  padding: 0;
   border: 0;
-  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   font: inherit;
-  font-size: var(--fs-md);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+  text-underline-offset: 3px;
   cursor: pointer;
 }
 
-.share-link-copy-passcode:hover {
-  background: var(--muted);
+.share-passcode-reset:hover:not(:disabled) {
+  color: var(--foreground);
+  text-decoration-color: var(--foreground);
 }
 
 .share-unshare {

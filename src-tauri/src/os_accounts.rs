@@ -1169,38 +1169,19 @@ async fn await_authorization_code(
     }
 }
 
-// Branded loopback success page. Self-contained (the loopback origin can't
-// reach the app's bundled fonts/assets), but mirrors the OS Accounts / June
-// look: warm-grey surface, inset card, OS mark, calm hierarchy — and follows
-// the system light/dark preference.
+// Branded loopback success page for the dev-only sign-in loopback: the shared
+// template from connectors/oauth.rs (embedded fonts, baked clay tokens, the
+// welcome-surface look) with sign-in copy.
 #[cfg(debug_assertions)]
-const SUCCESS_BODY: &str = r##"<!doctype html>
-<html lang=en>
-<meta charset=utf-8>
-<meta name=viewport content="width=device-width,initial-scale=1">
-<title>June</title>
-<style>
-  :root{--bg:#f1f0ed;--card:#fff;--fg:#2b2a28;--muted:#8a8884;--border:#e7e4de;--mark-fg:#fff;--ok:#2c6747;--ok-soft:#e7efe9}
-  @media (prefers-color-scheme:dark){:root{--bg:#181817;--card:#252423;--fg:#fafafa;--muted:#b2b0ac;--border:rgba(255,255,255,.10);--mark-fg:#181817;--ok:#6fbf94;--ok-soft:rgba(111,191,148,.16)}}
-  *{box-sizing:border-box}
-  html,body{height:100%}
-  body{margin:0;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-  .card{display:flex;flex-direction:column;align-items:center;gap:16px;width:100%;max-width:340px;padding:36px 32px;text-align:center;background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:0 1px 2px rgba(0,0,0,.05)}
-  .mark{display:grid;place-items:center;width:40px;height:40px;border-radius:11px;background:var(--fg);color:var(--mark-fg);font-weight:700;font-size:15px;letter-spacing:.06em}
-  .check{display:inline-flex;align-items:center;gap:7px;padding:4px 11px 4px 9px;border-radius:999px;background:var(--ok-soft);color:var(--ok);font-size:12.5px;font-weight:600}
-  .check svg{width:13px;height:13px}
-  .title{margin:0;font-size:17px;font-weight:600;letter-spacing:-.01em}
-  .sub{margin:0;font-size:14px;line-height:1.5;color:var(--muted)}
-</style>
-<body>
-  <main class=card>
-    <div class=mark>OS</div>
-    <span class=check><svg viewBox="0 0 14 14" fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round stroke-linejoin=round><path d="M3 7.5 6 10l5-6"/></svg>Signed in</span>
-    <h1 class=title>Signed in to June</h1>
-    <p class=sub>You can close this tab and return to the app.</p>
-  </main>
-</body>
-</html>"##;
+use std::sync::LazyLock;
+#[cfg(debug_assertions)]
+static SUCCESS_BODY: LazyLock<String> = LazyLock::new(|| {
+    crate::connectors::oauth::success_page(
+        "Signed in",
+        "Signed in to June",
+        "You can close this tab and return to the app.",
+    )
+});
 
 /// Accept connections until one hits `/callback`. Every per-socket read is
 /// bounded so a slow-loris client on the loopback port can't stall the
@@ -1240,7 +1221,7 @@ async fn await_callback(listener: &TcpListener, expected_state: &str) -> Result<
                 return Err(missing_code_error());
             }
             CallbackCode::Code(code) => {
-                write_http(&mut stream, "200 OK", SUCCESS_BODY).await;
+                write_http(&mut stream, "200 OK", &SUCCESS_BODY).await;
                 return Ok(code);
             }
         }
