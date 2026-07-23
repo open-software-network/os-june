@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listenUntilUnload } from "./lib/listen-until-unload";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -155,11 +155,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-void listen<RecordingTelemetryDto>(RECORDING_TELEMETRY_EVENT, (event) => {
+listenUntilUnload<RecordingTelemetryDto>(RECORDING_TELEMETRY_EVENT, (event) => {
   if (event.payload) applyStatus(event.payload);
 });
 
-void listen<{ vertical: boolean; animate: boolean }>("meeting-hud-zone", (event) => {
+listenUntilUnload<{ vertical: boolean; animate: boolean }>("meeting-hud-zone", (event) => {
   if (event.payload) applyZone(event.payload);
 });
 
