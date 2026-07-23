@@ -191,8 +191,9 @@ On macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
 **Paste target**:
-The app the dictation helper types a finished transcript into, pinned at the
-instant the recording stops and never re-resolved afterwards (see
+The destination where a finished dictation transcript is delivered. For native
+paste, it is the exact app window pinned when recording stops and never
+re-resolved afterwards (see
 [ADR-0014](docs/adr/0014-pinned-dictation-paste-target.md)). Pinning matters
 because the dictation round trip (capture, then dictation transcription, then
 cleanup) can outlast the user's attention: the frontmost app at paste time is

@@ -92,7 +92,7 @@ struct ComposerDeliveryRegistration {
 pub struct HelperState {
     process: Mutex<Option<HelperProcess>>,
     /// One composer request registered while the main-window editor owns
-    /// focus. Shortcut start consumes it atomically before reaching the helper.
+    /// focus. A matching helper-confirmed recording start consumes it.
     composer_registration: Mutex<Option<ComposerDeliveryRegistration>>,
     /// Set only on intentional teardown (app quit / [`stop_helper`]) so the
     /// supervisor can tell a deliberate stop from a crash and skip respawning.
@@ -1144,29 +1144,7 @@ pub fn dictation_helper_command(
         return handle_missing_helper_command(&app, &command);
     }
 
-    let composer_request_id = command
-        .get("composerRequestId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let result = send_helper_command(&state, command);
-    if result.is_ok()
-        && matches!(
-            command_type.as_str(),
-            "start_listening" | "toggle_listening"
-        )
-    {
-        if let Some(request_id) = composer_request_id {
-            if let Ok(mut registration) = state.composer_registration.lock() {
-                if registration
-                    .as_ref()
-                    .is_some_and(|registration| registration.request_id == request_id)
-                {
-                    *registration = None;
-                }
-            }
-        }
-    }
-    result
+    send_helper_command(&state, command)
 }
 
 #[cfg(target_os = "windows")]
@@ -2104,23 +2082,9 @@ fn forward_dictation_command(
             }
         }
     }
-    let composer_request_id = helper_command
-        .get("composerRequestId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
     if let Err(error) = send_helper_command(&state, helper_command) {
         emit_dictation_event_value(app, app_error_event(error));
         return false;
-    }
-    if let Some(request_id) = composer_request_id {
-        if let Ok(mut registration) = state.composer_registration.lock() {
-            if registration
-                .as_ref()
-                .is_some_and(|registration| registration.request_id == request_id)
-            {
-                *registration = None;
-            }
-        }
     }
     true
 }
@@ -3485,6 +3449,10 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
 
+    if let (Some(state), Some(event)) = (app.try_state::<HelperState>(), event.as_ref()) {
+        consume_started_composer_registration(&state, event_type, event);
+    }
+
     if matches!(
         event_type,
         Some("hotkey_trigger_ready" | "hotkey_trigger_unavailable")
@@ -3552,6 +3520,31 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         update_latest_event(app, event_type, Some(line.clone()));
         update_hud_window(app, event_type, None);
         let _ = app.emit("dictation-event", line);
+    }
+}
+
+fn consume_started_composer_registration(
+    state: &HelperState,
+    event_type: Option<&str>,
+    event: &serde_json::Value,
+) {
+    if event_type != Some("listening_started") {
+        return;
+    }
+    let Some(request_id) = event
+        .get("payload")
+        .and_then(|payload| payload.get("composerRequestId"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    if let Ok(mut registration) = state.composer_registration.lock() {
+        if registration
+            .as_ref()
+            .is_some_and(|registration| registration.request_id == request_id)
+        {
+            *registration = None;
+        }
     }
 }
 
@@ -7577,6 +7570,51 @@ mod tests {
         let oversized = recording_ready_info_from_event(&event(serde_json::json!("x".repeat(129))))
             .expect("recording info");
         assert_eq!(oversized.composer_request_id, None);
+    }
+
+    #[test]
+    fn composer_registration_waits_for_its_confirmed_recording_start() {
+        let state = HelperState::default();
+        *state.composer_registration.lock().expect("registration") =
+            Some(ComposerDeliveryRegistration {
+                request_id: "request-1".to_string(),
+                window_handle: 42,
+            });
+        let event = serde_json::json!({
+            "type": "listening_started",
+            "payload": { "composerRequestId": "request-1" },
+        });
+
+        // A toggle that stopped an existing external recording emits a
+        // terminal event, not a new listening_started acknowledgement. Keep
+        // the focused composer's registration armed for its next shortcut.
+        consume_started_composer_registration(&state, Some("finalizing_transcript"), &event);
+        assert!(state
+            .composer_registration
+            .lock()
+            .expect("registration")
+            .is_some());
+
+        consume_started_composer_registration(
+            &state,
+            Some("listening_started"),
+            &serde_json::json!({
+                "type": "listening_started",
+                "payload": { "composerRequestId": "newer-request" },
+            }),
+        );
+        assert!(state
+            .composer_registration
+            .lock()
+            .expect("registration")
+            .is_some());
+
+        consume_started_composer_registration(&state, Some("listening_started"), &event);
+        assert!(state
+            .composer_registration
+            .lock()
+            .expect("registration")
+            .is_none());
     }
 
     #[test]
