@@ -2321,18 +2321,21 @@ input:focus-visible,
   content: "";
   position: absolute;
   z-index: -1;
-  right: calc(-1 * var(--sp-1) - 1px);
+  right: calc(-1 * var(--sp-2));
   bottom: 0;
-  width: 13px;
-  height: 11px;
+  width: 26px;
+  height: 14px;
   background: var(--card);
-  /* The curly cue: a small concave horn swept from under the bubble's corner,
-   * its underside curved so the tip lifts into a flick rather than a hard
-   * point. Drawn as a mask so the shape stays exact over the wash gradient
-   * (a background-colored carve would need a flat canvas color). The left
-   * half tucks behind the bubble, so only the curl emerges. */
-  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 11"><path d="M0 0 C1.5 6.5 5 9.8 13 10.4 C8.5 11.4 4 11.4 0 11 Z"/></svg>');
-  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 11"><path d="M0 0 C1.5 6.5 5 9.8 13 10.4 C8.5 11.4 4 11.4 0 11 Z"/></svg>');
+  /* The curly cue. The mask's left half is a SOLID block that reaches 20px
+   * under the bubble — past the deepest inset of its 20px corner arc — so the
+   * horn can only ever emerge through the bubble's own curve; without that
+   * block, the corner arc sweeps inward and leaves a canvas wedge between
+   * bubble and tail (the "sitting behind" disconnect). The right half is the
+   * concave horn, underside curved so the tip lifts into a flick. Masked
+   * because a background-colored carve would need a flat canvas color the
+   * wash gradient cannot provide. */
+  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 14"><path d="M0 0 L14 0 C15.5 6 19.5 10.5 26 13.2 C21 14.3 17 14.4 14 14 L0 14 Z"/></svg>');
+  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 14"><path d="M0 0 L14 0 C15.5 6 19.5 10.5 26 13.2 C21 14.3 17 14.4 14 14 L0 14 Z"/></svg>');
   -webkit-mask-size: 100% 100%;
   mask-size: 100% 100%;
 }
