@@ -907,6 +907,10 @@ export function AgentWorkspace({
   const artifactPanelOpen = artifactPanel !== null;
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");
+    // Safe today because renderAppLayout's shell className is stable while the
+    // agent view owns this workspace: switching views unmounts us, and note
+    // chat cannot open here. If agent-local state ever changes that className,
+    // lift this flag into renderAppLayout instead of keeping the side channel.
     shell?.classList.toggle("app-shell-artifact-panel-open", artifactPanelOpen);
     return () => shell?.classList.remove("app-shell-artifact-panel-open");
   }, [artifactPanelOpen]);

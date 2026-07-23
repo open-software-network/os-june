@@ -9,6 +9,10 @@ import {
   SecretPart,
   turnIsConcreteResponse,
 } from "../components/agent/AgentWorkspace";
+import {
+  AgentChatTurnRow,
+  type AgentChatTurnRowProps,
+} from "../components/agent/chat-turns/AgentChatTurnRow";
 import type { AgentChatPart, AgentChatTurn } from "../lib/agent-chat-runtime";
 import { createHermesMethods } from "../lib/hermes-control-plane";
 import secretFixture from "../lib/hermes-control-plane/fixtures/secret-request-response.json";
@@ -256,6 +260,73 @@ function clarifyPart(
 function resolvedRow() {
   return document.querySelector(".agent-resolved-row") as HTMLDetailsElement | null;
 }
+
+function actionTurnRow(part: AgentChatPart, overrides: Partial<AgentChatTurnRowProps> = {}) {
+  return (
+    <AgentChatTurnRow
+      approvalSubmitting={{}}
+      clarifySubmitting={{}}
+      sudoSubmitting={{}}
+      secretSubmitting={{}}
+      thinkingOpen={() => false}
+      onApproval={() => {}}
+      onClarify={() => {}}
+      onSudo={() => {}}
+      onSecret={() => {}}
+      onThinkingOpenChange={() => {}}
+      turn={{
+        id: "action-turn",
+        role: "assistant",
+        createdAt: "2026-07-23T10:00:00Z",
+        status: "complete",
+        parts: [part],
+      }}
+      {...overrides}
+    />
+  );
+}
+
+describe("AgentChatTurnRow action-card clearance", () => {
+  it.each([
+    ["approval", approvalPart(), approvalPart({ status: "resolved", choice: "once" })],
+    ["clarification", clarifyPart(), clarifyPart({ status: "resolved", answer: "Bulleted list" })],
+    ["sudo", sudoPart(), sudoPart({ status: "resolved", approved: true })],
+    ["secret", secretPart(), secretPart({ status: "resolved" })],
+  ])("only marks a %s turn while its actionable card is rendered", (_label, pending, resolved) => {
+    const { rerender } = render(actionTurnRow(pending));
+
+    expect(document.querySelector(".agent-assistant-turn-body")).toHaveClass(
+      "agent-assistant-turn-body-action-card",
+    );
+
+    rerender(actionTurnRow(resolved));
+
+    expect(document.querySelector(".agent-resolved-row")).toBeInTheDocument();
+    expect(document.querySelector(".agent-assistant-turn-body")).not.toHaveClass(
+      "agent-assistant-turn-body-action-card",
+    );
+  });
+
+  it("drops the Agent CLI marker when the access card is dismissed", async () => {
+    render(
+      actionTurnRow(
+        { type: "text", text: "[REQUEST:AGENT_CLI_ACCESS]", status: "complete" },
+        { cliAccess: { enabled: false, submitting: false, onEnable: () => {} } },
+      ),
+    );
+
+    expect(document.querySelector(".agent-assistant-turn-body")).toHaveClass(
+      "agent-assistant-turn-body-action-card",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Not now" }));
+
+    expect(document.querySelector(".agent-resolved-row")).toBeInTheDocument();
+    expect(document.querySelector(".agent-assistant-turn-body")).not.toHaveClass(
+      "agent-assistant-turn-body-action-card",
+    );
+  });
+});
 
 describe("ApprovalPart", () => {
   it("pending renders a compact card with a split Approve, Deny, and a scope menu", async () => {

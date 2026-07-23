@@ -6746,12 +6746,17 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
+    expect(
+      (await screen.findByText("Browser use requested")).closest(".agent-assistant-turn-body"),
+    ).toHaveClass("agent-assistant-turn-body-action-card");
     await user.click(await screen.findByRole("button", { name: "Not now" }));
 
     // Declining leaves the grant off and the session usable: nothing is sent
     // into the session and the card resolves quietly.
     expect(mocks.setHermesBrowserAccess).not.toHaveBeenCalled();
-    expect(await screen.findByText("Not now")).toBeInTheDocument();
+    expect(
+      (await screen.findByText("Not now")).closest(".agent-assistant-turn-body"),
+    ).not.toHaveClass("agent-assistant-turn-body-action-card");
     expect(screen.queryByRole("button", { name: "Enable Browser use" })).toBeNull();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
   });
