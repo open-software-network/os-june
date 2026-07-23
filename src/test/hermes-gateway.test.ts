@@ -3,6 +3,8 @@ import {
   forceDisconnectHermesGatewayClients,
   HermesGatewayClient,
   HermesGatewayError,
+  HermesGatewayRequestTimeoutError,
+  HermesGatewaySendQueueOverflowError,
   isSessionBusyError,
 } from "../lib/hermes-gateway";
 
@@ -16,6 +18,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
   readyState = FakeWebSocket.CONNECTING;
+  bufferedAmount = 0;
   sent: string[] = [];
   private listeners = new Map<string, Listener[]>();
 
@@ -76,6 +79,8 @@ describe("HermesGatewayClient", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -187,6 +192,152 @@ describe("HermesGatewayClient", () => {
     expect((error as HermesGatewayError).code).toBe(4009);
     expect(isSessionBusyError(error)).toBe(true);
     expect(isSessionBusyError(new Error("session busy"))).toBe(false);
+  });
+
+  it("queues sends behind socket backpressure and flushes them in request order", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient();
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+
+      socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+      const first = client.request<{ ok: string }>("first");
+      const second = client.request<{ ok: string }>("second");
+      expect(socket.sent).toEqual([]);
+
+      socket.bufferedAmount = 0;
+      await vi.advanceTimersByTimeAsync(16);
+
+      const frames = socket.sent.map((raw) => JSON.parse(raw) as { id: number; method: string });
+      expect(frames.map((frame) => frame.method)).toEqual(["first", "second"]);
+
+      socket.message({ id: frames[0].id, result: { ok: "first" } });
+      socket.message({ id: frames[1].id, result: { ok: "second" } });
+      await expect(first).resolves.toEqual({ ok: "first" });
+      await expect(second).resolves.toEqual({ ok: "second" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a request that would overflow the bounded send queue", async () => {
+    const client = new HermesGatewayClient();
+    const connecting = client.connect("ws://gateway");
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await connecting;
+
+    socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+    const queued = Array.from({ length: 128 }, (_, index) =>
+      client.request(`queued.${index}`).catch((error: unknown) => error),
+    );
+
+    const overflow = client.request("overflow");
+    await expect(overflow).rejects.toBeInstanceOf(HermesGatewaySendQueueOverflowError);
+    await expect(overflow).rejects.toMatchObject({ method: "overflow" });
+    expect(socket.sent).toEqual([]);
+
+    client.close();
+    const errors = await Promise.all(queued);
+    expect(errors).toHaveLength(128);
+    expect(errors.every((error) => error instanceof Error)).toBe(true);
+  });
+
+  it("keeps request timeout accounting active while a send waits for drain", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient();
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+
+      socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+      const pending = client.request("session.active_list", {}, 25);
+      const timedOut = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(timedOut).resolves.toBeInstanceOf(HermesGatewayRequestTimeoutError);
+
+      socket.bufferedAmount = 0;
+      await vi.advanceTimersByTimeAsync(16);
+      expect(socket.sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispatches a 500-frame burst in ordered, yielding time-budgeted batches", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient();
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+
+      let simulatedNow = 0;
+      let batch = 0;
+      const batchSizes: number[] = [];
+      const received: number[] = [];
+      vi.spyOn(performance, "now").mockImplementation(() => simulatedNow);
+      const setTimeout = window.setTimeout.bind(window);
+      vi.spyOn(window, "setTimeout").mockImplementation(((
+        handler: TimerHandler,
+        timeout?: number,
+        ...args: unknown[]
+      ) => {
+        if (timeout === 0) batch += 1;
+        return setTimeout(handler, timeout, ...args);
+      }) as typeof window.setTimeout);
+      client.onEvent((event) => {
+        const index = (event.payload as { index: number }).index;
+        received.push(index);
+        batchSizes[batch] = (batchSizes[batch] ?? 0) + 1;
+        simulatedNow += 1;
+      });
+
+      for (let index = 0; index < 500; index += 1) {
+        socket.message({
+          method: "event",
+          params: { type: "message.delta", session_id: "session-1", payload: { index } },
+        });
+      }
+
+      expect(received).toEqual([]);
+      await Promise.resolve();
+      expect(received.length).toBeGreaterThan(0);
+      expect(received.length).toBeLessThan(500);
+
+      await vi.runAllTimersAsync();
+
+      expect(received).toEqual(Array.from({ length: 500 }, (_, index) => index));
+      expect(batchSizes.length).toBeGreaterThan(1);
+      expect(Math.max(...batchSizes)).toBeLessThanOrEqual(8);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replay a queued frame to a listener attached after ingress", async () => {
+    const client = new HermesGatewayClient();
+    const connecting = client.connect("ws://gateway");
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await connecting;
+
+    socket.message({
+      method: "event",
+      params: { type: "message.delta", session_id: "session-1" },
+    });
+    const lateListener = vi.fn();
+    client.onEvent(lateListener);
+
+    await Promise.resolve();
+    expect(lateListener).not.toHaveBeenCalled();
   });
 
   it("notifies close listeners on unexpected drops but not on explicit close", async () => {
