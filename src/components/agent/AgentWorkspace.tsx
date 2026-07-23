@@ -12440,10 +12440,17 @@ export function AgentWorkspace({
       ...(homeOptimisticTurn ? [homeOptimisticTurn] : []),
     ].filter((turn) => !isHomeModelRoutingTurn(turn) && !isHomeInternalUnauthorizedTurn(turn)),
   );
+  // The greeting is ambiance for an idle day-start, not a transcript entry:
+  // it shows only while it is the newest thing in the thread and steps aside
+  // the moment the conversation moves past it (it returns with the next day's
+  // check-in).
+  const homeMergedTurns = [homeCheckInTurn, ...homeConversationTurns].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
   const visibleHermesTurns = homeMode
-    ? [homeCheckInTurn, ...homeConversationTurns].sort((left, right) =>
-        left.createdAt.localeCompare(right.createdAt),
-      )
+    ? homeMergedTurns.at(-1) === homeCheckInTurn
+      ? homeMergedTurns
+      : homeMergedTurns.filter((turn) => turn !== homeCheckInTurn)
     : hermesTurns;
   const homeTaskHandoffByTurnId = new Map<string, HomeTaskHandoff>();
   const duplicateHomeTaskTurnIds = new Set<string>();

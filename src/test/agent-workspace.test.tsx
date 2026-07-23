@@ -734,6 +734,29 @@ describe("AgentWorkspace", () => {
     expect(home.queryByText("Here with you")).not.toBeInTheDocument();
   });
 
+  it("retires the daily greeting once the conversation moves past it", async () => {
+    const user = userEvent.setup();
+    mocks.juneHomeChat.mockResolvedValueOnce({ content: "Right here." });
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+    expect(
+      await screen.findByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
+    ).toBeInTheDocument();
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Are you there?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    // The greeting is idle-state ambiance: the moment the thread has a newer
+    // turn, it steps aside instead of sitting mid-transcript.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText("Right here.")).toBeInTheDocument();
+  });
+
   it("hands off to a fresh focused session from Home's new-session control", async () => {
     const user = userEvent.setup();
     const newSessionEvents: Event[] = [];

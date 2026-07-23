@@ -32,8 +32,10 @@ export function AgentThinking({
           animate={{ opacity: 1, y: 0 }}
           exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -AGENT_THINKING_OFFSET_PX }}
           transition={{
-            // Framer Motion takes seconds; these mirror --t-fast/--t-med.
-            duration: reduceMotion ? 0.1 : 0.16,
+            // Framer Motion takes seconds; these mirror --t-fast/--t-med. The
+            // Home typing dots drift in slowly — ephemeral presence, not a
+            // status flip.
+            duration: reduceMotion ? 0.1 : variant === "typing-bubble" ? 0.55 : 0.16,
             ease: [0.22, 1, 0.36, 1],
           }}
         >

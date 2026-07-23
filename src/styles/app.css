@@ -316,8 +316,8 @@ input:focus-visible,
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    color-mix(in oklch, var(--brand) 2%, transparent) 45%,
-    color-mix(in oklch, var(--brand) 7%, transparent) 100%
+    color-mix(in oklch, var(--brand) 3.5%, transparent) 45%,
+    color-mix(in oklch, var(--brand) 10%, transparent) 100%
   );
 }
 
@@ -2287,12 +2287,41 @@ input:focus-visible,
   margin-block: 0;
 }
 
+/* June's replies speak in the serif (the same face as the greeting), sized up
+ * a step: a text serif at UI sizes reads cramped, and the larger measure is
+ * what separates her voice from the chrome. Sent messages stay sans. */
+.agent-timeline[data-home="true"] .agent-assistant-turn-body {
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  line-height: 1.55;
+}
+
+/* Sent messages: a soft borderless card pill with a small tail curl peeking
+ * from the bottom-right — the chatty cue, dialed back (no accent fill, no
+ * full comma tail). The nub hides behind the bubble (z-index -1) so the two
+ * shapes merge without a carve, which would need a flat canvas color the
+ * wash gradient can't provide. */
 .agent-timeline[data-home="true"] .agent-user-turn-body {
+  position: relative;
   max-width: 70%;
-  border: var(--border-width) solid var(--border-subtle);
-  border-radius: var(--r-xl) var(--r-xl) var(--r-sm) var(--r-xl);
+  border: 0;
+  border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
   background: var(--card);
   box-shadow: var(--shadow-sm);
+}
+
+.agent-timeline[data-home="true"] .agent-user-turn-body::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  right: calc(-1 * var(--sp-1));
+  bottom: 0;
+  width: var(--sp-4);
+  height: var(--sp-4);
+  border-radius: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  transform: rotate(12deg);
 }
 
 /* Home is the relationship surface, so private chain-of-thought chrome stays
@@ -2302,7 +2331,9 @@ input:focus-visible,
 }
 
 /* June composing: bare dots at the reply position — no bubble chrome, since
- * her messages render bare on the canvas too. */
+ * her messages render bare on the canvas too. The dots breathe (a slow
+ * opacity wave, no bounce) so the state reads as presence gathering itself
+ * rather than a keyboard clattering. */
 .agent-thinking[data-variant="typing-bubble"] {
   display: inline-flex;
   flex: 0 0 auto;
@@ -2311,6 +2342,37 @@ input:focus-visible,
   padding-inline: var(--sp-1);
   color: var(--spinner-neutral);
   line-height: 1;
+}
+
+.agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
+  opacity: 0.14;
+  animation: june-home-typing-breath 1.9s var(--ease-in-out) infinite;
+  transform: none;
+}
+
+.agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span:nth-child(2) {
+  animation-delay: 0.24s;
+}
+
+.agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span:nth-child(3) {
+  animation-delay: 0.48s;
+}
+
+@keyframes june-home-typing-breath {
+  0%,
+  100% {
+    opacity: 0.14;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
+    opacity: 0.5;
+    animation: none;
+  }
 }
 
 .agent-typing-dots {
