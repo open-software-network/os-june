@@ -34,7 +34,11 @@ send protocol-level ping frames. June therefore treats the existing
 `session.active_list` cycle as its liveness signal. Three consecutive request
 timeouts force-disconnect all clients for that runtime mode so the ordinary
 close/reconnect recovery path runs. Do not add a second always-on heartbeat
-request.
+request. When no working session owns that cycle, only the first Gateway
+request of a new submit gets a three-second liveness deadline. Its timeout
+force-disconnects the mode and retries that request once; this is
+submit-scoped transport recovery, not a second composer submission or a change
+to the heartbeat counters.
 
 **App teardown is ordered and bounded.** Ordinary quit enters the idempotent
 shutdown coordinator from `RunEvent::ExitRequested`; update relaunch enters the

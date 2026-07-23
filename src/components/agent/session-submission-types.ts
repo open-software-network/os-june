@@ -17,7 +17,8 @@ export type SubmitHermesSession = (
 ) => Promise<string | undefined>;
 import type { AgentProjectContext } from "../../lib/agent-project-context";
 import { ProjectContextSignatureStore } from "../../lib/agent-project-context";
-import { HermesGatewayClient } from "../../lib/hermes-gateway";
+import type { HermesRequestLike } from "../../lib/hermes-control-plane";
+import type { HermesGatewayClient } from "../../lib/hermes-gateway";
 import type { HermesSessionDispatchReservation } from "../../lib/hermes-session-dispatch-mutex";
 import { type SessionModelSelectionMap } from "../../lib/hermes-session-model-selection";
 import {
@@ -44,6 +45,7 @@ export type SubmitHermesSessionDependencies = {
     sessionId: string,
     level: ThinkingLevel,
     explicitRuntimeSessionId?: string,
+    requestClient?: HermesRequestLike,
   ) => Promise<void>;
   attachHermesSessionEventListener: ({
     gateway,
@@ -59,7 +61,7 @@ export type SubmitHermesSessionDependencies = {
     computerUseRunLeaseId?: string;
   }) => () => void;
   attachPendingImages: (
-    gateway: HermesGatewayClient,
+    gateway: HermesRequestLike,
     runtimeSessionId: string,
     storedSessionId: string,
     turnAttachments: AgentAttachment[],

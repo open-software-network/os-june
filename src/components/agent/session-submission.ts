@@ -11,8 +11,10 @@ import { withTimeout } from "../../lib/async-timeout";
 import { toolsetsForComputerUseAgentRun } from "../../lib/computer-use-agent-run";
 import { messageFromError } from "../../lib/errors";
 import { titleFromPrompt } from "../../lib/hermes-adapter";
+import { hasHermesActiveSessionSnapshotSubscribers } from "../../lib/hermes-active-session-snapshots";
 import { createHermesMethods, hermesModeFor } from "../../lib/hermes-control-plane";
 import { isSessionBusyError } from "../../lib/hermes-gateway";
+import { createHermesIdleSubmitGateway } from "../../lib/hermes-idle-submit-recovery";
 import { pendingImageAttachments } from "../../lib/hermes-image-attach";
 import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
 import {
@@ -185,6 +187,9 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         .replace(/^([a-z])/, (match) => match.toUpperCase());
     }
     const targetStoredSessionId = modelTarget.targetStoredSessionId ?? undefined;
+    const submitFullMode = targetStoredSessionId
+      ? sessionUnrestricted(targetStoredSessionId)
+      : fullModeDraftRef.current;
     let dispatchReservation =
       options?.dispatchReservation ??
       (targetStoredSessionId ? reserveHermesSessionDispatch(targetStoredSessionId) : undefined);
@@ -291,14 +296,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
     // the mode its session was created with. Without this, one Unrestricted
     // session would leave the runtime unsandboxed under every other
     // session's follow-ups.
-    const { created, createdUnderProfile, gateway, sessionTitle, storedSessionId } =
+    const { created, createdUnderProfile, submitGateway, sessionTitle, storedSessionId } =
       await (async () => {
         const [nextGateway] = await Promise.all([
-          ensureHermesGateway(
-            targetStoredSessionId
-              ? sessionUnrestricted(targetStoredSessionId)
-              : fullModeDraftRef.current,
-          ),
+          ensureHermesGateway(submitFullMode),
           // Re-read the sticky active profile for every brand-new session so an
           // out-of-band switch (Hermes CLI, upstream dashboard) is honored
           // without a workspace remount. Runs in parallel with gateway setup
@@ -316,9 +317,15 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           : getActiveHermesProfileName();
         const underProfile =
           nextUnderProfileName !== undefined && nextUnderProfileName !== "default";
+        const submitGateway = createHermesIdleSubmitGateway({
+          fullMode: submitFullMode,
+          gateway: nextGateway,
+          shouldProbeFirstRequest: () => !hasHermesActiveSessionSnapshotSubscribers(submitFullMode),
+          reconnect: () => ensureHermesGateway(submitFullMode),
+        });
         const nextCreated = targetStoredSessionId
           ? undefined
-          : await createHermesMethods(nextGateway).createSession<HermesRuntimeSessionResponse>({
+          : await createHermesMethods(submitGateway).createSession<HermesRuntimeSessionResponse>({
               title: fallbackSessionTitle,
               cols: 96,
               // session.create treats `model` as a per-session override.
@@ -341,7 +348,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         return {
           created: nextCreated,
           createdUnderProfile: underProfile ? nextUnderProfileName : undefined,
-          gateway: nextGateway,
+          submitGateway,
           sessionTitle: fallbackSessionTitle,
           storedSessionId: nextStoredSessionId,
         };
@@ -464,7 +471,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         created?.session_id ??
         runtimeSessionIdsRef.current[storedSessionId] ??
         (
-          await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+          await submitGateway.request<HermesRuntimeSessionResponse>("session.resume", {
             session_id: storedSessionId,
             cols: 96,
           })
@@ -487,7 +494,12 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
     // runtime is already known to be at it (see applyThinkingLevelToSession).
     const thinkingSessionLevel = sessionThinkingEfforts()[storedSessionId];
     if (thinkingSessionLevel) {
-      await applyThinkingLevelToSession(storedSessionId, thinkingSessionLevel, runtimeSessionId);
+      await applyThinkingLevelToSession(
+        storedSessionId,
+        thinkingSessionLevel,
+        runtimeSessionId,
+        submitGateway,
+      );
     }
     const dispatchPreparedSession = async (): Promise<string | undefined> => {
       // Re-read after acquiring the cross-surface lock. NoteChat may have sent
@@ -507,7 +519,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
       if (mustApplyCapturedModel) {
         try {
           await applySessionModelWhenIdle(() =>
-            createHermesMethods(gateway).switchActiveSessionModel({
+            createHermesMethods(submitGateway).switchActiveSessionModel({
               mode: hermesModeFor(storedSessionId),
               sessionId: runtimeSessionId,
               model: targetSessionModelId,
@@ -546,7 +558,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         // retry — the prompt is NOT sent with a silently-missing image.
         try {
           const updatedAttachments = await attachPendingImages(
-            gateway,
+            submitGateway,
             runtimeSessionId,
             storedSessionId,
             agentRunAttachments,
@@ -677,7 +689,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         computerUseRunStarted = true;
         rememberComputerUseRun(storedSessionId, computerUseRunLeaseId);
         attachHermesSessionEventListener({
-          gateway,
+          gateway: submitGateway.currentGateway(),
           runtimeSessionId,
           sessionDisplayTitle,
           storedSessionId,
@@ -693,7 +705,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           method: "prompt.submit",
           params: { session_id: runtimeSessionId, text: preparedProjectPrompt.text },
         });
-        await createHermesMethods(gateway).submitPrompt({
+        await createHermesMethods(submitGateway).submitPrompt({
           sessionId: runtimeSessionId,
           text: preparedProjectPrompt.text,
           ...(scopedAgentRunToolsets ? { enabledToolsets: scopedAgentRunToolsets } : {}),

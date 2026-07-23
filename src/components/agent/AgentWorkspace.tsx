@@ -34,6 +34,7 @@ import {
   createHermesMethods,
   hermesModeFor,
   type JuneHermesEvent,
+  type HermesRequestLike,
 } from "../../lib/hermes-control-plane";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -1913,6 +1914,7 @@ export function AgentWorkspace({
     sessionId: string,
     level: ThinkingLevel,
     explicitRuntimeSessionId?: string,
+    requestClient?: HermesRequestLike,
   ) {
     const effort = thinkingEffortForLevel(level);
     const runtimeSessionId = explicitRuntimeSessionId ?? runtimeSessionIdsRef.current[sessionId];
@@ -1922,7 +1924,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      const gateway = requestClient ?? (await ensureHermesGateway(sessionUnrestricted(sessionId)));
       await createHermesMethods(gateway).setSessionReasoningEffort({
         sessionId: runtimeSessionId,
         effort,

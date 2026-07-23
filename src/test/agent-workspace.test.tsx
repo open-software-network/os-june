@@ -44,6 +44,7 @@ import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 import { resetHermesActiveSessionSnapshotsForTests } from "../lib/hermes-active-session-snapshots";
+import { HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS } from "../lib/hermes-idle-submit-recovery";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -8298,6 +8299,91 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("recovers an idle first-submit stall without resubmitting the composer action", async () => {
+    let createCalls = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        createCalls += 1;
+        if (createCalls === 1) return new Promise(() => undefined);
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "recover the idle submit" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() => expect(createCalls).toBe(1), { maxMs: 1_000 });
+
+      // The request hangs without a WebSocket close. Its submit-scoped deadline
+      // forces the existing mode disconnect and retries only the transport call.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      });
+      await settleUnderFakeTimers(
+        () =>
+          expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+            session_id: "runtime-session-2",
+            text: "recover the idle submit",
+          }),
+        { maxMs: 2_000 },
+      );
+
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
+      expect(createCalls).toBe(2);
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledTimes(1);
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledWith(false);
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1);
+      expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the idle-submit retry failure without a third transport attempt", async () => {
+    let createCalls = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        createCalls += 1;
+        if (createCalls === 1) return new Promise(() => undefined);
+        return Promise.reject(new Error("Gateway still unavailable."));
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "surface the retry failure" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() => expect(createCalls).toBe(1), { maxMs: 1_000 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      });
+      await settleUnderFakeTimers(
+        () => expect(screen.getByText("Gateway still unavailable.")).toBeInTheDocument(),
+        { maxMs: 2_000 },
+      );
+
+      expect(createCalls).toBe(2);
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledTimes(1);
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
+      expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("narrows an explicit Computer use agent run to the app-owned toolset", async () => {

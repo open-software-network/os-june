@@ -81,19 +81,41 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
 
-vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
-  HermesGatewayClient: class {
-    connect = mocks.gatewayConnect;
-    close = vi.fn();
-    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
-      mocks.gatewayEventHandlers.add(handler);
-      return () => mocks.gatewayEventHandlers.delete(handler);
-    });
-    onClose = vi.fn();
-    request = mocks.gatewayRequest;
-  },
-}));
+vi.mock("../lib/hermes-gateway", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/hermes-gateway")>();
+  return {
+    ...original,
+    HermesGatewayClient: class {
+      connect = mocks.gatewayConnect;
+      close = vi.fn();
+      onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+        mocks.gatewayEventHandlers.add(handler);
+        return () => mocks.gatewayEventHandlers.delete(handler);
+      });
+      onClose = vi.fn();
+      request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
+        const response = mocks.gatewayRequest(method, params) as Promise<T>;
+        if (timeoutMs === undefined) return response;
+        return new Promise<T>((resolve, reject) => {
+          const timer = window.setTimeout(
+            () => reject(new original.HermesGatewayRequestTimeoutError(method)),
+            timeoutMs,
+          );
+          void Promise.resolve(response).then(
+            (value) => {
+              window.clearTimeout(timer);
+              resolve(value);
+            },
+            (error) => {
+              window.clearTimeout(timer);
+              reject(error);
+            },
+          );
+        });
+      }
+    },
+  };
+});
 
 const STORAGE_KEY = "june.noteChat.sessionsByNote.v1";
 
