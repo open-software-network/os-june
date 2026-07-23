@@ -2642,10 +2642,11 @@ input:focus-visible,
 .agent-home-nudges button {
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  /* The system's quiet floating control: neutral hairline as its own layer,
-   * pure-elevation --shadow-sm, and a neutral hover step. The accent-line
-   * variant read as a colored glow against a cool preset's wash. */
-  border: var(--border-width) solid var(--border-subtle);
+  /* Accent-family chips (they are June's suggestions): the themed line at
+   * rest, and a hover tint STRONGER than the canvas wash so the state change
+   * reads clearly on every preset - the weak tint drowned in the wash, and a
+   * neutral grey step read rough against it. */
+  border: var(--border-width) solid var(--brand-line);
   border-radius: var(--r-pill);
   background: var(--card);
   box-shadow: var(--shadow-sm);
@@ -2658,7 +2659,7 @@ input:focus-visible,
 }
 
 .agent-home-nudges button:hover {
-  background: color-mix(in oklch, var(--muted) 55%, var(--card));
+  background: var(--brand-tint-strong);
 }
 
 .agent-home-task-list {
