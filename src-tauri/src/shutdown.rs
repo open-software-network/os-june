@@ -443,7 +443,7 @@ where
                 timeout_ms = deadline.as_millis(),
                 "last-chance app cleanup hit its deadline"
             );
-            coordinator.mark_finalizing(target);
+            coordinator.cancel(target);
             BoundedCleanupResult::TimedOut
         }
     }
@@ -721,6 +721,32 @@ mod tests {
             coordinator.begin(ShutdownTarget::Exit(0)),
             BeginShutdown::Started(ShutdownTarget::Exit(0))
         );
+    }
+
+    #[test]
+    fn exit_fallback_keeps_timed_out_cleanup_out_of_finalizing() {
+        let coordinator = ShutdownCoordinator::default();
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+
+        assert_eq!(
+            run_bounded_cleanup_if_idle(
+                &coordinator,
+                ShutdownTarget::Exit(0),
+                Duration::from_millis(20),
+                move || {
+                    let _ = release_rx.recv();
+                    CleanupOutcome::Completed
+                },
+            ),
+            BoundedCleanupResult::TimedOut
+        );
+
+        assert!(coordinator.is_idle());
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Exit(0)),
+            BeginShutdown::Started(ShutdownTarget::Exit(0))
+        );
+        let _ = release_tx.send(());
     }
 
     #[test]
