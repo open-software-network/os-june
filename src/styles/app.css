@@ -357,7 +357,7 @@ input:focus-visible,
    * it stuck on). The dissolve hangs off the fixed composer instead
    * (.agent-composer::before), inside the workspace context where the
    * composer wins. */
-  .main-panel:has(.main-panel-body[data-active-view="agent"])::after {
+  .main-panel.main-panel-agent-view::after {
     animation: none;
   }
   .main-panel-body[data-note-detail-scroller="true"] {
@@ -1982,7 +1982,7 @@ input:focus-visible,
 }
 
 /* Both segments disable together; dim the whole control so it reads inert. */
-.agent-approval-split:has(:disabled) {
+.agent-approval-split-disabled {
   opacity: 0.55;
 }
 
@@ -2368,10 +2368,9 @@ button.agent-user-attachment:hover {
  * at the turn body's floor (inset-block-start: 100%) with only 1px of padding —
  * so under a bordered card the timestamp nearly touches the card's bottom border.
  * Reserve clearance below a card-bearing turn (padding grows the padding box, so
- * the 100%-anchored row drops clear of the border). Scoped via :has() so text
- * turns keep their tight 1px timestamp spacing. */
-.agent-assistant-turn-body:has(.agent-approval-card),
-.agent-assistant-turn-body:has(.agent-clarify-card) {
+ * the 100%-anchored row drops clear of the border). React marks only the turns
+ * that render an action card, so text turns keep their tight 1px spacing. */
+.agent-assistant-turn-body-action-card {
   padding-bottom: var(--sp-2);
 }
 
@@ -3099,7 +3098,7 @@ button.agent-user-attachment:hover {
   text-align: left;
 }
 
-.agent-artifact-card:has(button.agent-artifact-open):hover {
+.agent-artifact-card-interactive:hover {
   border-color: var(--border);
   background: color-mix(in oklch, var(--muted) 35%, transparent);
 }
@@ -3429,7 +3428,7 @@ button.agent-user-attachment:hover {
  * The files panel is its own card on the background surface — a sibling of
  * .main-panel, not a box inside it. It fixes to the window's right edge with
  * the same insets, radius, and shadow as the main card, and the main card
- * slides left (via the :has() margin below) to accept it. Fixed top/bottom
+ * slides left (via the shell's explicit open-state class) to accept it. Fixed top/bottom
  * anchoring also guarantees the panel a bounded height, so its body always
  * scrolls no matter what the chat column is doing.
  *
@@ -3441,7 +3440,7 @@ button.agent-user-attachment:hover {
 
 /* The files panel slides over from the window edge; only the card hands it
  * room so the titlebar tab strip still spans the full window top. */
-.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel {
+.app-shell.app-shell-artifact-panel-open .main-panel {
   margin-right: calc(var(--agent-files-w) + var(--sp-3));
 }
 
@@ -8490,7 +8489,7 @@ button.agent-user-attachment:hover {
  * falls back to the base rule (titlebar band, 8px from left) — the collapsed
  * sidebar is display:none so the header doesn't exist, and Settings has no
  * sidebar-header. macOS is untouched: no data-platform="windows" attribute. */
-.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"])
+.app-shell.app-shell-sidebar-default[data-platform="windows"][data-sidebar="expanded"]
 > .chrome-sidebar-toggle {
   top: var(--sp-3);
   left: max(
@@ -9786,7 +9785,7 @@ button.agent-user-attachment:hover {
 
 .agent-sidebar-row:hover .agent-session-meta,
 .agent-sidebar-row[data-menu-open="true"] .agent-session-meta,
-.agent-sidebar-row:has(.agent-session-row-menu:focus-visible) .agent-session-meta {
+.agent-sidebar-row-menu-focused .agent-session-meta {
   opacity: 0;
 }
 
@@ -10414,9 +10413,9 @@ button.agent-user-attachment:hover {
   background: linear-gradient(to bottom, transparent, var(--card) 78%);
   opacity: 0;
   /* Soften any static opacity flip (e.g. leaving the agent view, where the
-   * :has() rule below holds the dissolve at 0) so the veil never pops in a
+   * agent-view rule below holds the dissolve at 0) so the veil never pops in a
    * single frame over content. Matches the warm wash's 280ms fade. Lives
-   * here, not on the :has() rule, because an exit transition must survive
+   * here, not on the state rule, because an exit transition must survive
    * the rule un-matching; scroll-driven animation values are unaffected, as
    * animations beat transitions. */
   transition: opacity 280ms var(--ease-out);
@@ -10431,7 +10430,7 @@ button.agent-user-attachment:hover {
  * this (animations beat static declarations). In browsers without
  * scroll-timeline support the agent view simply never shows the dissolve —
  * a safe degradation, since it exists to dissolve scrolling content. */
-.main-panel:has(.main-panel-body[data-active-view="agent"])::after {
+.main-panel.main-panel-agent-view::after {
   opacity: 0;
 }
 
@@ -10439,7 +10438,7 @@ button.agent-user-attachment:hover {
  * dissolve sits where the breadcrumb bar normally lives, and in the hero it
  * shows up behind floating popovers as a horizontal wash. Keep it off for the
  * entire agent view. */
-.main-panel:has(.main-panel-body[data-active-view="agent"])::before {
+.main-panel.main-panel-agent-view::before {
   top: var(--detail-bar-h);
   right: var(--scrollbar-w);
   animation: none;
@@ -11023,7 +11022,7 @@ button.agent-user-attachment:hover {
 /* Sits above the first transcript turn and shares its max-width so the
  * filter/Copy align with the turn content (and the editor header). Copy
  * hugs the right by default; the source filter (when present) takes the
- * left, splitting the bar via :has() so we don't need a layout
+ * left, with React marking the two-sided layout so we don't need a
  * placeholder. */
 .transcript-toolbar {
   display: flex;
@@ -11034,7 +11033,7 @@ button.agent-user-attachment:hover {
   margin-bottom: var(--sp-2);
 }
 
-.transcript-toolbar:has(.transcript-source-filter) {
+.transcript-toolbar-filtered {
   justify-content: space-between;
 }
 
@@ -11658,7 +11657,7 @@ button.agent-user-attachment:hover {
  * panel (window inset + panel + card gap + content gutter — the same math as
  * the agent composer's artifact-panel override) so the recorder pill centers
  * on the note card, not the window. */
-.app-shell:has(.note-chat-panel) .editor-footer {
+.app-shell.app-shell-note-chat-open .editor-footer {
   right: calc(2 * var(--sp-3) + var(--note-chat-w) + var(--sp-8));
 }
 
@@ -11757,7 +11756,7 @@ button.agent-user-attachment:hover {
 }
 
 /* The Dismiss button hugs the corner radius like the funding notice's CTA. */
-.record-dock .record-consent-note-surface:has(.inline-notice-actions) {
+.record-dock .record-consent-note-surface-actions {
   padding-right: var(--sp-2);
 }
 
@@ -12216,11 +12215,11 @@ button.agent-user-attachment:hover {
   /* Grows toward the 30px box with a little headroom at the edges. The shared
    * meter drives --level per frame; the 24ms transition smooths sub-frame steps
    * (sharpened from 40ms to match the HUD so the carrier shimmer reads crisp). */
-  height: calc(3px + var(--level, 0) * 24px);
+  height: 100%;
   border-radius: 999px;
   background: var(--foreground);
-  transform: translateY(50%);
-  transition: height 18ms linear;
+  transform: translateY(50%) scaleY(calc(0.1 + var(--level, 0) * 0.8));
+  transition: transform 18ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {
@@ -13839,7 +13838,7 @@ button.agent-user-attachment:hover {
   background: var(--border-subtle);
 }
 
-.settings-row:has(+ .settings-row-divider) {
+.settings-row-before-divider {
   border-bottom: 0;
 }
 
@@ -21511,7 +21510,7 @@ button.memory-project:hover {
   border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--border));
 }
 
-.folder-note-checkbox:has(input:checked) .folder-note-select-box {
+.folder-note-checkbox-checked .folder-note-select-box {
   border-color: var(--brand);
   background: var(--brand);
   color: var(--on-solid);
@@ -21711,7 +21710,7 @@ button.memory-project:hover {
 
 .all-notes-row:hover .folder-note-checkbox,
 .all-notes-row:focus-within .folder-note-checkbox,
-.all-notes-row .folder-note-checkbox:has(input:checked),
+.all-notes-row .folder-note-checkbox-checked,
 .all-notes-list[data-selecting="true"] .folder-note-checkbox {
   opacity: 1;
   pointer-events: auto;
@@ -21994,7 +21993,7 @@ button.memory-project:hover {
 }
 
 /* Trim the bottom padding when a footer follows so the two don't double up. */
-.empty-state:has(.empty-state-footer) .empty-state-content {
+.empty-state-with-footer .empty-state-content {
   padding-bottom: var(--sp-10);
 }
 
@@ -23322,12 +23321,13 @@ button.memory-project:hover {
 
 .update-progress-fill {
   height: 100%;
-  min-width: 8px;
+  width: 100%;
   border-radius: inherit;
   /* Lighter than --foreground so the bar reads quiet; --muted-foreground stays
    * clearly ahead of the --surface-subtle track in both themes. */
   background: var(--muted-foreground);
-  transition: width var(--t-fast) var(--ease-out);
+  clip-path: inset(0 var(--update-progress-clip, 100%) 0 0 round var(--r-pill));
+  transition: clip-path var(--t-fast) var(--ease-out);
 }
 
 .update-progress-percent {
@@ -25063,14 +25063,17 @@ button.memory-project:hover {
 .skills-hub-install-bar-fill {
   display: block;
   height: 100%;
-  width: 0;
+  width: 100%;
   border-radius: 999px;
   background: var(--primary);
-  transition: width 0.2s ease;
+  clip-path: inset(0 var(--install-progress-clip, 100%) 0 0 round var(--r-pill));
+  transition: clip-path 0.2s ease;
 }
 
 .skills-hub-install-bar-fill[data-indeterminate] {
   width: 40%;
+  clip-path: none;
+  transition: none;
   animation: skills-hub-indeterminate 1.1s ease-in-out infinite;
 }
 
@@ -26981,13 +26984,13 @@ button.memory-project:hover {
 /* Note chat panel -----------------------------------------------------
  * Ask June beside the open note: the same attach mechanics as the agent
  * files panel — a sibling card fixed to the window's right edge, the main
- * card sliding left via the :has() margin — but holding a conversation
+ * card sliding left via the shell's explicit open-state class — but holding a conversation
  * instead of a document (src/components/note-chat/). */
 .app-shell {
   --note-chat-w: clamp(320px, 32vw, 440px);
 }
 
-.app-shell:has(.note-chat-panel) .main-panel {
+.app-shell.app-shell-note-chat-open .main-panel {
   margin-right: calc(var(--note-chat-w) + var(--sp-3));
 }
 
@@ -27349,17 +27352,17 @@ button.memory-project:hover {
   border-color: color-mix(in oklch, var(--muted-foreground) 35%, var(--border));
 }
 
-.checkbox-control:has(input:checked) .checkbox-box {
+.checkbox-control-checked .checkbox-box {
   border-color: var(--brand);
   background: var(--brand);
 }
 
-.checkbox-control:has(input:focus-visible) .checkbox-box {
+.checkbox-control input:focus-visible + .checkbox-box {
   outline: 2px solid color-mix(in oklch, var(--ring) 55%, transparent);
   outline-offset: 2px;
 }
 
-.checkbox-control:has(input:disabled) {
+.checkbox-control-disabled {
   opacity: 0.55;
 }
 

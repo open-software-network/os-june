@@ -172,6 +172,9 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
     thinkingOpen(activeThinkingKey);
   const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
   const [copied, setCopied] = useState(false);
+  const [dismissedAccessRequestCards, setDismissedAccessRequestCards] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   const copyResetTimerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -216,6 +219,35 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
+  const hasActionCard = turn.parts.some((part, index) => {
+    if (
+      part.type === "approval" ||
+      part.type === "clarify" ||
+      part.type === "sudo" ||
+      part.type === "secret"
+    ) {
+      return part.status === "pending";
+    }
+    if (part.type !== "text") return false;
+    return (
+      (hasAgentCliAccessRequest(part.text) &&
+        cliAccess?.enabled !== true &&
+        !dismissedAccessRequestCards.has(accessRequestCardKey(turn.id, index, "cli"))) ||
+      (hasBrowserAccessRequest(part.text) &&
+        browserAccess?.enabled !== true &&
+        !dismissedAccessRequestCards.has(accessRequestCardKey(turn.id, index, "browser")))
+    );
+  });
+
+  function dismissAccessRequestCard(index: number, kind: AccessRequestCardKind) {
+    const key = accessRequestCardKey(turn.id, index, kind);
+    setDismissedAccessRequestCards((current) => {
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+  }
 
   async function copyTurn() {
     if (!copyText) return;
@@ -346,7 +378,11 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
 
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
-      <div className="agent-assistant-turn-body">
+      <div
+        className={`agent-assistant-turn-body${
+          hasActionCard ? " agent-assistant-turn-body-action-card" : ""
+        }`}
+      >
         {reasoningParts.length > 0 ? (
           <AgentThinkingGroup
             reasoning={reasoningParts}
@@ -384,10 +420,22 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
                   />
                 ) : null}
                 {hasAgentCliAccessRequest(part.text) ? (
-                  <AgentCliAccessCard cliAccess={cliAccess} />
+                  <AgentCliAccessCard
+                    cliAccess={cliAccess}
+                    dismissed={dismissedAccessRequestCards.has(
+                      accessRequestCardKey(turn.id, index, "cli"),
+                    )}
+                    onDismiss={() => dismissAccessRequestCard(index, "cli")}
+                  />
                 ) : null}
                 {hasBrowserAccessRequest(part.text) ? (
-                  <AgentBrowserAccessCard browserAccess={browserAccess} />
+                  <AgentBrowserAccessCard
+                    browserAccess={browserAccess}
+                    dismissed={dismissedAccessRequestCards.has(
+                      accessRequestCardKey(turn.id, index, "browser"),
+                    )}
+                    onDismiss={() => dismissAccessRequestCard(index, "browser")}
+                  />
                 ) : null}
               </div>
             ) : (
@@ -489,6 +537,12 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
     </article>
   );
 });
+
+type AccessRequestCardKind = "browser" | "cli";
+
+function accessRequestCardKey(turnId: string, partIndex: number, kind: AccessRequestCardKind) {
+  return `${turnId}:${partIndex}:${kind}`;
+}
 
 function AgentUserAttachmentList({
   attachments,

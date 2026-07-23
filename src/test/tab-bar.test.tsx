@@ -133,7 +133,7 @@ describe("TabBar", () => {
 
   it("places the Windows sidebar toggle in the sidebar header band when expanded", () => {
     const toggleRule = cssRuleFor(
-      '.app-shell[data-platform="windows"][data-sidebar="expanded"]:has(> .sidebar[data-mode="default"])\n> .chrome-sidebar-toggle',
+      '.app-shell.app-shell-sidebar-default[data-platform="windows"][data-sidebar="expanded"]\n> .chrome-sidebar-toggle',
     );
 
     // Vertically aligned with the sidebar header (flush at the top, --sp-3).
@@ -184,13 +184,11 @@ describe("TabBar", () => {
   });
 
   it("keeps the tab strip full-width when the files panel is open", () => {
-    const panelRule = cssRuleFor(
-      '.app-shell:has(.agent-workspace[data-artifact-panel="open"]) .main-panel',
-    );
+    const panelRule = cssRuleFor(".app-shell.app-shell-artifact-panel-open .main-panel");
 
     expect(panelRule).toContain("margin-right: calc(var(--agent-files-w) + var(--sp-3));");
     expect(appCss).not.toMatch(
-      /\.app-shell:has\(\.agent-workspace\[data-artifact-panel="open"\]\) \.main-column\s*\{[\s\S]*?padding-right:\s*calc\(var\(--agent-files-w\)/,
+      /\.app-shell\.app-shell-artifact-panel-open \.main-column\s*\{[\s\S]*?padding-right:\s*calc\(var\(--agent-files-w\)/,
     );
   });
 

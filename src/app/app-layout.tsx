@@ -152,10 +152,17 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
     updateStatusLeaving,
     workspaceContent,
   } = dependencies;
+  const noteChatVisible = activeView === "meetings" && selectedNote !== undefined && noteChatOpen;
 
   return (
     <main
-      className="app-shell"
+      className={[
+        "app-shell",
+        activeView !== "settings" ? "app-shell-sidebar-default" : "",
+        noteChatVisible ? "app-shell-note-chat-open" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       data-platform={isWindowsPlatform() ? "windows" : undefined}
       data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
       data-sidebar-resizing={sidebarResizing ? "true" : "false"}
@@ -332,7 +339,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
           layoutFrozen={sidebarResizing}
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
-        <section className="main-panel">
+        <section className={`main-panel${activeView === "agent" ? " main-panel-agent-view" : ""}`}>
           {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
               onDismiss={() => setAccessibilityBannerDismissed(true)}
@@ -393,7 +400,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
             ) : null}
           </AnimatePresence>
         </section>
-        {activeView === "meetings" && selectedNote && noteChatOpen ? (
+        {noteChatVisible && selectedNote ? (
           <NoteChatPanel
             note={{ id: selectedNote.id, title: selectedNote.title }}
             chat={noteChat}

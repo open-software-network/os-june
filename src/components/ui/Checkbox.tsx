@@ -10,10 +10,14 @@ type CheckboxProps = Omit<ComponentPropsWithoutRef<"input">, "type" | "className
  * the visual — outline when unchecked, brand fill + checkmark when checked.
  * Place inside a <label> next to the option copy.
  */
-export function Checkbox({ checked, ...rest }: CheckboxProps) {
+export function Checkbox({ checked, disabled, ...rest }: CheckboxProps) {
   return (
-    <span className="checkbox-control">
-      <input type="checkbox" checked={checked} {...rest} />
+    <span
+      className={`checkbox-control${checked ? " checkbox-control-checked" : ""}${
+        disabled ? " checkbox-control-disabled" : ""
+      }`}
+    >
+      <input type="checkbox" checked={checked} disabled={disabled} {...rest} />
       <span className="checkbox-box" aria-hidden>
         {checked ? <IconCheckmark2Medium size={10} /> : null}
       </span>
