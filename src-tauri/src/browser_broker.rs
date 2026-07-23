@@ -4,8 +4,11 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(test)]
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,8 +55,13 @@ pub(crate) trait BrowserTransport: Send + Sync {
     fn terminate_session(&self, _session_id: &str) {}
 
     /// App-shutdown variant. Managed transports override this to keep mutex
-    /// acquisition bounded; other transports retain their existing teardown.
-    fn terminate_session_for_shutdown(&self, session_id: &str) {
+    /// acquisition inside the supervised aggregate deadline; other transports
+    /// retain their existing teardown.
+    fn terminate_session_for_shutdown(
+        &self,
+        session_id: &str,
+        _deadline: crate::shutdown::ShutdownDeadline,
+    ) {
         self.terminate_session(session_id);
     }
 }
@@ -287,7 +295,7 @@ struct BrowserBrokerState {
 struct BrowserShutdownPlan {
     transports: HashMap<BrowserTransportKind, Arc<dyn BrowserTransport>>,
     sessions: Vec<(String, BrowserTransportKind)>,
-    approvals_changed: bool,
+    approvals_changed: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 struct BrowserSession {
@@ -686,37 +694,23 @@ impl BrowserBroker {
 
     /// App-exit backstop. Managed transports terminate synchronously so no
     /// in-flight request can keep Chromium or its ephemeral profile alive.
-    pub(crate) fn terminate_sessions(self: &Arc<Self>) {
-        let Some(mut state) =
-            crate::shutdown::try_lock_for(&self.state, Duration::from_millis(250))
-        else {
+    pub(crate) fn terminate_sessions(&self, deadline: crate::shutdown::ShutdownDeadline) {
+        let Some(mut state) = deadline.try_lock(&self.state) else {
             tracing::warn!(
-                "browser shutdown timed out acquiring the broker state lock; scheduling retry"
+                "browser shutdown exhausted the aggregate deadline acquiring the broker state lock"
             );
-            let broker = Arc::clone(self);
-            if let Err(error) = std::thread::Builder::new()
-                .name("june-browser-shutdown-retry".to_string())
-                .spawn(move || broker.terminate_sessions_blocking())
-            {
-                tracing::warn!(%error, "could not schedule browser shutdown retry");
-            }
             return;
         };
         let shutdown = Self::drain_sessions_for_shutdown(&mut state);
         drop(state);
-        self.finish_session_termination(shutdown);
-    }
-
-    fn terminate_sessions_blocking(&self) {
-        let mut state = self.lock();
-        let shutdown = Self::drain_sessions_for_shutdown(&mut state);
-        drop(state);
-        self.finish_session_termination(shutdown);
+        self.finish_session_termination(shutdown, deadline);
     }
 
     fn drain_sessions_for_shutdown(state: &mut BrowserBrokerState) -> BrowserShutdownPlan {
         state.transition_blocked = true;
-        let approvals_changed = !state.pending_approvals.is_empty();
+        let approvals_changed = (!state.pending_approvals.is_empty())
+            .then(|| state.approvals_changed.clone())
+            .flatten();
         state.pending_approvals.clear();
         state.pending_by_action.clear();
         state.resolved_actions.clear();
@@ -733,13 +727,17 @@ impl BrowserBroker {
         }
     }
 
-    fn finish_session_termination(&self, plan: BrowserShutdownPlan) {
-        if plan.approvals_changed {
-            self.notify_approvals_changed();
+    fn finish_session_termination(
+        &self,
+        plan: BrowserShutdownPlan,
+        deadline: crate::shutdown::ShutdownDeadline,
+    ) {
+        if let Some(notify) = plan.approvals_changed {
+            notify();
         }
         for (session_id, kind) in plan.sessions {
             if let Some(transport) = plan.transports.get(&kind) {
-                transport.terminate_session_for_shutdown(&session_id);
+                transport.terminate_session_for_shutdown(&session_id, deadline);
             }
         }
     }
@@ -3329,6 +3327,58 @@ mod tests {
             self.terminated
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn shutdown_waits_for_contended_broker_state_before_terminating_sessions() {
+        let broker = Arc::new(BrowserBroker::default());
+        let transport = Arc::new(TeardownTrackingTransport::default());
+        {
+            let mut state = broker.lock();
+            state
+                .transports
+                .insert(BrowserTransportKind::Managed, transport.clone());
+            state.sessions.insert(
+                "contended-session".to_string(),
+                BrowserSession {
+                    transport_kind: BrowserTransportKind::Managed,
+                    ..BrowserSession::default()
+                },
+            );
+        }
+
+        let state_guard = broker
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown_broker = Arc::clone(&broker);
+        let shutdown = std::thread::spawn(move || {
+            shutdown_broker.terminate_sessions(crate::shutdown::ShutdownDeadline::after(
+                Duration::from_secs(2),
+            ));
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "supervised browser teardown must retain ownership past the old 250 ms lock attempt"
+        );
+        drop(state_guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown completes after broker state is released");
+        shutdown.join().expect("shutdown thread");
+
+        let state = broker.lock();
+        assert!(state.transition_blocked);
+        assert!(state.sessions.is_empty());
+        assert_eq!(
+            transport
+                .terminated
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     #[tokio::test]

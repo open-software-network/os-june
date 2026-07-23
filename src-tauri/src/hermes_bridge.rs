@@ -4999,7 +4999,7 @@ fn hermes_file_mime_type(path: &Path) -> Option<&'static str> {
     image_mime_type(path).or_else(|| video_mime_type(path))
 }
 
-pub async fn shutdown(app: &tauri::AppHandle) {
+pub(crate) async fn shutdown(app: &tauri::AppHandle, deadline: crate::shutdown::ShutdownDeadline) {
     let bridge = app.state::<HermesBridge>();
     // Latch teardown *before* draining so an in-flight `start_hermes_bridge_inner`
     // cannot register a runtime after the drain and re-orphan the tree we are
@@ -5030,7 +5030,7 @@ pub async fn shutdown(app: &tauri::AppHandle) {
         ),
     }
 
-    bridge.browser_broker.terminate_sessions();
+    bridge.browser_broker.terminate_sessions(deadline);
     stop_hermes_bridge_for_shutdown(&bridge);
     let proxy = match crate::shutdown::try_lock_for(&bridge.provider_proxy, SHUTDOWN_MUTEX_TIMEOUT)
     {

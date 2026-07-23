@@ -253,20 +253,14 @@ impl ManagedSessionResources {
         self.profile.delete();
     }
 
-    fn teardown_for_shutdown(self: &Arc<Self>) {
+    fn teardown_for_shutdown(&self, deadline: crate::shutdown::ShutdownDeadline) {
         if self.closed.load(Ordering::SeqCst) {
             return;
         }
-        let Some(mut browser) =
-            crate::shutdown::try_lock_for(&self.browser, Duration::from_millis(250))
-        else {
-            let resources = Arc::clone(self);
-            if let Err(error) = std::thread::Builder::new()
-                .name("june-managed-browser-retry".to_string())
-                .spawn(move || resources.teardown())
-            {
-                tracing::warn!(%error, "could not schedule managed browser teardown retry");
-            }
+        let Some(mut browser) = deadline.try_lock(&self.browser) else {
+            tracing::warn!(
+                "managed browser teardown exhausted the aggregate deadline acquiring the browser lock"
+            );
             return;
         };
         if self.closed.swap(true, Ordering::SeqCst) {
@@ -327,18 +321,18 @@ impl StartingManagedSession {
         }
     }
 
-    fn terminate_for_shutdown(self: &Arc<Self>) {
+    fn terminate_for_shutdown(&self, deadline: crate::shutdown::ShutdownDeadline) {
         self.cancelled.store(true, Ordering::SeqCst);
-        let resources = crate::shutdown::try_lock_for(&self.resources, Duration::from_millis(250));
-        if let Some(resources) = resources.and_then(|resources| resources.as_ref().cloned()) {
-            resources.teardown_for_shutdown();
-        } else {
-            let starting = Arc::clone(self);
-            if let Err(error) = std::thread::Builder::new()
-                .name("june-managed-start-retry".to_string())
-                .spawn(move || starting.terminate())
-            {
-                tracing::warn!(%error, "could not schedule managed browser start teardown retry");
+        match deadline.try_lock(&self.resources) {
+            Some(resources) => {
+                if let Some(resources) = resources.as_ref().cloned() {
+                    resources.teardown_for_shutdown(deadline);
+                }
+            }
+            None => {
+                tracing::warn!(
+                    "managed browser teardown exhausted the aggregate deadline acquiring startup resources"
+                );
             }
         }
         if !self.begun.load(Ordering::SeqCst) {
@@ -1128,39 +1122,32 @@ impl ManagedBrowserTransport {
         }
     }
 
-    fn terminate_session_for_shutdown(&self, session_id: &str) {
-        let Some(starting_sessions) =
-            crate::shutdown::try_lock_for(&self.inner.starting, Duration::from_millis(250))
-        else {
-            self.schedule_termination_retry(session_id);
+    fn terminate_session_for_shutdown(
+        &self,
+        session_id: &str,
+        deadline: crate::shutdown::ShutdownDeadline,
+    ) {
+        let Some(starting_sessions) = deadline.try_lock(&self.inner.starting) else {
+            tracing::warn!(
+                "managed browser teardown exhausted the aggregate deadline acquiring the starting-session map"
+            );
             return;
         };
         let starting = starting_sessions.get(session_id).cloned();
         drop(starting_sessions);
         if let Some(starting) = starting {
-            starting.terminate_for_shutdown();
+            starting.terminate_for_shutdown(deadline);
         }
-        let Some(mut sessions) =
-            crate::shutdown::try_lock_for(&self.inner.sessions, Duration::from_millis(250))
-        else {
-            self.schedule_termination_retry(session_id);
+        let Some(mut sessions) = deadline.try_lock(&self.inner.sessions) else {
+            tracing::warn!(
+                "managed browser teardown exhausted the aggregate deadline acquiring the live-session map"
+            );
             return;
         };
         let session = sessions.remove(session_id);
         drop(sessions);
         if let Some(session) = session {
-            session.resources.teardown_for_shutdown();
-        }
-    }
-
-    fn schedule_termination_retry(&self, session_id: &str) {
-        let transport = self.clone();
-        let session_id = session_id.to_string();
-        if let Err(error) = std::thread::Builder::new()
-            .name("june-managed-session-retry".to_string())
-            .spawn(move || transport.terminate_session(&session_id))
-        {
-            tracing::warn!(%error, "could not schedule managed session teardown retry");
+            session.resources.teardown_for_shutdown(deadline);
         }
     }
 
@@ -1274,8 +1261,12 @@ impl BrowserTransport for ManagedBrowserTransport {
         ManagedBrowserTransport::terminate_session(self, session_id);
     }
 
-    fn terminate_session_for_shutdown(&self, session_id: &str) {
-        ManagedBrowserTransport::terminate_session_for_shutdown(self, session_id);
+    fn terminate_session_for_shutdown(
+        &self,
+        session_id: &str,
+        deadline: crate::shutdown::ShutdownDeadline,
+    ) {
+        ManagedBrowserTransport::terminate_session_for_shutdown(self, session_id, deadline);
     }
 }
 
@@ -1679,6 +1670,47 @@ mod tests {
         assert!(error.message.contains("session-456"));
         assert!(!error.message.contains("private.example"));
         assert!(!error.message.contains("field-value-456"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_contended_managed_session_map() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let transport =
+            ManagedBrowserTransport::new(ManagedSessionConfig::production(temp.path().into()));
+        transport
+            .reserve_session("contended-session")
+            .expect("reserve managed session");
+        let starting = transport
+            .starting()
+            .get("contended-session")
+            .cloned()
+            .expect("starting session");
+
+        let starting_guard = transport
+            .inner
+            .starting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown_transport = transport.clone();
+        let shutdown = std::thread::spawn(move || {
+            shutdown_transport.terminate_session_for_shutdown(
+                "contended-session",
+                crate::shutdown::ShutdownDeadline::after(Duration::from_secs(2)),
+            );
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "managed teardown must remain supervised past the old 250 ms lock attempt"
+        );
+        drop(starting_guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("managed teardown completes after the session map is released");
+        shutdown.join().expect("shutdown thread");
+        assert!(starting.is_cancelled());
     }
 }
 

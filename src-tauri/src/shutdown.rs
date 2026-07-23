@@ -27,6 +27,33 @@ const _: () = assert!(
             + HERMES_FINALIZATION_BUDGET_MS
 );
 
+/// One absolute deadline shared by every leaf in a supervised cleanup run.
+///
+/// A leaf that has to wait for ownership stays on the cleanup worker's call
+/// stack until this deadline. That makes the supervisor account for the wait:
+/// successful cleanup delays finalization, while an expired deadline produces
+/// an explicit leaf fallback instead of an untracked retry thread.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ShutdownDeadline {
+    expires_at: Instant,
+}
+
+impl ShutdownDeadline {
+    pub(crate) fn after(timeout: Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + timeout,
+        }
+    }
+
+    fn remaining(self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+
+    pub(crate) fn try_lock<'a, T>(self, mutex: &'a Mutex<T>) -> Option<MutexGuard<'a, T>> {
+        try_lock_for(mutex, self.remaining())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShutdownTarget {
     Exit(i32),
@@ -162,12 +189,13 @@ pub(crate) fn handle_exit_requested(
 pub(crate) fn handle_exit(app: &tauri::AppHandle) {
     let coordinator = app.state::<ShutdownCoordinator>();
     let cleanup_app = app.clone();
+    let cleanup_deadline = ShutdownDeadline::after(EXIT_FALLBACK_DEADLINE);
     if matches!(
         run_bounded_cleanup_if_idle(
             &coordinator,
             ShutdownTarget::Exit(0),
             EXIT_FALLBACK_DEADLINE,
-            move || tauri::async_runtime::block_on(run_cleanup(&cleanup_app)),
+            move || { tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)) },
         ),
         Some(true)
     ) {
@@ -189,8 +217,9 @@ pub(crate) fn cleanup_before_updater_exit(app: &tauri::AppHandle) {
     let cleanup_app = app.clone();
     match coordinator.begin(ShutdownTarget::Restart) {
         BeginShutdown::Started(target) => {
+            let cleanup_deadline = ShutdownDeadline::after(SHUTDOWN_AGGREGATE_DEADLINE);
             let completed = run_bounded_cleanup(SHUTDOWN_AGGREGATE_DEADLINE, move || {
-                tauri::async_runtime::block_on(run_cleanup(&cleanup_app));
+                tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline));
             });
             if !completed {
                 tracing::warn!(
@@ -215,9 +244,10 @@ fn request(app: &tauri::AppHandle, requested: ShutdownTarget) -> Result<(), AppE
 
     let cleanup_app = app.clone();
     let final_app = app.clone();
+    let cleanup_deadline = ShutdownDeadline::after(SHUTDOWN_AGGREGATE_DEADLINE);
     spawn_supervised_shutdown(
         SHUTDOWN_AGGREGATE_DEADLINE,
-        move || tauri::async_runtime::block_on(run_cleanup(&cleanup_app)),
+        move || tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)),
         move |completed| {
             if completed {
                 tracing::info!(?target, "app shutdown cleanup completed");
@@ -262,7 +292,7 @@ where
         .map(|_| ())
 }
 
-async fn run_cleanup(app: &tauri::AppHandle) {
+async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) {
     let dictation_app = app.clone();
     let dictation =
         tauri::async_runtime::spawn_blocking(move || crate::dictation::stop_helper(&dictation_app));
@@ -270,7 +300,7 @@ async fn run_cleanup(app: &tauri::AppHandle) {
     // This call preserves the load-bearing order inside the Hermes subsystem:
     // quiesce starts -> unload the Gateway -> reap runtimes -> stop the
     // provider proxy.
-    let hermes = crate::hermes_bridge::shutdown(app);
+    let hermes = crate::hermes_bridge::shutdown(app, deadline);
     let (dictation_result, (), ()) = tokio::join!(dictation, computer_use, hermes);
     if let Err(error) = dictation_result {
         tracing::warn!(%error, "dictation shutdown worker could not be joined");
