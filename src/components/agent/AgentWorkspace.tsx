@@ -1,11 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { IconArrowDown } from "central-icons/IconArrowDown";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconMicrophone } from "central-icons/IconMicrophone";
+import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
@@ -50,16 +52,22 @@ import {
   advanceHeroGreeting,
   AGENT_NEW_SESSION_EVENT,
   AGENT_SHORTCUTS,
+  rememberUnrestrictedAcknowledged,
   SANDBOX_OPTIONS,
+  unrestrictedAcknowledged,
 } from "./agent-workspace-config";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
 import { agentComposerClearance } from "./composer/layout";
 import {
   ComposerModelPicker,
   ComposerModelPopover,
+  heroPrivacyFootnote,
   type ComposerModelFlyout,
 } from "./composer/ModelPicker";
+import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { modelOptions, selectedModel } from "../settings/ModelPickerDialog";
+import { Dialog } from "../ui/Dialog";
+import { Spinner } from "../ui/Spinner";
 import {
   type AgentNewSessionDetail,
   pendingNewSessionRequest,
@@ -512,6 +520,30 @@ export function AgentWorkspace({
 
   const heroMode = newSessionMode && !selectedSession;
   const renderedArtifacts = artifacts.filter((artifact) => artifact.available).map(artifactView);
+  const activeModel = selectedModel(models, model);
+  const composer = (
+    <AgentComposer
+      formRef={composerRef}
+      scrollRef={scrollRef}
+      draft={draft}
+      setDraft={setDraft}
+      model={model}
+      setModel={setModel}
+      models={models}
+      safetyMode={safetyMode}
+      setSafetyMode={setSafetyMode}
+      attachments={attachments}
+      setAttachments={setAttachments}
+      onPickAttachments={pickAttachments}
+      onDictate={startDictation}
+      onSubmit={submit}
+      onStop={stop}
+      running={running}
+      submitting={submitting}
+      disabledReason={creditActionsDisabledReason}
+      hero={heroMode}
+    />
+  );
   return (
     <section
       className="agent-workspace"
@@ -535,61 +567,56 @@ export function AgentWorkspace({
           onDelete={remove}
         />
       ) : null}
-      <div
-        ref={scrollRef}
-        className="agent-scroll"
-        style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
-      >
-        <main className="agent-main" data-hero={heroMode ? "true" : undefined}>
+      {heroMode ? (
+        <main className="agent-main" aria-label="Agent task details" data-hero="true">
           {error ? (
             <div className="agent-composer-notice" role="alert">
               {error}
             </div>
           ) : null}
-          {heroMode ? (
-            <>
-              <div className="agent-hero-heading">
-                <h2 className="agent-hero-title">{heroGreeting}</h2>
+          <div className="agent-hero-heading">
+            <h2 className="agent-hero-title">{heroGreeting}</h2>
+          </div>
+          {composer}
+          <div className="agent-hero-suggestions">
+            <div className="agent-hero-chips" data-hidden={draft.trim() ? "true" : undefined}>
+              {AGENT_SHORTCUTS.slice(0, 3).map((shortcut, index) => (
+                <button
+                  key={shortcut.key}
+                  type="button"
+                  className="agent-hero-chip"
+                  style={{ "--chip-i": index } as CSSProperties}
+                  title={shortcut.description}
+                  disabled={submitting}
+                  onClick={() => setDraft(shortcut.prompt)}
+                >
+                  <span className="agent-hero-chip-icon" aria-hidden>
+                    {shortcut.icon}
+                  </span>
+                  {shortcut.title}
+                </button>
+              ))}
+            </div>
+            <p className="agent-hero-footnote">
+              {heroPrivacyFootnote(
+                activeModel,
+                activeModel ? modelPrivacyBadge(activeModel) : undefined,
+              )}
+            </p>
+          </div>
+        </main>
+      ) : (
+        <div
+          ref={scrollRef}
+          className="agent-scroll"
+          style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
+        >
+          <main className="agent-main" aria-label="Agent task details">
+            {error ? (
+              <div className="agent-composer-notice" role="alert">
+                {error}
               </div>
-              <AgentComposer
-                formRef={composerRef}
-                draft={draft}
-                setDraft={setDraft}
-                model={model}
-                setModel={setModel}
-                models={models}
-                safetyMode={safetyMode}
-                setSafetyMode={setSafetyMode}
-                attachments={attachments}
-                setAttachments={setAttachments}
-                onPickAttachments={pickAttachments}
-                onDictate={startDictation}
-                onSubmit={submit}
-                onStop={stop}
-                working={running || submitting}
-                disabledReason={creditActionsDisabledReason}
-                hero
-              />
-              <div className="agent-hero-suggestions">
-                <div className="agent-hero-chips">
-                  {AGENT_SHORTCUTS.slice(0, 3).map((shortcut, index) => (
-                    <button
-                      key={shortcut.key}
-                      type="button"
-                      className="agent-hero-chip"
-                      style={{ "--chip-i": index } as React.CSSProperties}
-                      onClick={() => setDraft(shortcut.prompt)}
-                    >
-                      <span className="agent-hero-chip-icon" aria-hidden>
-                        {shortcut.icon}
-                      </span>
-                      {shortcut.title}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : (
+            ) : null}
             <div className="agent-timeline">
               {turns.map((turn) => (
                 <AgentChatTurnRow
@@ -612,35 +639,17 @@ export function AgentWorkspace({
               <AgentArtifactList artifacts={renderedArtifacts} />
               <AgentThinking visible={running && turns.at(-1)?.role === "user"} />
             </div>
-          )}
-        </main>
-      </div>
-      {!heroMode ? (
-        <AgentComposer
-          formRef={composerRef}
-          draft={draft}
-          setDraft={setDraft}
-          model={model}
-          setModel={setModel}
-          models={models}
-          safetyMode={safetyMode}
-          setSafetyMode={setSafetyMode}
-          attachments={attachments}
-          setAttachments={setAttachments}
-          onPickAttachments={pickAttachments}
-          onDictate={startDictation}
-          onSubmit={submit}
-          onStop={stop}
-          working={running || submitting}
-          disabledReason={creditActionsDisabledReason}
-        />
-      ) : null}
+            {composer}
+          </main>
+        </div>
+      )}
     </section>
   );
 }
 
 function AgentComposer({
   formRef,
+  scrollRef,
   draft,
   setDraft,
   model,
@@ -654,11 +663,13 @@ function AgentComposer({
   onDictate,
   onSubmit,
   onStop,
-  working,
+  running,
+  submitting,
   disabledReason,
   hero = false,
 }: {
   formRef: RefObject<HTMLFormElement>;
+  scrollRef: RefObject<HTMLDivElement>;
   draft: string;
   setDraft: (value: string) => void;
   model: string;
@@ -672,7 +683,8 @@ function AgentComposer({
   onDictate: () => Promise<void>;
   onSubmit: (event?: FormEvent) => Promise<void>;
   onStop: () => Promise<void>;
-  working: boolean;
+  running: boolean;
+  submitting: boolean;
   disabledReason?: string;
   hero?: boolean;
 }) {
@@ -685,9 +697,14 @@ function AgentComposer({
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
   const [safetyOpen, setSafetyOpen] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [confirmUnrestricted, setConfirmUnrestricted] = useState(false);
+  const attachTriggerRef = useRef<HTMLButtonElement>(null);
+  const attachMenuRef = useRef<HTMLDivElement>(null);
   const safetyTriggerRef = useRef<HTMLButtonElement>(null);
   const safetyMenuRef = useRef<HTMLDivElement>(null);
   const activeModel = selectedModel(models, model);
+  const working = running || submitting;
 
   useEffect(() => {
     if (draft === publishedDraftRef.current) return;
@@ -696,7 +713,7 @@ function AgentComposer({
   }, [draft]);
 
   useEffect(() => {
-    if (!modelOpen && !safetyOpen) return;
+    if (!modelOpen && !safetyOpen && !attachOpen) return;
     const close = (event: MouseEvent) => {
       const target = event.target as Node;
       if (modelPopoverRef.current?.contains(target) || modelTriggerRef.current?.contains(target)) {
@@ -704,13 +721,25 @@ function AgentComposer({
       }
       if (safetyTriggerRef.current?.contains(target)) return;
       if (safetyMenuRef.current?.contains(target)) return;
+      if (attachTriggerRef.current?.contains(target) || attachMenuRef.current?.contains(target)) {
+        return;
+      }
       if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
       setModelOpen(false);
       setSafetyOpen(false);
+      setAttachOpen(false);
     };
     window.addEventListener("mousedown", close);
     return () => window.removeEventListener("mousedown", close);
-  }, [modelOpen, safetyOpen]);
+  }, [attachOpen, modelOpen, safetyOpen]);
+
+  function referenceNote() {
+    const prefix = draft && !/\s$/.test(draft) ? " @" : "@";
+    const next = `${draft}${prefix}`;
+    publishedDraftRef.current = next;
+    setDraft(next);
+    editorRef.current?.setContent(next, null, { focus: true });
+  }
 
   return (
     <form
@@ -719,6 +748,14 @@ function AgentComposer({
       data-hero={hero ? "true" : undefined}
       onSubmit={(event) => void onSubmit(event)}
     >
+      {hero ? null : (
+        <AgentScrollToLatestButton
+          scrollRef={scrollRef}
+          onJump={() =>
+            scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
+          }
+        />
+      )}
       <div className="agent-composer-box">
         {attachments.length ? (
           <div className="agent-composer-attachments">
@@ -749,34 +786,37 @@ function AgentComposer({
         <div className="agent-composer-toolbar">
           <button
             type="button"
+            ref={attachTriggerRef}
             className="agent-composer-attach"
-            aria-label="Add files"
+            aria-label="Add files or notes"
             title="Add"
-            onClick={() => void onPickAttachments()}
+            aria-haspopup="menu"
+            aria-expanded={attachOpen}
+            data-open={attachOpen || undefined}
+            onClick={() => setAttachOpen((open) => !open)}
           >
             <IconPlusMedium size={18} />
           </button>
-          <button
-            ref={safetyTriggerRef}
-            type="button"
-            className="agent-sandbox-trigger"
-            data-unrestricted={safetyMode === "unrestricted" ? "true" : undefined}
-            disabled={working}
-            aria-haspopup="menu"
-            aria-expanded={safetyOpen}
-            title={
-              working ? "Safety mode is fixed while June is working" : "Change what June can touch"
-            }
-            onClick={() => setSafetyOpen((open) => !open)}
-          >
-            {safetyMode === "sandboxed" ? (
-              <IconShieldCheck size={14} />
-            ) : (
-              <IconShieldCrossed size={14} />
-            )}
-            {safetyMode === "sandboxed" ? "Sandboxed" : "Unrestricted"}
-            <IconChevronDownSmall size={12} aria-hidden />
-          </button>
+          {hero ? (
+            <button
+              ref={safetyTriggerRef}
+              type="button"
+              className="agent-sandbox-trigger"
+              data-unrestricted={safetyMode === "unrestricted" ? "true" : undefined}
+              aria-haspopup="menu"
+              aria-expanded={safetyOpen}
+              title="Change what June can touch"
+              onClick={() => setSafetyOpen((open) => !open)}
+            >
+              {safetyMode === "sandboxed" ? (
+                <IconShieldCheck size={14} />
+              ) : (
+                <IconShieldCrossed size={14} />
+              )}
+              {safetyMode === "sandboxed" ? "Sandboxed" : "Unrestricted"}
+              <IconChevronDownSmall size={12} aria-hidden />
+            </button>
+          ) : null}
           <div className="agent-composer-actions">
             <ComposerModelPicker
               open={modelOpen}
@@ -798,7 +838,7 @@ function AgentComposer({
             >
               <IconMicrophone size={18} />
             </button>
-            {working ? (
+            {running ? (
               <button
                 type="button"
                 className="agent-composer-stop"
@@ -812,16 +852,51 @@ function AgentComposer({
                 type="submit"
                 className="agent-composer-send"
                 aria-label="Send message"
-                disabled={!draft.trim() || Boolean(disabledReason)}
+                disabled={submitting || !draft.trim() || Boolean(disabledReason)}
                 title={disabledReason}
               >
-                <IconArrowUp size={18} />
+                {submitting ? <Spinner /> : <IconArrowUp size={18} />}
               </button>
             )}
           </div>
         </div>
       </div>
-      {safetyOpen ? (
+      {attachOpen ? (
+        <div
+          ref={attachMenuRef}
+          className="agent-attach-menu"
+          role="menu"
+          aria-label="Add files or notes"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setAttachOpen(false);
+              void onPickAttachments();
+            }}
+          >
+            <span className="agent-attach-menu-icon">
+              <IconFileText size={16} aria-hidden />
+            </span>
+            <span className="agent-attach-menu-label">Attach files</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setAttachOpen(false);
+              referenceNote();
+            }}
+          >
+            <span className="agent-attach-menu-icon">
+              <IconNoteText size={16} aria-hidden />
+            </span>
+            <span className="agent-attach-menu-label">Reference a note</span>
+          </button>
+        </div>
+      ) : null}
+      {hero && safetyOpen ? (
         <div
           ref={safetyMenuRef}
           className="agent-sandbox-menu"
@@ -838,8 +913,12 @@ function AgentComposer({
                 role="menuitemradio"
                 aria-checked={safetyMode === value}
                 onClick={() => {
-                  setSafetyMode(value);
                   setSafetyOpen(false);
+                  if (value === "unrestricted" && !unrestrictedAcknowledged()) {
+                    setConfirmUnrestricted(true);
+                    return;
+                  }
+                  setSafetyMode(value);
                 }}
               >
                 {option.icon}
@@ -875,6 +954,78 @@ function AgentComposer({
           }}
         />
       ) : null}
+      <Dialog
+        open={confirmUnrestricted}
+        onClose={() => setConfirmUnrestricted(false)}
+        title="Turn on Unrestricted?"
+        description="June will be able to change any file your account can, not just its own workspace. This comes with risks like data loss if something goes wrong."
+        footer={
+          <>
+            <button
+              type="button"
+              className="primary-action"
+              onClick={() => setConfirmUnrestricted(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-action primary-solid"
+              onClick={() => {
+                rememberUnrestrictedAcknowledged();
+                setSafetyMode("unrestricted");
+                setConfirmUnrestricted(false);
+              }}
+            >
+              Turn on Unrestricted
+            </button>
+          </>
+        }
+      >
+        {null}
+      </Dialog>
     </form>
+  );
+}
+
+function AgentScrollToLatestButton({
+  scrollRef,
+  onJump,
+}: {
+  scrollRef: RefObject<HTMLDivElement>;
+  onJump: () => void;
+}) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const recheck = () => {
+      const distanceFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      setVisible(scroller.scrollHeight > scroller.clientHeight && distanceFromBottom > 48);
+    };
+    recheck();
+    scroller.addEventListener("scroll", recheck, { passive: true });
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(recheck) : undefined;
+    observer?.observe(scroller);
+    for (const child of Array.from(scroller.children)) observer?.observe(child);
+    return () => {
+      scroller.removeEventListener("scroll", recheck);
+      observer?.disconnect();
+    };
+  }, [scrollRef]);
+
+  return (
+    <button
+      type="button"
+      className="agent-scroll-to-latest"
+      data-visible={visible ? "true" : undefined}
+      aria-label="Scroll to latest"
+      aria-hidden={visible ? undefined : true}
+      tabIndex={visible ? undefined : -1}
+      onClick={onJump}
+    >
+      <IconArrowDown size={16} ariaHidden />
+    </button>
   );
 }

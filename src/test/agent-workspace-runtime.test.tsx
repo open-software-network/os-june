@@ -108,14 +108,12 @@ describe("AgentWorkspace runtime wiring", () => {
 
   it("hydrates history, shows an optimistic turn, and cancels", async () => {
     const user = userEvent.setup();
-    render(<AgentWorkspace initialSession={session} />);
+    const { container } = render(<AgentWorkspace initialSession={session} />);
 
     expect(await screen.findByText("Earlier answer")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sandboxed" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Sandboxed" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: "Sandboxed" }));
-    await user.click(screen.getByRole("menuitemradio", { name: /Unrestricted/ }));
-    expect(screen.getByRole("button", { name: "Unrestricted" })).toBeEnabled();
+    expect(container.querySelector(".agent-scroll .agent-main > .agent-composer")).not.toBeNull();
     const composer = screen.getByRole("textbox", { name: "Message June" });
     await user.click(composer);
     await user.type(composer, "New request");
@@ -124,10 +122,9 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByText("New request")).toBeInTheDocument();
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
-        request: expect.objectContaining({ model: "fast", safetyMode: "unrestricted" }),
+        request: expect.objectContaining({ model: "fast", safetyMode: "sandboxed" }),
       }),
     );
-    expect(screen.getByRole("button", { name: "Unrestricted" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Model: Fast" })).not.toBeInTheDocument();
     expect(screen.getByText("Fast")).toBeInTheDocument();
 
@@ -150,8 +147,7 @@ describe("AgentWorkspace runtime wiring", () => {
       });
     });
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Unrestricted" })).toBeEnabled());
-    expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled());
   });
 
   it("resolves clarification interruptions through the typed host command", async () => {
@@ -198,7 +194,9 @@ describe("AgentWorkspace runtime wiring", () => {
   it("resets an open conversation when a new session is requested", async () => {
     const user = userEvent.setup();
     const onSessionSelected = vi.fn();
-    render(<AgentWorkspace initialSession={session} onSessionSelected={onSessionSelected} />);
+    const { container } = render(
+      <AgentWorkspace initialSession={session} onSessionSelected={onSessionSelected} />,
+    );
     await screen.findByText("Earlier answer");
 
     act(() => {
@@ -209,6 +207,20 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByRole("heading", { level: 2 })).toBeVisible();
     expect(screen.queryByText("Earlier answer")).not.toBeInTheDocument();
     expect(onSessionSelected).toHaveBeenLastCalledWith(undefined);
+    expect(
+      container.querySelector(".agent-workspace > .agent-main[data-hero='true']"),
+    ).not.toBeNull();
+    expect(container.querySelector(".agent-scroll")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    expect(screen.getByRole("menuitem", { name: "Attach files" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Reference a note" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+
+    await user.click(screen.getByRole("button", { name: "Sandboxed" }));
+    await user.click(screen.getByRole("menuitemradio", { name: /Unrestricted/ }));
+    expect(screen.getByRole("dialog", { name: "Turn on Unrestricted?" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
 
     const composer = screen.getByRole("textbox", { name: "Message June" });
     await user.click(composer);
