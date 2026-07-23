@@ -13,8 +13,6 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-#[cfg(debug_assertions)]
-use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicUsize;
 use std::{
@@ -24,7 +22,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -102,6 +100,9 @@ pub struct ComputerUseState {
     cursor: crate::computer_use_cursor::ComputerUseCursorState,
     capture_generation: AtomicU64,
     runtime_ready_state: AtomicU32,
+    runtime_ready_epoch: AtomicU64,
+    runtime_ready_publish: Mutex<()>,
+    driver_prewarm_in_flight: AtomicBool,
 }
 
 impl ComputerUseState {
@@ -376,6 +377,21 @@ impl<'a> CleanupInProgress<'a> {
 impl Drop for CleanupInProgress<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct DriverPrewarmInProgress<'a>(&'a AtomicBool);
+
+impl<'a> DriverPrewarmInProgress<'a> {
+    fn try_begin(flag: &'a AtomicBool) -> bool {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+impl Drop for DriverPrewarmInProgress<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -1956,7 +1972,10 @@ fn subscription_plan_eligible(subscribed: bool, plan: Option<&str>) -> bool {
 
 pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> bool {
     let state = app.state::<ComputerUseState>();
-    let ready = if !rollout_gate().await.enabled
+    let expected_epoch = app
+        .try_state::<ComputerUseState>()
+        .map(|state| state.epoch.load(Ordering::SeqCst));
+    let mut ready = if !rollout_gate().await.enabled
         || !supports_vision
         || !plan_eligible().await
         || !grant_enabled(app).await
@@ -1973,10 +1992,92 @@ pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> boo
     } else {
         false
     };
-    state
-        .runtime_ready_state
-        .store(ready_state_value(ready), Ordering::SeqCst);
+    if let (Some(state), Some(expected_epoch)) =
+        (app.try_state::<ComputerUseState>(), expected_epoch)
+    {
+        match publish_runtime_ready_probe(&state, expected_epoch, ready) {
+            Some(previous) if !ready && previous == ready_state_value(true) => {
+                stop_inner(app, &state).await;
+                replace_runtime_ready(&state, false);
+            }
+            Some(_) => {}
+            None => ready = false,
+        }
+    }
+    if ready {
+        schedule_driver_prewarm(app);
+    }
     ready
+}
+
+/// Start the persistent private driver away from the first model action.
+///
+/// This shares the same `driver` mutex and cache as `driver_call`, so a focus
+/// event, an enable/status refresh, and a real action collapse to one start.
+/// The captured epoch also makes a queued prewarm lose to Stop or grant
+/// revocation instead of resurrecting a driver after cleanup.
+pub(crate) fn schedule_driver_prewarm(app: &AppHandle) {
+    let Some(state) = app.try_state::<ComputerUseState>() else {
+        return;
+    };
+    if !runtime_ready_is_current(&state, true) {
+        return;
+    }
+    if !DriverPrewarmInProgress::try_begin(&state.driver_prewarm_in_flight) {
+        return;
+    }
+    let expected_epoch = state.epoch.load(Ordering::SeqCst);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<ComputerUseState>();
+        let _prewarm_in_progress = DriverPrewarmInProgress(&state.driver_prewarm_in_flight);
+        let started_at = Instant::now();
+        match prewarm_driver(&app, expected_epoch).await {
+            Ok(started) => tracing::info!(
+                stage = "computer_use_driver_prewarm",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                started,
+                "Computer use startup stage completed"
+            ),
+            Err(error) => tracing::warn!(
+                stage = "computer_use_driver_prewarm",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                error_code = error.code,
+                "Computer use startup stage failed"
+            ),
+        }
+    });
+}
+
+async fn prewarm_driver(app: &AppHandle, expected_epoch: u64) -> Result<bool, AppError> {
+    let state = app.state::<ComputerUseState>();
+    let mut driver = state.driver.lock().await;
+    if driver.is_some() || !driver_prewarm_is_current(&state, expected_epoch) {
+        return Ok(false);
+    }
+
+    let path = bundled_driver_executable(app)?;
+    // Reuse JUN-411's fingerprint-cached verification before a prewarm can
+    // create a persistent helper. This keeps prewarm behind the same signed
+    // bundle gate as readiness probes and real actions.
+    verify_packaged_driver_signatures(&state, &path, false).await?;
+    driver_version(&path).await?;
+    if !driver_prewarm_is_current(&state, expected_epoch) {
+        return Ok(false);
+    }
+
+    let client = DriverClient::start(&path, None).await?;
+    if !driver_prewarm_is_current(&state, expected_epoch) {
+        client.stop().await;
+        return Ok(false);
+    }
+    state.driver_pid.store(client.pid(), Ordering::SeqCst);
+    *driver = Some(client);
+    Ok(true)
+}
+
+fn driver_prewarm_is_current(state: &ComputerUseState, expected_epoch: u64) -> bool {
+    state.epoch.load(Ordering::SeqCst) == expected_epoch && runtime_ready_is_current(state, true)
 }
 
 #[tauri::command]
@@ -1985,17 +2086,20 @@ pub async fn computer_use_status(
     state: State<'_, ComputerUseState>,
     bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
-    let status = status_inner(&app, &state).await;
+    let (status, previous) = status_with_published_readiness(&app, &state).await?;
     let current = ready_state_value(status.ready);
-    let previous = state.runtime_ready_state.swap(current, Ordering::SeqCst);
     if previous != 0 && previous != current {
         if !status.ready {
             stop_inner(&app, &state).await;
+            replace_runtime_ready(&state, false);
         }
-        if let Err(error) = crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await {
-            state.runtime_ready_state.store(previous, Ordering::SeqCst);
-            return Err(error);
-        }
+        // `current` is the authoritative live readiness observation. If the
+        // Hermes config refresh fails, keep that observation instead of
+        // re-arming focus prewarm with the stale previous value.
+        crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
+    }
+    if status.ready {
+        schedule_driver_prewarm(&app);
     }
     Ok(status)
 }
@@ -2006,6 +2110,65 @@ fn ready_state_value(ready: bool) -> u32 {
     } else {
         1
     }
+}
+
+fn runtime_ready_is_current(state: &ComputerUseState, ready: bool) -> bool {
+    state.runtime_ready_epoch.load(Ordering::SeqCst) == state.epoch.load(Ordering::SeqCst)
+        && state.runtime_ready_state.load(Ordering::SeqCst) == ready_state_value(ready)
+}
+
+fn replace_runtime_ready(state: &ComputerUseState, ready: bool) -> u32 {
+    let _publish = state
+        .runtime_ready_publish
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = state
+        .runtime_ready_state
+        .swap(ready_state_value(ready), Ordering::SeqCst);
+    state
+        .runtime_ready_epoch
+        .store(state.epoch.load(Ordering::SeqCst), Ordering::SeqCst);
+    previous
+}
+
+fn publish_runtime_ready_probe(
+    state: &ComputerUseState,
+    expected_epoch: u64,
+    ready: bool,
+) -> Option<u32> {
+    let _publish = state
+        .runtime_ready_publish
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.epoch.load(Ordering::SeqCst) != expected_epoch {
+        return None;
+    }
+    let previous = state
+        .runtime_ready_state
+        .swap(ready_state_value(ready), Ordering::SeqCst);
+    state
+        .runtime_ready_epoch
+        .store(expected_epoch, Ordering::SeqCst);
+    Some(previous)
+}
+
+async fn status_with_published_readiness(
+    app: &AppHandle,
+    state: &ComputerUseState,
+) -> Result<(ComputerUseStatus, u32), AppError> {
+    let expected_epoch = state.epoch.load(Ordering::SeqCst);
+    let status = status_inner(app, state).await;
+    let previous =
+        publish_runtime_ready_probe(state, expected_epoch, status.ready).ok_or_else(|| {
+            // Stop, revocation, or shutdown won while the helper/version/permission
+            // probe was suspended. Reject the stale observation instead of
+            // publishing, prewarming, or letting the UI render it.
+            AppError::new(
+                "computer_use_status_superseded",
+                "Computer use changed while its status was loading. Try again.",
+            )
+        })?;
+    Ok((status, previous))
 }
 
 #[tauri::command]
@@ -2024,9 +2187,14 @@ pub async fn set_computer_use_grant(
     store_grant(&app, request.enabled).await?;
     if !request.enabled {
         stop_inner(&app, &state).await;
+        replace_runtime_ready(&state, false);
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    Ok(status_inner(&app, &state).await)
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -2054,12 +2222,17 @@ pub async fn computer_use_request_permissions(
         ));
     }
     stop_inner(&app, &state).await;
+    replace_runtime_ready(&state, false);
     let path = bundled_driver_executable(&app)?;
     verify_packaged_driver_signatures(&state, &path, true).await?;
     driver_version(&path).await?;
     let _ = probe_permissions(&state, &path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    Ok(status_inner(&app, &state).await)
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 pub(crate) async fn shutdown(app: &AppHandle) {
@@ -2259,27 +2432,28 @@ async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
     let _ = set_june_stage_companion(app, false).await;
 }
 
-/// Ends resources for a completed attended run without erasing a newer run
-/// that began while the terminal event was crossing the webview boundary.
+/// Retires a completed attended run without erasing a newer run that began
+/// while the terminal event was crossing the webview boundary.
+///
+/// The initialized driver is intentionally retained as the off-action-path
+/// prewarm for the next attended task. It has no authority without an attended lease;
+/// explicit Stop, revocation, readiness loss, and shutdown still invalidate the
+/// epoch and terminate it through `stop_inner`/`stop_for_shutdown`.
 async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64) {
     let _operation = state.operation.lock().await;
     let _cleanup = CleanupInProgress::begin(&state.cleanup_in_progress);
     if !idle_generation_is_current(state, generation) {
         return;
     }
-    state.epoch.fetch_add(1, Ordering::SeqCst);
     crate::computer_use_cursor::hide(app);
     cancel_pending(app, state);
-    force_stop_pid(state.driver_pid.swap(0, Ordering::SeqCst));
-    if let Some(driver) = state.driver.lock().await.take() {
-        driver.stop().await;
-    }
     if let Ok(mut target) = state.target.lock() {
         *target = None;
     }
     clear_app_authorizations(state);
     clear_capture_dir(app);
     let _ = set_june_stage_companion(app, false).await;
+    schedule_driver_prewarm(app);
 }
 
 fn idle_generation_is_current(state: &ComputerUseState, generation: u64) -> bool {
@@ -4761,6 +4935,123 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn driver_prewarm_loses_to_stop_and_readiness_loss() {
+        let state = ComputerUseState::default();
+        replace_runtime_ready(&state, true);
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        assert!(driver_prewarm_is_current(&state, epoch));
+
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        assert!(!driver_prewarm_is_current(&state, epoch));
+
+        let next_epoch = state.epoch.load(Ordering::SeqCst);
+        replace_runtime_ready(&state, false);
+        assert!(!driver_prewarm_is_current(&state, next_epoch));
+    }
+
+    #[test]
+    fn blocked_runtime_readiness_probe_cannot_publish_after_revocation() {
+        let state = Arc::new(ComputerUseState::default());
+        let probe_epoch = state.epoch.load(Ordering::SeqCst);
+        let probe_blocked = Arc::new(std::sync::Barrier::new(2));
+        let probe_can_publish = Arc::clone(&probe_blocked);
+        let probe_state = Arc::clone(&state);
+        let stale_probe = std::thread::spawn(move || {
+            probe_can_publish.wait();
+            publish_runtime_ready_probe(&probe_state, probe_epoch, true)
+        });
+
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        replace_runtime_ready(&state, false);
+        probe_blocked.wait();
+
+        assert_eq!(stale_probe.join().expect("stale probe joins"), None);
+        assert!(runtime_ready_is_current(&state, false));
+    }
+
+    #[test]
+    fn runtime_readiness_loss_enters_the_stop_path() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("pub(crate) async fn runtime_ready")
+            .expect("runtime readiness boundary");
+        let end = source[start..]
+            .find("/// Start the persistent private driver")
+            .map(|offset| start + offset)
+            .expect("driver prewarm boundary");
+        let readiness = &source[start..end];
+
+        assert!(readiness.contains("previous == ready_state_value(true)"));
+        assert!(readiness.contains("stop_inner(app, &state).await"));
+        assert!(readiness.contains("replace_runtime_ready(&state, false)"));
+    }
+
+    #[test]
+    fn status_probe_does_not_rebind_after_stop_or_shutdown() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("async fn status_with_published_readiness")
+            .expect("status readiness helper boundary");
+        let end = source[start..]
+            .find("#[tauri::command]")
+            .map(|offset| start + offset)
+            .expect("next command boundary");
+        let helper = &source[start..end];
+
+        assert!(!helper.contains("loop {"));
+        assert_eq!(
+            helper.matches("state.epoch.load(Ordering::SeqCst)").count(),
+            1
+        );
+        assert!(helper.contains("computer_use_status_superseded"));
+    }
+
+    #[test]
+    fn driver_prewarm_single_flight_reopens_after_completion() {
+        let in_flight = AtomicBool::new(false);
+        assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+        let first = DriverPrewarmInProgress(&in_flight);
+        assert!(!DriverPrewarmInProgress::try_begin(&in_flight));
+        drop(first);
+        assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+    }
+
+    #[test]
+    fn status_refresh_does_not_restore_stale_readiness_on_config_error() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("pub async fn computer_use_status")
+            .expect("status command boundary");
+        let end = source[start..]
+            .find("fn ready_state_value")
+            .map(|offset| start + offset)
+            .expect("readiness helper boundary");
+
+        assert!(
+            !source[start..end].contains("runtime_ready_state.store(previous"),
+            "a config error must not re-arm prewarm after observed readiness loss"
+        );
+    }
+
+    #[test]
+    fn completed_run_keeps_driver_readiness_for_immediate_retry() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("async fn stop_if_idle")
+            .expect("completed-run cleanup boundary");
+        let end = source[start..]
+            .find("fn clear_app_authorizations")
+            .map(|offset| start + offset)
+            .expect("completed-run cleanup end");
+        let cleanup = &source[start..end];
+
+        assert!(!cleanup.contains("state.epoch.fetch_add"));
+        assert!(!cleanup.contains("driver.stop().await"));
+        assert!(cleanup.contains("schedule_driver_prewarm(app)"));
+    }
 
     #[tokio::test]
     async fn permission_probe_is_single_flight_for_concurrent_pollers() {

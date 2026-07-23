@@ -742,11 +742,16 @@ fn setup_main_window_lifecycle(app: &mut tauri::App) {
 fn register_main_window_lifecycle(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     install_main_window_first_mouse_bridge(app, window);
     let close_window = window.clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    let lifecycle_app = app.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let _ = close_window.hide();
         }
+        tauri::WindowEvent::Focused(true) => {
+            computer_use::schedule_driver_prewarm(&lifecycle_app);
+        }
+        _ => {}
     });
 }
 
