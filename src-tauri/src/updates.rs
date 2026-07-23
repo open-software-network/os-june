@@ -191,10 +191,22 @@ pub async fn fetch_update(
     let channel = current_channel(&app);
     let endpoint = tauri::Url::parse(channel.endpoint())
         .map_err(|error| AppError::new("update_check_failed", error.to_string()))?;
-    let update = app
+    let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|error| AppError::new("update_check_failed", error.to_string()))?
+        .map_err(|error| AppError::new("update_check_failed", error.to_string()))?;
+    // On Windows the updater invokes this hook and then calls
+    // `std::process::exit(0)` from `Update::install_inner`; no ExitRequested
+    // event follows. Override Tauri's default hook with June's bounded cleanup,
+    // which calls `cleanup_before_exit` itself as its final step.
+    #[cfg(windows)]
+    let updater = {
+        let exit_app = app.clone();
+        updater.on_before_exit(move || {
+            crate::shutdown::cleanup_before_updater_exit(&exit_app);
+        })
+    };
+    let update = updater
         // The comparator is the sole downgrade gate; routing the default path
         // through `should_update` too keeps all install-decision logic in one
         // tested place. With reconcile=false this is exactly `remote > current`.

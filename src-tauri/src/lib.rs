@@ -448,9 +448,10 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
                 shutdown::handle_exit_requested(app, code, &api);
             }
-            // Teardown must never start here. Tauri is already exiting, so
-            // fire-and-forget work can be dropped before it runs.
-            tauri::RunEvent::Exit => {}
+            // Tao emits only Exit for macOS logout/application termination.
+            // This is a bounded synchronous backstop when ExitRequested never
+            // had a chance to latch the coordinator.
+            tauri::RunEvent::Exit => shutdown::handle_exit(app),
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}

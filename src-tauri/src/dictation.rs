@@ -2909,11 +2909,7 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
             error = %error.message,
             "dictation: could not record helper ownership; killing untracked helper"
         );
-        let _ = crate::shutdown::terminate_child(
-            &mut child,
-            Duration::ZERO,
-            HELPER_FORCED_REAP_TIMEOUT,
-        );
+        let _ = crate::shutdown::terminate_child(child, Duration::ZERO, HELPER_FORCED_REAP_TIMEOUT);
         return Err(error);
     }
 
@@ -3169,9 +3165,9 @@ fn decide_and_record_respawn(
 
 fn reap_exited_helper(state: &HelperState) -> bool {
     if let Ok(mut guard) = state.process.lock() {
-        if let Some(mut process) = guard.take() {
+        if let Some(process) = guard.take() {
             let _ = crate::shutdown::terminate_child(
-                &mut process.child,
+                process.child,
                 Duration::from_millis(100),
                 HELPER_FORCED_REAP_TIMEOUT,
             );
@@ -3218,23 +3214,23 @@ const HELPER_SHUTDOWN_MUTEX_TIMEOUT: Duration = Duration::from_millis(250);
 /// Stops a helper we spawned but will not install (shutdown raced the respawn).
 /// Dropping a [`Child`] only detaches it, so we kill explicitly to avoid an
 /// orphaned helper holding the global hotkey tap. Give a cooperative shutdown a
-/// short grace period first so the helper can restore clipboard state and remove
-/// temporary recordings before the forced-kill fallback.
+/// short grace period first so the helper can restore clipboard state and
+/// finalize an in-flight WAV before the forced-kill fallback. The aggregate app
+/// deadline may still cut off a wedged finalize; that trades the incomplete
+/// current artifact for a relaunch that cannot be held hostage by the helper.
 fn abandon_helper(helper: HelperProcess) {
-    let HelperProcess { mut child, stdin } = helper;
+    let HelperProcess { child, stdin } = helper;
+    let helper_pid = child.id();
     send_helper_shutdown_nonblocking(stdin);
-    let outcome = crate::shutdown::terminate_child(
-        &mut child,
-        HELPER_SHUTDOWN_GRACE,
-        HELPER_FORCED_REAP_TIMEOUT,
-    );
+    let outcome =
+        crate::shutdown::terminate_child(child, HELPER_SHUTDOWN_GRACE, HELPER_FORCED_REAP_TIMEOUT);
     if matches!(
         outcome,
         crate::shutdown::ChildTermination::TimedOut | crate::shutdown::ChildTermination::WaitFailed
     ) {
         tracing::warn!(
             ?outcome,
-            helper_pid = child.id(),
+            helper_pid,
             "dictation helper could not be reaped before shutdown continued"
         );
     }

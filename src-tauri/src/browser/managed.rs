@@ -253,13 +253,20 @@ impl ManagedSessionResources {
         self.profile.delete();
     }
 
-    fn teardown_for_shutdown(&self) {
+    fn teardown_for_shutdown(self: &Arc<Self>) {
         if self.closed.load(Ordering::SeqCst) {
             return;
         }
         let Some(mut browser) =
             crate::shutdown::try_lock_for(&self.browser, Duration::from_millis(250))
         else {
+            let resources = Arc::clone(self);
+            if let Err(error) = std::thread::Builder::new()
+                .name("june-managed-browser-retry".to_string())
+                .spawn(move || resources.teardown())
+            {
+                tracing::warn!(%error, "could not schedule managed browser teardown retry");
+            }
             return;
         };
         if self.closed.swap(true, Ordering::SeqCst) {
@@ -320,13 +327,19 @@ impl StartingManagedSession {
         }
     }
 
-    fn terminate_for_shutdown(&self) {
+    fn terminate_for_shutdown(self: &Arc<Self>) {
         self.cancelled.store(true, Ordering::SeqCst);
-        if let Some(resources) =
-            crate::shutdown::try_lock_for(&self.resources, Duration::from_millis(250))
-                .and_then(|resources| resources.as_ref().cloned())
-        {
+        let resources = crate::shutdown::try_lock_for(&self.resources, Duration::from_millis(250));
+        if let Some(resources) = resources.and_then(|resources| resources.as_ref().cloned()) {
             resources.teardown_for_shutdown();
+        } else {
+            let starting = Arc::clone(self);
+            if let Err(error) = std::thread::Builder::new()
+                .name("june-managed-start-retry".to_string())
+                .spawn(move || starting.terminate())
+            {
+                tracing::warn!(%error, "could not schedule managed browser start teardown retry");
+            }
         }
         if !self.begun.load(Ordering::SeqCst) {
             self.finish();
@@ -991,6 +1004,7 @@ pub struct ManagedScreenshot {
 
 /// JUN-291 transport adapter. It owns managed-session lifecycle while the
 /// broker owns authorization, transport selection, and artifact persistence.
+#[derive(Clone)]
 pub(crate) struct ManagedBrowserTransport {
     inner: Arc<ManagedTransportInner>,
 }
@@ -1115,17 +1129,38 @@ impl ManagedBrowserTransport {
     }
 
     fn terminate_session_for_shutdown(&self, session_id: &str) {
-        let starting =
+        let Some(starting_sessions) =
             crate::shutdown::try_lock_for(&self.inner.starting, Duration::from_millis(250))
-                .and_then(|starting| starting.get(session_id).cloned());
+        else {
+            self.schedule_termination_retry(session_id);
+            return;
+        };
+        let starting = starting_sessions.get(session_id).cloned();
+        drop(starting_sessions);
         if let Some(starting) = starting {
             starting.terminate_for_shutdown();
         }
-        let session =
+        let Some(mut sessions) =
             crate::shutdown::try_lock_for(&self.inner.sessions, Duration::from_millis(250))
-                .and_then(|mut sessions| sessions.remove(session_id));
+        else {
+            self.schedule_termination_retry(session_id);
+            return;
+        };
+        let session = sessions.remove(session_id);
+        drop(sessions);
         if let Some(session) = session {
             session.resources.teardown_for_shutdown();
+        }
+    }
+
+    fn schedule_termination_retry(&self, session_id: &str) {
+        let transport = self.clone();
+        let session_id = session_id.to_string();
+        if let Err(error) = std::thread::Builder::new()
+            .name("june-managed-session-retry".to_string())
+            .spawn(move || transport.terminate_session(&session_id))
+        {
+            tracing::warn!(%error, "could not schedule managed session teardown retry");
         }
     }
 

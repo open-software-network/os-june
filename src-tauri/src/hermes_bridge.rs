@@ -5114,9 +5114,12 @@ async fn shutdown_hermes_gateway(
 /// How long `shutdown` waits for in-flight starts to register/reap their spawned
 /// child before draining. The window it guards (spawn -> register) is short, so
 /// this is only a safety bound; teardown proceeds regardless once it elapses.
-const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const SHUTDOWN_START_QUIESCE_TIMEOUT_MS: u64 = 2_000;
+const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration =
+    Duration::from_millis(SHUTDOWN_START_QUIESCE_TIMEOUT_MS);
 const SHUTDOWN_MUTEX_TIMEOUT: Duration = Duration::from_millis(250);
 const SHUTDOWN_CHILD_REAP_TIMEOUT: Duration = Duration::from_millis(250);
+const HERMES_PROCESS_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 /// Gateway lifecycle commands are serialized with shutdown, so every command
 /// needs a deadline: a stuck start/restart must not keep app teardown waiting
 /// on the lifecycle lock indefinitely. Fifteen seconds leaves room for the
@@ -5130,7 +5133,9 @@ const GATEWAY_LIFECYCLE_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const GATEWAY_SHUTDOWN_LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 /// One aggregate deadline prevents individually bounded launchctl/CLI steps
 /// from stacking into an unacceptably long main-thread quit or update relaunch.
-const GATEWAY_SHUTDOWN_TOTAL_TIMEOUT: Duration = Duration::from_secs(6);
+pub(crate) const GATEWAY_SHUTDOWN_TOTAL_TIMEOUT_MS: u64 = 6_000;
+const GATEWAY_SHUTDOWN_TOTAL_TIMEOUT: Duration =
+    Duration::from_millis(GATEWAY_SHUTDOWN_TOTAL_TIMEOUT_MS);
 /// Leave the non-macOS CLI stop below the aggregate deadline so its own timeout
 /// path can terminate the whole lifecycle process group before the outer future
 /// is dropped.
@@ -6818,7 +6823,7 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<BoundedOutpu
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = crate::shutdown::terminate_child(
+                    let _ = crate::shutdown::terminate_child_in_place(
                         &mut child,
                         Duration::ZERO,
                         SHUTDOWN_CHILD_REAP_TIMEOUT,
@@ -8134,23 +8139,43 @@ fn stop_hermes_bridge_generation(bridge: &HermesBridge, generation: u64) -> Resu
 }
 
 fn shutdown_hermes_process(process: Option<HermesProcess>) {
-    if let Some(mut process) = process {
-        // Sweep the runtime's process group first so any worker subprocess it
-        // forked dies with it rather than detaching and outliving the app (the
-        // child spawns into its own group; see the spawn site). Then kill and
-        // reap the tracked child itself.
+    if let Some(process) = process {
+        let pid = process.child.id();
+        let ownership_record = process.ownership_record;
+        // Ask the whole runtime process group to stop before escalating. This
+        // short grace gives SQLite WAL writes a chance to commit; if the hard
+        // deadline still requires SIGKILL, WAL mode limits loss to the
+        // uncommitted transaction while preserving committed state.
         #[cfg(unix)]
-        kill_process_group(process.child.id());
-        match crate::shutdown::terminate_child(
-            &mut process.child,
-            Duration::ZERO,
+        terminate_process_group(pid);
+        #[cfg(unix)]
+        let graceful_started = Instant::now();
+        let outcome = crate::shutdown::terminate_child_with(
+            process.child,
+            HERMES_PROCESS_SHUTDOWN_GRACE,
             SHUTDOWN_CHILD_REAP_TIMEOUT,
-        ) {
+            move |child| {
+                #[cfg(unix)]
+                kill_process_group(pid);
+                let _ = child.kill();
+            },
+        );
+        #[cfg(unix)]
+        {
+            // The leader can exit before a worker that shared its process
+            // group. Give every worker the same grace, then sweep the group so
+            // an ignored SIGTERM cannot survive the relaunch.
+            if matches!(outcome, crate::shutdown::ChildTermination::Exited) {
+                std::thread::sleep(
+                    HERMES_PROCESS_SHUTDOWN_GRACE.saturating_sub(graceful_started.elapsed()),
+                );
+            }
+            kill_process_group(pid);
+        }
+        match outcome {
             crate::shutdown::ChildTermination::Exited
             | crate::shutdown::ChildTermination::Killed => {
-                if let Err(error) =
-                    remove_hermes_ownership_record(process.ownership_record.as_deref())
-                {
+                if let Err(error) = remove_hermes_ownership_record(ownership_record.as_deref()) {
                     tracing::warn!(
                         %error,
                         "Hermes runtime was reaped but its ownership record could not be removed"
@@ -8162,7 +8187,7 @@ fn shutdown_hermes_process(process: Option<HermesProcess>) {
                 // the next startup must make the fail-closed recovery decision.
                 tracing::warn!(
                     ?outcome,
-                    pid = process.child.id(),
+                    pid,
                     "Hermes runtime leader could not be reaped; retaining ownership record"
                 );
             }
@@ -8179,7 +8204,11 @@ fn reap_unregistered_child(child: &mut Child, ownership_record: Option<&Path>) {
     #[cfg(unix)]
     kill_process_group(child.id());
     if matches!(
-        crate::shutdown::terminate_child(child, Duration::ZERO, SHUTDOWN_CHILD_REAP_TIMEOUT,),
+        crate::shutdown::terminate_child_in_place(
+            child,
+            Duration::ZERO,
+            SHUTDOWN_CHILD_REAP_TIMEOUT,
+        ),
         crate::shutdown::ChildTermination::Exited | crate::shutdown::ChildTermination::Killed
     ) {
         if let Err(error) = remove_hermes_ownership_record(ownership_record) {
@@ -8681,6 +8710,15 @@ fn wait_for_recorded_hermes_runtime_exit(
 fn kill_process_group(pid: u32) {
     if let Ok(pid) = libc::pid_t::try_from(pid) {
         let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+}
+
+/// Best-effort cooperative stop for a runtime process group. Shutdown follows
+/// this with bounded polling and SIGKILL escalation.
+#[cfg(unix)]
+fn terminate_process_group(pid: u32) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        let _ = unsafe { libc::kill(-pid, libc::SIGTERM) };
     }
 }
 

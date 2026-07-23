@@ -284,6 +284,12 @@ struct BrowserBrokerState {
     routine_entitlement_override: Option<bool>,
 }
 
+struct BrowserShutdownPlan {
+    transports: HashMap<BrowserTransportKind, Arc<dyn BrowserTransport>>,
+    sessions: Vec<(String, BrowserTransportKind)>,
+    approvals_changed: bool,
+}
+
 struct BrowserSession {
     transport_kind: BrowserTransportKind,
     routine_id: Option<String>,
@@ -680,32 +686,59 @@ impl BrowserBroker {
 
     /// App-exit backstop. Managed transports terminate synchronously so no
     /// in-flight request can keep Chromium or its ephemeral profile alive.
-    pub(crate) fn terminate_sessions(&self) {
-        let (transports, sessions, approvals_changed) = {
-            let Some(mut state) =
-                crate::shutdown::try_lock_for(&self.state, Duration::from_millis(250))
-            else {
-                tracing::warn!("browser shutdown timed out acquiring the broker state lock");
-                return;
-            };
-            state.transition_blocked = true;
-            let approvals_changed = !state.pending_approvals.is_empty();
-            state.pending_approvals.clear();
-            state.pending_by_action.clear();
-            state.resolved_actions.clear();
-            let transports = state.transports.clone();
-            let sessions = state
-                .sessions
-                .drain()
-                .map(|(id, session)| (id, session.transport_kind))
-                .collect::<Vec<_>>();
-            (transports, sessions, approvals_changed)
+    pub(crate) fn terminate_sessions(self: &Arc<Self>) {
+        let Some(mut state) =
+            crate::shutdown::try_lock_for(&self.state, Duration::from_millis(250))
+        else {
+            tracing::warn!(
+                "browser shutdown timed out acquiring the broker state lock; scheduling retry"
+            );
+            let broker = Arc::clone(self);
+            if let Err(error) = std::thread::Builder::new()
+                .name("june-browser-shutdown-retry".to_string())
+                .spawn(move || broker.terminate_sessions_blocking())
+            {
+                tracing::warn!(%error, "could not schedule browser shutdown retry");
+            }
+            return;
         };
-        if approvals_changed {
+        let shutdown = Self::drain_sessions_for_shutdown(&mut state);
+        drop(state);
+        self.finish_session_termination(shutdown);
+    }
+
+    fn terminate_sessions_blocking(&self) {
+        let mut state = self.lock();
+        let shutdown = Self::drain_sessions_for_shutdown(&mut state);
+        drop(state);
+        self.finish_session_termination(shutdown);
+    }
+
+    fn drain_sessions_for_shutdown(state: &mut BrowserBrokerState) -> BrowserShutdownPlan {
+        state.transition_blocked = true;
+        let approvals_changed = !state.pending_approvals.is_empty();
+        state.pending_approvals.clear();
+        state.pending_by_action.clear();
+        state.resolved_actions.clear();
+        let transports = state.transports.clone();
+        let sessions = state
+            .sessions
+            .drain()
+            .map(|(id, session)| (id, session.transport_kind))
+            .collect::<Vec<_>>();
+        BrowserShutdownPlan {
+            transports,
+            sessions,
+            approvals_changed,
+        }
+    }
+
+    fn finish_session_termination(&self, plan: BrowserShutdownPlan) {
+        if plan.approvals_changed {
             self.notify_approvals_changed();
         }
-        for (session_id, kind) in sessions {
-            if let Some(transport) = transports.get(&kind) {
+        for (session_id, kind) in plan.sessions {
+            if let Some(transport) = plan.transports.get(&kind) {
                 transport.terminate_session_for_shutdown(&session_id);
             }
         }
@@ -2294,14 +2327,14 @@ mod tests {
             state
                 .terminated
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            if let Some(mut child) = state
+            if let Some(child) = state
                 .child
                 .try_lock()
                 .ok()
                 .and_then(|mut child| child.take())
             {
                 let _ = crate::shutdown::terminate_child(
-                    &mut child,
+                    child,
                     Duration::ZERO,
                     Duration::from_millis(250),
                 );

@@ -193,7 +193,7 @@ impl Drop for EphemeralProfile {
 /// [`EphemeralProfile`] guard is the sole profile owner, so kill/Drop here must
 /// not delete profile data.
 pub struct LaunchedBrowser {
-    child: std::process::Child,
+    child: Option<std::process::Child>,
     /// `(read from browser, write to browser)`. Taken once by the CDP client.
     cdp_pipes: Option<(File, File)>,
     killed: bool,
@@ -211,15 +211,12 @@ impl LaunchedBrowser {
         if self.killed {
             return;
         }
-        let outcome = crate::shutdown::terminate_child(
-            &mut self.child,
-            Duration::ZERO,
-            Duration::from_millis(250),
-        );
-        self.killed = matches!(
-            outcome,
-            crate::shutdown::ChildTermination::Exited | crate::shutdown::ChildTermination::Killed
-        );
+        if let Some(child) = self.child.take() {
+            let _ =
+                crate::shutdown::terminate_child(child, Duration::ZERO, Duration::from_millis(250));
+        }
+        // The child was either reaped or transferred to the detached reaper.
+        self.killed = true;
     }
 
     /// The process id while the child has not been reaped, for diagnostics and
@@ -228,7 +225,7 @@ impl LaunchedBrowser {
         if self.killed {
             None
         } else {
-            Some(self.child.id())
+            self.child.as_ref().map(std::process::Child::id)
         }
     }
 
@@ -238,7 +235,11 @@ impl LaunchedBrowser {
         if self.killed {
             return true;
         }
-        match self.child.try_wait() {
+        let Some(child) = self.child.as_mut() else {
+            self.killed = true;
+            return true;
+        };
+        match child.try_wait() {
             Ok(Some(_)) => {
                 self.killed = true;
                 true
@@ -399,7 +400,7 @@ pub fn launch(binary: &Path, profile_dir: &Path, proxy_port: u16) -> io::Result<
     let read_from_browser = unsafe { File::from_raw_fd(out_read) };
 
     Ok(LaunchedBrowser {
-        child,
+        child: Some(child),
         cdp_pipes: Some((read_from_browser, write_to_browser)),
         killed: false,
     })
@@ -546,7 +547,7 @@ mod tests {
             .spawn()
             .unwrap();
         let mut launched = LaunchedBrowser {
-            child,
+            child: Some(child),
             cdp_pipes: None,
             killed: false,
         };
