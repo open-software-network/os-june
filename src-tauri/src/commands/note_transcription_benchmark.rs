@@ -498,6 +498,7 @@ async fn run_benchmark_iteration(
                 source: *source,
                 final_path: path.clone(),
                 elapsed_ms,
+                dropped_samples: 0,
                 capture_issue: None,
                 failure: None,
             })

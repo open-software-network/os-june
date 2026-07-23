@@ -1,4 +1,5 @@
 pub mod capture;
+mod capture_buffer;
 pub mod echo;
 pub mod live_preview;
 pub mod recovery;
