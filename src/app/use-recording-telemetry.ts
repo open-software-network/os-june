@@ -1,11 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { RECORDING_TELEMETRY_EVENT, type RecordingTelemetryDto } from "../lib/tauri";
-import { mergeRecordingTelemetry } from "../lib/recording-telemetry";
+import { mergeRecordingTelemetry, sameRecordingSemantics } from "../lib/recording-telemetry";
 import type { UseRecordingTelemetryDependencies } from "./use-recording-telemetry-types";
 
 export function useRecordingTelemetry(dependencies: UseRecordingTelemetryDependencies) {
-  const { dispatch, recordingStatusRef } = dependencies;
+  const { dispatch, recordingTelemetryStore, recordingStatusRef } = dependencies;
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -17,9 +17,10 @@ export function useRecordingTelemetry(dependencies: UseRecordingTelemetryDepende
       }
       const next = mergeRecordingTelemetry(current, event.payload);
       recordingStatusRef.current = next;
-      if (next) {
+      recordingTelemetryStore.setStatus(next);
+      if (next && !sameRecordingSemantics(current, next)) {
         dispatch({ type: "recordingStatusChanged", status: next });
-      } else {
+      } else if (!next) {
         dispatch({ type: "recordingSessionLost", sessionId: event.payload.sessionId });
       }
     }).then((cleanup) => {
@@ -30,5 +31,5 @@ export function useRecordingTelemetry(dependencies: UseRecordingTelemetryDepende
       aborted = true;
       unlisten?.();
     };
-  }, [dispatch, recordingStatusRef]);
+  }, [dispatch, recordingStatusRef, recordingTelemetryStore]);
 }

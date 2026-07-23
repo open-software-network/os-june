@@ -72,6 +72,7 @@ import {
   notifyRecordingAutoPaused,
   notifyRecordingStillMeetingPrompt,
 } from "../lib/recording-notifications";
+import { RecordingTelemetryProvider } from "../lib/recording-telemetry-store";
 import {
   OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
@@ -293,6 +294,7 @@ export function App() {
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,
+    recordingTelemetryStore,
     recordingStatusRef,
     dictationWorkflowActiveRef,
     recordingInactivityTrackerRef,
@@ -1377,6 +1379,7 @@ export function App() {
 
   useRecordingTelemetry({
     dispatch,
+    recordingTelemetryStore,
     recordingStatusRef,
   });
 
@@ -1788,42 +1791,53 @@ export function App() {
   });
 
   useEffect(() => {
-    const status = state.recordingStatus;
-    const now = Date.now();
-    const decision = nextRecordingInactivityDecision(
-      recordingInactivityTrackerRef.current,
-      status,
-      now,
-    );
-    recordingInactivityTrackerRef.current = decision.tracker;
+    const evaluateLatestStatus = () => {
+      const status = recordingTelemetryStore.getStatus();
+      const now = Date.now();
+      const decision = nextRecordingInactivityDecision(
+        recordingInactivityTrackerRef.current,
+        status,
+        now,
+      );
+      recordingInactivityTrackerRef.current = decision.tracker;
 
-    if (
-      recordingInactivityPrompt &&
-      (!status ||
-        status.sessionId !== recordingInactivityPrompt.sessionId ||
-        status.state !== "recording" ||
-        recordingHasActivity(status))
-    ) {
-      setRecordingInactivityPrompt(null);
-      return;
-    }
+      if (
+        recordingInactivityPrompt &&
+        (!status ||
+          status.sessionId !== recordingInactivityPrompt.sessionId ||
+          status.state !== "recording" ||
+          recordingHasActivity(status))
+      ) {
+        setRecordingInactivityPrompt(null);
+        return;
+      }
 
-    if (
-      !status ||
-      !decision.shouldPrompt ||
-      recordingInactivityPrompt?.sessionId === status.sessionId
-    ) {
-      return;
-    }
+      if (
+        !status ||
+        !decision.shouldPrompt ||
+        recordingInactivityPrompt?.sessionId === status.sessionId
+      ) {
+        return;
+      }
 
-    const prompt = {
-      sessionId: status.sessionId,
-      expiresAt: now + RECORDING_INACTIVITY_RESPONSE_MS,
+      const prompt = {
+        sessionId: status.sessionId,
+        expiresAt: now + RECORDING_INACTIVITY_RESPONSE_MS,
+      };
+      setRecordingInactivityNow(now);
+      setRecordingInactivityPrompt(prompt);
+      void notifyRecordingStillMeetingPrompt(status.sessionId);
     };
-    setRecordingInactivityNow(now);
-    setRecordingInactivityPrompt(prompt);
-    void notifyRecordingStillMeetingPrompt(status.sessionId);
-  }, [recordingInactivityPrompt, state.recordingStatus]);
+
+    evaluateLatestStatus();
+    return recordingTelemetryStore.subscribeStatus(evaluateLatestStatus);
+  }, [
+    recordingInactivityPrompt,
+    recordingInactivityTrackerRef,
+    recordingTelemetryStore,
+    setRecordingInactivityNow,
+    setRecordingInactivityPrompt,
+  ]);
 
   useEffect(() => {
     if (!recordingInactivityPrompt) return;
@@ -2019,7 +2033,7 @@ export function App() {
     topUpLabel,
   });
 
-  return renderAppLayout({
+  const appLayout = renderAppLayout({
     accessibilityBannerDismissed,
     accessibilityBlocked,
     account,
@@ -2129,6 +2143,11 @@ export function App() {
     updateStatusLeaving,
     workspaceContent,
   });
+  return (
+    <RecordingTelemetryProvider store={recordingTelemetryStore}>
+      {appLayout}
+    </RecordingTelemetryProvider>
+  );
 }
 
 // The collapsed transform is driven by `aria-pressed` on the parent button.
