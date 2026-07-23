@@ -187,6 +187,21 @@ describe("classifyHermesEvent — transcript", () => {
       expect(complete.delta).toBe("Summary only");
     }
   });
+
+  it("keeps a successful message.complete non-terminal while a failed one ends the run", () => {
+    const successful = classifyHermesEvent(
+      event("message.complete", {
+        message_id: "assistant-tool-call",
+        tool_calls: [{ id: "computer-use-1" }],
+      }),
+    );
+    const failed = classifyHermesEvent(
+      event("message.complete", { message_id: "failed-message", status: "error" }),
+    );
+
+    expect(isTerminalHermesEvent(successful)).toBe(false);
+    expect(isTerminalHermesEvent(failed)).toBe(true);
+  });
 });
 
 describe("classifyHermesEvent — reasoning", () => {

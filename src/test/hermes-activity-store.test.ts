@@ -213,12 +213,17 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(1);
   });
 
-  it("message completion flips the session to phase 'complete'", () => {
+  it("keeps a successful message completion active until lifecycle completion", () => {
     const store = createHermesActivityStore();
     store.record(classified("message.start", "s1"), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("running");
 
     store.record(classified("message.complete", "s1", { text: "Done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+
+    store.record(classified("lifecycle.complete", "s1", { status: "success" }), "sandboxed");
 
     expect(store.getRecord("s1")?.phase).toBe("complete");
     expect(store.activeCount()).toBe(0);

@@ -257,13 +257,19 @@ export type JuneHermesEvent =
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
 
-/** True for classified events that end the current workspace turn. */
+/** True for classified events that end the current agent run.
+ *
+ * A successful `message.complete` seals one assistant transcript segment. It
+ * can carry tool calls that Hermes executes before the run-level lifecycle
+ * completion, so it is not a terminal edge. A failed segment is terminal
+ * because Hermes will not continue its tool loop after that error.
+ */
 export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
   switch (event.kind) {
     case "error":
       return true;
     case "transcript":
-      return event.complete === true;
+      return event.complete === true && event.failed === true;
     case "lifecycle":
       return event.flavor === "terminal";
     default:

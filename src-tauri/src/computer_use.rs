@@ -1695,9 +1695,8 @@ pub async fn computer_use_end_run(
             .attended_runs
             .lock()
             .map_err(|_| AppError::new("computer_use_unavailable", "Run lease lock failed."))?;
-        runs.remove(&session_id);
-        runs.is_empty()
-            .then(|| state.attended_generation.load(Ordering::SeqCst))
+        let removed = runs.remove(&session_id);
+        (removed && runs.is_empty()).then(|| state.attended_generation.load(Ordering::SeqCst))
     };
     if let Some(generation) = idle_generation {
         stop_if_idle(&app, &state, generation).await;
