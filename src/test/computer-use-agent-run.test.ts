@@ -19,6 +19,12 @@ describe("Computer use agent-run tool scope", () => {
     expect(toolsetsForComputerUseAgentRun(prompt)).toEqual(COMPUTER_USE_AGENT_RUN_TOOLSETS);
   });
 
+  it("keeps combined Computer use tasks on the intentional CU-only path", () => {
+    expect(
+      toolsetsForComputerUseAgentRun("Use Computer use to open my note and summarize it."),
+    ).toEqual(COMPUTER_USE_AGENT_RUN_TOOLSETS);
+  });
+
   it.each([
     "What is Computer use?",
     "How do I use Computer use?",

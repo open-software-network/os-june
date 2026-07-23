@@ -318,7 +318,7 @@ type InternalRecord = {
  * - `error`                   -> error.
  * - `lifecycle`               -> complete when the flavor is terminal, running when
  *                                the flavor is running, no-op when informational.
- * - `transcript`              -> complete on message completion, else running.
+ * - `transcript`              -> error on failed message completion, else running.
  * - `reasoning`               -> running (the agent is producing output).
  * - `steering`                -> no phase change (local transcript marker).
  * - `unsupported`             -> no phase change (don't let an unknown frame
@@ -351,18 +351,23 @@ function applyEvent(row: InternalRecord, event: JuneHermesEvent): void {
       row.phase = "error";
       return;
     case "lifecycle":
-      // Genuine completions arrive as terminal-flavored frames (lifecycle.complete(d),
-      // session/turn/background completions, plus the workspace's synthetic terminal
-      // write). An info frame's status text must never retire a live row, and info
-      // frames must not flip idle rows to running; this matches main's event-driven
-      // spinner semantics.
+      // Genuine completions arrive as terminal-flavored frames (including the
+      // pinned runtime's session.info { running: false }, explicit completion
+      // aliases, and the workspace's synthetic terminal write). An info frame's
+      // status text must never retire a live row, and info frames must not flip
+      // idle rows to running; this matches main's event-driven spinner semantics.
       if (event.flavor === "terminal") row.phase = "complete";
       if (event.flavor === "running") row.phase = "running";
       return;
     case "transcript":
       if (event.complete) {
-        row.phase = "complete";
-        row.currentTool = undefined;
+        // A successful message.complete seals one transcript segment; Hermes
+        // may still execute tools or post-run work. Only a failed segment ends
+        // the run before a terminal lifecycle frame arrives.
+        if (event.failed) {
+          row.phase = "error";
+          row.currentTool = undefined;
+        }
         return;
       }
       // The agent is actively producing output — running, unless it has already

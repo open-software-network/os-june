@@ -149,6 +149,29 @@ pub struct NoteDto {
     pub retry_recording_session_id: Option<String>,
 }
 
+/// The note-row fields returned by the single-statement `update_note` path.
+///
+/// Existing callers can keep requesting the fully hydrated [`NoteDto`].
+/// Renderer autosave opts into this smaller response so an ordinary edit does
+/// not re-read transcripts, folders, and audio after every persisted patch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotePatchDto {
+    pub id: String,
+    pub title: String,
+    pub preview: String,
+    pub edited_content: Option<String>,
+    pub active_tab: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UpdateNoteResponse {
+    Note(Box<NoteDto>),
+    Patch(NotePatchDto),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteCalendarEventDto {
@@ -220,6 +243,10 @@ pub struct UpdateNoteRequest {
     pub title: Option<String>,
     pub edited_content: Option<String>,
     pub active_tab: Option<String>,
+    /// Additive opt-in for the single-query patch response. Absent/false keeps
+    /// the original fully hydrated NoteDto response for existing callers.
+    #[serde(default)]
+    pub patch_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

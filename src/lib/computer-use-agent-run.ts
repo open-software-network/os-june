@@ -3,6 +3,12 @@ export const COMPUTER_USE_AGENT_RUN_TOOLSETS = ["june_computer_use"] as const;
 const COMPUTER_USE_PHRASE = String.raw`computer(?:\s+|-)use`;
 const INFORMATIONAL_QUESTION =
   /^(?:(?:what|why|how|when|where|who|which|does|did|is|are|was|were)\b|(?:do|should|could|would|can)\s+(?:i|we)\b|tell\s+me\s+(?:how|whether|if|what|why)\b)/i;
+/**
+ * Explicit Computer use requests intentionally narrow the turn to the
+ * Computer use toolset, including combined tasks such as "use Computer use
+ * to open my note and summarize it". The model can complete the whole task
+ * through the selected desktop-control tool without unrelated schemas.
+ */
 const EXPLICIT_COMPUTER_USE_REQUEST = new RegExp(
   String.raw`(?:\buse\s+(?:the\s+)?${COMPUTER_USE_PHRASE}(?:\s+tool)?\s+(?:to|for)\b|\buse\s+(?:the\s+)?${COMPUTER_USE_PHRASE}(?:\s+tool)?\s*(?::|,|-)\s*(?:please\s+)?(?:open|launch|click|type|enter|press|select|choose|drag|scroll|close|quit|switch|move|resize|focus|inspect|look|take|capture|use)\b|\b(?:using|via|through)\s+(?:the\s+)?${COMPUTER_USE_PHRASE}(?:\s+tool)?\b|\bwith\s+(?:the\s+)?${COMPUTER_USE_PHRASE}(?:\s+tool)?\s*(?::|,|\bto\b)|^(?:please\s+)?${COMPUTER_USE_PHRASE}(?:\s+tool)?\s*(?::|,|-)?\s*(?:please\s+)?(?:open|launch|click|type|enter|press|select|choose|drag|scroll|close|quit|switch|move|resize|focus|inspect|look|take|capture|use)\b)`,
   "i",

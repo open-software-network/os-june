@@ -131,7 +131,7 @@ export function classifyHermesEvent(raw: HermesGatewayEvent): JuneHermesEvent {
     return {
       kind: "lifecycle",
       sessionId,
-      flavor: lifecycleFlavor(type),
+      flavor: lifecycleFlavor(type, payload),
       status: lifecycleStatus(type, payload),
       text: eventText(payload),
       payload: payload ? sanitizePayload(payload) : undefined,
@@ -560,7 +560,19 @@ function lifecycleStatus(type: string, payload: RawHermesPayload | undefined): s
   return stringValue(payload?.status, true) ?? type;
 }
 
-function lifecycleFlavor(type: string): Extract<JuneHermesEvent, { kind: "lifecycle" }>["flavor"] {
+function lifecycleFlavor(
+  type: string,
+  payload: RawHermesPayload | undefined,
+): Extract<JuneHermesEvent, { kind: "lifecycle" }>["flavor"] {
+  // The pinned v2026.7.20 dashboard gateway closes a plain prose run with
+  // session.info { running: false }; it does not emit lifecycle.complete or
+  // turn.completed. The matching running:true frame opens the same run-level
+  // state edge. Keep session.info without a boolean informational for older
+  // runtimes and connection-time snapshots.
+  if (type === "session.info") {
+    if (payload?.running === false) return "terminal";
+    if (payload?.running === true) return "running";
+  }
   switch (type.toLowerCase()) {
     // Intentional extension beyond main's terminal type list: main never tore
     // down on lifecycle.complete, but June's typed lifecycle union does.

@@ -79,6 +79,34 @@ describe("notesReducer", () => {
     expect(state.selectedNote?.editedContent).toBe("Clean notes");
   });
 
+  it("ignores nullable database fields in a note patch", () => {
+    const initial = notesReducer(createInitialState(), {
+      type: "noteLoaded",
+      note: note({
+        id: "note-1",
+        title: "Existing title",
+        editedContent: "Existing edit",
+        activeTab: "transcription",
+      }),
+    });
+
+    const state = notesReducer(initial, {
+      type: "notePatched",
+      noteId: "note-1",
+      patch: {
+        title: "Patched title",
+        preview: "Patched preview",
+        editedContent: null,
+        activeTab: null,
+        updatedAt: "2026-07-23T12:00:00Z",
+      } as never,
+    });
+
+    expect(state.selectedNote?.title).toBe("Patched title");
+    expect(state.selectedNote?.editedContent).toBe("Existing edit");
+    expect(state.selectedNote?.activeTab).toBe("transcription");
+  });
+
   it("keeps optimistic transcribing status when a stale validating note arrives", () => {
     const initial = notesReducer(createInitialState(), {
       type: "noteLoaded",

@@ -6,7 +6,7 @@ import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
 import { NotesList } from "../components/notes-list/NotesList";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconProjects } from "central-icons/IconProjects";
-import { retryProcessing, updateNote } from "../lib/tauri";
+import { retryProcessing } from "../lib/tauri";
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { messageFromError } from "../lib/errors";
 import {
@@ -58,6 +58,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     handleEnableMicrophone,
     handleEnableSystemAudio,
     handleFinishRecording,
+    handleFlushNote,
     handleFoldersImported,
     handleNewAgentSession,
     handleNewAgentSessionInProject,
@@ -72,6 +73,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     handleRenameFolder,
     handleReportIssue,
     handleResumeRecording,
+    handleSaveNoteNow,
     handleReturnToAgentOriginFolder,
     handleReturnToAgentsList,
     handleReturnToNote,
@@ -537,14 +539,11 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
           recovery={selectedRecovery}
           onRecoverRecording={(sessionId) => handleRecovery(sessionId, "validate")}
           onDiscardRecording={(sessionId) => handleRecovery(sessionId, "discard")}
-          onTitleChange={(title) => void handleUpdateNote({ title })}
+          onTitleChange={(title) => handleUpdateNote(selectedNote.id, { title })}
           onContentChange={(sourceNoteId, editedContent) => {
-            // Blur fired by an editor that was already torn
-            // down on note-switch — ignore so we don't write
-            // the old note's content into the new selectedNote.
-            if (sourceNoteId !== selectedNote.id) return;
-            void handleUpdateNote({ editedContent });
+            handleUpdateNote(sourceNoteId, { editedContent });
           }}
+          onFlushNote={(noteId) => void handleFlushNote(noteId)}
           onSourceModeChange={handleSourceModeChange}
           onEnableSystemAudio={handleEnableSystemAudio}
           onEnableMicrophone={handleEnableMicrophone}
@@ -553,10 +552,9 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
             import.meta.env.DEV && recordNoticesConsentPinned && selectedNoteId === recordingNoteId
           }
           onTabChange={(activeTab) =>
-            void updateNote({
-              noteId: selectedNote.id,
+            void handleSaveNoteNow(selectedNote.id, {
               activeTab,
-            }).then((note) => dispatch({ type: "noteUpdated", note }))
+            })
           }
           onStartRecording={() => void handleStartRecording()}
           onPauseRecording={(sessionId) => void handlePauseRecording(sessionId)}

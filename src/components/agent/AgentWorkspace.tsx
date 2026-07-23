@@ -28,7 +28,8 @@ import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { isWindowsPlatform } from "../../lib/platform";
 import { listHermesSessionMessages } from "../../lib/hermes-adapter";
 import { dispatchAgentSessionStatus } from "../../lib/agent-events";
-import { HermesGatewayClient } from "../../lib/hermes-gateway";
+import type { HermesGatewayClient } from "../../lib/hermes-gateway";
+import { subscribeHermesActiveSessionSnapshots } from "../../lib/hermes-active-session-snapshots";
 import {
   createHermesMethods,
   hermesModeFor,
@@ -466,7 +467,7 @@ export function AgentWorkspace({
     runtimeSessionIds,
     setRuntimeSessionIds,
     runtimeSessionIdsRef,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     stoppingSessionIds,
     setStoppingSessionIds,
     skills,
@@ -648,6 +649,7 @@ export function AgentWorkspace({
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const [composerHasContent, setComposerHasContent] = useState(Boolean(draft.trim()));
   const [composerClearance, setComposerClearance] = useState(0);
   // A note reference to seed once the editor is ready, set by startNewTask for
   // note-level "Ask June" entry points.
@@ -1162,7 +1164,7 @@ export function AgentWorkspace({
     composerModelSearchRef,
     composerModelTriggerRef,
     composerSteerDemo,
-    draft,
+    composerHasContent,
     errorState,
     fullModeDraftRef,
     gallerySections,
@@ -1439,18 +1441,15 @@ export function AgentWorkspace({
   // working from a trailing user message — would otherwise stay "working"
   // forever, leaving the menu bar stuck on "Working…". The gateway's
   // session.active_list is ground truth for what is actually running, so any
-  // locally-working session absent from it (or sitting idle) for two
-  // consecutive polls gets its activity cleared. Two misses, not one: a
-  // just-submitted prompt can race the runtime session registering.
+  // locally-working session absent from it (or sitting idle) for the original
+  // five-second tolerance gets its activity cleared. The tolerance covers a
+  // just-submitted prompt racing runtime-session registration.
   const {
-    liveRuntimeSessionsForModes,
-    runtimeSnapshotHasSession,
     cancelAgentRunSettlement,
     hasAutomaticContinuation,
     watchCompletedAgentRunSettle,
     reconcileWorkingSessionsAgainstRuntime,
   } = createRuntimeReconciliation({
-    ensureHermesGateway,
     hermesSessionItems,
     pendingAttachmentPreparationsRef,
     pendingSteerBySessionIdRef,
@@ -1459,7 +1458,7 @@ export function AgentWorkspace({
     refreshHermesSession,
     runtimeSessionIdsRef,
     setError,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     workingSessionIdsRef,
   });
 
@@ -1592,6 +1591,7 @@ export function AgentWorkspace({
     setAttachMenuOpen,
     setAttachments,
     setCategory,
+    setComposerHasContent,
     setDraft,
     setError,
     setImportingFiles,
@@ -1728,19 +1728,28 @@ export function AgentWorkspace({
     return () => window.clearInterval(interval);
   }, [selectedTask?.id, selectedTask?.status, upsertTask]);
 
-  // Poll every working session — not just the selected one — so a run whose
-  // live gateway stream died (disconnect, navigation) still reconciles from
-  // persisted messages instead of staying "working" forever.
+  // One process-wide active-list poll per mode is shared with run settlement.
+  // Gateway events render live message deltas, while bounded missing-row and
+  // unreachable-snapshot streaks trigger native persisted-history recovery.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: subscription ownership follows mode membership; the render-local reconciler reads current refs, and resubscribing every render would force extra immediate snapshots.
   useEffect(() => {
-    if (!bridge.running || workingSessionIds.size === 0) return;
-    const sessionIds = Array.from(workingSessionIds);
-    const interval = window.setInterval(() => {
-      for (const sessionId of sessionIds) {
-        void refreshHermesSession(sessionId);
+    for (const sessionId of workingReconcileStreaksRef.current.keys()) {
+      if (!workingSessionIds.has(sessionId)) {
+        workingReconcileStreaksRef.current.delete(sessionId);
       }
-      void reconcileWorkingSessionsAgainstRuntime();
-    }, 2500);
-    return () => window.clearInterval(interval);
+    }
+    if (!bridge.running || workingSessionIds.size === 0) return;
+    const modes = new Set(
+      Array.from(workingSessionIds, (sessionId) => sessionUnrestricted(sessionId)),
+    );
+    const unsubscribe = [...modes].map((fullMode) =>
+      subscribeHermesActiveSessionSnapshots(fullMode, (snapshot) => {
+        void reconcileWorkingSessionsAgainstRuntime(snapshot);
+      }),
+    );
+    return () => {
+      for (const remove of unsubscribe) remove();
+    };
   }, [bridge.running, workingSessionIds]);
 
   useEffect(() => {
@@ -2059,6 +2068,7 @@ export function AgentWorkspace({
   }
 
   function clearComposerCommandDraft(commandText: string) {
+    if (!composerEditorRef.current?.flushPendingChange()) return;
     if (draftRef.current.trim() !== commandText.trim()) return;
     if (categoryRef.current) return;
     composerEditorRef.current?.clear();
@@ -2087,6 +2097,16 @@ export function AgentWorkspace({
 
   let submitImplementation: (event?: FormEvent) => Promise<void>;
   async function submit(event?: FormEvent) {
+    const liveComposer = composerEditorRef.current;
+    if (
+      liveComposer &&
+      !liveComposer.flushPendingChange({
+        changeKey: composerDraftKeyRef.current,
+      })
+    ) {
+      event?.preventDefault();
+      return;
+    }
     return submitImplementation(event);
   }
 
@@ -2519,9 +2539,9 @@ export function AgentWorkspace({
   // remains read-only; transport state stays out of the visual scan line.
   const { renderSteerCard, renderQueuedAttachmentFollowUp } = createQueuedFollowUpRenderers({
     attachments,
+    composerHasContent,
     composerEditorRef,
     deliverQueuedAttachmentFollowUp,
-    draft,
     draftRef,
     editQueuedAttachmentFollowUp,
     queuedAttachmentFollowUpsRef,
@@ -2720,7 +2740,7 @@ export function AgentWorkspace({
   // hovering the chips, has started typing, or has the window backgrounded;
   // never cycles under reduced motion.
   useAgentHeroRotation({
-    draftRef,
+    composerHasContent,
     heroChipsHoverRef,
     heroMode,
     setHeroChipPhase,
@@ -2761,17 +2781,14 @@ export function AgentWorkspace({
     beginAttachmentPreparation,
     cancelComposerDispatch,
     captureSessionModelTarget,
-    category,
     categoryRef,
     clearComposerDraft,
     composerDispatchOrderRef,
     composerDispatchWasInvalidated,
     composerDraftKeyRef,
     composerEditorRef,
-    composerInputSignature,
     composerSizeProceedSignatureRef,
     deferredFailedIssueReportDeliverySessionIdsRef,
-    draft,
     draftRef,
     enqueueAttachmentFollowUp,
     enqueueFailedComposerFollowUp,
@@ -2781,7 +2798,6 @@ export function AgentWorkspace({
     generationModels,
     handleBuiltinComposerSlashCommand,
     heroMode,
-    imageSlashBlockedByModel,
     importingFiles,
     newSessionModeRef,
     pendingSteerBySessionIdRef,
@@ -2826,6 +2842,8 @@ export function AgentWorkspace({
     composerBoxRef,
     composerDraftKeyRef,
     composerEditorRef,
+    composerHasContent,
+    setComposerHasContent,
     onComposerFocusChange: handleComposerFocusChange,
     composerInSteerState,
     composerModelFlyout,
@@ -2839,7 +2857,6 @@ export function AgentWorkspace({
     composerTiptapEditorRef,
     confirmUnrestricted,
     creditActionsDisabledReason,
-    draft,
     draftRef,
     dropActive,
     editOversizeComposerInput,
@@ -3018,11 +3035,11 @@ export function AgentWorkspace({
     compactSessionId,
     composer,
     composerClearance,
+    composerHasContent,
     compressSessionContext,
     deleteSelectedHermesSession,
     detailContent,
     downloadArtifact,
-    draft,
     fetchSessionUsage,
     galleryErrors,
     generationModel,

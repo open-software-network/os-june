@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HermesGatewayError, isSessionBusyError } from "../lib/hermes-gateway";
 import {
   classifyHermesEvent,
+  isTerminalHermesEvent,
   replayFixture,
   replayFixtureFrames,
 } from "../lib/hermes-control-plane";
@@ -18,6 +19,7 @@ import type {
 // (vite.config include: ["src/test/**"]). Each import is type-checked because
 // resolveJsonModule is on, so a malformed fixture fails `tsc`/lint, not just here.
 import normalMessage from "../lib/hermes-control-plane/fixtures/normal-message.json";
+import plainProseTurn from "../lib/hermes-control-plane/fixtures/plain-prose-turn.json";
 import toolCallSuccess from "../lib/hermes-control-plane/fixtures/tool-call-success.json";
 import toolCallFailure from "../lib/hermes-control-plane/fixtures/tool-call-failure.json";
 import approvalRequestResponse from "../lib/hermes-control-plane/fixtures/approval-request-response.json";
@@ -66,6 +68,10 @@ type FrameExpectation = {
 
 type FixtureCase = {
   fixture: HermesReplayFixture;
+  provenance?: {
+    hermesVersion: string;
+    recordedFrom: string;
+  };
   /** Expected classification for each frame, in order. Length must equal the
    * fixture's frame count — a mismatch means the fixture changed under us. */
   expected: FrameExpectation[];
@@ -93,6 +99,26 @@ const CASES: Record<string, FixtureCase> = {
       k("transcript"),
       k("transcript"),
       k("transcript"),
+    ],
+  },
+  "plain-prose-turn": {
+    fixture: plainProseTurn as HermesReplayFixture,
+    provenance: {
+      hermesVersion: "v2026.7.20",
+      recordedFrom: "dashboard-gateway",
+    },
+    // Exact pinned-runtime trace: the message segment completes before the
+    // session.info frame reports that the whole run is idle.
+    expected: [
+      k("lifecycle"),
+      k("transcript"),
+      k("reasoning"),
+      k("reasoning"),
+      k("transcript"),
+      k("reasoning"),
+      k("reasoning"),
+      k("transcript"),
+      k("lifecycle"),
     ],
   },
   "tool-call-success": {
@@ -193,9 +219,13 @@ describe("hermes replay — fixture corpus integrity", () => {
   });
 
   it("records provenance metadata on every fixture (version, source, sanitized)", () => {
-    for (const [name, { fixture }] of ALL_CASES) {
-      expect(fixture.hermesVersion, `${name} missing hermesVersion`).toBe("v2026.6.19");
-      expect(fixture.recordedFrom, `${name} missing recordedFrom`).toBe("tui-gateway");
+    for (const [name, { fixture, provenance }] of ALL_CASES) {
+      expect(fixture.hermesVersion, `${name} missing hermesVersion`).toBe(
+        provenance?.hermesVersion ?? "v2026.6.19",
+      );
+      expect(fixture.recordedFrom, `${name} missing recordedFrom`).toBe(
+        provenance?.recordedFrom ?? "tui-gateway",
+      );
       expect(fixture.sanitized, `${name} not marked sanitized`).toBe(true);
     }
   });
@@ -262,6 +292,23 @@ describe("hermes replay — family-specific expectations", () => {
       "Sure, here is the plan: step one.",
     ]);
     expect(transcripts.at(-1)?.complete).toBe(true);
+  });
+
+  it("captures the pinned runtime's terminal frame on a plain prose turn", () => {
+    const replayed = replayFixtureFrames(plainProseTurn as HermesReplayFixture);
+    const rawTypes = replayed.map(({ raw }) => raw.type);
+    const first = replayed.at(0)?.event;
+    const messageComplete = replayed.find(({ raw }) => raw.type === "message.complete")?.event;
+    const terminal = replayed.at(-1)?.event;
+
+    expect(rawTypes).not.toContain("lifecycle.complete");
+    expect(rawTypes).not.toContain("turn.completed");
+    expect(rawTypes.at(-1)).toBe("session.info");
+    expect(first).toMatchObject({ kind: "lifecycle", flavor: "running" });
+    expect(messageComplete).toMatchObject({ kind: "transcript", complete: true });
+    expect(messageComplete && isTerminalHermesEvent(messageComplete)).toBe(false);
+    expect(terminal).toMatchObject({ kind: "lifecycle", flavor: "terminal" });
+    expect(terminal && isTerminalHermesEvent(terminal)).toBe(true);
   });
 
   it("carries approval metadata and a request id through the approval fixture", () => {

@@ -154,7 +154,6 @@ export function tabMeta(
         title: settingsSectionLabel?.trim() || "Settings",
         icon: <IconSettingsGear4 size={TAB_ICON_SIZE} />,
       };
-    case "notes":
     default:
       return {
         title: "Notes",

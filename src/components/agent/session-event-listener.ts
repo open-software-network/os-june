@@ -223,9 +223,7 @@ export function createSessionEventListener(dependencies: createSessionEventListe
         });
       }
       if (isTerminalHermesEvent(classified)) {
-        if (computerUseRunLeaseId) {
-          void releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
-        } else {
+        if (!computerUseRunLeaseId) {
           void releaseAllComputerUseRuns(storedSessionId);
         }
         unlisten();
@@ -258,6 +256,12 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     });
     unlisten = () => {
       removeListener();
+      // This listener owns exactly the lease opened with its prompt. Replacing
+      // the runtime listener (for example after a gateway reconnect) must fail
+      // that lease closed without revoking a newer listener's lease.
+      if (computerUseRunLeaseId) {
+        void releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
+      }
       // Stop, cancellation, listener replacement, and normal teardown all
       // converge here. Publish any trailing delta before cancelling its timer
       // so React never remains behind the authoritative event ref.

@@ -21,6 +21,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     agentSessions,
     completedSessions,
     dispatch,
+    noteSaveController,
     pendingSessionProjectRef,
     sessionCompletionTouchedRef,
     sessionCompletionWritesRef,
@@ -60,6 +61,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     options?: { rethrow?: boolean },
   ) {
     try {
+      await noteSaveController.flush(noteId);
       const note = await removeNoteFromFolder(noteId, folderId);
       dispatch({ type: "noteUpdated", note });
     } catch (err) {
@@ -80,6 +82,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     if (!note) return;
     if (note.folderIds.length === 1 && note.folderIds[0] === folderId) return;
     try {
+      await noteSaveController.flush(noteId);
       for (const existing of note.folderIds) {
         if (existing === folderId) continue;
         const updated = await removeNoteFromFolder(noteId, existing);

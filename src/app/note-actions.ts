@@ -1,14 +1,14 @@
-import { deleteNote, deleteNotes, getNote, listNotes, updateNote } from "../lib/tauri";
+import { deleteNote, deleteNotes, getNote, listNotes } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import type { NoteDto } from "../lib/tauri";
+import type { NoteEditablePatch } from "../lib/tauri";
 import type { CreateNoteActionsDependencies } from "./note-actions-types";
 
 export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
   const {
     dispatch,
     handleEmptyNotesAfterDelete,
+    noteSaveController,
     pruneDeletedNoteTabs,
-    selectedNote,
     setActiveView,
     setError,
     setFolderReturnTarget,
@@ -23,6 +23,8 @@ export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
       return;
     }
     try {
+      await noteSaveController.flush(noteId);
+      noteSaveController.discard(noteId);
       await deleteNote(noteId);
       pruneDeletedNoteTabs(new Set([noteId]));
       const response = await listNotes();
@@ -45,6 +47,10 @@ export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
       return;
     }
     try {
+      await Promise.all(noteIds.map((noteId) => noteSaveController.flush(noteId)));
+      for (const noteId of noteIds) {
+        noteSaveController.discard(noteId);
+      }
       await deleteNotes(noteIds);
       pruneDeletedNoteTabs(new Set(noteIds));
       const response = await listNotes();
@@ -74,21 +80,31 @@ export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
     }
   }
 
-  async function handleUpdateNote(patch: Partial<Pick<NoteDto, "title" | "editedContent">>) {
-    if (!selectedNote) return;
-    const optimistic = {
-      ...selectedNote,
-      ...patch,
-      updatedAt: new Date().toISOString(),
-    };
-    dispatch({ type: "noteUpdated", note: optimistic });
+  function handleUpdateNote(noteId: string, patch: NoteEditablePatch) {
+    dispatch({
+      type: "notePatched",
+      noteId,
+      patch: { ...patch, updatedAt: new Date().toISOString() },
+    });
+    noteSaveController.queue(noteId, patch);
+  }
+
+  async function handleFlushNote(noteId: string) {
     try {
-      const note = await updateNote({
-        noteId: selectedNote.id,
-        title: patch.title,
-        editedContent: patch.editedContent,
-      });
-      dispatch({ type: "noteUpdated", note });
+      await noteSaveController.flush(noteId);
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleSaveNoteNow(noteId: string, patch: NoteEditablePatch) {
+    dispatch({
+      type: "notePatched",
+      noteId,
+      patch: { ...patch, updatedAt: new Date().toISOString() },
+    });
+    try {
+      await noteSaveController.saveNow(noteId, patch);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -97,6 +113,8 @@ export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
   return {
     handleDeleteNote,
     handleDeleteNotes,
+    handleFlushNote,
+    handleSaveNoteNow,
     handleSelectNoteFromFolder,
     handleUpdateNote,
   };

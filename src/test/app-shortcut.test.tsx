@@ -80,6 +80,8 @@ const mocks = vi.hoisted(() => ({
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   updateNote: vi.fn(),
+  patchNote: vi.fn(),
+  completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
@@ -223,6 +225,9 @@ vi.mock("../lib/tauri", () => ({
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   updateNote: mocks.updateNote,
+  patchNote: mocks.patchNote,
+  completeNoteSaveFlush: mocks.completeNoteSaveFlush,
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
@@ -480,6 +485,14 @@ describe("App shortcuts", () => {
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,
+    }));
+    mocks.patchNote.mockImplementation(async (noteId, patch) => ({
+      id: noteId,
+      title: patch.title ?? first.title,
+      preview: first.preview,
+      editedContent: patch.editedContent ?? first.editedContent,
+      activeTab: patch.activeTab ?? first.activeTab,
+      updatedAt: first.updatedAt,
     }));
   });
 
@@ -1087,9 +1100,13 @@ describe("App shortcuts", () => {
 
     await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
 
-    mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
 
-    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "General" }, { timeout: 10_000 }),
+    ).toBeInTheDocument();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
