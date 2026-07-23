@@ -2238,6 +2238,7 @@ export function AppSettings({
                 <div className="settings-rows">
                   <ModelRow
                     mode="transcription"
+                    beforeDivider
                     title="Transcription"
                     description="Speech-to-text for note recordings and dictation."
                     value={modelValueForMode("transcription")}
@@ -2323,6 +2324,7 @@ export function AppSettings({
                 <div className="settings-rows">
                   <ModelRow
                     mode="generation"
+                    beforeDivider={providerSettings.generationModel !== "open-software/auto"}
                     title="Text"
                     description="Used for generated notes and agent responses."
                     value={modelValueForMode("generation")}
@@ -2350,7 +2352,7 @@ export function AppSettings({
                     readOnly={showingActiveProfileModels}
                   />
                   {providerSettings.generationModel === "open-software/auto" ? (
-                    <div className="settings-row">
+                    <div className="settings-row settings-row-before-divider">
                       <div className="settings-row-info">
                         <span className="settings-row-title">Auto preference</span>
                         <span className="settings-row-description">
@@ -2583,6 +2585,7 @@ export function AppSettings({
                     {IMAGE_GENERATION_ENABLED ? (
                       <ModelRow
                         mode="image"
+                        beforeDivider={!VIDEO_GENERATION_ENABLED}
                         title="Image"
                         description="Used when you generate an image from chat."
                         value={modelValueForMode("image")}
@@ -2606,6 +2609,7 @@ export function AppSettings({
                     {VIDEO_GENERATION_ENABLED ? (
                       <ModelRow
                         mode="video"
+                        beforeDivider
                         title="Video"
                         description="Used when you generate a video from chat."
                         value={modelValueForMode("video")}
@@ -3280,6 +3284,7 @@ function numericPayload(value: unknown) {
 
 function ModelRow({
   mode,
+  beforeDivider = false,
   title,
   description,
   value,
@@ -3301,6 +3306,7 @@ function ModelRow({
   summarySuppressed,
 }: {
   mode: ProviderModelMode;
+  beforeDivider?: boolean;
   title: string;
   description: string;
   value: string;
@@ -3324,7 +3330,11 @@ function ModelRow({
   const model = selectedModel(options, value);
   const modelLabel = `${title.toLowerCase()} model`;
   return (
-    <div className="settings-row settings-model-row">
+    <div
+      className={`settings-row settings-model-row${
+        beforeDivider ? " settings-row-before-divider" : ""
+      }`}
+    >
       <div className="settings-row-info">
         <h3 className="settings-row-title">{title}</h3>
         <p className="settings-row-description">{description}</p>

@@ -905,6 +905,12 @@ export function AgentWorkspace({
   // when the panel opens, so the keyboard is the close affordance that never
   // moves; the panel's filter input claims the first Esc to clear itself.
   const artifactPanelOpen = artifactPanel !== null;
+  useLayoutEffect(() => {
+    const shell = document.querySelector(".app-shell");
+    shell?.classList.toggle("app-shell-artifact-panel-open", artifactPanelOpen);
+    return () => shell?.classList.remove("app-shell-artifact-panel-open");
+  }, [artifactPanelOpen]);
+
   useEffect(() => {
     if (!artifactPanelOpen) return;
     const onKey = (event: KeyboardEvent) => {

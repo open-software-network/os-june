@@ -387,7 +387,7 @@ const AllNoteRow = memo(function AllNoteRow({
         data-has-actions="true"
         data-menu-open={menu !== null}
       >
-        <label className="folder-note-checkbox">
+        <label className={`folder-note-checkbox${checked ? " folder-note-checkbox-checked" : ""}`}>
           <input
             type="checkbox"
             checked={checked}

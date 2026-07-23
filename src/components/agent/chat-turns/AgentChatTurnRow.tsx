@@ -216,6 +216,15 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
   const nonTextParts = turn.parts.filter((part) => part.type !== "text");
   const concreteResponse = turnIsConcreteResponse(turn);
   const copyText = copyableTextForTurn(turn);
+  const hasActionCard = turn.parts.some(
+    (part) =>
+      part.type === "approval" ||
+      part.type === "clarify" ||
+      part.type === "sudo" ||
+      part.type === "secret" ||
+      (part.type === "text" &&
+        (hasAgentCliAccessRequest(part.text) || hasBrowserAccessRequest(part.text))),
+  );
 
   async function copyTurn() {
     if (!copyText) return;
@@ -346,7 +355,11 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
 
   return (
     <article className="agent-assistant-turn" data-status={turn.status}>
-      <div className="agent-assistant-turn-body">
+      <div
+        className={`agent-assistant-turn-body${
+          hasActionCard ? " agent-assistant-turn-body-action-card" : ""
+        }`}
+      >
         {reasoningParts.length > 0 ? (
           <AgentThinkingGroup
             reasoning={reasoningParts}
