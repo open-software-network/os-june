@@ -1,7 +1,7 @@
 /**
  * Per-session record of settled title edits. Keyed by stored session id (not
  * runtime session id) because June's session list and persistence use the
- * durable id, while live Hermes processes may resume under a different
+ * durable id, while live the retired runtime processes may resume under a different
  * runtime id. Absence means auto-titling is allowed, so sessions from before
  * this record existed fall back to the safe default.
  *

@@ -2,13 +2,13 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { NotesListHandle } from "../components/notes-list/NotesList";
-import type { SettingsTab } from "../components/settings/settings-config";
+import type { SettingsTab } from "../components/settings/AppSettings";
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import { defaultNav, makeTabId, type Tab, type TabNav } from "./tabs/tabs";
 import type { LiveTranscriptEventDto } from "../lib/tauri";
 import { isMacLikePlatform, isWindowsPlatform } from "../lib/platform";
 import type { AgentSessionStatusDetail } from "../lib/agent-events";
-import { useActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { useActiveAgentProfileName } from "../lib/agent-profile";
 import type { SessionProfileMap } from "../lib/session-profile-filter";
 import type { RecordingInactivityTracker } from "../lib/recording-inactivity";
 import {
@@ -16,7 +16,8 @@ import {
   type RecordingTelemetryStore,
 } from "../lib/recording-telemetry-store";
 import { getAgentHudEnabled } from "../lib/agent-hud-settings";
-import type { NoteDto, HermesSessionInfo } from "../lib/tauri";
+import type { NoteDto } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { shouldReplayOnboarding } from "../lib/onboarding";
@@ -32,7 +33,7 @@ import { SIDEBAR_DEFAULT_WIDTH, type RecordingInactivityPrompt } from "./app-she
 
 export function useAppState() {
   const replayOnboarding = shouldReplayOnboarding();
-  const activeHermesProfileName = useActiveHermesProfileName();
+  const activeAgentProfileName = useActiveAgentProfileName();
   const startsOnAgent = isMacLikePlatform() || isWindowsPlatform();
   const [profileDataRefreshRevision, setProfileDataRefreshRevision] = useState(0);
   const [state, dispatch] = useReducer(notesReducer, undefined, createInitialState);
@@ -68,12 +69,12 @@ export function useAppState() {
   // Reactive copy of the known agent sessions for the "view all" list and
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
-  const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [agentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
   const activeAgentSessionIdRef = useRef(activeAgentSessionId);
   activeAgentSessionIdRef.current = activeAgentSessionId;
-  const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<HermesSessionInfo>();
-  const setActiveAgentSession = useCallback((session: HermesSessionInfo | undefined) => {
+  const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<AgentSessionDto>();
+  const setActiveAgentSession = useCallback((session: AgentSessionDto | undefined) => {
     setActiveAgentSessionId(session?.id);
     setActiveAgentSessionSeed(session);
   }, []);
@@ -83,10 +84,10 @@ export function useAppState() {
   const [agentWaitingSessionIds, setAgentWaitingSessionIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // sessionId -> project (folder) ids. Sessions live in Hermes, so their
+  // sessionId -> project (folder) ids. Sessions live in the retired runtime, so their
   // project assignments are tracked separately from the notes state.
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
-  // stored Hermes session id -> completed_at ISO. June-owned; see JUN-203.
+  // stored the retired runtime session id -> completed_at ISO. June-owned; see JUN-203.
   const [completedSessions, setCompletedSessions] = useState<Record<string, string>>({});
   // In-flight completion writes per stored session id, so rapid toggles for one
   // session persist in the order the user made them (see
@@ -100,7 +101,7 @@ export function useAppState() {
   // callback and so cannot close over the state directly.
   const completedSessionsRef = useRef<Record<string, string>>({});
   // `null` means the mapping has never loaded. An empty object is meaningful:
-  // it confirms every unmapped Hermes session belongs to Default. Keeping
+  // it confirms every unmapped the retired runtime session belongs to Default. Keeping
   // those states distinct lets failed reads retain a known-good map while the
   // first failure exposes no sessions at all.
   const sessionProfilesRef = useRef<SessionProfileMap | null>(null);
@@ -118,7 +119,7 @@ export function useAppState() {
     knownSessionIds: Set<string>;
     profile: string;
   } | null>(null);
-  const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
+  const agentMenuBarSessionsRef = useRef<AgentSessionDto[]>([]);
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
@@ -261,7 +262,7 @@ export function useAppState() {
   }, []);
 
   return {
-    activeHermesProfileName,
+    activeAgentProfileName,
     profileDataRefreshRevision,
     setProfileDataRefreshRevision,
     state,

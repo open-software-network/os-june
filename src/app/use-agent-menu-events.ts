@@ -3,9 +3,8 @@ import { useEffect } from "react";
 import {
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
-} from "../components/agent/session-persistence";
-import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
-import { listHermesSessions } from "../lib/hermes-adapter";
+} from "../components/agent/AgentWorkspace";
+import { listAgentSessions } from "../lib/tauri";
 import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
@@ -70,7 +69,7 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
         setActiveView("agent");
         return;
       }
-      void Promise.all([listHermesSessions({ limit: 100 }), refreshSessionProfiles()])
+      void Promise.all([listAgentSessions(), refreshSessionProfiles()])
         .then(([sessions, profiles]) => {
           const scopedSessions = profileScopedAgentSessions(sessions, profiles);
           agentMenuBarSessionsRef.current = scopedSessions;

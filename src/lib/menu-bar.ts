@@ -1,5 +1,5 @@
 import type { AgentSessionStatusDetail } from "./agent-events";
-import type { HermesSessionInfo } from "./tauri";
+import type { AgentSessionDto } from "./agent-runtime-contract";
 
 export const AGENT_MENU_BAR_STATE_EVENT = "june:menu-bar:agent-state";
 export const AGENT_MENU_BAR_NEW_SESSION_EVENT = "june:menu-bar:new-agent-session";
@@ -32,7 +32,7 @@ export type AgentMenuBarState = {
 };
 
 type BuildAgentMenuBarStateOptions = {
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   workingSessionIds: ReadonlySet<string>;
   waitingSessionIds: ReadonlySet<string>;
   lastStatus?: AgentSessionStatusDetail;
@@ -124,23 +124,12 @@ function statusForSession(
   return "idle";
 }
 
-function titleForSession(session: HermesSessionInfo) {
-  return (
-    normalizeText(session.title, TITLE_LIMIT) ??
-    normalizeText(session.preview, TITLE_LIMIT) ??
-    "Untitled session"
-  );
+function titleForSession(session: AgentSessionDto) {
+  return normalizeText(session.title, TITLE_LIMIT) ?? "Untitled session";
 }
 
-function sessionTimestamp(session: HermesSessionInfo) {
-  return timestampString(
-    session.last_active ??
-      session.lastActive ??
-      session.started_at ??
-      session.startedAt ??
-      session.ended_at ??
-      session.endedAt,
-  );
+function sessionTimestamp(session: AgentSessionDto) {
+  return timestampString(session.updatedAt ?? session.createdAt);
 }
 
 function timestampString(value: unknown) {

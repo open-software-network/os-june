@@ -1,6 +1,6 @@
 /** The literal token June's soul tells it to emit when an agent CLI fails
  * because the sandbox blocks its state folders (JUNE_SOUL_CLI_BLOCKED_MD in
- * src-tauri/src/hermes_bridge.rs — the two must stay in sync). The agent can
+ * src-tauri/src/the retired bridge — the two must stay in sync). The agent can
  * never flip the setting itself: the flag file lives outside every sandbox
  * write root by design, so the request is rendered as a card the user
  * approves with one click. */

@@ -40,7 +40,7 @@ const CONTEXT_CLOSE_MARKER = "[/June project context]";
  * fires. */
 export const COMPACTED_CONTEXT_SIGNATURE = "compacted";
 
-// The block is injected into user-role prompt text (Hermes has no separate
+// The block is injected into user-role prompt text (the retired runtime has no separate
 // structured-context channel on prompt.submit), so the markers are forgeable
 // by construction. Two mitigations keep display honest: marker lines are
 // stripped out of the injected payload so instructions can never terminate

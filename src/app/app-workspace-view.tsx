@@ -1,7 +1,9 @@
 import { FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
-import { markAgentNewSessionPending } from "../components/agent/session-persistence";
+import { AgentWorkspace } from "../components/agent/AgentWorkspace";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
+import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
+import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
 import { NotesList } from "../components/notes-list/NotesList";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
@@ -14,7 +16,6 @@ import {
   NOTE_RETRY_FUNDING_DISABLED_REASON,
   RECOVERY_FUNDING_DISABLED_REASON,
   RECORDING_FUNDING_DISABLED_REASON,
-  ROUTINE_FUNDING_DISABLED_REASON,
 } from "./app-shell";
 import type { RenderAppWorkspaceDependencies } from "./app-workspace-view-types";
 import {
@@ -177,31 +178,6 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
             block: "start",
           });
         }, 80);
-      }}
-    />
-  ) : activeView === "routines" ? (
-    <RoutinesViewRoute
-      creditActionsDisabledReason={fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined}
-      onCreateRoutine={(prompt) => {
-        // The agent workspace is unmounted while Routines is shown,
-        // so the pending marker alone is consumed on mount — no
-        // window event needed (it could double-submit the session).
-        markAgentNewSessionPending(prompt);
-        setActiveAgentSession(undefined);
-        setActiveView("agent");
-      }}
-      onOpenRun={(session) => {
-        if (takeNewTabIntent()) {
-          openTab({
-            view: "agent",
-            agentSessionId: session.id,
-            agentOrigin: { kind: "routines" },
-          });
-          return;
-        }
-        setAgentOrigin({ kind: "routines" });
-        setActiveAgentSession(session);
-        setActiveView("agent");
       }}
     />
   ) : activeView === "agent" ? (

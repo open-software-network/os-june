@@ -5,15 +5,13 @@ import { Fragment } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import { ComputerUseControl } from "../plugins/ComputerUseControl";
 import {
+  BUNDLE_META,
   accountStatusMeta,
-  bundleMeta,
   bundlesForProvider,
   bundlesFromScopes,
-  defaultBundlesForProvider,
   grantedFeatureLabels,
   isConnectorNotConfiguredError,
 } from "../../lib/connectors";
-import { useConnectorPolicy } from "../../lib/connector-policy";
 import { errorCode, messageFromError } from "../../lib/errors";
 import {
   CONNECTORS_CHANGED_EVENT,
@@ -44,12 +42,22 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { HoverTip } from "../ui/HoverTip";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
-import { useExperimentalFlags } from "../../lib/experimental-flags";
-import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 
+// Read-only by default: Google gets mail read and calendar read, Linear gets
+// workspace read, GitHub gets repository read. Write scopes are opt-in
+// checkboxes, so a fresh connect never grants mutation authority the user
+// did not ask for.
 type OAuthConnectorProvider = Extract<ConnectorProvider, "google" | "linear" | "github">;
+
+const DEFAULT_CONNECT_BUNDLES = {
+  google: ["gmail_read", "calendar_read"],
+  linear: ["linear_read"],
+  github: ["github_read"],
+} satisfies Record<OAuthConnectorProvider, readonly ConnectorScopeBundle[]>;
+
+const PROVIDER_ORDER = ["google", "linear", "github"] as const;
 
 const PROVIDER_NAMES = {
   google: "Google",
@@ -275,14 +283,11 @@ const CONNECT_TOASTS = {
 
 /** True once an account holds every feature bundle its provider offers -
  * nothing left to add. */
-function allBundlesGranted(
-  policy: NonNullable<ReturnType<typeof useConnectorPolicy>["policy"]>,
-  account: ConnectorAccount,
-): boolean {
+function allBundlesGranted(account: ConnectorAccount): boolean {
   if (account.provider === "notion") return true;
   return (
-    bundlesFromScopes(policy, account.scopes, account.provider).length >=
-    bundlesForProvider(policy, account.provider).length
+    bundlesFromScopes(account.scopes, account.provider).length >=
+    bundlesForProvider(account.provider).length
   );
 }
 
@@ -305,11 +310,8 @@ function loginHintFor(account: ConnectorAccount): string {
   return account.email;
 }
 
-function featureSummary(
-  policy: NonNullable<ReturnType<typeof useConnectorPolicy>["policy"]>,
-  account: ConnectorAccount,
-): string {
-  const features = grantedFeatureLabels(policy, account.scopes, account.provider);
+function featureSummary(account: ConnectorAccount): string {
+  const features = grantedFeatureLabels(account.scopes, account.provider);
   return features.length > 0 ? `Can ${features.join(", ").toLowerCase()}.` : "";
 }
 
@@ -329,12 +331,9 @@ function obsidianStatusMeta(status: ObsidianStatus | null) {
 
 /** The connected row's one-liner: who is connected, then what June may do,
  * then (Linear only) how many teams are selected. */
-function accountSubtitle(
-  policy: NonNullable<ReturnType<typeof useConnectorPolicy>["policy"]>,
-  account: ConnectorAccount,
-): string {
+function accountSubtitle(account: ConnectorAccount): string {
   const parts = [accountDisplayName(account)];
-  const summary = featureSummary(policy, account);
+  const summary = featureSummary(account);
   if (summary) parts.push(summary);
   if (account.provider === "linear" && account.selectedTeams.length > 0) {
     const count = account.selectedTeams.length;
@@ -384,26 +383,15 @@ export function ConnectorsSection({
   onOpenModels?: () => void;
   onOpenBilling?: () => void;
 }) {
-  const { browserUseEnabled } = useExperimentalFlags();
-  const { policy, error: policyError } = useConnectorPolicy();
-  const oauthProviders =
-    policy?.providers.flatMap((definition) =>
-      definition.enabled && definition.connectFlow === "oauth" && definition.id !== "notion"
-        ? [definition.id as OAuthConnectorProvider]
-        : [],
-    ) ?? [];
-  const notionEnabled =
-    policy?.providers.some(
-      (definition) =>
-        definition.id === "notion" && definition.enabled && definition.connectFlow === "hosted_mcp",
-    ) ?? false;
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notConfigured, setNotConfigured] = useState<ConnectorProvider | null>(null);
 
   const [connectProvider, setConnectProvider] = useState<OAuthConnectorProvider>("google");
   const [connectOpen, setConnectOpen] = useState(false);
-  const [bundles, setBundles] = useState<ConnectorScopeBundle[]>([]);
+  const [bundles, setBundles] = useState<ConnectorScopeBundle[]>([
+    ...DEFAULT_CONNECT_BUNDLES.google,
+  ]);
   // The account we are adding scope to (single-account-per-provider
   // incremental auth), or null for a first-time connect. Its login hint
   // preselects that account/workspace so the backend's single-account guard
@@ -581,19 +569,18 @@ export function ConnectorsSection({
   // (only offered when none is connected), or to add scope to the one
   // existing account.
   function openConnectNew(provider: OAuthConnectorProvider) {
-    if (!policy) return;
     setConnectProvider(provider);
-    setBundles(defaultBundlesForProvider(policy, provider));
+    setBundles([...DEFAULT_CONNECT_BUNDLES[provider]]);
     setConnectTarget(null);
     setConnectOpen(true);
   }
 
   function openAddAccess(account: ConnectorAccount) {
-    if (account.provider === "notion" || !policy) return;
+    if (account.provider === "notion") return;
     // Preselect what the account already holds so the dialog reads as "add to
     // these"; the checkboxes the user adds are the new scopes.
     setConnectProvider(account.provider);
-    setBundles(bundlesFromScopes(policy, account.scopes, account.provider));
+    setBundles(bundlesFromScopes(account.scopes, account.provider));
     setConnectTarget(account);
     setConnectOpen(true);
   }
@@ -724,7 +711,7 @@ export function ConnectorsSection({
   }
 
   async function reconnect(account: ConnectorAccount) {
-    if (account.provider === "notion" || !policy) return;
+    if (account.provider === "notion") return;
     setNotConfigured(null);
 
     // GitHub uses the device-authorization flow: the device-code panel only
@@ -734,7 +721,7 @@ export function ConnectorsSection({
     // bundles and login hint — the reconnect flag suppresses the bundle picker
     // and adjusts the title and toast.
     if (account.provider === "github") {
-      const accountBundles = bundlesFromScopes(policy, account.scopes, account.provider);
+      const accountBundles = bundlesFromScopes(account.scopes, account.provider);
       setConnectProvider("github");
       setConnectTarget(account);
       setBundles(accountBundles);
@@ -782,7 +769,7 @@ export function ConnectorsSection({
     try {
       const updated = await runConnect({
         provider: account.provider,
-        scopes: bundlesFromScopes(policy, account.scopes, account.provider),
+        scopes: bundlesFromScopes(account.scopes, account.provider),
         loginHint: loginHintFor(account),
       });
       toast.success(CONNECT_TOASTS[account.provider].reconnect);
@@ -852,12 +839,11 @@ export function ConnectorsSection({
   }
 
   function toggleBundle(bundle: ConnectorScopeBundle, checked: boolean) {
-    if (!policy) return;
     setBundles((current) => {
       const next = new Set(current);
       if (checked) next.add(bundle);
       else next.delete(bundle);
-      return bundlesForProvider(policy, connectProvider).filter((entry) => next.has(entry));
+      return bundlesForProvider(connectProvider).filter((entry) => next.has(entry));
     });
   }
 
@@ -937,20 +923,12 @@ export function ConnectorsSection({
       {loadError ? (
         <InlineNotice tone="warning" body={loadError} aria-label="Plugins load error" />
       ) : null}
-      {policyError ? (
-        <InlineNotice
-          tone="warning"
-          body={messageFromError(policyError)}
-          aria-label="Plugin policy load error"
-        />
-      ) : null}
       {obsidianError ? (
         <InlineNotice tone="warning" body={obsidianError} aria-label="Obsidian plugin error" />
       ) : null}
 
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
-          {browserUseEnabled ? <BrowserUseCapabilityRow /> : null}
           <li className="connector-row">
             <span className="connector-logo" aria-hidden>
               <ConnectorProviderIcon provider="obsidian" />
@@ -991,136 +969,128 @@ export function ConnectorsSection({
               ) : null}
             </div>
           </li>
-          {policy
-            ? oauthProviders.map((provider) => {
-                const account = accounts?.find((entry) => entry.provider === provider) ?? null;
-                const name = PROVIDER_NAMES[provider];
-                const status = account ? accountStatusMeta(account.status, provider) : null;
-                const subtitle = account
-                  ? accountSubtitle(policy, account)
-                  : PROVIDER_BLURBS[provider];
-                const reconnecting =
-                  account !== null &&
-                  (reconnectingId === account.accountId ||
-                    (provider === "github" && connectIsReconnect && connectOpen));
-                // Linear only: a connected workspace with no teams picked yet
-                // still needs one more step before June can read or write
-                // anything in it.
-                const needsTeams =
-                  account !== null && provider === "linear" && account.selectedTeams.length === 0;
-                const showTeamsHint =
-                  needsTeams && account !== null && account.status === "connected";
-                // Google's "Add access" stays unconditional (preserves existing
-                // Google behavior); Linear hides it once both bundles are
-                // granted, since there is nothing left to add.
-                const showAddAccess =
-                  account !== null &&
-                  (provider === "google" || !allBundlesGranted(policy, account));
-                return (
-                  <li key={provider} className="connector-row">
-                    <span className="connector-logo" aria-hidden>
-                      <ConnectorProviderIcon provider={provider} />
+          {PROVIDER_ORDER.map((provider) => {
+            const account = accounts?.find((entry) => entry.provider === provider) ?? null;
+            const name = PROVIDER_NAMES[provider];
+            const status = account ? accountStatusMeta(account.status, provider) : null;
+            const subtitle = account ? accountSubtitle(account) : PROVIDER_BLURBS[provider];
+            const reconnecting =
+              account !== null &&
+              (reconnectingId === account.accountId ||
+                (provider === "github" && connectIsReconnect && connectOpen));
+            // Linear only: a connected workspace with no teams picked yet
+            // still needs one more step before June can read or write
+            // anything in it.
+            const needsTeams =
+              account !== null && provider === "linear" && account.selectedTeams.length === 0;
+            const showTeamsHint = needsTeams && account !== null && account.status === "connected";
+            // Google's "Add access" stays unconditional (preserves existing
+            // Google behavior); Linear hides it once both bundles are
+            // granted, since there is nothing left to add.
+            const showAddAccess =
+              account !== null && (provider === "google" || !allBundlesGranted(account));
+            return (
+              <li key={provider} className="connector-row">
+                <span className="connector-logo" aria-hidden>
+                  <ConnectorProviderIcon provider={provider} />
+                </span>
+                <div className="connector-main">
+                  <span className="connector-name">{name}</span>
+                  <p className="connector-subtitle" title={subtitle}>
+                    {subtitle}
+                  </p>
+                  {showTeamsHint ? (
+                    <span className="status-pill" data-tone="warning">
+                      Select teams to finish setup
                     </span>
-                    <div className="connector-main">
-                      <span className="connector-name">{name}</span>
-                      <p className="connector-subtitle" title={subtitle}>
-                        {subtitle}
-                      </p>
-                      {showTeamsHint ? (
-                        <span className="status-pill" data-tone="warning">
-                          Select teams to finish setup
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="connector-actions">
-                      {account && status ? (
-                        <span
-                          className="status-pill"
-                          data-tone={status.tone === "ok" ? "ok" : "warning"}
-                          title={status.blurb}
-                        >
-                          {status.label}
-                        </span>
-                      ) : null}
-                      {!account ? (
+                  ) : null}
+                </div>
+                <div className="connector-actions">
+                  {account && status ? (
+                    <span
+                      className="status-pill"
+                      data-tone={status.tone === "ok" ? "ok" : "warning"}
+                      title={status.blurb}
+                    >
+                      {status.label}
+                    </span>
+                  ) : null}
+                  {!account ? (
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      aria-label={`Connect ${name}`}
+                      disabled={accounts === null}
+                      onClick={() => openConnectNew(provider)}
+                    >
+                      Connect
+                    </button>
+                  ) : (
+                    <>
+                      {account.status === "reconnect_required" ? (
                         <button
                           type="button"
                           className="btn btn-secondary"
-                          aria-label={`Connect ${name}`}
-                          disabled={accounts === null}
-                          onClick={() => openConnectNew(provider)}
+                          aria-label={`Reconnect ${name}`}
+                          disabled={reconnectingId !== null || reconnecting}
+                          aria-busy={reconnecting || undefined}
+                          onClick={() => void reconnect(account)}
                         >
-                          Connect
+                          {reconnecting ? "Reconnecting…" : "Reconnect"}
                         </button>
                       ) : (
                         <>
-                          {account.status === "reconnect_required" ? (
+                          {provider === "linear" ? (
                             <button
                               type="button"
                               className="btn btn-secondary"
-                              aria-label={`Reconnect ${name}`}
-                              disabled={reconnectingId !== null || reconnecting}
-                              aria-busy={reconnecting || undefined}
-                              onClick={() => void reconnect(account)}
+                              onClick={() => openTeamsDialog(account)}
                             >
-                              {reconnecting ? "Reconnecting…" : "Reconnect"}
+                              {needsTeams ? "Select teams" : "Manage teams"}
                             </button>
-                          ) : (
-                            <>
-                              {provider === "linear" ? (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary"
-                                  onClick={() => openTeamsDialog(account)}
-                                >
-                                  {needsTeams ? "Select teams" : "Manage teams"}
-                                </button>
-                              ) : null}
-                              {showAddAccess ? (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary"
-                                  onClick={() => openAddAccess(account)}
-                                >
-                                  Add access
-                                </button>
-                              ) : null}
-                            </>
-                          )}
-                          <button
-                            type="button"
-                            className="btn btn-ghost"
-                            aria-label={`Disconnect ${name}`}
-                            onClick={() => {
-                              setRevoke(true);
-                              setDisconnectTarget(account);
-                            }}
-                          >
-                            Disconnect
-                          </button>
+                          ) : null}
+                          {showAddAccess ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => openAddAccess(account)}
+                            >
+                              Add access
+                            </button>
+                          ) : null}
                         </>
                       )}
-                    </div>
-                  </li>
-                );
-              })
-            : null}
-          {notionEnabled ? (
-            <NotionConnectorRow
-              account={accounts?.find((entry) => entry.provider === "notion") ?? null}
-              connecting={accounts === null || notionConnecting}
-              disconnecting={notionDisconnecting}
-              onDisconnect={() => void disconnectNotion()}
-              onOpenConnectDialog={() => {
-                setNotionDialogMode("connect");
-                setNotionConnectOpen(true);
-              }}
-              onOpenReconnectDialog={() => {
-                setNotionDialogMode("reconnect");
-                setNotionConnectOpen(true);
-              }}
-            />
-          ) : null}
+                      <button
+                        type="button"
+                        className="btn btn-ghost"
+                        aria-label={`Disconnect ${name}`}
+                        onClick={() => {
+                          setRevoke(true);
+                          setDisconnectTarget(account);
+                        }}
+                      >
+                        Disconnect
+                      </button>
+                    </>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+          <NotionConnectorRow
+            account={accounts?.find((entry) => entry.provider === "notion") ?? null}
+            connecting={accounts === null || notionConnecting}
+            disconnecting={notionDisconnecting}
+            onDisconnect={() => void disconnectNotion()}
+            onOpenConnectDialog={() => {
+              setNotionDialogMode("connect");
+              setNotionConnectOpen(true);
+            }}
+            onOpenReconnectDialog={() => {
+              setNotionDialogMode("reconnect");
+              setNotionConnectOpen(true);
+            }}
+          />
           <li className="connectors-advanced-row">
             <button
               type="button"
@@ -1212,8 +1182,8 @@ export function ConnectorsSection({
               <InlineNotice tone="warning" body={connectError} aria-label="Connect error" />
             ) : null}
             <div className="connectors-bundle-list">
-              {(policy ? bundlesForProvider(policy, connectProvider) : []).map((bundle) => {
-                const meta = bundleMeta(bundle);
+              {bundlesForProvider(connectProvider).map((bundle) => {
+                const meta = BUNDLE_META[bundle];
                 return (
                   <label
                     key={bundle}

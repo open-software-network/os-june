@@ -3,14 +3,15 @@ import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
+import type { FolderDto } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import { Dialog } from "../ui/Dialog";
 
 type AddSessionsToProjectDialogProps = {
   open: boolean;
   onClose: () => void;
   folder: FolderDto;
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   /** sessionId -> project ids, used to hide sessions already in the project. */
   sessionFolderIds: Record<string, string[]>;
   /** Called once per session when the user commits the selection. */
@@ -43,9 +44,7 @@ export function AddSessionsToProjectDialog({
     );
     const normalized = query.trim().toLowerCase();
     if (!normalized) return available;
-    return available.filter((session) =>
-      `${session.title ?? ""} ${session.preview ?? ""}`.toLowerCase().includes(normalized),
-    );
+    return available.filter((session) => session.title.toLowerCase().includes(normalized));
   }, [sessions, sessionFolderIds, folder.id, query]);
 
   function toggle(sessionId: string) {
@@ -149,10 +148,12 @@ export function AddSessionsToProjectDialog({
                     </span>
                     <span className="add-notes-body">
                       <span className="add-notes-title">
-                        {session.title?.trim() || session.preview?.trim() || "Untitled session"}
+                        {session.title.trim() || "Untitled session"}
                       </span>
                       <span className="add-notes-preview">
-                        {session.preview?.trim() || "No messages yet"}
+                        {session.source === "legacy_routine"
+                          ? "Imported routine history"
+                          : "Conversation"}
                       </span>
                     </span>
                     <span className="add-notes-check" aria-hidden>

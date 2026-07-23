@@ -144,9 +144,6 @@ vi.mock("../lib/tauri", () => ({
   pendingMeetingStartRequest: mocks.readPendingMeetingStartRequest,
   acknowledgeMeetingStartRequest: mocks.acknowledgeMeetingStartRequest,
   startMeetingRecording: mocks.startMeetingRecording,
-  // The agent workspace mounts at launch; a quiet, not-running bridge keeps
-  // these tests focused on the meetings surfaces.
-  hermesBridgeStatus: vi.fn(async () => ({ running: false })),
   listAgentTasks: vi.fn(async () => ({ items: [] })),
   juneVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: vi.fn(async () => ({
@@ -160,8 +157,6 @@ vi.mock("../lib/tauri", () => ({
     generationModel: "",
     veniceApiKeyConfigured: false,
   })),
-  hermesAgentCliAccess: vi.fn(async () => ({ enabled: false })),
-  hermesBrowserAccess: vi.fn(async () => ({ enabled: false })),
   listVeniceModels: vi.fn(async () => ({
     mode: "generation",
     modelType: "text",

@@ -21,7 +21,6 @@ import {
   juneOpenCommunityPage,
   juneOpenVerifyPage,
   clearVeniceApiKey,
-  hermesBridgeStatus,
   saveLocalGenerationSettings,
   setLocalGenerationEnabled,
   probeLocalGenerationEndpoint,
@@ -131,38 +130,12 @@ import {
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { ConnectorsSection } from "./ConnectorsSection";
-import { ExternalDirsSection } from "./ExternalDirsSection";
-import { InstalledSkillsSection } from "./InstalledSkillsSection";
-import { SkillDetailSection } from "./SkillDetailSection";
-import { SkillReviewSection } from "./SkillReviewSection";
-import { McpCatalogSection } from "./McpCatalogSection";
-import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
-import { McpSecuritySection } from "./McpSecuritySection";
-import { McpServersSection } from "./McpServersSection";
-import {
-  IntegrationsHealthSection,
-  type IntegrationsHealthTarget,
-} from "./IntegrationsHealthSection";
-import { ProfileBuilderSection } from "./ProfileBuilderSection";
-import { SetupSnapshotSection } from "./SetupSnapshotSection";
-import { SkillBundlesSection } from "./SkillBundlesSection";
-import { SkillsHubSection } from "./SkillsHubSection";
-import { TeamTapsSection } from "./TeamTapsSection";
-import { SETTINGS_TABS, type SettingsTab } from "./settings-config";
-export { SETTINGS_TABS, type SettingsTab } from "./settings-config";
-import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MemorySettingsSection } from "./MemorySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 import { PrivacySettingsSection } from "./PrivacySettingsSection";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
-import {
-  DEFAULT_HERMES_PROFILE,
-  adminTargetForMode,
-  createHermesAdminClient,
-  createRustAdminFetch,
-} from "../../lib/hermes-admin";
+import { DEFAULT_AGENT_PROFILE, useActiveAgentProfileName } from "../../lib/agent-profile";
 import {
   getStoredDateFormat,
   setStoredDateFormat,
@@ -332,23 +305,34 @@ function providerModelSettingsSnapshot(response: ProviderModelSettingsSnapshot) 
   };
 }
 
-async function activeProfileTextModel(profileName: string): Promise<string | undefined> {
-  const status = await hermesBridgeStatus();
-  const target =
-    adminTargetForMode(status, "sandboxed", profileName) ??
-    adminTargetForMode(status, "unrestricted", profileName);
-  if (!target) return undefined;
-  const client = createHermesAdminClient(target, {
-    fetch: createRustAdminFetch(target.mode),
-  });
-  const profiles = await client.profiles.list();
-  const normalized = profileName.trim().toLowerCase();
-  return profiles
-    .find((profile) => profile.name.trim().toLowerCase() === normalized)
-    ?.model?.trim();
-}
-
 const MIC_TEST_DURATION_SECONDS = 5;
+
+export type SettingsTab =
+  | "general"
+  | "appearance"
+  | "billing"
+  | "shortcuts"
+  | "dictation"
+  | "audio"
+  | "models"
+  | "agent"
+  | "memory"
+  | "connectors"
+  | "about";
+
+export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
+  { id: "billing", label: "Billing" },
+  { id: "shortcuts", label: "Shortcuts" },
+  { id: "dictation", label: "Dictation" },
+  { id: "audio", label: "Audio" },
+  { id: "models", label: "Models" },
+  { id: "agent", label: "Agent" },
+  { id: "memory", label: "Memory" },
+  { id: "connectors", label: "Plugins" },
+  { id: "about", label: "About" },
+];
 
 /**
  * The shared settings page header (Codex-app style): a large serif page title
@@ -462,8 +446,8 @@ export function AppSettings({
   const [localGenerationDraft, setLocalGenerationDraft] = useState<LocalGenerationSettingsDto>(
     DEFAULT_PROVIDER_MODELS.localGeneration,
   );
-  const activeProfileName = useActiveHermesProfileName();
-  const showingActiveProfileModels = activeProfileName !== DEFAULT_HERMES_PROFILE;
+  const activeProfileName = useActiveAgentProfileName();
+  const showingActiveProfileModels = activeProfileName !== DEFAULT_AGENT_PROFILE;
   const [activeProfileGenerationModel, setActiveProfileGenerationModel] = useState<string>();
   // Model ids returned by the last successful "Test connection" probe, used to
   // populate the Model ID field's datalist (free text is still allowed).
@@ -556,17 +540,7 @@ export function AppSettings({
   // The skill opened from Installed skills. While set (and the skills tab is
   // active) the whole settings page swaps for the notes-style detail shell:
   // pinned breadcrumb bar on top, its own scroll region beneath.
-  const [openSkill, setOpenSkill] = useState<string | null>(null);
-  const skillDetailOpen = activeTab === "skills" && openSkill !== null;
-  // The agent tab's messaging platform drill-in pins the SAME notes-style detail
-  // shell as skill detail, and lifts its selection here (mirroring `openSkill`)
-  // so the detail can replace the whole settings page at the top level rather
-  // than render nested — that top-level placement is what pins the breadcrumb
-  // bar. Placement is decided synchronously from this id, so there's no effect
-  // lag. Both signals feed the same host hook so only one reaches App.tsx.
-  const [agentPlatformId, setAgentPlatformId] = useState<string>();
-  const agentDetailOpen = activeTab === "agent" && agentPlatformId != null;
-  const detailPinned = skillDetailOpen || agentDetailOpen;
+  const detailPinned = false;
   useEffect(() => {
     onDetailPinnedChange?.(detailPinned);
   }, [detailPinned, onDetailPinnedChange]);
@@ -595,11 +569,11 @@ export function AppSettings({
     runtimeFlagBaselineCandidateRef.current ??= experimentalFlags.browserUseEnabled;
     let cancelled = false;
     const baseline = runtimeFlagBaselineCandidateRef.current;
-    void hermesBridgeStatus()
-      .then((bridge) => {
+    Promise.resolve()
+      .then(() => {
         if (cancelled) return;
         runtimeFlagStatusLoadedRef.current = true;
-        setAgentRuntimeRunning(bridge.running);
+        setAgentRuntimeRunning(true);
         setRuntimeBrowserUseBaseline(baseline);
       })
       .catch(() => {
@@ -808,8 +782,7 @@ export function AppSettings({
 
     async function loadActiveProfileTextModel() {
       try {
-        const model = await activeProfileTextModel(activeProfileName);
-        if (!cancelled) setActiveProfileGenerationModel(model);
+        if (!cancelled) setActiveProfileGenerationModel(effectiveProviderSettings.generationModel);
       } catch {
         if (!cancelled) setActiveProfileGenerationModel(undefined);
       }
@@ -819,7 +792,7 @@ export function AppSettings({
     return () => {
       cancelled = true;
     };
-  }, [activeProfileName, showingActiveProfileModels]);
+  }, [effectiveProviderSettings.generationModel, showingActiveProfileModels]);
 
   useEffect(() => {
     if (!micOpen) return;
@@ -1681,7 +1654,7 @@ export function AppSettings({
     try {
       await connectorsApplyRuntime();
       setRuntimeBrowserUseBaseline(experimentalFlags.browserUseEnabled);
-      setAgentRuntimeRunning((await hermesBridgeStatus()).running);
+      setAgentRuntimeRunning(true);
     } catch (error) {
       setExperimentalError(messageFromError(error));
     } finally {
@@ -1706,23 +1679,7 @@ export function AppSettings({
     runtimeBrowserUseBaseline !== null &&
     runtimeBrowserUseBaseline !== experimentalFlags.browserUseEnabled;
 
-  return skillDetailOpen && openSkill ? (
-    // Notes-parity drill-in: the detail shell replaces the settings page
-    // entirely (pinned breadcrumb bar + its own scroll container), the same
-    // way opening a meeting note swaps in note-shell.
-    <SkillDetailSection skill={openSkill} onBack={() => setOpenSkill(null)} />
-  ) : agentDetailOpen ? (
-    // The agent messaging drill-in sits exactly where SkillDetailSection sits
-    // (top level, replacing the settings page) so its BreadcrumbBar pins the
-    // same way. It renders the SAME AgentSettingsSection with the SAME
-    // controlled props as the nested placement below — only the position in the
-    // tree differs, chosen synchronously from agentPlatformId.
-    <AgentSettingsSection
-      selectedPlatformId={agentPlatformId}
-      onSelectPlatform={setAgentPlatformId}
-      onBackFromPlatform={() => setAgentPlatformId(undefined)}
-    />
-  ) : (
+  return (
     <div className="settings-page" data-controlled={controlled || undefined}>
       {controlled ? null : (
         <>
@@ -2633,13 +2590,7 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "agent" ? (
-          <AgentSettingsSection
-            selectedPlatformId={agentPlatformId}
-            onSelectPlatform={setAgentPlatformId}
-            onBackFromPlatform={() => setAgentPlatformId(undefined)}
-            folders={folders}
-            onFoldersImported={onFoldersImported}
-          />
+          <AgentSettingsSection folders={folders} onFoldersImported={onFoldersImported} />
         ) : null}
 
         {activeTab === "memory" ? (
@@ -2656,28 +2607,6 @@ export function AppSettings({
             onOpenBilling={() => setActiveTab("billing")}
           />
         ) : null}
-
-        {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}
-        {activeTab === "external-dirs" ? <ExternalDirsSection /> : null}
-        {activeTab === "skill-review" ? <SkillReviewSection /> : null}
-
-        {activeTab === "mcp" ? <McpServersSection /> : null}
-        {activeTab === "mcp-catalog" ? <McpCatalogSection /> : null}
-        {activeTab === "mcp-diagnostics" ? <McpDiagnosticsSection /> : null}
-        {activeTab === "mcp-security" ? <McpSecuritySection /> : null}
-        {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
-        {activeTab === "taps" ? (
-          <TeamTapsSection onConfigureGithubToken={() => setActiveTab("skills")} />
-        ) : null}
-        {activeTab === "toolsets" ? <ToolsetsSection /> : null}
-        {activeTab === "bundles" ? <SkillBundlesSection onStartChat={onStartBundleChat} /> : null}
-        {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
-        {activeTab === "integrations-health" ? (
-          <IntegrationsHealthSection
-            onNavigate={(target: IntegrationsHealthTarget) => setActiveTab(target)}
-          />
-        ) : null}
-        {activeTab === "import-export" ? <SetupSnapshotSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">

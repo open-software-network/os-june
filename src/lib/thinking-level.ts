@@ -3,19 +3,16 @@
  * answering. It lives in the model menu as an "Effort" row with a submenu of
  * three levels, mirroring the upstream desktop's model menu.
  *
- * Three user-facing stops map onto Hermes' reasoning-effort levels
- * (`parse_reasoning_effort` in hermes_constants.py: none, minimal, low,
- * medium, high, xhigh). June deliberately exposes only three of them so the
+ * Three user-facing stops map onto the model's reasoning-effort levels
+ * (none, minimal, low, medium, high, xhigh). June deliberately exposes only three so the
  * choice stays a simple speed/depth tradeoff:
  *
- * - Low -> "minimal": the model barely deliberates, so first tokens arrive
- *   quickly without sending provider-specific thinking controls.
- * - Medium -> "medium": Hermes' own default; a balance of speed and depth.
+ * - Low -> "none": the model answers without a separate reasoning pass.
+ * - Medium -> "medium": the default, balancing speed and depth.
  * - High -> "high": substantially more reasoning for harder problems.
  *
- * The choice rides to Hermes as a PER-SESSION override (`reasoning_effort`
- * on session.create, `config.set` key "reasoning" for a live session), so
- * June never has to rely on the profile config default. The user's last pick
+ * The choice is included in each June-owned run as a per-session override, so
+ * June never has to rely on a provider-wide default. The user's last pick
  * is kept in localStorage as the draft for the next new session, mirroring
  * how agent-session-modes.ts records the Unrestricted opt-in (machine-local
  * state, readable synchronously on render).
@@ -29,7 +26,7 @@ export type ThinkingLevelOption = {
   label: string;
   /** One-line description of the tradeoff, no dashes (project copy rule). */
   blurb: string;
-  /** The Hermes reasoning-effort string sent on the wire. */
+  /** The reasoning-effort string sent on the wire. */
   effort: string;
 };
 
@@ -55,8 +52,7 @@ export const THINKING_LEVELS: readonly ThinkingLevelOption[] = Object.freeze([
   },
 ]);
 
-/** The control lands here when the user has never picked a level. Matches
- * Hermes' own default effort, so a fresh install behaves like upstream. */
+/** The control lands here when the user has never picked a level. */
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
 const STORAGE_KEY = "june.agent.thinkingLevel";
@@ -72,13 +68,13 @@ export function thinkingOptionForLevel(level: ThinkingLevel): ThinkingLevelOptio
   return option ?? THINKING_LEVELS[1];
 }
 
-/** The wire value Hermes expects for this level (`reasoning_effort`). */
+/** The wire value the model expects for this level (`reasoning_effort`). */
 export function thinkingEffortForLevel(level: ThinkingLevel): string {
   return thinkingOptionForLevel(level).effort;
 }
 
-/** Best-effort reverse mapping from a Hermes effort string (e.g. one reported
- * by session.info) back onto a level. `none`, `minimal`, and `low` display as
+/** Best-effort reverse mapping from a model effort string back onto a level.
+ * `none`, `minimal`, and `low` display as
  * Low; `high` and `xhigh` display as High. Unknown/empty values let callers keep
  * their current draft instead of snapping to a stop. */
 export function thinkingLevelForEffort(effort: string | undefined): ThinkingLevel | undefined {
@@ -120,9 +116,9 @@ export function saveThinkingLevel(level: ThinkingLevel) {
  * Per-session record of each chat's reasoning effort, mirroring
  * agent-session-modes.ts: machine-local (like the runtime's own session
  * store) and readable synchronously on render. This is what lets the
- * composer show the level a session actually runs at — its creation pin, a
+ * composer show the level a session actually runs at: its creation pin, a
  * pick made while it was open, or the effort its live runtime last reported
- * via session.info — instead of guessing from the machine-wide draft.
+ * via runtime events, instead of guessing from the machine-wide draft.
  */
 
 const SESSION_LEVELS_STORAGE_KEY = "june.agent.sessionThinkingLevels";

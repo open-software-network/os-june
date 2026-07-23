@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { bootstrapApp, createNote, getNote } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getActiveAgentProfileName } from "../lib/agent-profile";
 import { withFakeRecovery } from "./app-helpers";
 import type { UseAppBootstrapDependencies } from "./use-app-bootstrap-types";
 
@@ -33,7 +33,7 @@ export function useAppBootstrap(dependencies: UseAppBootstrapDependencies) {
           if (activeRecordingNoteId) {
             calendarContextNoteProfilesRef.current.set(
               activeRecordingNoteId,
-              getActiveHermesProfileName(),
+              getActiveAgentProfileName(),
             );
             pendingCalendarContextAdoptionsRef.current.add(activeRecordingNoteId);
             setRecordingNote(activeRecordingNoteId);

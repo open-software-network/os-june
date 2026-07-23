@@ -1,13 +1,12 @@
 import { useEffect } from "react";
 import { invalidateNoteTabs } from "./tabs/tabs";
-import { getNote, listFolders, listNotes } from "../lib/tauri";
+import { getNote, listAgentSessions, listFolders, listNotes } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import { listHermesSessions } from "../lib/hermes-adapter";
 import type { UseActiveProfileDataDependencies } from "./use-active-profile-data-types";
 
 export function useActiveProfileData(dependencies: UseActiveProfileDataDependencies) {
   const {
-    activeHermesProfileName,
+    activeAgentProfileName,
     activeViewRef,
     appBlocked,
     bootstrapped,
@@ -34,12 +33,12 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
   useEffect(() => {
     if (appBlocked || !bootstrapped) return;
     const previous = lastDataProfileRef.current;
-    const profileChanged = previous !== undefined && previous !== activeHermesProfileName;
+    const profileChanged = previous !== undefined && previous !== activeAgentProfileName;
     const refreshRequested =
       lastProfileDataRefreshRevisionRef.current !== profileDataRefreshRevision;
-    lastDataProfileRef.current = activeHermesProfileName;
+    lastDataProfileRef.current = activeAgentProfileName;
     lastProfileDataRefreshRevisionRef.current = profileDataRefreshRevision;
-    if (!refreshRequested && (previous === undefined || previous === activeHermesProfileName)) {
+    if (!refreshRequested && (previous === undefined || previous === activeAgentProfileName)) {
       return;
     }
     // A project-scoped new-session request belongs to the profile that started
@@ -52,7 +51,7 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
         const [notesResponse, folders, sessions, profiles] = await Promise.all([
           listNotes(),
           listFolders(),
-          listHermesSessions({ limit: 100 }),
+          listAgentSessions(),
           refreshSessionProfiles(),
         ]);
         if (cancelled) return;
@@ -103,7 +102,7 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
       cancelled = true;
     };
   }, [
-    activeHermesProfileName,
+    activeAgentProfileName,
     appBlocked,
     bootstrapped,
     commitAgentSessions,

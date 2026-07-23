@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef } from "react";
 import { NOTE_CALENDAR_CONTEXT_UPDATED_EVENT } from "../lib/tauri";
 import { isPrimaryShortcut } from "../lib/platform";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getActiveAgentProfileName } from "../lib/agent-profile";
 import { CLOSE_TAB_EVENT } from "../lib/menu-bar";
 import type { NoteDto } from "../lib/tauri";
 import type { UseAppTabEventsDependencies } from "./use-app-tab-events-types";
@@ -55,7 +55,7 @@ export function useAppTabEvents(dependencies: UseAppTabEventsDependencies) {
     void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
       const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
       calendarContextNoteProfilesRef.current.delete(event.payload.id);
-      if (noteProfile !== getActiveHermesProfileName()) return;
+      if (noteProfile !== getActiveAgentProfileName()) return;
       if (pendingCalendarContextAdoptionsRef.current.delete(event.payload.id)) {
         calendarContextNoteUpdatesRef.current.set(event.payload.id, event.payload);
       }

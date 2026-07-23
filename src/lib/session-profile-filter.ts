@@ -1,5 +1,5 @@
-import type { HermesSessionInfo, SessionProfileDto } from "./tauri";
-import { isScheduledRunSession } from "./hermes-adapter";
+import type { SessionProfileDto } from "./tauri";
+import type { AgentSessionDto } from "./agent-runtime-contract";
 
 export type SessionProfileMap = Record<string, string>;
 
@@ -11,7 +11,7 @@ export function sessionProfileMap(assignments: readonly SessionProfileDto[]): Se
   return next;
 }
 
-function normalizedHermesProfileName(profile: string | undefined): string {
+function normalizedAgentProfileName(profile: string | undefined): string {
   const trimmed = profile?.trim();
   return trimmed || "default";
 }
@@ -19,21 +19,19 @@ function normalizedHermesProfileName(profile: string | undefined): string {
 /** A session with no mapping row belongs to `default` (pre-profiles data and
  * sessions created outside June's create path — see ADR 0031). */
 export function sessionMatchesProfile(
-  session: HermesSessionInfo,
+  session: AgentSessionDto,
   profiles: SessionProfileMap,
   activeProfile: string,
 ): boolean {
   return (
-    normalizedHermesProfileName(profiles[session.id]) === normalizedHermesProfileName(activeProfile)
+    normalizedAgentProfileName(profiles[session.id]) === normalizedAgentProfileName(activeProfile)
   );
 }
 
 export function filterAgentSessionsForProfile(
-  sessions: readonly HermesSessionInfo[],
+  sessions: readonly AgentSessionDto[],
   profiles: SessionProfileMap,
   activeProfile: string,
-): HermesSessionInfo[] {
-  return sessions
-    .filter((session) => !isScheduledRunSession(session))
-    .filter((session) => sessionMatchesProfile(session, profiles, activeProfile));
+): AgentSessionDto[] {
+  return sessions.filter((session) => sessionMatchesProfile(session, profiles, activeProfile));
 }

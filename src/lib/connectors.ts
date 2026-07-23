@@ -1,11 +1,11 @@
 /**
  * Pure, render-free view logic for the private connectors (Google, Linear)
  * in local mode: scope-bundle metadata, account status labels, trust-mode
- * metadata and earned-autonomy gating, the trust-mode to Hermes toolset
+ * metadata and earned-autonomy gating, the trust-mode to the retired runtime toolset
  * composition, and event-trigger metadata.
  *
  * Kept separate from the React components and the Tauri bindings (mirroring
- * the hermes-admin/*-view.ts split) so all of it is unit-testable without a
+ * the retired agent admin/*-view.ts split) so all of it is unit-testable without a
  * Tauri runtime. Copy is sentence case, no em/en dashes, per June rules.
  */
 
@@ -13,15 +13,28 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconChecklist } from "central-icons/IconChecklist";
 import { IconEyeOpen } from "central-icons/IconEyeOpen";
 import { errorCode } from "./errors";
-import { UNRESTRICTED_ROUTINE_TOOLSETS } from "./hermes-routines";
 import type {
   ConnectorAccountStatus,
-  ConnectorPolicyCatalog,
   ConnectorProvider,
   ConnectorScopeBundle,
   ConnectorTriggerKind,
   RoutineTrustMode,
 } from "./tauri";
+
+const UNRESTRICTED_AGENT_TOOLSETS = [
+  "terminal",
+  "file",
+  "code_execution",
+  "web",
+  "vision",
+  "tts",
+  "skills",
+  "todo",
+  "memory",
+  "context_engine",
+  "session_search",
+  "delegation",
+];
 
 // ---------------------------------------------------------------------------
 // Scope bundles
@@ -32,110 +45,134 @@ export type ConnectorBundleMeta = {
   label: string;
   /** One-line supporting copy under the label. */
   description: string;
+  /** The provider scope identifiers the bundle grants: Google's full auth
+   * URLs, Linear's short scope names. Mirrors ScopeBundle::scopes() in
+   * src-tauri/src/connectors/scopes.rs; keep in sync. */
+  scopeUrls: string[];
   /** Short feature phrase for "This routine can: ..." summaries. */
   feature: string;
 };
 
-/** Renderer-only copy. Bundle ownership and scopes come from Rust. */
-export const BUNDLE_META: Readonly<Partial<Record<ConnectorScopeBundle, ConnectorBundleMeta>>> =
+export const BUNDLE_META: Readonly<Record<ConnectorScopeBundle, ConnectorBundleMeta>> =
   Object.freeze({
     gmail_read: {
       label: "Read mail",
       description: "Search and read your email for briefings and triage.",
+      scopeUrls: ["https://www.googleapis.com/auth/gmail.readonly"],
       feature: "read your mail",
     },
     gmail_draft: {
       label: "Draft replies",
       description: "Write draft replies for you to review. Never sends.",
+      scopeUrls: ["https://www.googleapis.com/auth/gmail.compose"],
       feature: "draft replies",
     },
     gmail_modify: {
       label: "Organize mail",
       description: "Label and archive your mail. Never deletes.",
+      scopeUrls: ["https://www.googleapis.com/auth/gmail.modify"],
       feature: "label and archive mail",
     },
     gmail_send: {
       label: "Send mail",
       description: "Send email on your behalf. Only used when you allow it per routine.",
+      scopeUrls: ["https://www.googleapis.com/auth/gmail.send"],
       feature: "send mail",
     },
     calendar_read: {
       label: "Read calendar",
       description: "Read your events and find free slots for briefings and prep.",
+      scopeUrls: ["https://www.googleapis.com/auth/calendar.readonly"],
       feature: "read your calendar",
     },
     calendar_events: {
       label: "Manage calendar",
       description: "Create events and respond to invites on your behalf.",
+      scopeUrls: ["https://www.googleapis.com/auth/calendar.events"],
       feature: "manage your calendar",
     },
     linear_read: {
       label: "Read workspace",
       description: "Read teams, projects, cycles, and issues for planning and status briefs.",
+      scopeUrls: ["read"],
       feature: "read your Linear workspace",
     },
     linear_write: {
       label: "Create and update issues",
       description:
         "Draft issues, comments, and project updates. Nothing is written without your approval.",
+      scopeUrls: ["write"],
       feature: "create and update issues",
     },
     github_read: {
       label: "Read repositories, issues, and pull requests",
       description:
         "Read code, issues, pull requests, and comments in the repositories chosen during GitHub App installation.",
+      scopeUrls: ["read"],
       feature: "read your GitHub repositories",
     },
     github_write: {
       label: "Create and update issues and comments",
       description:
         "June allows drafting issues and comments on your behalf. Every write asks for your approval before it runs.",
+      scopeUrls: ["write"],
       feature: "create and update issues",
     },
   });
 
-export function bundleMeta(bundle: ConnectorScopeBundle): ConnectorBundleMeta {
-  return (
-    BUNDLE_META[bundle] ?? {
-      label: bundle.replace(/_/g, " "),
-      description: "Connector capability.",
-      feature: bundle.replace(/_/g, " "),
-    }
-  );
-}
+/** The six Google feature bundles, in the order the connect dialog lists
+ * them. */
+export const GOOGLE_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+  "gmail_read",
+  "gmail_draft",
+  "gmail_modify",
+  "gmail_send",
+  "calendar_read",
+  "calendar_events",
+]);
+
+/** The two Linear feature bundles, in the order the connect dialog lists
+ * them. */
+export const LINEAR_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+  "linear_read",
+  "linear_write",
+]);
+
+/** The two GitHub feature bundles, in the order the connect dialog lists
+ * them. */
+export const GITHUB_SCOPE_BUNDLES: readonly ConnectorScopeBundle[] = Object.freeze([
+  "github_read",
+  "github_write",
+]);
 
 /** The feature bundles a provider's connect dialog offers, in display
  * order. */
-export function bundlesForProvider(
-  policy: ConnectorPolicyCatalog,
-  provider: ConnectorProvider,
-): ConnectorScopeBundle[] {
-  return policy.scopeBundles
-    .filter((bundle) => bundle.provider === provider)
-    .map((bundle) => bundle.id);
+export function bundlesForProvider(provider: ConnectorProvider): readonly ConnectorScopeBundle[] {
+  if (provider === "linear") return LINEAR_SCOPE_BUNDLES;
+  if (provider === "github") return GITHUB_SCOPE_BUNDLES;
+  return GOOGLE_SCOPE_BUNDLES;
 }
 
-export function defaultBundlesForProvider(
-  policy: ConnectorPolicyCatalog,
-  provider: ConnectorProvider,
-): ConnectorScopeBundle[] {
-  return (
-    policy.providers.find((definition) => definition.id === provider)?.defaultBundles ?? []
-  ).slice();
-}
+/** A granted Google scope implies these narrower scope needs: a write scope
+ * already grants the matching read, so an account with `calendar.events` need
+ * not be re-prompted for `calendar.readonly`, and `gmail.modify` covers read
+ * and draft. Used for the "can this routine run" gate, not for display. */
+const SCOPE_IMPLICATIONS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  "https://www.googleapis.com/auth/gmail.modify": [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.compose",
+  ],
+  "https://www.googleapis.com/auth/calendar.events": [
+    "https://www.googleapis.com/auth/calendar.readonly",
+  ],
+});
 
 /** True when the granted scope set satisfies `needed`, directly or because a
  * broader granted scope implies it. */
-function grantsScope(
-  policy: ConnectorPolicyCatalog,
-  granted: Set<string>,
-  needed: string,
-): boolean {
+function grantsScope(granted: Set<string>, needed: string): boolean {
   if (granted.has(needed)) return true;
   for (const held of granted) {
-    if (policy.scopeImplications.find((entry) => entry.held === held)?.grants.includes(needed)) {
-      return true;
-    }
+    if (SCOPE_IMPLICATIONS[held]?.includes(needed)) return true;
   }
   return false;
 }
@@ -148,40 +185,32 @@ function grantsScope(
  * for. Unknown identifiers (identity scopes, future grants) are ignored: the
  * UI shows features, not raw scopes. */
 export function bundlesFromScopes(
-  policy: ConnectorPolicyCatalog,
   scopeUrls: string[],
   provider: ConnectorProvider,
 ): ConnectorScopeBundle[] {
   const granted = new Set(scopeUrls);
-  return policy.scopeBundles
-    .filter((bundle) => bundle.provider === provider)
-    .filter((bundle) => bundle.scopeIds.every((scope) => granted.has(scope)))
-    .map((bundle) => bundle.id);
+  return bundlesForProvider(provider).filter((bundle) =>
+    BUNDLE_META[bundle].scopeUrls.every((url) => granted.has(url)),
+  );
 }
 
 /** "Read mail, draft replies and calendar" — the human feature list an
  * account's grants render as. */
-export function grantedFeatureLabels(
-  policy: ConnectorPolicyCatalog,
-  scopeUrls: string[],
-  provider: ConnectorProvider,
-): string[] {
-  return bundlesFromScopes(policy, scopeUrls, provider).map((bundle) => bundleMeta(bundle).label);
+export function grantedFeatureLabels(scopeUrls: string[], provider: ConnectorProvider): string[] {
+  return bundlesFromScopes(scopeUrls, provider).map((bundle) => BUNDLE_META[bundle].label);
 }
 
 /** True when the account's granted scopes already cover every bundle a routine
  * needs, counting a broader granted scope as covering a narrower need (so a
  * read-only briefing runs on an account that granted calendar write). */
 export function scopesCoverBundles(
-  policy: ConnectorPolicyCatalog,
   scopeUrls: string[],
   bundles: readonly ConnectorScopeBundle[],
 ): boolean {
   const granted = new Set(scopeUrls);
-  return bundles.every((bundleId) => {
-    const bundle = policy.scopeBundles.find((entry) => entry.id === bundleId);
-    return Boolean(bundle?.scopeIds.every((scope) => grantsScope(policy, granted, scope)));
-  });
+  return bundles.every((bundle) =>
+    BUNDLE_META[bundle].scopeUrls.every((url) => grantsScope(granted, url)),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -294,14 +323,16 @@ export const TRUST_MODE_META: Readonly<Record<RoutineTrustMode, TrustModeMeta>> 
  * cannot attribute a specific approval to a specific run. The copy below says
  * "under approval" rather than "approved" to match what is actually counted.
  */
-export function canSelectAutonomous(policy: ConnectorPolicyCatalog, runCount: number): boolean {
-  return runCount >= policy.earnedAutonomyMinApprovalRuns;
+export const AUTONOMY_RUN_THRESHOLD = 3;
+
+export function canSelectAutonomous(runCount: number): boolean {
+  return runCount >= AUTONOMY_RUN_THRESHOLD;
 }
 
 /** Helper text under the trust picker while autonomy is still locked:
  * "Runs 2 more times under approval to unlock autonomous". */
-export function autonomyUnlockHint(policy: ConnectorPolicyCatalog, runCount: number): string {
-  const remaining = Math.max(0, policy.earnedAutonomyMinApprovalRuns - runCount);
+export function autonomyUnlockHint(runCount: number): string {
+  const remaining = Math.max(0, AUTONOMY_RUN_THRESHOLD - runCount);
   if (remaining === 0) return "Autonomous is unlocked for this routine.";
   const times = remaining === 1 ? "1 more time" : `${remaining} more times`;
   return `Runs ${times} under approval to unlock autonomous.`;
@@ -309,57 +340,158 @@ export function autonomyUnlockHint(policy: ConnectorPolicyCatalog, runCount: num
 
 /** Progress label for the detail page: "Run 2 of 3 under approval before
  * autonomy unlocks". Clamped once the threshold is met. */
-export function autonomyProgressLabel(policy: ConnectorPolicyCatalog, runCount: number): string {
-  if (canSelectAutonomous(policy, runCount)) return "Autonomy unlocked.";
-  const threshold = policy.earnedAutonomyMinApprovalRuns;
-  const next = Math.min(runCount + 1, threshold);
-  return `Run ${next} of ${threshold} under approval before autonomy unlocks.`;
+export function autonomyProgressLabel(runCount: number): string {
+  if (canSelectAutonomous(runCount)) return "Autonomy unlocked.";
+  const next = Math.min(runCount + 1, AUTONOMY_RUN_THRESHOLD);
+  return `Run ${next} of ${AUTONOMY_RUN_THRESHOLD} under approval before autonomy unlocks.`;
 }
 
 // ---------------------------------------------------------------------------
 // Trust-mode toolset composition
 // ---------------------------------------------------------------------------
 
-/** Renderer projection of one native-owned connector action tool. */
+/** The sandboxed cron default toolsets. Duplicated from
+ * CRON_SANDBOXED_TOOLSETS in the retired bridge (the Rust side renders this
+ * list into config.yaml); keep in sync. */
+export const SANDBOXED_ROUTINE_BASE_TOOLSETS = [
+  "web",
+  "vision",
+  "todo",
+  "memory",
+  "session_search",
+  "context_engine",
+];
+
+/** Read-only connector MCP servers: ambient for every routine. Linear reads
+ * are team-enforced in Rust (the proxy checks the caller's selected-team
+ * grant on every team-scoped route), so `june_linear` is safe to grant
+ * ambiently just like the Google read servers rather than gating it behind
+ * trust mode. GitHub reads are similarly gated by the installation's
+ * repository selection on GitHub's side, so `june_github` is safe to grant
+ * ambiently too. */
+export const CONNECTOR_READ_TOOLSETS = [
+  "june_gmail",
+  "june_gcal",
+  "june_linear",
+  "june_notion",
+  "june_github",
+];
+
+/** Action connector MCP servers: every mutating call parks for approval in
+ * the Rust proxy. Linear and GitHub have no autonomous mode in v1 (see
+ * `grantable` on `ConnectorActionTool`), but their action servers still park
+ * for approval like the Google ones, so they belong in this list too. */
+export const CONNECTOR_ACTION_TOOLSETS = [
+  "june_gmail_actions",
+  "june_gcal_actions",
+  "june_linear_actions",
+  "june_notion_actions",
+  "june_github_actions",
+];
+
+/** One connector action tool, for the approvals-surface label lookup
+ * (`actionToolLabel`) and the autonomous grant checklist. `id` is the raw
+ * tool name the Rust proxy consults grants by. `grantable` is false for
+ * every Linear tool: Linear has no autonomous mode in v1, so its tools get
+ * approvals-surface labels but must never appear in the earned-autonomy
+ * grant checklist (only the checklist consumer filters on this field). */
 export type ConnectorActionTool = {
   id: string;
   server: string;
-  provider: ConnectorProvider;
   label: string;
   grantable: boolean;
 };
 
-/** Labels only. Tool/server ownership and grantability come from Rust. */
-const ACTION_TOOL_LABELS: Readonly<Record<string, string>> = Object.freeze({
-  "june_gmail_actions:create_draft": "Create drafts",
-  "june_gmail_actions:send_email": "Send email",
-  "june_gmail_actions:modify_labels": "Change labels",
-  "june_gmail_actions:archive": "Archive mail",
-  "june_gcal_actions:create_event": "Create events",
-  "june_gcal_actions:respond_to_invite": "Respond to invites",
-  "june_linear_actions:create_issue": "Create issues",
-  "june_linear_actions:update_issue": "Update issues",
-  "june_linear_actions:add_comment": "Comment on issues",
-  "june_linear_actions:create_project_update": "Post project updates",
-  "june_notion_actions:notion-create-pages": "Create Notion pages",
-  "june_notion_actions:notion-update-page": "Update Notion pages",
-  "june_github_actions:create_issue": "Create issue",
-  "june_github_actions:update_issue": "Update issue",
-  "june_github_actions:add_comment": "Add comment",
-});
+export const CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.freeze([
+  { id: "create_draft", server: "june_gmail_actions", label: "Create drafts", grantable: true },
+  { id: "send_email", server: "june_gmail_actions", label: "Send email", grantable: true },
+  { id: "modify_labels", server: "june_gmail_actions", label: "Change labels", grantable: true },
+  { id: "archive", server: "june_gmail_actions", label: "Archive mail", grantable: true },
+  { id: "create_event", server: "june_gcal_actions", label: "Create events", grantable: true },
+  {
+    id: "respond_to_invite",
+    server: "june_gcal_actions",
+    label: "Respond to invites",
+    grantable: true,
+  },
+  {
+    id: "create_issue",
+    server: "june_linear_actions",
+    label: "Create issues",
+    grantable: false,
+  },
+  {
+    id: "update_issue",
+    server: "june_linear_actions",
+    label: "Update issues",
+    grantable: false,
+  },
+  {
+    id: "add_comment",
+    server: "june_linear_actions",
+    label: "Comment on issues",
+    grantable: false,
+  },
+  {
+    id: "create_project_update",
+    server: "june_linear_actions",
+    label: "Post project updates",
+    grantable: false,
+  },
+  {
+    id: "notion-create-pages",
+    server: "june_notion_actions",
+    label: "Create Notion pages",
+    grantable: false,
+  },
+  {
+    id: "notion-update-page",
+    server: "june_notion_actions",
+    label: "Update Notion pages",
+    grantable: false,
+  },
+  {
+    id: "create_issue",
+    server: "june_github_actions",
+    label: "Create issue",
+    grantable: false,
+  },
+  {
+    id: "update_issue",
+    server: "june_github_actions",
+    label: "Update issue",
+    grantable: false,
+  },
+  {
+    id: "add_comment",
+    server: "june_github_actions",
+    label: "Add comment",
+    grantable: false,
+  },
+]);
 
-export function connectorActionTools(policy: ConnectorPolicyCatalog): ConnectorActionTool[] {
-  return policy.actionTools.map((tool) => ({
-    ...tool,
-    label: ACTION_TOOL_LABELS[`${tool.server}:${tool.id}`] ?? tool.id.replace(/[_-]/g, " "),
-  }));
-}
+/** The connector action tools eligible for the earned-autonomy grant
+ * checklist. Linear tools are excluded: Linear has no autonomous mode in
+ * v1, so they must never be offered as grantable even though they have
+ * approvals-surface labels above. */
+export const GRANTABLE_CONNECTOR_ACTION_TOOLS: readonly ConnectorActionTool[] = Object.freeze(
+  CONNECTOR_ACTION_TOOLS.filter((tool) => tool.grantable),
+);
 
-export function grantableConnectorActionTools(
-  policy: ConnectorPolicyCatalog,
-): ConnectorActionTool[] {
-  return connectorActionTools(policy).filter((tool) => tool.grantable);
-}
+/** Labels keyed `server:id`, with an id-only fallback for callers that have
+ * no server context. Tool ids collide across providers (Linear and GitHub
+ * both ship create_issue / update_issue / add_comment), so the fallback keeps
+ * the first registration instead of letting a later provider shadow an
+ * earlier one. */
+const ACTION_TOOL_LABELS: Readonly<Record<string, string>> = Object.freeze(
+  CONNECTOR_ACTION_TOOLS.reduce<Record<string, string>>((labels, tool) => {
+    labels[`${tool.server}:${tool.id}`] = tool.label;
+    if (!(tool.id in labels)) {
+      labels[tool.id] = tool.label;
+    }
+    return labels;
+  }, {}),
+);
 
 /** A scheduled run that counts toward earned autonomy: one the routine
  * finished without failing. Active runs and error/cancelled runs do not count
@@ -383,37 +515,26 @@ export function isCreditableRun(run: {
  * Pass the originating server when known: colliding ids resolve to that
  * provider's label. Falls back to a spaced form of the raw name for any
  * unmapped tool. */
-export function actionToolLabel(
-  policy: ConnectorPolicyCatalog,
-  tool: string,
-  server?: string,
-): string {
+export function actionToolLabel(tool: string, server?: string): string {
   if (server) {
     const qualified = ACTION_TOOL_LABELS[`${server}:${tool}`];
     if (qualified) {
       return qualified;
     }
   }
-  const firstIdentity = policy.actionTools.find((entry) => entry.id === tool);
-  if (firstIdentity) {
-    return (
-      ACTION_TOOL_LABELS[`${firstIdentity.server}:${firstIdentity.id}`] ??
-      tool.replace(/[_-]/g, " ")
-    );
-  }
-  return tool.replace(/[_-]/g, " ");
+  return ACTION_TOOL_LABELS[tool] ?? tool.replace(/_/g, " ");
 }
 
 /** The provider behind a connector MCP server name, for provider marks on the
  * approvals surface. Null for non-connector servers. */
 export function providerFromServer(
-  policy: ConnectorPolicyCatalog,
   server: string,
 ): "google" | "linear" | "notion" | "github" | null {
-  return (
-    policy.serverOwnerPrefixes.find((definition) => server.startsWith(definition.prefix))
-      ?.provider ?? null
-  );
+  if (server.startsWith("june_gmail") || server.startsWith("june_gcal")) return "google";
+  if (server.startsWith("june_linear")) return "linear";
+  if (server.startsWith("june_notion")) return "notion";
+  if (server.startsWith("june_github")) return "github";
+  return null;
 }
 
 /**
@@ -428,7 +549,6 @@ export function providerFromServer(
  *   not granted stays unavailable rather than silently parking.
  */
 export function routineToolsetsFor(
-  policy: ConnectorPolicyCatalog,
   trust: RoutineTrustMode,
   options: {
     unrestricted: boolean;
@@ -436,15 +556,15 @@ export function routineToolsetsFor(
     routineBrowserServer?: string;
   },
 ): string[] {
-  const base = options.unrestricted
-    ? UNRESTRICTED_ROUTINE_TOOLSETS
-    : policy.routine.sandboxedBaseToolsets;
-  const toolsets = [...base, ...policy.routine.readToolsets];
-  if (trust === "approval") toolsets.push(...policy.routine.actionToolsets);
+  const base = options.unrestricted ? UNRESTRICTED_AGENT_TOOLSETS : SANDBOXED_ROUTINE_BASE_TOOLSETS;
+  const toolsets = [...base, ...CONNECTOR_READ_TOOLSETS];
+  if (trust === "approval") toolsets.push(...CONNECTOR_ACTION_TOOLSETS);
   if (trust === "autonomous") toolsets.push(...(options.autonomousServers ?? []));
   if (options.routineBrowserServer) toolsets.push(options.routineBrowserServer);
   return [...new Set(toolsets)];
 }
+
+const AUTO_SERVER_PATTERN = /^june_(?:gmail|gcal)_auto_/;
 
 /**
  * Derives the trust mode a stored job's toolset override implies, for the
@@ -452,23 +572,12 @@ export function routineToolsetsFor(
  * no connector toolsets at all (nothing to badge).
  */
 export function routineTrustModeFromToolsets(
-  policy: ConnectorPolicyCatalog,
   enabledToolsets: string[] | undefined,
 ): RoutineTrustMode | null {
   const toolsets = enabledToolsets ?? [];
-  if (
-    toolsets.some((toolset) =>
-      policy.routine.autonomousServerPrefixes.some((prefix) => toolset.startsWith(prefix)),
-    )
-  ) {
-    return "autonomous";
-  }
-  if (toolsets.some((toolset) => policy.routine.actionToolsets.includes(toolset))) {
-    return "approval";
-  }
-  if (toolsets.some((toolset) => policy.routine.readToolsets.includes(toolset))) {
-    return "read_only";
-  }
+  if (toolsets.some((toolset) => AUTO_SERVER_PATTERN.test(toolset))) return "autonomous";
+  if (toolsets.some((toolset) => CONNECTOR_ACTION_TOOLSETS.includes(toolset))) return "approval";
+  if (toolsets.some((toolset) => CONNECTOR_READ_TOOLSETS.includes(toolset))) return "read_only";
   return null;
 }
 
@@ -515,14 +624,15 @@ export const DEFAULT_EVENT_LEAD_MINUTES = 30;
  * the routine silently never firing (the Gmail history / calendar list call
  * fails on the missing scope).
  */
-export function triggerRequiredBundles(
-  policy: ConnectorPolicyCatalog,
-  trigger: TriggerDraft,
-): readonly ConnectorScopeBundle[] {
-  if (trigger.source === "schedule") return [];
-  return (
-    policy.triggers.find((definition) => definition.id === trigger.source)?.requiredBundles ?? []
-  );
+export function triggerRequiredBundles(trigger: TriggerDraft): readonly ConnectorScopeBundle[] {
+  switch (trigger.source) {
+    case "email_received":
+      return ["gmail_read"];
+    case "event_upcoming":
+      return ["calendar_read"];
+    default:
+      return [];
+  }
 }
 
 /**
@@ -533,32 +643,20 @@ export function triggerRequiredBundles(
  * "connect an account" notice in that case).
  */
 export function triggerScopeWarning(
-  policy: ConnectorPolicyCatalog,
   trigger: TriggerDraft,
   accountScopes: string[] | null,
 ): string | null {
-  const bundles = triggerRequiredBundles(policy, trigger);
+  const bundles = triggerRequiredBundles(trigger);
   if (bundles.length === 0) return null;
   if (accountScopes == null) return null;
-  if (scopesCoverBundles(policy, accountScopes, bundles)) return null;
-  const features = bundles.map((bundle) => bundleMeta(bundle).label.toLowerCase()).join(" and ");
+  if (scopesCoverBundles(accountScopes, bundles)) return null;
+  const features = bundles.map((bundle) => BUNDLE_META[bundle].label.toLowerCase()).join(" and ");
   return `This trigger needs ${features} access on your connected Google account. Add it in Settings under Plugins.`;
-}
-
-/** Contract check for the renderer-only presentation maps. */
-export function missingConnectorPresentationIds(policy: ConnectorPolicyCatalog): string[] {
-  const missingBundles = policy.scopeBundles
-    .filter((bundle) => !BUNDLE_META[bundle.id])
-    .map((bundle) => `bundle:${bundle.id}`);
-  const missingActions = policy.actionTools
-    .filter((tool) => !ACTION_TOOL_LABELS[`${tool.server}:${tool.id}`])
-    .map((tool) => `action:${tool.server}:${tool.id}`);
-  return [...missingBundles, ...missingActions];
 }
 
 /**
  * The schedule an event-triggered routine is created with. Event routines
- * still need a Hermes cron record underneath (the trigger daemon fires them
+ * still need a the retired runtime cron record underneath (the trigger daemon fires them
  * via the cron trigger action), so they get a far-future one-time schedule
  * and are paused right after creation — the daemon re-pauses after each
  * fire, and the distant date guarantees the scheduler itself never runs it.

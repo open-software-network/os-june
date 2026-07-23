@@ -4,9 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { NOTE_PROCESSING_RECONCILE_INTERVAL_MS } from "../app/use-note-processing-events";
 import {
-  resetActiveHermesProfileForTests,
-  setActiveHermesProfileName,
-} from "../lib/active-hermes-profile";
+  resetActiveAgentProfileForTests,
+  setActiveAgentProfileName,
+} from "../lib/agent-profile";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   beginMaxGrantWait,
@@ -331,7 +331,7 @@ describe("notes recording reliability", () => {
       mocks.pendingMeetingStartRequest = undefined;
       return true;
     });
-    resetActiveHermesProfileForTests();
+    resetActiveAgentProfileForTests();
     mocks.listFolders.mockResolvedValue([]);
     mocks.listHermesSessions.mockResolvedValue([]);
 
@@ -498,7 +498,7 @@ describe("notes recording reliability", () => {
     const listCallsBefore = mocks.listNotes.mock.calls.length;
 
     await act(async () => {
-      setActiveHermesProfileName("work");
+      setActiveAgentProfileName("work");
     });
 
     await waitFor(() => expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBefore));
@@ -623,7 +623,7 @@ describe("notes recording reliability", () => {
     );
     const listCallsBeforeSwitch = mocks.listNotes.mock.calls.length;
     await act(async () => {
-      setActiveHermesProfileName("work");
+      setActiveAgentProfileName("work");
     });
 
     await waitFor(() =>

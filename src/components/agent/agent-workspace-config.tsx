@@ -210,15 +210,6 @@ export const HERO_SHORTCUT_COUNT = 3;
 // the deck advances (300ms fade + 2 × 90ms stagger, see .agent-hero-chip).
 export const HERO_ROTATE_MS = 8000;
 export const HERO_CHIP_SWAP_MS = 500;
-export const PROVISIONAL_HERMES_SESSION_PREFIX = "pending:new-session:";
-
-export function makeProvisionalHermesSessionId() {
-  return `${PROVISIONAL_HERMES_SESSION_PREFIX}${Date.now()}:${Math.random().toString(36).slice(2)}`;
-}
-
-export function isProvisionalHermesSessionId(sessionId?: string | null) {
-  return Boolean(sessionId && sessionId.startsWith(PROVISIONAL_HERMES_SESSION_PREFIX));
-}
 
 // Fisher–Yates with the swap target mirrored (j = i − rand) so a rand() of 0
 // is the identity permutation: tests that mock Math.random get the curated

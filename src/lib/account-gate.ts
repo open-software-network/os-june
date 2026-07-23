@@ -1,4 +1,4 @@
-import { AUTO_MODEL_ID } from "./hermes-session-model-selection";
+import { AUTO_MODEL_ID } from "./agent-model-selection";
 import { modelAvailableForMode } from "./model-privacy";
 import type { AccountStatus, VeniceModelDto } from "./tauri";
 

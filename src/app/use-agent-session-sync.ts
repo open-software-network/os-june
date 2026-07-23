@@ -6,7 +6,7 @@ import {
 } from "../lib/agent-events";
 import { assignSessionToFolder } from "../lib/tauri";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getActiveAgentProfileName } from "../lib/agent-profile";
 import { updateMenuBarSessionStatus } from "./app-effects/update-ui";
 import type { UseAgentSessionSyncDependencies } from "./use-agent-session-sync-types";
 
@@ -64,7 +64,7 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
       if (pendingProject && detail.selectedSessionId) {
         pendingSessionProjectRef.current = null;
         const sessionId = detail.selectedSessionId;
-        if (pendingProject.profile !== getActiveHermesProfileName()) {
+        if (pendingProject.profile !== getActiveAgentProfileName()) {
           setAgentOrigin(undefined);
         } else if (!pendingProject.knownSessionIds.has(sessionId)) {
           void assignSessionToFolder(sessionId, pendingProject.folderId)

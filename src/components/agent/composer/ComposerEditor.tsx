@@ -20,7 +20,7 @@ import {
   type NoteReferenceInput,
 } from "./noteReference";
 import type { ReportCategory } from "./reportCategory";
-import type { HermesSkillInfo } from "../../../lib/tauri";
+import type { AgentSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandName } from "../../../lib/agent-composer-slash-commands";
 
 type SetContentOptions = {
@@ -58,21 +58,8 @@ export type ComposerEditorHandle = {
 
 type ComposerEditorProps = {
   placeholder: string;
-  skills?: HermesSkillInfo[] | null;
-  changeKey?: string | null;
-  onChange: (
-    text: string,
-    category: ReportCategory | null,
-    changeKey: string | null | undefined,
-  ) => void;
-  /** Persists a pending snapshot without updating React state. Used during
-   * teardown and lifecycle-driven draft switches so refs/storage stay
-   * authoritative without causing a nested render. */
-  onPendingChangePersist?: (
-    text: string,
-    category: ReportCategory | null,
-    changeKey: string | null | undefined,
-  ) => void;
+  skills?: AgentSkillInfo[] | null;
+  onChange: (text: string, category: ReportCategory | null) => void;
   onSubmit: () => void;
   onFocusChange?: (focused: boolean) => void;
   /** Reports cheap document empty/non-empty transitions without serializing
@@ -107,7 +94,7 @@ type PendingEditorAction =
 
 /** Serializes the doc to the plain string sent to June: paragraph and
  * hard-break boundaries become newlines, the category chip contributes
- * nothing, and note reference atoms emit the stable token Hermes resolves via
+ * nothing, and note reference atoms emit the stable token the retired runtime resolves via
  * June's note context tool. */
 export function serializePlainText(doc: ProseMirrorNode): string {
   return doc.textBetween(0, doc.content.size, "\n", (leaf) => {

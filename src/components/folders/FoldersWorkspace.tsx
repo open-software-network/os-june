@@ -18,8 +18,8 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
-import type { FolderDto, HermesSessionInfo, NoteListItemDto } from "../../lib/tauri";
-import { sessionTimestamp } from "../../lib/hermes-adapter";
+import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import {
   type DragEvent,
   type ReactNode,
@@ -51,7 +51,7 @@ type FoldersWorkspaceProps = {
   folders: FolderDto[];
   notes: NoteListItemDto[];
   /** Agent sessions that can be filed into projects alongside notes. */
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   /** sessionId -> project (folder) ids the session is filed under. */
   sessionFolderIds: Record<string, string[]>;
   selectedFolderId?: string;
@@ -73,7 +73,7 @@ type FoldersWorkspaceProps = {
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   onOpenMoveDialog: (noteId: string) => void;
   onDeleteNote: (noteId: string) => void;
-  onSelectSession: (session: HermesSessionInfo) => void;
+  onSelectSession: (session: AgentSessionDto) => void;
   onAssignSessionToFolder: (sessionId: string, folderId: string) => Promise<unknown>;
   onRemoveSessionFromFolder: (sessionId: string, folderId: string) => void;
   onOpenSessionMoveDialog: (sessionId: string) => void;
@@ -396,8 +396,9 @@ function FolderCard({
   onDropNote,
 }: {
   folder: FolderDto;
-  notes: readonly NoteListItemDto[];
-  sessions: readonly HermesSessionInfo[];
+  notes: NoteListItemDto[];
+  sessions: AgentSessionDto[];
+  sessionFolderIds: Record<string, string[]>;
   menuOpen: boolean;
   onOpen: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
@@ -662,7 +663,7 @@ function FolderDetail({
         ? []
         : sessions
             .filter((session) => (sessionFolderIds[session.id] ?? []).includes(folder.id))
-            .sort((a, b) => sessionTimestamp(b).localeCompare(sessionTimestamp(a))),
+            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [sessions, sessionFolderIds, folder.id, forcedEmpty],
   );
 
@@ -954,8 +955,8 @@ function FolderSessionList({
   onRemoveSessionFromFolder,
 }: {
   folder: FolderDto;
-  sessions: HermesSessionInfo[];
-  onSelectSession: (session: HermesSessionInfo) => void;
+  sessions: AgentSessionDto[];
+  onSelectSession: (session: AgentSessionDto) => void;
   onOpenSessionMoveDialog: (sessionId: string) => void;
   onRemoveSessionFromFolder: (sessionId: string, folderId: string) => void;
 }) {
@@ -980,13 +981,13 @@ function FolderSessionRow({
   onOpenMove,
   onRemoveFromFolder,
 }: {
-  session: HermesSessionInfo;
+  session: AgentSessionDto;
   onSelect: () => void;
   onOpenMove: () => void;
   onRemoveFromFolder: () => void;
 }) {
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
-  const title = session.title?.trim() || session.preview?.trim() || "Untitled session";
+  const title = session.title.trim() || "Untitled session";
 
   useEffect(() => {
     if (!menu) return;
@@ -1014,11 +1015,11 @@ function FolderSessionRow({
           <span className="folder-note-body">
             <span className="folder-note-title">{title}</span>
             <span className="folder-note-subtitle">
-              {session.preview?.trim() || "No messages yet"}
+              {session.source === "legacy_routine" ? "Imported routine history" : "Conversation"}
             </span>
           </span>
         </button>
-        <span className="folder-note-time">{formatNoteTime(sessionTimestamp(session))}</span>
+        <span className="folder-note-time">{formatNoteTime(session.updatedAt)}</span>
         <span className="folder-note-actions">
           <button
             type="button"

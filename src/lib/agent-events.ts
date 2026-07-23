@@ -1,4 +1,4 @@
-import type { HermesSessionInfo } from "./tauri";
+import type { AgentSessionDto } from "./agent-runtime-contract";
 
 export const AGENT_NEW_SESSION_EVENT = "june:agent:new-session";
 export const AGENT_DELETE_SESSION_EVENT = "june:agent:delete-session";
@@ -47,7 +47,7 @@ export type AgentRunSettledDetail = {
 };
 
 export type AgentSessionsChangedDetail = {
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   selectedSessionId?: string;
   workingSessionIds: string[];
   waitingSessionIds?: string[];

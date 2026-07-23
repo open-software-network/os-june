@@ -2,16 +2,15 @@
  * Orchestration for generating an image from chat and handing it to June's
  * EXISTING inline image display path.
  *
- * June already imports a pasted/dropped image into the Hermes workspace
- * (`import_hermes_bridge_file_bytes`) and shows it inline as a composer
+ * June imports a pasted or dropped image into the session workspace and shows it inline as a composer
  * attachment (`attachmentStateFrom` -> `attachImageToSession`, rendered from
  * `previewDataUrl`). This module reuses that path verbatim for a GENERATED
  * image: it calls the June API image endpoint, decodes the base64 result,
  * imports the bytes into the workspace, and returns the same
- * `HermesAttachmentState` a pasted image produces. The caller drops the
+ * `AgentAttachmentState` a pasted image produces. The caller drops the
  * attachment into the composer list exactly as it does for a paste.
  *
- * UI- and gateway-free (mirrors `hermes-image-attach.ts`): side effects are
+ * UI- and runtime-free: side effects are
  * injected, so the flow is unit-testable and only this seam moves if the wire
  * shape changes. It never throws.
  */
@@ -19,10 +18,11 @@
 import {
   attachmentStateFrom,
   parseImageDataUrl,
-  type HermesAttachmentState,
-} from "./hermes-image-attach";
+  type AgentAttachmentState,
+  type ImportedAgentFile,
+} from "./agent-image-attachments";
 import { messageFromError } from "./errors";
-import type { GeneratedImageDto, ImportedHermesFile } from "./tauri";
+import type { GeneratedImageDto } from "./tauri";
 
 export type GenerateChatImageDeps = {
   /** Calls the June API image endpoint; `model` falls back server-side. */
@@ -32,8 +32,8 @@ export type GenerateChatImageDeps = {
     requestId: string,
     safeMode?: boolean,
   ) => Promise<GeneratedImageDto>;
-  /** Imports raw bytes into the Hermes workspace (the paste path's importer). */
-  importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedHermesFile>;
+  /** Imports raw bytes into the the retired runtime workspace (the paste path's importer). */
+  importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedAgentFile>;
   /** Resolves the default image model when the caller passes none. */
   defaultModel?: () => string;
 };
@@ -41,9 +41,9 @@ export type GenerateChatImageDeps = {
 export type GenerateChatImageResult =
   | {
       status: "ok";
-      file: ImportedHermesFile;
+      file: ImportedAgentFile;
       /** Ready to drop into the composer attachment list, like a pasted image. */
-      attachment: HermesAttachmentState;
+      attachment: AgentAttachmentState;
       /** `data:<mime>;base64,<data>` for any direct inline preview. */
       dataUrl: string;
     }
@@ -59,8 +59,8 @@ export type EditChatImageDeps = {
     mimeType?: string,
     model?: string,
   ) => Promise<GeneratedImageDto>;
-  /** Imports edited bytes into the Hermes workspace. */
-  importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedHermesFile>;
+  /** Imports edited bytes into the the retired runtime workspace. */
+  importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedAgentFile>;
 };
 
 export type EditChatImageResult = GenerateChatImageResult;
@@ -130,7 +130,7 @@ export async function generateChatImage(
     };
   }
 
-  let file: ImportedHermesFile;
+  let file: ImportedAgentFile;
   try {
     file = await deps.importImageBytes(
       generatedImageFileName(image.mimeType),
@@ -157,7 +157,7 @@ export function newImageRequestId(): string {
  * same imported-file shape as generation. Never throws.
  */
 export async function editChatImage(
-  source: ImportedHermesFile,
+  source: ImportedAgentFile,
   instruction: string,
   deps: EditChatImageDeps,
   model?: string,
@@ -196,7 +196,7 @@ export async function editChatImage(
     };
   }
 
-  let file: ImportedHermesFile;
+  let file: ImportedAgentFile;
   try {
     file = await deps.importImageBytes(
       generatedImageFileName(image.mimeType),

@@ -21,10 +21,10 @@ describe("thinking levels", () => {
     expect(THINKING_LEVELS.map((option) => option.label)).toEqual(["Low", "Medium", "High"]);
   });
 
-  it("maps each level onto a Hermes reasoning effort", () => {
-    // Low barely deliberates, Medium is Hermes' own default, and High reasons
-    // substantially more.
-    expect(thinkingEffortForLevel("instant")).toBe("minimal");
+  it("maps each level onto a agent reasoning effort", () => {
+    // Low skips a separate reasoning pass, Medium is the runtime default, and
+    // High reasons substantially more.
+    expect(thinkingEffortForLevel("instant")).toBe("none");
     expect(thinkingEffortForLevel("medium")).toBe("medium");
     expect(thinkingEffortForLevel("hard")).toBe("high");
   });
@@ -42,7 +42,7 @@ describe("thinking levels", () => {
     }
   });
 
-  it("maps Hermes effort strings back onto the nearest stop", () => {
+  it("maps agent effort strings back onto the nearest stop", () => {
     expect(thinkingLevelForEffort("minimal")).toBe("instant");
     expect(thinkingLevelForEffort("low")).toBe("instant");
     expect(thinkingLevelForEffort("medium")).toBe("medium");

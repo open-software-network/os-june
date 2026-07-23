@@ -11,7 +11,7 @@ import {
 import { playRecordingSound } from "../lib/recording-sounds";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { errorCode, messageFromError } from "../lib/errors";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getActiveAgentProfileName } from "../lib/agent-profile";
 import type { RecordingSourceMode } from "../lib/tauri";
 import {
   recordingToStatus,
@@ -74,7 +74,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
-      const recordingProfile = getActiveHermesProfileName();
+      const recordingProfile = getActiveAgentProfileName();
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -167,7 +167,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
         return false;
       }
       if (competingRecording) return true;
-      calendarContextNoteProfilesRef.current.set(noteId, getActiveHermesProfileName());
+      calendarContextNoteProfilesRef.current.set(noteId, getActiveAgentProfileName());
       pendingCalendarContextAdoptionsRef.current.add(noteId);
       recordingStartInFlightRef.current = true;
       setCheckingSourceReadiness(true);

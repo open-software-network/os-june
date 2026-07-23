@@ -25,11 +25,10 @@ import {
 } from "./lib/agent-hud-settings";
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
-import { titleFromPrompt } from "./lib/hermes-adapter";
-import { createHudLifecycle } from "./lib/hud-lifecycle";
+import { titleFromPrompt } from "./lib/session-title";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
-import type { HermesSessionInfo } from "./lib/tauri";
+import type { AgentSessionDto } from "./lib/agent-runtime-contract";
 import { subscribeBrand } from "./lib/brand";
 import "./styles/agent-hud.css";
 
@@ -50,7 +49,7 @@ type HudEntry = {
   summary: string;
   status: HudSessionStatus;
   updatedAt: string;
-  session?: HermesSessionInfo;
+  session?: AgentSessionDto;
 };
 
 const EXPANDED_KEY = "june:agent-hud:expanded";
@@ -89,7 +88,7 @@ const state = {
   focused: false,
   hovered: false,
   menuOpen: false,
-  sessions: [] as HermesSessionInfo[],
+  sessions: [] as AgentSessionDto[],
   workingSessionIds: new Set<string>(),
   waitingSessionIds: new Set<string>(),
   statusBySessionId: new Map<string, StatusRecord>(),
@@ -469,7 +468,7 @@ function buildEntries() {
   return entries.sort(compareEntries).slice(0, MAX_VISIBLE_ROWS);
 }
 
-function entryFromSession(session: HermesSessionInfo, record?: StatusRecord): HudEntry {
+function entryFromSession(session: AgentSessionDto, record?: StatusRecord): HudEntry {
   const status = sessionStatus(session, record);
   return {
     id: session.id,
@@ -491,7 +490,7 @@ function entryFromPending(record: StatusRecord): HudEntry {
   };
 }
 
-function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSessionStatus {
+function sessionStatus(session: AgentSessionDto, record?: StatusRecord): HudSessionStatus {
   if (record && isTerminalStatus(record.status) && !isExpiredTerminalRecord(record)) {
     return record.status;
   }
@@ -503,15 +502,17 @@ function sessionStatus(session: HermesSessionInfo, record?: StatusRecord): HudSe
   return "idle";
 }
 
-function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
+function sessionTitle(session: AgentSessionDto, record?: StatusRecord) {
   const storedTitle = session.title?.trim();
+  // Runtime-owned session titles are persisted application data. When there
+  // is no newer lifecycle title to reconcile, keep them verbatim, including
+  // intentional question-shaped and manually entered titles.
+  if (storedTitle && !record?.title?.trim()) return storedTitle;
   const settledTitleKind = sessionSettledTitleKind(session.id);
   const storedTitleIsAuthoritative =
     storedTitle &&
-    (settledTitleKind ||
-      (storedTitle !== session.preview?.trim() &&
-        !isPromptDerivedTitle(storedTitle, session.preview))) &&
-    isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview);
+    (settledTitleKind || !isPromptDerivedTitle(storedTitle, record?.prompt)) &&
+    isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, record?.prompt);
   if (storedTitleIsAuthoritative) {
     return storedTitle;
   }
@@ -521,40 +522,30 @@ function sessionTitle(session: HermesSessionInfo, record?: StatusRecord) {
     const safeSessionTitle = storedTitle;
     if (
       safeSessionTitle &&
-      isHudStoredSessionTitleSafe(safeSessionTitle, session.id, record?.prompt, session.preview)
+      isHudStoredSessionTitleSafe(safeSessionTitle, session.id, record?.prompt, record?.prompt)
     ) {
       return safeSessionTitle;
     }
-    return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+    return record?.prompt?.trim() || "Agent session";
   }
   if (storedTitle) {
-    return isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, session.preview)
+    return isHudStoredSessionTitleSafe(storedTitle, session.id, record?.prompt, record?.prompt)
       ? storedTitle
-      : record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+      : record?.prompt?.trim() || "Agent session";
   }
-  return record?.prompt?.trim() || session.preview?.trim() || "Agent session";
+  return record?.prompt?.trim() || "Agent session";
 }
 
-function sessionSummary(
-  session: HermesSessionInfo,
-  status: HudSessionStatus,
-  record?: StatusRecord,
-) {
+function sessionSummary(session: AgentSessionDto, status: HudSessionStatus, record?: StatusRecord) {
   const summary = record?.summary?.trim();
   if (summary) return summary;
   if (status !== "idle") return statusLabel(status);
-  return session.preview?.trim() || "Idle";
+  return "Idle";
 }
 
-function sessionTimestamp(session: HermesSessionInfo, record?: StatusRecord) {
+function sessionTimestamp(session: AgentSessionDto, record?: StatusRecord) {
   if (record) return new Date(record.receivedAt).toISOString();
-  return (
-    session.last_active ??
-    session.lastActive ??
-    session.started_at ??
-    session.startedAt ??
-    new Date(0).toISOString()
-  );
+  return session.updatedAt;
 }
 
 function statusTitle(record: StatusRecord) {
@@ -642,7 +633,7 @@ function statusLabel(status: HudSessionStatus) {
 function compareEntries(a: HudEntry, b: HudEntry) {
   const rank = statusRank(a.status) - statusRank(b.status);
   if (rank !== 0) return rank;
-  return b.updatedAt.localeCompare(a.updatedAt);
+  return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
 }
 
 function statusRank(status: HudSessionStatus) {
@@ -764,7 +755,7 @@ function isTerminalStatus(status: HudSessionStatus) {
   return status === "completed" || status === "cancelled" || status === "failed";
 }
 
-function sameSubject(session: HermesSessionInfo, record: StatusRecord) {
+function sameSubject(session: AgentSessionDto, record: StatusRecord) {
   const title = statusSubject(record);
   return session.id === record.sessionId || session.title?.trim().toLowerCase() === title;
 }
@@ -968,7 +959,7 @@ function appendDotSpinner(parent: HTMLElement) {
   parent.appendChild(spinner);
 }
 
-async function openAgent(session?: HermesSessionInfo) {
+async function openAgent(session?: AgentSessionDto) {
   await agentHudOpenAgent(session).catch(() => {
     window.dispatchEvent(
       new CustomEvent(AGENT_OPEN_EVENT, {

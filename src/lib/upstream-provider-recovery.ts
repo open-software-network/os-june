@@ -15,7 +15,7 @@ export function displayedUpstreamProviderRecoveryText(content: string) {
   return content.trim() === UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT ? "Try again" : content;
 }
 
-/** Hermes can truncate a session preview mid-prompt, so the preview is
+/** the retired runtime can truncate a session preview mid-prompt, so the preview is
  * replaced when it is a prefix of the full recovery prompt. That covers every
  * truncation point while a user message that merely quotes the opener and
  * then diverges stays visible as the user's own text. */

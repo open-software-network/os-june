@@ -1643,8 +1643,7 @@ input:focus-visible,
 /* Action cards (approval, clarify) — a clean system card: card surface, subtle
  * border, soft shadow. */
 .agent-safety-panel,
-.agent-tool-event,
-.agent-hermes-event {
+.agent-tool-event {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--sp-3);
@@ -2444,12 +2443,6 @@ button.agent-user-attachment:hover {
   color: var(--muted-foreground);
 }
 
-.agent-hermes-message {
-  width: 100%;
-  padding: var(--sp-1) var(--sp-2);
-  color: var(--foreground);
-}
-
 .agent-markdown {
   color: var(--foreground);
   font-size: var(--fs-lg);
@@ -2862,57 +2855,6 @@ button.agent-user-attachment:hover {
   font-style: italic;
 }
 
-.agent-hermes-note {
-  width: min(760px, 100%);
-  padding: 0 var(--sp-2);
-  color: var(--muted-foreground);
-  font-size: var(--fs-lg);
-}
-
-.agent-hermes-note summary {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  cursor: pointer;
-  list-style: none;
-  color: var(--muted-foreground);
-}
-
-.agent-hermes-note summary:hover {
-  color: var(--foreground);
-}
-
-.agent-hermes-note summary::-webkit-details-marker {
-  display: none;
-}
-
-.agent-hermes-note span {
-  font-weight: 400;
-}
-
-.agent-hermes-note > .agent-markdown {
-  margin: var(--sp-2) 0 0;
-  color: var(--muted-foreground);
-}
-
-.agent-hermes-note:not([open]) > .agent-markdown {
-  display: none;
-}
-
-.agent-hermes-event {
-  width: min(760px, 100%);
-  padding: var(--sp-3);
-  border-radius: var(--r-sm);
-}
-
-.agent-hermes-event p {
-  margin: var(--sp-1) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
-  white-space: pre-wrap;
-}
-
 /* Collapsed-by-default tool row: a single quiet line (icon · name · status),
  * with the raw output tucked behind a disclosure so it never floods the
  * conversation. */
@@ -3023,7 +2965,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Status sits beside the name (not floated to the far edge) so the row reads
- * as one phrase. StatusPill rows (hermes/tool events) flatten to the same
+ * as one phrase. StatusPill tool-event rows flatten to the same
  * quiet-word treatment inside disclosures. */
 .agent-tool-disclosure .agent-status-pill {
   min-height: 0;
@@ -4872,8 +4814,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Reasoning + note bodies fade/slide in when expanded for a smooth reveal. */
-.agent-reasoning[open] .agent-reasoning-body,
-.agent-hermes-note[open] > .agent-markdown {
+.agent-reasoning[open] .agent-reasoning-body {
   animation: agent-reveal 160ms var(--ease-out);
 }
 
@@ -5698,7 +5639,7 @@ button.agent-user-attachment:hover {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* Unsupported Hermes event notice: a quiet, recoverable banner at the top of
+/* Unsupported runtime event notice: a quiet, recoverable banner at the top of
  * the timeline. Uses the destructive-soft surface (same family as other
  * attention states) without shouting — the event is recoverable, not fatal. */
 .agent-unsupported-notice {
@@ -5806,177 +5747,6 @@ button.agent-user-attachment:hover {
 .agent-unsupported-notice-action:focus-visible {
   outline: 2px solid var(--ring-focus);
   outline-offset: 1px;
-}
-
-/* Dev/debug raw Hermes trace panel (feature 15). A bottom-anchored overlay
- * pinned to the viewport; never ships to users (gated on import.meta.env.DEV). */
-.hermes-trace-panel {
-  position: fixed;
-  inset: auto 0 0 0;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  max-height: 60%;
-  padding: var(--sp-4) var(--sp-5);
-  border-top: 1px solid var(--border);
-  background: var(--card);
-  box-shadow: 0 -8px 24px color-mix(in oklch, var(--foreground) 12%, transparent);
-}
-
-.hermes-trace-panel-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-3);
-  align-items: flex-end;
-  justify-content: space-between;
-}
-
-.hermes-trace-panel-title {
-  display: flex;
-  gap: var(--sp-2);
-  align-items: center;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-medium);
-}
-
-.hermes-trace-panel-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  align-items: flex-end;
-}
-
-.hermes-trace-panel-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-sm);
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-panel-field select {
-  padding: var(--sp-1) var(--sp-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.hermes-trace-panel-button {
-  display: inline-flex;
-  gap: var(--sp-1);
-  align-items: center;
-  padding: var(--sp-1) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  font-weight: 400;
-  cursor: pointer;
-}
-
-.hermes-trace-panel-button:hover {
-  background: var(--accent);
-}
-
-.hermes-trace-panel-button:focus-visible {
-  outline: 2px solid var(--ring-focus);
-  outline-offset: 1px;
-}
-
-.hermes-trace-copy-tip {
-  display: inline-flex;
-}
-
-.hermes-trace-panel-close {
-  padding: var(--sp-1) var(--sp-2);
-}
-
-.hermes-trace-panel-note {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-panel-empty {
-  margin: var(--sp-2) 0;
-  font-size: var(--fs-md);
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-panel-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-
-.hermes-trace-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--background);
-}
-
-.hermes-trace-row[data-unsupported="true"] {
-  border-color: color-mix(in oklch, var(--destructive) 36%, transparent);
-  background: var(--destructive-soft);
-}
-
-.hermes-trace-row-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  align-items: center;
-  font-size: var(--fs-sm);
-}
-
-.hermes-trace-row-direction {
-  padding: 0 var(--sp-1);
-  border-radius: var(--r-xs);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  text-transform: capitalize;
-}
-
-.hermes-trace-row-type {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-}
-
-.hermes-trace-row-kind {
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-row-time {
-  margin-left: auto;
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-row-message {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--destructive);
-}
-
-.hermes-trace-row-payload {
-  margin: 0;
-  max-height: 160px;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .agent-composer[data-hidden="true"] {
@@ -13922,7 +13692,7 @@ button.agent-user-attachment:hover {
   line-height: 1.5;
 }
 
-/* Installed skills (Hermes admin surface). A native settings section: reuses
+/* Installed skills (retired agent admin surface). A native settings section: reuses
  * the settings-group / settings-card chrome, with a purpose-built toolbar,
  * category chips, lifecycle banner, and skill rows. Tokens only — matches the
  * agent capability list visually while reading as plain settings. */
@@ -14868,7 +14638,7 @@ button.agent-user-attachment:hover {
   width: 70%;
 }
 
-/* External skill directories manager (Hermes admin surface, spec 10). Lists the
+/* External skill directories manager (retired agent admin surface). Lists the
  * configured skills.external_dirs with filesystem status, shadowing, and the
  * shared-directory warning. Reuses the installed-skills chrome vocabulary;
  * tokens only. */
@@ -15197,7 +14967,7 @@ button.agent-user-attachment:hover {
   height: 14px;
 }
 
-/* Agent-managed skill write review queue (Hermes admin surface, spec 12). The
+/* Agent-managed skill write review queue (retired agent admin surface). The
  * human-in-the-loop gate: a write-approval toggle card, the lifecycle banner,
  * and a list of pending writes with expandable diffs and approve/reject. Reuses
  * the settings chrome; tokens only. */
@@ -15619,7 +15389,7 @@ button.agent-user-attachment:hover {
   height: 14px;
 }
 
-/* Skill config + required-secret setup (Hermes admin surface, spec 09). The
+/* Skill config + required-secret setup (retired agent admin surface). The
  * setup status badge sits inline in a skill row; the per-skill setup panel
  * expands inline below the row and spans both grid columns. Tokens only. */
 .installed-skill-setup-toggle {
@@ -15877,7 +15647,7 @@ button.agent-user-attachment:hover {
   font-size: var(--fs-xs);
 }
 
-/* Skill detail viewer + safe editor (Hermes admin surface, spec 05). A sub-view
+/* Skill detail viewer + safe editor (retired agent admin surface). A sub-view
  * off the installed-skills list: metadata + supporting files + setup + a
  * SKILL.md read view or validated editor with a diff-before-save confirm.
  * Tokens only; sentence case; no dashes in copy. */
@@ -16390,7 +16160,7 @@ button.agent-user-attachment:hover {
   color: var(--muted-foreground);
 }
 
-/* MCP servers (Hermes admin surface). Mirrors the installed-skills chrome:
+/* MCP servers (retired agent admin surface). Mirrors the installed-skills chrome:
  * settings-group / settings-card, a toolbar, a lifecycle banner, durable
  * notifications, and server rows with transport / risk / status pills. Tokens
  * only. */
@@ -19337,7 +19107,7 @@ button.memory-project:hover {
   margin-bottom: var(--sp-3);
 }
 
-/* Routines — Hermes scheduled automations. Shares the Dictation page chrome
+/* Routines - retired scheduled automations. Shares the Dictation page chrome
  * (.folders-* header/search) and the dictation row action buttons. */
 .routines-workspace,
 .routine-detail,
@@ -20831,8 +20601,7 @@ button.memory-project:hover {
   gap: var(--sp-4);
 }
 
-.folders-meetings-files,
-.folders-hermes-files {
+.folders-meetings-files {
   display: grid;
   gap: var(--sp-4);
   margin-top: var(--sp-8);
@@ -20842,25 +20611,11 @@ button.memory-project:hover {
   margin-top: 0;
 }
 
-.folders-hermes-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: var(--sp-4);
-}
-
-.folders-hermes-header h2,
 .folders-file-root-title h3 {
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
   font-weight: var(--fw-medium);
-}
-
-.folders-hermes-header p {
-  margin: var(--sp-1) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
 }
 
 .folders-section-count {
@@ -24750,7 +24505,7 @@ button.memory-project:hover {
   animation: onboarding-rise var(--t-med) var(--ease-out);
 }
 
-/* Skills Hub browser (Hermes admin surface, spec 06). Reuses the settings-group
+/* Skills Hub browser (retired agent admin surface). Reuses the settings-group
  * / settings-card chrome with a search toolbar, source filter chips, result
  * cards with source + trust badges, an install action with live progress, and a
  * detail drawer. Tokens only; sentence case; matches the Installed Skills page. */
@@ -25424,7 +25179,7 @@ button.memory-project:hover {
   border-top: 1px solid var(--border-subtle);
 }
 
-/* Team skill taps manager (Hermes admin surface, spec 13). Lists configured
+/* Team skill taps manager (retired agent admin surface). Lists configured
  * GitHub skill taps, adds/removes them, and searches/installs a tap's skills by
  * reusing the Skills Hub install flow. Reuses the same token palette as the hub
  * surface so the two read as one family. */
@@ -25880,7 +25635,7 @@ button.memory-project:hover {
   font-size: var(--fs-sm);
 }
 
-/* Skill install security review (Hermes admin surface, spec 07). A native
+/* Skill install security review (retired agent admin surface). A native
  * dialog (the shared .dialog-card) shown before a non-trusted Skills Hub
  * install: it surfaces source/trust, the scan's findings + affected files, what
  * the skill bundles, the capabilities it may use, and the sandbox/full-mode
@@ -26145,7 +25900,7 @@ button.memory-project:hover {
   line-height: 1.45;
 }
 
-/* Toolsets inventory (Hermes admin surface, spec 04). A read-only settings
+/* Toolsets inventory (retired agent admin surface). A read-only settings
  * section: reuses the settings-group / settings-card chrome, with a search
  * toolbar, a last-refreshed line, toolset rows (status / mode / tools /
  * requirements), and a companion skill-availability card. Tokens only. */

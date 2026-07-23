@@ -12,7 +12,7 @@ import {
 import { playRecordingSound } from "../lib/recording-sounds";
 import { AGENT_RECORDER_REQUEST_EVENT } from "../lib/events";
 import { errorCode, messageFromError } from "../lib/errors";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getActiveAgentProfileName } from "../lib/agent-profile";
 import type { RecordingSourceMode } from "../lib/tauri";
 import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import { type AgentRecorderRequestPayload } from "./app-shell";
@@ -236,14 +236,14 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
       if (options.rethrow) throw err;
     } finally {
       if (wasCrossProfileRecording) {
-        const finishingProfile = getActiveHermesProfileName();
+        const finishingProfile = getActiveAgentProfileName();
         try {
           const response = await listNotes();
-          if (getActiveHermesProfileName() === finishingProfile) {
+          if (getActiveAgentProfileName() === finishingProfile) {
             dispatch({ type: "notesLoaded", notes: response.items });
           }
         } catch (refreshErr) {
-          if (getActiveHermesProfileName() === finishingProfile) {
+          if (getActiveAgentProfileName() === finishingProfile) {
             setError(messageFromError(refreshErr));
           }
         }
