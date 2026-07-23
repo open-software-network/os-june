@@ -311,6 +311,22 @@ input:focus-visible,
  * rather than a console. Hero owns the full-strength moment. Home re-curves
  * the gradient rather than opacity-scaling it: a taller, gentler ombre (felt
  * from mid-canvas, never loud at the floor). */
+/* Home's top dissolve lives inside the workspace (the card-level fade is
+ * disabled for the home view, like the agent view): scrolled content melts at
+ * the card's top edge, and the listening bloom (z 4) sits crisp above the
+ * veil. The hero rim never renders in home, so its pseudo is free. */
+.agent-workspace[data-home="true"]::after {
+  bottom: auto;
+  height: 56px;
+  z-index: 3;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+  background: linear-gradient(to bottom, var(--card), transparent);
+  opacity: 1;
+}
+
 .agent-workspace[data-home="true"]::before {
   opacity: 1;
   /* Bottom-hugging: the top third stays pure canvas, then the warmth eases in
@@ -2278,9 +2294,9 @@ input:focus-visible,
 .agent-timeline[data-home="true"] {
   gap: var(--sp-3);
   padding-top: var(--sp-6);
-  /* Match the composer pill's inner inset so the conversation column aligns
-   * with the + on the left and the send on the right, like sessions. */
-  padding-inline: var(--sp-1);
+  /* Align the conversation with the + glyph's line inside the pill (button
+   * inset plus a step), matching the sessions relationship. */
+  padding-inline: var(--sp-3);
   /* Conversation gravity: a short thread (first open, first day) settles by
    * the composer, where the transcript pins anyway once it grows — instead of
    * floating at the top of a mostly-empty canvas. The timeline stretches to
@@ -2294,48 +2310,41 @@ input:focus-visible,
   margin-block: 0;
 }
 
-/* Sent messages: a soft borderless card pill whose bottom-right corner flows
- * into a tail — the chatty cue. The corner itself goes square, and the tail
- * piece below supplies the corner arc, the tail tip, and BOTH smoothed joins
- * (a concave fillet into the right edge, a soft hill into the bottom edge) as
- * one continuous curve, so bubble and tail read as a single drawn shape. */
+/* Sent messages: a soft borderless card whose little curl turns the surface
+ * into speech. This is one continuous silhouette, not a rounded rectangle with
+ * a tail glued behind it: the mask owns the side, concave neck, tip, return
+ * curve, and bottom edge in the same Bézier path. Nine-slice scaling preserves
+ * that drawn endcap while letting the middle grow for longer messages. */
 .agent-timeline[data-home="true"] .agent-user-turn-body {
+  --agent-home-bubble-radius: calc(var(--control-lg) / 2 + var(--sp-1));
+
   position: relative;
   max-width: 70%;
+  padding-inline: var(--sp-5);
   border: 0;
-  /* The tail corner goes square: the tail piece's concave sweep enters
-   * vertically (as drawn), so it continues the squared edge seamlessly and
-   * owns all curvature from there down. */
-  border-radius: calc(var(--control-lg) / 2 + var(--sp-1)) calc(var(--control-lg) / 2 + var(--sp-1))
-    0 calc(var(--control-lg) / 2 + var(--sp-1));
+  border-radius: var(--agent-home-bubble-radius);
   background: var(--card);
-  /* drop-shadow, not box-shadow: the shadow must wrap the UNION of bubble and
-   * tail pseudo as one silhouette. A box-shadow outlines each box separately
-   * and draws a seam where the tail meets the bubble. */
-  filter: var(--drop-shadow-sm);
+  /* drop-shadow follows the mask's alpha (where the curl mask applies), so
+   * the single shadow wraps the silhouette instead of outlining a box. One
+   * step up from sm so the white card reads against the unwashed card canvas
+   * at the top of the thread. */
+  filter: var(--drop-shadow-md);
 }
 
-.agent-timeline[data-home="true"] .agent-user-turn-body::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  right: -6px;
-  /* A hair above true abutment: the top strip tucks under the bubble fill so
-   * the glue line cannot antialias into a seam. */
-  bottom: -10.5px;
-  width: 14px;
-  height: 11.5px;
-  background: var(--card);
-  /* Andrew's chat tail.svg, verbatim, in its drawn orientation: the flat top
-   * edge glues under the bubble's bottom edge, the concave sweep's vertical
-   * entry continues the squared corner's edge, and the big arc carries the
-   * silhouette down into the flick. Nothing is redrawn — scale and placement
-   * only. Masked because a background-colored carve cannot sit on the wash
-   * gradient. */
-  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
-  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
-  -webkit-mask-size: 100% 100%;
-  mask-size: 100% 100%;
+/* Only the last message of a user run speaks the curl (iMessage grouping);
+ * earlier messages in the run stay fully rounded. The source slices are
+ * intrinsic coordinates from home-chat-bubble.svg. Render widths stay on
+ * June's radius/spacing tokens; when a one-line bubble is shorter than the
+ * two radius slices, WebKit scales them down together. */
+.agent-timeline[data-home="true"] .agent-user-turn:not(:has(+ .agent-user-turn))
+  .agent-user-turn-body {
+  border-radius: 0;
+  -webkit-mask-box-image-source: url("../assets/home-chat-bubble.svg");
+  -webkit-mask-box-image-slice: 29 34 29 29 fill;
+  -webkit-mask-box-image-width: var(--agent-home-bubble-radius)
+    calc(var(--agent-home-bubble-radius) + var(--sp-px)) var(--agent-home-bubble-radius)
+    var(--agent-home-bubble-radius);
+  -webkit-mask-box-image-repeat: stretch;
 }
 
 /* Home is the relationship surface, so private chain-of-thought chrome stays
@@ -2586,24 +2595,38 @@ input:focus-visible,
   margin-top: var(--sp-2);
 }
 
-/* The idle re-offer above the composer. The fixed composer column is
- * pointer-events: none, so the chips restore their own interactivity. */
+/* The abandoned-draft re-offer hovers ABOVE the pill (absolute, so it never
+ * grows the composer's measured clearance or pushes the conversation up).
+ * The fixed composer column is pointer-events: none, so the chips restore
+ * their own interactivity. Chips cascade in with the hero chips' stagger. */
 .agent-home-nudges-idle {
+  position: absolute;
+  bottom: calc(100% + var(--sp-2));
+  left: 0;
+  right: 0;
+  /* Track the pill's column and align with its left edge (the + line). */
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin: 0 auto;
+  padding-inline: var(--sp-1);
   pointer-events: auto;
-  justify-content: center;
-  margin: 0 0 var(--sp-3);
-  animation: june-home-nudges-in var(--t-slow) var(--ease-out);
+  justify-content: flex-start;
 }
 
-@keyframes june-home-nudges-in {
+.agent-home-nudges-idle button {
+  animation: june-home-chip-in 300ms var(--ease-out) both;
+  animation-delay: calc(var(--chip-i, 0) * 70ms);
+}
+
+@keyframes june-home-chip-in {
   from {
     opacity: 0;
-    transform: translateY(var(--sp-3));
+    transform: translateY(var(--sp-2));
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-home-nudges-idle {
+  .agent-home-nudges-idle button {
     animation: none;
   }
 }
@@ -10961,7 +10984,8 @@ button.agent-user-attachment:hover {
  * dissolve sits where the breadcrumb bar normally lives, and in the hero it
  * shows up behind floating popovers as a horizontal wash. Keep it off for the
  * entire agent view. */
-.main-panel:has(.main-panel-body[data-active-view="agent"])::before {
+.main-panel:has(.main-panel-body[data-active-view="agent"])::before,
+.main-panel:has(.main-panel-body[data-active-view="home"])::before {
   top: var(--detail-bar-h);
   right: var(--scrollbar-w);
   animation: none;

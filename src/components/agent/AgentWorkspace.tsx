@@ -1955,7 +1955,9 @@ function persistHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTur
     ) as Record<string, unknown>;
     window.localStorage.setItem(
       HOME_DIRECT_TURNS_STORAGE_KEY,
-      JSON.stringify({ ...records, [homeStoredSessionId]: turns.slice(-80) }),
+      // Home is one continual stream: keep a deep local tail (the model
+      // context window is trimmed separately at send time).
+      JSON.stringify({ ...records, [homeStoredSessionId]: turns.slice(-400) }),
     );
     emitHomeDirectQueueChange();
   } catch {
@@ -2808,6 +2810,10 @@ export function AgentWorkspace({
   const homeDirectTurnsRef = useRef(homeDirectTurns);
   const [homeOptimisticTurn, setHomeOptimisticTurn] = useState<AgentChatTurn | null>(null);
   const [homeIdleNudgesVisible, setHomeIdleNudgesVisible] = useState(false);
+  // Transient assistant turn being progressively revealed (Home's streaming
+  // feel: june_home_chat returns one shot, so the reveal is client-paced and
+  // the finished turn persists once the last words have faded in).
+  const [homeStreamingReply, setHomeStreamingReply] = useState<AgentChatTurn | null>(null);
   const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -6969,6 +6975,43 @@ export function AgentWorkspace({
                 model: sentModelTarget.hermesModelId,
                 reasoningEffort: thinkingEffortForLevel(sentThinkingLevel),
               });
+          // Plain replies stream in: words fade at a model-like pace through
+          // SmoothedStreamingMarkdown (part status "running"), and the turn
+          // persists complete once the reveal lands. Handoff replies keep the
+          // instant card. The queue holds until the reveal finishes, so rapid
+          // follow-ups stay ordered behind it.
+          if (!response.task) {
+            const fullText = response.content?.trim() || "I'm here.";
+            const streamingTurnId = `home:direct:assistant:${directTurnId}`;
+            const tokens = fullText.split(/(\s+)/);
+            const startedAt = new Date().toISOString();
+            let visible = "";
+            for (let index = 0; index < tokens.length; index += 4) {
+              visible += tokens.slice(index, index + 4).join("");
+              setHomeStreamingReply({
+                // Distinct id from the persisted turn: the reveal instance
+                // keeps its fade spans through settling, so the final turn
+                // must mount fresh (plain text) rather than inherit them.
+                id: `${streamingTurnId}:reveal`,
+                role: "assistant",
+                createdAt: startedAt,
+                status: "running",
+                parts: [{ type: "text", text: visible, status: "running" }],
+              });
+              if (index + 4 < tokens.length) {
+                await new Promise((resolve) => window.setTimeout(resolve, 70));
+              }
+            }
+            insertHomeDirectReply(homeStoredSessionId, userTurn.id, {
+              id: streamingTurnId,
+              role: "assistant",
+              createdAt: startedAt,
+              status: "complete",
+              parts: [{ type: "text", text: fullText, status: "complete" }],
+            });
+            setHomeStreamingReply(null);
+            return;
+          }
           const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
           const assistantTurn: AgentChatTurn = response.task
             ? {
@@ -11980,19 +12023,34 @@ export function AgentWorkspace({
             </motion.section>
           ) : null}
         </AnimatePresence>
-        {homeMode && homeIdleNudgesVisible ? (
-          // Quiet re-offer of the day-start suggestions: they drift in after
-          // the thread has been idle a beat and step aside the moment a draft
-          // begins (the unmount is instant on purpose - the eye is on the
-          // text by then).
-          <div className="agent-home-nudges agent-home-nudges-idle" aria-label="Suggestions">
-            {HOME_NUDGE_PROMPTS.map((prompt) => (
-              <button key={prompt} type="button" onClick={() => prefillHomeNudge(prompt)}>
-                {prompt}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <AnimatePresence>
+          {homeMode && homeIdleNudgesVisible ? (
+            // Re-offer of the day-start suggestions on an abandoned draft.
+            // Hovers above the pill (never grows the composer clearance);
+            // chips cascade in with the hero chips' stagger and the whole
+            // group glides out when a draft begins.
+            <motion.div
+              key="home-idle-nudges"
+              className="agent-home-nudges agent-home-nudges-idle"
+              aria-label="Suggestions"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 4 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+            >
+              {HOME_NUDGE_PROMPTS.map((prompt, index) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  style={{ "--chip-i": index } as CSSProperties}
+                  onClick={() => prefillHomeNudge(prompt)}
+                >
+                  {prompt}
+                </button>
+              ))}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
         <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
@@ -12514,6 +12572,7 @@ export function AgentWorkspace({
       ...hermesTurns,
       ...homeDirectTurns,
       ...(homeOptimisticTurn ? [homeOptimisticTurn] : []),
+      ...(homeStreamingReply ? [homeStreamingReply] : []),
     ].filter((turn) => !isHomeModelRoutingTurn(turn) && !isHomeInternalUnauthorizedTurn(turn)),
   );
   // The greeting is ambiance for an idle day-start, not a transcript entry:
@@ -12820,7 +12879,8 @@ export function AgentWorkspace({
         variant={homeMode ? "typing-bubble" : "label"}
         visible={
           homeMode
-            ? Boolean(homeOptimisticTurn) || homeDirectPendingCountValue > 0
+            ? !homeStreamingReply &&
+              (Boolean(homeOptimisticTurn) || homeDirectPendingCountValue > 0)
             : Boolean(transcriptSessionId) &&
               workingSessionIds.has(transcriptSessionId) &&
               hermesTurns.at(-1)?.role === "user"

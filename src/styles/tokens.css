@@ -379,12 +379,16 @@
 
   /* Shadows ---------------------------------------------------------- */
   --shadow-sm: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 2px 4px oklch(24% 0.002 84.59 / 3%);
-  /* Filter twin of --shadow-sm for shapes composed of an element plus
-   * pseudo-element parts (e.g. a chat bubble and its tail): drop-shadow wraps
-   * the union silhouette, where box-shadow would outline each box and draw a
-   * seam between them. */
+  /* Filter twin of --shadow-sm for non-rectangular silhouettes (e.g. a masked
+   * chat bubble): drop-shadow follows rendered alpha, where box-shadow would
+   * outline the element's rectangular box. */
   --drop-shadow-sm: drop-shadow(0 1px 2px oklch(24% 0.002 84.59 / 5%))
     drop-shadow(0 2px 4px oklch(24% 0.002 84.59 / 3%));
+  /* One step up for silhouetted surfaces that must read against the bare
+   * card canvas (e.g. Home's sent bubbles at the unwashed top of the
+   * thread). */
+  --drop-shadow-md: drop-shadow(0 1px 2px oklch(24% 0.002 84.59 / 5%))
+    drop-shadow(0 4px 12px oklch(24% 0.002 84.59 / 6%));
   /* Compact overlay depth: fits inside the dictation HUD's transparent
    * native gutter, unlike --shadow-md's long card shadow. */
   --shadow-hud: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 4px 12px oklch(24% 0.002 84.59 / 8%);
@@ -525,6 +529,8 @@
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 24%), 0 2px 4px oklch(0% 0 none / 12%);
   --drop-shadow-sm: drop-shadow(0 1px 2px oklch(0% 0 none / 24%))
     drop-shadow(0 2px 4px oklch(0% 0 none / 12%));
+  --drop-shadow-md: drop-shadow(0 1px 2px oklch(0% 0 none / 24%))
+    drop-shadow(0 4px 12px oklch(0% 0 none / 18%));
   --shadow-hud: 0 1px 2px oklch(0% 0 none / 18%), 0 4px 12px oklch(0% 0 none / 28%);
   /* Same ambient bias as light md: soft contact, weight in the wide blurs. */
   --shadow-md:
