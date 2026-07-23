@@ -1189,9 +1189,46 @@ def verify_agent_run_scoped_toolsets(root: Path) -> None:
         "                    worker = _SlashWorker("
     ) in server_source, "scoped sessions still eagerly start the broad slash worker"
 
+    failed_prompt_setup = copy.deepcopy(
+        _function(tree, "_record_failed_inline_prompt_setup")
+    )
     dispatch_inline = copy.deepcopy(_function(tree, "_dispatch_inline_prompt"))
+    failed_setup_calls = [
+        node
+        for node in ast.walk(dispatch_inline)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_record_failed_inline_prompt_setup"
+    ]
+    assert len(failed_setup_calls) == 2, (
+        "acknowledged prompts are not recovered from every inline setup failure"
+    )
     ready_gate = threading.Event()
     dispatch_calls = []
+
+    class FailedPromptDb:
+        def __init__(self):
+            self.messages = []
+
+        def append_message(self, **message):
+            self.messages.append(message)
+
+    class FailedPromptDbContext:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class Logger:
+        @staticmethod
+        def debug(*_args, **_kwargs):
+            return None
+
+    failed_prompt_db = FailedPromptDb()
     dispatch_namespace = {
         "_AGENT_RUN_TOOLSETS_UNSET": object(),
         "_ensure_session_db_row": lambda _session: dispatch_calls.append("persist"),
@@ -1209,12 +1246,18 @@ def verify_agent_run_scoped_toolsets(root: Path) -> None:
             "run"
         ),
         "_emit": lambda *_args, **_kwargs: None,
-        "_clear_inflight_turn": lambda _session: None,
+        "_clear_inflight_turn": lambda session: session.update(inflight_turn=None),
+        "_session_db": lambda _session: FailedPromptDbContext(failed_prompt_db),
+        "_drain_queued_prompt": lambda *_args: dispatch_calls.append("drain"),
+        "logger": Logger(),
         "threading": threading,
     }
     exec(
         compile(
-            "from __future__ import annotations\n" + ast.unparse(dispatch_inline),
+            "from __future__ import annotations\n"
+            + ast.unparse(failed_prompt_setup)
+            + "\n\n"
+            + ast.unparse(dispatch_inline),
             str(root / "tui_gateway" / "server.py"),
             "exec",
         ),
@@ -1243,6 +1286,46 @@ def verify_agent_run_scoped_toolsets(root: Path) -> None:
         "scope",
         "run",
     ], "queued scoped prompt did not use the full readiness-gated inline path"
+
+    dispatch_calls.clear()
+    failed_session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "inflight_turn": {"user": "prompt"},
+        "running": True,
+        "session_key": "failed-session",
+    }
+    dispatch_namespace["_wait_agent"] = lambda _session, _rid: {
+        "error": {"message": "synthetic setup failure"}
+    }
+    dispatch_namespace["_dispatch_inline_prompt"](
+        "failed-rid",
+        "failed-sid",
+        failed_session,
+        "preserve this prompt",
+        ["june_computer_use"],
+    )
+    failed_session["_run_thread"].join(timeout=2)
+    assert failed_session["history"] == [
+        {"role": "user", "content": "preserve this prompt"}
+    ], "acknowledged prompt vanished from in-memory history after setup failure"
+    assert failed_session["history_version"] == 1
+    assert failed_session["running"] is False
+    assert failed_session["inflight_turn"] is None
+    assert failed_prompt_db.messages == [
+        {
+            "session_id": "failed-session",
+            "role": "user",
+            "content": "preserve this prompt",
+        }
+    ], "acknowledged prompt was not durable after setup failure"
+    assert dispatch_calls == [
+        "persist",
+        "branch",
+        "build",
+        "drain",
+    ], "a later queued prompt was not offered after setup failure"
 
 
 def verify_tui_memory_deny_propagation(root: Path) -> None:

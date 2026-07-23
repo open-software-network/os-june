@@ -94,6 +94,8 @@ pub struct ComputerUseState {
     cursor: crate::computer_use_cursor::ComputerUseCursorState,
     capture_generation: AtomicU64,
     runtime_ready_state: AtomicU32,
+    runtime_ready_epoch: AtomicU64,
+    runtime_ready_publish: Mutex<()>,
     driver_prewarm_in_flight: AtomicBool,
 }
 
@@ -1538,7 +1540,10 @@ fn subscription_plan_eligible(subscribed: bool, plan: Option<&str>) -> bool {
 }
 
 pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> bool {
-    let ready = if !rollout_gate().await.enabled
+    let expected_epoch = app
+        .try_state::<ComputerUseState>()
+        .map(|state| state.epoch.load(Ordering::SeqCst));
+    let mut ready = if !rollout_gate().await.enabled
         || !supports_vision
         || !plan_eligible().await
         || !grant_enabled(app).await
@@ -1552,10 +1557,10 @@ pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> boo
     } else {
         false
     };
-    if let Some(state) = app.try_state::<ComputerUseState>() {
-        state
-            .runtime_ready_state
-            .store(ready_state_value(ready), Ordering::SeqCst);
+    if let (Some(state), Some(expected_epoch)) =
+        (app.try_state::<ComputerUseState>(), expected_epoch)
+    {
+        ready = publish_runtime_ready_probe(&state, expected_epoch, ready);
     }
     if ready {
         schedule_driver_prewarm(app);
@@ -1573,7 +1578,7 @@ pub(crate) fn schedule_driver_prewarm(app: &AppHandle) {
     let Some(state) = app.try_state::<ComputerUseState>() else {
         return;
     };
-    if state.runtime_ready_state.load(Ordering::SeqCst) != ready_state_value(true) {
+    if !runtime_ready_is_current(&state, true) {
         return;
     }
     if !DriverPrewarmInProgress::try_begin(&state.driver_prewarm_in_flight) {
@@ -1626,8 +1631,7 @@ async fn prewarm_driver(app: &AppHandle, expected_epoch: u64) -> Result<bool, Ap
 }
 
 fn driver_prewarm_is_current(state: &ComputerUseState, expected_epoch: u64) -> bool {
-    state.epoch.load(Ordering::SeqCst) == expected_epoch
-        && state.runtime_ready_state.load(Ordering::SeqCst) == ready_state_value(true)
+    state.epoch.load(Ordering::SeqCst) == expected_epoch && runtime_ready_is_current(state, true)
 }
 
 #[tauri::command]
@@ -1638,7 +1642,7 @@ pub async fn computer_use_status(
 ) -> Result<ComputerUseStatus, AppError> {
     let status = status_inner(&app).await;
     let current = ready_state_value(status.ready);
-    let previous = state.runtime_ready_state.swap(current, Ordering::SeqCst);
+    let previous = replace_runtime_ready(&state, status.ready);
     if previous != 0 && previous != current {
         if !status.ready {
             stop_inner(&app, &state).await;
@@ -1662,6 +1666,40 @@ fn ready_state_value(ready: bool) -> u32 {
     }
 }
 
+fn runtime_ready_is_current(state: &ComputerUseState, ready: bool) -> bool {
+    state.runtime_ready_epoch.load(Ordering::SeqCst) == state.epoch.load(Ordering::SeqCst)
+        && state.runtime_ready_state.load(Ordering::SeqCst) == ready_state_value(ready)
+}
+
+fn replace_runtime_ready(state: &ComputerUseState, ready: bool) -> u32 {
+    let Ok(_publish) = state.runtime_ready_publish.lock() else {
+        return state.runtime_ready_state.load(Ordering::SeqCst);
+    };
+    let previous = state
+        .runtime_ready_state
+        .swap(ready_state_value(ready), Ordering::SeqCst);
+    state
+        .runtime_ready_epoch
+        .store(state.epoch.load(Ordering::SeqCst), Ordering::SeqCst);
+    previous
+}
+
+fn publish_runtime_ready_probe(state: &ComputerUseState, expected_epoch: u64, ready: bool) -> bool {
+    let Ok(_publish) = state.runtime_ready_publish.lock() else {
+        return false;
+    };
+    if state.epoch.load(Ordering::SeqCst) != expected_epoch {
+        return false;
+    }
+    state
+        .runtime_ready_state
+        .store(ready_state_value(ready), Ordering::SeqCst);
+    state
+        .runtime_ready_epoch
+        .store(expected_epoch, Ordering::SeqCst);
+    ready
+}
+
 #[tauri::command]
 pub async fn set_computer_use_grant(
     app: AppHandle,
@@ -1677,16 +1715,12 @@ pub async fn set_computer_use_grant(
     }
     store_grant(&app, request.enabled).await?;
     if !request.enabled {
-        state
-            .runtime_ready_state
-            .store(ready_state_value(false), Ordering::SeqCst);
         stop_inner(&app, &state).await;
+        replace_runtime_ready(&state, false);
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
     let status = status_inner(&app).await;
-    state
-        .runtime_ready_state
-        .store(ready_state_value(status.ready), Ordering::SeqCst);
+    replace_runtime_ready(&state, status.ready);
     if status.ready {
         schedule_driver_prewarm(&app);
     }
@@ -1717,18 +1751,14 @@ pub async fn computer_use_request_permissions(
             "Computer use is temporarily unavailable for this June or macOS version.",
         ));
     }
-    state
-        .runtime_ready_state
-        .store(ready_state_value(false), Ordering::SeqCst);
     stop_inner(&app, &state).await;
+    replace_runtime_ready(&state, false);
     let path = bundled_driver_executable(&app)?;
     driver_version(&path).await?;
     let _ = probe_permissions(&path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
     let status = status_inner(&app).await;
-    state
-        .runtime_ready_state
-        .store(ready_state_value(status.ready), Ordering::SeqCst);
+    replace_runtime_ready(&state, status.ready);
     if status.ready {
         schedule_driver_prewarm(&app);
     }
@@ -4425,9 +4455,7 @@ mod tests {
     #[test]
     fn driver_prewarm_loses_to_stop_and_readiness_loss() {
         let state = ComputerUseState::default();
-        state
-            .runtime_ready_state
-            .store(ready_state_value(true), Ordering::SeqCst);
+        replace_runtime_ready(&state, true);
         let epoch = state.epoch.load(Ordering::SeqCst);
         assert!(driver_prewarm_is_current(&state, epoch));
 
@@ -4435,10 +4463,20 @@ mod tests {
         assert!(!driver_prewarm_is_current(&state, epoch));
 
         let next_epoch = state.epoch.load(Ordering::SeqCst);
-        state
-            .runtime_ready_state
-            .store(ready_state_value(false), Ordering::SeqCst);
+        replace_runtime_ready(&state, false);
         assert!(!driver_prewarm_is_current(&state, next_epoch));
+    }
+
+    #[test]
+    fn stale_runtime_readiness_probe_cannot_publish_after_revocation() {
+        let state = ComputerUseState::default();
+        let probe_epoch = state.epoch.load(Ordering::SeqCst);
+
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        replace_runtime_ready(&state, false);
+
+        assert!(!publish_runtime_ready_probe(&state, probe_epoch, true));
+        assert!(runtime_ready_is_current(&state, false));
     }
 
     #[test]

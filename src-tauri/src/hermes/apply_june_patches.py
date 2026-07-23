@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "6a655b6b8c1c966772d5953cc8e63d9aea35435c4f2a7088acba2d05514481be",
+    "tui_gateway/server.py": "4f2837c9e948e4b7ca67d39e921a414e065376e0a4ae321c9df06ea9162be996",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -1733,6 +1733,34 @@ def _session_tool_progress_mode(sid: str) -> str:
         '''# ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _record_failed_inline_prompt_setup(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    message: str,
+) -> None:
+    """Keep an acknowledged prompt durable when inline setup cannot start it."""
+    failed_message = {"role": "user", "content": text}
+    with session["history_lock"]:
+        session.setdefault("history", []).append(failed_message)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        session["running"] = False
+        _clear_inflight_turn(session)
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.append_message(
+                    session_id=session.get("session_key", ""),
+                    role="user",
+                    content=text,
+                )
+            except Exception:
+                logger.debug("failed to persist an acknowledged prompt", exc_info=True)
+    _emit("error", sid, {"message": message})
+    _drain_queued_prompt(rid, sid, session)
+
+
 def _dispatch_inline_prompt(
     rid,
     sid: str,
@@ -1748,18 +1776,15 @@ def _dispatch_inline_prompt(
     def run_after_agent_ready() -> None:
         err = _wait_agent(session, rid)
         if err:
-            _emit(
-                "error",
+            _record_failed_inline_prompt_setup(
+                rid,
                 sid,
-                {
-                    "message": err.get("error", {}).get(
-                        "message", "agent initialization failed"
-                    )
-                },
+                session,
+                text,
+                err.get("error", {}).get(
+                    "message", "agent initialization failed"
+                ),
             )
-            with session["history_lock"]:
-                session["running"] = False
-                _clear_inflight_turn(session)
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
@@ -1769,10 +1794,13 @@ def _dispatch_inline_prompt(
         try:
             _apply_agent_run_enabled_toolsets(session, agent_run_toolsets)
         except Exception as exc:
-            _emit("error", sid, {"message": f"June tool setup failed: {exc}"})
-            with session["history_lock"]:
-                session["running"] = False
-                _clear_inflight_turn(session)
+            _record_failed_inline_prompt_setup(
+                rid,
+                sid,
+                session,
+                text,
+                f"June tool setup failed: {exc}",
+            )
             return
         _run_prompt_submit(rid, sid, session, text)
 
