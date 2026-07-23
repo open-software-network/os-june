@@ -94,6 +94,12 @@ The full standup and iteration loop lives in
    eyeball, and one potential nudge. UI PRs state that the change was tested
    visually and attach proof.
 
+**The skill stops at handoff.** The deliverable is a clean working-tree diff
+plus visual evidence. Never commit, push, or open a PR unless the user
+explicitly asks — the user eyeballs the dials first, and publishing is their
+call. When they do ask, route PR tending through the repo's review loop
+(shepherd) rather than handling it here.
+
 ## Calling specialist skills
 
 Other design skills are amplifiers, not requirements — check what is

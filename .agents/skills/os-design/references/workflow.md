@@ -87,6 +87,12 @@ through small iterations:
 
 ## 5. Hand off with evidence
 
+Handoff is where this skill ends. Do not commit, push, or open a PR unless
+the user explicitly asks — the diff stays in the working tree for the user
+to eyeball first, and publishing is their call. When the user does ask for a
+PR, hand the tending to the repo's review loop (shepherd) and follow the
+repo's PR conventions:
+
 - Screenshots or a short recording, light and dark, attached to the PR (UI
   PRs state that the change was tested visually — os-june's PR template has
   a section for it).
