@@ -149,7 +149,7 @@ impl ShutdownCoordinator {
         matches!(*self.lock_phase(), ShutdownPhase::Finalizing(_))
     }
 
-    fn is_idle(&self) -> bool {
+    pub(crate) fn is_idle(&self) -> bool {
         matches!(*self.lock_phase(), ShutdownPhase::Idle)
     }
 }

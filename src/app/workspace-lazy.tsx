@@ -191,5 +191,3 @@ function WorkspaceFallback() {
     </section>
   );
 }
-
-export const preloadInitialWorkspace = agentWorkspace.preload;

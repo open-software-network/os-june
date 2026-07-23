@@ -129,16 +129,16 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 }
 
 /// Root directory holding every ephemeral browser profile, under app-controlled
-/// temporary storage. The app sweeps it once at startup (see
+/// temporary storage. The app sweeps it once after first paint (see
 /// [`sweep_profiles_root`]) so a crash that skipped Drop never leaves a stale
 /// profile behind on the next run.
 pub fn profiles_root() -> PathBuf {
     std::env::temp_dir().join("co.opensoftware.june.browser-profiles")
 }
 
-/// Best-effort delete of everything under [`profiles_root`]. Called once at app
-/// startup, before any session exists; all errors are ignored (a missing root
-/// is already the desired state).
+/// Best-effort delete of everything under [`profiles_root`]. Called through the
+/// browser module's one-time gate before any session creates a new profile; all
+/// errors are ignored (a missing root is already the desired state).
 pub fn sweep_profiles_root() {
     sweep_profiles_root_at(&profiles_root());
 }
@@ -157,6 +157,9 @@ pub struct EphemeralProfile {
 impl EphemeralProfile {
     /// Creates a new uuid-named profile directory under [`profiles_root`].
     pub fn create() -> io::Result<EphemeralProfile> {
+        // The post-paint background task normally wins. This same Once gate is
+        // the race-free fallback when a routine starts unusually early.
+        super::setup_on_app_start();
         Self::create_in(&profiles_root())
     }
 

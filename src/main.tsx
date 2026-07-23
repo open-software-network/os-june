@@ -9,12 +9,7 @@ import { initTheme } from "./lib/theme";
 import { initBrand } from "./lib/brand";
 import { initFontScale, installFontScaleShortcuts } from "./lib/font-scale";
 import { installExternalLinkOpener } from "./lib/external-links";
-import { initializeExperimentalFlags } from "./lib/experimental-flags";
-import { isMacLikePlatform, isWindowsPlatform } from "./lib/platform";
-import {
-  prefetchRemainingWorkspacesAfterPaint,
-  preloadInitialWorkspace,
-} from "./app/workspace-lazy";
+import { scheduleLaunchWorkAfterFirstPaint } from "./app/launch-startup";
 import "./styles/app.css";
 
 declare global {
@@ -36,16 +31,12 @@ initFontScale();
 installFontScaleShortcuts();
 installExternalLinkOpener();
 installNativeContextMenuGuard();
-// Intentionally await the default Agent workspace before mounting React. This
-// trades some first-paint parsing for a stable launch with no fallback flash;
-// JUN-391 owns the broader paint-first startup work. The remaining workspaces
-// are fetched after first paint below.
-await Promise.all([
-  initializeExperimentalFlags(),
-  isMacLikePlatform() || isWindowsPlatform()
-    ? preloadInitialWorkspace().catch(() => undefined)
-    : Promise.resolve(),
-]);
+// Paint the account/loading shell or workspace fallback immediately. The
+// previous await-before-render preload avoided a fallback flash, but made a
+// code-split workspace and experimental-flags IPC prerequisites for any frame.
+// JUN-391 deliberately accepts the stable skeleton so launch never stays blank
+// behind optional work; flags, native helpers, and remaining preloads start
+// after the browser has had a rendering opportunity below.
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.
 // from this window's devtools. Emits on the Tauri bus only, so fake demo
@@ -106,4 +97,4 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     {import.meta.env.DEV ? <Agentation /> : null}
   </React.StrictMode>,
 );
-prefetchRemainingWorkspacesAfterPaint();
+scheduleLaunchWorkAfterFirstPaint();
