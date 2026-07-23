@@ -313,11 +313,15 @@ input:focus-visible,
  * from mid-canvas, never loud at the floor). */
 .agent-workspace[data-home="true"]::before {
   opacity: 1;
+  /* Bottom-hugging: the top third stays pure canvas, then the warmth eases in
+   * and gathers at the floor (hero-strength at the very bottom). */
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    color-mix(in oklch, var(--brand) 3.5%, transparent) 45%,
-    color-mix(in oklch, var(--brand) 10%, transparent) 100%
+    transparent 30%,
+    color-mix(in oklch, var(--brand) 1.5%, transparent) 55%,
+    color-mix(in oklch, var(--brand) 5%, transparent) 78%,
+    color-mix(in oklch, var(--brand) 11%, transparent) 100%
   );
 }
 
@@ -2314,14 +2318,20 @@ input:focus-visible,
   content: "";
   position: absolute;
   z-index: -1;
-  right: calc(-1 * var(--sp-1));
+  right: calc(-1 * var(--sp-1) - 1px);
   bottom: 0;
-  width: var(--sp-4);
-  height: var(--sp-4);
-  border-radius: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-4);
+  width: 13px;
+  height: 11px;
   background: var(--card);
-  box-shadow: var(--shadow-sm);
-  transform: rotate(12deg);
+  /* The curly cue: a small concave horn swept from under the bubble's corner,
+   * its underside curved so the tip lifts into a flick rather than a hard
+   * point. Drawn as a mask so the shape stays exact over the wash gradient
+   * (a background-colored carve would need a flat canvas color). The left
+   * half tucks behind the bubble, so only the curl emerges. */
+  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 11"><path d="M0 0 C1.5 6.5 5 9.8 13 10.4 C8.5 11.4 4 11.4 0 11 Z"/></svg>');
+  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 11"><path d="M0 0 C1.5 6.5 5 9.8 13 10.4 C8.5 11.4 4 11.4 0 11 Z"/></svg>');
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
 }
 
 /* Home is the relationship surface, so private chain-of-thought chrome stays
@@ -2345,7 +2355,8 @@ input:focus-visible,
 }
 
 .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
-  opacity: 0.14;
+  opacity: 0.12;
+  filter: blur(2.5px);
   animation: june-home-typing-breath 1.9s var(--ease-in-out) infinite;
   transform: none;
 }
@@ -2358,19 +2369,25 @@ input:focus-visible,
   animation-delay: 0.48s;
 }
 
+/* Each dot drifts between a blurred haze and a brief moment of focus, so the
+ * passage between states is where the softness lives — thought resolving,
+ * not a cursor blinking. */
 @keyframes june-home-typing-breath {
   0%,
   100% {
-    opacity: 0.14;
+    opacity: 0.12;
+    filter: blur(2.5px);
   }
   50% {
-    opacity: 0.62;
+    opacity: 0.66;
+    filter: blur(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
     opacity: 0.5;
+    filter: none;
     animation: none;
   }
 }
@@ -19479,7 +19496,9 @@ button.memory-project:hover {
   align-items: end;
 }
 
-.agent-workspace[data-home="true"] .agent-composer-send {
+.agent-workspace[data-home="true"] .agent-composer-send,
+.agent-workspace[data-home="true"] .agent-composer-attach {
+  /* Circular controls nest concentrically inside the pill's rounded ends. */
   border-radius: var(--r-pill);
 }
 
