@@ -73,12 +73,25 @@ use tokio::{sync::OnceCell, time::sleep};
 
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 // React StrictMode and renderer reloads may call `bootstrap_app` more than once
 // while native processing tasks keep running. Startup repair must run exactly
 // once per native process or a second bootstrap could reset a genuinely live
 // job from running back to pending.
 static TRANSCRIPTION_STARTUP_REPAIR: OnceCell<()> = OnceCell::const_new();
+
+fn sqlite_connect_options(path: &Path) -> Result<SqliteConnectOptions, sqlx::Error> {
+    SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+        .map(|options| options.busy_timeout(SQLITE_BUSY_TIMEOUT))
+}
+
+fn sqlite_pool_options(max_connections: u32) -> SqlitePoolOptions {
+    SqlitePoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(SQLITE_ACQUIRE_TIMEOUT)
+}
 
 /// Owns a newly published capture until every required database row exists.
 /// If startup returns early or its future is cancelled, dropping this guard
@@ -3531,11 +3544,10 @@ async fn hermes_state_pool(path: &Path) -> Result<SqlitePool, AppError> {
             return Ok(pool.clone());
         }
     }
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+    let options = sqlite_connect_options(path)
         .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?
         .create_if_missing(false);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+    let pool = sqlite_pool_options(1)
         .connect_with(options)
         .await
         .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
@@ -3689,18 +3701,14 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
     let paths = app_paths(app)?;
     REPOSITORIES
         .get_or_try_init(|| async {
-            let options = SqliteConnectOptions::from_str(&format!(
-                "sqlite://{}",
-                paths.database_path.display()
-            ))
-            .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
-            .create_if_missing(true)
-            // Recording finalization, transcript persistence, and UI polling
-            // legitimately overlap. WAL lets readers observe progress without
-            // blocking the durable job transaction (or vice versa).
-            .journal_mode(SqliteJournalMode::Wal);
-            let pool = SqlitePoolOptions::new()
-                .max_connections(5)
+            let options = sqlite_connect_options(&paths.database_path)
+                .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
+                .create_if_missing(true)
+                // Recording finalization, transcript persistence, and UI polling
+                // legitimately overlap. WAL lets readers observe progress without
+                // blocking the durable job transaction (or vice versa).
+                .journal_mode(SqliteJournalMode::Wal);
+            let pool = sqlite_pool_options(5)
                 .connect_with(options)
                 .await
                 .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
@@ -3812,6 +3820,70 @@ mod retry_audio_source_tests {
 
 #[cfg(test)]
 mod note_transcription_timing_tests;
+
+#[cfg(test)]
+mod sqlite_pool_configuration_tests {
+    use super::{sqlite_connect_options, sqlite_pool_options, SQLITE_ACQUIRE_TIMEOUT};
+    use sqlx::query::query;
+    use sqlx_sqlite::SqliteJournalMode;
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contending_writer_waits_for_the_lock_and_succeeds() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let database_path = temp.path().join("contention.sqlite3");
+        let options = sqlite_connect_options(&database_path)
+            .expect("SQLite options")
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        let pool_options = sqlite_pool_options(2);
+        assert_eq!(pool_options.get_acquire_timeout(), SQLITE_ACQUIRE_TIMEOUT);
+        let pool = pool_options
+            .connect_with(options)
+            .await
+            .expect("contention database");
+
+        query("CREATE TABLE writes (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create writes table");
+        let mut first_writer = pool.acquire().await.expect("first writer connection");
+        let mut second_writer = pool.acquire().await.expect("second writer connection");
+
+        query("BEGIN IMMEDIATE")
+            .execute(&mut *first_writer)
+            .await
+            .expect("begin first write transaction");
+        query("INSERT INTO writes (value) VALUES ('first')")
+            .execute(&mut *first_writer)
+            .await
+            .expect("first write");
+
+        let (attempted_tx, attempted_rx) = tokio::sync::oneshot::channel();
+        let waiting_writer = tokio::spawn(async move {
+            let _ = attempted_tx.send(());
+            query("INSERT INTO writes (value) VALUES ('second')")
+                .execute(&mut *second_writer)
+                .await
+        });
+        attempted_rx.await.expect("second writer should start");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !waiting_writer.is_finished(),
+            "the second writer should wait while the first holds the SQLite write lock"
+        );
+
+        query("COMMIT")
+            .execute(&mut *first_writer)
+            .await
+            .expect("commit first write transaction");
+        tokio::time::timeout(Duration::from_secs(1), waiting_writer)
+            .await
+            .expect("second writer should finish within the busy timeout")
+            .expect("second writer task")
+            .expect("second write should succeed after the lock is released");
+    }
+}
 
 #[cfg(test)]
 mod tests {
