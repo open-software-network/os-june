@@ -24,6 +24,20 @@ async fn count_rows(repos: &Repositories, statement: &str) -> i64 {
         .get("count")
 }
 
+fn legacy_note_preview(
+    title: &str,
+    generated_content: Option<&str>,
+    edited_content: Option<&str>,
+) -> String {
+    let content = edited_content.or(generated_content).unwrap_or_default();
+    let source = if content.trim().is_empty() {
+        title
+    } else {
+        content
+    };
+    source.chars().take(140).collect()
+}
+
 #[tokio::test]
 async fn migrations_create_empty_store() {
     let repos = test_repositories().await;
@@ -909,6 +923,270 @@ async fn creates_notes_in_reverse_chronological_order() {
     assert_eq!(notes.items.len(), 2);
     assert_eq!(notes.items[0].id, second.id);
     assert_eq!(notes.items[1].id, first.id);
+}
+
+#[tokio::test]
+async fn list_notes_sql_previews_match_the_legacy_derivation() {
+    let repos = test_repositories().await;
+    let unicode_content = format!("{}Zażółć gęślą jaźń 你好", "🦀".repeat(145));
+    let cases = vec![
+        (
+            "Markdown title",
+            Some("# Heading\n\n- first\n- **second**".to_string()),
+            None,
+        ),
+        (
+            "Edited content is intentionally empty",
+            Some("Generated content must not win".to_string()),
+            Some(String::new()),
+        ),
+        ("Unicode title", Some(unicode_content), None),
+        (
+            "Unicode whitespace falls back to the title",
+            Some("\u{2003}\u{00a0}\u{3000}".to_string()),
+            None,
+        ),
+        (
+            "Long leading whitespace is still content",
+            Some(format!("{}body", " ".repeat(145))),
+            None,
+        ),
+    ];
+
+    let mut expected = Vec::new();
+    for (title, generated_content, edited_content) in cases {
+        let note = repos
+            .create_note("default", None)
+            .await
+            .expect("create preview note");
+        query(
+            "UPDATE notes
+             SET title = ?, generated_content = ?, edited_content = ?
+             WHERE id = ?",
+        )
+        .bind(title)
+        .bind(generated_content.as_deref())
+        .bind(edited_content.as_deref())
+        .bind(&note.id)
+        .execute(&repos.pool)
+        .await
+        .expect("seed preview content");
+        expected.push((
+            note.id,
+            legacy_note_preview(
+                title,
+                generated_content.as_deref(),
+                edited_content.as_deref(),
+            ),
+        ));
+    }
+
+    let listed = repos
+        .list_notes("default", None, 50, None)
+        .await
+        .expect("list notes with SQL previews");
+    for (note_id, expected_preview) in expected {
+        let item = listed
+            .items
+            .iter()
+            .find(|item| item.id == note_id)
+            .expect("preview note should be listed");
+        assert_eq!(item.preview, expected_preview);
+        assert!(item.preview.chars().count() <= 140);
+    }
+}
+
+#[tokio::test]
+async fn list_notes_cursor_paginates_across_timestamp_and_rowid_boundaries() {
+    let repos = test_repositories().await;
+    let oldest = repos
+        .create_note("default", None)
+        .await
+        .expect("oldest note");
+    let tied_earlier = repos
+        .create_note("default", None)
+        .await
+        .expect("earlier tied note");
+    let tied_later = repos
+        .create_note("default", None)
+        .await
+        .expect("later tied note");
+    let newest = repos
+        .create_note("default", None)
+        .await
+        .expect("newest note");
+    let final_note = repos
+        .create_note("default", None)
+        .await
+        .expect("final note");
+
+    for (note_id, created_at) in [
+        (&oldest.id, "2026-07-23T10:01:00.000Z"),
+        (&tied_earlier.id, "2026-07-23T10:02:00.000Z"),
+        (&tied_later.id, "2026-07-23T10:02:00.000Z"),
+        (&newest.id, "2026-07-23T10:03:00.000Z"),
+        (&final_note.id, "2026-07-23T10:00:00.000Z"),
+    ] {
+        query("UPDATE notes SET created_at = ? WHERE id = ?")
+            .bind(created_at)
+            .bind(note_id)
+            .execute(&repos.pool)
+            .await
+            .expect("set pagination timestamp");
+    }
+
+    let first_page = repos
+        .list_notes("default", None, 2, None)
+        .await
+        .expect("first page");
+    assert_eq!(
+        first_page
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![newest.id.as_str(), tied_later.id.as_str()]
+    );
+    let first_cursor = first_page.next_cursor.expect("first page cursor");
+
+    let second_page = repos
+        .list_notes("default", None, 2, Some(first_cursor))
+        .await
+        .expect("second page");
+    assert_eq!(
+        second_page
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![tied_earlier.id.as_str(), oldest.id.as_str()]
+    );
+    let second_cursor = second_page.next_cursor.expect("second page cursor");
+
+    let third_page = repos
+        .list_notes("default", None, 2, Some(second_cursor))
+        .await
+        .expect("third page");
+    assert_eq!(
+        third_page
+            .items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![final_note.id.as_str()]
+    );
+    assert!(third_page.next_cursor.is_none());
+}
+
+#[tokio::test]
+async fn list_notes_groups_all_folder_assignments_in_the_page_query() {
+    let repos = test_repositories().await;
+    let alpha = repos
+        .create_folder("default", "Alpha", None)
+        .await
+        .expect("alpha folder");
+    let beta = repos
+        .create_folder("default", "Beta", None)
+        .await
+        .expect("beta folder");
+    let gamma = repos
+        .create_folder("default", "Gamma", None)
+        .await
+        .expect("gamma folder");
+    let archived = repos
+        .create_folder("default", "Archived", None)
+        .await
+        .expect("archived folder");
+    let first = repos
+        .create_note("default", None)
+        .await
+        .expect("first note");
+    let second = repos
+        .create_note("default", None)
+        .await
+        .expect("second note");
+
+    for (note_id, folder_id, assigned_at) in [
+        (&first.id, &alpha.id, "2026-07-23T10:00:00.000Z"),
+        (&first.id, &archived.id, "2026-07-23T10:00:30.000Z"),
+        (&first.id, &beta.id, "2026-07-23T10:01:00.000Z"),
+        (&second.id, &gamma.id, "2026-07-23T10:00:00.000Z"),
+        (&second.id, &alpha.id, "2026-07-23T10:01:00.000Z"),
+    ] {
+        query(
+            "INSERT INTO note_folders (note_id, folder_id, assigned_at)
+             VALUES (?, ?, ?)",
+        )
+        .bind(note_id)
+        .bind(folder_id)
+        .bind(assigned_at)
+        .execute(&repos.pool)
+        .await
+        .expect("assign note folder");
+    }
+    query("UPDATE folders SET deleted_at = ? WHERE id = ?")
+        .bind("2026-07-23T10:02:00.000Z")
+        .bind(&archived.id)
+        .execute(&repos.pool)
+        .await
+        .expect("soft-delete archived folder");
+
+    let all_notes = repos
+        .list_notes("default", None, 50, None)
+        .await
+        .expect("list all notes");
+    let first_item = all_notes
+        .items
+        .iter()
+        .find(|item| item.id == first.id)
+        .expect("first note should be listed");
+    assert_eq!(first_item.folder_ids, vec![alpha.id.clone(), beta.id]);
+    let second_item = all_notes
+        .items
+        .iter()
+        .find(|item| item.id == second.id)
+        .expect("second note should be listed");
+    assert_eq!(second_item.folder_ids, vec![gamma.id, alpha.id.clone()]);
+
+    let alpha_notes = repos
+        .list_notes("default", Some(alpha.id.clone()), 50, None)
+        .await
+        .expect("list alpha notes");
+    assert_eq!(alpha_notes.items.len(), 2);
+    assert_eq!(
+        alpha_notes
+            .items
+            .iter()
+            .find(|item| item.id == first.id)
+            .expect("first alpha note")
+            .folder_ids,
+        first_item.folder_ids
+    );
+    assert_eq!(
+        alpha_notes
+            .items
+            .iter()
+            .find(|item| item.id == second.id)
+            .expect("second alpha note")
+            .folder_ids,
+        second_item.folder_ids
+    );
+
+    let first_alpha_page = repos
+        .list_notes("default", Some(alpha.id.clone()), 1, None)
+        .await
+        .expect("list first alpha page");
+    let alpha_cursor = first_alpha_page
+        .next_cursor
+        .expect("first alpha page cursor");
+    let second_alpha_page = repos
+        .list_notes("default", Some(alpha.id), 1, Some(alpha_cursor))
+        .await
+        .expect("list second alpha page");
+    assert_eq!(first_alpha_page.items.len(), 1);
+    assert_eq!(second_alpha_page.items.len(), 1);
+    assert_ne!(first_alpha_page.items[0].id, second_alpha_page.items[0].id);
+    assert!(second_alpha_page.next_cursor.is_none());
 }
 
 #[tokio::test]
