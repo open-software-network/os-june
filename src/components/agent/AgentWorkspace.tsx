@@ -53,11 +53,11 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { type ComposerEditorHandle, stripPlaceholder } from "./composer/ComposerEditor";
-import { type NoteReferenceInput } from "./composer/noteReference";
+import type { NoteReferenceInput } from "./composer/noteReference";
 import { sessionUnrestricted } from "../../lib/agent-session-modes";
-import { type AgentChatPart, type AgentChatTurn } from "../../lib/agent-chat-runtime";
+import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { ProjectContextSignatureStore } from "../../lib/agent-project-context";
-import { type AgentChatGallerySection } from "../../lib/agent-chat-gallery";
+import type { AgentChatGallerySection } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
 import { useAgentGalleryEvents } from "./use-agent-gallery-events";
@@ -184,7 +184,7 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-import { type AgentWorkspaceError } from "./agent-workspace-errors";
+import type { AgentWorkspaceError } from "./agent-workspace-errors";
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 import {
@@ -194,7 +194,7 @@ import {
   storedVideoSlashTurns,
   videoSlashTurnsBySessionFromStored,
 } from "./composer/media-slash-persistence";
-import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
+import type { CapturedSessionModelTarget } from "./composer/follow-up-queue";
 
 import {
   persistedReviewableIssueReports,
@@ -418,8 +418,9 @@ export function AgentWorkspace({
   // the model's session history, so a follow-up ("do you think it's nice?")
   // reaches an empty context. Hold each generated image here, keyed by session,
   // and lazily attach it to the user's NEXT prompt via the same
-  // `image.attach_bytes` path composer attachments use — so the image lands in
-  // context exactly when the model first needs it. A ref (not state) on purpose:
+  // native path snapshot composer attachments use, with `image.attach_bytes`
+  // retained for callers that do not have a gateway-local path. The image lands
+  // in context exactly when the model first needs it. A ref (not state) on purpose:
   // it must NOT render a composer chip (the image already shows in-thread; ADR
   // 0003 decision 2). Cleared once attached.
   const {
@@ -2206,12 +2207,13 @@ export function AgentWorkspace({
     });
 
   /**
-   * Attach this turn's pending images to the live session via image.attach_bytes
-   * (feature 19), updating each chip's status and feeding the artifact timeline.
-   * The base64 is read on demand from the workspace file, passed straight to
-   * the typed attachImage, and discarded; it never lands on composer state and
-   * the trace entry is redacted to a byte count. Throws a single blocking error
-   * if any image failed so the prompt is not sent with a missing image.
+   * Attach this turn's pending images to the live session via a Rust-validated
+   * workspace snapshot and `image.attach` (feature 19), updating each chip's
+   * status and feeding the artifact timeline. Image bytes do not cross the JS
+   * bridge or Hermes WebSocket on this path; `image.attach_bytes` remains the
+   * additive fallback for callers without a local path. Throws a single
+   * blocking error if any image failed so the prompt is not sent with a missing
+   * image.
    */
   const { attachPendingImages, clearHeldFastPathImages } = createPendingImageActions({
     pendingFastPathImagesRef,
@@ -3177,7 +3179,7 @@ export {
   branchSourceSessionIdForTurn,
   turnIsConcreteResponse,
 } from "./chat-turns/BranchAndSensitiveActions";
-import { type AgentArtifact } from "./chat-turns/AgentArtifactPanel";
+import type { AgentArtifact } from "./chat-turns/AgentArtifactPanel";
 export { generatedImagePathAliases } from "./composer/composer-input-helpers";
 import {
   agentActivityCountsFromStore,

@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   gatewayConnect: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   hermesBridgeImageDataUrl: vi.fn(),
+  prepareHermesBridgeImageAttachment: vi.fn(),
   hermesBridgeSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock("../lib/agent-run-monitor", () => ({
 vi.mock("../lib/tauri", () => ({
   dictationHelperCommand: vi.fn(),
   hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
+  prepareHermesBridgeImageAttachment: mocks.prepareHermesBridgeImageAttachment,
   hermesBridgeSessionMessages: mocks.hermesBridgeSessionMessages,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
   importHermesBridgeFile: vi.fn(),
@@ -189,6 +191,13 @@ describe("note chat session map", () => {
       return Promise.resolve({});
     });
     mocks.gatewayConnect.mockResolvedValue(undefined);
+    mocks.prepareHermesBridgeImageAttachment.mockImplementation(
+      async (_sessionId: string, path: string) => ({
+        path: `/workspace/session-attachments/test/${path.split("/").pop() ?? "image.png"}`,
+        mimeType: "image/png",
+        size: 1234,
+      }),
+    );
     mocks.canAttributeUntaggedAgentRun.mockReturnValue(true);
   });
 

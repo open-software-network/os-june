@@ -53,6 +53,7 @@ import {
   hermesBridgeImageDataUrl,
   hermesBridgeSessionMessages,
   hermesBridgeStatus,
+  prepareHermesBridgeImageAttachment,
   providerModelSettings,
   startHermesBridge,
   type HermesSessionMessage,
@@ -734,6 +735,9 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
           if (pendingImages.length) {
             const methods = createHermesMethods(gateway);
             const deps = {
+              prepareImagePath: prepareHermesBridgeImageAttachment,
+              attachImagePath: methods.attachImagePath,
+              isPathSupported: () => isHermesFeatureSupported("image.attach"),
               attachImage: methods.attachImage,
               readImageData: (path: string) => hermesBridgeImageDataUrl(path),
               isSupported: () => isHermesFeatureSupported("image.attach_bytes"),

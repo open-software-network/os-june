@@ -358,7 +358,9 @@ _Avoid_: trait (`traits` is a separate, non-authoritative Venice field).
 A file or image referenced by path. Agent-composer attachments and DOM-dropped
 report attachments are imported into the Hermes workspace; native-picker
 issue-report attachments keep their original local paths. Composer images
-additionally get a structured `image.attach_bytes`.
+are snapshotted by Rust into a session-scoped workspace directory and attached
+with `image.attach`; `image.attach_bytes` remains an additive fallback for
+callers without a gateway-local path.
 _Avoid_: upload (unqualified).
 
 **Note reference**:

@@ -97,6 +97,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeImageDataUrl: vi.fn(),
+  prepareHermesBridgeImageAttachment: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
   hermesBridgeSkills: vi.fn(),
@@ -199,6 +200,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
+  prepareHermesBridgeImageAttachment: mocks.prepareHermesBridgeImageAttachment,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -730,10 +732,16 @@ describe("AgentWorkspace", () => {
     mocks.hermesBridgeFilePreview.mockImplementation(async (path: string) =>
       /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
     );
-    // Feature 19's structured image attach reads full image bytes through the
-    // image-source capped command at attach time.
+    // Additive byte fallback for callers without a gateway-local path.
     mocks.hermesBridgeImageDataUrl.mockImplementation(async (path: string) =>
       /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
+    );
+    mocks.prepareHermesBridgeImageAttachment.mockImplementation(
+      async (_sessionId: string, path: string) => ({
+        path: path.replace("/workspace/uploads/", "/workspace/session-attachments/test/"),
+        mimeType: "image/png",
+        size: 1234,
+      }),
     );
     mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
@@ -2479,9 +2487,9 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "use this reference next");
     await user.click(screen.getByRole("button", { name: "Queue next message" }));
 
-    expect(
-      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+      false,
+    );
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
@@ -2493,9 +2501,9 @@ describe("AgentWorkspace", () => {
     });
 
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+        true,
+      ),
     );
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2504,9 +2512,7 @@ describe("AgentWorkspace", () => {
       }),
     );
     const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
-    expect(methods.indexOf("image.attach_bytes")).toBeLessThan(
-      methods.lastIndexOf("prompt.submit"),
-    );
+    expect(methods.indexOf("image.attach")).toBeLessThan(methods.lastIndexOf("prompt.submit"));
   });
 
   it("retains a failed queued attachment delivery for retry", async () => {
@@ -2679,7 +2685,7 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
-      if (method === "image.attach_bytes") {
+      if (method === "image.attach") {
         return Promise.resolve({ attachment_id: "attached-image-1" });
       }
       if (method === "prompt.submit" && params?.text?.includes("use this reference next")) {
@@ -12567,9 +12573,9 @@ describe("AgentWorkspace", () => {
         true,
       ),
     );
-    expect(
-      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+      false,
+    );
 
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
@@ -13003,7 +13009,7 @@ describe("AgentWorkspace", () => {
 
   it("attaches the image when the active model id is unresolved", async () => {
     // Regression: a stale or not-yet-loaded model id must not be assumed
-    // non-vision. The image still attaches via image.attach_bytes rather than
+    // non-vision. The image still attaches via image.attach rather than
     // silently downgrading to the text-only fallback.
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
@@ -13041,9 +13047,9 @@ describe("AgentWorkspace", () => {
     await user.click(sendButton);
 
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+        true,
+      ),
     );
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
@@ -13069,9 +13075,9 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByRole("button", { name: /^Switch to / })).not.toBeInTheDocument();
   });
 
-  it("attaches a dropped image to the session via image.attach_bytes and marks it attached", async () => {
+  it("attaches a dropped image to the session via image.attach and marks it attached", async () => {
     // Feature 19: on submit, an imported image is sent to the session through
-    // the structured image.attach_bytes RPC, the chip flips to "Attached", and the
+    // the structured image.attach RPC, the chip flips to "Attached", and the
     // attachment lands in the artifact timeline — without the base64 ever
     // reaching the sanitized trace export.
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
@@ -13095,16 +13101,14 @@ describe("AgentWorkspace", () => {
     await user.click(sendButton);
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "cHJldmlldw==",
-        filename: "screenshot.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/session-attachments/test/screenshot.png",
       }),
     );
-    // image.attach_bytes precedes prompt.submit for the same turn.
+    // image.attach precedes prompt.submit for the same turn.
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -13122,13 +13126,13 @@ describe("AgentWorkspace", () => {
 
     // The sanitized trace export records the attach but NEVER the base64.
     const trace = JSON.stringify(hermesTraceBuffer.exportSanitizedTrace("session-1"));
-    expect(trace).toContain("image.attach_bytes");
+    expect(trace).toContain("image.attach");
     expect(trace).not.toContain("cHJldmlldw==");
     expect(trace).not.toContain("content_base64");
   });
 
   it("blocks the prompt and warns when an image attach fails", async () => {
-    // A failed image.attach_bytes must not silently send the prompt with a missing
+    // A failed image.attach must not silently send the prompt with a missing
     // image: the send is blocked, the chip surfaces the failure, and the
     // composer text is restored for a retry.
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
@@ -13143,7 +13147,7 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
-      if (method === "image.attach_bytes") {
+      if (method === "image.attach") {
         return Promise.reject(new Error("attach exploded"));
       }
       return Promise.resolve({});
@@ -13168,9 +13172,9 @@ describe("AgentWorkspace", () => {
 
     // The attach was attempted and rejected; prompt.submit must NOT have run.
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+        true,
+      ),
     );
     expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
       false,
@@ -14046,7 +14050,6 @@ describe("AgentWorkspace", () => {
     resetAgentSessionContinuity();
     mocks.gatewayRequest.mockClear();
     mocks.hermesBridgeFilePreview.mockResolvedValue(null);
-    mocks.hermesBridgeImageDataUrl.mockResolvedValue("data:image/png;base64,ZnVsbC1zaXpl");
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("a red bicycle")).toBeInTheDocument();
@@ -14055,18 +14058,18 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "ZnVsbC1zaXpl",
-        filename: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/session-attachments/test/generated-image.png",
       }),
     );
-    expect(mocks.hermesBridgeImageDataUrl).toHaveBeenCalledWith(
+    expect(mocks.prepareHermesBridgeImageAttachment).toHaveBeenCalledWith(
+      "runtime-session-1",
       "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
     );
+    expect(mocks.hermesBridgeImageDataUrl).not.toHaveBeenCalled();
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -14213,11 +14216,9 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
-        filename: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/session-attachments/test/generated-image.png",
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -14225,7 +14226,7 @@ describe("AgentWorkspace", () => {
       text: "make it feel calmer\n\n--- Attached Context ---\nPrevious /image request: june the assistant",
     });
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -14324,7 +14325,7 @@ describe("AgentWorkspace", () => {
     // JUN-171: the /image image renders in-thread but must also enter the
     // model's session history, so a follow-up ("what do you think?") reaches the
     // model WITH the image. On a vision model the held image is sent via
-    // image.attach_bytes before that follow-up's prompt.submit — and with NO
+    // image.attach before that follow-up's prompt.submit — and with NO
     // composer chip in between (it already renders in-thread).
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
@@ -14345,27 +14346,27 @@ describe("AgentWorkspace", () => {
     await screen.findByRole("img", { name: "a red bicycle" });
     expect(document.querySelector(".agent-attachment-chip")).toBeNull();
     // The /image itself never attaches (no prompt to carry it yet).
-    expect(
-      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+      false,
+    );
 
     await user.type(await screen.findByRole("textbox"), "what do you think");
     const sendButton = screen.getByRole("button", { name: "Send message" });
     await waitFor(() => expect(sendButton).not.toBeDisabled());
     await user.click(sendButton);
 
-    // The generated image lands in the session via image.attach_bytes, keyed to
+    // The generated image lands in the session via image.attach, keyed to
     // the same session, before the follow-up prompt.submit.
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
-        filename: expect.stringMatching(/^generated-image-\d+\.png$/),
+        path: expect.stringMatching(
+          /\/workspace\/session-attachments\/test\/generated-image-\d+\.png$/,
+        ),
       }),
     );
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -14375,7 +14376,7 @@ describe("AgentWorkspace", () => {
     // Attached exactly once — the held image is cleared after it goes through,
     // not re-sent.
     expect(
-      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "image.attach_bytes"),
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "image.attach"),
     ).toHaveLength(1);
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
       session_id: "runtime-session-1",
@@ -14405,11 +14406,11 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
-        filename: expect.stringMatching(/^generated-image-\d+\.png$/),
+        path: expect.stringMatching(
+          /\/workspace\/session-attachments\/test\/generated-image-\d+\.png$/,
+        ),
       }),
     );
   });
@@ -14458,14 +14459,15 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(promptSubmitAttempts).toBe(2));
 
     const attachCalls = mocks.gatewayRequest.mock.calls.filter(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     expect(attachCalls).toHaveLength(2);
     for (const [, payload] of attachCalls) {
       expect(payload).toMatchObject({
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
+        path: expect.stringMatching(
+          /\/workspace\/session-attachments\/test\/generated-image-\d+\.png$/,
+        ),
       });
     }
   });

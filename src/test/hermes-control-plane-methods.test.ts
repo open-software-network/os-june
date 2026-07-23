@@ -175,6 +175,18 @@ describe("createHermesMethods — typed command wrappers", () => {
     });
   });
 
+  it("attachImagePath forwards only a native path to image.attach", async () => {
+    const { request, methods } = setup();
+    await methods.attachImagePath({
+      sessionId: "runtime-1",
+      path: "/workspace/session-attachments/abc/diagram.png",
+    });
+    expect(request).toHaveBeenCalledWith("image.attach", {
+      session_id: "runtime-1",
+      path: "/workspace/session-attachments/abc/diagram.png",
+    });
+  });
+
   it("omits undefined optional params rather than sending nulls", async () => {
     const { request, methods } = setup();
     await methods.branchSession({ sessionId: "s1" });

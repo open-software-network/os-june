@@ -137,16 +137,12 @@ describe("isHermesFeatureSupported — honest support gate", () => {
     expect(isHermesFeatureSupported("automationBlueprints")).toBe(false);
   });
 
-  it("reports feature 19's image.attach_bytes + image editing once shipped", () => {
-    // Feature 19 wires the composer's imported images into image.attach_bytes
-    // (attachImage) with imported/attached/failed status, a failed-attach submit
-    // block, and the attachment fed into feature 14's artifact timeline, so its
-    // owned method key flips planned → supported; the imageEditing feature is
-    // partial (explicit source-image selection ships; the edited output is not
-    // rendered inline yet). Covered by hermes-image-attach and agent-workspace
-    // tests.
-    expect(getFeatureStatus("image.attach")).toBe("unsupported");
-    expect(isHermesFeatureSupported("image.attach")).toBe(false);
+  it("reports native path attach, byte fallback, and image editing", () => {
+    // The desktop path validates and snapshots workspace images in Rust before
+    // calling image.attach; image.attach_bytes remains the additive fallback.
+    // imageEditing stays partial because edited output is not rendered inline.
+    expect(getFeatureStatus("image.attach")).toBe("supported");
+    expect(isHermesFeatureSupported("image.attach")).toBe(true);
     expect(getFeatureStatus("image.attach_bytes")).toBe("supported");
     expect(isHermesFeatureSupported("image.attach_bytes")).toBe(true);
     expect(getFeatureStatus("imageEditing")).toBe("partial");

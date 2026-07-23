@@ -635,6 +635,12 @@ export type ImportedHermesFile = {
   previewDataUrl?: string | null;
 };
 
+export type PreparedHermesImageAttachment = {
+  path: string;
+  mimeType: string;
+  size: number;
+};
+
 export type HermesSkillInfo = {
   name: string;
   description?: string;
@@ -1334,6 +1340,12 @@ export async function hermesBridgeFilePreview(path: string) {
 export async function hermesBridgeImageDataUrl(path: string) {
   return invoke<string | null>("hermes_bridge_image_data_url", {
     request: { path },
+  });
+}
+
+export async function prepareHermesBridgeImageAttachment(sessionId: string, path: string) {
+  return invoke<PreparedHermesImageAttachment>("prepare_hermes_bridge_image_attachment", {
+    request: { sessionId, path },
   });
 }
 
