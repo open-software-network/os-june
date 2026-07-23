@@ -48,6 +48,7 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
     composerBoxRef,
     composerDraftKeyRef,
     composerEditorRef,
+    onComposerFocusChange,
     composerInSteerState,
     composerModelFlyout,
     composerModelOpen,
@@ -383,6 +384,7 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
         ) : null}
         <ComposerEditor
           ref={composerEditorRef}
+          onFocusChange={onComposerFocusChange}
           skills={skills}
           placeholder={
             generatingVideo

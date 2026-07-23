@@ -22,6 +22,7 @@ use std::{
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(700);
 const CLIPBOARD_RESTORE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const CLIPBOARD_RESTORE_RETRY_WINDOW: Duration = Duration::from_secs(5);
+const COMPOSER_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 struct EventWriter {
@@ -56,6 +57,36 @@ struct DelayedClipboardRestore {
     backup: clipboard::ClipboardBackup,
 }
 
+struct DirectComposerRequest {
+    id: String,
+    june_pid: Option<u32>,
+    june_window_handle: Option<isize>,
+    start_target: Option<PinnedTarget>,
+}
+
+struct PendingComposerAck {
+    id: String,
+    deadline: std::time::Instant,
+    text: String,
+    backup: Option<clipboard::ClipboardBackup>,
+}
+
+fn composer_error_event(
+    code: &str,
+    message: impl Into<String>,
+    composer_request_id: &str,
+) -> serde_json::Value {
+    event(
+        "error",
+        serde_json::json!({
+            "code": code,
+            "message": message.into(),
+            "delivery": "agent_composer",
+            "composerRequestId": composer_request_id,
+        }),
+    )
+}
+
 struct HelperApp {
     writer: EventWriter,
     recorder: Option<Recorder>,
@@ -64,6 +95,9 @@ struct HelperApp {
     pinned_target: Option<PinnedTarget>,
     hotkeys: Option<HotkeyManager>,
     delayed_clipboard_restore: Option<DelayedClipboardRestore>,
+    direct_composer_request: Option<DirectComposerRequest>,
+    pending_composer_ack: Option<PendingComposerAck>,
+    awaiting_transcript: bool,
     last_mic_test_path: Option<std::path::PathBuf>,
 }
 
@@ -149,6 +183,9 @@ impl HelperApp {
             pinned_target: None,
             hotkeys,
             delayed_clipboard_restore: None,
+            direct_composer_request: None,
+            pending_composer_ack: None,
+            awaiting_transcript: false,
             last_mic_test_path: None,
         }
     }
@@ -204,16 +241,31 @@ impl HelperApp {
                     hotkeys.cancel_capture();
                 }
             }
-            "start_listening" => self.start_listening(),
+            "start_listening" => self.start_listening(
+                command.composer_request_id,
+                command.june_process_id,
+                command.june_window_handle,
+            ),
             "stop_and_paste" => self.stop_and_paste(),
             "toggle_listening" => {
                 if self.recorder.is_some() {
                     self.stop_and_paste();
                 } else {
-                    self.start_listening();
+                    self.start_listening(
+                        command.composer_request_id,
+                        command.june_process_id,
+                        command.june_window_handle,
+                    );
                 }
             }
-            "paste_text" => self.paste_text(command.text.unwrap_or_default()),
+            "paste_text" => self.paste_text(
+                command.text.unwrap_or_default(),
+                command.composer_request_id,
+            ),
+            "composer_delivery_result" => self.composer_delivery_result(
+                command.composer_request_id,
+                command.inserted.unwrap_or(false),
+            ),
             "start_mic_test" => {
                 self.start_mic_test(command.duration_seconds.unwrap_or(5).clamp(1, 10))
             }
@@ -267,34 +319,97 @@ impl HelperApp {
         }
     }
 
-    fn start_listening(&mut self) {
-        if self.recorder.is_some() || self.mic_test.is_some() {
+    fn start_listening(
+        &mut self,
+        composer_request_id: Option<String>,
+        june_pid: Option<u32>,
+        june_window_handle: Option<isize>,
+    ) {
+        if !self.can_start_listening(composer_request_id.as_deref()) {
+            if self.pending_composer_ack.is_some() {
+                if let Some(request_id) = composer_request_id {
+                    self.writer.emit(composer_error_event(
+                        "composer_delivery_busy",
+                        "June is finishing the previous dictation. Try again.",
+                        &request_id,
+                    ));
+                }
+            }
             return;
         }
         self.cleanup_last_mic_test();
+        let start_target = focus::pin_foreground_window();
         match Recorder::start(self.selected_microphone_id.as_deref()) {
             Ok(recorder) => {
                 self.recorder = Some(recorder);
                 self.pinned_target = None;
-                self.writer.emit(simple_event("listening_started"));
+                self.direct_composer_request = composer_request_id.map(|id| {
+                    let verified_start_target = match (june_pid, june_window_handle, start_target) {
+                        (Some(pid), Some(hwnd), Some(target))
+                            if target.pid() == pid && target.hwnd_value() == hwnd =>
+                        {
+                            Some(target)
+                        }
+                        _ => None,
+                    };
+                    DirectComposerRequest {
+                        id,
+                        june_pid,
+                        june_window_handle,
+                        start_target: verified_start_target,
+                    }
+                });
+                self.writer.emit(event(
+                    "listening_started",
+                    serde_json::json!({
+                        "composerRequestId": self
+                            .direct_composer_request
+                            .as_ref()
+                            .map(|request| request.id.as_str()),
+                    }),
+                ));
                 self.spawn_level_thread();
             }
-            Err(error) => self
-                .writer
-                .emit(error_event("recording_start_failed", error.to_string())),
+            Err(error) => {
+                if let Some(request_id) = composer_request_id {
+                    self.writer.emit(composer_error_event(
+                        "recording_start_failed",
+                        error.to_string(),
+                        &request_id,
+                    ));
+                } else {
+                    self.writer
+                        .emit(error_event("recording_start_failed", error.to_string()));
+                }
+            }
         }
+    }
+
+    fn can_start_listening(&self, composer_request_id: Option<&str>) -> bool {
+        self.recorder.is_none()
+            && self.mic_test.is_none()
+            && !self.awaiting_transcript
+            && (composer_request_id.is_none() || self.pending_composer_ack.is_none())
     }
 
     fn stop_and_paste(&mut self) {
         let Some(recorder) = self.recorder.take() else {
+            if self.awaiting_transcript {
+                return;
+            }
             self.writer.emit(simple_event("recording_discarded"));
             return;
         };
+        self.awaiting_transcript = true;
         self.pinned_target = focus::pin_foreground_window();
         self.writer.emit(simple_event("finalizing_transcript"));
         match recorder.stop() {
             Ok(summary) => {
                 let target = self.pinned_target;
+                let composer_request_id = self
+                    .direct_composer_request
+                    .as_ref()
+                    .map(|request| request.id.clone());
                 self.writer.emit(event(
                     "recording_ready",
                     serde_json::json!({
@@ -304,29 +419,124 @@ impl HelperApp {
                         "targetProcessId": target.map(|target| target.pid()),
                         "targetWindowHandle": target.map(|target| target.hwnd_value()),
                         "targetWindowTitle": target.map(|target| target.title()),
+                        "composerRequestId": composer_request_id,
                     }),
                 ));
             }
-            Err(error) => self
-                .writer
-                .emit(error_event("recording_stop_failed", error.to_string())),
+            Err(error) => {
+                self.awaiting_transcript = false;
+                if let Some(request) = self.direct_composer_request.take() {
+                    self.writer.emit(composer_error_event(
+                        "recording_stop_failed",
+                        error.to_string(),
+                        &request.id,
+                    ));
+                } else {
+                    self.writer
+                        .emit(error_event("recording_stop_failed", error.to_string()));
+                }
+            }
         }
     }
 
-    fn paste_text(&mut self, text: String) {
+    fn paste_text(&mut self, text: String, composer_request_id: Option<String>) {
+        let owns_current_request = match (
+            self.direct_composer_request.as_ref(),
+            composer_request_id.as_deref(),
+        ) {
+            (Some(request), Some(request_id)) => request.id == request_id,
+            (None, None) => true,
+            _ => false,
+        };
+        if !owns_current_request {
+            // An asynchronous outcome can reconnect to a restarted helper
+            // after another recording has begun. Preserve the newer request's
+            // target and lifecycle while keeping the stale text recoverable.
+            self.finish_clipboard_restore(false);
+            match clipboard::replace_text(&text) {
+                Ok(_) => self.delayed_clipboard_restore = None,
+                Err(error) => {
+                    self.writer
+                        .emit(error_event("clipboard_write_failed", error.to_string()));
+                    return;
+                }
+            }
+            if let Some(request_id) = composer_request_id {
+                self.writer.emit(composer_error_event(
+                    "composer_request_unavailable",
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                    &request_id,
+                ));
+            } else {
+                self.writer.emit(error_event(
+                    "paste_target_unavailable",
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                ));
+            }
+            return;
+        }
+        self.awaiting_transcript = false;
         self.finish_clipboard_restore(false);
-        self.writer.emit(event(
-            "final_transcript",
-            serde_json::json!({ "text": text }),
-        ));
+        if self.direct_composer_request.is_none() && composer_request_id.is_none() {
+            self.writer.emit(event(
+                "final_transcript",
+                serde_json::json!({ "text": text }),
+            ));
+        }
         let previous_clipboard = match clipboard::replace_text(&text) {
             Ok(previous) => previous,
             Err(error) => {
-                self.writer
-                    .emit(error_event("clipboard_write_failed", error.to_string()));
+                if let Some(request) = self.direct_composer_request.take() {
+                    self.writer.emit(composer_error_event(
+                        "clipboard_write_failed",
+                        error.to_string(),
+                        &request.id,
+                    ));
+                } else {
+                    self.writer
+                        .emit(error_event("clipboard_write_failed", error.to_string()));
+                }
                 return;
             }
         };
+        // Once the new text owns the clipboard, an older restore must never
+        // remain armed: on any paste failure this dictation is the fallback.
+        let previous_clipboard = backup_for_next_clipboard_restore(
+            previous_clipboard,
+            self.delayed_clipboard_restore.take(),
+        );
+        if let Some(request) = self.direct_composer_request.take() {
+            let exact_request = composer_request_id.as_deref() == Some(request.id.as_str());
+            let exact_target = request.start_target.is_some_and(|start_target| {
+                request.june_pid == Some(start_target.pid())
+                    && request.june_window_handle == Some(start_target.hwnd_value())
+                    && start_target.has_exact_identity()
+            });
+            self.pinned_target = None;
+            if !exact_request || !exact_target {
+                self.writer.emit(composer_error_event(
+                    "paste_target_unavailable",
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                    &request.id,
+                ));
+                return;
+            }
+            self.writer.emit(event(
+                "final_transcript",
+                serde_json::json!({
+                    "text": text,
+                    "delivery": "agent_composer",
+                    "composerRequestId": request.id,
+                }),
+            ));
+            self.pending_composer_ack = Some(PendingComposerAck {
+                id: request.id,
+                deadline: std::time::Instant::now() + COMPOSER_ACK_TIMEOUT,
+                text,
+                backup: previous_clipboard,
+            });
+            return;
+        }
         let Some(target) = self.pinned_target.take() else {
             self.writer.emit(error_event(
                 "paste_target_unavailable",
@@ -334,10 +544,17 @@ impl HelperApp {
             ));
             return;
         };
-        if !focus::verify_foreground(target) {
+        if let Err(error) = focus::activate_and_settle(target) {
+            let code = if error.is_target_unavailable() {
+                "paste_target_unavailable"
+            } else {
+                "paste_target_restricted"
+            };
             self.writer.emit(error_event(
-                "paste_target_restricted",
-                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                code,
+                format!(
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
+                ),
             ));
             return;
         }
@@ -350,26 +567,74 @@ impl HelperApp {
                 "activated": true,
             }),
         ));
-        if let Err(error) = focus::send_ctrl_v() {
-            self.writer.emit(error_event(
-                "paste_target_restricted",
-                format!(
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
-                ),
-            ));
-            return;
-        }
-        self.writer.emit(simple_event("paste_completed"));
+        let submission = match focus::submit_ctrl_v_if_foreground(target) {
+            Ok(submission) => submission,
+            Err(error) => {
+                let code = if error.is_target_unavailable() {
+                    "paste_target_unavailable"
+                } else {
+                    "paste_target_restricted"
+                };
+                let guidance = if error.is_incomplete_submission() {
+                    "Automatic paste may be incomplete. Check the target before pasting the full dictation from the clipboard."
+                } else {
+                    "Press Ctrl+V to paste it."
+                };
+                self.writer.emit(error_event(
+                    code,
+                    format!("June copied the dictation to the clipboard. {guidance} ({error})"),
+                ));
+                return;
+            }
+        };
+        self.writer.emit(paste_completed_event(&submission));
         if let Some(backup) = previous_clipboard {
             let now = std::time::Instant::now();
-            let backup =
-                backup_for_next_clipboard_restore(backup, self.delayed_clipboard_restore.take());
             self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
                 deadline: now + CLIPBOARD_RESTORE_DELAY,
                 expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
                 text,
                 backup,
             });
+        }
+    }
+
+    fn composer_delivery_result(&mut self, request_id: Option<String>, inserted: bool) {
+        let Some(pending) = self.pending_composer_ack.take() else {
+            return;
+        };
+        if request_id.as_deref() != Some(pending.id.as_str())
+            || std::time::Instant::now() >= pending.deadline
+        {
+            self.pending_composer_ack = Some(pending);
+            return;
+        }
+        if !inserted {
+            self.writer.emit(composer_error_event(
+                "composer_delivery_failed",
+                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                &pending.id,
+            ));
+            return;
+        }
+        self.writer.emit(event(
+            "paste_completed",
+            serde_json::json!({
+                "inputSubmitted": false,
+                "deliveryConfirmed": true,
+                "eventsSubmitted": 0,
+                "delivery": "agent_composer",
+                "composerRequestId": pending.id,
+            }),
+        ));
+        if let Some(backup) = pending.backup {
+            let now = std::time::Instant::now();
+            self.delayed_clipboard_restore = Some(clipboard_restore_after_composer_ack(
+                pending.text,
+                backup,
+                self.delayed_clipboard_restore.take(),
+                now,
+            ));
         }
     }
 
@@ -391,7 +656,7 @@ impl HelperApp {
     }
 
     fn start_mic_test(&mut self, duration_seconds: u64) {
-        if self.recorder.is_some() || self.mic_test.is_some() {
+        if self.recorder.is_some() || self.mic_test.is_some() || self.awaiting_transcript {
             self.writer.emit(event(
                 "mic_test_error",
                 serde_json::json!({
@@ -448,6 +713,19 @@ impl HelperApp {
         {
             self.finish_clipboard_restore(false);
         }
+        if self
+            .pending_composer_ack
+            .as_ref()
+            .is_some_and(|pending| std::time::Instant::now() >= pending.deadline)
+        {
+            if let Some(pending) = self.pending_composer_ack.take() {
+                self.writer.emit(composer_error_event(
+                    "composer_delivery_timeout",
+                    "June could not confirm the dictation was inserted. The text is on the clipboard if you need to paste it manually.",
+                    &pending.id,
+                ));
+            }
+        }
     }
 
     fn finish_mic_test(&mut self) {
@@ -491,8 +769,19 @@ impl HelperApp {
                 let _ = std::fs::remove_file(summary.path);
             }
         }
+        self.awaiting_transcript = false;
         self.pinned_target = None;
-        self.writer.emit(simple_event("recording_discarded"));
+        if let Some(request) = self.direct_composer_request.take() {
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({
+                    "delivery": "agent_composer",
+                    "composerRequestId": request.id,
+                }),
+            ));
+        } else {
+            self.writer.emit(simple_event("recording_discarded"));
+        }
     }
 
     fn spawn_level_thread(&self) {
@@ -527,13 +816,46 @@ fn next_clipboard_restore(
 }
 
 fn backup_for_next_clipboard_restore(
-    backup: clipboard::ClipboardBackup,
+    backup: Option<clipboard::ClipboardBackup>,
     pending: Option<DelayedClipboardRestore>,
-) -> clipboard::ClipboardBackup {
-    match pending {
-        Some(pending) if backup.original_text_is(&pending.text) => pending.backup,
-        _ => backup,
+) -> Option<clipboard::ClipboardBackup> {
+    match (backup, pending) {
+        (Some(backup), Some(pending)) if backup.original_text_is(&pending.text) => {
+            Some(pending.backup)
+        }
+        (backup, _) => backup,
     }
+}
+
+fn clipboard_restore_after_composer_ack(
+    composer_text: String,
+    composer_backup: clipboard::ClipboardBackup,
+    pending: Option<DelayedClipboardRestore>,
+    now: std::time::Instant,
+) -> DelayedClipboardRestore {
+    if let Some(mut pending) = pending {
+        if pending.backup.original_text_is(&composer_text) {
+            pending.backup = composer_backup;
+        }
+        return pending;
+    }
+    DelayedClipboardRestore {
+        deadline: now + CLIPBOARD_RESTORE_DELAY,
+        expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
+        text: composer_text,
+        backup: composer_backup,
+    }
+}
+
+fn paste_completed_event(submission: &focus::InputSubmission) -> serde_json::Value {
+    event(
+        "paste_completed",
+        serde_json::json!({
+            "inputSubmitted": true,
+            "deliveryConfirmed": false,
+            "eventsSubmitted": submission.events_submitted,
+        }),
+    )
 }
 
 impl Drop for HelperApp {
@@ -559,6 +881,43 @@ impl Drop for HelperApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paste_completed_reports_input_submission_without_claiming_delivery() {
+        let event = paste_completed_event(&focus::InputSubmission {
+            events_submitted: 4,
+        });
+
+        assert_eq!(event["type"], "paste_completed");
+        assert_eq!(event["payload"]["inputSubmitted"], true);
+        assert_eq!(event["payload"]["deliveryConfirmed"], false);
+        assert_eq!(event["payload"]["eventsSubmitted"], 4);
+    }
+
+    #[test]
+    fn pending_composer_ack_blocks_a_replacement_recording() {
+        let app = HelperApp {
+            writer: EventWriter::new(),
+            recorder: None,
+            mic_test: None,
+            selected_microphone_id: None,
+            pinned_target: None,
+            hotkeys: None,
+            delayed_clipboard_restore: None,
+            direct_composer_request: None,
+            pending_composer_ack: Some(PendingComposerAck {
+                id: "pending-request".to_string(),
+                deadline: std::time::Instant::now() + COMPOSER_ACK_TIMEOUT,
+                text: "first transcript".to_string(),
+                backup: None,
+            }),
+            awaiting_transcript: false,
+            last_mic_test_path: None,
+        };
+
+        assert!(!app.can_start_listening(Some("replacement-request")));
+        assert!(app.can_start_listening(None));
+    }
 
     fn restore_with_expiry(
         now: std::time::Instant,
@@ -600,7 +959,8 @@ mod tests {
         let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
         let second_backup = clipboard::ClipboardBackup::from_text_for_test("dictated text");
 
-        let backup = backup_for_next_clipboard_restore(second_backup, Some(pending));
+        let backup = backup_for_next_clipboard_restore(Some(second_backup), Some(pending))
+            .expect("original clipboard backup");
 
         assert!(backup.original_text_is("previous clipboard"));
     }
@@ -611,9 +971,60 @@ mod tests {
         let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
         let second_backup = clipboard::ClipboardBackup::from_text_for_test("user copied text");
 
-        let backup = backup_for_next_clipboard_restore(second_backup, Some(pending));
+        let backup = backup_for_next_clipboard_restore(Some(second_backup), Some(pending))
+            .expect("new clipboard backup");
 
         assert!(backup.original_text_is("user copied text"));
+    }
+
+    #[test]
+    fn second_paste_without_text_backup_cancels_pending_restore() {
+        let now = std::time::Instant::now();
+        let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
+
+        assert!(backup_for_next_clipboard_restore(None, Some(pending)).is_none());
+    }
+
+    #[test]
+    fn composer_ack_chains_backup_into_a_newer_external_restore() {
+        let now = std::time::Instant::now();
+        let external_restore = DelayedClipboardRestore {
+            deadline: now + CLIPBOARD_RESTORE_DELAY,
+            expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
+            text: "external transcript".to_string(),
+            backup: clipboard::ClipboardBackup::from_text_for_test("composer transcript"),
+        };
+
+        let restore = clipboard_restore_after_composer_ack(
+            "composer transcript".to_string(),
+            clipboard::ClipboardBackup::from_text_for_test("original clipboard"),
+            Some(external_restore),
+            now,
+        );
+
+        assert_eq!(restore.text, "external transcript");
+        assert!(restore.backup.original_text_is("original clipboard"));
+    }
+
+    #[test]
+    fn composer_ack_preserves_a_newer_unrelated_clipboard_backup() {
+        let now = std::time::Instant::now();
+        let external_restore = DelayedClipboardRestore {
+            deadline: now + CLIPBOARD_RESTORE_DELAY,
+            expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
+            text: "external transcript".to_string(),
+            backup: clipboard::ClipboardBackup::from_text_for_test("user copied text"),
+        };
+
+        let restore = clipboard_restore_after_composer_ack(
+            "composer transcript".to_string(),
+            clipboard::ClipboardBackup::from_text_for_test("original clipboard"),
+            Some(external_restore),
+            now,
+        );
+
+        assert_eq!(restore.text, "external transcript");
+        assert!(restore.backup.original_text_is("user copied text"));
     }
 
     #[test]

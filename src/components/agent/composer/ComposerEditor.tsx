@@ -1,7 +1,8 @@
 import Placeholder from "@tiptap/extension-placeholder";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Fragment, Slice, type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { closeHistory } from "@tiptap/pm/history";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 import {
@@ -40,6 +41,9 @@ export type ComposerEditorHandle = {
   /** Inserts a note reference chip at the caret. Multiple references can
    * coexist because they serialize into the prompt text. */
   insertNoteReference: (ref: NoteReferenceInput) => void;
+  /** Replaces the current selection with literal text without changing focus. */
+  insertPlainText: (text: string) => boolean;
+  isFocused: () => boolean;
   isEmpty: () => boolean;
 };
 
@@ -48,6 +52,7 @@ type ComposerEditorProps = {
   skills?: HermesSkillInfo[] | null;
   onChange: (text: string, category: ReportCategory | null) => void;
   onSubmit: () => void;
+  onFocusChange?: (focused: boolean) => void;
   /** Returns true when the host handles the selected command as an immediate
    * action instead of inserting its slash text into the draft. */
   onBuiltinSlashCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
@@ -152,22 +157,27 @@ export function buildDoc(
 }
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
-  ({ placeholder, skills, onChange, onSubmit, onBuiltinSlashCommand, onReady }, ref) => {
+  (
+    { placeholder, skills, onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady },
+    ref,
+  ) => {
     const frameRef = useRef<HTMLDivElement | null>(null);
     const skillsRef = useRef(skills);
     // Latest callbacks behind refs so the editor (created once) never closes
     // over a stale handler.
     const onChangeRef = useRef(onChange);
     const onSubmitRef = useRef(onSubmit);
+    const onFocusChangeRef = useRef(onFocusChange);
     const onBuiltinSlashCommandRef = useRef(onBuiltinSlashCommand);
     const onReadyRef = useRef(onReady);
     useEffect(() => {
       onChangeRef.current = onChange;
       onSubmitRef.current = onSubmit;
+      onFocusChangeRef.current = onFocusChange;
       onBuiltinSlashCommandRef.current = onBuiltinSlashCommand;
       onReadyRef.current = onReady;
       skillsRef.current = skills;
-    }, [onChange, onSubmit, onBuiltinSlashCommand, onReady, skills]);
+    }, [onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady, skills]);
 
     useEffect(() => {
       document.querySelectorAll(".agent-category-menu-host").forEach((host) => {
@@ -203,6 +213,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     }
 
     const editor = useEditor({
+      onFocus: () => onFocusChangeRef.current?.(true),
+      onBlur: () => onFocusChangeRef.current?.(false),
       extensions: [
         StarterKit.configure({
           // Truly-plain composer: no block structure or inline marks, just text,
@@ -339,6 +351,23 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         insertNoteReference: (noteReference) => {
           if (editor) insertNoteReference(editor, noteReference);
         },
+        insertPlainText: (text) => {
+          if (!editor || editor.isDestroyed) return false;
+          const normalized = text.replace(/\r\n?/g, "\n");
+          const content = normalized.split("\n").flatMap((line, index) => {
+            const nodes = [];
+            if (index > 0) nodes.push(editor.schema.nodes.hardBreak.create());
+            if (line) nodes.push(editor.schema.text(line));
+            return nodes;
+          });
+          const transaction = closeHistory(editor.state.tr).replaceSelection(
+            new Slice(Fragment.fromArray(content), 0, 0),
+          );
+          if (!transaction.docChanged) return false;
+          editor.view.dispatch(transaction);
+          return true;
+        },
+        isFocused: () => !!editor?.isFocused && document.hasFocus(),
         isEmpty: () => editor?.isEmpty ?? true,
       }),
       [editor],

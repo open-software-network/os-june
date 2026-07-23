@@ -8,7 +8,8 @@
  * medium, high, xhigh). June deliberately exposes only three of them so the
  * choice stays a simple speed/depth tradeoff:
  *
- * - Low -> "none": the model answers without a separate reasoning pass.
+ * - Low -> "minimal": the model barely deliberates, so first tokens arrive
+ *   quickly without sending provider-specific thinking controls.
  * - Medium -> "medium": Hermes' own default; a balance of speed and depth.
  * - High -> "high": substantially more reasoning for harder problems.
  *
@@ -38,7 +39,7 @@ export const THINKING_LEVELS: readonly ThinkingLevelOption[] = Object.freeze([
     id: "instant",
     label: "Low",
     blurb: "Faster responses with lower usage.",
-    effort: "none",
+    effort: "minimal",
   },
   {
     id: "medium",

@@ -17,6 +17,14 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
+    pub composer_request_id: Option<String>,
+    #[serde(default)]
+    pub june_process_id: Option<u32>,
+    #[serde(default)]
+    pub june_window_handle: Option<isize>,
+    #[serde(default)]
+    pub inserted: Option<bool>,
+    #[serde(default)]
     pub duration_seconds: Option<u64>,
     #[serde(flatten)]
     pub _extra: serde_json::Map<String, Value>,
@@ -79,6 +87,18 @@ mod tests {
     }
 
     #[test]
+    fn composer_command_accepts_exact_june_window_identity() {
+        let command: CommandEnvelope = serde_json::from_str(
+            r#"{"type":"start_listening","composerRequestId":"request-1","juneProcessId":42,"juneWindowHandle":1234}"#,
+        )
+        .expect("composer command parses");
+
+        assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
+        assert_eq!(command.june_process_id, Some(42));
+        assert_eq!(command.june_window_handle, Some(1234));
+    }
+
+    #[test]
     fn set_shortcut_keeps_structured_payload() {
         let command: CommandEnvelope = serde_json::from_str(
             r#"{"type":"set_shortcut","shortcut":{"keyCode":32,"code":"KeyU","label":"Ctrl+U","kind":"push_to_talk","pressCount":1,"modifiers":{"control":true}}}"#,
@@ -91,6 +111,18 @@ mod tests {
         assert_eq!(shortcut.kind, ShortcutKind::PushToTalk);
         assert_eq!(shortcut.code, "KeyU");
         assert!(shortcut.modifiers.control);
+    }
+
+    #[test]
+    fn composer_delivery_fields_parse() {
+        let command: CommandEnvelope = serde_json::from_str(
+            r#"{"type":"composer_delivery_result","composerRequestId":"request-1","juneProcessId":42,"inserted":true}"#,
+        )
+        .expect("composer acknowledgement parses");
+
+        assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
+        assert_eq!(command.june_process_id, Some(42));
+        assert_eq!(command.inserted, Some(true));
     }
 }
 

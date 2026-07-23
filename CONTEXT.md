@@ -180,17 +180,30 @@ _Avoid_: system driver, in-process capture.
 The platform-native helper (`mac-dictation-helper` on macOS,
 `june-dictation-helper.exe` on Windows) that owns push-to-talk **dictation**
 capture and text insertion into the **paste target**. It is the authoritative
-source for helper-owned microphone state and platform paste readiness. On
-macOS it is also authoritative for Accessibility permission state.
+source for helper-owned microphone state, destination selection, and platform
+paste readiness. On Windows, an exact Dictate-button request or a global
+shortcut started while June's composer owns focus may be delivered through
+acknowledged in-app insertion, but only when the helper verifies the initiating
+June window's exact handle and original process identity. The foreground window
+at stop is irrelevant to this logical in-app destination and may be the
+non-focusable dictation HUD.
+On macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
 **Paste target**:
-The app the dictation helper types a finished transcript into, pinned at the
-instant the recording stops and never re-resolved afterwards (see
+The destination where a finished dictation transcript is delivered. For native
+paste, it is the exact app window pinned when recording stops and never
+re-resolved afterwards (see
 [ADR-0014](docs/adr/0014-pinned-dictation-paste-target.md)). Pinning matters
 because the dictation round trip (capture, then dictation transcription, then
 cleanup) can outlast the user's attention: the frontmost app at paste time is
 often no longer the one they dictated into.
+On Windows, the helper may select acknowledged in-app composer insertion for a
+correlated Dictate-button request or a global shortcut pre-registered while the
+composer owns focus. The helper requires the exact initiating window handle and
+original process identity. The request id and captured draft key pin the in-app
+destination; all other targets retain exact-window activation and synthetic
+paste.
 _Avoid_: foreground app, frontmost app (both name a live value, not the pin);
 focus target.
 

@@ -22,6 +22,27 @@ describe("parseDictationHelperEvent", () => {
     );
   });
 
+  it("keeps input-submission details on the terminal paste event", () => {
+    const event = parseDictationHelperEvent({
+      type: "paste_completed",
+      payload: {
+        inputSubmitted: true,
+        deliveryConfirmed: false,
+        eventsSubmitted: 4,
+      },
+    });
+
+    expect(event).toEqual({
+      type: "paste_completed",
+      payload: {
+        inputSubmitted: true,
+        deliveryConfirmed: false,
+        eventsSubmitted: 4,
+      },
+    });
+    expect(nextDictationWorkflowActive(true, event?.type ?? "")).toBe(false);
+  });
+
   it("parses helper_unavailable events with a reason", () => {
     expect(
       parseDictationHelperEvent({
@@ -60,7 +81,7 @@ describe("dictation workflow activity", () => {
     "error",
     "helper_unavailable",
     "shutdown_ack",
-  ])("treats %s as finished", (eventType) => {
+  ])("treats %s as workflow-finished", (eventType) => {
     expect(nextDictationWorkflowActive(true, eventType)).toBe(false);
   });
 

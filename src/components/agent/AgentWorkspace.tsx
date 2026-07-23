@@ -1,4 +1,5 @@
 import type { Editor as TiptapEditor } from "@tiptap/react";
+import { listen } from "@tauri-apps/api/event";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconBubbleWide } from "central-icons/IconBubbleWide";
 import { IconToolbox } from "central-icons/IconToolbox";
@@ -17,11 +18,14 @@ import {
   getAgentTask,
   hermesBrowserAccess,
   primeGeneratedVideoDir,
+  dictationHelperCommand,
   importHermesBridgeFileBytes,
   type AgentTaskStatus,
   type HermesSessionMessage,
   type ProviderModelSettingsDto,
 } from "../../lib/tauri";
+import { parseDictationHelperEvent } from "../../lib/dictation-events";
+import { isWindowsPlatform } from "../../lib/platform";
 import { listHermesSessionMessages } from "../../lib/hermes-adapter";
 import { dispatchAgentSessionStatus } from "../../lib/agent-events";
 import { HermesGatewayClient } from "../../lib/hermes-gateway";
@@ -893,6 +897,139 @@ export function AgentWorkspace({
     thinkingLevel,
     veniceApiKeyConfigured,
   });
+
+  const composerDictationRequestRef = useRef<{
+    id: string;
+    draftKey: string | null;
+    active: boolean;
+  } | null>(null);
+  const composerDeliveryIpcRef = useRef(Promise.resolve());
+  const queueComposerDeliveryCommand = useCallback(
+    (command: Parameters<typeof dictationHelperCommand>[0]) => {
+      const pending = composerDeliveryIpcRef.current.then(() => dictationHelperCommand(command));
+      composerDeliveryIpcRef.current = pending.catch(() => {});
+      return pending;
+    },
+    [],
+  );
+  const registerComposerDelivery = useCallback(() => {
+    if (
+      !isWindowsPlatform() ||
+      composerDictationRequestRef.current ||
+      !composerEditorRef.current?.isFocused()
+    ) {
+      return;
+    }
+    const registration = {
+      id: crypto.randomUUID(),
+      draftKey: composerDraftKeyRef.current,
+      active: false,
+    };
+    composerDictationRequestRef.current = registration;
+    void queueComposerDeliveryCommand({
+      type: "register_composer_delivery",
+      composerRequestId: registration.id,
+    }).catch(() => {
+      if (composerDictationRequestRef.current === registration) {
+        composerDictationRequestRef.current = null;
+      }
+    });
+  }, [composerDraftKeyRef, composerEditorRef, queueComposerDeliveryCommand]);
+  const releaseComposerDelivery = useCallback(
+    (registration = composerDictationRequestRef.current) => {
+      if (!registration) return;
+      if (composerDictationRequestRef.current === registration) {
+        composerDictationRequestRef.current = null;
+      }
+      if (!registration.active) {
+        void queueComposerDeliveryCommand({
+          type: "unregister_composer_delivery",
+          composerRequestId: registration.id,
+        }).catch(() => {});
+      }
+    },
+    [queueComposerDeliveryCommand],
+  );
+  const handleComposerFocusChange = useCallback(
+    (focused: boolean) => {
+      if (focused) {
+        registerComposerDelivery();
+        return;
+      }
+      const registration = composerDictationRequestRef.current;
+      if (registration && !registration.active) releaseComposerDelivery(registration);
+    },
+    [registerComposerDelivery, releaseComposerDelivery],
+  );
+  useEffect(() => {
+    const registration = composerDictationRequestRef.current;
+    if (!registration || registration.active || registration.draftKey === composerDraftKey) return;
+    releaseComposerDelivery(registration);
+    window.queueMicrotask(registerComposerDelivery);
+  }, [composerDraftKey, registerComposerDelivery, releaseComposerDelivery]);
+
+  useEffect(() => {
+    if (!isWindowsPlatform()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<unknown>("dictation-event", (event) => {
+      const helperEvent = parseDictationHelperEvent(event.payload);
+      if (!helperEvent) return;
+      const payload = helperEvent.payload;
+      if (
+        helperEvent.type === "listening_started" &&
+        typeof payload?.composerRequestId === "string" &&
+        composerDictationRequestRef.current?.id === payload.composerRequestId
+      ) {
+        composerDictationRequestRef.current.active = true;
+      }
+      if (
+        helperEvent.type !== "final_transcript" ||
+        payload?.delivery !== "agent_composer" ||
+        typeof payload.composerRequestId !== "string"
+      ) {
+        if (helperEvent.type === "helper_unavailable") {
+          releaseComposerDelivery();
+          window.queueMicrotask(registerComposerDelivery);
+        } else if (
+          (helperEvent.type === "recording_discarded" ||
+            helperEvent.type === "paste_completed" ||
+            helperEvent.type === "error") &&
+          payload?.delivery === "agent_composer" &&
+          typeof payload.composerRequestId === "string" &&
+          composerDictationRequestRef.current?.id === payload.composerRequestId
+        ) {
+          composerDictationRequestRef.current = null;
+          window.queueMicrotask(registerComposerDelivery);
+        }
+        return;
+      }
+      const armed = composerDictationRequestRef.current;
+      if (!armed || armed.id !== payload.composerRequestId) return;
+      composerDictationRequestRef.current = null;
+      const editor = composerEditorRef.current;
+      const inserted =
+        typeof payload.text === "string" &&
+        composerDraftKeyRef.current === armed.draftKey &&
+        !!editor &&
+        editor.insertPlainText(payload.text);
+      void dictationHelperCommand({
+        type: "composer_delivery_result",
+        composerRequestId: armed.id,
+        inserted,
+      })
+        .catch(() => {})
+        .finally(registerComposerDelivery);
+    }).then((remove) => {
+      if (disposed) remove();
+      else unlisten = remove;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      releaseComposerDelivery();
+    };
+  }, [composerDraftKeyRef, composerEditorRef, registerComposerDelivery, releaseComposerDelivery]);
 
   // The file viewer is scoped to one conversation — files from the previous
   // session must not linger open after a switch.
@@ -1990,8 +2127,35 @@ export function AgentWorkspace({
     setImportingFiles,
     setReportDialogAttachments,
   });
-  const { removeAttachment, startDictation, pickAttachments } =
-    attachmentImportActionsImplementation;
+  const { removeAttachment, pickAttachments } = attachmentImportActionsImplementation;
+  async function startDictation() {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
+    composerEditorRef.current?.focus();
+    const existingRequest = composerDictationRequestRef.current;
+    const armedRequest =
+      isWindowsPlatform() && existingRequest
+        ? existingRequest
+        : isWindowsPlatform()
+          ? { id: crypto.randomUUID(), draftKey: composerDraftKeyRef.current, active: false }
+          : null;
+    if (armedRequest) composerDictationRequestRef.current = armedRequest;
+    try {
+      await queueComposerDeliveryCommand({
+        type: "toggle_listening",
+        shortcut: "Dictation",
+        ...(armedRequest ? { composerRequestId: armedRequest.id } : {}),
+      });
+    } catch (err) {
+      if (composerDictationRequestRef.current === armedRequest) {
+        releaseComposerDelivery(armedRequest);
+        window.queueMicrotask(registerComposerDelivery);
+      }
+      setError(messageFromError(err));
+    }
+  }
 
   /** Sends the captured report plus June's diagnostic reply (the last
    * assistant message of the turn) to the June team. The diagnosis fetch is
@@ -2652,6 +2816,7 @@ export function AgentWorkspace({
     composerBoxRef,
     composerDraftKeyRef,
     composerEditorRef,
+    onComposerFocusChange: handleComposerFocusChange,
     composerInSteerState,
     composerModelFlyout,
     composerModelOpen,

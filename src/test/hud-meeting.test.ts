@@ -539,7 +539,7 @@ describe("meeting detection HUD", () => {
     );
   });
 
-  it("fades the processing HUD in place when paste completes", async () => {
+  it("fades the processing HUD after paste input is submitted", async () => {
     vi.useFakeTimers();
     await loadHud();
     await emit("dictation-event", {
@@ -548,7 +548,10 @@ describe("meeting detection HUD", () => {
     });
     mocks.invoke.mockClear();
 
-    await emit("dictation-event", { type: "paste_completed" });
+    await emit("dictation-event", {
+      type: "paste_completed",
+      payload: { inputSubmitted: true, deliveryConfirmed: false, eventsSubmitted: 4 },
+    });
 
     expect(hudElement().dataset.state).toBe("exiting");
     expect(hudElement().dataset.exitState).toBe("pasting");

@@ -54,6 +54,25 @@ const HERO_GREETING = new RegExp(
 const streamedText = (text: string) => (_: string, element: Element | null) =>
   element?.tagName === "P" && element.textContent === text;
 
+function stubNavigatorPlatform(platform: string, userAgent: string) {
+  const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+  const ownUserAgent = Object.getOwnPropertyDescriptor(navigator, "userAgent");
+  Object.defineProperty(navigator, "platform", {
+    configurable: true,
+    get: () => platform,
+  });
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    get: () => userAgent,
+  });
+  return () => {
+    if (ownPlatform) Object.defineProperty(navigator, "platform", ownPlatform);
+    else Reflect.deleteProperty(navigator, "platform");
+    if (ownUserAgent) Object.defineProperty(navigator, "userAgent", ownUserAgent);
+    else Reflect.deleteProperty(navigator, "userAgent");
+  };
+}
+
 const mocks = vi.hoisted(() => ({
   assignSessionToProfile: vi.fn(),
   invoke: vi.fn(),
@@ -63,6 +82,7 @@ const mocks = vi.hoisted(() => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   createAgentTask: vi.fn(),
+  dictationHelperCommand: vi.fn(),
   editImage: vi.fn(),
   ensureHermesBridgeSession: vi.fn(),
   finalizeHermesBridgeBranch: vi.fn(),
@@ -161,6 +181,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: mocks.computerUseEndRun,
   computerUseStop: mocks.computerUseStop,
   createAgentTask: mocks.createAgentTask,
+  dictationHelperCommand: mocks.dictationHelperCommand,
   editImage: mocks.editImage,
   ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
   finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
@@ -943,6 +964,149 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Existing session")).toBeNull();
     expect(screen.queryByText("Existing task")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("focuses the in-session composer before starting dictation", async () => {
+    const user = userEvent.setup();
+    let activeElementWhenListeningStarted: Element | null = null;
+    mocks.dictationHelperCommand.mockImplementationOnce(async () => {
+      activeElementWhenListeningStarted = document.activeElement;
+    });
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.click(screen.getByRole("button", { name: "Dictate" }));
+
+    expect(activeElementWhenListeningStarted).toBe(composer);
+    expect(document.activeElement).toBe(composer);
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "toggle_listening",
+      shortcut: "Dictation",
+    });
+  });
+
+  it("inserts one matching Windows dictation directly into the armed composer", async () => {
+    const restorePlatform = stubNavigatorPlatform("Win32", "Windows");
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValueOnce("12345678-1234-4234-8234-123456789abc")
+      .mockReturnValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    try {
+      mocks.dictationHelperCommand.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.click(screen.getByRole("button", { name: "Dictate" }));
+
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "toggle_listening",
+        shortcut: "Dictation",
+        composerRequestId: "12345678-1234-4234-8234-123456789abc",
+      });
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "register_composer_delivery",
+        composerRequestId: "12345678-1234-4234-8234-123456789abc",
+      });
+      await waitFor(() => expect(mocks.eventHandlers.has("dictation-event")).toBe(true));
+      const emitDirectDictation = async (composerRequestId: string) => {
+        await act(async () => {
+          await mocks.eventHandlers.get("dictation-event")?.({
+            payload: JSON.stringify({
+              type: "final_transcript",
+              payload: {
+                text: "Inserted directly",
+                delivery: "agent_composer",
+                composerRequestId,
+              },
+            }),
+          });
+        });
+      };
+
+      await emitDirectDictation("wrong-request");
+      expect(composer).toHaveTextContent("");
+
+      await act(async () => {
+        await mocks.eventHandlers.get("dictation-event")?.({
+          payload: JSON.stringify({
+            type: "paste_completed",
+            payload: {
+              delivery: "agent_composer",
+              composerRequestId: "older-request",
+              deliveryConfirmed: true,
+            },
+          }),
+        });
+      });
+
+      await emitDirectDictation("12345678-1234-4234-8234-123456789abc");
+      expect(composer).toHaveTextContent("Inserted directly");
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "composer_delivery_result",
+        composerRequestId: "12345678-1234-4234-8234-123456789abc",
+        inserted: true,
+      });
+
+      await emitDirectDictation("12345678-1234-4234-8234-123456789abc");
+      expect(composer).toHaveTextContent("Inserted directly");
+      expect(
+        mocks.dictationHelperCommand.mock.calls.filter(
+          ([command]) => command.type === "composer_delivery_result",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      randomUUID.mockRestore();
+      restorePlatform();
+    }
+  });
+
+  it("pre-registers a focused Windows composer for global shortcut delivery", async () => {
+    const restorePlatform = stubNavigatorPlatform("Win32", "Windows");
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValueOnce("87654321-4321-4321-8321-cba987654321")
+      .mockReturnValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    try {
+      mocks.dictationHelperCommand.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.click(composer);
+
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "register_composer_delivery",
+        composerRequestId: "87654321-4321-4321-8321-cba987654321",
+      });
+      await waitFor(() => expect(mocks.eventHandlers.has("dictation-event")).toBe(true));
+      await act(async () => {
+        await mocks.eventHandlers.get("dictation-event")?.({
+          payload: JSON.stringify({
+            type: "listening_started",
+            payload: { composerRequestId: "87654321-4321-4321-8321-cba987654321" },
+          }),
+        });
+        await mocks.eventHandlers.get("dictation-event")?.({
+          payload: JSON.stringify({
+            type: "final_transcript",
+            payload: {
+              text: "Shortcut insertion",
+              delivery: "agent_composer",
+              composerRequestId: "87654321-4321-4321-8321-cba987654321",
+            },
+          }),
+        });
+      });
+
+      expect(composer).toHaveTextContent("Shortcut insertion");
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "composer_delivery_result",
+        composerRequestId: "87654321-4321-4321-8321-cba987654321",
+        inserted: true,
+      });
+    } finally {
+      randomUUID.mockRestore();
+      restorePlatform();
+    }
   });
 
   it("keeps retrying startup session loads until the API is ready", async () => {
@@ -4195,7 +4359,7 @@ describe("AgentWorkspace", () => {
         title: "write a project update",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
-        reasoning_effort: "none",
+        reasoning_effort: "minimal",
       }),
     );
   });
