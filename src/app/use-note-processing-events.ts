@@ -33,6 +33,12 @@ export function useNoteProcessingEvents(dependencies: UseNoteProcessingEventsDep
   const { dispatch, noteSaveController, notes, setError } = dependencies;
   const activeNotesRef = useRef(new Map<string, NoteListItemDto>());
   const reconcileInFlightRef = useRef(new Map<string, Promise<void>>());
+  const pendingTerminalHydrationsRef = useRef(new Map<string, NoteProcessingProgressDto>());
+  const terminalHydrationInFlightRef = useRef(new Map<string, Promise<void>>());
+  const terminalHydrationRetryRef = useRef(new Map<string, number>());
+  const refreshCompletedNoteRef = useRef<(progress: NoteProcessingProgressDto) => Promise<void>>(
+    async () => undefined,
+  );
   const disposedRef = useRef(false);
   const activeNotes = activeProcessingNotes(notes);
   const activeProcessingKey = activeNotes
@@ -48,8 +54,101 @@ export function useNoteProcessingEvents(dependencies: UseNoteProcessingEventsDep
     disposedRef.current = false;
     return () => {
       disposedRef.current = true;
+      for (const timeout of terminalHydrationRetryRef.current.values()) {
+        window.clearTimeout(timeout);
+      }
+      terminalHydrationRetryRef.current.clear();
     };
   }, []);
+
+  const clearTerminalHydration = useCallback((progress: NoteProcessingProgressDto) => {
+    const pending = pendingTerminalHydrationsRef.current.get(progress.noteId);
+    if (!pending || progressIdentity(pending) !== progressIdentity(progress)) return;
+    pendingTerminalHydrationsRef.current.delete(progress.noteId);
+    const timeout = terminalHydrationRetryRef.current.get(progress.noteId);
+    if (timeout !== undefined) {
+      window.clearTimeout(timeout);
+      terminalHydrationRetryRef.current.delete(progress.noteId);
+    }
+  }, []);
+
+  const scheduleTerminalHydrationRetry = useCallback((progress: NoteProcessingProgressDto) => {
+    if (terminalHydrationRetryRef.current.has(progress.noteId)) return;
+    const timeout = window.setTimeout(() => {
+      terminalHydrationRetryRef.current.delete(progress.noteId);
+      const pending = pendingTerminalHydrationsRef.current.get(progress.noteId);
+      if (
+        disposedRef.current ||
+        !pending ||
+        progressIdentity(pending) !== progressIdentity(progress)
+      ) {
+        return;
+      }
+      void refreshCompletedNoteRef.current(pending);
+    }, NOTE_PROCESSING_RECONCILE_INTERVAL_MS);
+    terminalHydrationRetryRef.current.set(progress.noteId, timeout);
+  }, []);
+
+  const refreshCompletedNote = useCallback(
+    (progress: NoteProcessingProgressDto) => {
+      const pending = terminalHydrationInFlightRef.current.get(progress.noteId);
+      if (pending) return pending;
+
+      let shouldRetry = false;
+      const hydration = (async () => {
+        try {
+          // PR #917 made editor persistence asynchronous. Drain that note's
+          // optimistic edits before hydrating the generated result so the done
+          // snapshot cannot replace a newer local title or body.
+          await noteSaveController.flush(progress.noteId);
+          const note = await getNote(progress.noteId);
+          const latest = pendingTerminalHydrationsRef.current.get(progress.noteId);
+          if (
+            disposedRef.current ||
+            !latest ||
+            progressIdentity(latest) !== progressIdentity(progress)
+          ) {
+            return;
+          }
+          if (note.updatedAt < progress.revision) {
+            shouldRetry = true;
+            return;
+          }
+          dispatch({ type: "noteUpdated", note });
+          clearTerminalHydration(progress);
+        } catch (error) {
+          shouldRetry = true;
+          if (!disposedRef.current) setError(messageFromError(error));
+        }
+      })();
+
+      terminalHydrationInFlightRef.current.set(progress.noteId, hydration);
+      void hydration.finally(() => {
+        if (terminalHydrationInFlightRef.current.get(progress.noteId) === hydration) {
+          terminalHydrationInFlightRef.current.delete(progress.noteId);
+        }
+        const latest = pendingTerminalHydrationsRef.current.get(progress.noteId);
+        if (
+          disposedRef.current ||
+          !latest ||
+          progressIdentity(latest) !== progressIdentity(progress)
+        ) {
+          if (latest && !disposedRef.current) void refreshCompletedNoteRef.current(latest);
+          return;
+        }
+        if (shouldRetry) scheduleTerminalHydrationRetry(progress);
+      });
+      return hydration;
+    },
+    [
+      clearTerminalHydration,
+      dispatch,
+      noteSaveController,
+      scheduleTerminalHydrationRetry,
+      setError,
+    ],
+  );
+  refreshCompletedNoteRef.current = refreshCompletedNote;
 
   const reconcileNote = useCallback(
     (noteId: string) => {
@@ -91,41 +190,29 @@ export function useNoteProcessingEvents(dependencies: UseNoteProcessingEventsDep
     }
   }, [reconcileNote]);
 
+  const reconcilePendingTerminalHydrations = useCallback(() => {
+    for (const progress of pendingTerminalHydrationsRef.current.values()) {
+      void refreshCompletedNote(progress);
+    }
+  }, [refreshCompletedNote]);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    const latestByNote = new Map<string, NoteProcessingProgressDto>();
-
-    const refreshCompletedNote = async (progress: NoteProcessingProgressDto) => {
-      const identity = progressIdentity(progress);
-      try {
-        // PR #917 made editor persistence asynchronous. Drain that note's
-        // optimistic edits before hydrating the generated result so the done
-        // snapshot cannot replace a newer local title or body.
-        await noteSaveController.flush(progress.noteId);
-        const note = await getNote(progress.noteId);
-        const latest = latestByNote.get(progress.noteId);
-        if (disposed || !latest || progressIdentity(latest) !== identity) return;
-        if (note.updatedAt < progress.revision) return;
-        dispatch({ type: "noteUpdated", note });
-        if (latestByNote.get(progress.noteId) === latest) {
-          latestByNote.delete(progress.noteId);
-        }
-      } catch (error) {
-        if (!disposed) setError(messageFromError(error));
-      }
-    };
 
     void listen<NoteProcessingProgressDto>(NOTE_PROCESSING_PROGRESS_EVENT, (event) => {
       const progress = event.payload;
-      latestByNote.set(progress.noteId, progress);
       dispatch({
         type: "noteProcessingStageChanged",
         noteId: progress.noteId,
         processingStatus: progress.processingStatus,
       });
       if (progress.stage === "done") {
+        pendingTerminalHydrationsRef.current.set(progress.noteId, progress);
         void refreshCompletedNote(progress);
+      } else {
+        const pending = pendingTerminalHydrationsRef.current.get(progress.noteId);
+        if (pending) clearTerminalHydration(pending);
       }
     }).then((cleanup) => {
       if (disposed) cleanup();
@@ -136,12 +223,16 @@ export function useNoteProcessingEvents(dependencies: UseNoteProcessingEventsDep
       disposed = true;
       unlisten?.();
     };
-  }, [dispatch, noteSaveController, setError]);
+  }, [clearTerminalHydration, dispatch, refreshCompletedNote]);
 
   useEffect(() => {
-    const onFocus = () => reconcileActiveNotes();
+    const reconcileProcessing = () => {
+      reconcileActiveNotes();
+      reconcilePendingTerminalHydrations();
+    };
+    const onFocus = () => reconcileProcessing();
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") reconcileActiveNotes();
+      if (document.visibilityState === "visible") reconcileProcessing();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -149,7 +240,7 @@ export function useNoteProcessingEvents(dependencies: UseNoteProcessingEventsDep
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [reconcileActiveNotes]);
+  }, [reconcileActiveNotes, reconcilePendingTerminalHydrations]);
 
   useEffect(() => {
     if (!activeProcessingKey) return;

@@ -1573,6 +1573,85 @@ describe("notes recording reliability", () => {
     expect(await screen.findByText("The completed note is visible.")).toBeInTheDocument();
   });
 
+  it("retries a terminal hydration that fails transiently", async () => {
+    const selectedNote = note({
+      processingStatus: "generating",
+      activeTab: "transcription",
+      sourceTranscripts: [],
+    });
+    const completedNote = {
+      ...selectedNote,
+      processingStatus: "ready" as const,
+      updatedAt: "2026-05-19T10:00:05Z",
+      sourceTranscripts: [
+        {
+          id: "turn-terminal-retry",
+          text: "Recovered after terminal hydration failed.",
+          source: "microphone" as const,
+          sourceMode: "microphonePlusSystem" as const,
+          startMs: 0,
+          endMs: 4_000,
+          turnIndex: 0,
+          language: "en",
+          status: "succeeded" as const,
+          recordedSilence: false,
+        },
+      ],
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockResolvedValue(selectedNote);
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
+    await waitFor(() => expect(mocks.listeners.has("note-processing-progress")).toBe(true));
+
+    mocks.getNote.mockClear();
+    mocks.getNote
+      .mockRejectedValueOnce(new Error("Temporary note read failure"))
+      .mockResolvedValue(completedNote);
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+
+    try {
+      await act(async () => {
+        await mocks.listeners.get("note-processing-progress")?.({
+          payload: {
+            noteId: selectedNote.id,
+            recordingSessionId: "recording-1",
+            stage: "done",
+            processingStatus: "ready",
+            revision: completedNote.updatedAt,
+          },
+        });
+      });
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(1));
+      let retry: TimerHandler | undefined;
+      await waitFor(() => {
+        retry = setTimeoutSpy.mock.calls.find(
+          ([, delay]) => delay === NOTE_PROCESSING_RECONCILE_INTERVAL_MS,
+        )?.[0];
+        expect(retry).toBeTypeOf("function");
+      });
+
+      await act(async () => {
+        if (typeof retry === "function") retry();
+      });
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(2));
+      expect(
+        await screen.findByText("Recovered after terminal hydration failed."),
+      ).toBeInTheDocument();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it.each([
     ["window focus", () => window.dispatchEvent(new Event("focus"))],
     ["visible document", () => document.dispatchEvent(new Event("visibilitychange"))],
