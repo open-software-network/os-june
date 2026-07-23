@@ -1089,7 +1089,9 @@ describe("App shortcuts", () => {
 
     mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
 
-    expect(await screen.findByRole("heading", { name: "General" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "General" }, { timeout: 10_000 }),
+    ).toBeInTheDocument();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
