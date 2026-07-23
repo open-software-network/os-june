@@ -56,6 +56,7 @@ import {
   type TabNav,
 } from "./tabs/tabs";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
+import { IconHome } from "central-icons/IconHome";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconProjects } from "central-icons/IconProjects";
@@ -376,7 +377,7 @@ function tabMeta(
     case "home":
       return {
         title: "Home",
-        icon: null,
+        icon: <IconHome size={TAB_ICON_SIZE} />,
       };
     case "meetings": {
       const note = nav.noteId ? notes.find((n) => n.id === nav.noteId) : undefined;

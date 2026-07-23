@@ -1665,7 +1665,10 @@ pub async fn june_home_chat(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("minimal")
+        // "none" mirrors the composer's Low stop (thinking-level.ts): Home is
+        // conversational, so by default the model answers without a separate
+        // reasoning pass.
+        .unwrap_or("none")
         .to_string();
     let mut messages = vec![serde_json::json!({
         "role": "system",

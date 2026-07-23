@@ -173,6 +173,37 @@ function localDateKey(now: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+/** Local calendar-day key for a turn timestamp, or "" when unparseable, so the
+ * Home transcript can detect day boundaries without inventing one for turns
+ * whose timestamps are missing or malformed. */
+export function juneHomeDayKey(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return localDateKey(date);
+}
+
+/** Human day-boundary label for the Home thread ("Today at 2:45 PM",
+ * "Yesterday at 9:04 AM", "Monday at 8:12 AM", "March 3 at 4:20 PM"). */
+export function juneHomeDayLabel(iso: string, now = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  const startOfDay = (value: Date) =>
+    new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (dayDiff <= 0) return `Today at ${time}`;
+  if (dayDiff === 1) return `Yesterday at ${time}`;
+  if (dayDiff < 7) return `${date.toLocaleDateString(undefined, { weekday: "long" })} at ${time}`;
+  const sameYear = date.getFullYear() === now.getFullYear();
+  const day = date.toLocaleDateString(
+    undefined,
+    sameYear
+      ? { month: "long", day: "numeric" }
+      : { month: "long", day: "numeric", year: "numeric" },
+  );
+  return `${day} at ${time}`;
+}
+
 function checkInText(now: Date): string {
   const hour = now.getHours();
   if (hour < 12) return "Good morning. What would make today feel lighter?";

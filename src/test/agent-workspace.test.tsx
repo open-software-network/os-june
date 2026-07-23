@@ -719,14 +719,37 @@ describe("AgentWorkspace", () => {
     });
   });
 
-  it("shows June's identity and concise online presence in Home", () => {
+  it("opens Home as a quiet thread: serif greeting, no identity chrome, a new-session escape hatch", () => {
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
     const home = within(screen.getByRole("region", { name: "Home" }));
-    expect(home.getByText("June", { selector: "strong" })).toBeInTheDocument();
-    expect(home.getByText("Your personal assistant")).toBeInTheDocument();
-    expect(home.getByText("Online")).toBeInTheDocument();
+    // June's presence lives in the daily greeting and the composer, not a
+    // support-widget header (avatar, subtitle, presence dot).
+    expect(
+      home.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
+    ).toBeInTheDocument();
+    expect(home.getByRole("button", { name: "New session" })).toBeInTheDocument();
+    expect(home.queryByText("Your personal assistant")).not.toBeInTheDocument();
+    expect(home.queryByText("Online")).not.toBeInTheDocument();
     expect(home.queryByText("Here with you")).not.toBeInTheDocument();
+  });
+
+  it("hands off to a fresh focused session from Home's new-session control", async () => {
+    const user = userEvent.setup();
+    const newSessionEvents: Event[] = [];
+    const record = (event: Event) => newSessionEvents.push(event);
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, record);
+    try {
+      render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+      await user.click(screen.getByRole("button", { name: "New session" }));
+
+      // The app shell owns the navigation (Home stays mounted); the workspace
+      // only announces the intent.
+      expect(newSessionEvents).toHaveLength(1);
+    } finally {
+      window.removeEventListener(AGENT_NEW_SESSION_EVENT, record);
+    }
   });
 
   it("keeps Home in place while June starts a focused session from its handoff tool", async () => {
@@ -757,7 +780,7 @@ describe("AgentWorkspace", () => {
         [{ role: "user", content: "Please research a weekend in Oaxaca" }],
         expect.objectContaining({
           model: "__june_auto_generation__:0",
-          reasoningEffort: "minimal",
+          reasoningEffort: "none",
         }),
       ),
     );
@@ -906,7 +929,7 @@ describe("AgentWorkspace", () => {
         expect.objectContaining({
           title: "Home",
           model: "__june_auto_generation__:0",
-          reasoning_effort: "minimal",
+          reasoning_effort: "none",
           fast: true,
         }),
       ),
@@ -938,7 +961,7 @@ describe("AgentWorkspace", () => {
 
     expect(screen.getByText("Are you there?")).toBeInTheDocument();
     expect(screen.getByRole("status")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
 
     resolveHomeChat?.({ content: "Yes — right here." });
     expect(await screen.findByText("Yes — right here.")).toBeInTheDocument();
@@ -989,7 +1012,7 @@ describe("AgentWorkspace", () => {
         ],
         expect.objectContaining({
           model: "__june_auto_generation__:0",
-          reasoningEffort: "minimal",
+          reasoningEffort: "none",
         }),
       ),
     );
@@ -1006,7 +1029,7 @@ describe("AgentWorkspace", () => {
 
     const first = render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
-    expect(await screen.findByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
     await waitFor(() =>
       expect(readSessionModelSelections()[existingSession.id]?.selection).toEqual({
         modelId: "open-software/auto",
@@ -1032,9 +1055,9 @@ describe("AgentWorkspace", () => {
 
     await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
     const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
-    await user.click(within(dialog).getByRole("button", { name: "Effort Instant" }));
+    await user.click(within(dialog).getByRole("button", { name: "Effort Low" }));
     const submenu = await screen.findByRole("group", { name: "Thinking level" });
-    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^High / }));
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
     await user.type(composer, "Think this through");
@@ -4423,6 +4446,198 @@ describe("AgentWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("searches and keyboard-selects a model when bare /model is submitted", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    expect(search).toBeInTheDocument();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("switch", { name: "Choose the model automatically" }),
+    ).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
+
+    await user.type(search, "GLM 5.2");
+    expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
+    );
+    expect(composer).toHaveFocus();
+  });
+
+  it("opens the model palette immediately when Model is clicked in the slash menu", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/");
+    await user.click(await screen.findByRole("option", { name: "Model" }));
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    expect(search).toHaveFocus();
+    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
+    expect(
+      within(palette).getByRole("switch", { name: "Choose the model automatically" }),
+    ).toBeInTheDocument();
+    expect(composer).toHaveTextContent(/^$/);
+
+    await user.type(search, "GLM 5.2");
+    expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
+
+    // Escape peels one layer at a time: the active query first, then the
+    // popover itself (returning focus to the draft for the /model flow).
+    await user.keyboard("{Escape}");
+    expect(search).toHaveValue("");
+    expect(screen.getByRole("dialog", { name: "Choose text model" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
+    await waitFor(() => expect(composer).toHaveFocus());
+  });
+
+  it("opens the model palette when the filtered Model command is selected with Enter", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/mode");
+    await user.keyboard("{Enter}");
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    expect(within(palette).getByRole("combobox", { name: "Search models" })).toHaveFocus();
+    expect(composer).toHaveTextContent(/^$/);
+  });
+
+  it("returns Auto, Preference, and Effort when searching the root model palette", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "open-software/auto",
+        costQuality: 50,
+      },
+    });
+    // Auto is a first-class control, not a catalog row. Keep it out of the
+    // mocked catalog to prove L1 search does not depend on a provider result.
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "open-software/auto",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.keyboard("{Enter}");
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("");
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.type(search, "auto");
+
+    const autoSwitch = within(palette).getByRole("switch", {
+      name: "Choose the model automatically",
+    });
+    expect(autoSwitch).toBeChecked();
+    expect(
+      within(palette).getByRole("button", { name: "Preference Balanced" }),
+    ).toBeInTheDocument();
+    expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+    expect(
+      within(palette).queryByRole("listbox", { name: "Matching models" }),
+    ).not.toBeInTheDocument();
+    expect(search).toHaveAttribute("aria-expanded", "false");
+    const searchStatus = within(palette).getByRole("status");
+    expect(searchStatus).toHaveTextContent("3 settings shown. Press Tab to review settings.");
+    expect(search).toHaveAttribute("aria-describedby", searchStatus.id);
+
+    // A settings-only query has no active model option. Enter stays within the
+    // search flow instead of bubbling into the surrounding message form.
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("auto");
+    expect(fireEvent.keyDown(search, { key: "ArrowDown" })).toBe(true);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.tab();
+    expect(autoSwitch).toHaveFocus();
+
+    await user.clear(search);
+    await user.type(search, "Preference Balanced");
+    expect(
+      within(palette).getByRole("button", { name: "Preference Balanced" }),
+    ).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "Effort Medium");
+    expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "auto preference");
+    await user.click(within(palette).getByRole("button", { name: "Preference Balanced" }));
+    expect(within(palette).getByRole("group", { name: "Auto preference" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(
+      within(palette).queryByRole("group", { name: "Auto preference" }),
+    ).not.toBeInTheDocument();
+    expect(search).toHaveValue("auto preference");
+    await user.keyboard("{Escape}");
+    expect(search).toHaveValue("");
+  });
+
+  it("keeps the root layer in browse mode while searching the All models flyout", async () => {
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.keyboard("{Enter}");
+
+    const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
+    await user.click(within(dialog).getByRole("button", { name: "All models" }));
+    const flyoutSearch = within(dialog).getByRole("textbox", { name: "Search models" });
+    await user.type(flyoutSearch, "kimi");
+
+    // The two queries are independent: L2's box filters only its own list,
+    // so the root layer stays in browse mode with an empty root query.
+    expect(within(dialog).getByText("Suggested")).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: "Search models" })).toHaveValue("");
+  });
+
   it("shows the current thinking level on the model menu's Effort row", async () => {
     const user = userEvent.setup();
 
@@ -4437,21 +4652,21 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    expect(within(submenu).getByRole("option", { name: "Instant" })).toHaveAttribute(
-      "aria-selected",
+    expect(within(submenu).getByRole("menuitemradio", { name: /^Low / })).toHaveAttribute(
+      "aria-checked",
       "false",
     );
-    expect(within(submenu).getByRole("option", { name: "Medium" })).toHaveAttribute(
-      "aria-selected",
+    expect(within(submenu).getByRole("menuitemradio", { name: /^Medium / })).toHaveAttribute(
+      "aria-checked",
       "true",
     );
-    expect(within(submenu).getByRole("option", { name: "Hard" })).toHaveAttribute(
-      "aria-selected",
+    expect(within(submenu).getByRole("menuitemradio", { name: /^High / })).toHaveAttribute(
+      "aria-checked",
       "false",
     );
-    expect(
-      within(submenu).getByText("Higher effort consumes usage limits faster."),
-    ).toBeInTheDocument();
+    expect(within(submenu).getByText("Faster responses with lower usage.")).toBeVisible();
+    expect(within(submenu).getByText("Balances speed and depth for most tasks.")).toBeVisible();
+    expect(within(submenu).getByText("Deeper reasoning with higher usage.")).toBeVisible();
   });
 
   it("retunes the open session live when the thinking level changes", async () => {
@@ -4478,7 +4693,7 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^High / }));
 
     // The live runtime retunes through config.set (the same surface as the
     // TUI's /reasoning), keyed by the runtime session id.
@@ -4504,7 +4719,7 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    await user.click(within(submenu).getByRole("option", { name: "Instant" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^Low / }));
 
     window.dispatchEvent(
       new CustomEvent(AGENT_NEW_SESSION_EVENT, {
@@ -4519,7 +4734,7 @@ describe("AgentWorkspace", () => {
         title: "Summarize Current Page",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
-        reasoning_effort: "minimal",
+        reasoning_effort: "none",
       }),
     );
   });
@@ -4557,7 +4772,7 @@ describe("AgentWorkspace", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    expect(within(dialog).getByRole("button", { name: "Effort Hard" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Effort High" })).toBeInTheDocument();
   });
 
   it("keeps another chat on its own level after retuning the current chat", async () => {
@@ -4587,7 +4802,7 @@ describe("AgentWorkspace", () => {
     const submenu = await screen.findByRole("group", {
       name: "Thinking level",
     });
-    await user.click(within(submenu).getByRole("option", { name: "Hard" }));
+    await user.click(within(submenu).getByRole("menuitemradio", { name: /^High / }));
 
     view.rerender(<AgentWorkspace initialSession={secondSession} />);
 
@@ -4596,11 +4811,11 @@ describe("AgentWorkspace", () => {
       name: "Choose text model",
     });
     expect(within(dialog2).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
-    expect(within(dialog2).queryByRole("button", { name: "Effort Hard" })).not.toBeInTheDocument();
+    expect(within(dialog2).queryByRole("button", { name: "Effort High" })).not.toBeInTheDocument();
   });
 
   it("re-asserts a persisted session level on the first send after a reload", async () => {
-    // The session was retuned to Hard before the app restarted: its record
+    // The session was retuned to High before the app restarted: its record
     // survived (localStorage) but the in-memory ack cache did not, so the
     // fresh runtime must be retuned before the next prompt runs.
     window.localStorage.setItem(
@@ -4615,7 +4830,7 @@ describe("AgentWorkspace", () => {
     const dialog = await screen.findByRole("dialog", {
       name: "Choose text model",
     });
-    expect(within(dialog).getByRole("button", { name: "Effort Hard" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Effort High" })).toBeInTheDocument();
     await user.keyboard("{Escape}");
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
@@ -4633,60 +4848,6 @@ describe("AgentWorkspace", () => {
       session_id: "runtime-session-1",
       text: "hello again",
     });
-  });
-
-  it("stages /model from the slash menu, then opens the model palette on Enter", async () => {
-    const user = userEvent.setup();
-
-    render(<AgentWorkspace initialSession={existingSession} />);
-
-    const composer = await screen.findByRole("textbox", { name: "Message June" });
-    await user.type(composer, "/");
-    await user.click(await screen.findByRole("option", { name: "Model" }));
-
-    expect(composer).toHaveTextContent("/model");
-    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
-
-    await user.keyboard("{Enter}");
-
-    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
-    expect(within(palette).getByRole("combobox", { name: "Search models" })).toHaveFocus();
-    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
-    expect(within(palette).getByText("All models")).toBeInTheDocument();
-    expect(composer).toHaveTextContent(/^$/);
-
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument();
-    await waitFor(() => expect(composer).toHaveFocus());
-  });
-
-  it("searches and keyboard-selects a model when bare /model is submitted", async () => {
-    const user = userEvent.setup();
-
-    render(<AgentWorkspace initialSession={existingSession} />);
-
-    const composer = await screen.findByRole("textbox", { name: "Message June" });
-    await user.type(composer, "/model");
-    await user.click(screen.getByRole("button", { name: "Send message" }));
-
-    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
-    const search = within(palette).getByRole("combobox", { name: "Search models" });
-    expect(search).toBeInTheDocument();
-    expect(
-      within(palette).getByRole("switch", { name: "Only show private models" }),
-    ).not.toBeChecked();
-    expect(within(palette).getByText("Suggested")).toBeInTheDocument();
-    expect(within(palette).getByText("All models")).toBeInTheDocument();
-    expect(composer).toHaveTextContent(/^$/);
-
-    await user.type(search, "GLM 5.2");
-    expect(within(palette).getByRole("option", { name: /GLM 5\.2/ })).toBeInTheDocument();
-
-    await user.keyboard("{Enter}");
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
-    );
-    expect(composer).toHaveFocus();
   });
 
   it("queues /model in an existing chat and applies it before the next message", async () => {
@@ -5107,13 +5268,13 @@ describe("AgentWorkspace", () => {
       expect(mocks.setVeniceModel).toHaveBeenCalledWith("generation", "open-software/auto"),
     );
     // The pill ghosts the active preset designation beside the model name.
-    expect(await screen.findByRole("button", { name: "Model: Auto (Lower)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
 
     // The Preference drill-in persists a new preset and updates the pill.
     await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
-    await user.click(await screen.findByRole("menuitemradio", { name: /Higher quality/ }));
+    await user.click(await screen.findByRole("menuitemradio", { name: /Quality/ }));
     await waitFor(() => expect(mocks.setCostQuality).toHaveBeenCalledWith(100));
-    expect(await screen.findByRole("button", { name: "Model: Auto (Higher)" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {
@@ -13267,7 +13428,7 @@ describe("AgentWorkspace", () => {
       ],
       expect.objectContaining({
         model: "__june_auto_generation__:0",
-        reasoningEffort: "minimal",
+        reasoningEffort: "none",
       }),
     );
     expect(
@@ -13296,7 +13457,7 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
     expect(await screen.findByText("A useful system notice.")).toBeInTheDocument();
-    expect(screen.queryByText("Model changed to Auto Lower.")).toBeNull();
+    expect(screen.queryByText("Model changed to Auto Economy.")).toBeNull();
   });
 
   it("shows only the latest retryable service notice in Home", async () => {
@@ -15549,7 +15710,7 @@ describe("AgentWorkspace", () => {
       );
 
       const composer = await screen.findByRole("textbox", { name: "Message June" });
-      await screen.findByRole("button", { name: "Model: Auto (Higher)" });
+      await screen.findByRole("button", { name: "Model: Auto" });
       await user.type(composer, "Use my Venice key");
       expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
 
@@ -16019,7 +16180,7 @@ describe("AgentWorkspace", () => {
       );
       expect(dialog).toBeInTheDocument();
       await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
-      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Economy/ }));
 
       expect(mocks.setCostQuality).not.toHaveBeenCalled();
       expect(mocks.setVeniceModel).not.toHaveBeenCalled();
@@ -16055,7 +16216,7 @@ describe("AgentWorkspace", () => {
         />,
       );
 
-      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      await user.click(await screen.findByRole("button", { name: "Model: Auto" }));
       const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
       const autoSwitch = within(dialog).getByRole("switch", {
         name: "Choose the model automatically",
@@ -16203,10 +16364,10 @@ describe("AgentWorkspace", () => {
       render(<AgentWorkspace />);
 
       const composer = await screen.findByRole("textbox", { name: "Message June" });
-      await user.click(await screen.findByRole("button", { name: "Model: Auto (Higher)" }));
+      await user.click(await screen.findByRole("button", { name: "Model: Auto" }));
       const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
       await user.click(within(dialog).getByRole("button", { name: /Preference/ }));
-      await user.click(await screen.findByRole("menuitemradio", { name: /Lower cost/ }));
+      await user.click(await screen.findByRole("menuitemradio", { name: /Economy/ }));
       expect(mocks.setCostQuality).toHaveBeenCalledWith(20);
       expect(finishCostQualitySave).toBeDefined();
       await user.type(composer, "Start with this Auto preference");

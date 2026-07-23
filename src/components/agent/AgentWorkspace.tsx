@@ -60,6 +60,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
+  Fragment,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -74,7 +75,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { BackButton } from "../ui/BackButton";
-import { JuneMark } from "../account/AccountGate";
+import { JuneBloom } from "../brand/JuneBloom";
 import { TierMiniCard } from "../account/FundingNotice";
 import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNotice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -116,6 +117,7 @@ import {
   importHermesBridgeFile,
   importHermesBridgeFileBytes,
   juneHomeChat,
+  type JuneHomeChatResponse,
   listVeniceModels,
   listAgentTasks,
   downloadHermesBridgeFile,
@@ -314,7 +316,6 @@ import {
   saveThinkingLevel,
   thinkingEffortForLevel,
   thinkingLevelForEffort,
-  thinkingOptionForLevel,
   type ThinkingLevel,
 } from "../../lib/thinking-level";
 import {
@@ -322,11 +323,7 @@ import {
   modelOptions,
   selectedModel as selectedModelOption,
 } from "../settings/ModelPickerDialog";
-import {
-  ModelCommandPalette,
-  ModelPickerPopover,
-  type ModelPickerFlyout,
-} from "../settings/ModelPickerPopover";
+import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import {
   HERMES_SERVER_ERROR_MESSAGE,
   describeHermesError,
@@ -437,8 +434,12 @@ import {
 import {
   isJuneHomeStartTaskTool,
   juneHomeDailyCheckIn,
+  juneHomeDayKey,
+  juneHomeDayLabel,
   juneHomeTaskRequestFromPayload,
+  readJuneHomeSessionId,
   withJuneHomeContext,
+  writeJuneHomeSessionId,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
 
@@ -1962,6 +1963,98 @@ function persistHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTur
   }
 }
 
+// Dev-tools Home thread driver (window.__homeDemo). Seeds the persistent Home
+// conversation with a believable multi-day script and flips replies to canned
+// local responses (~1.3s delay, no June API call), so the whole loop — day
+// markers, greeting, send, typing dots, reply, task handoff — can be exercised
+// offline or while the API path is unavailable. Dev builds only.
+const HOME_DEMO_SEEDED_EVENT = "june:agent:home-demo-seeded";
+let homeDemoCannedReplies = false;
+
+const HOME_DEMO_REPLIES = [
+  "On it. I will keep that in the back of my mind and surface it when it matters.",
+  "Noted. Want me to fold that into tomorrow's morning rundown?",
+  "Done. I also nudged your reading list while I was at it, since you asked me to keep an eye on it.",
+];
+let homeDemoReplyIndex = 0;
+
+async function homeDemoReply(prompt: string): Promise<JuneHomeChatResponse> {
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  if (/\b(research|session|plan a|look into)\b/i.test(prompt)) {
+    return {
+      task: {
+        title: "Focused follow-up",
+        prompt,
+        summary: "I will dig into that in a focused session.",
+      },
+    };
+  }
+  const content = HOME_DEMO_REPLIES[homeDemoReplyIndex % HOME_DEMO_REPLIES.length];
+  homeDemoReplyIndex += 1;
+  return { content };
+}
+
+function seedHomeDemoTurns(storedSessionId: string) {
+  const now = Date.now();
+  const at = (minutesAgo: number) => new Date(now - minutesAgo * 60000).toISOString();
+  const turn = (
+    id: string,
+    role: "user" | "assistant",
+    text: string,
+    createdAt: string,
+  ): AgentChatTurn => ({
+    id: `home-demo-${id}`,
+    role,
+    createdAt,
+    status: "complete",
+    parts: [{ type: "text", text, status: "complete" }],
+  });
+  persistHomeDirectTurns(storedSessionId, [
+    turn(
+      "u1",
+      "user",
+      "Can you keep an eye on my reading list and nudge me when I stall?",
+      at(4 * 24 * 60 + 90),
+    ),
+    turn(
+      "a1",
+      "assistant",
+      "Happy to. I will check in when a book sits untouched for a week, gently and without guilt.",
+      at(4 * 24 * 60 + 89),
+    ),
+    turn("u2", "user", "How did the accounts migration land yesterday?", at(24 * 60 + 30)),
+    turn(
+      "a2",
+      "assistant",
+      "Cleanly. All three services are on the new tokens and nothing hit the fallback path overnight. The one loose end is the staging cron. Want me to open a session to fix it?",
+      at(24 * 60 + 29),
+    ),
+    turn("u3", "user", "Morning! What does my day look like?", at(170)),
+    turn(
+      "a3",
+      "assistant",
+      "Light, for once. Two meetings: standup at 10 and the design review at 2. Your notes from last week's review are ready if you want a refresher.",
+      at(169),
+    ),
+  ]);
+  window.dispatchEvent(new CustomEvent(HOME_DEMO_SEEDED_EVENT));
+}
+
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__homeDemo = (enable: boolean = true) => {
+    homeDemoCannedReplies = enable;
+    if (!enable) return "Home demo off; sends go through June API again.";
+    const profile = "default";
+    let storedSessionId = readJuneHomeSessionId(profile);
+    if (!storedSessionId) {
+      storedSessionId = "home-demo-session";
+      writeJuneHomeSessionId(profile, storedSessionId);
+    }
+    seedHomeDemoTurns(storedSessionId);
+    return "Home seeded with a multi-day thread; sends now get canned local replies (no API). Open Home (reload if it was empty). Run __homeDemo(false) to restore real sends.";
+  };
+}
+
 function juneHomeChatMessagesFromTurns(turns: AgentChatTurn[]) {
   return turns
     .filter(
@@ -2080,7 +2173,7 @@ function homeTaskSessionMatchScore(prompt: string, title: string): number {
 // routes quick personal-assistant turns toward the fastest eligible private
 // model. An explicit picker choice still wins for this Home conversation.
 // Auto's lowest-cost route consistently selects the quickest eligible private
-// conversational model. The picker still labels this band "Lower", while an
+// conversational model. The picker still labels this band "Economy", while an
 // explicit user selection continues to win after the one-time Home migration.
 const HOME_CONVERSATIONAL_COST_QUALITY = 0;
 const HOME_CONVERSATIONAL_DEFAULT_MIGRATION_PREFIX = "june.home.conversationalDefaultMigrated.v2:";
@@ -3204,7 +3297,12 @@ export function AgentWorkspace({
   // endpoint in Settings re-arms the warning. Loopback endpoints never arm it.
   const localEnableConfirmArmedForRef = useRef<string | null>(null);
   const [composerModelOpen, setComposerModelOpen] = useState(false);
-  const [composerModelCommandPalette, setComposerModelCommandPalette] = useState(false);
+  const [composerModelFromSlash, setComposerModelFromSlash] = useState(false);
+  const composerModelRootSearchRef = useRef<HTMLInputElement>(null);
+  // The popover's root-layer query, independent of the All models flyout's
+  // `modelSearch`: L2's box filters only its catalog list, and typing there
+  // never flips the root layer into results mode.
+  const [modelRootSearch, setModelRootSearch] = useState("");
   const [composerModelFlyout, setComposerModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const composerModelTriggerRef = useRef<HTMLButtonElement>(null);
@@ -4190,18 +4288,20 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (composerModelCommandPalette) {
-          setComposerModelOpen(false);
-          composerEditorRef.current?.focus();
-          return;
-        }
-        // Escape peels one layer at a time: the all-models panel first,
-        // then the popover itself.
-        if (composerModelFlyout?.kind === "all" || composerModelFlyout?.kind === "effort") {
+        // Escape peels one layer at a time: a nested model control or the
+        // all-models panel first, then an active root query, then the popover.
+        if (
+          composerModelFlyout?.kind === "all" ||
+          composerModelFlyout?.kind === "auto" ||
+          composerModelFlyout?.kind === "effort"
+        ) {
           setComposerModelFlyout(null);
           setModelSearch("");
+        } else if (modelRootSearch) {
+          setModelRootSearch("");
         } else {
           setComposerModelOpen(false);
+          if (composerModelFromSlash) composerEditorRef.current?.focus();
         }
       }
     }
@@ -4211,13 +4311,18 @@ export function AgentWorkspace({
       window.removeEventListener("mousedown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [composerModelCommandPalette, composerModelOpen, composerModelFlyout]);
+  }, [composerModelFromSlash, composerModelOpen, composerModelFlyout, modelRootSearch]);
 
   useLayoutEffect(() => {
-    if (composerModelOpen && (composerModelCommandPalette || composerModelFlyout?.kind === "all")) {
+    if (!composerModelOpen) return;
+    if (composerModelFlyout?.kind === "all") {
       composerModelSearchRef.current?.focus();
+      return;
     }
-  }, [composerModelCommandPalette, composerModelFlyout, composerModelOpen]);
+    if (composerModelFromSlash) {
+      composerModelRootSearchRef.current?.focus();
+    }
+  }, [composerModelFromSlash, composerModelFlyout, composerModelOpen]);
 
   // The popover lives outside the composer box (whose overflow:hidden would
   // clip it), so CSS alone can only anchor it to the box, leaving the whole
@@ -4232,27 +4337,13 @@ export function AgentWorkspace({
       if (!trigger || !popover || !form) return;
       const triggerRect = trigger.getBoundingClientRect();
       const formRect = form.getBoundingClientRect();
-      if (composerModelCommandPalette) {
-        const composerBox = form.querySelector<HTMLElement>(".agent-composer-box");
-        const composerRect = composerBox?.getBoundingClientRect() ?? formRect;
-        popover.style.left = `${composerRect.left - formRect.left}px`;
-        popover.style.right = `${formRect.right - composerRect.right}px`;
-        popover.style.bottom = `${formRect.bottom - composerRect.top + 4}px`;
-        popover.style.setProperty(
-          "--model-command-available-height",
-          `${Math.max(96, composerRect.top - 12)}px`,
-        );
-        return;
-      }
-      popover.style.left = "";
-      popover.style.removeProperty("--model-command-available-height");
       popover.style.right = `${formRect.right - triggerRect.right}px`;
       popover.style.bottom = `${formRect.bottom - triggerRect.top + 4}px`;
     }
     positionPopover();
     window.addEventListener("resize", positionPopover);
     return () => window.removeEventListener("resize", positionPopover);
-  }, [composerModelCommandPalette, composerModelOpen]);
+  }, [composerModelOpen]);
 
   useLayoutEffect(() => {
     if (sandboxMenuOpen) {
@@ -4316,6 +4407,39 @@ export function AgentWorkspace({
       window.removeEventListener("resize", measure);
     };
   }, [activePanel, heroMode, selectedFollowUpCount, steerQueueOpen]);
+
+  // Home's one-row composer centers its controls in the pill; once the draft
+  // soft-wraps, the controls drop to the bottom edge and the text grows above
+  // them. CSS cannot observe soft wrapping, so measure the editor against its
+  // own line height and flag the box. Attribute toggling (not state) keeps
+  // keystrokes from re-rendering the workspace.
+  useLayoutEffect(() => {
+    if (!homeMode || activePanel !== "chat") return;
+    const composer = composerRef.current;
+    const editor = composer?.querySelector<HTMLElement>(".agent-composer-editor");
+    const box = composer?.querySelector<HTMLElement>(".agent-composer-box");
+    if (!editor || !box) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 20;
+      box.toggleAttribute("data-multiline", editor.clientHeight > lineHeight * 1.8);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : undefined;
+    observer?.observe(editor);
+    return () => observer?.disconnect();
+  }, [homeMode, activePanel]);
+
+  // Dev-only: __homeDemo seeds the persisted thread from the console; a
+  // mounted Home re-reads it on the seed event so the script appears without
+  // a reload.
+  useEffect(() => {
+    if (!import.meta.env.DEV || !homeMode) return;
+    function refreshSeededTurns() {
+      setHomeDirectTurns(readPersistedHomeDirectTurns(selectedHermesSessionIdRef.current));
+    }
+    window.addEventListener(HOME_DEMO_SEEDED_EVENT, refreshSeededTurns);
+    return () => window.removeEventListener(HOME_DEMO_SEEDED_EVENT, refreshSeededTurns);
+  }, [homeMode]);
 
   // Updates the task list without touching the selection — a late poll
   // response must not re-select a task the user already navigated away from.
@@ -4666,10 +4790,11 @@ export function AgentWorkspace({
 
   // Stale catalog (the mount fetch can fail while the bridge is starting) is
   // refreshed in the background on every open, like Settings does.
-  function openComposerModelPicker(commandPalette = false) {
+  function openComposerModelPicker(fromSlash = false) {
     setModelSearch("");
+    setModelRootSearch("");
     setComposerModelFlyout(null);
-    setComposerModelCommandPalette(commandPalette);
+    setComposerModelFromSlash(fromSlash);
     setComposerModelOpen(true);
     setSandboxMenuOpen(false);
     void loadGenerationModel();
@@ -6832,13 +6957,12 @@ export function AgentWorkspace({
           const currentTurns = readPersistedHomeDirectTurns(homeStoredSessionId);
           const userIndex = currentTurns.findIndex((turn) => turn.id === userTurn.id);
           const contextTurns = userIndex < 0 ? currentTurns : currentTurns.slice(0, userIndex + 1);
-          const response = await juneHomeChat(
-            juneHomeChatMessagesFromTurns([...hermesTurns, ...contextTurns]),
-            {
-              model: sentModelTarget.hermesModelId,
-              reasoningEffort: thinkingEffortForLevel(sentThinkingLevel),
-            },
-          );
+          const response = homeDemoCannedReplies
+            ? await homeDemoReply(prepared.displayContent)
+            : await juneHomeChat(juneHomeChatMessagesFromTurns([...hermesTurns, ...contextTurns]), {
+                model: sentModelTarget.hermesModelId,
+                reasoningEffort: thinkingEffortForLevel(sentThinkingLevel),
+              });
           const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
           const assistantTurn: AgentChatTurn = response.task
             ? {
@@ -7678,7 +7802,7 @@ export function AgentWorkspace({
     };
     try {
       // A handoff returns to the normal new-session defaults. Home's implicit
-      // Auto Lower + Instant route is for conversational latency, not task work.
+      // Auto Economy + Low route is for conversational latency, not task work.
       const defaultModelId = defaultGenerationModelIdRef.current;
       const selection: SessionModelSelection =
         defaultModelId === AUTO_MODEL_ID && generationCostQualityRef.current !== undefined
@@ -11923,6 +12047,15 @@ export function AgentWorkspace({
               );
             }}
             onSubmit={() => void submit()}
+            onBuiltinSlashCommand={(name) => {
+              if (name !== "model") return false;
+              // The slash row commits on mousedown. Mounting the palette in
+              // that same event lets its window-level outside-click listener
+              // observe the now-removed row and close immediately. Queue the
+              // palette for the next task, after that pointer or keyboard event.
+              window.setTimeout(() => openComposerModelPicker(true), 0);
+              return true;
+            }}
             onReady={(editor) => {
               composerTiptapEditorRef.current = editor;
               restoreComposerDraft(composerDraftKeyRef.current);
@@ -11979,7 +12112,7 @@ export function AgentWorkspace({
                     ? autoPillDesignation(activeGenerationCostQuality)
                     : undefined
                 }
-                effort={thinkingOptionForLevel(composerThinkingLevel).label}
+                effort={composerThinkingLevel}
                 triggerRef={composerModelTriggerRef}
                 onToggleOpen={() => {
                   if (composerModelOpen) {
@@ -12169,44 +12302,40 @@ export function AgentWorkspace({
           />
         ) : null}
         {composerModelOpen ? (
-          composerModelCommandPalette ? (
-            <ModelCommandPalette
-              model={generationModel}
-              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-              search={modelSearch}
-              popoverRef={composerModelPopoverRef}
-              searchRef={composerModelSearchRef}
-              onSearchChange={setModelSearch}
-              onSelect={(modelId) => {
-                void handleSelectGenerationModel(modelId);
-                composerEditorRef.current?.focus();
-              }}
-            />
-          ) : (
-            <ModelPickerPopover
-              mode="generation"
-              flyout={composerModelFlyout}
-              model={generationModel}
-              options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
-              costQuality={activeGenerationCostQuality}
-              veniceApiKeyConfigured={veniceApiKeyConfigured}
-              search={modelSearch}
-              popoverRef={composerModelPopoverRef}
-              searchRef={composerModelSearchRef}
-              onFlyoutChange={setComposerModelFlyout}
-              onSearchChange={setModelSearch}
-              onSelect={(modelId, costQuality, options) =>
-                void handleSelectGenerationModel(modelId, costQuality, options)
-              }
-              onCostQualityChange={handleCostQualityChange}
-              thinkingLevel={composerThinkingLevel}
-              onSelectThinking={(level) => {
-                setComposerModelFlyout(null);
-                setComposerModelOpen(false);
-                void handleSelectThinkingLevel(level);
-              }}
-            />
-          )
+          <ModelPickerPopover
+            mode="generation"
+            flyout={composerModelFlyout}
+            model={generationModel}
+            options={modelOptions(generationModelOptions, generationModel?.id ?? "")}
+            costQuality={activeGenerationCostQuality}
+            veniceApiKeyConfigured={veniceApiKeyConfigured}
+            catalogLoaded={generationModelOptions.length > 0}
+            search={modelSearch}
+            popoverRef={composerModelPopoverRef}
+            searchRef={composerModelSearchRef}
+            rootSearchRef={composerModelRootSearchRef}
+            rootSearch={modelRootSearch}
+            onRootSearchChange={(value) => {
+              setComposerModelFlyout(null);
+              setModelRootSearch(value);
+            }}
+            onFlyoutChange={setComposerModelFlyout}
+            onSearchChange={setModelSearch}
+            onSelect={(modelId, costQuality, options) => {
+              void handleSelectGenerationModel(modelId, costQuality, options);
+              // A final pick closes the popover and hands focus back to the
+              // draft; control adjustments (Auto, a keepOpen select) leave
+              // the popover and its focus in place.
+              if (!options?.keepOpen) composerEditorRef.current?.focus();
+            }}
+            onCostQualityChange={handleCostQualityChange}
+            thinkingLevel={composerThinkingLevel}
+            onSelectThinking={(level) => {
+              setComposerModelFlyout(null);
+              setComposerModelOpen(false);
+              void handleSelectThinkingLevel(level);
+            }}
+          />
         ) : null}
         {heroMode && sandboxMenuOpen ? (
           <div
@@ -12454,101 +12583,142 @@ export function AgentWorkspace({
         sessionId={rawTraceSession}
         onClose={() => setRawTraceSession(undefined)}
       />
-      {renderedHermesTurns.map((turn) => (
-        <AgentChatTurnRow
-          key={turn.id}
-          turn={turn}
-          homeTaskHandoff={homeTaskHandoffByTurnId.get(turn.id)}
-          onOpenHomeTaskSession={onOpenHomeTaskSession}
-          activeThinkingKey={activeThinkingKey}
-          artifacts={turnArtifacts.get(turn.id)}
-          approvalSubmitting={approvalSubmitting}
-          clarifySubmitting={clarifySubmitting}
-          sudoSubmitting={sudoSubmitting}
-          secretSubmitting={secretSubmitting}
-          cliAccess={{
-            enabled: cliAccessEnabled,
-            submitting: cliAccessSubmitting,
-            onEnable: () => void enableCliAccessFromChat(),
-          }}
-          browserAccess={{
-            enabled: browserAccessEnabled,
-            submitting: browserAccessSubmitting,
-            onEnable: () => void enableBrowserAccessFromChat(),
-          }}
-          thinkingOpen={thinkingOpen}
-          onThinkingOpenChange={setThinkingOpen}
-          onDownloadArtifact={downloadArtifact}
-          onOpenArtifact={openArtifact}
-          onDownloadImage={downloadGeneratedImage}
-          onOpenImage={openGeneratedImage}
-          onRetryImage={(assistantTurnId, part) =>
-            void retryImageSlashTurn(transcriptSessionId, assistantTurnId, part)
-          }
-          onDownloadVideo={downloadGeneratedVideo}
-          onRetryVideo={(assistantTurnId, part) =>
-            void retryVideoSlashTurn(transcriptSessionId, assistantTurnId, part)
-          }
-          onRetryUpstreamFailure={(turnId) =>
-            void retryUpstreamProviderFailure(
-              transcriptSessionId,
-              upstreamFailureRecoveryIds.get(turnId),
-            )
-          }
-          upstreamFailureRetryAttempted={upstreamProviderRecoveryStore.attempted(
-            transcriptSessionId,
-            upstreamFailureRecoveryIds.get(turn.id) ?? "",
-          )}
-          upstreamFailureRetryDisabled={
-            workingSessionIds.has(transcriptSessionId) || waitingSessionIds.has(transcriptSessionId)
-          }
-          creditActionsDisabledReason={creditActionsDisabledReason}
-          onApproval={(part, choice) =>
-            void respondToApproval(
-              transcriptSessionId,
-              part.sessionId ?? transcriptSessionId,
-              part.id,
-              choice,
-              sessionUnrestricted(transcriptSessionId),
-            )
-          }
-          onTopUp={handleTopUp}
-          topUpLabel={topUpLabel}
-          fundingTier={fundingTier}
-          onClarify={(part, answer) =>
-            void respondToClarify(
-              transcriptSessionId,
-              part.id,
-              answer,
-              sessionUnrestricted(transcriptSessionId),
-            )
-          }
-          onSudo={(part, approved) =>
-            void respondToSudo(
-              transcriptSessionId,
-              part.sessionId ?? transcriptSessionId,
-              part.id,
-              approved,
-              part.mode,
-              sessionUnrestricted(transcriptSessionId),
-            )
-          }
-          onSecret={(part, value) =>
-            void respondToSecret(
-              transcriptSessionId,
-              part.sessionId ?? transcriptSessionId,
-              part.id,
-              value,
-              sessionUnrestricted(transcriptSessionId),
-            )
-          }
-          onBranch={(messageId, sessionId) =>
-            void branchFromMessage(sessionId ?? transcriptSessionId, messageId, transcriptSessionId)
-          }
-          branchingMessageId={branchingMessageId}
-          onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
-        />
-      ))}
+      {renderedHermesTurns.map((turn, turnIndex) => {
+        // Home reads as an ongoing thread, so day boundaries get a quiet
+        // centered marker ("Yesterday at 4:12 PM") instead of running together.
+        const previousTurn = turnIndex > 0 ? renderedHermesTurns[turnIndex - 1] : undefined;
+        const turnDayKey = homeMode ? juneHomeDayKey(turn.createdAt) : "";
+        const dayMarker =
+          homeMode &&
+          previousTurn &&
+          turnDayKey &&
+          turnDayKey !== juneHomeDayKey(previousTurn.createdAt) ? (
+            <div className="agent-home-day">{juneHomeDayLabel(turn.createdAt)}</div>
+          ) : null;
+        // The daily check-in is client-authored ambiance, not a model reply, so
+        // it renders as a serif display greeting — June opening the day — rather
+        // than impersonating a chat message.
+        if (homeMode && turn.id.startsWith("home-check-in:")) {
+          // Salutation becomes the serif display line; the question stays quiet
+          // prose beneath it.
+          const greetingText = homeCheckIn.text;
+          const sentenceSplit = greetingText.match(/^(.+?[.!?])\s+(.+)$/);
+          return (
+            <Fragment key={turn.id}>
+              {dayMarker}
+              <div className="agent-home-greeting">
+                <span className="agent-home-greeting-mark" aria-hidden>
+                  <JuneBloom size={30} animated />
+                </span>
+                <h2>{sentenceSplit ? sentenceSplit[1] : greetingText}</h2>
+                {sentenceSplit ? <p>{sentenceSplit[2]}</p> : null}
+              </div>
+            </Fragment>
+          );
+        }
+        return (
+          <Fragment key={turn.id}>
+            {dayMarker}
+            <AgentChatTurnRow
+              turn={turn}
+              homeTaskHandoff={homeTaskHandoffByTurnId.get(turn.id)}
+              onOpenHomeTaskSession={onOpenHomeTaskSession}
+              activeThinkingKey={activeThinkingKey}
+              artifacts={turnArtifacts.get(turn.id)}
+              approvalSubmitting={approvalSubmitting}
+              clarifySubmitting={clarifySubmitting}
+              sudoSubmitting={sudoSubmitting}
+              secretSubmitting={secretSubmitting}
+              cliAccess={{
+                enabled: cliAccessEnabled,
+                submitting: cliAccessSubmitting,
+                onEnable: () => void enableCliAccessFromChat(),
+              }}
+              browserAccess={{
+                enabled: browserAccessEnabled,
+                submitting: browserAccessSubmitting,
+                onEnable: () => void enableBrowserAccessFromChat(),
+              }}
+              thinkingOpen={thinkingOpen}
+              onThinkingOpenChange={setThinkingOpen}
+              onDownloadArtifact={downloadArtifact}
+              onOpenArtifact={openArtifact}
+              onDownloadImage={downloadGeneratedImage}
+              onOpenImage={openGeneratedImage}
+              onRetryImage={(assistantTurnId, part) =>
+                void retryImageSlashTurn(transcriptSessionId, assistantTurnId, part)
+              }
+              onDownloadVideo={downloadGeneratedVideo}
+              onRetryVideo={(assistantTurnId, part) =>
+                void retryVideoSlashTurn(transcriptSessionId, assistantTurnId, part)
+              }
+              onRetryUpstreamFailure={(turnId) =>
+                void retryUpstreamProviderFailure(
+                  transcriptSessionId,
+                  upstreamFailureRecoveryIds.get(turnId),
+                )
+              }
+              upstreamFailureRetryAttempted={upstreamProviderRecoveryStore.attempted(
+                transcriptSessionId,
+                upstreamFailureRecoveryIds.get(turn.id) ?? "",
+              )}
+              upstreamFailureRetryDisabled={
+                workingSessionIds.has(transcriptSessionId) ||
+                waitingSessionIds.has(transcriptSessionId)
+              }
+              creditActionsDisabledReason={creditActionsDisabledReason}
+              onApproval={(part, choice) =>
+                void respondToApproval(
+                  transcriptSessionId,
+                  part.sessionId ?? transcriptSessionId,
+                  part.id,
+                  choice,
+                  sessionUnrestricted(transcriptSessionId),
+                )
+              }
+              onTopUp={handleTopUp}
+              topUpLabel={topUpLabel}
+              fundingTier={fundingTier}
+              onClarify={(part, answer) =>
+                void respondToClarify(
+                  transcriptSessionId,
+                  part.id,
+                  answer,
+                  sessionUnrestricted(transcriptSessionId),
+                )
+              }
+              onSudo={(part, approved) =>
+                void respondToSudo(
+                  transcriptSessionId,
+                  part.sessionId ?? transcriptSessionId,
+                  part.id,
+                  approved,
+                  part.mode,
+                  sessionUnrestricted(transcriptSessionId),
+                )
+              }
+              onSecret={(part, value) =>
+                void respondToSecret(
+                  transcriptSessionId,
+                  part.sessionId ?? transcriptSessionId,
+                  part.id,
+                  value,
+                  sessionUnrestricted(transcriptSessionId),
+                )
+              }
+              onBranch={(messageId, sessionId) =>
+                void branchFromMessage(
+                  sessionId ?? transcriptSessionId,
+                  messageId,
+                  transcriptSessionId,
+                )
+              }
+              branchingMessageId={branchingMessageId}
+              onVisibleMarkdownChange={pinTranscriptAfterVisibleReveal}
+            />
+          </Fragment>
+        );
+      })}
       {homeMode &&
       hermesTurns.length === 0 &&
       homeDirectTurns.length === 0 &&
@@ -12741,18 +12911,22 @@ export function AgentWorkspace({
         }
       />
       {homeMode ? (
-        <header className="agent-home-bar">
-          <span className="agent-home-avatar" aria-hidden>
-            <JuneMark />
-          </span>
-          <span className="agent-home-identity">
-            <strong>June</strong>
-            <span>Your personal assistant</span>
-          </span>
-          <span className="agent-home-presence">
-            <span aria-hidden /> Online
-          </span>
-        </header>
+        /* Home carries no identity chrome — June's presence lives in the daily
+         * greeting and the composer, the way a conversation does. The one
+         * affordance is an escape hatch into a fresh focused session, for work
+         * that shouldn't happen in the relationship thread. The home workspace
+         * instance ignores this event (see handleNewSession); the app shell
+         * listens and navigates to a new focused session. */
+        <div className="agent-home-actions">
+          <button
+            type="button"
+            className="agent-home-new-session"
+            onClick={() => window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT))}
+          >
+            <IconPlusMedium size={14} ariaHidden />
+            New session
+          </button>
+        </div>
       ) : !heroMode && !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
           origin={origin}

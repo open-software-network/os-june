@@ -506,7 +506,7 @@ describe("App shortcuts", () => {
         [{ role: "user", content: "Help me plan the afternoon" }],
         expect.objectContaining({
           model: "__june_auto_generation__:0",
-          reasoningEffort: "minimal",
+          reasoningEffort: "none",
         }),
       ),
     );

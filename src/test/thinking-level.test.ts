@@ -18,12 +18,13 @@ const STORAGE_KEY = "june.agent.thinkingLevel";
 describe("thinking levels", () => {
   it("exposes exactly three stops in track order", () => {
     expect(THINKING_LEVELS.map((option) => option.id)).toEqual(["instant", "medium", "hard"]);
+    expect(THINKING_LEVELS.map((option) => option.label)).toEqual(["Low", "Medium", "High"]);
   });
 
   it("maps each level onto a Hermes reasoning effort", () => {
-    // Instant barely deliberates (near-instant responses), Medium is Hermes'
-    // own default, Hard reasons substantially more.
-    expect(thinkingEffortForLevel("instant")).toBe("minimal");
+    // Low skips a separate reasoning pass, Medium is Hermes' own default, and
+    // High reasons substantially more.
+    expect(thinkingEffortForLevel("instant")).toBe("none");
     expect(thinkingEffortForLevel("medium")).toBe("medium");
     expect(thinkingEffortForLevel("hard")).toBe("high");
   });

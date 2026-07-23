@@ -490,7 +490,7 @@ describe("Agent chat runtime", () => {
     expect(turns[0]?.parts).toEqual([
       {
         type: "text",
-        text: "Model changed to Auto Higher.",
+        text: "Model changed to Auto Quality.",
         status: "complete",
       },
     ]);

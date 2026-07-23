@@ -15,7 +15,10 @@ import {
 import { reportCategoryDef, type ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
-import { matchBuiltinComposerSlashCommands } from "../../../lib/agent-composer-slash-commands";
+import {
+  matchBuiltinComposerSlashCommands,
+  type BuiltinComposerSlashCommandName,
+} from "../../../lib/agent-composer-slash-commands";
 
 /** Node name for the inline category chip. Distinct from the generic
  * "mention" node so the composer's chip styling never bleeds into (or
@@ -138,6 +141,7 @@ const CategoryChipBase = Mention.extend({
 
 export type CategoryChipOptions = {
   skills?: () => HermesSkillInfo[] | null | undefined;
+  onBuiltinCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
 };
 
 export function createCategoryChip(options: CategoryChipOptions = {}) {
@@ -164,6 +168,10 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
       command: ({ editor, range, props }) => {
         const item = props as unknown as ComposerSlashCommandItem;
         if (item.kind === "builtin") {
+          if (options.onBuiltinCommand?.(item.command.name)) {
+            editor.chain().focus().deleteRange(range).run();
+            return;
+          }
           insertSlashCommandText(editor, item.command.insertText, range);
           return;
         }

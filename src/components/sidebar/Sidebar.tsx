@@ -18,6 +18,7 @@ import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconGift1 } from "central-icons/IconGift1";
+import { IconHome } from "central-icons/IconHome";
 import { IconLayersThree } from "central-icons/IconLayersThree";
 import { IconMagicWand } from "central-icons/IconMagicWand";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
@@ -694,7 +695,7 @@ export function Sidebar({
       {
         id: "quick:home",
         label: "Go to Home",
-        icon: <JuneMark />,
+        icon: <IconHome size={15} />,
         searchText: normalizeCommandQuery("home june personal assistant conversation"),
         action: () => onChangeView("home"),
       },
@@ -1250,8 +1251,8 @@ export function Sidebar({
               aria-current={activeView === "home" ? "page" : undefined}
               onClick={() => onChangeView("home")}
             >
-              <span className="sidebar-nav-icon sidebar-home-mark" aria-hidden>
-                <JuneMark />
+              <span className="sidebar-nav-icon">
+                <IconHome size={15} />
               </span>
               <span className="sidebar-nav-label">Home</span>
             </button>
