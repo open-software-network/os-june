@@ -424,6 +424,23 @@ describe("agent run monitor", () => {
     expect(monitorMocks.forceDisconnect).toHaveBeenCalledWith(false);
   });
 
+  it("resets heartbeat misses after a successful active-list response", async () => {
+    let activeListCalls = 0;
+    monitorMocks.request.mockImplementation((method: string) => {
+      if (method !== "session.active_list") return Promise.resolve({});
+      activeListCalls += 1;
+      if (activeListCalls === 3) return Promise.resolve({ sessions: [] });
+      return new Promise(() => undefined);
+    });
+    startRun();
+
+    await flush();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(activeListCalls).toBe(5);
+    expect(monitorMocks.forceDisconnect).not.toHaveBeenCalled();
+  });
+
   it("distributes one active-session request per cycle to runs in the same mode", async () => {
     activeRuntime();
     startRun();
