@@ -40,7 +40,6 @@ const mocks = vi.hoisted(() => ({
   startMeetingRecording: vi.fn(),
   pauseRecording: vi.fn(),
   resumeRecording: vi.fn(),
-  getRecordingStatus: vi.fn(),
   setRecordingPresenceBounds: vi.fn(async () => undefined),
   finishRecording: vi.fn(),
   retryProcessing: vi.fn(),
@@ -95,6 +94,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  RECORDING_TELEMETRY_EVENT: "recording-telemetry",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "note-calendar-context-updated-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
@@ -119,7 +119,6 @@ vi.mock("../lib/tauri", () => ({
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
   resumeRecording: mocks.resumeRecording,
-  getRecordingStatus: mocks.getRecordingStatus,
   setRecordingPresenceBounds: mocks.setRecordingPresenceBounds,
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
@@ -258,18 +257,6 @@ describe("meeting start transcription event", () => {
       ],
     });
     mocks.startRecording.mockResolvedValue(recording());
-    // The active-recording poll (App.tsx ~20Hz waveform interval) calls this
-    // on a timer; without a resolved value the tick throws on undefined.then
-    // as an unhandled error after the assertions finish - a timing-dependent
-    // CI failure that coverage instrumentation reliably triggers.
-    mocks.getRecordingStatus.mockResolvedValue({
-      sessionId: "rec-1",
-      state: "recording",
-      elapsedMs: 500,
-      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
-      silenceWarning: false,
-      bytesWritten: 2048,
-    });
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -829,7 +816,6 @@ describe("meeting start transcription event", () => {
       activeRecording,
       providerConfigured: true,
     });
-    mocks.getRecordingStatus.mockResolvedValue(activeRecording);
 
     render(<App />);
 
@@ -980,16 +966,6 @@ describe("agent recorder request event", () => {
       ],
     });
     mocks.startRecording.mockResolvedValue(recording({ id: "rec-agent", noteId: "note-agent" }));
-    mocks.getRecordingStatus.mockResolvedValue({
-      sessionId: "rec-agent",
-      noteId: "note-agent",
-      sourceMode: "microphonePlusSystem",
-      state: "recording",
-      elapsedMs: 500,
-      level: { peak: 0.2, rms: 0.1, recentPeaks: [0.2] },
-      silenceWarning: false,
-      bytesWritten: 2048,
-    });
     mocks.finishRecording.mockResolvedValue({
       note: note({ id: "note-agent", title: "Agent recording", processingStatus: "transcribing" }),
       recording: recording({ id: "rec-agent", noteId: "note-agent" }),

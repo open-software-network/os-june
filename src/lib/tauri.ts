@@ -113,6 +113,7 @@ export type TranscriptDto = {
 };
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
+export const RECORDING_TELEMETRY_EVENT = "recording-telemetry";
 export const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT = "june://note-calendar-context-updated";
 
 export type LiveTranscriptEventDto = {
@@ -402,6 +403,19 @@ export type RecordingStatusDto = {
   livePreviewEnabled?: boolean;
   sources?: SourceStatusDto[];
   warnings?: SourceWarningDto[];
+};
+
+export type RecordingSourceTelemetryDto = Pick<
+  SourceStatusDto,
+  "source" | "state" | "elapsedMs" | "level" | "silenceWarning"
+>;
+
+export type RecordingTelemetryDto = Pick<
+  RecordingStatusDto,
+  "sessionId" | "state" | "elapsedMs" | "level" | "silenceWarning"
+> & {
+  sources: RecordingSourceTelemetryDto[];
+  warnings: SourceWarningDto[];
 };
 
 export type RecordingPresenceBoundsDto = {

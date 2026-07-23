@@ -6,11 +6,11 @@
 //! a control surface: clicking it reopens the app on the meeting being recorded
 //! (see [`meeting_hud_reopen`]); all recording controls stay in-app.
 //!
-//! Unlike the dictation HUD (driven by helper-process events) the recording
-//! lifecycle is owned by the React main window. This module is deliberately a
-//! thin mirror: a background supervisor reads the live status straight from the
-//! audio capture layer, drives the HUD's visibility against the main window's
-//! state, and pumps status to the webview.
+//! Unlike the dictation HUD (driven by helper-process events), note recording
+//! is owned by the native capture layer. One background supervisor samples that
+//! layer, emits the shared narrow telemetry stream, and drives HUD visibility.
+//! The main renderer and HUD subscribe to the same event instead of polling
+//! capture independently.
 //!
 //! The window is a fixed square that covers the pill in both orientations, so
 //! it never resizes. The frosted surface is a real NSVisualEffectView sized to
@@ -27,7 +27,9 @@
 //! waveform itself still reads left-to-right when the pill stands upright.
 
 use crate::audio::capture;
-use crate::domain::types::{RecordingState, RecordingStatusDto};
+use crate::domain::types::{
+    AudioLevelDto, RecordingState, RecordingStatusDto, RecordingTelemetryDto,
+};
 use std::{sync::Mutex, thread, time::Duration};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
@@ -38,10 +40,12 @@ use tauri::{
 use objc2::runtime::{AnyClass, AnyObject};
 
 const WINDOW_LABEL: &str = "meeting-hud";
+pub const RECORDING_TELEMETRY_EVENT: &str = "recording-telemetry";
 
-/// While a recording is live we poll fast enough for a smooth waveform; idle we
-/// back off so the thread costs nothing between meetings.
-const ACTIVE_TICK: Duration = Duration::from_millis(40);
+/// One native sample feeds both renderer surfaces. Their animation loops smooth
+/// between samples, so 10 Hz stays responsive without contending with the audio
+/// callback at the old combined 45 Hz status-read rate.
+const ACTIVE_TICK: Duration = Duration::from_millis(100);
 const IDLE_TICK: Duration = Duration::from_millis(220);
 
 /// Logical pill size — must agree with `.mhud` in meeting-hud.css.
@@ -183,6 +187,9 @@ struct ZoneTracker {
     stable_ticks: u32,
     /// Settled while the button was still held — flip on release instead.
     pending_release: bool,
+    /// Last emitted telemetry. Paused recordings stop advancing, so equality
+    /// suppresses redundant events until state or signal changes again.
+    last_telemetry: Option<RecordingTelemetryDto>,
     /// Position + zone were applied last tick; show on this one. The native
     /// rotation is queued on the main thread and lands before show either
     /// way, but the `meeting-hud-zone` event rides WKWebView's async message
@@ -197,6 +204,7 @@ fn spawn_supervisor(app: AppHandle) {
             last_position: None,
             stable_ticks: 0,
             pending_release: false,
+            last_telemetry: None,
             show_armed: false,
         };
         loop {
@@ -207,9 +215,6 @@ fn spawn_supervisor(app: AppHandle) {
 }
 
 fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
-    let Some(hud) = app.get_webview_window(WINDOW_LABEL) else {
-        return IDLE_TICK;
-    };
     let Some(state) = app.try_state::<MeetingHudState>() else {
         return IDLE_TICK;
     };
@@ -218,21 +223,48 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
     let live = status.filter(|status| is_live(status.state));
 
     let Some(status) = live else {
-        // Nothing recording: make sure the pill is gone and forget the snapshot.
-        if hud.is_visible().unwrap_or(false) {
-            let _ = hud.hide();
+        // Tell renderer subscribers once that the native session disappeared.
+        // The session id makes the clear safe if a newer recording already won
+        // the UI race.
+        if let Some(previous) = tracker.last_telemetry.take() {
+            let ended = RecordingTelemetryDto {
+                session_id: previous.session_id,
+                state: RecordingState::Idle,
+                elapsed_ms: previous.elapsed_ms,
+                level: AudioLevelDto::default(),
+                silence_warning: false,
+                sources: Vec::new(),
+                warnings: Vec::new(),
+            };
+            let _ = app.emit(RECORDING_TELEMETRY_EVENT, ended);
         }
         if let Ok(mut guard) = state.latest_status.lock() {
             *guard = None;
+        }
+        // Nothing recording: make sure the pill is gone and forget the snapshot.
+        if let Some(hud) = app.get_webview_window(WINDOW_LABEL) {
+            if hud.is_visible().unwrap_or(false) {
+                let _ = hud.hide();
+            }
         }
         tracker.last_position = None;
         tracker.show_armed = false;
         return IDLE_TICK;
     };
 
+    let telemetry = RecordingTelemetryDto::from(&status);
+    if tracker.last_telemetry.as_ref() != Some(&telemetry) {
+        let _ = app.emit(RECORDING_TELEMETRY_EVENT, &telemetry);
+        tracker.last_telemetry = Some(telemetry);
+    }
+
     if let Ok(mut guard) = state.latest_status.lock() {
         *guard = Some(status.clone());
     }
+
+    let Some(hud) = app.get_webview_window(WINDOW_LABEL) else {
+        return ACTIVE_TICK;
+    };
 
     let should_show = main_window_dismissed(app);
     let visible = hud.is_visible().unwrap_or(false);
@@ -257,8 +289,6 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
     }
 
     if hud.is_visible().unwrap_or(false) {
-        // emit_to keeps the 25Hz status stream off the main window's bus.
-        let _ = app.emit_to(WINDOW_LABEL, "meeting-hud-status", &status);
         track_zone(&hud, &state, tracker);
     }
     ACTIVE_TICK
@@ -761,6 +791,10 @@ fn make_nonactivating(hud: &WebviewWindow) {
 #[cfg(test)]
 mod tests {
     use super::{PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
+    use crate::domain::types::{
+        AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState, RecordingStatusDto,
+        RecordingTelemetryDto, SourceState, SourceStatusDto,
+    };
 
     /// First `prop: <n>px` declaration inside the rule whose selector line
     /// contains `selector`. Good enough for the flat declarations this test
@@ -821,5 +855,47 @@ mod tests {
             .expect("meeting-hud window entry");
         assert_eq!(window["width"].as_f64(), Some(WINDOW_SIZE.width));
         assert_eq!(window["height"].as_f64(), Some(WINDOW_SIZE.height));
+    }
+
+    #[test]
+    fn recording_telemetry_omits_stable_command_fields() {
+        let level = AudioLevelDto {
+            peak: 0.5,
+            rms: 0.25,
+            recent_peaks: vec![0.2, 0.5],
+        };
+        let status = RecordingStatusDto {
+            session_id: "session-1".to_string(),
+            note_id: Some("note-1".to_string()),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            state: RecordingState::Recording,
+            elapsed_ms: 1_250,
+            level: level.clone(),
+            silence_warning: false,
+            bytes_written: 8_192,
+            live_preview_enabled: true,
+            sources: vec![SourceStatusDto {
+                source: RecordingSource::Microphone,
+                state: SourceState::Recording,
+                elapsed_ms: 1_250,
+                bytes_written: 8_192,
+                level,
+                silence_warning: false,
+                path_finalized: false,
+                last_error: None,
+            }],
+            warnings: Vec::new(),
+        };
+
+        let value = serde_json::to_value(RecordingTelemetryDto::from(&status))
+            .expect("telemetry should serialize");
+        assert_eq!(value["sessionId"], "session-1");
+        assert_eq!(value["elapsedMs"], 1_250);
+        assert!(value.get("noteId").is_none());
+        assert!(value.get("sourceMode").is_none());
+        assert!(value.get("bytesWritten").is_none());
+        assert!(value.get("livePreviewEnabled").is_none());
+        assert!(value["sources"][0].get("bytesWritten").is_none());
+        assert!(value["sources"][0].get("pathFinalized").is_none());
     }
 }

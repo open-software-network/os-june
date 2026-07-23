@@ -1,6 +1,9 @@
 import type { LiveTranscriptEventDto, TranscriptDto } from "./tauri";
 
 const LIVE_TRANSCRIPT_COHERENCE_GAP_MS = 500;
+const LIVE_TRANSCRIPT_WINDOW_MS = 2 * 60 * 60 * 1000;
+export const LIVE_TRANSCRIPT_MAX_EVENTS_PER_SESSION = 2048;
+const LIVE_TRANSCRIPT_MAX_EVENTS_TOTAL = 4096;
 
 export function upsertLiveTranscriptEvent(
   current: LiveTranscriptEventDto[],
@@ -10,7 +13,18 @@ export function upsertLiveTranscriptEvent(
     .filter((event) => !isSameLiveSegment(event, next))
     .concat(next)
     .sort(compareLiveTranscriptEvents);
-  return events;
+  const sameSession = events.filter((event) => event.sessionId === next.sessionId);
+  const newestEndMs = Math.max(...sameSession.map((event) => event.endMs));
+  const windowStartMs = newestEndMs - LIVE_TRANSCRIPT_WINDOW_MS;
+  const sessionWindow = sameSession
+    .filter((event) => event.endMs >= windowStartMs)
+    .slice(-LIVE_TRANSCRIPT_MAX_EVENTS_PER_SESSION);
+  const remainingCapacity = LIVE_TRANSCRIPT_MAX_EVENTS_TOTAL - sessionWindow.length;
+  const retainedOtherSessions =
+    remainingCapacity > 0
+      ? events.filter((event) => event.sessionId !== next.sessionId).slice(-remainingCapacity)
+      : [];
+  return retainedOtherSessions.concat(sessionWindow).sort(compareLiveTranscriptEvents);
 }
 
 /**

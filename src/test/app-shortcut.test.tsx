@@ -86,7 +86,6 @@ const mocks = vi.hoisted(() => ({
   startMeetingRecording: vi.fn(),
   pauseRecording: vi.fn(),
   resumeRecording: vi.fn(),
-  getRecordingStatus: vi.fn(),
   finishRecording: vi.fn(),
   retryProcessing: vi.fn(),
   recoverRecording: vi.fn(),
@@ -191,6 +190,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseEndRun: vi.fn().mockResolvedValue(undefined),
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
+  RECORDING_TELEMETRY_EVENT: "recording-telemetry",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "note-calendar-context-updated-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps
@@ -228,7 +228,6 @@ vi.mock("../lib/tauri", () => ({
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
   resumeRecording: mocks.resumeRecording,
-  getRecordingStatus: mocks.getRecordingStatus,
   finishRecording: mocks.finishRecording,
   retryProcessing: mocks.retryProcessing,
   recoverRecording: mocks.recoverRecording,
@@ -1387,17 +1386,6 @@ describe("App shortcuts", () => {
         }),
       }),
     );
-    mocks.getRecordingStatus.mockResolvedValue({
-      sessionId: "rec-1",
-      noteId: "note-1",
-      sourceMode: "microphoneOnly",
-      state: "recording",
-      elapsedMs: 0,
-      level: { peak: 0, rms: 0, recentPeaks: [] },
-      silenceWarning: false,
-      bytesWritten: 0,
-    });
-
     try {
       render(<App />);
 

@@ -9504,6 +9504,12 @@ button.agent-user-attachment:hover {
   font-weight: 400;
 }
 
+.sidebar-section-title-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
 .sidebar[data-collapsed="true"] .section-title-label,
 .sidebar[data-collapsed="true"] .section-title,
 .sidebar[data-collapsed="true"] .notes-nav-wrap {

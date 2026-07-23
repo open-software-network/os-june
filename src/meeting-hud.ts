@@ -11,7 +11,11 @@ import {
   withWaveLayers,
 } from "./lib/audio-meter";
 import { meterLevelForSources, visualPeakScale } from "./lib/recorder-levels";
-import type { RecordingStatusDto } from "./lib/tauri";
+import {
+  RECORDING_TELEMETRY_EVENT,
+  type RecordingStatusDto,
+  type RecordingTelemetryDto,
+} from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
 import "./styles/meeting-hud.css";
@@ -34,13 +38,13 @@ const meter = createBarMeter(
   LIVE_WAVE_OPTIONS,
 );
 
-// Coalesce the freshest peaks per poll, matching the in-app recorder
-// (Waveform.tsx) so transients between status pushes aren't missed.
-const POLL_WINDOW_PEAKS = 6;
+// Coalesce the freshest peaks per telemetry sample, matching the in-app
+// recorder (Waveform.tsx) so transients between native pushes aren't missed.
+const TELEMETRY_WINDOW_PEAKS = 6;
 
 let recording = false;
 
-function applyStatus(status: RecordingStatusDto) {
+function applyStatus(status: RecordingStatusDto | RecordingTelemetryDto) {
   const paused = status.state === "paused";
   recording = status.state === "recording";
 
@@ -55,7 +59,7 @@ function applyStatus(status: RecordingStatusDto) {
   // status.level is mic-only; status.sources carries mic+system when present.
   const level = meterLevelForSources(status.level, status.sources);
   const recent = level.recentPeaks;
-  const raw = recent.length > 0 ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS)) : level.peak;
+  const raw = recent.length > 0 ? Math.max(...recent.slice(-TELEMETRY_WINDOW_PEAKS)) : level.peak;
   meter.pushLevel(visualPeakScale(raw));
 }
 
@@ -151,7 +155,7 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-void listen<RecordingStatusDto>("meeting-hud-status", (event) => {
+void listen<RecordingTelemetryDto>(RECORDING_TELEMETRY_EVENT, (event) => {
   if (event.payload) applyStatus(event.payload);
 });
 

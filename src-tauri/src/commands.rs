@@ -4,11 +4,12 @@ use crate::{
     app_paths::AppPaths,
     audio::{
         capture::{
-            capture_start_timeout_error, capture_status_for_recovery, current_status,
-            finish_active_capture, finish_capture, is_capture_active, microphone_device_available,
-            microphone_device_hint, microphone_permission_state, pause_capture, resume_capture,
-            start_capture_with_cancel, CaptureRecoverySnapshot, CaptureStartHandshake,
-            CaptureStartState, StartedRecording, CAPTURE_START_TIMEOUT,
+            capture_recovery_checkpoint, capture_start_timeout_error, capture_status,
+            current_status, finish_active_capture, finish_capture, is_capture_active,
+            microphone_device_available, microphone_device_hint, microphone_permission_state,
+            pause_capture, resume_capture, start_capture_with_cancel, CaptureRecoverySnapshot,
+            CaptureStartHandshake, CaptureStartState, StartedRecording, CAPTURE_START_TIMEOUT,
+            RECOVERY_SNAPSHOT_INTERVAL,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -1932,6 +1933,7 @@ async fn start_recording_inner(
     // The capture now has all rows required for reload/recovery. Optional
     // diagnostics below must not roll it back if their future is cancelled.
     startup_guard.disarm();
+    spawn_recording_recovery_checkpoint_worker(repos.clone(), started.session_id.clone());
     if let Err(error) = repos
         .add_checkpoint(
             &started.session_id,
@@ -2146,12 +2148,49 @@ pub async fn resume_recording(
 
 #[tauri::command]
 pub async fn get_recording_status(
-    app: AppHandle,
+    _app: AppHandle,
     request: SessionRequest,
 ) -> Result<RecordingStatusDto, AppError> {
-    let snapshot = capture_status_for_recovery(&request.session_id)?;
-    checkpoint_recording_recovery_snapshot(&app, &snapshot).await;
-    Ok(snapshot.status)
+    capture_status(&request.session_id)
+}
+
+fn spawn_recording_recovery_checkpoint_worker(repos: Repositories, session_id: String) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(RECOVERY_SNAPSHOT_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Tokio intervals tick immediately. The recording-start rows already
+        // hold elapsed=0, so wait for the first real checkpoint interval.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            match capture_recovery_checkpoint(&session_id) {
+                Ok(Some(checkpoint)) => {
+                    if let Err(error) = persist_recording_recovery_state(
+                        &repos,
+                        &checkpoint.session_id,
+                        checkpoint.state,
+                        checkpoint.elapsed_ms,
+                    )
+                    .await
+                    {
+                        eprintln!(
+                            "recording recovery checkpoint failed for {}: {}: {}",
+                            checkpoint.session_id, error.code, error.message
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(error) if error.code == "recording_not_found" => break,
+                Err(error) => {
+                    eprintln!(
+                        "recording recovery checkpoint worker stopped for {}: {}: {}",
+                        session_id, error.code, error.message
+                    );
+                    break;
+                }
+            }
+        }
+    });
 }
 
 async fn checkpoint_recording_recovery_snapshot(
@@ -2183,12 +2222,23 @@ async fn persist_recording_recovery_snapshot(
     repos: &Repositories,
     snapshot: &CaptureRecoverySnapshot,
 ) -> Result<(), AppError> {
+    persist_recording_recovery_state(
+        repos,
+        &snapshot.status.session_id,
+        snapshot.status.state,
+        snapshot.status.elapsed_ms,
+    )
+    .await
+}
+
+async fn persist_recording_recovery_state(
+    repos: &Repositories,
+    session_id: &str,
+    state: crate::domain::types::RecordingState,
+    elapsed_ms: i64,
+) -> Result<(), AppError> {
     repos
-        .update_recording_recovery_snapshot(
-            &snapshot.status.session_id,
-            snapshot.status.state,
-            snapshot.status.elapsed_ms,
-        )
+        .update_recording_recovery_snapshot(session_id, state, elapsed_ms)
         .await?;
     Ok(())
 }

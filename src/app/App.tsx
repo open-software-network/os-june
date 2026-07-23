@@ -160,7 +160,7 @@ import { useAppTabEvents } from "./use-app-tab-events";
 
 import { useAppDevDemos } from "./use-app-dev-demos";
 
-import { useRecordingStatusPoll } from "./use-recording-status-poll";
+import { useRecordingTelemetry } from "./use-recording-telemetry";
 
 import { useSessionMetadata } from "./use-session-metadata";
 
@@ -1321,10 +1321,9 @@ export function App() {
     });
   }
 
-  useRecordingStatusPoll({
+  useRecordingTelemetry({
     dispatch,
-    setError,
-    state,
+    recordingStatusRef,
   });
 
   useEffect(() => {
