@@ -474,6 +474,13 @@ export type NoteDto = NoteListItemDto & {
   queuedRecordings?: number;
 };
 
+export type NotePatchDto = Pick<
+  NoteDto,
+  "id" | "title" | "preview" | "editedContent" | "activeTab" | "updatedAt"
+>;
+
+export type NoteEditablePatch = Partial<Pick<NoteDto, "title" | "editedContent" | "activeTab">>;
+
 export type NoteCalendarEventDto = {
   eventId: string;
   title: string;
@@ -1770,6 +1777,18 @@ export async function updateNote(input: {
   activeTab?: "notes" | "transcription";
 }) {
   return invoke<NoteDto>("update_note", { request: input });
+}
+
+export async function patchNote(noteId: string, patch: NoteEditablePatch) {
+  return invoke<NotePatchDto>("update_note", {
+    request: { noteId, ...patch, patchOnly: true },
+  });
+}
+
+export const NOTE_SAVE_FLUSH_REQUESTED_EVENT = "june://flush-pending-note-saves";
+
+export async function completeNoteSaveFlush(requestId: string) {
+  return invoke<boolean>("complete_note_save_flush", { request: { requestId } });
 }
 
 export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceMode) {

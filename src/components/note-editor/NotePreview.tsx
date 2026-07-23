@@ -13,10 +13,17 @@ type NotePreviewProps = {
   // blur (during note-switch teardown) can't silently overwrite a
   // different note's content.
   onChange: (noteId: string, markdown: string) => void;
+  onBlur?: (noteId: string) => void;
   emptyPlaceholder?: string;
 };
 
-export function NotePreview({ noteId, markdown, onChange, emptyPlaceholder }: NotePreviewProps) {
+export function NotePreview({
+  noteId,
+  markdown,
+  onChange,
+  onBlur,
+  emptyPlaceholder,
+}: NotePreviewProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<{ x: number; y: number } | null>(null);
   const initialHtml = useMemo(() => markdownToHtml(markdown), [noteId]);
@@ -48,6 +55,9 @@ export function NotePreview({ noteId, markdown, onChange, emptyPlaceholder }: No
           "aria-multiline": "true",
         },
       },
+      onUpdate: ({ editor }) => {
+        onChange(noteId, htmlToMarkdown(editor.view.dom));
+      },
       onBlur: ({ editor }) => {
         // `noteId` here is the value at editor-creation time — the
         // useEditor dep list tears the editor down on note change, so
@@ -60,6 +70,7 @@ export function NotePreview({ noteId, markdown, onChange, emptyPlaceholder }: No
         );
         focusedExternalMarkdown.current = null;
         onChange(noteId, mergedMarkdown);
+        onBlur?.(noteId);
       },
     },
     [noteId],

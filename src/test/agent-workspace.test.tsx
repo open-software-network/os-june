@@ -10995,9 +10995,11 @@ describe("AgentWorkspace", () => {
         true,
       ),
     );
-    expect(textbox).toHaveTextContent(
-      "/repo-build-pr implement issue JUN-46 and keep this draft edit",
-    );
+    // jsdom cannot map pointer coordinates to a contenteditable caret, so the
+    // inserted phrase's position is undefined. This assertion is about keeping
+    // both the submitted prompt and the edit made while preparation awaited.
+    expect(textbox).toHaveTextContent("/repo-build-pr implement issue JUN-46");
+    expect(textbox).toHaveTextContent("and keep this draft edit");
   });
 
   it("reserves the session dispatch order before skill preparation finishes", async () => {

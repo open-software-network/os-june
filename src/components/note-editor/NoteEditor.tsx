@@ -67,6 +67,7 @@ type NoteEditorProps = {
   recovery?: RecoverableRecordingDto;
   onTitleChange: (title: string) => void;
   onContentChange: (noteId: string, content: string) => void;
+  onFlushNote: (noteId: string) => void;
   onSourceModeChange: (mode: RecordingSourceMode) => void;
   onEnableSystemAudio: () => void;
   onEnableMicrophone: () => void;
@@ -169,6 +170,7 @@ export function NoteEditor({
   recovery,
   onTitleChange,
   onContentChange,
+  onFlushNote,
   onSourceModeChange,
   onEnableSystemAudio,
   onEnableMicrophone,
@@ -392,6 +394,7 @@ export function NoteEditor({
           placeholder={NOTE_TITLE_PLACEHOLDER}
           value={note.title}
           onChange={(event) => onTitleChange(event.currentTarget.value)}
+          onBlur={() => onFlushNote(note.id)}
         />
         <div className="note-title-print" aria-hidden="true">
           {note.title.trim() || NOTE_TITLE_PLACEHOLDER}
@@ -541,6 +544,7 @@ export function NoteEditor({
                 noteId={note.id}
                 markdown={content}
                 onChange={onContentChange}
+                onBlur={onFlushNote}
                 emptyPlaceholder={
                   processingLock
                     ? ""
