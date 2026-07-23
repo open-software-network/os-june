@@ -8,6 +8,7 @@ use crate::{
     },
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use futures_core::Stream;
 use rand::{distributions::Alphanumeric, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -17,16 +18,18 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Component, Path, PathBuf},
+    pin::Pin,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex,
     },
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     sync::{oneshot, Notify},
 };
 
@@ -119,6 +122,7 @@ const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
+const JUNE_PROVIDER_PROXY_BODY_CHUNK_BYTES: usize = 64 * 1024;
 const JUNE_WORKSPACE_SESSION_ATTACHMENTS_DIR_NAME: &str = "session-attachments";
 // Must sit ABOVE june-api's aggregate request-string cap
 // (`MAX_AGENT_TOTAL_STRING_CHARS`, 6M chars) counted in BYTES, or this proxy
@@ -12755,7 +12759,7 @@ async fn handle_june_provider_connection(
     mut stream: tokio::net::TcpStream,
     state: Arc<ProviderProxyState>,
 ) -> io::Result<()> {
-    let (mut request, content_length, leftover) = match read_http_head(&mut stream).await {
+    let (request, content_length, leftover) = match read_http_head(&mut stream).await {
         Ok(head) => head,
         Err(error) => {
             let _ = write_json_response(
@@ -12804,24 +12808,44 @@ async fn handle_june_provider_connection(
         .await?;
         return Ok(());
     }
-    if content_length > provider_proxy_max_body_bytes(&request.path) {
+    let body_mode = provider_proxy_body_mode(&request.method, &request.path);
+    let max_body_bytes = provider_proxy_max_body_bytes(&request.path);
+    if body_mode != ProviderProxyBodyMode::StreamedPassthrough && content_length > max_body_bytes {
         // Enforced here (was inside the old read_http_request) so it runs after
         // auth. Chat bodies keep the context-overflow wording the frontend
         // classifier keys on ("maximum context length" / `prompt_too_long`), so
         // an over-cap chat body degrades into the recoverable overflow notice;
         // image bodies use an image-specific message. Only authenticated callers
         // reach this — an unauthenticated over-cap request is already a 401.
-        write_json_response(
-            &mut stream,
-            400,
-            serde_json::json!({
-                "error": { "message": provider_proxy_body_too_large_message(&request.path) }
-            }),
-        )
-        .await?;
+        write_provider_proxy_body_too_large_response(&mut stream, &request.path).await?;
         return Ok(());
     }
-    request.body = read_http_body(&mut stream, leftover, content_length).await?;
+    if body_mode == ProviderProxyBodyMode::StreamedPassthrough {
+        let path = request.path;
+        let (read_half, mut write_half) = stream.into_split();
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let body = CappedHttpBody::new(
+            read_half,
+            leftover,
+            content_length,
+            max_body_bytes,
+            overflowed.clone(),
+        );
+        return forward_streaming_web_tool(
+            &mut write_half,
+            &path,
+            reqwest::Body::wrap_stream(body),
+            content_length,
+            max_body_bytes,
+            overflowed,
+        )
+        .await;
+    }
+    let request_body = if body_mode == ProviderProxyBodyMode::Buffered {
+        collect_http_body(&mut stream, leftover, content_length, max_body_bytes).await?
+    } else {
+        Vec::new()
+    };
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/v1/models") => {
             let selected_model = crate::providers::generation_model();
@@ -12846,7 +12870,7 @@ async fn handle_june_provider_connection(
             write_json_response(&mut stream, 200, body).await?;
         }
         ("POST", "/v1/chat/completions") => {
-            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             match crate::june_api::proxy_agent_chat_completions(body).await {
                 Ok(response) if response.status >= 400 => {
@@ -12883,18 +12907,15 @@ async fn handle_june_provider_connection(
                 }
             }
         }
-        ("POST", "/v1/web/search") => {
-            forward_web_tool(&mut stream, "/v1/web/search", &request.body).await?;
-        }
-        ("POST", "/v1/web/fetch") => {
-            forward_web_tool(&mut stream, "/v1/web/fetch", &request.body).await?;
+        ("POST", "/v1/web/search") | ("POST", "/v1/web/fetch") => {
+            unreachable!("web pass-through routes return before buffered dispatch")
         }
         ("POST", "/v1/image/generate") => {
             // The image MCP sends no model, so the user's selected image model
             // is authoritative — inject it here (June API requires a model).
             // safe_mode likewise comes from the on-device setting. Venice video
             // has no safe-mode parameter, so this injection is image-only.
-            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             let image_self_report = strip_image_explicit_self_report(&mut body);
             ensure_image_generation_model(&mut body);
@@ -12919,7 +12940,7 @@ async fn handle_june_provider_connection(
             // no model is injected here; safe_mode still comes from the setting.
             // The MCP sends only an opaque sourceFilename. Resolve and validate
             // it here, where the signing key is outside Hermes home.
-            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             let image_self_report = strip_image_explicit_self_report(&mut body);
             if let Err(message) = prepare_image_edit_request(&mut body, &state.image_sources) {
@@ -12949,7 +12970,7 @@ async fn handle_june_provider_connection(
                 write_not_found_response(&mut stream).await?;
                 return Ok(());
             }
-            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             ensure_video_generation_model(&mut body);
             ensure_video_defaults(&mut body);
@@ -12960,7 +12981,7 @@ async fn handle_june_provider_connection(
                 write_not_found_response(&mut stream).await?;
                 return Ok(());
             }
-            let mut body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let mut body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             if let Err(message) = prepare_image_edit_request(&mut body, &state.image_sources) {
                 write_json_response(
@@ -12986,7 +13007,7 @@ async fn handle_june_provider_connection(
             forward_video_status(&mut stream, path, &state.videos_dir).await?;
         }
         ("POST", "/v1/recorder/start") => {
-            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             handle_recorder_action(&mut stream, state, AgentRecorderAction::Start, &body).await?;
         }
@@ -13006,10 +13027,10 @@ async fn handle_june_provider_connection(
             handle_browser_status(&mut stream, &state, browser_context).await?;
         }
         ("POST", "/v1/browser/execute") => {
-            handle_browser_execute(&mut stream, &state, browser_context, &request.body).await?;
+            handle_browser_execute(&mut stream, &state, browser_context, &request_body).await?;
         }
         ("POST", crate::computer_use::PROXY_PATH) => {
-            let body = serde_json::from_slice::<serde_json::Value>(&request.body)
+            let body = serde_json::from_slice::<serde_json::Value>(&request_body)
                 .unwrap_or_else(|_| serde_json::json!({}));
             let Some(app) = state.app.as_ref() else {
                 write_json_response(
@@ -13033,17 +13054,17 @@ async fn handle_june_provider_connection(
             write_json_response(&mut stream, status, body).await?;
         }
         ("POST", path) if matches!(path, "/v1/memory/save" | "/v1/memory/forget") => {
-            handle_memory_route(&mut stream, &state, path, &request.body).await?;
+            handle_memory_route(&mut stream, &state, path, &request_body).await?;
         }
         ("POST", path) if provider_proxy_is_notion_connector_route(path) => {
-            handle_notion_connector_route(&mut stream, &state, path, &request.body).await?;
+            handle_notion_connector_route(&mut stream, &state, path, &request_body).await?;
         }
         ("POST", path)
             if provider_proxy_is_google_connector_route(path)
                 || provider_proxy_is_linear_connector_route(path)
                 || provider_proxy_is_github_connector_route(path) =>
         {
-            handle_connector_route(&mut stream, &state, path, &request.body).await?;
+            handle_connector_route(&mut stream, &state, path, &request_body).await?;
         }
         _ => {
             write_not_found_response(&mut stream).await?;
@@ -15757,16 +15778,13 @@ struct HttpRequest {
     method: String,
     path: String,
     headers: Vec<(String, String)>,
-    body: Vec<u8>,
 }
 
 /// Read and parse the request line + headers only, WITHOUT consuming the body.
-/// Returns the request (with an empty `body`), its declared `Content-Length`,
-/// and any bytes already read past the header terminator. The caller must
-/// authorize on the returned headers before calling `read_http_body`, so an
-/// unauthenticated caller never makes the loopback proxy buffer a large body
-/// (JUN-336 review). The body-size cap is likewise enforced by the caller,
-/// after authentication.
+/// Returns the request, its declared `Content-Length`, and any bytes already
+/// read past the header terminator. The caller must authorize on the returned
+/// headers before consuming the body, so an unauthenticated caller never makes
+/// the loopback proxy read a large body (JUN-336 review).
 async fn read_http_head(
     stream: &mut tokio::net::TcpStream,
 ) -> io::Result<(HttpRequest, usize, Vec<u8>)> {
@@ -15827,30 +15845,164 @@ async fn read_http_head(
             method,
             path,
             headers,
-            body: Vec::new(),
         },
         content_length,
         leftover,
     ))
 }
 
-/// Read the request body. Call ONLY after `read_http_head` and a successful
-/// authorization + body-size check on the head — never for an unauthenticated
-/// or over-cap request (JUN-336).
-async fn read_http_body(
-    stream: &mut tokio::net::TcpStream,
-    mut body: Vec<u8>,
-    content_length: usize,
-) -> io::Result<Vec<u8>> {
-    let mut chunk = [0u8; 4096];
-    while body.len() < content_length {
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..read]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderProxyBodyMode {
+    None,
+    Buffered,
+    StreamedPassthrough,
+}
+
+/// Chooses body ownership at the narrowest consumer.
+///
+/// Web search/fetch are byte-for-byte June API pass-throughs, so their socket
+/// bodies stream directly into reqwest. Every buffered route below either
+/// rewrites JSON before forwarding (chat/image/video) or dispatches parsed
+/// arguments inside June (recorder/browser/Computer use/memory/connectors).
+/// Routes with no body consumer never allocate one.
+fn provider_proxy_body_mode(method: &str, path: &str) -> ProviderProxyBodyMode {
+    if method != "POST" {
+        return ProviderProxyBodyMode::None;
     }
-    body.truncate(content_length);
+    match path {
+        "/v1/web/search" | "/v1/web/fetch" => ProviderProxyBodyMode::StreamedPassthrough,
+        "/v1/chat/completions"
+        | "/v1/image/generate"
+        | "/v1/image/edit"
+        | "/v1/video/generate"
+        | "/v1/video/animate"
+        | "/v1/recorder/start"
+        | "/v1/browser/execute"
+        | crate::computer_use::PROXY_PATH
+        | "/v1/memory/save"
+        | "/v1/memory/forget" => ProviderProxyBodyMode::Buffered,
+        path if provider_proxy_is_connector_route(path) => ProviderProxyBodyMode::Buffered,
+        _ => ProviderProxyBodyMode::None,
+    }
+}
+
+/// A content-length-bounded request body that also enforces the route cap on
+/// bytes as they are consumed. The small `prefix` contains only bytes read
+/// alongside the HTTP headers; the remaining body stays in the socket.
+struct CappedHttpBody<R> {
+    reader: R,
+    prefix: Vec<u8>,
+    prefix_offset: usize,
+    remaining: usize,
+    transferred: usize,
+    max_bytes: usize,
+    overflowed: Arc<AtomicBool>,
+    finished: bool,
+}
+
+impl<R> CappedHttpBody<R> {
+    fn new(
+        reader: R,
+        prefix: Vec<u8>,
+        content_length: usize,
+        max_bytes: usize,
+        overflowed: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            reader,
+            prefix,
+            prefix_offset: 0,
+            remaining: content_length,
+            transferred: 0,
+            max_bytes,
+            overflowed,
+            finished: false,
+        }
+    }
+
+    fn overflow_error(&mut self) -> Poll<Option<io::Result<Vec<u8>>>> {
+        self.finished = true;
+        self.overflowed.store(true, Ordering::Release);
+        Poll::Ready(Some(Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP request body exceeds its route limit",
+        ))))
+    }
+}
+
+impl<R> Stream for CappedHttpBody<R>
+where
+    R: AsyncRead + Unpin,
+{
+    type Item = io::Result<Vec<u8>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finished {
+            return Poll::Ready(None);
+        }
+        if this.remaining == 0 {
+            this.finished = true;
+            return Poll::Ready(None);
+        }
+        let available_under_cap = this.max_bytes.saturating_sub(this.transferred);
+        if available_under_cap == 0 {
+            return this.overflow_error();
+        }
+        let chunk_len = this
+            .remaining
+            .min(available_under_cap)
+            .min(JUNE_PROVIDER_PROXY_BODY_CHUNK_BYTES);
+        if this.prefix_offset < this.prefix.len() {
+            let end = (this.prefix_offset + chunk_len).min(this.prefix.len());
+            let chunk = this.prefix[this.prefix_offset..end].to_vec();
+            this.prefix_offset = end;
+            this.remaining -= chunk.len();
+            this.transferred += chunk.len();
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+
+        let mut chunk = vec![0; chunk_len];
+        let mut read_buf = ReadBuf::new(&mut chunk);
+        match Pin::new(&mut this.reader).poll_read(cx, &mut read_buf) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(error)) => {
+                this.finished = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(Ok(())) => {
+                let read = read_buf.filled().len();
+                if read == 0 {
+                    this.finished = true;
+                    return Poll::Ready(None);
+                }
+                chunk.truncate(read);
+                this.remaining -= read;
+                this.transferred += read;
+                Poll::Ready(Some(Ok(chunk)))
+            }
+        }
+    }
+}
+
+/// Collects only for routes whose consumer must parse or rewrite the complete
+/// JSON document. The same streaming cap adapter is retained as a defense if a
+/// caller reaches this helper without the declared-length precheck.
+async fn collect_http_body<R>(
+    reader: R,
+    prefix: Vec<u8>,
+    content_length: usize,
+    max_bytes: usize,
+) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let mut stream = CappedHttpBody::new(reader, prefix, content_length, max_bytes, overflowed);
+    let mut body = Vec::with_capacity(content_length.min(max_bytes));
+    while let Some(chunk) = std::future::poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await {
+        body.extend_from_slice(&chunk?);
+    }
     Ok(body)
 }
 
@@ -15885,6 +16037,20 @@ fn provider_proxy_body_too_large_message(path: &str) -> &'static str {
              context length. Reduce the length of the messages and retry."
         }
     }
+}
+
+async fn write_provider_proxy_body_too_large_response(
+    stream: &mut (impl AsyncWrite + Unpin),
+    path: &str,
+) -> io::Result<()> {
+    write_json_response(
+        stream,
+        400,
+        serde_json::json!({
+            "error": { "message": provider_proxy_body_too_large_message(path) }
+        }),
+    )
+    .await
 }
 
 /// Rewrites the backend's `prompt_too_long` rejection into wording the agent
@@ -16196,19 +16362,35 @@ async fn write_json_response(
     write_raw_response(stream, status, "application/json", &body).await
 }
 
-/// Forwards a web tool request to the June API and relays its `ApiResponse`
-/// envelope back to the loopback caller (the `june_web` MCP) verbatim. The
-/// access token is added inside `june_api`, so it never reaches the MCP. A
-/// 4xx/5xx envelope (e.g. a blocked site, or an out-of-credits 402) is passed
-/// through unchanged so the agent gets the backend's own usable message.
-async fn forward_web_tool(
-    stream: &mut tokio::net::TcpStream,
+/// Streams a web tool request into June API and relays its `ApiResponse`
+/// envelope back to the loopback caller. The route cap is checked by
+/// `CappedHttpBody` while reqwest consumes the downstream socket. An overflow
+/// keeps the same 400 envelope and route-specific wording as the former
+/// pre-buffer check, even if reqwest reports only a transport abort.
+async fn forward_streaming_web_tool(
+    stream: &mut (impl AsyncWrite + Unpin),
     path: &str,
-    request_body: &[u8],
+    body: reqwest::Body,
+    content_length: usize,
+    max_body_bytes: usize,
+    overflowed: Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let body = serde_json::from_slice::<serde_json::Value>(request_body)
-        .unwrap_or_else(|_| serde_json::json!({}));
-    match crate::june_api::forward_web_request(path, &body).await {
+    let response = crate::june_api::forward_streaming_web_request(path, body, content_length).await;
+    if content_length > max_body_bytes || overflowed.load(Ordering::Acquire) {
+        return write_provider_proxy_body_too_large_response(stream, path).await;
+    }
+    write_web_tool_response(stream, response).await
+}
+
+/// Keeps the web MCP's existing response boundary independent of whether the
+/// request reached June API through a buffered or streaming body. Upstream
+/// statuses and bytes pass through; local request failures retain the 502
+/// envelope the MCP already handles.
+async fn write_web_tool_response(
+    stream: &mut (impl AsyncWrite + Unpin),
+    response: Result<crate::june_api::WebProxyResponse, AppError>,
+) -> io::Result<()> {
+    match response {
         Ok(response) => {
             write_raw_response(
                 stream,
@@ -18412,6 +18594,47 @@ assert capped["has_more"] is True, capped
         response
     }
 
+    async fn receive_streamed_request_body(listener: tokio::net::TcpListener) -> Vec<u8> {
+        let (mut socket, _) = listener.accept().await.expect("accept streamed request");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 16 * 1024];
+        let header_end = loop {
+            let read = socket.read(&mut chunk).await.expect("read request head");
+            if read == 0 {
+                panic!("request closed before its headers completed");
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let content_length = headers
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find_map(|(name, value)| {
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("content length"))
+            })
+            .expect("streamed request has content length");
+        let mut body = request.split_off(header_end);
+        while body.len() < content_length {
+            let read = socket.read(&mut chunk).await.expect("read request body");
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..read]);
+        }
+        body.truncate(content_length);
+        if body.len() == content_length {
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .await
+                .expect("write mock response");
+        }
+        body
+    }
+
     async fn test_memory_proxy_context(
         enabled: bool,
     ) -> (
@@ -18911,7 +19134,6 @@ assert capped["has_more"] is True, capped
             method: "GET".to_string(),
             path: "/v1/models".to_string(),
             headers: vec![("Authorization".to_string(), value.to_string())],
-            body: Vec::new(),
         }
     }
 
@@ -20221,7 +20443,6 @@ assert capped["has_more"] is True, capped
             method: "GET".to_string(),
             path: "/v1/models".to_string(),
             headers: Vec::new(),
-            body: Vec::new(),
         };
         let basic = request_with_authorization("Basic proxy-secret");
         let extra = request_with_authorization("Bearer proxy-secret extra");
@@ -20398,6 +20619,208 @@ assert capped["has_more"] is True, capped
         assert!(
             provider_proxy_max_body_bytes(crate::computer_use::PROXY_PATH)
                 < provider_proxy_max_body_bytes("/v1/chat/completions")
+        );
+    }
+
+    #[test]
+    fn provider_proxy_buffers_only_routes_that_inspect_or_rewrite_bodies() {
+        assert_eq!(
+            provider_proxy_body_mode("POST", "/v1/web/search"),
+            ProviderProxyBodyMode::StreamedPassthrough
+        );
+        assert_eq!(
+            provider_proxy_body_mode("POST", "/v1/web/fetch"),
+            ProviderProxyBodyMode::StreamedPassthrough
+        );
+        for path in [
+            "/v1/chat/completions",
+            "/v1/image/generate",
+            "/v1/image/edit",
+            "/v1/video/generate",
+            "/v1/video/animate",
+            crate::computer_use::PROXY_PATH,
+            "/v1/browser/execute",
+            "/v1/memory/save",
+            "/v1/notion-actions/call",
+        ] {
+            assert_eq!(
+                provider_proxy_body_mode("POST", path),
+                ProviderProxyBodyMode::Buffered,
+                "{path} must keep its consumer-local JSON buffer"
+            );
+        }
+        assert_eq!(
+            provider_proxy_body_mode("GET", "/v1/models"),
+            ProviderProxyBodyMode::None
+        );
+        assert_eq!(
+            provider_proxy_body_mode("POST", "/v1/unknown"),
+            ProviderProxyBodyMode::None
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_streamed_body_round_trips_large_bytes_exactly() {
+        let body_len = 3 * 1024 * 1024 + 731;
+        let body = (0..body_len)
+            .map(|index| ((index * 31) % 251) as u8)
+            .collect::<Vec<_>>();
+        let prefix_len = 3_173;
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let body_stream = CappedHttpBody::new(
+            std::io::Cursor::new(body[prefix_len..].to_vec()),
+            body[..prefix_len].to_vec(),
+            body.len(),
+            body.len() + 1,
+            overflowed.clone(),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind mock upstream");
+        let url = format!(
+            "http://{}/v1/web/search",
+            listener.local_addr().expect("mock upstream addr")
+        );
+        let server = tokio::spawn(receive_streamed_request_body(listener));
+
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .http1_only()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .expect("streaming test client")
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .header(reqwest::header::CONTENT_LENGTH, body.len())
+            .body(reqwest::Body::wrap_stream(body_stream))
+            .send()
+            .await
+            .expect("streamed request succeeds");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let received = server.await.expect("mock upstream task");
+        assert_eq!(received, body);
+        assert!(!overflowed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_streamed_body_aborts_at_cap_mid_stream() {
+        let max_body_bytes = 2 * JUNE_PROVIDER_PROXY_BODY_CHUNK_BYTES;
+        let body_len = max_body_bytes + JUNE_PROVIDER_PROXY_BODY_CHUNK_BYTES;
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let mut body_stream = CappedHttpBody::new(
+            std::io::Cursor::new(vec![b'x'; body_len]),
+            Vec::new(),
+            body_len,
+            max_body_bytes,
+            overflowed.clone(),
+        );
+        let mut received = Vec::new();
+        let error = loop {
+            match std::future::poll_fn(|cx| Pin::new(&mut body_stream).poll_next(cx)).await {
+                Some(Ok(chunk)) => received.extend_from_slice(&chunk),
+                Some(Err(error)) => break error,
+                None => panic!("over-cap body ended without an error"),
+            }
+        };
+        assert_eq!(received.len(), max_body_bytes);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(overflowed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_streamed_limit_keeps_legacy_error_status_and_shape() {
+        let path = "/v1/web/search";
+        let (mut writer, mut reader) = tokio::io::duplex(4 * 1024);
+        let response = tokio::spawn(async move {
+            write_provider_proxy_body_too_large_response(&mut writer, path)
+                .await
+                .expect("write limit response");
+        });
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .await
+            .expect("read limit response");
+        response.await.expect("limit response task");
+
+        let header_end = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("response headers")
+            + 4;
+        assert!(
+            bytes.starts_with(b"HTTP/1.1 400 Bad Request\r\n"),
+            "body-limit status must remain 400"
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes[header_end..]).expect("limit JSON envelope");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": {
+                    "message": provider_proxy_body_too_large_message(path),
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_streaming_keeps_upstream_and_transport_error_mapping() {
+        let upstream_body = br#"{"success":false,"message":"Slow down"}"#.to_vec();
+        let (mut upstream_writer, mut upstream_reader) = tokio::io::duplex(4 * 1024);
+        let upstream_response = crate::june_api::WebProxyResponse {
+            status: 429,
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: upstream_body.clone(),
+        };
+        let upstream = tokio::spawn(async move {
+            write_web_tool_response(&mut upstream_writer, Ok(upstream_response))
+                .await
+                .expect("write upstream error response");
+        });
+        let mut upstream_bytes = Vec::new();
+        upstream_reader
+            .read_to_end(&mut upstream_bytes)
+            .await
+            .expect("read upstream error response");
+        upstream.await.expect("upstream error response task");
+        assert!(upstream_bytes.starts_with(
+            b"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json; charset=utf-8\r\n"
+        ));
+        assert!(upstream_bytes.ends_with(&upstream_body));
+
+        let (mut transport_writer, mut transport_reader) = tokio::io::duplex(4 * 1024);
+        let transport = tokio::spawn(async move {
+            write_web_tool_response(
+                &mut transport_writer,
+                Err(AppError::new(
+                    "june_request_failed",
+                    "upstream connection closed",
+                )),
+            )
+            .await
+            .expect("write transport error response");
+        });
+        let mut transport_bytes = Vec::new();
+        transport_reader
+            .read_to_end(&mut transport_bytes)
+            .await
+            .expect("read transport error response");
+        transport.await.expect("transport error response task");
+        assert!(transport_bytes.starts_with(b"HTTP/1.1 502 Bad Gateway\r\n"));
+        let header_end = transport_bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("transport response headers")
+            + 4;
+        let body: serde_json::Value =
+            serde_json::from_slice(&transport_bytes[header_end..]).expect("transport error JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "success": false,
+                "message": "Web request failed: upstream connection closed",
+            })
         );
     }
 

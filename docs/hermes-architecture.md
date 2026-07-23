@@ -104,6 +104,14 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   decodes them before forwarding. This keeps a local model and remote model with
   the same raw id unambiguous and prevents a settings change from rerouting an
   active agent run.
+- **Provider-proxy request bodies are route-specific.** Web search/fetch bodies
+  pass through unchanged from the loopback socket into June API under the
+  route's byte cap. Routes that inspect or rewrite JSON keep a bounded buffer at
+  that consumer only: chat selects and normalizes the model route; image/video
+  inject settings and expand source references; browser, Computer use, memory,
+  recorder, and connector routes dispatch locally from parsed arguments. Native
+  path attachment snapshots separately keep composer image bytes out of the
+  JavaScript/Tauri/Hermes transport before any provider request exists.
 - **Model capabilities come from the live Venice catalog, never traits** — see
   [ADR-0007](adr/0007-model-capability-source-of-truth.md). The model catalog is
   Rust-side (`src-tauri/src/providers/mod.rs`, backed by June API's Venice
