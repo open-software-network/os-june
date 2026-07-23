@@ -13,8 +13,6 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-#[cfg(debug_assertions)]
-use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicUsize;
 use std::{
@@ -24,7 +22,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -96,6 +94,7 @@ pub struct ComputerUseState {
     cursor: crate::computer_use_cursor::ComputerUseCursorState,
     capture_generation: AtomicU64,
     runtime_ready_state: AtomicU32,
+    driver_prewarm_in_flight: AtomicBool,
 }
 
 impl ComputerUseState {
@@ -251,6 +250,21 @@ impl<'a> CleanupInProgress<'a> {
 impl Drop for CleanupInProgress<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct DriverPrewarmInProgress<'a>(&'a AtomicBool);
+
+impl<'a> DriverPrewarmInProgress<'a> {
+    fn try_begin(flag: &'a AtomicBool) -> bool {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+impl Drop for DriverPrewarmInProgress<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -1543,7 +1557,77 @@ pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> boo
             .runtime_ready_state
             .store(ready_state_value(ready), Ordering::SeqCst);
     }
+    if ready {
+        schedule_driver_prewarm(app);
+    }
     ready
+}
+
+/// Start the persistent private driver away from the first model action.
+///
+/// This shares the same `driver` mutex and cache as `driver_call`, so a focus
+/// event, an enable/status refresh, and a real action collapse to one start.
+/// The captured epoch also makes a queued prewarm lose to Stop or grant
+/// revocation instead of resurrecting a driver after cleanup.
+pub(crate) fn schedule_driver_prewarm(app: &AppHandle) {
+    let Some(state) = app.try_state::<ComputerUseState>() else {
+        return;
+    };
+    if state.runtime_ready_state.load(Ordering::SeqCst) != ready_state_value(true) {
+        return;
+    }
+    if !DriverPrewarmInProgress::try_begin(&state.driver_prewarm_in_flight) {
+        return;
+    }
+    let expected_epoch = state.epoch.load(Ordering::SeqCst);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<ComputerUseState>();
+        let _prewarm_in_progress = DriverPrewarmInProgress(&state.driver_prewarm_in_flight);
+        let started_at = Instant::now();
+        match prewarm_driver(&app, expected_epoch).await {
+            Ok(started) => tracing::info!(
+                stage = "computer_use_driver_prewarm",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                started,
+                "Computer use startup stage completed"
+            ),
+            Err(error) => tracing::warn!(
+                stage = "computer_use_driver_prewarm",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                error_code = error.code,
+                "Computer use startup stage failed"
+            ),
+        }
+    });
+}
+
+async fn prewarm_driver(app: &AppHandle, expected_epoch: u64) -> Result<bool, AppError> {
+    let state = app.state::<ComputerUseState>();
+    let mut driver = state.driver.lock().await;
+    if driver.is_some() || !driver_prewarm_is_current(&state, expected_epoch) {
+        return Ok(false);
+    }
+
+    let path = bundled_driver_executable(app)?;
+    driver_version(&path).await?;
+    if !driver_prewarm_is_current(&state, expected_epoch) {
+        return Ok(false);
+    }
+
+    let client = DriverClient::start(&path, None).await?;
+    if !driver_prewarm_is_current(&state, expected_epoch) {
+        client.stop().await;
+        return Ok(false);
+    }
+    state.driver_pid.store(client.pid(), Ordering::SeqCst);
+    *driver = Some(client);
+    Ok(true)
+}
+
+fn driver_prewarm_is_current(state: &ComputerUseState, expected_epoch: u64) -> bool {
+    state.epoch.load(Ordering::SeqCst) == expected_epoch
+        && state.runtime_ready_state.load(Ordering::SeqCst) == ready_state_value(true)
 }
 
 #[tauri::command]
@@ -1563,6 +1647,9 @@ pub async fn computer_use_status(
             state.runtime_ready_state.store(previous, Ordering::SeqCst);
             return Err(error);
         }
+    }
+    if status.ready {
+        schedule_driver_prewarm(&app);
     }
     Ok(status)
 }
@@ -1593,7 +1680,11 @@ pub async fn set_computer_use_grant(
         stop_inner(&app, &state).await;
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    Ok(status_inner(&app).await)
+    let status = status_inner(&app).await;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1625,7 +1716,11 @@ pub async fn computer_use_request_permissions(
     driver_version(&path).await?;
     let _ = probe_permissions(&path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    Ok(status_inner(&app).await)
+    let status = status_inner(&app).await;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 pub(crate) async fn shutdown(app: &AppHandle) {
@@ -4314,6 +4409,35 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn driver_prewarm_loses_to_stop_and_readiness_loss() {
+        let state = ComputerUseState::default();
+        state
+            .runtime_ready_state
+            .store(ready_state_value(true), Ordering::SeqCst);
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        assert!(driver_prewarm_is_current(&state, epoch));
+
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        assert!(!driver_prewarm_is_current(&state, epoch));
+
+        let next_epoch = state.epoch.load(Ordering::SeqCst);
+        state
+            .runtime_ready_state
+            .store(ready_state_value(false), Ordering::SeqCst);
+        assert!(!driver_prewarm_is_current(&state, next_epoch));
+    }
+
+    #[test]
+    fn driver_prewarm_single_flight_reopens_after_completion() {
+        let in_flight = AtomicBool::new(false);
+        assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+        let first = DriverPrewarmInProgress(&in_flight);
+        assert!(!DriverPrewarmInProgress::try_begin(&in_flight));
+        drop(first);
+        assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+    }
 
     #[test]
     fn non_secret_computer_use_grant_never_uses_keychain() {

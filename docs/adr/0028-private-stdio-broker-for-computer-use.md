@@ -276,3 +276,30 @@ helper as a drag source. Screen Recording setup names and offers the signed
 outer June app as its separate drag source; it never tells the user to add the
 helper to that list. The private transport, helper parent authentication,
 capture execution, and app-owned broker policy are unchanged.
+
+## Addendum - turn-scoped tool exposure and driver prewarm (2026-07-23)
+
+An explicit request to use Computer use narrows the Hermes agent snapshot to
+the single `june_computer_use` MCP server for that turn. The desktop may only
+subtract names from the gateway process allowlist; the gateway rejects an
+attempt to add a toolset. It waits only for requested local MCP servers while
+unrelated MCP discovery continues in the process-wide background. A later
+ordinary turn restores the normal June allowlist by refreshing the existing
+agent snapshot, without rebuilding the agent or reconnecting MCP clients.
+The separate broad slash-command worker remains lazy for a scoped session and
+starts only if the user later dispatches a slash command.
+
+June deliberately does not use Hermes' deferred tool-search bridge for this
+path. Computer use must remain a direct app-owned tool with its native approval
+and attended-run semantics visible to the model. The upstream
+`macos-computer-use` skill is also disabled: its driver instructions describe a
+different trust boundary and duplicate the concise workflow already present in
+June's tool schema.
+
+Once every readiness gate is already satisfied, June starts the persistent
+private driver off the first-action path. App startup, enabling Computer use,
+status refresh, and main-window focus all enter the same driver mutex and cache
+used by a real action, so concurrent attempts remain single-flight. A captured
+task epoch makes Stop, grant revocation, or readiness loss win over an in-flight
+prewarm. Authorization, target validation, rollout, plan, model, billing, and
+approval behavior remain unchanged.

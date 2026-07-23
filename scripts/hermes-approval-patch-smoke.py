@@ -998,6 +998,71 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     )
 
 
+def verify_turn_scoped_toolsets(root: Path) -> None:
+    server_source = (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(server_source)
+    normalize = copy.deepcopy(_function(tree, "_normalize_turn_enabled_toolsets"))
+    namespace = {"_load_enabled_toolsets": lambda: ["web", "june_computer_use"]}
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(normalize),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        namespace,
+    )
+    normalize_toolsets = namespace["_normalize_turn_enabled_toolsets"]
+    assert normalize_toolsets(None) is None
+    assert normalize_toolsets(
+        ["june_computer_use", "june_computer_use"]
+    ) == ["june_computer_use"]
+    for invalid in ("june_computer_use", ["todoist"], [""]):
+        try:
+            normalize_toolsets(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("turn toolsets widened or accepted an invalid shape")
+
+    make_agent = _function(tree, "_make_agent")
+    assert any(
+        argument.arg == "enabled_toolsets_override"
+        for argument in make_agent.args.args
+    ), "TUI agent constructor omits the turn toolset override"
+    agent_calls = [
+        node
+        for node in ast.walk(make_agent)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "AIAgent"
+    ]
+    assert len(agent_calls) == 1
+    assert any(
+        keyword.arg == "enabled_toolsets" for keyword in agent_calls[0].keywords
+    ), "turn toolsets are not applied to the agent snapshot"
+
+    create = _rpc_method(tree, "session.create")
+    prompt = _rpc_method(tree, "prompt.submit")
+    create_names = {
+        node.func.id
+        for node in ast.walk(create)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    prompt_names = {
+        node.func.id
+        for node in ast.walk(prompt)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_normalize_turn_enabled_toolsets" in create_names
+    assert "_normalize_turn_enabled_toolsets" in prompt_names
+    assert "_apply_turn_enabled_toolsets" in prompt_names
+    assert (
+        'if current.get("enabled_toolsets_override") is None:\n'
+        "                try:\n"
+        "                    worker = _SlashWorker("
+    ) in server_source, "scoped sessions still eagerly start the broad slash worker"
+
+
 def verify_tui_memory_deny_propagation(root: Path) -> None:
     tree = ast.parse(
         (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
@@ -1806,6 +1871,7 @@ def main() -> int:
         upstream_root = args.upstream_root.resolve() if args.upstream_root else None
         verify_patch_state_machine(root, upstream_root)
         verify_new_session_image_attach_is_immediate(root)
+        verify_turn_scoped_toolsets(root)
         verify_tui_memory_deny_propagation(root)
         verify_memory_lifecycle_deny(root)
         verify_cross_process_config_writer(root)

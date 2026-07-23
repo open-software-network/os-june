@@ -8144,6 +8144,32 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
+  it("narrows an explicit Computer use turn to the app-owned toolset", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "Use Computer use to open Calculator and click 7.",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "Use Computer use to open Calculator and click 7.",
+        enabled_toolsets: ["june_computer_use"],
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "Use Computer use to open Calculator and click 7.",
+      cols: 96,
+      reasoning_effort: "medium",
+      enabled_toolsets: ["june_computer_use"],
+    });
+  });
+
   it("submits a new-session prompt before its AI title resolves", async () => {
     let resolveTitle: ((value: { title: string }) => void) | undefined;
     mocks.suggestAgentSessionTitle.mockImplementationOnce(

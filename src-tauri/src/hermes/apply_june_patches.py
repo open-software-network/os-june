@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v14"
+PATCH_SET = "june-approval-memory-v15"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "85b7cb13d6e6306e75d5eec46f193433df680425533b7d35ee99e0f7eab9512a",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
+    "tui_gateway/server.py": "d49e8b3428b8b0d89d8182ba6b6d958402becc6d8d8b92e002c6fc2b76bca0e5",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -1307,6 +1307,426 @@ def _(rid, params: dict) -> dict:
         '@method("config.set")\n',
         handler,
         "targeted approval response",
+    )
+    source = replace_once(
+        source,
+        '''        return None
+
+
+def _session_tool_progress_mode(sid: str) -> str:
+''',
+        '''        return None
+
+
+_TURN_TOOLSETS_UNSET = object()
+
+
+def _normalize_turn_enabled_toolsets(raw):
+    """Validate that a client can narrow, never widen, June's tool surface."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("enabled_toolsets must be an array or null")
+    if len(raw) > 32:
+        raise ValueError("enabled_toolsets has too many entries")
+
+    normalized = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("enabled_toolsets entries must be non-empty strings")
+        name = item.strip()
+        if name not in normalized:
+            normalized.append(name)
+
+    allowed = _load_enabled_toolsets()
+    if allowed is None:
+        raise ValueError("turn-scoped toolsets require a configured gateway allowlist")
+    allowed_names = set(allowed)
+    if any(name not in allowed_names for name in normalized):
+        raise ValueError("enabled_toolsets may only narrow the gateway allowlist")
+    return normalized
+
+
+def _wait_for_session_toolsets(enabled_toolsets_override) -> None:
+    """Wait only for requested MCP servers; unrelated discovery stays async."""
+    started_at = time.monotonic()
+    if enabled_toolsets_override is None:
+        try:
+            from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+            wait_for_mcp_discovery()
+        except Exception:
+            pass
+        try:
+            from tui_gateway.entry import wait_for_mcp_discovery
+
+            wait_for_mcp_discovery()
+        except Exception:
+            pass
+        logger.info(
+            "June tool stage: scoped=false toolsets=default registry_wait_ms=%d",
+            round((time.monotonic() - started_at) * 1000),
+        )
+        return
+
+    cfg = _load_cfg()
+    mcp_servers = cfg.get("mcp_servers")
+    configured = set(mcp_servers) if isinstance(mcp_servers, dict) else set()
+    requested_servers = []
+    for toolset in enabled_toolsets_override:
+        server_name = toolset[4:] if toolset.startswith("mcp-") else toolset
+        if server_name in configured:
+            requested_servers.append(server_name)
+    if requested_servers:
+        from tools.registry import registry
+
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            missing = [
+                name
+                for name in requested_servers
+                if not registry.get_tool_names_for_toolset(f"mcp-{name}")
+            ]
+            if not missing:
+                break
+            time.sleep(0.01)
+        else:
+            raise RuntimeError("A requested June tool server did not become ready")
+    logger.info(
+        "June tool stage: scoped=true toolsets=%d registry_wait_ms=%d",
+        len(enabled_toolsets_override),
+        round((time.monotonic() - started_at) * 1000),
+    )
+
+
+def _apply_turn_enabled_toolsets(session: dict, requested) -> None:
+    """Retune one live agent snapshot without rebuilding the agent or clients."""
+    if requested is _TURN_TOOLSETS_UNSET:
+        return
+    normalized = _normalize_turn_enabled_toolsets(requested)
+    effective = normalized if normalized is not None else _load_enabled_toolsets()
+    _wait_for_session_toolsets(normalized)
+    agent = session.get("agent")
+    if agent is None:
+        session["enabled_toolsets_override"] = normalized
+        return
+    current = getattr(agent, "enabled_toolsets", None)
+    if current != effective:
+        from tools.mcp_tool import refresh_agent_tool_snapshot
+
+        refresh_agent_tool_snapshot(
+            agent,
+            enabled_override=effective,
+            disabled_override=getattr(agent, "disabled_toolsets", None),
+        )
+    session["enabled_toolsets_override"] = normalized
+    logger.info(
+        "June tool stage: scoped=%s toolsets=%d schema_ready=true",
+        normalized is not None,
+        len(effective or []),
+    )
+
+
+def _session_tool_progress_mode(sid: str) -> str:
+''',
+        "turn-scoped toolset helpers",
+    )
+    source = replace_once(
+        source,
+        '''def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    session_db=None,
+    model_override: dict | str | None = None,
+    provider_override: str | None = None,
+    reasoning_config_override: dict | None = None,
+    service_tier_override: str | None = None,
+    platform_override: str | None = None,
+):
+''',
+        '''def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    session_db=None,
+    model_override: dict | str | None = None,
+    provider_override: str | None = None,
+    reasoning_config_override: dict | None = None,
+    service_tier_override: str | None = None,
+    platform_override: str | None = None,
+    enabled_toolsets_override: list[str] | None = None,
+):
+''',
+        "session-scoped agent toolsets argument",
+    )
+    source = replace_once(
+        source,
+        '''    # MCP tool discovery runs in a background daemon thread at startup so a
+    # dead server can't freeze the shell.  The agent snapshots its tool list
+    # once here and never re-reads it, so briefly wait for in-flight discovery
+    # to land before building — bounded, so a slow/dead server still can't
+    # block. Dashboard /api/ws uses hermes_cli.mcp_startup; TUI stdio keeps
+    # its existing tui_gateway.entry-owned thread.
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+    try:
+        from tui_gateway.entry import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+''',
+        '''    # A narrowed desktop-control turn waits only for its one local MCP
+    # server. Other MCP clients keep connecting in the process-wide background
+    # and cannot delay this agent's immutable first tool snapshot.
+    _wait_for_session_toolsets(enabled_toolsets_override)
+''',
+        "targeted MCP discovery wait",
+    )
+    source = replace_once(
+        source,
+        '''        enabled_toolsets=_load_enabled_toolsets(),
+        disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
+''',
+        '''        enabled_toolsets=(
+            enabled_toolsets_override
+            if enabled_toolsets_override is not None
+            else _load_enabled_toolsets()
+        ),
+        disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
+''',
+        "session-scoped agent toolsets selection",
+    )
+    source = replace_once(
+        source,
+        '''                    if (tier := current.get("create_service_tier_override")) is not None:
+                        kw["service_tier_override"] = tier
+                agent = _make_agent(sid, key, **kw)
+''',
+        '''                    if (tier := current.get("create_service_tier_override")) is not None:
+                        kw["service_tier_override"] = tier
+                if (toolsets := current.get("enabled_toolsets_override")) is not None:
+                    kw["enabled_toolsets_override"] = toolsets
+                agent = _make_agent(sid, key, **kw)
+''',
+        "session toolsets forwarded to lazy build",
+    )
+    source = replace_once(
+        source,
+        '''                    service_tier_override=session.get("create_service_tier_override"),
+                )
+''',
+        '''                    service_tier_override=session.get("create_service_tier_override"),
+                    enabled_toolsets_override=session.get("enabled_toolsets_override"),
+                )
+''',
+        "session toolsets preserved across reset",
+    )
+    source = replace_once(
+        source,
+        '''    title = str(params.get("title") or "").strip()
+    # When set, this is a branch: the new chat copies an existing conversation's
+''',
+        '''    title = str(params.get("title") or "").strip()
+    try:
+        enabled_toolsets_override = _normalize_turn_enabled_toolsets(
+            params.get("enabled_toolsets")
+        )
+    except ValueError as exc:
+        return _err(rid, 4003, str(exc))
+    logger.info(
+        "June tool stage: session_create scoped=%s toolsets=%d",
+        enabled_toolsets_override is not None,
+        len(enabled_toolsets_override or []),
+    )
+    # When set, this is a branch: the new chat copies an existing conversation's
+''',
+        "session create toolset validation",
+    )
+    source = replace_once(
+        source,
+        '''            "model_override": session_model_override,
+            "create_reasoning_override": create_reasoning_override,
+''',
+        '''            "model_override": session_model_override,
+            "enabled_toolsets_override": enabled_toolsets_override,
+            "create_reasoning_override": create_reasoning_override,
+''',
+        "session toolset storage",
+    )
+    source = replace_once(
+        source,
+        '''def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+''',
+        '''def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    enabled_toolsets=_TURN_TOOLSETS_UNSET,
+) -> None:
+''',
+        "queued prompt toolset argument",
+    )
+    source = replace_once(
+        source,
+        '''    session["queued_prompt"] = {"text": text, "transport": transport}
+''',
+        '''    queued_toolsets = enabled_toolsets
+    if queued_toolsets is _TURN_TOOLSETS_UNSET and isinstance(existing, dict):
+        queued_toolsets = existing.get("enabled_toolsets", _TURN_TOOLSETS_UNSET)
+    queued_prompt = {"text": text, "transport": transport}
+    if queued_toolsets is not _TURN_TOOLSETS_UNSET:
+        queued_prompt["enabled_toolsets"] = queued_toolsets
+    session["queued_prompt"] = queued_prompt
+''',
+        "queued prompt toolset storage",
+    )
+    source = replace_once(
+        source,
+        '''def _handle_busy_submit(
+    rid, sid: str, session: dict, text: Any, transport: Any
+) -> dict | None:
+''',
+        '''def _handle_busy_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    enabled_toolsets=_TURN_TOOLSETS_UNSET,
+) -> dict | None:
+''',
+        "busy prompt toolset argument",
+    )
+    source = replace_once(
+        source,
+        '''    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+''',
+        '''    if (
+        mode == "steer"
+        and enabled_toolsets in (_TURN_TOOLSETS_UNSET, None)
+        and agent is not None
+        and hasattr(agent, "steer")
+    ):
+''',
+        "scoped busy prompt avoids unsafe steer",
+    )
+    source = replace_once(
+        source,
+        '''        _enqueue_prompt(session, text, transport)
+''',
+        '''        _enqueue_prompt(session, text, transport, enabled_toolsets)
+''',
+        "busy prompt queues toolsets",
+    )
+    source = replace_once(
+        source,
+        '''        else:
+            _run_prompt_submit(rid, sid, session, queued["text"])
+''',
+        '''        else:
+            _apply_turn_enabled_toolsets(
+                session,
+                queued.get("enabled_toolsets", _TURN_TOOLSETS_UNSET),
+            )
+            _run_prompt_submit(rid, sid, session, queued["text"])
+''',
+        "queued prompt applies toolsets",
+    )
+    source = replace_once(
+        source,
+        '''    truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    session, err = _sess_nowait(params, rid)
+''',
+        '''    truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    turn_toolsets = None
+    if "enabled_toolsets" in params:
+        try:
+            turn_toolsets = _normalize_turn_enabled_toolsets(
+                params.get("enabled_toolsets")
+            )
+        except ValueError as exc:
+            return _err(rid, 4003, str(exc))
+    session, err = _sess_nowait(params, rid)
+''',
+        "prompt toolset validation",
+    )
+    source = replace_once(
+        source,
+        '''        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+''',
+        '''        busy_response = _handle_busy_submit(
+            rid, sid, session, text, busy_transport, turn_toolsets
+        )
+''',
+        "busy prompt toolset forwarding",
+    )
+    source = replace_once(
+        source,
+        '''        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
+        _run_prompt_submit(rid, sid, session, text)
+''',
+        '''        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
+        try:
+            _apply_turn_enabled_toolsets(session, turn_toolsets)
+        except Exception as exc:
+            _emit("error", sid, {"message": f"June tool setup failed: {exc}"})
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(rid, sid, session, text)
+''',
+        "prompt applies turn-scoped toolsets",
+    )
+    source = replace_once(
+        source,
+        '''            try:
+                worker = _SlashWorker(
+                    key,
+                    getattr(agent, "model", _resolve_model()),
+                    profile_home=current.get("profile_home"),
+                )
+                _attach_worker(sid, current, worker)
+            except Exception:
+                pass
+
+            try:
+                from tools.approval import (
+''',
+        '''            # A scoped Computer use turn has no slash command to run.
+            # Starting its broad HermesCLI child here would reconnect every MCP
+            # server and probe optional dependencies while the first model call
+            # is in flight. command.dispatch already creates this worker lazily,
+            # so leave it absent until a later slash command actually needs it.
+            if current.get("enabled_toolsets_override") is None:
+                try:
+                    worker = _SlashWorker(
+                        key,
+                        getattr(agent, "model", _resolve_model()),
+                        profile_home=current.get("profile_home"),
+                    )
+                    _attach_worker(sid, current, worker)
+                except Exception:
+                    pass
+
+            try:
+                from tools.approval import (
+''',
+        "scoped session defers broad slash worker",
     )
     save_config = r'''def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path

@@ -8,6 +8,7 @@ import { prepareProjectPrompt } from "../../lib/agent-project-context";
 import { startAgentRunMonitoring } from "../../lib/agent-run-monitor";
 import { rememberSessionMode, sessionUnrestricted } from "../../lib/agent-session-modes";
 import { withTimeout } from "../../lib/async-timeout";
+import { toolsetsForComputerUseTurn } from "../../lib/computer-use-turn";
 import { messageFromError } from "../../lib/errors";
 import { titleFromPrompt } from "../../lib/hermes-adapter";
 import { createHermesMethods, hermesModeFor } from "../../lib/hermes-control-plane";
@@ -38,7 +39,7 @@ import {
 import { rememberSessionThinkingLevel, thinkingEffortForLevel } from "../../lib/thinking-level";
 import { AUTO_MODEL_ID } from "../settings/ModelPickerDialog";
 import type { PendingIssueReport } from "./agent-session-continuity";
-import { type HermesRuntimeSessionResponse } from "./agent-session-continuity";
+import type { HermesRuntimeSessionResponse } from "./agent-session-continuity";
 import type { AgentAttachment } from "./agent-workspace-models";
 import { unsupportedImageInputPrompt } from "./composer/composer-input-helpers";
 import {
@@ -245,6 +246,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
       ),
       heldVideoContexts,
     );
+    const turnToolsets =
+      options?.issueReport || options?.skipPrompt
+        ? null
+        : toolsetsForComputerUseTurn(displayContent);
     // Start the AI title request early, but never put it on the prompt's
     // critical path. The session starts with the deterministic fallback and
     // the suggestion patches it in the background once a stored id exists.
@@ -326,6 +331,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
                 ? { reasoning_effort: thinkingEffortForLevel(thinkingLevelRef.current) }
                 : {}),
               ...(underProfile ? { profile: nextUnderProfileName } : {}),
+              ...(turnToolsets ? { enabled_toolsets: turnToolsets } : {}),
             });
         const nextStoredSessionId =
           targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
@@ -686,6 +692,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         await gateway.request("prompt.submit", {
           session_id: runtimeSessionId,
           text: preparedProjectPrompt.text,
+          ...(turnToolsets ? { enabled_toolsets: turnToolsets } : {}),
         });
         startAgentRunMonitoring({
           storedSessionId,

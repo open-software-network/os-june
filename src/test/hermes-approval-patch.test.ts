@@ -28,7 +28,7 @@ describe("June Hermes compatibility patch", () => {
       expect(patcher.match(new RegExp(`"${escaped}": "[a-f0-9]{64}"`, "g"))).toHaveLength(1);
       expect(bridge).toContain(`"${path}",`);
     }
-    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v14"');
+    expect(patcher).toContain('PATCH_SET = "june-approval-memory-v15"');
     for (const provenanceSource of [
       bridge,
       compatibilityMatrix,
@@ -36,7 +36,7 @@ describe("June Hermes compatibility patch", () => {
       pinNote,
       upgradeChecklist,
     ]) {
-      expect(provenanceSource).toContain("june-approval-memory-v14");
+      expect(provenanceSource).toContain("june-approval-memory-v15");
     }
     expect(patcher).toContain("session, err = _sess_nowait(params, rid)");
     expect(patcher).toContain('upstream_request_id = getattr(context, "request_id", None)');
@@ -57,6 +57,7 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain("tools_to_include.difference_update(resolved)");
     expect(protocolSmoke).toContain("verify_patch_state_machine");
     expect(protocolSmoke).toContain("verify_new_session_image_attach_is_immediate");
+    expect(protocolSmoke).toContain("verify_turn_scoped_toolsets");
     expect(protocolSmoke).toContain("verify_tui_memory_deny_propagation");
     expect(protocolSmoke).toContain("verify_cross_process_config_writer");
     expect(protocolSmoke).toContain("verify_model_deny_wins");
@@ -81,7 +82,7 @@ describe("June Hermes compatibility patch", () => {
   });
 
   it("pins managed installs to the patch set and verifies them before launch", () => {
-    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14"');
+    expect(bridge).toContain('const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v15"');
     expect(bridge).toContain('include_str!("hermes/apply_june_patches.py")');
     expect(bridge).toContain("verify_managed_hermes_runtime_patch(&managed_install_dir)?");
     for (const mapName of ["PATCHED_SHA256", "POLICY_SHA256"]) {
