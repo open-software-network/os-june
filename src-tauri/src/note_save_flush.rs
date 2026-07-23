@@ -38,8 +38,10 @@ pub(crate) fn complete_note_save_flush(
 /// Gives the renderer a bounded opportunity to drain its debounced note-row
 /// writes while the webview and command runtime are still alive. The shutdown
 /// supervisor includes this full budget so a patch already executing in SQLite
-/// can finish before native teardown advances.
-pub(crate) async fn request(app: &tauri::AppHandle) {
+/// can finish before native teardown advances. A missing acknowledgement is a
+/// failed barrier, not permission to destroy the renderer.
+#[must_use]
+pub(crate) async fn request(app: &tauri::AppHandle) -> bool {
     let request_id = Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();
     let state = app.state::<NoteSaveFlushState>();
@@ -57,22 +59,25 @@ pub(crate) async fn request(app: &tauri::AppHandle) {
     ) {
         remove_pending(&state, &request_id);
         tracing::warn!(%error, "could not request pending note-save flush");
-        return;
+        return false;
     }
 
-    match tokio::time::timeout(NOTE_SAVE_FLUSH_TIMEOUT, receiver).await {
-        Ok(Ok(())) => {}
+    let acknowledged = match tokio::time::timeout(NOTE_SAVE_FLUSH_TIMEOUT, receiver).await {
+        Ok(Ok(())) => true,
         Ok(Err(_)) => {
             tracing::warn!("pending note-save flush acknowledgement channel closed");
+            false
         }
         Err(_) => {
             tracing::warn!(
                 timeout_ms = NOTE_SAVE_FLUSH_TIMEOUT.as_millis(),
                 "timed out waiting for pending note saves"
             );
+            false
         }
-    }
+    };
     remove_pending(&state, &request_id);
+    acknowledged
 }
 
 fn complete(state: &NoteSaveFlushState, request_id: &str) -> bool {

@@ -60,13 +60,17 @@ export class NoteSaveController {
   }
 
   async flushAll() {
+    let lastError: unknown;
     for (let pass = 0; pass < NOTE_SAVE_MAX_FLUSH_PASSES; pass += 1) {
       for (const noteId of [...this.timers.keys()]) {
         this.clearTimer(noteId);
       }
       const noteIds = new Set([...this.pending.keys(), ...this.inFlight.keys()]);
       if (noteIds.size > 0) {
-        await Promise.all([...noteIds].map((noteId) => this.drain(noteId)));
+        const results = await Promise.all([...noteIds].map((noteId) => this.drain(noteId)));
+        for (const result of results) {
+          if (!result.succeeded) lastError = result.error;
+        }
       }
 
       // Let promise continuations that were already queued publish any final
@@ -75,11 +79,12 @@ export class NoteSaveController {
       if (!this.hasPending()) return;
     }
 
-    const error = new Error(
+    if (lastError !== undefined) throw lastError;
+    const drainError = new Error(
       `Could not drain pending note saves after ${NOTE_SAVE_MAX_FLUSH_PASSES} passes`,
     );
-    this.options.onError?.(error, "all");
-    throw error;
+    this.options.onError?.(drainError, "all");
+    throw drainError;
   }
 
   hasPending(noteId?: string) {

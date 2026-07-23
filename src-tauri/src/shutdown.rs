@@ -76,6 +76,12 @@ enum BeginShutdown {
     AlreadyRunning(ShutdownTarget),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupOutcome {
+    Completed,
+    NoteSaveFlushFailed,
+}
+
 pub(crate) struct ShutdownCoordinator {
     phase: Mutex<ShutdownPhase>,
     phase_changed: Condvar,
@@ -115,6 +121,14 @@ impl ShutdownCoordinator {
     fn mark_finalizing(&self, target: ShutdownTarget) {
         *self.lock_phase() = ShutdownPhase::Finalizing(target);
         self.phase_changed.notify_all();
+    }
+
+    fn cancel(&self, target: ShutdownTarget) {
+        let mut phase = self.lock_phase();
+        if *phase == ShutdownPhase::Running(target) {
+            *phase = ShutdownPhase::Idle;
+            self.phase_changed.notify_all();
+        }
     }
 
     fn final_exit_is_allowed(&self) -> bool {
@@ -198,7 +212,9 @@ pub(crate) fn handle_exit(app: &tauri::AppHandle) {
             &coordinator,
             ShutdownTarget::Exit(0),
             EXIT_FALLBACK_DEADLINE,
-            move || { tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)) },
+            move || {
+                let _ = tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline));
+            },
         ),
         Some(true)
     ) {
@@ -251,16 +267,28 @@ fn request(app: &tauri::AppHandle, requested: ShutdownTarget) -> Result<(), AppE
     spawn_supervised_shutdown(
         SHUTDOWN_AGGREGATE_DEADLINE,
         move || tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)),
-        move |completed| {
-            if completed {
-                tracing::info!(?target, "app shutdown cleanup completed");
-            } else {
-                tracing::warn!(
-                    ?target,
-                    timeout_ms = SHUTDOWN_AGGREGATE_DEADLINE.as_millis(),
-                    "app shutdown cleanup hit its aggregate deadline"
-                );
+        move |outcome| {
+            match outcome {
+                Some(CleanupOutcome::Completed) => {
+                    tracing::info!(?target, "app shutdown cleanup completed");
+                }
+                Some(CleanupOutcome::NoteSaveFlushFailed) => {
+                    tracing::warn!(
+                        ?target,
+                        "app shutdown cancelled because pending note saves could not be flushed"
+                    );
+                    final_app.state::<ShutdownCoordinator>().cancel(target);
+                    return;
+                }
+                None => {
+                    tracing::warn!(
+                        ?target,
+                        timeout_ms = SHUTDOWN_AGGREGATE_DEADLINE.as_millis(),
+                        "app shutdown cleanup hit its aggregate deadline"
+                    );
+                }
             }
+
             final_app
                 .state::<ShutdownCoordinator>()
                 .mark_finalizing(target);
@@ -270,14 +298,10 @@ fn request(app: &tauri::AppHandle, requested: ShutdownTarget) -> Result<(), AppE
     .map_err(|error| AppError::new("shutdown_start_failed", error.to_string()))
 }
 
-fn spawn_supervised_shutdown<C, F>(
-    deadline: Duration,
-    cleanup: C,
-    finalize: F,
-) -> std::io::Result<()>
+fn spawn_supervised_shutdown<C, F>(deadline: Duration, cleanup: C, finish: F) -> std::io::Result<()>
 where
-    C: FnOnce() + Send + 'static,
-    F: FnOnce(bool) + Send + 'static,
+    C: FnOnce() -> CleanupOutcome + Send + 'static,
+    F: FnOnce(Option<CleanupOutcome>) + Send + 'static,
 {
     thread::Builder::new()
         .name("june-shutdown-supervisor".to_string())
@@ -286,19 +310,22 @@ where
             let cleanup_spawn = thread::Builder::new()
                 .name("june-shutdown-cleanup".to_string())
                 .spawn(move || {
-                    cleanup();
-                    let _ = done_tx.send(());
+                    let _ = done_tx.send(cleanup());
                 });
-            let completed = cleanup_spawn.is_ok() && wait_for_cleanup(&done_rx, deadline);
-            finalize(completed);
+            let outcome = cleanup_spawn
+                .ok()
+                .and_then(|_| done_rx.recv_timeout(deadline).ok());
+            finish(outcome);
         })
         .map(|_| ())
 }
 
-async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) {
+async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) -> CleanupOutcome {
     // Renderer autosaves must drain while the webview and command runtime are
     // still alive. Keep this ordered before native child-process teardown.
-    crate::note_save_flush::request(app).await;
+    if !crate::note_save_flush::request(app).await {
+        return CleanupOutcome::NoteSaveFlushFailed;
+    }
 
     let dictation_app = app.clone();
     let dictation =
@@ -312,6 +339,7 @@ async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) {
     if let Err(error) = dictation_result {
         tracing::warn!(%error, "dictation shutdown worker could not be joined");
     }
+    CleanupOutcome::Completed
 }
 
 fn wait_for_cleanup(receiver: &Receiver<()>, timeout: Duration) -> bool {
@@ -617,9 +645,10 @@ mod tests {
             Duration::from_millis(20),
             move || {
                 let _ = release_rx.recv();
+                CleanupOutcome::Completed
             },
-            move |completed| {
-                let _ = final_tx.send(completed);
+            move |outcome| {
+                let _ = final_tx.send(outcome);
             },
         )
         .expect("spawn supervisor");
@@ -628,12 +657,30 @@ mod tests {
             "request path must return control to the main event loop"
         );
         assert!(
-            !final_rx
+            final_rx
                 .recv_timeout(Duration::from_secs(1))
-                .expect("deadline finalizer"),
+                .expect("deadline finalizer")
+                .is_none(),
             "deadline must finalize while cleanup remains blocked"
         );
         let _ = release_tx.send(());
+    }
+
+    #[test]
+    fn failed_note_flush_cancels_shutdown_and_allows_retry() {
+        let coordinator = ShutdownCoordinator::default();
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Restart),
+            BeginShutdown::Started(ShutdownTarget::Restart)
+        );
+
+        coordinator.cancel(ShutdownTarget::Restart);
+
+        assert!(coordinator.is_idle());
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Restart),
+            BeginShutdown::Started(ShutdownTarget::Restart)
+        );
     }
 
     #[test]

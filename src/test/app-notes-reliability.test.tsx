@@ -553,6 +553,26 @@ describe("notes recording reliability", () => {
     expect(mocks.completeNoteSaveFlush).toHaveBeenCalledWith("flush-1");
   });
 
+  it("does not acknowledge app quit when pending note persistence fails", async () => {
+    mocks.patchNote.mockRejectedValue(new Error("database busy"));
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    const title = await screen.findByDisplayValue("First note");
+    mocks.completeNoteSaveFlush.mockClear();
+
+    await userEvent.type(title, " unsaved");
+    await act(async () => {
+      await mocks.listeners.get("june://flush-pending-note-saves")?.({
+        payload: { requestId: "flush-failed" },
+      });
+    });
+
+    expect(mocks.completeNoteSaveFlush).not.toHaveBeenCalled();
+    expect(await screen.findByText("database busy")).toBeInTheDocument();
+  });
+
   it("ignores calendar context without profile provenance after a renderer reload", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));

@@ -323,8 +323,12 @@ export function App() {
     let unlisten: (() => void) | undefined;
     let disposed = false;
     void listen<{ requestId: string }>(NOTE_SAVE_FLUSH_REQUESTED_EVENT, async (event) => {
-      await noteSaveController.flushAll();
-      await completeNoteSaveFlush(event.payload.requestId);
+      try {
+        await noteSaveController.flushAll();
+        await completeNoteSaveFlush(event.payload.requestId);
+      } catch (saveError) {
+        setError(messageFromError(saveError));
+      }
     }).then((cleanup) => {
       if (disposed) cleanup();
       else unlisten = cleanup;
@@ -332,9 +336,12 @@ export function App() {
     return () => {
       disposed = true;
       unlisten?.();
-      void noteSaveController.flushAll();
+      void noteSaveController.flushAll().catch(() => {
+        // Native shutdown owns the durable barrier. React cleanup is only a
+        // best-effort backstop, and persist() has already surfaced the error.
+      });
     };
-  }, [noteSaveController]);
+  }, [noteSaveController, setError]);
 
   function getSelectedNoteId() {
     return selectedNoteIdRef.current;
