@@ -110,7 +110,10 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
 - **Browser approvals are event-led.** The browser-approval change event
   refreshes pending approvals promptly. Snapshot reads are limited to initial
   subscription, listener reattachment, and focus, visibility, or online
-  recovery rather than a permanent timer.
+  recovery. Rejected listener registrations retry with capped exponential
+  backoff and emit a diagnostic after repeated failures. While agent work is
+  active, a 30-second safety snapshot recovers a missed backend event without
+  restoring the old permanent five-second idle poll.
 - **Identity override.** June rewrites the runtime's persona at prompt-build time
   via an injected `SOUL.md`; June presents as June, never as Hermes.
 

@@ -585,6 +585,13 @@ describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.suggestAgentSessionTitle.mockReset();
+    mocks.eventHandlers.clear();
+    mocks.listen.mockImplementation(
+      async (eventName: string, handler: (event: { payload?: unknown }) => unknown) => {
+        mocks.eventHandlers.set(eventName, handler);
+        return () => mocks.eventHandlers.delete(eventName);
+      },
+    );
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
@@ -605,6 +612,7 @@ describe("AgentWorkspace", () => {
     // rows (now keyed by the durable stored id) don't leak into the next.
     for (const id of ["session-1", "session-2", "runtime-session-1", "runtime-session-2"]) {
       pendingActionStore.resolveSession(id);
+      hermesActivityStore.clearSession(id);
     }
     setActiveHermesProfileName("default");
     mocks.invoke.mockResolvedValue({ active: "default", current: "default" });
@@ -822,6 +830,64 @@ describe("AgentWorkspace", () => {
         expect(screen.queryByText("Browser approval required")).toBeNull(),
       );
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers browser approvals when listener registration keeps rejecting", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      mocks.listen.mockImplementation(
+        async (eventName: string, handler: (event: { payload?: unknown }) => unknown) => {
+          if (eventName === "june://browser-approvals-changed") {
+            throw new Error("listener unavailable");
+          }
+          mocks.eventHandlers.set(eventName, handler);
+          return () => mocks.eventHandlers.delete(eventName);
+        },
+      );
+      hermesActivityStore.record(
+        {
+          kind: "lifecycle",
+          sessionId: "session-1",
+          flavor: "running",
+          status: "running",
+          text: "",
+          receivedAt: new Date().toISOString(),
+        },
+        "sandboxed",
+      );
+
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() => expect(mocks.browserApprovalsPending).toHaveBeenCalled());
+      mocks.browserApprovalsPending.mockResolvedValue([
+        {
+          approvalId: "browser-approval-safety-net",
+          site: "https://shop.example",
+          action: "click",
+          elementLabel: "Purchase now",
+          requestedAtMs: 1,
+        },
+      ]);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Browser approval required")).toBeInTheDocument(),
+      );
+
+      const browserListenerAttempts = mocks.listen.mock.calls.filter(
+        ([eventName]) => eventName === "june://browser-approvals-changed",
+      );
+      expect(browserListenerAttempts.length).toBeGreaterThanOrEqual(4);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Browser approval event listener keeps failing"),
+      );
+    } finally {
+      hermesActivityStore.clearSession("session-1");
+      warn.mockRestore();
       vi.useRealTimers();
     }
   });

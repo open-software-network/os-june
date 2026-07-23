@@ -1,5 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   osAccountsUpgrade,
   type AgentTaskDto,
@@ -14,10 +14,11 @@ import {
   useActiveHermesProfile,
 } from "../../lib/active-hermes-profile";
 import { isTopUpRequiresMaxError, messageFromError } from "../../lib/errors";
-import { type ReportCategory } from "./composer/reportCategory";
-import { type ReportDialogAttachment } from "./ReportDialog";
+import { hermesActivityStore } from "../../lib/hermes-activity-store";
+import type { ReportCategory } from "./composer/reportCategory";
+import type { ReportDialogAttachment } from "./ReportDialog";
 import type { AgentAttachment } from "./agent-workspace-models";
-import { type AgentPanel } from "./agent-workspace-config";
+import type { AgentPanel } from "./agent-workspace-config";
 import type { ImageSafeModeConsentRequest } from "./agent-workspace-models";
 import {
   agentWorkspaceErrorStateForMessage,
@@ -28,9 +29,14 @@ import {
   readAgentSessionContinuity,
   shouldOpenNewSessionOnMount,
 } from "./agent-session-continuity";
-import { type ComposerInputSizeWarning } from "./composer/composer-input-helpers";
+import type { ComposerInputSizeWarning } from "./composer/composer-input-helpers";
 import { readLastOpenSessionId } from "./session-persistence";
 import type { UseAgentCoreStateDependencies } from "./use-agent-core-state-types";
+
+const BROWSER_APPROVAL_SAFETY_NET_INTERVAL_MS = 30_000;
+const BROWSER_APPROVAL_LISTENER_RETRY_BASE_MS = 1_000;
+const BROWSER_APPROVAL_LISTENER_RETRY_MAX_MS = 30_000;
+const BROWSER_APPROVAL_LISTENER_DIAGNOSTIC_FAILURES = 3;
 
 export function useAgentCoreState(dependencies: UseAgentCoreStateDependencies) {
   const { BROWSER_APPROVALS_CHANGED_EVENT, initialSession, initialSessionIdProp, onTopUp } =
@@ -38,6 +44,11 @@ export function useAgentCoreState(dependencies: UseAgentCoreStateDependencies) {
 
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   const activeHermesProfile = useActiveHermesProfile();
+  const hasActiveAgentWork = useSyncExternalStore(
+    hermesActivityStore.subscribe,
+    () => hermesActivityStore.activeCount() > 0,
+    () => false,
+  );
   // Read once per mount (lazy initializer): the continuity snapshot the
   // previous mount captured on unmount, if any session was still mid-run.
   const [continuity] = useState(readAgentSessionContinuity);
@@ -185,35 +196,75 @@ export function useAgentCoreState(dependencies: UseAgentCoreStateDependencies) {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let listenerFailures = 0;
+    let diagnosticEmitted = false;
     let disposed = false;
     const refreshWhenVisible = () => {
       if (document.visibilityState !== "hidden") void refreshBrowserApprovals();
     };
+    const registerListener = () => {
+      if (disposed) return;
+      void listen(BROWSER_APPROVALS_CHANGED_EVENT, () => void refreshBrowserApprovals()).then(
+        (cleanup) => {
+          if (disposed) {
+            cleanup();
+            return;
+          }
+          unlisten = cleanup;
+          listenerFailures = 0;
+          diagnosticEmitted = false;
+          // Close the race between the initial snapshot and event-subscription
+          // readiness. A successful retry gets the same closing snapshot.
+          void refreshBrowserApprovals();
+        },
+        () => {
+          if (disposed) return;
+          listenerFailures += 1;
+          if (
+            listenerFailures >= BROWSER_APPROVAL_LISTENER_DIAGNOSTIC_FAILURES &&
+            !diagnosticEmitted
+          ) {
+            diagnosticEmitted = true;
+            // biome-ignore lint/suspicious/noConsole: repeated listener failures need a developer diagnostic
+            console.warn(
+              "[agent] Browser approval event listener keeps failing; retrying with backoff while safety snapshots remain available.",
+            );
+          }
+          const delayMs = Math.min(
+            BROWSER_APPROVAL_LISTENER_RETRY_BASE_MS * 2 ** Math.min(listenerFailures - 1, 5),
+            BROWSER_APPROVAL_LISTENER_RETRY_MAX_MS,
+          );
+          retryTimer = setTimeout(registerListener, delayMs);
+        },
+      );
+    };
     void refreshBrowserApprovals();
-    void listen(BROWSER_APPROVALS_CHANGED_EVENT, () => void refreshBrowserApprovals()).then(
-      (cleanup) => {
-        if (disposed) {
-          cleanup();
-          return;
-        }
-        unlisten = cleanup;
-        // Close the race between the initial snapshot and event-subscription
-        // readiness. Re-registering this listener after a remount is also the
-        // approval path's reconnect fallback.
-        void refreshBrowserApprovals();
-      },
-    );
+    registerListener();
     window.addEventListener("focus", refreshWhenVisible);
     window.addEventListener("online", refreshWhenVisible);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       disposed = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
       window.removeEventListener("focus", refreshWhenVisible);
       window.removeEventListener("online", refreshWhenVisible);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
       unlisten?.();
     };
   }, [BROWSER_APPROVALS_CHANGED_EVENT, refreshBrowserApprovals]);
+
+  useEffect(() => {
+    if (!hasActiveAgentWork) return;
+    // Events remain the prompt path. This low-frequency snapshot exists only
+    // while agent work is live, so an idle focused window cannot hide an
+    // approval forever after a missed event or listener failure.
+    const interval = setInterval(
+      () => void refreshBrowserApprovals(),
+      BROWSER_APPROVAL_SAFETY_NET_INTERVAL_MS,
+    );
+    return () => clearInterval(interval);
+  }, [hasActiveAgentWork, refreshBrowserApprovals]);
 
   const respondToBrowserApproval = useCallback(
     async (approvalId: string, approve: boolean, allowSite = false) => {
