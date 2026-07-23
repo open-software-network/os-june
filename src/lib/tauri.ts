@@ -1748,8 +1748,8 @@ export async function openHermesTuiDebug(input: { sessionId: string; unrestricte
   return invoke<void>("open_hermes_tui_debug", { request: input });
 }
 
-export async function listNotes(folderId?: string, limit?: number) {
-  return invoke<ListNotesResponse>("list_notes", { request: { folderId, limit } });
+export async function listNotes(folderId?: string, limit?: number, cursor?: string) {
+  return invoke<ListNotesResponse>("list_notes", { request: { folderId, limit, cursor } });
 }
 
 export async function getNote(noteId: string) {

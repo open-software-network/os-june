@@ -8,16 +8,29 @@ use crate::domain::types::{
     ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
     SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::query::query;
+use sqlx::query_builder::QueryBuilder;
 use sqlx::row::Row;
-use sqlx_sqlite::SqlitePool;
+use sqlx_sqlite::{Sqlite, SqlitePool};
 use uuid::Uuid;
 
 use crate::note_audio_export::{NoteAudioExportSelection, NoteAudioExportSource};
 
 const DICTATION_HISTORY_RETENTION_DAYS: i64 = 7;
+const NOTE_PREVIEW_CHAR_LIMIT: usize = 140;
+const LIST_NOTES_CURSOR_VERSION: u8 = 1;
+const LIST_NOTES_CURSOR_MAX_ENCODED_LEN: usize = 1_024;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ListNotesCursor {
+    version: u8,
+    created_at: String,
+    rowid: i64,
+}
 
 #[derive(Clone)]
 pub struct Repositories {
@@ -1763,65 +1776,143 @@ impl Repositories {
         profile: &str,
         folder_id: Option<String>,
         limit: i64,
-        _cursor: Option<String>,
+        cursor: Option<String>,
     ) -> Result<ListNotesResponse, sqlx::error::Error> {
-        let rows = if let Some(folder_id) = folder_id {
-            query(
-                "SELECT n.id, n.title, n.generated_content, n.edited_content, n.processing_status, n.created_at, n.updated_at
-                 FROM notes n
-                 INNER JOIN note_folders nf ON nf.note_id = n.id
-                 WHERE nf.folder_id = ? AND n.profile = ?
-                 ORDER BY n.created_at DESC, n.rowid DESC
-                 LIMIT ?",
-            )
-            .bind(folder_id)
-            .bind(profile)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            query(
-                "SELECT id, title, generated_content, edited_content, processing_status, created_at, updated_at
-                 FROM notes
-                 WHERE profile = ?
-                 ORDER BY created_at DESC, rowid DESC
-                 LIMIT ?",
-            )
-            .bind(profile)
-            .bind(limit)
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let cursor = cursor
+            .as_deref()
+            .map(decode_list_notes_cursor)
+            .transpose()?;
+        let page_size = usize::try_from(limit).ok();
+        let fetch_limit = page_size
+            .map(|_| limit.saturating_add(1))
+            // Preserve the existing SQLite `LIMIT -1` behavior for callers
+            // that explicitly request an unbounded list.
+            .unwrap_or(limit);
 
-        let mut items = Vec::with_capacity(rows.len());
+        // `char(...)` is the Unicode White_Space set used by Rust's
+        // `char::is_whitespace`. Keeping the blank-content check in SQL lets
+        // this projection match `preview_for` exactly without selecting either
+        // full note body.
+        let mut list_query = QueryBuilder::<Sqlite>::new(format!(
+            "WITH page AS (
+                 SELECT n.rowid AS note_rowid, n.id, n.title,
+                        substr(
+                            CASE
+                                WHEN trim(
+                                    COALESCE(n.edited_content, n.generated_content, ''),
+                                    char(9, 10, 11, 12, 13, 32, 133, 160, 5760,
+                                         8192, 8193, 8194, 8195, 8196, 8197,
+                                         8198, 8199, 8200, 8201, 8202, 8232,
+                                         8233, 8239, 8287, 12288)
+                                ) = ''
+                                THEN n.title
+                                ELSE COALESCE(n.edited_content, n.generated_content, '')
+                            END,
+                            1,
+                            {NOTE_PREVIEW_CHAR_LIMIT}
+                        ) AS preview,
+                        n.processing_status, n.created_at, n.updated_at
+                 FROM notes n"
+        ));
+        if folder_id.is_some() {
+            list_query.push(
+                "
+                 INNER JOIN note_folders nf_filter ON nf_filter.note_id = n.id",
+            );
+        }
+        list_query.push(
+            "
+                 WHERE n.profile = ",
+        );
+        list_query.push_bind(profile);
+        if let Some(folder_id) = folder_id {
+            list_query.push(" AND nf_filter.folder_id = ");
+            list_query.push_bind(folder_id);
+        }
+        if let Some(cursor) = &cursor {
+            list_query.push(" AND (n.created_at < ");
+            list_query.push_bind(&cursor.created_at);
+            list_query.push(" OR (n.created_at = ");
+            list_query.push_bind(&cursor.created_at);
+            list_query.push(" AND n.rowid < ");
+            list_query.push_bind(cursor.rowid);
+            list_query.push("))");
+        }
+        list_query.push(
+            "
+                 ORDER BY n.created_at DESC, n.rowid DESC
+                 LIMIT ",
+        );
+        list_query.push_bind(fetch_limit);
+        list_query.push(
+            "
+             )
+             SELECT page.note_rowid, page.id, page.title, page.preview,
+                    page.processing_status, page.created_at, page.updated_at,
+                    CASE WHEN f.id IS NOT NULL THEN nf.folder_id END AS folder_id
+             FROM page
+             LEFT JOIN note_folders nf ON nf.note_id = page.id
+             LEFT JOIN folders f
+               ON f.id = nf.folder_id AND f.deleted_at IS NULL
+             ORDER BY page.created_at DESC, page.note_rowid DESC, nf.assigned_at ASC",
+        );
+
+        let rows = list_query.build().fetch_all(&self.pool).await?;
+        let mut items_with_cursors: Vec<(NoteListItemDto, ListNotesCursor)> =
+            Vec::with_capacity(rows.len());
         for row in rows {
             let id: String = row.get("id");
-            let title: String = row.get("title");
-            let content = row
-                .try_get::<Option<String>, _>("edited_content")?
-                .or_else(|| {
-                    row.try_get::<Option<String>, _>("generated_content")
-                        .ok()
-                        .flatten()
-                })
-                .unwrap_or_default();
-            items.push(NoteListItemDto {
-                id: id.clone(),
-                title: title.clone(),
-                preview: preview_for(&title, &content),
-                processing_status: ProcessingStatus::from(
-                    row.get::<String, _>("processing_status").as_str(),
-                ),
-                folder_ids: self.folder_ids(&id).await?,
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
-                duration_ms: None,
-            });
+            let folder_id = row.try_get::<Option<String>, _>("folder_id")?;
+            if let Some((item, _)) = items_with_cursors.last_mut() {
+                if item.id == id {
+                    if let Some(folder_id) = folder_id {
+                        item.folder_ids.push(folder_id);
+                    }
+                    continue;
+                }
+            }
+
+            let created_at: String = row.get("created_at");
+            items_with_cursors.push((
+                NoteListItemDto {
+                    id,
+                    title: row.get("title"),
+                    preview: row.get("preview"),
+                    processing_status: ProcessingStatus::from(
+                        row.get::<String, _>("processing_status").as_str(),
+                    ),
+                    folder_ids: folder_id.into_iter().collect(),
+                    created_at: created_at.clone(),
+                    updated_at: row.get("updated_at"),
+                    duration_ms: None,
+                },
+                ListNotesCursor {
+                    version: LIST_NOTES_CURSOR_VERSION,
+                    created_at,
+                    rowid: row.get("note_rowid"),
+                },
+            ));
         }
 
+        let has_more = page_size.is_some_and(|page_size| items_with_cursors.len() > page_size);
+        if let Some(page_size) = page_size {
+            items_with_cursors.truncate(page_size);
+        }
+        let next_cursor = if has_more {
+            items_with_cursors
+                .last()
+                .map(|(_, cursor)| encode_list_notes_cursor(cursor))
+                .transpose()?
+        } else {
+            None
+        };
+
         Ok(ListNotesResponse {
-            items,
-            next_cursor: None,
+            items: items_with_cursors
+                .into_iter()
+                .map(|(item, _)| item)
+                .collect(),
+            next_cursor,
         })
     }
 
@@ -6091,7 +6182,33 @@ fn preview_for(title: &str, content: &str) -> String {
     } else {
         content
     };
-    source.chars().take(140).collect()
+    source.chars().take(NOTE_PREVIEW_CHAR_LIMIT).collect()
+}
+
+fn encode_list_notes_cursor(cursor: &ListNotesCursor) -> Result<String, sqlx::Error> {
+    let bytes = serde_json::to_vec(cursor).map_err(|error| {
+        sqlx::Error::Protocol(format!("could not encode notes cursor: {error}"))
+    })?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_list_notes_cursor(cursor: &str) -> Result<ListNotesCursor, sqlx::Error> {
+    if cursor.len() > LIST_NOTES_CURSOR_MAX_ENCODED_LEN {
+        return Err(sqlx::Error::Protocol(
+            "notes cursor is too large".to_string(),
+        ));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(cursor)
+        .map_err(|_| sqlx::Error::Protocol("notes cursor is not valid base64url".to_string()))?;
+    let cursor: ListNotesCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| sqlx::Error::Protocol("notes cursor is not valid JSON".to_string()))?;
+    if cursor.version != LIST_NOTES_CURSOR_VERSION {
+        return Err(sqlx::Error::Protocol(
+            "notes cursor version is not supported".to_string(),
+        ));
+    }
+    Ok(cursor)
 }
 
 fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
