@@ -193,10 +193,19 @@ const FOLDER_LOCAL_PATH_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     definition: "TEXT",
 }];
 
-// Versions follow the order in which schema changes reached users. They do
-// not follow the SQL filename prefixes: parallel feature branches produced
-// duplicate 014 files and later renumbered files without changing their
-// release order. Keep this catalog append-only.
+// IMPORTANT: positions in this catalog are shipped schema versions. They must
+// follow the order in which changes reached users, not SQL filename prefixes:
+// parallel branches produced duplicate 014 files and later renumbered files
+// without changing release chronology. The historical-prefix upgrade test
+// models real vintages by slicing this catalog, so reordering an entry would
+// invalidate both legacy detection and that test. Append at the end only.
+//
+// Fresh databases add columns in catalog order, while replay-era databases
+// retain the old runner's physical order. In particular,
+// transcripts.source_mode is cid 14 on fresh databases but cid 17 on upgraded
+// databases; folders.profile precedes local_path when fresh but follows it when
+// upgraded. All access must name columns explicitly; never rely on cid order,
+// positional decoding, or SELECT *.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
@@ -894,6 +903,13 @@ fn validate_catalog(migrations: &[Migration]) -> Result<(), sqlx::Error> {
                 "invalid migration catalog entry at position {expected_version}"
             )));
         }
+        if migration.requirements.is_empty() {
+            return Err(sqlx::Error::Protocol(format!(
+                "migration {} ({}) has no schema requirements and cannot be safely detected on \
+                 an unversioned database",
+                migration.version, migration.name
+            )));
+        }
     }
     Ok(())
 }
@@ -909,6 +925,9 @@ fn validate_applied_migrations(
     }
     for (index, applied_migration) in applied.iter().enumerate() {
         let expected = &migrations[index];
+        // Names are persisted migration identity, not descriptive labels. A
+        // rename makes every stamped install fail this check. Per ADR-0037,
+        // existing version/name pairs are append-only and must never be edited.
         if applied_migration.version != expected.version || applied_migration.name != expected.name
         {
             return Err(sqlx::Error::Protocol(format!(
@@ -1149,6 +1168,12 @@ mod tests {
             )],
         },
     ];
+    const EMPTY_REQUIREMENTS_MIGRATIONS: &[Migration] = &[Migration {
+        version: 1,
+        name: "missing_requirements",
+        requirements: &[],
+        steps: &[],
+    }];
 
     async fn test_pool() -> SqlitePool {
         SqlitePoolOptions::new()
@@ -1227,6 +1252,14 @@ mod tests {
         assert!(table_exists(&pool, "browser_action_outcomes").await);
         assert!(table_exists(&pool, "connector_actions").await);
         assert_latest_stamp(&pool).await;
+    }
+
+    #[test]
+    fn catalog_rejects_migrations_without_legacy_requirements() {
+        let error = validate_catalog(EMPTY_REQUIREMENTS_MIGRATIONS)
+            .expect_err("empty requirements must fail catalog validation");
+
+        assert!(error.to_string().contains("has no schema requirements"));
     }
 
     #[tokio::test]
