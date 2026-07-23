@@ -10,7 +10,7 @@ import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlugin2 } from "central-icons/IconPlugin2";
 import { IconShield } from "central-icons/IconShield";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
-import { useEffect, useMemo, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import {
   catalogAuthMeta,
   catalogStatusMeta,
@@ -436,7 +436,11 @@ function InstallControl({
         <span className="skills-hub-install-bar" aria-hidden>
           <span
             className="skills-hub-install-bar-fill"
-            style={pct !== undefined ? { width: `${pct}%` } : undefined}
+            style={
+              pct !== undefined
+                ? ({ "--install-progress-clip": `${100 - pct}%` } as CSSProperties)
+                : undefined
+            }
             data-indeterminate={pct === undefined || undefined}
           />
         </span>

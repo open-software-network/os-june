@@ -202,7 +202,7 @@ function assistantPartNode(
 
 /** The contextual Ask June chat: a fixed side panel next to the meeting note,
  * mirroring the agent artifact panel's attach mechanics (sibling card on the
- * window background; the main card slides left via the :has() margin in
+ * window background; the main card slides left via the shell state class in
  * app.css). The conversation itself is a real Hermes session scoped to the
  * note — see useNoteChat. */
 export function NoteChatPanel({

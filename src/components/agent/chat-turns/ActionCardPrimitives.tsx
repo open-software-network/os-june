@@ -221,7 +221,10 @@ export function ApproveSplitButton({
   }
 
   return (
-    <div className="agent-approval-split" ref={wrapRef}>
+    <div
+      className={`agent-approval-split${disabled ? " agent-approval-split-disabled" : ""}`}
+      ref={wrapRef}
+    >
       <button
         type="button"
         className="agent-approval-approve"

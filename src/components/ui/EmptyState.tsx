@@ -34,7 +34,12 @@ export function EmptyState({
   className?: string;
 }) {
   return (
-    <section className={`empty-state${className ? ` ${className}` : ""}`} aria-label={label}>
+    <section
+      className={`empty-state${footer ? " empty-state-with-footer" : ""}${
+        className ? ` ${className}` : ""
+      }`}
+      aria-label={label}
+    >
       <div className="empty-state-content">
         {icon ? (
           <span className="empty-state-icon" aria-hidden>

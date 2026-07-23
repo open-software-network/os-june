@@ -603,7 +603,9 @@ function AgentSessionListRow({
          * render no checkbox (a completed row can't be selected, moved, or
          * bulk-deleted — JUN-203 review). */}
         {completed ? null : (
-          <label className="folder-note-checkbox">
+          <label
+            className={`folder-note-checkbox${checked ? " folder-note-checkbox-checked" : ""}`}
+          >
             <input
               type="checkbox"
               checked={checked}

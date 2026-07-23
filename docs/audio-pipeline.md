@@ -13,13 +13,28 @@ preview).
 1. **`start_recording`** → `capture::start_capture` opens `microphone.partial.wav`
    (a CPAL input stream) and, in meeting mode, starts the system-audio helper
    writing `system.partial.wav`.
-2. Per input callback: write 16-bit PCM, update `CaptureStats`, and
-   non-blockingly feed the **live preview** sink (a bounded channel) — a worker
-   transcribes ~8s chunks and emits ephemeral `live-transcript-event`s that are
-   **never persisted**.
-3. **`finish_recording`** finalizes the writer, atomically renames
+2. Per input callback: convert samples to 16-bit PCM, update lock-free level
+   atomics, and publish fixed-size blocks into a preallocated bounded audio
+   ring. The callback allocates nothing, takes no locks, and performs no I/O.
+   A dedicated non-real-time task drains the ring into the WAV writer and
+   non-blockingly feeds the **live preview** sink; its worker transcribes ~8s
+   chunks and emits ephemeral `live-transcript-event`s that are **never
+   persisted**. The ring holds 30 seconds at the configured sample rate and
+   channel count, with a memory cap for unusual high-channel devices. If disk
+   writing ever falls more than that capacity behind, the oldest queued blocks
+   are dropped, exact dropped-sample counts appear in recording status, and
+   recovery/finalization checkpoints persist the count. Writer progress is
+   tracked separately from callback production: `bytesWritten` advances only
+   after successful WAV writes. The first writer I/O error, panic, unexpected
+   exit, or sustained stall stops the drain and immediately enters the existing
+   microphone warning path; recovery checkpoints persist its diagnostic code.
+   Each queued block also carries its callback generation, so overflow cannot
+   merge surviving live-preview audio across a dropped callback boundary.
+3. **`finish_recording`** stops the input stream, drains and finalizes the
+   writer task, then atomically renames
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
-   preview.
+   preview. Completed microphone byte metadata is replaced from the writer
+   watermark returned after that final drain.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
@@ -37,13 +52,18 @@ and live warnings; both the main renderer and meeting HUD subscribe to that
 single stream. Stable metadata still comes from the recording commands, and
 `get_recording_status` remains available as a read-only compatibility command.
 Recovery durability is independent of telemetry: a recording-scoped worker
-flushes and checkpoints elapsed time every 500 ms after the recording rows are
-created.
+requests a ring watermark flush and checkpoints elapsed time every 500 ms after
+the recording rows are created. The WAV task drains through that watermark and
+flushes the WAV before the recovery row advances. A dead writer releases the
+flush wait so recovery state and diagnostics continue advancing instead of
+waiting for the full timeout.
 
 ## Key files
 
-- `src-tauri/src/audio/capture.rs` — mic capture, `CaptureStats`, the single
+- `src-tauri/src/audio/capture.rs` — mic capture lifecycle and the single
   global `ACTIVE_RECORDING` (one recorder at a time).
+- `src-tauri/src/audio/capture_buffer.rs` — preallocated audio ring, atomic
+  capture telemetry, recovery flush protocol, and non-real-time WAV drain.
 - `src-tauri/src/audio/system_macos.rs` + `native/mac-system-audio-recorder/
   main.swift` — the system-audio helper and its readiness/permission probes.
 - `src-tauri/src/audio/turns.rs` — turn detection, coalescing, WAV extraction,

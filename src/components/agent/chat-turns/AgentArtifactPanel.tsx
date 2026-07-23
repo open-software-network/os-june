@@ -79,7 +79,7 @@ function AgentArtifactCard({
   );
 
   return (
-    <article className="agent-artifact-card">
+    <article className={`agent-artifact-card${onOpen ? " agent-artifact-card-interactive" : ""}`}>
       {onOpen ? (
         <button
           type="button"
