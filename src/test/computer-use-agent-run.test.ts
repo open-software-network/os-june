@@ -15,7 +15,7 @@ describe("Computer use agent-run tool scope", () => {
     "Use Computer use: open Calculator.",
     "Use Computer use, open Calculator.",
     "Can you use Computer use to open Calculator?",
-  ])("narrows an explicit desktop-control request: %s", (prompt) => {
+  ])("narrows an explicit Computer use request: %s", (prompt) => {
     expect(toolsetsForComputerUseAgentRun(prompt)).toEqual(COMPUTER_USE_AGENT_RUN_TOOLSETS);
   });
 

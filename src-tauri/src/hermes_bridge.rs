@@ -74,7 +74,7 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "4f2837c9e948e4b7ca67d39e921a414e065376e0a4ae321c9df06ea9162be996",
+        "a0d57103021a758507299b95d816038aea3bfc5b7d013a4032bfd4273aa0c33b",
     ),
     (
         "cron/scheduler.py",

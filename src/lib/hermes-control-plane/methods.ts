@@ -28,6 +28,21 @@ export type HermesRequestFn = (
 
 export type HermesRequestLike = HermesRequestFn | { request: HermesRequestFn };
 
+export type CreateSessionParams = {
+  title: string;
+  cols: number;
+  model?: string;
+  reasoningEffort?: string;
+  profile?: string;
+  enabledToolsets?: readonly string[];
+};
+export type SubmitPromptParams = {
+  /** The session's RUNTIME id (not the stored id). */
+  sessionId: string;
+  text: string;
+  /** An agent-run scope that may narrow, but never expand, the gateway allowlist. */
+  enabledToolsets?: readonly string[];
+};
 export type SteerSessionParams = { sessionId: string; text: string };
 export type BranchSessionParams = {
   sessionId: string;
@@ -87,6 +102,8 @@ export type AttachImageParams = {
 /** The typed command surface. Each call resolves to whatever the gateway
  * returns (typed by the caller via the generic on `request`). */
 export type HermesMethods = {
+  createSession<T = unknown>(params: CreateSessionParams): Promise<T>;
+  submitPrompt(params: SubmitPromptParams): Promise<unknown>;
   steerSession(params: SteerSessionParams): Promise<unknown>;
   branchSession(params: BranchSessionParams): Promise<unknown>;
   compressSession(params: CompressSessionParams): Promise<unknown>;
@@ -114,6 +131,32 @@ export function createHermesMethods(client: HermesRequestLike): HermesMethods {
     typeof client === "function" ? client : client.request.bind(client);
 
   return {
+    createSession<T = unknown>({
+      title,
+      cols,
+      model,
+      reasoningEffort,
+      profile,
+      enabledToolsets,
+    }: CreateSessionParams): Promise<T> {
+      return request("session.create", {
+        title,
+        cols,
+        ...defined({
+          model,
+          reasoning_effort: reasoningEffort,
+          profile,
+          enabled_toolsets: enabledToolsets,
+        }),
+      }) as Promise<T>;
+    },
+    submitPrompt({ sessionId, text, enabledToolsets }) {
+      return request("prompt.submit", {
+        session_id: sessionId,
+        text,
+        ...defined({ enabled_toolsets: enabledToolsets }),
+      });
+    },
     steerSession({ sessionId, text }) {
       return request("session.steer", {
         session_id: sessionId,

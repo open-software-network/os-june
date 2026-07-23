@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "4f2837c9e948e4b7ca67d39e921a414e065376e0a4ae321c9df06ea9162be996",
+    "tui_gateway/server.py": "a0d57103021a758507299b95d816038aea3bfc5b7d013a4032bfd4273aa0c33b",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -1512,7 +1512,7 @@ def _session_tool_progress_mode(sid: str) -> str:
     except Exception:
         pass
 ''',
-        '''    # A narrowed desktop-control agent run waits only for its one local MCP
+        '''    # A narrowed Computer use agent run waits only for its one local MCP
     # server. Other MCP clients keep connecting in the process-wide background
     # and cannot delay this agent's immutable first tool snapshot.
     _wait_for_session_toolsets(enabled_toolsets_override)

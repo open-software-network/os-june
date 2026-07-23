@@ -318,7 +318,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           nextUnderProfileName !== undefined && nextUnderProfileName !== "default";
         const nextCreated = targetStoredSessionId
           ? undefined
-          : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
+          : await createHermesMethods(nextGateway).createSession<HermesRuntimeSessionResponse>({
               title: fallbackSessionTitle,
               cols: 96,
               // session.create treats `model` as a per-session override.
@@ -328,10 +328,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
               // thinking level's reasoning_effort follows the same rule.
               ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
               ...(!underProfile
-                ? { reasoning_effort: thinkingEffortForLevel(thinkingLevelRef.current) }
+                ? { reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) }
                 : {}),
               ...(underProfile ? { profile: nextUnderProfileName } : {}),
-              ...(agentRunToolsets && !underProfile ? { enabled_toolsets: agentRunToolsets } : {}),
+              ...(agentRunToolsets && !underProfile ? { enabledToolsets: agentRunToolsets } : {}),
             });
         const nextStoredSessionId =
           targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
@@ -693,10 +693,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           method: "prompt.submit",
           params: { session_id: runtimeSessionId, text: preparedProjectPrompt.text },
         });
-        await gateway.request("prompt.submit", {
-          session_id: runtimeSessionId,
+        await createHermesMethods(gateway).submitPrompt({
+          sessionId: runtimeSessionId,
           text: preparedProjectPrompt.text,
-          ...(scopedAgentRunToolsets ? { enabled_toolsets: scopedAgentRunToolsets } : {}),
+          ...(scopedAgentRunToolsets ? { enabledToolsets: scopedAgentRunToolsets } : {}),
         });
         startAgentRunMonitoring({
           storedSessionId,

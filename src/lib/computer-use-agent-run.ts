@@ -16,7 +16,7 @@ const NEGATED_COMPUTER_USE_REQUEST = new RegExp(
  * A new agent has to choose its tool snapshot before the model sees the agent run.
  * Keep the fast path deliberately explicit: descriptive questions about the
  * feature retain June's normal tools, while requests that name Computer use as
- * the execution mechanism receive only the app-owned desktop-control server.
+ * the execution mechanism receive only the app-owned Computer use server.
  */
 export function toolsetsForComputerUseAgentRun(prompt: string): string[] | null {
   const normalized = prompt.replace(/\s+/g, " ").trim();

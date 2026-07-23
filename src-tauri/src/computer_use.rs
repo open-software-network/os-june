@@ -1560,7 +1560,14 @@ pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> boo
     if let (Some(state), Some(expected_epoch)) =
         (app.try_state::<ComputerUseState>(), expected_epoch)
     {
-        ready = publish_runtime_ready_probe(&state, expected_epoch, ready).is_some() && ready;
+        match publish_runtime_ready_probe(&state, expected_epoch, ready) {
+            Some(previous) if !ready && previous == ready_state_value(true) => {
+                stop_inner(app, &state).await;
+                replace_runtime_ready(&state, false);
+            }
+            Some(_) => {}
+            None => ready = false,
+        }
     }
     if ready {
         schedule_driver_prewarm(app);
@@ -1640,22 +1647,20 @@ pub async fn computer_use_status(
     state: State<'_, ComputerUseState>,
     bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
-    let (status, previous) = status_with_published_readiness(&app, &state).await;
-    if let Some(previous) = previous {
-        let current = ready_state_value(status.ready);
-        if previous != 0 && previous != current {
-            if !status.ready {
-                stop_inner(&app, &state).await;
-                replace_runtime_ready(&state, false);
-            }
-            // `current` is the authoritative live readiness observation. If the
-            // Hermes config refresh fails, keep that observation instead of
-            // re-arming focus prewarm with the stale previous value.
-            crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
+    let (status, previous) = status_with_published_readiness(&app, &state).await?;
+    let current = ready_state_value(status.ready);
+    if previous != 0 && previous != current {
+        if !status.ready {
+            stop_inner(&app, &state).await;
+            replace_runtime_ready(&state, false);
         }
-        if status.ready {
-            schedule_driver_prewarm(&app);
-        }
+        // `current` is the authoritative live readiness observation. If the
+        // Hermes config refresh fails, keep that observation instead of
+        // re-arming focus prewarm with the stale previous value.
+        crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
+    }
+    if status.ready {
+        schedule_driver_prewarm(&app);
     }
     Ok(status)
 }
@@ -1711,14 +1716,20 @@ fn publish_runtime_ready_probe(
 async fn status_with_published_readiness(
     app: &AppHandle,
     state: &ComputerUseState,
-) -> (ComputerUseStatus, Option<u32>) {
+) -> Result<(ComputerUseStatus, u32), AppError> {
     let expected_epoch = state.epoch.load(Ordering::SeqCst);
     let status = status_inner(app).await;
-    let previous = publish_runtime_ready_probe(state, expected_epoch, status.ready);
-    // Stop, revocation, or shutdown may win while the helper/version/permission
-    // probe is suspended. Return the observation to the caller for display, but
-    // do not retry against the newer lifecycle or publish/prewarm into it.
-    (status, previous)
+    let previous =
+        publish_runtime_ready_probe(state, expected_epoch, status.ready).ok_or_else(|| {
+            // Stop, revocation, or shutdown won while the helper/version/permission
+            // probe was suspended. Reject the stale observation instead of
+            // publishing, prewarming, or letting the UI render it.
+            AppError::new(
+                "computer_use_status_superseded",
+                "Computer use changed while its status was loading. Try again.",
+            )
+        })?;
+    Ok((status, previous))
 }
 
 #[tauri::command]
@@ -1740,8 +1751,8 @@ pub async fn set_computer_use_grant(
         replace_runtime_ready(&state, false);
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let (status, published) = status_with_published_readiness(&app, &state).await;
-    if published.is_some() && status.ready {
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
         schedule_driver_prewarm(&app);
     }
     Ok(status)
@@ -1777,8 +1788,8 @@ pub async fn computer_use_request_permissions(
     driver_version(&path).await?;
     let _ = probe_permissions(&path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let (status, published) = status_with_published_readiness(&app, &state).await;
-    if published.is_some() && status.ready {
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
         schedule_driver_prewarm(&app);
     }
     Ok(status)
@@ -1980,7 +1991,7 @@ async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
 /// while the terminal event was crossing the webview boundary.
 ///
 /// The initialized driver is intentionally retained as the off-action-path
-/// prewarm for the next turn. It has no authority without an attended lease;
+/// prewarm for the next agent run. It has no authority without an attended lease;
 /// explicit Stop, revocation, readiness loss, and shutdown still invalidate the
 /// epoch and terminate it through `stop_inner`/`stop_for_shutdown`.
 async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64) {
@@ -4509,6 +4520,23 @@ mod tests {
     }
 
     #[test]
+    fn runtime_readiness_loss_enters_the_stop_path() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("pub(crate) async fn runtime_ready")
+            .expect("runtime readiness boundary");
+        let end = source[start..]
+            .find("/// Start the persistent private driver")
+            .map(|offset| start + offset)
+            .expect("driver prewarm boundary");
+        let readiness = &source[start..end];
+
+        assert!(readiness.contains("previous == ready_state_value(true)"));
+        assert!(readiness.contains("stop_inner(app, &state).await"));
+        assert!(readiness.contains("replace_runtime_ready(&state, false)"));
+    }
+
+    #[test]
     fn status_probe_does_not_rebind_after_stop_or_shutdown() {
         let source = include_str!("computer_use.rs");
         let start = source
@@ -4525,6 +4553,7 @@ mod tests {
             helper.matches("state.epoch.load(Ordering::SeqCst)").count(),
             1
         );
+        assert!(helper.contains("computer_use_status_superseded"));
     }
 
     #[test]
