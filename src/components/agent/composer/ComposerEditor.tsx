@@ -23,6 +23,8 @@ import type { ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandName } from "../../../lib/agent-composer-slash-commands";
 
+type SetContentOptions = { selectPlaceholder?: boolean; focus?: boolean };
+
 export type ComposerEditorHandle = {
   focus: () => void;
   clear: () => void;
@@ -31,11 +33,7 @@ export type ComposerEditorHandle = {
    * the composer after a failed send. With `selectPlaceholder`, the first
    * `<placeholder>` token's brackets are stripped and the bare phrase left
    * selected so the user can overtype it in place. */
-  setContent: (
-    text: string,
-    category?: ReportCategory | null,
-    options?: { selectPlaceholder?: boolean; focus?: boolean },
-  ) => void;
+  setContent: (text: string, category?: ReportCategory | null, options?: SetContentOptions) => void;
   /** Inserts or swaps the legacy message category tag at the caret. */
   insertCategory: (category: ReportCategory) => void;
   /** Inserts a note reference chip at the caret. Multiple references can
@@ -61,6 +59,18 @@ type ComposerEditorProps = {
   onReady?: (editor: Editor) => void;
 };
 
+type PendingEditorAction =
+  | { type: "focus" }
+  | { type: "clear" }
+  | {
+      type: "setContent";
+      text: string;
+      category?: ReportCategory | null;
+      options?: SetContentOptions;
+    }
+  | { type: "insertCategory"; category: ReportCategory }
+  | { type: "insertNoteReference"; noteReference: NoteReferenceInput };
+
 /** Serializes the doc to the plain string sent to June: paragraph and
  * hard-break boundaries become newlines, the category chip contributes
  * nothing, and note reference atoms emit the stable token Hermes resolves via
@@ -78,13 +88,20 @@ export function serializePlainText(doc: ProseMirrorNode): string {
   });
 }
 
+/** Tiptap reports an editor as destroyed both before its view mounts and after
+ * that view unmounts. Treat both lifecycle windows as unavailable so callers
+ * never reach the throwing `editor.view` proxy. */
+function editorHasView(editor: Editor | null): editor is Editor {
+  return editor !== null && !editor.isDestroyed;
+}
+
 /** Focuses the editor with the caret at the end, synchronously. tiptap's
  * `focus` command defers the actual `view.focus()` to a requestAnimationFrame
  * (for scroll handling); that deferral can land after the user has moved on
  * and steal focus back from, say, a menu they just opened. Focusing the view
  * directly keeps it immediate. */
 function focusEnd(editor: Editor | null) {
-  if (!editor || editor.isDestroyed) return;
+  if (!editorHasView(editor)) return;
   editor.commands.setTextSelection(editor.state.doc.content.size);
   editor.view.focus();
 }
@@ -156,12 +173,87 @@ export function buildDoc(
   return { type: "doc", content: paragraphs };
 }
 
+function setEditorContent(
+  editor: Editor,
+  text: string,
+  category?: ReportCategory | null,
+  options?: SetContentOptions,
+) {
+  const staged = options?.selectPlaceholder && !category ? stripPlaceholder(text) : null;
+  editor.commands.setContent(
+    buildDoc(staged?.text ?? text, category, { rehydrateNoteTokens: !staged }),
+    {
+      emitUpdate: true,
+    },
+  );
+  // A hero shortcut authors a "<placeholder>" token; the brackets are
+  // stripped before the text hits the document and the bare phrase left
+  // selected (rather than parking the caret at the end) so typing
+  // overtypes it in place.
+  const range = staged ? { from: staged.from, to: staged.to } : null;
+  const shouldFocus = options?.focus !== false;
+  if (range) {
+    editor.commands.setTextSelection(range);
+    if (shouldFocus) editor.view.focus();
+  } else if (shouldFocus) {
+    focusEnd(editor);
+  }
+}
+
+function applyEditorAction(editor: Editor, action: PendingEditorAction) {
+  switch (action.type) {
+    case "focus":
+      focusEnd(editor);
+      break;
+    case "clear":
+      editor.commands.clearContent(true);
+      break;
+    case "setContent":
+      setEditorContent(editor, action.text, action.category, action.options);
+      break;
+    case "insertCategory":
+      insertReportCategory(editor, action.category);
+      break;
+    case "insertNoteReference":
+      insertNoteReference(editor, action.noteReference);
+      break;
+  }
+}
+
+function queueEditorAction(
+  pendingActions: PendingEditorAction[],
+  action: PendingEditorAction,
+): PendingEditorAction[] {
+  if (action.type === "setContent" || action.type === "clear") {
+    // A replacement supersedes earlier document mutations. Preserve a
+    // standalone focus request, but make content last-write-wins.
+    return [...pendingActions.filter(({ type }) => type === "focus"), action];
+  }
+  if (action.type === "focus" && pendingActions.some(({ type }) => type === "focus")) {
+    return pendingActions;
+  }
+  return [...pendingActions, action];
+}
+
+function flushEditorActions(
+  editor: Editor | null,
+  pendingActionsRef: { current: PendingEditorAction[] },
+) {
+  if (!editorHasView(editor) || pendingActionsRef.current.length === 0) return;
+  const pendingActions = pendingActionsRef.current;
+  pendingActionsRef.current = [];
+  for (const action of pendingActions) {
+    applyEditorAction(editor, action);
+  }
+}
+
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   (
     { placeholder, skills, onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady },
     ref,
   ) => {
     const frameRef = useRef<HTMLDivElement | null>(null);
+    const pendingEditorActionsRef = useRef<PendingEditorAction[]>([]);
     const skillsRef = useRef(skills);
     // Latest callbacks behind refs so the editor (created once) never closes
     // over a stale handler.
@@ -187,7 +279,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     function updateScrollFades(nextEditor: Editor | null) {
       const frame = frameRef.current;
-      if (!frame || !nextEditor || nextEditor.isDestroyed) return;
+      if (!frame || !editorHasView(nextEditor)) return;
       const scroller = nextEditor.view.dom;
       // A range selection paints a full-width highlight, and the edge fades
       // shave it — which reads as the selection being clipped, not as content
@@ -282,7 +374,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       onCreate: ({ editor }) => {
         queueMicrotask(() => {
           updateScrollFades(editor);
-          if (!editor.isDestroyed) onReadyRef.current?.(editor);
+          if (editorHasView(editor)) onReadyRef.current?.(editor);
         });
       },
       onUpdate: ({ editor }) => {
@@ -299,60 +391,80 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     useEffect(() => {
       if (!editor) return;
-      const scroller = editor.view.dom;
-      let frame = 0;
-      const schedule = () => {
-        window.cancelAnimationFrame(frame);
-        frame = window.requestAnimationFrame(() => updateScrollFades(editor));
+      let detachScrollTracking: (() => void) | null = null;
+      const attachScrollTracking = () => {
+        if (detachScrollTracking || !editorHasView(editor)) return;
+        const scroller = editor.view.dom;
+        let frame = 0;
+        const schedule = () => {
+          window.cancelAnimationFrame(frame);
+          frame = window.requestAnimationFrame(() => updateScrollFades(editor));
+        };
+        scroller.addEventListener("scroll", schedule, { passive: true });
+        window.addEventListener("resize", schedule);
+        const observer =
+          typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+        observer?.observe(scroller);
+        schedule();
+        detachScrollTracking = () => {
+          window.cancelAnimationFrame(frame);
+          scroller.removeEventListener("scroll", schedule);
+          window.removeEventListener("resize", schedule);
+          observer?.disconnect();
+        };
       };
-      scroller.addEventListener("scroll", schedule, { passive: true });
-      window.addEventListener("resize", schedule);
-      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
-      observer?.observe(scroller);
-      schedule();
+
+      const handleViewReady = () => {
+        attachScrollTracking();
+        flushEditorActions(editor, pendingEditorActionsRef);
+      };
+
+      // Register first so a view created between the readiness check and the
+      // subscription still gets its scroll tracking and queued updates.
+      editor.on("mount", handleViewReady);
+      editor.on("create", handleViewReady);
+      handleViewReady();
       return () => {
-        window.cancelAnimationFrame(frame);
-        scroller.removeEventListener("scroll", schedule);
-        window.removeEventListener("resize", schedule);
-        observer?.disconnect();
+        editor.off("mount", handleViewReady);
+        editor.off("create", handleViewReady);
+        detachScrollTracking?.();
       };
     }, [editor]);
 
-    useImperativeHandle(
-      ref,
-      () => ({
-        focus: () => focusEnd(editor),
-        clear: () => editor?.commands.clearContent(true),
-        setContent: (text, category, options) => {
-          if (!editor) return;
-          const staged = options?.selectPlaceholder && !category ? stripPlaceholder(text) : null;
-          editor.commands.setContent(
-            buildDoc(staged?.text ?? text, category, { rehydrateNoteTokens: !staged }),
-            {
-              emitUpdate: true,
-            },
-          );
-          // A hero shortcut authors a "<placeholder>" token; the brackets are
-          // stripped before the text hits the document and the bare phrase left
-          // selected (rather than parking the caret at the end) so typing
-          // overtypes it in place.
-          const range = staged ? { from: staged.from, to: staged.to } : null;
-          const shouldFocus = options?.focus !== false;
-          if (range) {
-            editor.commands.setTextSelection(range);
-            if (shouldFocus) editor.view.focus();
-          } else if (shouldFocus) {
-            focusEnd(editor);
-          }
-        },
-        insertCategory: (category) => {
-          if (editor) insertReportCategory(editor, category);
-        },
-        insertNoteReference: (noteReference) => {
-          if (editor) insertNoteReference(editor, noteReference);
-        },
+    useImperativeHandle(ref, () => {
+      const applyOrQueue = (action: PendingEditorAction) => {
+        if (pendingEditorActionsRef.current.length === 0 && editorHasView(editor)) {
+          applyEditorAction(editor, action);
+          return;
+        }
+        pendingEditorActionsRef.current = queueEditorAction(
+          pendingEditorActionsRef.current,
+          action,
+        );
+        // The view can become available before React runs the readiness
+        // effect. Flush the reconciled queue now so an older request can never
+        // overwrite this newer one when the create event arrives.
+        flushEditorActions(editor, pendingEditorActionsRef);
+      };
+
+      return {
+        focus: () => applyOrQueue({ type: "focus" }),
+        clear: () => applyOrQueue({ type: "clear" }),
+        setContent: (text, category, options) =>
+          applyOrQueue({
+            type: "setContent",
+            text,
+            category,
+            options: options ? { ...options } : undefined,
+          }),
+        insertCategory: (category) => applyOrQueue({ type: "insertCategory", category }),
+        insertNoteReference: (noteReference) =>
+          applyOrQueue({
+            type: "insertNoteReference",
+            noteReference: { ...noteReference },
+          }),
         insertPlainText: (text) => {
-          if (!editor || editor.isDestroyed) return false;
+          if (!editorHasView(editor)) return false;
           const normalized = text.replace(/\r\n?/g, "\n");
           const content = normalized.split("\n").flatMap((line, index) => {
             const nodes = [];
@@ -367,11 +479,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           editor.view.dispatch(transaction);
           return true;
         },
-        isFocused: () => !!editor?.isFocused && document.hasFocus(),
-        isEmpty: () => editor?.isEmpty ?? true,
-      }),
-      [editor],
-    );
+        isFocused: () => editorHasView(editor) && editor.isFocused && document.hasFocus(),
+        isEmpty: () => !editorHasView(editor) || editor.isEmpty,
+      };
+    }, [editor]);
 
     return (
       <div ref={frameRef} className="agent-composer-editor-root scroll-fade">
