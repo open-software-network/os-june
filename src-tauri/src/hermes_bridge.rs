@@ -5041,6 +5041,7 @@ fn snapshot_image_source(
     {
         use std::os::unix::fs::MetadataExt;
 
+        // June-owned attach sources are unique-named and effectively immutable; later mutation would also change the shared inode.
         if fs::hard_link(source_path, destination).is_ok() {
             let source_metadata = source.metadata()?;
             let destination_metadata = fs::metadata(destination)?;
