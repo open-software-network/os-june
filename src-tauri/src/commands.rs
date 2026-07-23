@@ -1,5 +1,3 @@
-use crate::hermes_bridge::resolve_june_hermes_home;
-use crate::providers::active_profile_for_hermes_home;
 use crate::{
     app_paths::AppPaths,
     audio::{
@@ -26,51 +24,43 @@ use crate::{
         },
         processing_queue,
         types::{
-            AgentMessageRole, AgentTaskDto, AgentTaskListResponse, AgentTaskRequest,
-            AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError,
-            AssignNoteToFolderRequest, AssignSessionToFolderRequest, AssignSessionToProfileRequest,
-            BootstrapResponse, CheckRecordingSourceReadinessRequest, ClaudeProjectCandidateDto,
-            CompletedSessionDto, CreateAgentTaskRequest, CreateDictionaryEntryRequest,
+            AppError, AssignNoteToFolderRequest, AssignSessionToFolderRequest,
+            AssignSessionToProfileRequest, BootstrapResponse, CheckRecordingSourceReadinessRequest,
+            ClaudeProjectCandidateDto, CompletedSessionDto, CreateDictionaryEntryRequest,
             CreateFolderRequest, CreateNoteRequest, DeleteDictionaryEntryRequest,
             DeleteFolderRequest, DeleteNoteRequest, DeleteNotesRequest, DictionaryEntryDto,
             DownloadNoteAudioRequest, DownloadNoteAudioResponse, ExplainAgentApprovalRequest,
-            ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
-            GetNoteRequest, ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse,
-            MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
-            OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
-            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionProfileDto, SessionRequest, SetSessionCompletedRequest, ShareAddInvitesRequest,
-            ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest,
-            ShareInviteKeyDto, ShareInviteKeySaveRequest, ShareInviteKeysGetRequest,
-            ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest,
-            ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto,
-            StartMeetingRecordingRequest, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
-            UpdateNoteResponse,
+            ExplainAgentApprovalResponse, FinishRecordingResponse, GetNoteRequest,
+            ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse, MemoryDto,
+            MemorySettingsDto, MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
+            ProcessingStatus, ProfileDataSummaryDto, RecordingSessionDto, RecordingSource,
+            RecordingSourceMode, RecordingSourceReadinessDto, RecordingStatusDto,
+            RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest, RenameFolderRequest,
+            RetryProcessingRequest, SessionFolderDto, SessionProfileDto, SessionRequest,
+            SetSessionCompletedRequest, ShareAddInvitesRequest, ShareCreateRequest,
+            ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
+            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
+            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
+            ShareSummaryDto, SourceReadinessDto, StartMeetingRecordingRequest,
+            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
     meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},
 };
-use chrono::{TimeZone, Utc};
-use serde::{Deserialize, Serialize};
-use sqlx::query::query;
-use sqlx::row::Row;
-use sqlx_sqlite::SqlitePool;
+use chrono::Utc;
 use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::fs;
 use std::str::FromStr;
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::{sync::OnceCell, time::sleep};
+use tokio::sync::OnceCell;
 
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
@@ -207,11 +197,6 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
             Ok::<(), sqlx::Error>(())
         })
         .await?;
-    // Complete stale tasks that already received their assistant reply
-    // before pausing the rest: the repair only considers queued/running
-    // tasks, so it must run before they are flipped to paused.
-    repos.complete_agent_tasks_with_assistant_messages().await?;
-    repos.pause_running_agent_tasks_on_launch().await?;
     let active_recording = current_status();
     let mut active_recoveries = scan_recoverable_recordings(&repos.pool)
         .await
@@ -544,9 +529,7 @@ pub async fn import_claude_projects(
         .await?)
 }
 
-/// The sticky active profile, read straight from the Hermes home file. Gives
-/// the frontend a resolution path that works before the Hermes web server is
-/// up (cold start), matching what every profile-scoped Rust read uses.
+/// The active June profile used by every profile-scoped Rust read.
 #[tauri::command]
 pub fn sticky_active_profile(app: AppHandle) -> String {
     active_profile(&app)
@@ -798,7 +781,6 @@ pub async fn memory_settings(app: AppHandle) -> Result<MemorySettingsDto, AppErr
 #[tauri::command]
 pub async fn set_memory_enabled(
     app: AppHandle,
-    bridge: tauri::State<'_, crate::hermes_bridge::HermesBridge>,
     enabled: bool,
 ) -> Result<MemorySettingsDto, AppError> {
     // Keep the transaction lock through persistence, direct policy mutation,
@@ -809,37 +791,7 @@ pub async fn set_memory_enabled(
     let settings = MemorySettingsDto { enabled };
     let path = memory_settings_path(&app)?;
     persist_memory_settings(&path, &settings)?;
-    // The persisted file is authoritative for June's own memory write gate and
-    // every future Hermes config render. Apply the native global toolset policy
-    // directly before relying on live runtime state: the launchd routine
-    // gateway can outlive every bridge connection, and cron reloads config.yaml
-    // for each run. Do not roll the persisted choice back if either enforcement
-    // step fails, but do return the failure so the UI never reports that native
-    // runtime enforcement succeeded when it did not.
-    let direct_error = crate::hermes_bridge::apply_memory_runtime_policy(&app, &bridge)
-        .await
-        .err();
-    if let Some(error) = direct_error.as_ref() {
-        tracing::warn!(
-            ?error,
-            "memory setting saved but the direct Hermes config policy update failed",
-        );
-    }
-    let reapply_error = crate::hermes_bridge::reapply_hermes_runtime(&app, &bridge)
-        .await
-        .err();
-    if let Some(error) = reapply_error.as_ref() {
-        tracing::warn!(
-            ?error,
-            "memory setting saved but live runtime reapply failed; it will take effect on the next spawn",
-        );
-    }
-    if let Some(error) = direct_error {
-        return Err(error);
-    }
-    if let Some(error) = reapply_error {
-        return Err(error);
-    }
+    // The persisted file is authoritative for June's own memory write gate.
     Ok(load_memory_settings(&path))
 }
 
@@ -905,7 +857,7 @@ fn persist_memory_settings(path: &Path, settings: &MemorySettingsDto) -> Result<
     // `replace_file` is the repo's platform-aware wrapper (POSIX rename, or
     // ReplaceFileW/MoveFileExW on Windows) so a second toggle can't fail and an
     // existing destination keeps its security metadata.
-    crate::hermes_bridge::replace_file(&temporary_path, path).map_err(|error| {
+    crate::filesystem::replace_file(&temporary_path, path).map_err(|error| {
         let _ = fs::remove_file(&temporary_path);
         AppError::new("memory_settings_save_failed", error.to_string())
     })
@@ -965,140 +917,6 @@ fn memory_disabled_error() -> AppError {
 }
 
 #[tauri::command]
-pub async fn list_agent_tasks(app: AppHandle) -> Result<AgentTaskListResponse, AppError> {
-    let repos = repositories(&app).await?;
-    repos.complete_agent_tasks_with_assistant_messages().await?;
-    let response = repos.list_agent_tasks().await?;
-    for task in &response.items {
-        if let Err(error) = hydrate_agent_task_from_hermes(&app, &repos, &task.id).await {
-            eprintln!(
-                "failed to hydrate agent task {} from Hermes state: {}",
-                task.id, error.message
-            );
-        }
-    }
-    Ok(repos.list_agent_tasks().await?)
-}
-
-#[tauri::command]
-pub async fn create_agent_task(
-    app: AppHandle,
-    request: CreateAgentTaskRequest,
-) -> Result<AgentTaskDto, AppError> {
-    let prompt = request.prompt.trim();
-    if prompt.is_empty() {
-        return Err(AppError::new(
-            "agent_prompt_required",
-            "Describe what the agent should do.",
-        ));
-    }
-    let repos = repositories(&app).await?;
-    let task = repos
-        .create_agent_task(
-            prompt,
-            request.title.as_deref(),
-            request.safety_profile.unwrap_or_default(),
-        )
-        .await?;
-    if request.run_placeholder.unwrap_or(true) {
-        schedule_agent_runtime_placeholder(repos, task.id.clone());
-    }
-    crate::p3a::record_question_best_effort(app, crate::p3a::questions::Question::AgentSessions);
-    Ok(task)
-}
-
-#[tauri::command]
-pub async fn get_agent_task(
-    app: AppHandle,
-    request: GetAgentTaskRequest,
-) -> Result<AgentTaskDto, AppError> {
-    let repos = repositories(&app).await?;
-    if let Err(error) = hydrate_agent_task_from_hermes(&app, &repos, &request.task_id).await {
-        eprintln!(
-            "failed to hydrate agent task {} from Hermes state: {}",
-            request.task_id, error.message
-        );
-    }
-    Ok(repos.get_agent_task(&request.task_id).await?)
-}
-
-#[tauri::command]
-pub async fn send_agent_message(
-    app: AppHandle,
-    request: SendAgentMessageRequest,
-) -> Result<AgentTaskDto, AppError> {
-    let content = request.content.trim();
-    if content.is_empty() {
-        return Err(AppError::new(
-            "agent_message_required",
-            "Message content is required.",
-        ));
-    }
-    let repos = repositories(&app).await?;
-    repos
-        .add_agent_message(&request.task_id, AgentMessageRole::User, content)
-        .await?;
-    repos
-        .update_agent_task_status(
-            &request.task_id,
-            AgentTaskStatus::Queued,
-            Some("Queued for the agent runtime."),
-            None,
-        )
-        .await?;
-    if request.run_placeholder.unwrap_or(true) {
-        schedule_agent_runtime_placeholder(repos.clone(), request.task_id.clone());
-    }
-    Ok(repos.get_agent_task(&request.task_id).await?)
-}
-
-#[tauri::command]
-pub async fn save_agent_assistant_message(
-    app: AppHandle,
-    request: SaveAgentAssistantMessageRequest,
-) -> Result<AgentTaskDto, AppError> {
-    let content = request.content.trim();
-    if content.is_empty() {
-        return Err(AppError::new(
-            "agent_message_required",
-            "Message content is required.",
-        ));
-    }
-    let repos = repositories(&app).await?;
-    repos
-        .add_agent_message(&request.task_id, AgentMessageRole::Assistant, content)
-        .await?;
-    repos
-        .update_agent_task_status(
-            &request.task_id,
-            AgentTaskStatus::Completed,
-            Some("Completed."),
-            None,
-        )
-        .await?;
-    Ok(repos.get_agent_task(&request.task_id).await?)
-}
-
-#[tauri::command]
-pub async fn save_agent_hermes_session(
-    app: AppHandle,
-    request: SaveAgentHermesSessionRequest,
-) -> Result<AgentTaskDto, AppError> {
-    let hermes_session_id = request.hermes_session_id.trim();
-    if hermes_session_id.is_empty() {
-        return Err(AppError::new(
-            "agent_hermes_session_required",
-            "Hermes session id is required.",
-        ));
-    }
-    let repos = repositories(&app).await?;
-    repos
-        .set_agent_task_hermes_session(&request.task_id, hermes_session_id)
-        .await?;
-    Ok(repos.get_agent_task(&request.task_id).await?)
-}
-
-#[tauri::command]
 pub async fn suggest_agent_session_title(
     request: SuggestAgentSessionTitleRequest,
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
@@ -1117,204 +935,6 @@ pub async fn submit_issue_report(
     crate::june_api::submit_issue_report(&request, &app_version).await
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FinalizeHermesBranchRequest {
-    pub branch_session_id: String,
-    pub source_session_id: String,
-    pub through_message_id: Option<String>,
-    pub keep_message_count: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FinalizeHermesBranchResponse {
-    pub branch_session_id: String,
-    pub kept_message_count: i64,
-    pub removed_message_count: i64,
-}
-
-#[tauri::command]
-pub async fn finalize_hermes_bridge_branch(
-    app: AppHandle,
-    request: FinalizeHermesBranchRequest,
-) -> Result<FinalizeHermesBranchResponse, AppError> {
-    let branch_session_id = request.branch_session_id.trim().to_string();
-    let source_session_id = request.source_session_id.trim().to_string();
-    if branch_session_id.is_empty() || source_session_id.is_empty() {
-        return Err(AppError::new(
-            "hermes_branch_session_id_required",
-            "A source and branch session id are required.",
-        ));
-    }
-
-    if let Some(keep_message_count) = request.keep_message_count {
-        if keep_message_count < 0 {
-            return Err(AppError::new(
-                "hermes_branch_keep_count_invalid",
-                "The branch keep count cannot be negative.",
-            ));
-        }
-    }
-
-    let through_message_id = request
-        .through_message_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-
-    let paths = app_paths(&app)?;
-    let hermes_db_path = paths.data_dir.join("hermes").join("state.db");
-    if !hermes_db_path.exists() {
-        return Err(AppError::new(
-            "hermes_state_unavailable",
-            "Hermes state database is not available.",
-        ));
-    }
-    let pool = hermes_state_pool(&hermes_db_path).await?;
-
-    let keep_count = if let Some(through_message_id) = through_message_id {
-        let cutoff = query(
-            "SELECT id, timestamp
-             FROM messages
-             WHERE session_id = ?
-               AND active = 1
-               AND (CAST(id AS TEXT) = ? OR platform_message_id = ?)
-             ORDER BY timestamp ASC, id ASC
-             LIMIT 1",
-        )
-        .bind(&source_session_id)
-        .bind(&through_message_id)
-        .bind(&through_message_id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-
-        let Some(cutoff) = cutoff else {
-            return Err(AppError::new(
-                "hermes_branch_source_message_not_found",
-                "Could not find the source message to finalize the branch.",
-            ));
-        };
-        let cutoff_id: i64 = cutoff.get("id");
-        let cutoff_timestamp: f64 = cutoff.get("timestamp");
-
-        let keep_count_row = query(
-            "SELECT COUNT(*) AS count
-             FROM messages
-             WHERE session_id = ?
-               AND active = 1
-               AND (timestamp < ? OR (timestamp = ? AND id <= ?))",
-        )
-        .bind(&source_session_id)
-        .bind(cutoff_timestamp)
-        .bind(cutoff_timestamp)
-        .bind(cutoff_id)
-        .fetch_one(&pool)
-        .await
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-        let keep_count: i64 = keep_count_row.get("count");
-        if keep_count <= 0 {
-            return Err(AppError::new(
-                "hermes_branch_empty_cutoff",
-                "Could not determine the branch cutoff.",
-            ));
-        }
-        keep_count
-    } else if let Some(keep_message_count) = request.keep_message_count {
-        keep_message_count
-    } else {
-        return Ok(FinalizeHermesBranchResponse {
-            branch_session_id,
-            kept_message_count: 0,
-            removed_message_count: 0,
-        });
-    };
-
-    let minimum_materialized_count = if keep_count == 0 { 1 } else { keep_count };
-
-    let branch_count_query = "SELECT COUNT(*) AS count
-         FROM messages
-         WHERE session_id = ?
-           AND active = 1";
-    let wait_started = Instant::now();
-    let branch_count = loop {
-        let branch_count_row = query(branch_count_query)
-            .bind(&branch_session_id)
-            .fetch_one(&pool)
-            .await
-            .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-        let count: i64 = branch_count_row.get("count");
-        if count >= minimum_materialized_count || wait_started.elapsed() >= Duration::from_secs(2) {
-            break count;
-        }
-        sleep(Duration::from_millis(50)).await;
-    };
-    if branch_count <= keep_count {
-        return Ok(FinalizeHermesBranchResponse {
-            branch_session_id,
-            kept_message_count: branch_count,
-            removed_message_count: 0,
-        });
-    }
-
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-    let delete_result = query(
-        "DELETE FROM messages
-         WHERE id IN (
-             SELECT id
-             FROM messages
-             WHERE session_id = ?
-               AND active = 1
-             ORDER BY timestamp ASC, id ASC
-             LIMIT -1 OFFSET ?
-         )",
-    )
-    .bind(&branch_session_id)
-    .bind(keep_count)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-
-    query(
-        "UPDATE sessions
-         SET message_count = (
-                 SELECT COUNT(*)
-                 FROM messages
-                 WHERE session_id = ?
-                   AND active = 1
-             ),
-             tool_call_count = (
-                 SELECT COUNT(*)
-                 FROM messages
-                 WHERE session_id = ?
-                   AND active = 1
-                   AND role = 'tool'
-             )
-         WHERE id = ?",
-    )
-    .bind(&branch_session_id)
-    .bind(&branch_session_id)
-    .bind(&branch_session_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-
-    tx.commit()
-        .await
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-
-    Ok(FinalizeHermesBranchResponse {
-        branch_session_id,
-        kept_message_count: keep_count,
-        removed_message_count: i64::try_from(delete_result.rows_affected()).unwrap_or(i64::MAX),
-    })
-}
-
 #[tauri::command]
 pub async fn explain_agent_approval(
     request: ExplainAgentApprovalRequest,
@@ -1323,52 +943,6 @@ pub async fn explain_agent_approval(
         crate::june_api::explain_agent_approval(&request.description, request.command.as_deref())
             .await?;
     Ok(ExplainAgentApprovalResponse { explanation })
-}
-
-#[tauri::command]
-pub async fn cancel_agent_task(
-    app: AppHandle,
-    request: AgentTaskRequest,
-) -> Result<AgentTaskDto, AppError> {
-    repositories(&app)
-        .await?
-        .update_agent_task_status(
-            &request.task_id,
-            AgentTaskStatus::Cancelled,
-            Some("Cancelled by the user."),
-            None,
-        )
-        .await
-        .map_err(AppError::from)
-}
-
-#[tauri::command]
-pub async fn retry_agent_task(
-    app: AppHandle,
-    request: AgentTaskRequest,
-) -> Result<AgentTaskDto, AppError> {
-    let repos = repositories(&app).await?;
-    repos
-        .update_agent_task_status(
-            &request.task_id,
-            AgentTaskStatus::Queued,
-            Some("Queued for the agent runtime."),
-            None,
-        )
-        .await?;
-    schedule_agent_runtime_placeholder(repos.clone(), request.task_id.clone());
-    Ok(repos.get_agent_task(&request.task_id).await?)
-}
-
-#[tauri::command]
-pub async fn list_agent_tool_events(
-    app: AppHandle,
-    request: AgentTaskRequest,
-) -> Result<Vec<AgentToolEventDto>, AppError> {
-    Ok(repositories(&app)
-        .await?
-        .agent_tool_events(&request.task_id)
-        .await?)
 }
 
 #[tauri::command]
@@ -3330,262 +2904,6 @@ fn wav_duration_ms(path: &Path) -> Option<i64> {
     (duration_ms > 0).then_some(duration_ms)
 }
 
-static AGENT_PLACEHOLDER_TASKS_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-fn agent_placeholder_tasks_in_flight() -> &'static Mutex<HashSet<String>> {
-    AGENT_PLACEHOLDER_TASKS_IN_FLIGHT.get_or_init(Mutex::default)
-}
-
-fn schedule_agent_runtime_placeholder(repos: Repositories, task_id: String) {
-    // Two concurrent placeholder runs for the same task (e.g. a rapid
-    // double retry) would double-insert tool events and messages, so only
-    // one in-flight run per task is allowed.
-    {
-        let mut in_flight = agent_placeholder_tasks_in_flight()
-            .lock()
-            .expect("agent placeholder in-flight set is poisoned");
-        if !in_flight.insert(task_id.clone()) {
-            return;
-        }
-    }
-    tokio::spawn(async move {
-        run_agent_runtime_placeholder(&repos, &task_id).await;
-        agent_placeholder_tasks_in_flight()
-            .lock()
-            .expect("agent placeholder in-flight set is poisoned")
-            .remove(&task_id);
-    });
-}
-
-async fn run_agent_runtime_placeholder(repos: &Repositories, task_id: &str) {
-    // Only move a still-queued task to running. If the user cancelled the
-    // task (or it otherwise changed state) since this run was scheduled,
-    // the placeholder must not resurrect it.
-    let started = repos
-        .update_agent_task_status_if_in(
-            task_id,
-            AgentTaskStatus::Running,
-            Some("Preparing local privacy and tool policy."),
-            None,
-            &[AgentTaskStatus::Queued],
-        )
-        .await;
-    if !matches!(started, Ok(true)) {
-        return;
-    }
-    let _ = repos
-        .add_agent_tool_event(
-            task_id,
-            "local_tool_policy",
-            AgentToolEventStatus::Completed,
-            "Autonomous private mode is active. Sensitive actions will be blocked or escalated.",
-            Some(r#"{"profile":"autonomous_private"}"#),
-            Some(r#"{"localToolsReady":true,"rawOutputShared":false}"#),
-            true,
-        )
-        .await;
-    let _ = repos
-        .add_agent_tool_event(
-            task_id,
-            "backend_agent_runtime",
-            AgentToolEventStatus::Blocked,
-            "Backend agent orchestration is not configured in this build.",
-            Some(r#"{"endpoint":"/v1/agent/tasks"}"#),
-            Some(r#"{"reason":"agent_backend_unavailable"}"#),
-            true,
-        )
-        .await;
-    let _ = repos
-        .add_agent_message(
-            task_id,
-            AgentMessageRole::Assistant,
-            "I created the task and set up the local privacy/tool policy. The backend agent runtime endpoint is not configured yet, so I paused execution before taking desktop actions.",
-        )
-        .await;
-    let _ = repos
-        .update_agent_task_status_if_in(
-            task_id,
-            AgentTaskStatus::Paused,
-            Some("Paused until the backend agent runtime is configured."),
-            Some("Backend agent orchestration is not configured in this build."),
-            &[AgentTaskStatus::Running],
-        )
-        .await;
-}
-
-async fn hydrate_agent_task_from_hermes(
-    app: &AppHandle,
-    repos: &Repositories,
-    task_id: &str,
-) -> Result<(), AppError> {
-    let task = repos.get_agent_task(task_id).await?;
-    let paths = app_paths(app)?;
-    let hermes_db_path = paths.data_dir.join("hermes").join("state.db");
-    if !hermes_db_path.exists() {
-        return Ok(());
-    }
-    let pool = hermes_state_pool(&hermes_db_path).await?;
-
-    let session_id = match task.hermes_session_id.clone() {
-        Some(session_id) if !session_id.trim().is_empty() => Some(session_id),
-        _ => match_hermes_session_for_task(repos, &pool, &task).await?,
-    };
-
-    let Some(session_id) = session_id else {
-        return Ok(());
-    };
-
-    let rows = query(
-        "SELECT CAST(id AS TEXT) AS id, content, timestamp
-         FROM messages
-         WHERE session_id = ?
-           AND role = 'assistant'
-           AND active = 1
-           AND content IS NOT NULL
-           AND trim(content) != ''
-         ORDER BY timestamp ASC, id ASC",
-    )
-    .bind(&session_id)
-    .fetch_all(&pool)
-    .await
-    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-
-    // A task only counts as answered when the assistant replied AFTER the
-    // latest user message. Assistant messages from earlier turns must not
-    // complete a task that was re-queued by a newer user message.
-    let latest_user_message_at = task
-        .messages
-        .iter()
-        .filter(|message| message.role == AgentMessageRole::User)
-        .map(|message| message.created_at.clone())
-        .max();
-    let mut assistant_replied_to_latest_turn = false;
-
-    for row in rows {
-        let hermes_message_id: String = row.get("id");
-        let content: String = row.get("content");
-        let timestamp: f64 = row.get("timestamp");
-        let created_at = unix_timestamp_to_rfc3339(timestamp);
-        // Both timestamps are RFC3339 UTC with millisecond precision, so
-        // string ordering matches chronological ordering.
-        if latest_user_message_at
-            .as_deref()
-            .map(|user_at| created_at.as_str() > user_at)
-            .unwrap_or(true)
-        {
-            assistant_replied_to_latest_turn = true;
-        }
-        let external_id = format!("hermes:{session_id}:{hermes_message_id}");
-        repos
-            .add_agent_message_if_absent(
-                task_id,
-                AgentMessageRole::Assistant,
-                content.trim(),
-                &created_at,
-                &external_id,
-            )
-            .await?;
-    }
-    if assistant_replied_to_latest_turn
-        && matches!(
-            task.status,
-            AgentTaskStatus::Queued | AgentTaskStatus::Running
-        )
-    {
-        repos
-            .update_agent_task_status_if_in(
-                task_id,
-                AgentTaskStatus::Completed,
-                Some("Completed."),
-                None,
-                &[AgentTaskStatus::Queued, AgentTaskStatus::Running],
-            )
-            .await?;
-    }
-    Ok(())
-}
-
-/// How close (in seconds) a Hermes session's `started_at` must be to the
-/// task's creation time for heuristic title matching to bind them.
-const HERMES_SESSION_MATCH_WINDOW_SECONDS: f64 = 300.0;
-
-/// Heuristically binds a Hermes session to a task by title. Titles are
-/// derived from the first 64 characters of the prompt, so identical prompts
-/// collide; only bind when exactly one session with this title started near
-/// the task's creation time and it is not already bound to another task.
-/// When the match is ambiguous, skip hydration for this poll instead of
-/// persisting a guess.
-async fn match_hermes_session_for_task(
-    repos: &Repositories,
-    pool: &SqlitePool,
-    task: &AgentTaskDto,
-) -> Result<Option<String>, AppError> {
-    let Ok(task_started_at) = chrono::DateTime::parse_from_rfc3339(&task.created_at)
-        .map(|value| value.timestamp_millis() as f64 / 1000.0)
-    else {
-        return Ok(None);
-    };
-    let rows = query(
-        "SELECT id
-         FROM sessions
-         WHERE title = ?
-           AND ABS(started_at - ?) <= ?
-         LIMIT 2",
-    )
-    .bind(&task.title)
-    .bind(task_started_at)
-    .bind(HERMES_SESSION_MATCH_WINDOW_SECONDS)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-    if rows.len() != 1 {
-        return Ok(None);
-    }
-    let session_id: String = rows[0].get("id");
-    if repos
-        .hermes_session_bound_to_other_task(&task.id, &session_id)
-        .await?
-    {
-        return Ok(None);
-    }
-    repos
-        .set_agent_task_hermes_session(&task.id, &session_id)
-        .await?;
-    Ok(Some(session_id))
-}
-
-/// Cached read pool for the Hermes `state.db`, re-opened only if the path
-/// changes, so per-task polling does not open a fresh pool every second.
-static HERMES_STATE_POOL: tokio::sync::Mutex<Option<(PathBuf, SqlitePool)>> =
-    tokio::sync::Mutex::const_new(None);
-
-async fn hermes_state_pool(path: &Path) -> Result<SqlitePool, AppError> {
-    let mut cached = HERMES_STATE_POOL.lock().await;
-    if let Some((cached_path, pool)) = cached.as_ref() {
-        if cached_path == path && !pool.is_closed() {
-            return Ok(pool.clone());
-        }
-    }
-    let options = sqlite_connect_options(path)
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?
-        .create_if_missing(false);
-    let pool = sqlite_pool_options(1)
-        .connect_with(options)
-        .await
-        .map_err(|error| AppError::new("hermes_state_unavailable", error.to_string()))?;
-    *cached = Some((path.to_path_buf(), pool.clone()));
-    Ok(pool)
-}
-
-fn unix_timestamp_to_rfc3339(timestamp: f64) -> String {
-    let seconds = timestamp.trunc() as i64;
-    let nanos = ((timestamp.fract() * 1_000_000_000.0).round() as u32).min(999_999_999);
-    Utc.timestamp_opt(seconds, nanos)
-        .single()
-        .unwrap_or_else(Utc::now)
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
-
 // ---- Private sharing (JUN-308) -----------------------------------------
 // Thin proxies to the june-api /v1/shares endpoints plus the local key
 // store. All crypto happens in the webview; these commands only move
@@ -3737,6 +3055,19 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
             run_migrations(&pool)
                 .await
                 .map_err(|error| AppError::new("migration_failed", error.to_string()))?;
+            let legacy_state = paths.data_dir.join("hermes").join("state.db");
+            let artifact_root = paths.data_dir.join("agent-workspaces");
+            if let Err(error) = crate::agent_runtime::import_legacy_agent_state(
+                &pool,
+                &crate::agent_runtime::LegacyImportOptions {
+                    hermes_state_db: legacy_state,
+                    artifact_root: Some(artifact_root),
+                },
+            )
+            .await
+            {
+                tracing::warn!(%error, "Legacy agent history import did not complete");
+            }
             Ok(Repositories::new(pool))
         })
         .await
@@ -3744,9 +3075,8 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
 }
 
 pub(crate) fn active_profile(app: &AppHandle) -> String {
-    resolve_june_hermes_home(app)
-        .map(|hermes_home| active_profile_for_hermes_home(&hermes_home))
-        .unwrap_or_else(|_| "default".to_string())
+    let _ = app;
+    "default".to_string()
 }
 
 fn app_paths(app: &AppHandle) -> Result<AppPaths, AppError> {

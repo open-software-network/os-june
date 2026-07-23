@@ -3,6 +3,7 @@
 # Workspace packages: the app root plus the browser extension (JUN-287).
 packages:
   - '.'
+  - 'agent-runtime'
   - 'extension'
 
 # Supply-chain cooldown: refuse package versions published less than 7 days

@@ -777,6 +777,26 @@ const MIGRATIONS: &[Migration] = &[
             "../../migrations/024_note_hydration_indexes.sql"
         ))],
     },
+    Migration {
+        version: 32,
+        name: "agent_runtime",
+        requirements: &[
+            SchemaRequirement::Table("agent_sessions"),
+            SchemaRequirement::Table("agent_runs"),
+            SchemaRequirement::Table("agent_items"),
+            SchemaRequirement::Table("agent_artifacts"),
+            SchemaRequirement::Table("agent_skill_settings"),
+            SchemaRequirement::Table("agent_migration_manifests"),
+            SchemaRequirement::Index("idx_agent_sessions_updated_at"),
+            SchemaRequirement::Index("idx_agent_runs_session_started"),
+            SchemaRequirement::Index("idx_agent_items_session_sequence"),
+            SchemaRequirement::Index("idx_agent_artifacts_session_created"),
+            SchemaRequirement::Index("idx_session_folders_folder"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/025_agent_runtime.sql"
+        ))],
+    },
 ];
 
 struct AppliedMigration {
