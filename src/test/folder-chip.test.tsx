@@ -27,6 +27,7 @@ function baseProps(folders: FolderDto[]) {
     checkingSourceReadiness: false,
     onTitleChange: vi.fn(),
     onContentChange: vi.fn(),
+    onFlushNote: vi.fn(),
     onSourceModeChange: vi.fn(),
     onEnableSystemAudio: vi.fn(),
     onEnableMicrophone: vi.fn(),

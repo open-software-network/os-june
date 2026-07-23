@@ -49,6 +49,7 @@ use crate::{
             StartMeetingRecordingRequest, StartRecordingRequest, SubmitIssueReportRequest,
             SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
             SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            UpdateNoteResponse,
         },
     },
     meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},
@@ -300,16 +301,26 @@ pub async fn download_note_audio(
 }
 
 #[tauri::command]
-pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<NoteDto, AppError> {
-    Ok(repositories(&app)
-        .await?
+pub async fn update_note(
+    app: AppHandle,
+    request: UpdateNoteRequest,
+) -> Result<UpdateNoteResponse, AppError> {
+    let repositories = repositories(&app).await?;
+    let patch = repositories
         .update_note(
             &request.note_id,
             request.title,
             request.edited_content,
             request.active_tab,
         )
-        .await?)
+        .await?;
+    if request.patch_only {
+        return Ok(UpdateNoteResponse::Patch(patch));
+    }
+
+    Ok(UpdateNoteResponse::Note(Box::new(
+        repositories.get_note(&request.note_id).await?,
+    )))
 }
 
 /// Revoke the remote share for an item and drop its local keys, if the item is

@@ -2,6 +2,7 @@ use os_june_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };
+use sqlx::query::query;
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -32,6 +33,35 @@ async fn updates_title_body_and_active_tab() {
     assert_eq!(updated.title, "Edited title");
     assert_eq!(updated.edited_content.as_deref(), Some("Edited body"));
     assert_eq!(updated.active_tab.as_deref(), Some("transcription"));
+}
+
+#[tokio::test]
+async fn update_note_returns_its_patch_without_hydrating_related_note_data() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    // A fully hydrated NoteDto reads transcripts after the note row. Removing
+    // the relation makes this a regression guard that update_note executes its
+    // UPDATE ... RETURNING statement without a pre/post hydration round trip.
+    query("DROP TABLE transcripts")
+        .execute(&repos.pool)
+        .await
+        .expect("drop transcript relation");
+
+    let updated = repos
+        .update_note(
+            &note.id,
+            Some("Single statement".to_string()),
+            Some("Returned patch".to_string()),
+            None,
+        )
+        .await
+        .expect("single-query update");
+
+    assert_eq!(updated.id, note.id);
+    assert_eq!(updated.title, "Single statement");
+    assert_eq!(updated.preview, "Returned patch");
+    assert_eq!(updated.edited_content.as_deref(), Some("Returned patch"));
+    assert_eq!(updated.active_tab.as_deref(), Some("notes"));
 }
 
 #[tokio::test]

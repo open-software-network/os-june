@@ -55,6 +55,8 @@ const mocks = vi.hoisted(() => ({
   downloadNoteAudio: vi.fn(),
   revealPath: vi.fn(),
   updateNote: vi.fn(),
+  patchNote: vi.fn(),
+  completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
@@ -138,6 +140,7 @@ vi.mock("../lib/tauri", () => ({
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   RECORDING_TELEMETRY_EVENT: "recording-telemetry",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "june://note-calendar-context-updated",
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
@@ -160,6 +163,8 @@ vi.mock("../lib/tauri", () => ({
   downloadNoteAudio: mocks.downloadNoteAudio,
   revealPath: mocks.revealPath,
   updateNote: mocks.updateNote,
+  patchNote: mocks.patchNote,
+  completeNoteSaveFlush: mocks.completeNoteSaveFlush,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
@@ -435,6 +440,14 @@ describe("notes recording reliability", () => {
       ...first,
       ...input,
     }));
+    mocks.patchNote.mockImplementation(async (noteId, patch) => ({
+      id: noteId,
+      title: patch.title ?? first.title,
+      preview: first.preview,
+      editedContent: patch.editedContent ?? first.editedContent,
+      activeTab: patch.activeTab ?? first.activeTab,
+      updatedAt: now,
+    }));
   });
 
   async function startRecordingOnFirstNote() {
@@ -517,6 +530,27 @@ describe("notes recording reliability", () => {
 
     expect(await screen.findByText("Google Calendar")).toBeInTheDocument();
     expect(screen.getByText("june@example.com")).toBeInTheDocument();
+  });
+
+  it("flushes pending note edits and acknowledges the native app-quit barrier", async () => {
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    const title = await screen.findByDisplayValue("First note");
+    mocks.patchNote.mockClear();
+
+    await userEvent.type(title, " unsaved");
+    await act(async () => {
+      await mocks.listeners.get("june://flush-pending-note-saves")?.({
+        payload: { requestId: "flush-1" },
+      });
+    });
+
+    expect(mocks.patchNote).toHaveBeenCalledWith("note-1", {
+      title: "First note unsaved",
+    });
+    expect(mocks.completeNoteSaveFlush).toHaveBeenCalledWith("flush-1");
   });
 
   it("ignores calendar context without profile provenance after a renderer reload", async () => {
@@ -1590,8 +1624,7 @@ describe("notes recording reliability", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Transcription" }));
     await waitFor(() =>
-      expect(mocks.updateNote).toHaveBeenCalledWith({
-        noteId: "note-1",
+      expect(mocks.patchNote).toHaveBeenCalledWith("note-1", {
         activeTab: "transcription",
       }),
     );

@@ -278,6 +278,7 @@ pub async fn install_update(
 /// state while a background service is still winding down.
 #[tauri::command]
 pub async fn relaunch_for_update(app: AppHandle) -> Result<(), AppError> {
+    crate::note_save_flush::request(&app).await;
     crate::dictation::stop_helper(&app);
     crate::computer_use::shutdown(&app).await;
     crate::hermes_bridge::shutdown(&app).await;

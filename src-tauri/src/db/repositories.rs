@@ -3,7 +3,7 @@ use crate::domain::types::{
     AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
     AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto, DictionaryEntryDto,
     FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteCalendarEventDto,
-    NoteDto, NoteListItemDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
+    NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
     NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
     ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
     SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
@@ -2738,26 +2738,39 @@ impl Repositories {
         title: Option<String>,
         edited_content: Option<String>,
         active_tab: Option<String>,
-    ) -> Result<NoteDto, sqlx::error::Error> {
-        let current = self.get_note(note_id).await?;
-        let next_title = title.unwrap_or(current.title);
-        let next_content = edited_content.or(current.edited_content);
-        let next_tab = active_tab
-            .or(current.active_tab)
-            .unwrap_or_else(|| "notes".to_string());
-
-        query(
-            "UPDATE notes SET title = ?, edited_content = ?, active_tab = ?, updated_at = ? WHERE id = ?",
+    ) -> Result<NotePatchDto, sqlx::error::Error> {
+        let row = query(
+            "UPDATE notes
+             SET title = COALESCE(?, title),
+                 edited_content = COALESCE(?, edited_content),
+                 active_tab = COALESCE(?, active_tab, 'notes'),
+                 updated_at = ?
+             WHERE id = ?
+             RETURNING id, title, generated_content, edited_content, active_tab, updated_at",
         )
-        .bind(next_title)
-        .bind(next_content)
-        .bind(next_tab)
+        .bind(title)
+        .bind(edited_content)
+        .bind(active_tab)
         .bind(timestamp())
         .bind(note_id)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
+        let title: String = row.get("title");
+        let edited_content = row.try_get::<Option<String>, _>("edited_content")?;
+        let generated_content = row.try_get::<Option<String>, _>("generated_content")?;
+        let content = edited_content
+            .as_deref()
+            .or(generated_content.as_deref())
+            .unwrap_or_default();
 
-        self.get_note(note_id).await
+        Ok(NotePatchDto {
+            id: row.get("id"),
+            preview: preview_for(&title, content),
+            title,
+            edited_content,
+            active_tab: row.get("active_tab"),
+            updated_at: row.get("updated_at"),
+        })
     }
 
     pub async fn audio_artifact_paths_for_note(

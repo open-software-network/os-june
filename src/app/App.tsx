@@ -30,9 +30,11 @@ import {
   recoverRecording,
   revealPath,
   renameFolder,
-  updateNote,
   agentHudHide,
   agentHudShow,
+  completeNoteSaveFlush,
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT,
+  patchNote,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { preloadRecordingSounds } from "../lib/recording-sounds";
@@ -151,6 +153,7 @@ import { createAppDomainActions } from "./app-domain-actions";
 import { useAppUpdateActions } from "./use-app-update-actions";
 
 import { createNoteActions } from "./note-actions";
+import { NoteSaveController } from "./note-save-controller";
 
 import { useDictationEvents } from "./use-dictation-events";
 
@@ -302,6 +305,37 @@ export function App() {
     setLiveTranscriptEvents,
     setRecordingNote,
   } = useAppState();
+  const noteSaveControllerRef = useRef<NoteSaveController | null>(null);
+  if (!noteSaveControllerRef.current) {
+    noteSaveControllerRef.current = new NoteSaveController({
+      persist: patchNote,
+      onPersisted: (patch) => {
+        dispatch({ type: "notePatched", noteId: patch.id, patch });
+      },
+      onError: (saveError) => {
+        setError(messageFromError(saveError));
+      },
+    });
+  }
+  const noteSaveController = noteSaveControllerRef.current;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<{ requestId: string }>(NOTE_SAVE_FLUSH_REQUESTED_EVENT, async (event) => {
+      await noteSaveController.flushAll();
+      await completeNoteSaveFlush(event.payload.requestId);
+    }).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void noteSaveController.flushAll();
+    };
+  }, [noteSaveController]);
+
   function getSelectedNoteId() {
     return selectedNoteIdRef.current;
   }
@@ -498,6 +532,15 @@ export function App() {
   }, []);
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
+  const visibleEditorNoteId = activeView === "meetings" ? selectedNoteId : undefined;
+  const previousVisibleEditorNoteIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const previousNoteId = previousVisibleEditorNoteIdRef.current;
+    previousVisibleEditorNoteIdRef.current = visibleEditorNoteId;
+    if (previousNoteId && previousNoteId !== visibleEditorNoteId) {
+      void noteSaveController.flush(previousNoteId);
+    }
+  }, [noteSaveController, visibleEditorNoteId]);
   const selectedNoteLiveTranscript = useMemo(
     () => liveTranscriptEvents.filter((event) => event.noteId === selectedNoteId),
     [liveTranscriptEvents, selectedNoteId],
@@ -536,8 +579,7 @@ export function App() {
       showNotes:
         selectedNote.activeTab === "transcription"
           ? async () => {
-              const note = await updateNote({ noteId: selectedNote.id, activeTab: "notes" });
-              dispatch({ type: "noteUpdated", note });
+              await handleSaveNoteNow(selectedNote.id, { activeTab: "notes" });
             }
           : undefined,
     });
@@ -868,12 +910,15 @@ export function App() {
     relaunchingUpdateRef.current = true;
     setRelaunchingUpdate(true);
     setUpdateStatus(null);
-    void relaunchJune().catch((error) => {
-      relaunchingUpdateRef.current = false;
-      setRelaunchingUpdate(false);
-      setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`, true);
-    });
-  }, [setUpdateStatus]);
+    void noteSaveController
+      .flushAll()
+      .then(relaunchJune)
+      .catch((error) => {
+        relaunchingUpdateRef.current = false;
+        setRelaunchingUpdate(false);
+        setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`, true);
+      });
+  }, [noteSaveController, setUpdateStatus]);
 
   // Launch check: silent by design — a "no update" result shows nothing so it
   // never interrupts the user (PRD user story 7) — and fired at most once per
@@ -1625,19 +1670,25 @@ export function App() {
     setFolderReturnTarget(undefined);
   }
 
-  const { handleDeleteNote, handleDeleteNotes, handleSelectNoteFromFolder, handleUpdateNote } =
-    createNoteActions({
-      dispatch,
-      handleEmptyNotesAfterDelete,
-      pruneDeletedNoteTabs,
-      selectedNote,
-      setActiveView,
-      setError,
-      setFolderReturnTarget,
-      setOriginAllNotes,
-      setOriginFolderId,
-      state,
-    });
+  const {
+    handleDeleteNote,
+    handleDeleteNotes,
+    handleFlushNote,
+    handleSaveNoteNow,
+    handleSelectNoteFromFolder,
+    handleUpdateNote,
+  } = createNoteActions({
+    dispatch,
+    handleEmptyNotesAfterDelete,
+    noteSaveController,
+    pruneDeletedNoteTabs,
+    setActiveView,
+    setError,
+    setFolderReturnTarget,
+    setOriginAllNotes,
+    setOriginFolderId,
+    state,
+  });
 
   const {
     handleStartRecording,
@@ -1884,6 +1935,7 @@ export function App() {
     handleEnableMicrophone,
     handleEnableSystemAudio,
     handleFinishRecording,
+    handleFlushNote,
     handleFoldersImported,
     handleNewAgentSession,
     handleNewAgentSessionInProject,
@@ -1898,6 +1950,7 @@ export function App() {
     handleRenameFolder,
     handleReportIssue,
     handleResumeRecording,
+    handleSaveNoteNow,
     handleReturnToAgentOriginFolder,
     handleReturnToAgentsList,
     handleReturnToNote,
