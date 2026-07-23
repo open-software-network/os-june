@@ -12,9 +12,10 @@
 │                    │ (no-op unless consented)     │
 │                    ▼                              │
 │   local counter + reported cursor (sqlite)        │
-│                    │ immediate retry-aware flush  │
+│                    │ coalesced wake-up signal     │
 │                    ▼                              │
-│   event bucket ──► one POST per event increment   │
+│   one reporter ──► one POST per event increment   │
+│     (serialized, bounded retry backoff)            │
 │                 user-authenticated to June API    │
 └────────────────────┬──────────────────────────────┘
                      ▼
@@ -134,12 +135,15 @@ catalog CI test green.
 
 ### Desktop: transport
 
-- The current implementation uploads event-count questions immediately after
-  the local counter increments. `p3a_counters.reported_value` is a retry cursor:
-  if three events happened and two uploads succeeded, the next event or app
-  activity retries only the remaining unsent increment. Reports still include an
-  ISO week so OS Accounts can aggregate by reporting period, but no precise
-  event timestamp is sent.
+- Event producers persist the local counter increment, then send a non-blocking
+  wake-up through a bounded coalescing channel. One process-owned reporter is
+  the only delivery drain: it reads the durable cursor, sends increments
+  serially, persists `p3a_counters.reported_value` after every accepted report,
+  and retries failures with bounded exponential backoff. A startup wake-up
+  resumes any pending cursor after restart. Producers never wait for backlog
+  delivery, and concurrent events coalesce into the active or next drain.
+  Reports still include an ISO week so OS Accounts can aggregate by reporting
+  period, but no precise event timestamp is sent.
 - Transport uses `june_api.rs`'s authenticated JSON helper. This protects the
   public June API route from unauthenticated writes while keeping user identity
   out of the telemetry report and out of the OS Accounts aggregate write.
