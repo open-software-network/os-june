@@ -629,12 +629,12 @@ impl HelperApp {
         ));
         if let Some(backup) = pending.backup {
             let now = std::time::Instant::now();
-            self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
-                deadline: now + CLIPBOARD_RESTORE_DELAY,
-                expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
-                text: pending.text,
+            self.delayed_clipboard_restore = Some(clipboard_restore_after_composer_ack(
+                pending.text,
                 backup,
-            });
+                self.delayed_clipboard_restore.take(),
+                now,
+            ));
         }
     }
 
@@ -827,6 +827,26 @@ fn backup_for_next_clipboard_restore(
     }
 }
 
+fn clipboard_restore_after_composer_ack(
+    composer_text: String,
+    composer_backup: clipboard::ClipboardBackup,
+    pending: Option<DelayedClipboardRestore>,
+    now: std::time::Instant,
+) -> DelayedClipboardRestore {
+    if let Some(mut pending) = pending {
+        if pending.backup.original_text_is(&composer_text) {
+            pending.backup = composer_backup;
+        }
+        return pending;
+    }
+    DelayedClipboardRestore {
+        deadline: now + CLIPBOARD_RESTORE_DELAY,
+        expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
+        text: composer_text,
+        backup: composer_backup,
+    }
+}
+
 fn paste_completed_event(submission: &focus::InputSubmission) -> serde_json::Value {
     event(
         "paste_completed",
@@ -963,6 +983,48 @@ mod tests {
         let pending = restore_with_expiry(now, now + CLIPBOARD_RESTORE_RETRY_WINDOW);
 
         assert!(backup_for_next_clipboard_restore(None, Some(pending)).is_none());
+    }
+
+    #[test]
+    fn composer_ack_chains_backup_into_a_newer_external_restore() {
+        let now = std::time::Instant::now();
+        let external_restore = DelayedClipboardRestore {
+            deadline: now + CLIPBOARD_RESTORE_DELAY,
+            expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
+            text: "external transcript".to_string(),
+            backup: clipboard::ClipboardBackup::from_text_for_test("composer transcript"),
+        };
+
+        let restore = clipboard_restore_after_composer_ack(
+            "composer transcript".to_string(),
+            clipboard::ClipboardBackup::from_text_for_test("original clipboard"),
+            Some(external_restore),
+            now,
+        );
+
+        assert_eq!(restore.text, "external transcript");
+        assert!(restore.backup.original_text_is("original clipboard"));
+    }
+
+    #[test]
+    fn composer_ack_preserves_a_newer_unrelated_clipboard_backup() {
+        let now = std::time::Instant::now();
+        let external_restore = DelayedClipboardRestore {
+            deadline: now + CLIPBOARD_RESTORE_DELAY,
+            expires_at: now + CLIPBOARD_RESTORE_RETRY_WINDOW,
+            text: "external transcript".to_string(),
+            backup: clipboard::ClipboardBackup::from_text_for_test("user copied text"),
+        };
+
+        let restore = clipboard_restore_after_composer_ack(
+            "composer transcript".to_string(),
+            clipboard::ClipboardBackup::from_text_for_test("original clipboard"),
+            Some(external_restore),
+            now,
+        );
+
+        assert_eq!(restore.text, "external transcript");
+        assert!(restore.backup.original_text_is("user copied text"));
     }
 
     #[test]
