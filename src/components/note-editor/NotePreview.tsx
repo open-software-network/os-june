@@ -17,6 +17,16 @@ type NotePreviewProps = {
   emptyPlaceholder?: string;
 };
 
+type NotePreviewSerializationState = {
+  noteId: string;
+  lastSerializedMarkdown: string;
+  editorDirty: boolean;
+  focusedExternalMarkdown: {
+    editorMarkdown: string;
+    externalMarkdown: string;
+  } | null;
+};
+
 export function NotePreview({
   noteId,
   markdown,
@@ -27,10 +37,24 @@ export function NotePreview({
   const wrapRef = useRef<HTMLDivElement>(null);
   const [toolbar, setToolbar] = useState<{ x: number; y: number } | null>(null);
   const initialHtml = useMemo(() => markdownToHtml(markdown), [noteId]);
-  const focusedExternalMarkdown = useRef<{
-    editorMarkdown: string;
-    externalMarkdown: string;
-  } | null>(null);
+  const serializationStateRef = useRef<NotePreviewSerializationState>({
+    noteId,
+    lastSerializedMarkdown: markdown,
+    editorDirty: false,
+    focusedExternalMarkdown: null,
+  });
+  if (serializationStateRef.current.noteId !== noteId) {
+    serializationStateRef.current = {
+      noteId,
+      lastSerializedMarkdown: markdown,
+      editorDirty: false,
+      focusedExternalMarkdown: null,
+    };
+  }
+  // Capture the note-keyed object in each editor callback. A late blur from
+  // the previous editor can then finish reconciling that note after a switch
+  // without reading the new note's serialization state.
+  const serializationState = serializationStateRef.current;
 
   const editor = useEditor(
     {
@@ -55,21 +79,33 @@ export function NotePreview({
           "aria-multiline": "true",
         },
       },
-      onUpdate: ({ editor }) => {
-        onChange(noteId, htmlToMarkdown(editor.view.dom));
+      onUpdate: ({ editor, transaction }) => {
+        if (!transaction.docChanged) return;
+        const editorMarkdown = htmlToMarkdown(editor.view.dom);
+        serializationState.lastSerializedMarkdown = editorMarkdown;
+        serializationState.editorDirty = true;
+        onChange(noteId, editorMarkdown);
       },
-      onBlur: ({ editor }) => {
+      onBlur: () => {
         // `noteId` here is the value at editor-creation time — the
         // useEditor dep list tears the editor down on note change, so
         // this closure always reflects the note the editor was bound
         // to, even when blur fires during teardown.
-        const editorMarkdown = htmlToMarkdown(editor.view.dom);
-        const mergedMarkdown = mergeFocusedExternalMarkdown(
-          editorMarkdown,
-          focusedExternalMarkdown.current,
-        );
-        focusedExternalMarkdown.current = null;
-        onChange(noteId, mergedMarkdown);
+        const pendingExternalMarkdown = serializationState.focusedExternalMarkdown;
+        serializationState.focusedExternalMarkdown = null;
+        if (serializationState.editorDirty || pendingExternalMarkdown) {
+          if (pendingExternalMarkdown) {
+            const mergedMarkdown = mergeFocusedExternalMarkdown(
+              serializationState.lastSerializedMarkdown,
+              pendingExternalMarkdown,
+            );
+            serializationState.lastSerializedMarkdown = mergedMarkdown;
+            onChange(noteId, mergedMarkdown);
+          }
+          serializationState.editorDirty = false;
+        }
+        // onUpdate already queued the exact latest user edit. Blur only
+        // reconciles a focused external append, then flushes that queue.
         onBlur?.(noteId);
       },
     },
@@ -108,11 +144,11 @@ export function NotePreview({
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;
     try {
-      const current = htmlToMarkdown(editor.view.dom).trim();
+      const current = serializationState.lastSerializedMarkdown.trim();
       if (current === markdown.trim()) return;
       if (editor.isFocused) {
-        focusedExternalMarkdown.current = {
-          editorMarkdown: htmlToMarkdown(editor.view.dom),
+        serializationState.focusedExternalMarkdown = {
+          editorMarkdown: serializationState.lastSerializedMarkdown,
           externalMarkdown: markdown,
         };
         return;
@@ -120,11 +156,14 @@ export function NotePreview({
       editor.commands.setContent(markdownToHtml(markdown), {
         emitUpdate: false,
       });
+      serializationState.lastSerializedMarkdown = markdown;
+      serializationState.editorDirty = false;
+      serializationState.focusedExternalMarkdown = null;
     } catch {
       // Editor is mid-teardown or view isn't ready yet — the next
       // mount will paint the correct content.
     }
-  }, [editor, markdown]);
+  }, [editor, markdown, serializationState]);
 
   function applyFormat(command: "h1" | "bullet" | "bold") {
     if (!editor) return;
@@ -299,7 +338,7 @@ function inlineToMarkdown(node: Node): string {
   return inner;
 }
 
-function htmlToMarkdown(root: HTMLElement): string {
+export function htmlToMarkdown(root: HTMLElement): string {
   const blocks: string[] = [];
   for (const node of Array.from(root.childNodes)) {
     if (node.nodeType === Node.TEXT_NODE) {

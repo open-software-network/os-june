@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
+import { htmlToMarkdown } from "../components/note-editor/NotePreview";
 import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
 
 const now = "2026-05-19T10:00:00Z";
@@ -968,8 +969,70 @@ describe("NoteEditor", () => {
     await user.type(editor, "Unsaved thought");
 
     expect(onContentChange).toHaveBeenLastCalledWith("note-1", "Unsaved thought");
+    const updateCallCount = onContentChange.mock.calls.length;
     fireEvent.blur(editor);
+    expect(onContentChange).toHaveBeenCalledTimes(updateCallCount);
     expect(onFlushNote).toHaveBeenCalledWith("note-1");
+  });
+
+  it("does not echo clean blur or unfocused external content through onContentChange", async () => {
+    const user = userEvent.setup();
+    const onContentChange = vi.fn();
+    const onFlushNote = vi.fn();
+    const { rerender } = render(
+      <NoteEditor
+        {...props}
+        note={note({ generatedContent: "", editedContent: "Before generation" })}
+        onContentChange={onContentChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Generated note" });
+
+    rerender(
+      <NoteEditor
+        {...props}
+        note={note({
+          generatedContent: "",
+          editedContent: "Generated content arrived externally",
+        })}
+        onContentChange={onContentChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).toHaveTextContent("Generated content arrived externally");
+    });
+    expect(onContentChange).not.toHaveBeenCalled();
+
+    await user.click(editor);
+    fireEvent.blur(editor);
+
+    expect(onContentChange).not.toHaveBeenCalled();
+    expect(onFlushNote).toHaveBeenCalledWith("note-1");
+  });
+
+  it("keeps saved markdown stable for nested lists, code blocks, and Unicode", () => {
+    const editorDom = document.createElement("div");
+    editorDom.innerHTML = [
+      "<ul>",
+      "<li><p>Parent 😀</p><ul><li><p><strong>Nested café</strong></p></li></ul></li>",
+      "</ul>",
+      '<pre><code>const π = "λ";\nconsole.log(π);</code></pre>',
+      "<p>Zażółć <em>gęślą</em> jaźń</p>",
+    ].join("");
+
+    // This is the legacy DOM serializer's exact pre-optimization output.
+    // Actual user edits still take this path; blur now reuses that result.
+    expect(htmlToMarkdown(editorDom)).toBe(
+      [
+        "- Parent 😀**Nested café**",
+        "- **Nested café**",
+        'const π = "λ";\nconsole.log(π);',
+        "Zażółć *gęślą* jaźń",
+      ].join("\n\n"),
+    );
   });
 
   it("does not erase generated append content that arrives while editing", async () => {
