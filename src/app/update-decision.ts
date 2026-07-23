@@ -209,5 +209,5 @@ function normalizeNotes(notes?: string) {
 function messageFromUnknown(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  return "Update failed.";
+  return "An unknown error occurred.";
 }

@@ -4356,10 +4356,10 @@ describe("AgentWorkspace", () => {
     // session.create, never a profile config write.
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
+        title: "write a project update",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
-        reasoning_effort: "minimal",
+        reasoning_effort: "none",
       }),
     );
   });
@@ -4546,6 +4546,105 @@ describe("AgentWorkspace", () => {
       expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
     );
     expect(composer).toHaveFocus();
+  });
+
+  it("returns Auto, Preference, and Effort when searching the root model palette", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "open-software/auto",
+        costQuality: 50,
+      },
+    });
+    // Auto is a first-class control, not a catalog row. Keep it out of the
+    // mocked catalog to prove L1 search does not depend on a provider result.
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "open-software/auto",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5-2",
+          name: "GLM 5.2",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["functionCalling"],
+        },
+      ],
+    });
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "/model");
+    await user.keyboard("{Enter}");
+
+    const palette = await screen.findByRole("dialog", { name: "Choose text model" });
+    const search = within(palette).getByRole("combobox", { name: "Search models" });
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("");
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.type(search, "auto");
+
+    const autoSwitch = within(palette).getByRole("switch", {
+      name: "Choose the model automatically",
+    });
+    expect(autoSwitch).toBeChecked();
+    expect(
+      within(palette).getByRole("button", { name: "Preference Balanced" }),
+    ).toBeInTheDocument();
+    expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+    expect(
+      within(palette).queryByRole("listbox", { name: "Matching models" }),
+    ).not.toBeInTheDocument();
+    expect(search).toHaveAttribute("aria-expanded", "false");
+    const searchStatus = within(palette).getByRole("status");
+    expect(searchStatus).toHaveTextContent("3 settings shown. Press Tab to review settings.");
+    expect(search).toHaveAttribute("aria-describedby", searchStatus.id);
+
+    // A settings-only query has no active model option. Enter stays within the
+    // search flow instead of bubbling into the surrounding message form.
+    await user.keyboard("{Enter}");
+    expect(search).toHaveFocus();
+    expect(search).toHaveValue("auto");
+    expect(fireEvent.keyDown(search, { key: "ArrowDown" })).toBe(true);
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "prompt.submit",
+      expect.objectContaining({ text: expect.any(String) }),
+    );
+    await user.tab();
+    expect(autoSwitch).toHaveFocus();
+
+    await user.clear(search);
+    await user.type(search, "Preference Balanced");
+    expect(
+      within(palette).getByRole("button", { name: "Preference Balanced" }),
+    ).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "Effort Medium");
+    expect(within(palette).getByRole("button", { name: "Effort Medium" })).toBeInTheDocument();
+
+    await user.clear(search);
+    await user.type(search, "auto preference");
+    await user.click(within(palette).getByRole("button", { name: "Preference Balanced" }));
+    expect(within(palette).getByRole("group", { name: "Auto preference" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    expect(
+      within(palette).queryByRole("group", { name: "Auto preference" }),
+    ).not.toBeInTheDocument();
+    expect(search).toHaveValue("auto preference");
+    await user.keyboard("{Escape}");
+    expect(search).toHaveValue("");
   });
 
   it("keeps the root layer in browse mode while searching the All models flyout", async () => {
@@ -8023,7 +8122,7 @@ describe("AgentWorkspace", () => {
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-      title: "Summarize Current Page",
+      title: "summarize the current page",
       cols: 96,
       reasoning_effort: "medium",
     });
@@ -8034,6 +8133,144 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Summarize Current Page")).toBeInTheDocument();
     expect(screen.queryByText("Untitled session")).toBeNull();
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+  });
+
+  it("submits a new-session prompt before its AI title resolves", async () => {
+    let resolveTitle: ((value: { title: string }) => void) | undefined;
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "inspect startup latency" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect startup latency",
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "inspect startup latency",
+      cols: 96,
+      reasoning_effort: "medium",
+    });
+
+    await act(async () => {
+      resolveTitle?.({ title: "Startup Latency" });
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith({
+        sessionId: "session-2",
+        title: "Startup Latency",
+      }),
+    );
+  });
+
+  it("discards a pending AI title when its new session is deleted", async () => {
+    const user = userEvent.setup();
+    let resolveTitle: ((value: { title: string }) => void) | undefined;
+    let resolveDelete: (() => void) | undefined;
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+    mocks.deleteHermesSession.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "inspect startup latency" }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect startup latency",
+      }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([]);
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
+    await waitFor(() => expect(mocks.deleteHermesSession).toHaveBeenCalledWith("session-2"));
+
+    // The title resolves while the remote delete is still pending. The guard
+    // must already be active, rather than waiting for deletion to finish.
+    await act(async () => {
+      resolveTitle?.({ title: "Startup Latency" });
+      await Promise.resolve();
+    });
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-2",
+      title: "Startup Latency",
+    });
+    await act(async () => {
+      resolveDelete?.();
+      await Promise.resolve();
+    });
+  });
+
+  it("keeps a pending AI title from crossing a remount and overwriting a rename", async () => {
+    let resolveTitle: ((value: { title: string }) => void) | undefined;
+    mocks.suggestAgentSessionTitle.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveTitle = resolve;
+        }),
+    );
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "inspect startup latency" }),
+    );
+
+    const first = render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect startup latency",
+      }),
+    );
+    first.unmount();
+
+    const createdSession = {
+      id: "session-2",
+      title: "inspect startup latency",
+      preview: "inspect startup latency",
+      last_active: "2026-07-22T12:00:00Z",
+    };
+    mocks.listHermesSessions.mockResolvedValue([createdSession]);
+    render(<AgentWorkspace initialSession={createdSession} />);
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_SESSION_RENAMED_EVENT, {
+          detail: { sessionId: "session-2", title: "My startup investigation" },
+        }),
+      );
+    });
+    expect(await screen.findByText("My startup investigation")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveTitle?.({ title: "Startup Latency" });
+      await Promise.resolve();
+    });
+    expect(mocks.ensureHermesBridgeSession).not.toHaveBeenCalledWith({
+      sessionId: "session-2",
+      title: "Startup Latency",
+    });
   });
 
   it.each([
@@ -9641,7 +9878,7 @@ describe("AgentWorkspace", () => {
       expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
         storedSessionId: "session-2",
         runtimeSessionId: "runtime-session-2",
-        title: "Summarize Current Page",
+        title: "run the build",
         fullMode: false,
         settlementHeld: true,
       });
@@ -9973,7 +10210,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
+        title: "write a project update",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
         reasoning_effort: "medium",
@@ -10027,7 +10264,7 @@ describe("AgentWorkspace", () => {
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "Summarize Current Page",
+        title: "draft a research brief",
         cols: 96,
         // No `model`: the composer's model is June's GLOBAL generation
         // selection, and sending it as the per-session override would bypass

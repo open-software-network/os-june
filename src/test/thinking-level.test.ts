@@ -22,9 +22,9 @@ describe("thinking levels", () => {
   });
 
   it("maps each level onto a Hermes reasoning effort", () => {
-    // Low barely deliberates, Medium is Hermes' own default, and High reasons
-    // substantially more.
-    expect(thinkingEffortForLevel("instant")).toBe("minimal");
+    // Low skips a separate reasoning pass, Medium is Hermes' own default, and
+    // High reasons substantially more.
+    expect(thinkingEffortForLevel("instant")).toBe("none");
     expect(thinkingEffortForLevel("medium")).toBe("medium");
     expect(thinkingEffortForLevel("hard")).toBe("high");
   });

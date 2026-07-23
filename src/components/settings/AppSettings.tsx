@@ -585,7 +585,8 @@ export function AppSettings({
   // billing June credits (Auto never uses the key), so the save surfaces an
   // explicit billing choice: switch to a Venice model or knowingly keep Auto.
   const [veniceKeyAutoBillingChoiceOpen, setVeniceKeyAutoBillingChoiceOpen] = useState(false);
-  const [showMoreModelOptions, setShowMoreModelOptions] = useState(false);
+  const [showMoreVoiceOptions, setShowMoreVoiceOptions] = useState(false);
+  const [showMoreTextOptions, setShowMoreTextOptions] = useState(false);
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
   const [localModelSetupVisible, setLocalModelSetupVisible] = useState(false);
   const [localModelStatus, setLocalModelStatus] = useState<string>();
@@ -1244,8 +1245,8 @@ export function AppSettings({
     setModelSearch("");
   }
 
-  // Optimistic apply + persisted save, shared by the Models row's segmented
-  // control and the model picker popover's Auto section.
+  // Optimistic apply + persisted save for the Models row's segmented Auto
+  // preference control.
   function applyCostQuality(costQuality: number) {
     setProviderSettings((current) => ({ ...current, costQuality }));
     saveCostQuality(costQuality);
@@ -1345,7 +1346,7 @@ export function AppSettings({
       setLocalModelSetupVisible(true);
       // The confirm affordance lives behind More options; reveal it so the
       // status message's instruction is reachable.
-      setShowMoreModelOptions(true);
+      setShowMoreTextOptions(true);
       setLocalModelStatus(
         "This endpoint is not on this machine. Requests will leave your device. Confirm in More options to enable it.",
       );
@@ -1568,7 +1569,7 @@ export function AppSettings({
   // disable, is left as the user set it.
   useEffect(() => {
     if (localModelEnabled) {
-      setShowMoreModelOptions(true);
+      setShowMoreTextOptions(true);
       setLocalModelSetupVisible(true);
     }
   }, [localModelEnabled]);
@@ -2215,15 +2216,18 @@ export function AppSettings({
           <>
             <SettingsPageHeader
               title="Models"
-              blurb="Choose the models June uses for transcription, notes, and agent responses."
+              blurb="Choose the models June uses for voice, text, image, and video."
             />
             <section
               className="settings-group settings-models-group"
-              aria-labelledby="models-heading"
+              aria-labelledby="voice-models-heading"
             >
-              <h2 id="models-heading" className="settings-group-heading">
-                AI models
+              <h2 id="voice-models-heading" className="settings-group-heading">
+                Voice
               </h2>
+              <p className="settings-group-description">
+                Choose the model June uses for note transcription and dictation.
+              </p>
               {showingActiveProfileModels ? (
                 <p className="settings-models-profile-note">
                   Showing models for the active profile: {activeProfileName}. Switch to the default
@@ -2255,6 +2259,68 @@ export function AppSettings({
                     onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
                     readOnly={showingActiveProfileModels}
                   />
+                  <div className="settings-row-divider" aria-hidden />
+                  <button
+                    type="button"
+                    className="settings-more-options-trigger settings-more-options-row"
+                    aria-label="More options for voice"
+                    aria-expanded={showMoreVoiceOptions}
+                    aria-controls="voice-more-options-panel"
+                    onClick={() => setShowMoreVoiceOptions((open) => !open)}
+                  >
+                    <span className="settings-row-info">
+                      <span className="settings-row-title">More options</span>
+                      <span className="settings-row-description">Advanced voice settings</span>
+                    </span>
+                    <IconChevronDownSmall
+                      className="settings-more-options-chevron"
+                      size={14}
+                      aria-hidden
+                    />
+                  </button>
+                  {showMoreVoiceOptions ? (
+                    <div id="voice-more-options-panel" className="settings-more-options-panel">
+                      <div className="settings-row">
+                        <div className="settings-row-info">
+                          <h3 className="settings-row-title">Live transcription</h3>
+                          <p className="settings-row-description">
+                            Show a live transcript while you record. This transcribes audio twice,
+                            so it may use extra credits; turning it off shows the transcript only
+                            after the recording ends.
+                          </p>
+                        </div>
+                        <div className="settings-row-control">
+                          <Switch
+                            checked={providerSettings.liveTranscription}
+                            aria-label="Show a live transcript while recording"
+                            onCheckedChange={toggleLiveTranscription}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+
+            <section
+              className="settings-group settings-models-group"
+              aria-labelledby="text-models-heading"
+            >
+              <h2 id="text-models-heading" className="settings-group-heading">
+                Text
+              </h2>
+              <p className="settings-group-description">
+                Choose the model June uses for generated notes and agent responses.
+              </p>
+              {showingActiveProfileModels ? (
+                <p className="settings-models-profile-note">
+                  Showing models for the active profile: {activeProfileName}. Switch to the default
+                  profile to edit global models.
+                </p>
+              ) : null}
+              <div className="settings-card settings-models-card">
+                <div className="settings-rows">
                   <ModelRow
                     mode="generation"
                     title="Text"
@@ -2313,14 +2379,14 @@ export function AppSettings({
                   <button
                     type="button"
                     className="settings-more-options-trigger settings-more-options-row"
-                    aria-label="More options for AI models"
-                    aria-expanded={showMoreModelOptions}
-                    aria-controls="models-more-options-panel"
-                    onClick={() => setShowMoreModelOptions((open) => !open)}
+                    aria-label="More options for text"
+                    aria-expanded={showMoreTextOptions}
+                    aria-controls="text-more-options-panel"
+                    onClick={() => setShowMoreTextOptions((open) => !open)}
                   >
                     <span className="settings-row-info">
                       <span className="settings-row-title">More options</span>
-                      <span className="settings-row-description">Advanced model settings</span>
+                      <span className="settings-row-description">Advanced text settings</span>
                     </span>
                     <IconChevronDownSmall
                       className="settings-more-options-chevron"
@@ -2328,25 +2394,8 @@ export function AppSettings({
                       aria-hidden
                     />
                   </button>
-                  {showMoreModelOptions ? (
-                    <div id="models-more-options-panel" className="settings-more-options-panel">
-                      <div className="settings-row">
-                        <div className="settings-row-info">
-                          <h3 className="settings-row-title">Live transcription</h3>
-                          <p className="settings-row-description">
-                            Show a live transcript while you record. This transcribes audio twice,
-                            so it may use extra credits; turning it off shows the transcript only
-                            after the recording ends.
-                          </p>
-                        </div>
-                        <div className="settings-row-control">
-                          <Switch
-                            checked={providerSettings.liveTranscription}
-                            aria-label="Show a live transcript while recording"
-                            onCheckedChange={toggleLiveTranscription}
-                          />
-                        </div>
-                      </div>
+                  {showMoreTextOptions ? (
+                    <div id="text-more-options-panel" className="settings-more-options-panel">
                       <VeniceApiKeyRow
                         configured={providerSettings.veniceApiKeyConfigured}
                         value={veniceApiKeyDraft}
@@ -3299,7 +3348,11 @@ function ModelRow({
             aria-expanded={readOnly ? false : open}
             disabled={readOnly}
           >
-            <span className="model-summary-logo" aria-hidden>
+            <span
+              className="model-summary-logo"
+              data-brand={model.id === AUTO_MODEL_ID ? "june" : undefined}
+              aria-hidden
+            >
               <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
             </span>
             <span className="model-summary-name">{model.name}</span>
@@ -3318,12 +3371,17 @@ function ModelRow({
             popoverRef={popoverRef}
             searchRef={searchRef}
             className="settings-model-popover"
-            title={modelLabel[0].toUpperCase() + modelLabel.slice(1)}
+            title={
+              modelLabel === "text model"
+                ? undefined
+                : modelLabel[0].toUpperCase() + modelLabel.slice(1)
+            }
             ariaLabel={`Choose ${modelLabel}`}
             onFlyoutChange={onFlyoutChange}
             onSearchChange={onSearchChange}
             onSelect={onSelect}
             onCostQualityChange={onCostQualityChange}
+            showAutoPreference={false}
           />
         ) : null}
       </div>

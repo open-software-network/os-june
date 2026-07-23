@@ -16,7 +16,11 @@ import {
   noteChatSessionIdFor,
   rememberNoteChatSession,
 } from "../components/note-chat/noteChatSessions";
-import { type NoteChat, useNoteChat } from "../components/note-chat/useNoteChat";
+import {
+  type NoteChat,
+  type NoteChatSubmitResult,
+  useNoteChat,
+} from "../components/note-chat/useNoteChat";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 import {
   rememberAppliedSessionModelSelection,
@@ -131,8 +135,8 @@ function noteChat(overrides: Partial<NoteChat> = {}): NoteChat {
     storedSessionId: undefined,
     modelSelection: undefined,
     appliedHermesModelId: undefined,
-    submit: vi.fn(async () => true),
-    retryUpstreamFailure: vi.fn(async () => true),
+    submit: vi.fn(async () => ({ accepted: true, current: true })),
+    retryUpstreamFailure: vi.fn(async () => ({ accepted: true, current: true })),
     stop: vi.fn(),
     setSessionModel: vi.fn(),
     ...overrides,
@@ -229,6 +233,29 @@ describe("note chat session map", () => {
     expect(noteChatSessionIdFor("note-1")).toBe("sess-a");
   });
 
+  it("keeps accepted true when post-submit bookkeeping throws", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat" }]);
+    mocks.startAgentRunMonitoring.mockImplementationOnce(() => {
+      throw new Error("monitor failed after accept");
+    });
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      await expect(result.current.retryUpstreamFailure()).resolves.toMatchObject({
+        accepted: true,
+        current: true,
+      });
+    });
+
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-note-chat",
+      text: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+    });
+    expect(result.current.error).toMatch(/monitor failed after accept/i);
+  });
+
   it("submits an upstream-provider retry in the existing note-chat session", async () => {
     rememberNoteChatSession("note-1", "stored-note-chat");
     mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat" }]);
@@ -236,7 +263,10 @@ describe("note chat session map", () => {
 
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.retryUpstreamFailure()).toBe(true);
+      expect(await result.current.retryUpstreamFailure()).toEqual({
+        accepted: true,
+        current: true,
+      });
     });
 
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
@@ -265,7 +295,10 @@ describe("note chat session map", () => {
     expect(result.current.modelSelection).toEqual({ modelId: "kimi-k2-6" });
 
     await act(async () => {
-      expect(await result.current.submit("Use the upgraded route.")).toBe(true);
+      expect(await result.current.submit("Use the upgraded route.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
       session_id: "runtime-note-chat",
@@ -298,7 +331,10 @@ describe("note chat session map", () => {
       }),
     );
     await act(async () => {
-      expect(await result.current.submit("Keep this local.")).toBe(true);
+      expect(await result.current.submit("Keep this local.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith(
       "config.set",
@@ -329,7 +365,10 @@ describe("note chat session map", () => {
     );
 
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
-    let submission: Promise<boolean> = Promise.resolve(false);
+    let submission: Promise<NoteChatSubmitResult> = Promise.resolve({
+      accepted: false,
+      current: false,
+    });
     act(() => {
       submission = result.current.submit("Keep the legacy route.");
     });
@@ -337,7 +376,7 @@ describe("note chat session map", () => {
     resolveSessions([{ id: "stored-note-chat", model: "llama3.1:8b" }]);
 
     await act(async () => {
-      expect(await submission).toBe(true);
+      expect(await submission).toMatchObject({ accepted: true, current: true });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
       session_id: "runtime-note-chat",
@@ -370,7 +409,10 @@ describe("note chat session map", () => {
     expect(result.current.appliedHermesModelId).toBe("__june_remote_generation__:kimi-k2-6");
 
     await act(async () => {
-      expect(await result.current.submit("Keep my queued GLM choice.")).toBe(true);
+      expect(await result.current.submit("Keep my queued GLM choice.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("config.set", {
       session_id: "runtime-note-chat",
@@ -393,7 +435,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
 
     await act(async () => {
-      expect(await result.current.submit("What changed?")).toBe(true);
+      expect(await result.current.submit("What changed?")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
@@ -526,7 +571,7 @@ describe("note chat session map", () => {
 
   it("retries an upstream-provider failure once without clearing the note-chat draft", async () => {
     const user = userEvent.setup();
-    const retryUpstreamFailure = vi.fn(async () => true);
+    const retryUpstreamFailure = vi.fn(async () => ({ accepted: true, current: true }));
     render(
       createElement(NoteChatPanel, {
         note: { id: "note-1", title: "Launch planning" },
@@ -563,6 +608,48 @@ describe("note chat session map", () => {
     await waitFor(() => expect(retryUpstreamFailure).toHaveBeenCalledOnce());
     expect(retry).toBeDisabled();
     expect(composer).toHaveTextContent("Keep this draft");
+  });
+
+  it("keeps a spent recovery key after a stale-but-accepted note-chat retry", async () => {
+    const { upstreamProviderRecoveryStore } = await import("../lib/upstream-provider-recovery");
+    // Process-local store can retain keys from earlier panel tests in this file.
+    for (const recoveryId of ["upstream-provider:1", "upstream-provider:2"]) {
+      upstreamProviderRecoveryStore.release("stored-note-chat", recoveryId);
+    }
+    const retryUpstreamFailure = vi.fn(async () => ({ accepted: true, current: false }));
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat({
+          storedSessionId: "stored-note-chat",
+          retryUpstreamFailure,
+          turns: [
+            {
+              id: "provider-failure-1",
+              role: "assistant",
+              createdAt: "2026-07-21T08:00:00.000Z",
+              status: "complete",
+              parts: [
+                {
+                  type: "notice",
+                  kind: "upstream-provider",
+                  text: "The model service is temporarily unavailable. Your answer is saved.",
+                },
+              ],
+            },
+          ],
+        }),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    const retry = await screen.findByRole("button", { name: "Try again" });
+    fireEvent.click(retry);
+    await waitFor(() => expect(retryUpstreamFailure).toHaveBeenCalledOnce());
+    expect(retry).toBeDisabled();
+    fireEvent.click(retry);
+    expect(retryUpstreamFailure).toHaveBeenCalledOnce();
   });
 
   it("shows the Auto billing note in the picker while a Venice key is saved", async () => {
@@ -631,7 +718,7 @@ describe("note chat session map", () => {
       selectedModel: autoModel.id,
       models: [autoModel, currentModel],
     });
-    const submit = vi.fn(async () => true);
+    const submit = vi.fn(async () => ({ accepted: true, current: true }));
     const chat = noteChat({
       storedSessionId: "stored-note-chat",
       modelSelection: { modelId: autoModel.id, costQuality: 100 },
@@ -797,12 +884,12 @@ describe("note chat session map", () => {
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     act(() => result.current.setSessionModel({ modelId: "kimi-k2-6" }));
 
-    let accepted = false;
+    let accepted: NoteChatSubmitResult = { accepted: false, current: false };
     await act(async () => {
       accepted = await result.current.submit("What remains blocked?");
     });
 
-    expect(accepted).toBe(true);
+    expect(accepted).toMatchObject({ accepted: true, current: true });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
       session_id: "stored-note-chat",
       cols: 96,
@@ -823,7 +910,10 @@ describe("note chat session map", () => {
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
 
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(result.current.working).toBe(true);
 
@@ -849,7 +939,10 @@ describe("note chat session map", () => {
     mocks.gatewayRequest.mockClear();
 
     await act(async () => {
-      expect(await result.current.submit("What should we do next?")).toBe(true);
+      expect(await result.current.submit("What should we do next?")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     expect(mocks.gatewayRequest.mock.calls).toEqual([
@@ -883,7 +976,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     expect(mocks.startAgentRunMonitoring).toHaveBeenCalledWith({
       storedSessionId: "stored-note-chat",
@@ -912,7 +1008,10 @@ describe("note chat session map", () => {
     );
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     unmount();
@@ -925,7 +1024,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
 
     act(() => result.current.stop());
@@ -950,7 +1052,10 @@ describe("note chat session map", () => {
     const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
     await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
     await act(async () => {
-      expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+      expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
     });
     mocks.markAgentRunSucceeded.mockClear();
     mocks.cancelAgentRunMonitoring.mockClear();
@@ -980,7 +1085,10 @@ describe("note chat session map", () => {
       const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
       await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
       await act(async () => {
-        expect(await result.current.submit("Summarize the current plan.")).toBe(true);
+        expect(await result.current.submit("Summarize the current plan.")).toMatchObject({
+          accepted: true,
+          current: true,
+        });
       });
 
       act(() => {
@@ -1032,7 +1140,10 @@ describe("note chat session map", () => {
           releaseEarlierSend = resolve;
         }),
     );
-    let noteSubmit: Promise<boolean> = Promise.resolve(false);
+    let noteSubmit: Promise<NoteChatSubmitResult> = Promise.resolve({
+      accepted: false,
+      current: false,
+    });
     act(() => {
       noteSubmit = result.current.submit("Run after the workspace message.");
     });
@@ -1048,7 +1159,7 @@ describe("note chat session map", () => {
     releaseEarlierSend();
     await earlierSend;
     await act(async () => {
-      expect(await noteSubmit).toBe(true);
+      expect(await noteSubmit).toMatchObject({ accepted: true, current: true });
     });
     expect(mocks.gatewayRequest.mock.calls.slice(-2)).toEqual([
       [
@@ -1106,8 +1217,8 @@ describe("note chat session map", () => {
     const noteBSubmit = result.current.submit("Question for B");
     await act(async () => releaseConnection?.());
 
-    await expect(noteASubmit).resolves.toBe(false);
-    await expect(noteBSubmit).resolves.toBe(true);
+    await expect(noteASubmit).resolves.toMatchObject({ accepted: false, current: false });
+    await expect(noteBSubmit).resolves.toMatchObject({ accepted: true, current: true });
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
       session_id: "stored-a",
       cols: 96,

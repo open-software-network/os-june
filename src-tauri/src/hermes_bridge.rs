@@ -1467,6 +1467,15 @@ pub fn start_on_app_start(app: &tauri::App) {
                     "failed to start Hermes messaging gateway during app startup: {}",
                     error.message
                 );
+                // Bridge is up, but reconciliation failed. An inherited LaunchAgent
+                // may still be pointed at the previous process's dead proxy port.
+                // Disable it rather than leaving scheduled routines failing silently.
+                disable_inherited_gateway_after_failed_app_start(
+                    &app,
+                    &bridge,
+                    "gateway reconciliation failed",
+                )
+                .await;
             }
         }
     });
@@ -21515,10 +21524,12 @@ mcp_servers:
 
         assert!(config.contains("model:\n  default: \"glm\""));
         assert!(config.contains("  cron: [web, memory]"));
-        // The pinned runtime counts this as three total provider attempts,
-        // with its built-in jittered waits between attempts. June owns the
-        // schedule explicitly so a Hermes default change cannot multiply
-        // agent-chat calls behind shipped clients.
+        // Pinned Hermes conversation_loop uses `while retry_count < max_retries`
+        // and increments only after a failed attempt, so api_max_retries: 3 is
+        // three total provider attempts (not four). Upstream docs that say
+        // "default 3 = four attempts" do not match this runtime loop.
+        // June owns the schedule explicitly so a Hermes default change cannot
+        // multiply agent-chat calls behind shipped clients.
         assert!(config.contains("agent:\n  max_turns: 90\n  api_max_retries: 3\n"));
         assert!(config.contains("approvals:\n  mode: manual\n  cron_mode: deny\n"));
         assert!(config.contains(

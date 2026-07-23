@@ -77,9 +77,27 @@ function hasEnded(session: HermesSessionInfo) {
   return session.active !== true && session.is_active !== true && (session.message_count ?? 0) > 0;
 }
 
+/**
+ * Freshness for a finished routine run prefers the end timestamp when the
+ * session has one. `sessionTimestamp` ranks `last_active` first, which can
+ * predate a long-running job's real completion and make a just-ended run look
+ * older than the fresh window.
+ */
+export function routineRunFreshnessTimestamp(session: HermesSessionInfo): number | null {
+  const ended = session.ended_at ?? session.endedAt;
+  if (typeof ended === "string" && ended.trim()) {
+    const endedAt = Date.parse(ended);
+    if (Number.isFinite(endedAt) && endedAt > 0) return endedAt;
+  }
+
+  const fallback = Date.parse(sessionTimestamp(session));
+  if (!Number.isFinite(fallback) || fallback <= 0) return null;
+  return fallback;
+}
+
 function runIsFresh(session: HermesSessionInfo, now: number) {
-  const timestamp = Date.parse(sessionTimestamp(session));
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const timestamp = routineRunFreshnessTimestamp(session);
+  if (timestamp == null) return false;
   return now - timestamp <= FRESH_RUN_WINDOW_MS;
 }
 
@@ -147,5 +165,23 @@ export function markRunsNotified(
   return {
     seen: new Set([...seen].slice(-MAX_TRACKED_RUNS)),
     primed: state.primed,
+  };
+}
+
+/**
+ * Serializes async work so overlapping polls cannot both deliver the same
+ * routine notice. Returns false when a previous call is still running.
+ */
+export function createSingleFlight() {
+  let inFlight = false;
+  return async function runSingleFlight(task: () => Promise<void>): Promise<boolean> {
+    if (inFlight) return false;
+    inFlight = true;
+    try {
+      await task();
+      return true;
+    } finally {
+      inFlight = false;
+    }
   };
 }

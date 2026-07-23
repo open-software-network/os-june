@@ -6886,12 +6886,18 @@ button.agent-user-attachment:hover {
   line-height: 1.3;
 }
 
-/* Root-layer search on the composer popover: the field leads the panel; an
- * active query swaps the browse content (title, controls, suggested rows,
- * All models) for one flat result list across both layers, capped so long
- * catalogs scroll inside the popover. */
+/* Root-layer search on the composer popover: the field leads the panel. Model
+ * queries swap browse content for one flat result list across both layers;
+ * setting queries retain the matching control group and may append model
+ * results. Long catalogs scroll inside the popover. */
 .agent-composer-model-root-results .agent-composer-model-list {
   max-height: min(45vh, 320px);
+}
+
+.agent-composer-model-root-results,
+.agent-composer-model-root-empty,
+.agent-composer-model-root-control-results {
+  margin-top: var(--sp-1);
 }
 
 /* Model controls pinned above the suggested rows in the root popover: Auto,
@@ -18437,6 +18443,10 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
+.model-summary-logo[data-brand="june"] {
+  background: transparent;
+}
+
 .model-summary-name {
   grid-area: name;
   align-self: center;
@@ -27309,6 +27319,37 @@ button.memory-project:hover {
 
 .connector-row:hover {
   background: var(--secondary);
+}
+
+.connectors-advanced-row {
+  display: flex;
+  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+}
+
+.connectors-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2) 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.connectors-advanced-toggle:hover {
+  color: var(--foreground);
+}
+
+.connectors-advanced-chevron {
+  transition: transform var(--t-fast) var(--ease-out);
+}
+
+.connectors-advanced-chevron[data-open="true"] {
+  transform: rotate(180deg);
 }
 
 /* Brand marks are monochrome (central-icons currentColor), so the tile keeps

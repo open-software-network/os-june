@@ -146,11 +146,14 @@ appending so a post-delta replay cannot duplicate it.
 ## Upstream (via june-api)
 
 **Hermes owns agent-chat retries.** June pins `agent.api_max_retries: 3` in
-the per-spawn config. In the pinned runtime that means three total provider
-attempts, with the runtime's jittered waits between them. The desktop forwards
-each attempt once, and June API makes one upstream call for each request. Do not
-add another retry at either layer without moving ownership deliberately: shipped
-clients would multiply the new retry count by Hermes' attempts.
+the per-spawn config. In the pinned Hermes runtime the provider loop is
+`while retry_count < max_retries` and only increments after a failed attempt, so
+`3` is three total provider attempts (with the runtime's jittered waits between
+them). Do not trust generic Hermes docs that count this as four attempts; match
+the pinned runtime loop. The desktop forwards each attempt once, and June API
+makes one upstream call for each request. Do not add another retry at either
+layer without moving ownership deliberately: shipped clients would multiply the
+new retry count by Hermes' attempts.
 
 **One bad tool schema can brick every chat request.** The AI upstream rejects a
 tool parameter schema carrying both `type` and a sibling `allOf` (valid JSON
