@@ -3028,17 +3028,20 @@ impl Repositories {
         note_id: &str,
         status: ProcessingStatus,
         last_error: Option<String>,
-    ) -> Result<(), sqlx::error::Error> {
-        query(
-            "UPDATE notes SET processing_status = ?, last_error = ?, updated_at = ? WHERE id = ?",
+    ) -> Result<String, sqlx::error::Error> {
+        let row = query(
+            "UPDATE notes
+             SET processing_status = ?, last_error = ?, updated_at = ?
+             WHERE id = ?
+             RETURNING updated_at",
         )
         .bind(status.as_db())
         .bind(last_error)
         .bind(timestamp())
         .bind(note_id)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Ok(row.get("updated_at"))
     }
 
     pub async fn set_note_transcription_warning(

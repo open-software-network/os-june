@@ -139,6 +139,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   RECORDING_TELEMETRY_EVENT: "recording-telemetry",
+  NOTE_PROCESSING_PROGRESS_EVENT: "note-processing-progress",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "june://note-calendar-context-updated",
   NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   bootstrapApp: mocks.bootstrapApp,
@@ -1400,7 +1401,7 @@ describe("notes recording reliability", () => {
     await startRecordingOnFirstNote();
 
     // note-1 is "ready" (terminal); stacking another take must still flip it
-    // back to transcribing so the shimmer shows and polling resumes.
+    // back to transcribing so the shimmer shows and progress events apply.
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
@@ -1496,58 +1497,77 @@ describe("notes recording reliability", () => {
     );
   });
 
-  it("polls newly persisted turns while note transcription remains active", async () => {
+  it("refetches the full note only when processing emits done", async () => {
     const selectedNote = note({
       processingStatus: "transcribing",
       activeTab: "transcription",
       sourceTranscripts: [],
     });
-    let pollResponse = selectedNote;
+    const completedNote = {
+      ...selectedNote,
+      processingStatus: "ready" as const,
+      updatedAt: "2026-05-19T10:00:03Z",
+      sourceTranscripts: [
+        {
+          id: "turn-1",
+          text: "The completed note is visible.",
+          source: "microphone" as const,
+          sourceMode: "microphonePlusSystem" as const,
+          startMs: 0,
+          endMs: 4_000,
+          turnIndex: 0,
+          language: "en",
+          status: "succeeded" as const,
+          recordedSilence: false,
+        },
+      ],
+    };
     mocks.bootstrapApp.mockResolvedValue({
       folders: [],
       notes: [selectedNote],
       activeRecoveries: [],
       providerConfigured: true,
     });
-    mocks.getNote.mockImplementation(async () => pollResponse);
+    let processingDone = false;
+    mocks.getNote.mockImplementation(async () => (processingDone ? completedNote : selectedNote));
 
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
-    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
     await waitFor(() => expect(screen.getByText("Transcribing audio")).toBeInTheDocument());
-    const scroller = stubNoteDetailScroller(600);
+    await waitFor(() => expect(mocks.listeners.has("note-processing-progress")).toBe(true));
 
-    expect(screen.queryByText("The first saved turn is visible.")).not.toBeInTheDocument();
     mocks.getNote.mockClear();
-    pollResponse = {
-      ...selectedNote,
-      processingStatus: "transcribing",
-      sourceTranscripts: [
-        {
-          id: "turn-1",
-          text: "The first saved turn is visible.",
-          source: "microphone",
-          sourceMode: "microphonePlusSystem",
-          startMs: 0,
-          endMs: 4_000,
-          turnIndex: 0,
-          language: "en",
-          status: "succeeded",
-          recordedSilence: false,
+    await act(async () => {
+      await mocks.listeners.get("note-processing-progress")?.({
+        payload: {
+          noteId: selectedNote.id,
+          recordingSessionId: "recording-1",
+          stage: "generating",
+          processingStatus: "generating",
+          revision: "2026-05-19T10:00:02Z",
         },
-      ],
-    };
+      });
+    });
+    expect(mocks.getNote).not.toHaveBeenCalled();
+    expect(screen.queryByText("The completed note is visible.")).not.toBeInTheDocument();
 
-    await waitFor(
-      () => {
-        expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
-        expect(screen.getByText("The first saved turn is visible.")).toBeInTheDocument();
-      },
-      { timeout: 3_000 },
-    );
-    expect(scroller.scrollTo).toHaveBeenCalledTimes(1);
-    const transcribingStatus = screen.getByText("Transcribing audio");
-    expect(transcribingStatus.closest('[role="status"]')).not.toBeNull();
+    processingDone = true;
+    await act(async () => {
+      await mocks.listeners.get("note-processing-progress")?.({
+        payload: {
+          noteId: selectedNote.id,
+          recordingSessionId: "recording-1",
+          stage: "done",
+          processingStatus: "ready",
+          revision: completedNote.updatedAt,
+        },
+      });
+    });
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(1));
+    expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
+    expect(await screen.findByText("The completed note is visible.")).toBeInTheDocument();
   });
 
   it("keeps retry failures scoped to the failed note", async () => {

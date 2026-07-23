@@ -162,9 +162,13 @@ The Task 2 through Task 6 focused suites, the 69-test native processing module, 
 
 ## UI visibility bound
 
-The benchmark's first-persisted value detects the native persistence milestone; it is not the exact commit timestamp or a browser paint. For a selected note that remains active, the existing App refreshes the note on a one-second interval. Native persistence therefore precedes visible output by **0 to 1 second** plus database, IPC, reducer, and render time. The database observer's 5 ms polling interval separately quantizes the benchmarked persistence timestamp; it is not part of the UI polling bound.
+The polling behavior below describes the measured JUN-334 revision. JUN-390
+later replaced that one-second full-Note poll with native processing progress
+events and one full hydration on the terminal `done` event.
 
-The App regression starts with no saved source turns, changes the next poll response to include one exact saved turn while keeping status `transcribing`, and observes both that text and the live `Transcribing audio` status. This verifies partial output during processing rather than relying on Ready.
+The benchmark's first-persisted value detects the native persistence milestone; it is not the exact commit timestamp or a browser paint. In the measured revision, the App refreshed an active selected Note on a one-second interval. Native persistence therefore preceded visible output by **0 to 1 second** plus database, IPC, reducer, and render time. The database observer's 5 ms polling interval separately quantized the benchmarked persistence timestamp; it was not part of the UI polling bound.
+
+The historical App regression started with no saved source turns, changed the next poll response to include one exact saved turn while keeping status `transcribing`, and observed both that text and the live `Transcribing audio` status. JUN-390 replaces that regression with coverage proving intermediate events do not hydrate the Note and `done` hydrates it exactly once.
 
 ## Scope and limitations
 

@@ -10,9 +10,9 @@ use crate::{
     },
     db::repositories::Repositories,
     domain::types::{
-        AppError, DictionaryEntryDto, NoteDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
-        NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
-        RecordingSourceMode, TranscriptDto,
+        AppError, DictionaryEntryDto, NoteDto, NoteProcessingProgressDto, NoteProcessingStage,
+        NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobRecord,
+        NoteTranscriptionJobStatus, ProcessingStatus, RecordingSourceMode, TranscriptDto,
     },
     june_api::{
         generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
@@ -74,6 +74,112 @@ pub struct SourceTranscriptInput {
 }
 
 pub type SourceAudioForProcessing = (String, String, PathBuf, bool);
+
+pub const NOTE_PROCESSING_PROGRESS_EVENT: &str = "note-processing-progress";
+
+type NoteProcessingProgressSink = Arc<dyn Fn(NoteProcessingProgressDto) + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub(crate) struct NoteProcessingProgressReporter {
+    sink: Option<NoteProcessingProgressSink>,
+}
+
+impl NoteProcessingProgressReporter {
+    pub(crate) fn new(sink: impl Fn(NoteProcessingProgressDto) + Send + Sync + 'static) -> Self {
+        Self {
+            sink: Some(Arc::new(sink)),
+        }
+    }
+
+    pub(crate) fn emit(
+        &self,
+        note_id: &str,
+        recording_session_id: &str,
+        stage: NoteProcessingStage,
+        processing_status: ProcessingStatus,
+        revision: String,
+    ) {
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        sink(NoteProcessingProgressDto {
+            note_id: note_id.to_string(),
+            recording_session_id: recording_session_id.to_string(),
+            stage,
+            processing_status,
+            revision,
+        });
+    }
+}
+
+async fn transition_note_processing_stage(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+    stage: NoteProcessingStage,
+    processing_status: ProcessingStatus,
+    progress: &NoteProcessingProgressReporter,
+) -> Result<(), AppError> {
+    let revision = repos
+        .set_note_status(note_id, processing_status, None)
+        .await?;
+    progress.emit(
+        note_id,
+        recording_session_id,
+        stage,
+        processing_status,
+        revision,
+    );
+    Ok(())
+}
+
+async fn complete_note_processing_run(
+    repos: &Repositories,
+    progress: &NoteProcessingProgressReporter,
+    note_id: &str,
+    recording_session_id: &str,
+    result: Result<NoteDto, AppError>,
+) -> Result<NoteDto, AppError> {
+    match result {
+        Ok(note) => {
+            progress.emit(
+                note_id,
+                recording_session_id,
+                NoteProcessingStage::Done,
+                note.processing_status,
+                note.updated_at.clone(),
+            );
+            Ok(note)
+        }
+        Err(error) => {
+            match repos
+                .set_note_status(
+                    note_id,
+                    ProcessingStatus::Failed,
+                    Some(error.message.clone()),
+                )
+                .await
+            {
+                Ok(revision) => progress.emit(
+                    note_id,
+                    recording_session_id,
+                    NoteProcessingStage::Done,
+                    ProcessingStatus::Failed,
+                    revision,
+                ),
+                Err(status_error) => {
+                    tracing::warn!(
+                        note_id,
+                        recording_session_id,
+                        %status_error,
+                        "failed to persist terminal note processing status"
+                    );
+                }
+            }
+            Err(error)
+        }
+    }
+}
 
 pub fn valid_sources_for_processing(
     sources: Vec<SourceTranscriptInput>,
@@ -939,6 +1045,7 @@ pub(crate) async fn process_saved_audio(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn process_saved_source_audio(
     repos: &Repositories,
     note_id: &str,
@@ -950,12 +1057,75 @@ pub(crate) async fn process_saved_source_audio(
     manual_notes: Option<String>,
     timing: ProcessingTiming,
 ) -> Result<NoteDto, AppError> {
+    process_saved_source_audio_with_progress(
+        repos,
+        note_id,
+        session_id,
+        source_mode,
+        sources,
+        title,
+        existing_generated_note,
+        manual_notes,
+        timing,
+        NoteProcessingProgressReporter::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn process_saved_source_audio_with_progress(
+    repos: &Repositories,
+    note_id: &str,
+    session_id: &str,
+    source_mode: RecordingSourceMode,
+    sources: Vec<SourceAudioForProcessing>,
+    title: String,
+    existing_generated_note: Option<String>,
+    manual_notes: Option<String>,
+    timing: ProcessingTiming,
+    progress: NoteProcessingProgressReporter,
+) -> Result<NoteDto, AppError> {
+    let result = process_saved_source_audio_pipeline(
+        repos,
+        note_id,
+        session_id,
+        source_mode,
+        sources,
+        title,
+        existing_generated_note,
+        manual_notes,
+        timing,
+        progress.clone(),
+    )
+    .await;
+    complete_note_processing_run(repos, &progress, note_id, session_id, result).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_saved_source_audio_pipeline(
+    repos: &Repositories,
+    note_id: &str,
+    session_id: &str,
+    source_mode: RecordingSourceMode,
+    sources: Vec<SourceAudioForProcessing>,
+    title: String,
+    existing_generated_note: Option<String>,
+    manual_notes: Option<String>,
+    timing: ProcessingTiming,
+    progress: NoteProcessingProgressReporter,
+) -> Result<NoteDto, AppError> {
     let processing_started = Instant::now();
     let note_transcription_started = Instant::now();
     let timeline = FirstEventTimeline::new(timing);
-    repos
-        .set_note_status(note_id, ProcessingStatus::Transcribing, None)
-        .await?;
+    transition_note_processing_stage(
+        repos,
+        note_id,
+        session_id,
+        NoteProcessingStage::Transcribing,
+        ProcessingStatus::Transcribing,
+        &progress,
+    )
+    .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
     let dictionary_entries = match repos.list_dictionary_entries().await {
         Ok(entries) => entries,
@@ -1565,11 +1735,16 @@ pub(crate) async fn process_saved_source_audio(
     } else {
         plain_transcript_from_sources(&valid_sources)
     };
-    if let Err(error) = repos
-        .set_note_status(note_id, ProcessingStatus::Generating, None)
-        .await
+    if let Err(error) = transition_note_processing_stage(
+        repos,
+        note_id,
+        session_id,
+        NoteProcessingStage::Generating,
+        ProcessingStatus::Generating,
+        &progress,
+    )
+    .await
     {
-        let error = AppError::from(error);
         add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
             .await;
         return Err(error);
@@ -3904,6 +4079,76 @@ mod tests {
             .await
             .expect("recording session");
         (repos, recording_session_id)
+    }
+
+    #[tokio::test]
+    async fn processing_progress_emits_stage_transitions_and_done_revision() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let progress = NoteProcessingProgressReporter::new(move |event| {
+            captured.lock().expect("progress events").push(event);
+        });
+
+        transition_note_processing_stage(
+            &repos,
+            &note.id,
+            "recording-1",
+            NoteProcessingStage::Transcribing,
+            ProcessingStatus::Transcribing,
+            &progress,
+        )
+        .await
+        .expect("transcribing transition");
+        transition_note_processing_stage(
+            &repos,
+            &note.id,
+            "recording-1",
+            NoteProcessingStage::Generating,
+            ProcessingStatus::Generating,
+            &progress,
+        )
+        .await
+        .expect("generating transition");
+        let done_revision = repos
+            .set_note_status(&note.id, ProcessingStatus::Ready, None)
+            .await
+            .expect("ready transition");
+        let ready_note = repos.get_note(&note.id).await.expect("ready note");
+        complete_note_processing_run(&repos, &progress, &note.id, "recording-1", Ok(ready_note))
+            .await
+            .expect("complete processing");
+
+        let events = events.lock().expect("progress events");
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.stage, event.processing_status))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    NoteProcessingStage::Transcribing,
+                    ProcessingStatus::Transcribing,
+                ),
+                (
+                    NoteProcessingStage::Generating,
+                    ProcessingStatus::Generating,
+                ),
+                (NoteProcessingStage::Done, ProcessingStatus::Ready),
+            ]
+        );
+        assert_eq!(events[2].revision, done_revision);
+        assert!(events.iter().all(|event| event.note_id == note.id));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

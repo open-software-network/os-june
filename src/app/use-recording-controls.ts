@@ -14,7 +14,7 @@ import { AGENT_RECORDER_REQUEST_EVENT } from "../lib/events";
 import { errorCode, messageFromError } from "../lib/errors";
 import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
 import type { RecordingSourceMode } from "../lib/tauri";
-import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-polling";
+import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import { type AgentRecorderRequestPayload } from "./app-shell";
 import type { UseRecordingControlsDependencies } from "./use-recording-controls-types";
 

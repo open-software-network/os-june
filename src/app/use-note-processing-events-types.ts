@@ -1,9 +1,9 @@
-import type { NoteDto } from "../lib/tauri";
 import type * as React from "react";
+import type { NoteSaveController } from "./note-save-controller";
 import type { NotesAction } from "./state/app-state";
 
-export type UseProcessingStatusPollDependencies = {
+export type UseNoteProcessingEventsDependencies = {
   dispatch: React.Dispatch<NotesAction>;
-  selectedNote: NoteDto | undefined;
+  noteSaveController: NoteSaveController;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
 };

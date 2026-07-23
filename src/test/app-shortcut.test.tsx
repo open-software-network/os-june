@@ -193,6 +193,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   RECORDING_TELEMETRY_EVENT: "recording-telemetry",
+  NOTE_PROCESSING_PROGRESS_EVENT: "note-processing-progress",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "note-calendar-context-updated-event",
   // The agent workspace mounts the pending skill-writes tray, whose loader
   // reaches the Rust bridge through this named `invoke`. A quiet stub keeps

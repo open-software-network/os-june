@@ -4,7 +4,7 @@ import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
 import type { UpdateCardDemoApi } from "../lib/update-card-demo";
 import { type ReferralNudgeMoment } from "../components/referral/ReferralNudge";
 import type { RecordingStatusDto } from "../lib/tauri";
-import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-polling";
+import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import type { UseAppDevDemosDependencies } from "./use-app-dev-demos-types";
 
 export function useAppDevDemos(dependencies: UseAppDevDemosDependencies) {

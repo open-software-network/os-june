@@ -42,6 +42,38 @@ async fn migrations_create_empty_store() {
 }
 
 #[tokio::test]
+async fn migrations_create_note_hydration_indexes() {
+    let repos = test_repositories().await;
+    let rows = query(
+        "SELECT name
+         FROM sqlite_master
+         WHERE type = 'index'
+           AND name IN (
+             'idx_audio_artifacts_note_status_created_at',
+             'idx_transcripts_note_created_at',
+             'idx_recording_checkpoints_session_kind_created_at'
+           )
+         ORDER BY name",
+    )
+    .fetch_all(&repos.pool)
+    .await
+    .expect("note hydration indexes should be queryable");
+    let names = rows
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        vec![
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+            "idx_transcripts_note_created_at",
+        ]
+    );
+}
+
+#[tokio::test]
 async fn p3a_counters_increment_and_clear() {
     let repos = test_repositories().await;
 
