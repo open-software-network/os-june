@@ -260,9 +260,11 @@ export type JuneHermesEventKind = JuneHermesEvent["kind"];
 /** True for classified events that end the current agent run.
  *
  * A successful `message.complete` seals one assistant transcript segment. It
- * can carry tool calls that Hermes executes before the run-level lifecycle
- * completion, so it is not a terminal edge. A failed segment is terminal
- * because Hermes will not continue its tool loop after that error.
+ * can precede tool execution or other post-message work, so it is not a
+ * terminal edge. Pinned Hermes v2026.7.20 reports the real idle edge as
+ * `session.info` with `running: false`, which the classifier normalizes to a
+ * terminal lifecycle event. A failed segment remains terminal because Hermes
+ * will not continue its tool loop after that error.
  */
 export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
   switch (event.kind) {

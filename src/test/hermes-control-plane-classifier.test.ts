@@ -738,6 +738,19 @@ describe("classifyHermesEvent — lifecycle", () => {
     }
   });
 
+  it("uses pinned-runtime session.info running state as the run lifecycle edge", () => {
+    const running = classifyHermesEvent(event("session.info", { running: true }));
+    const terminal = classifyHermesEvent(event("session.info", { running: false }));
+    const informational = classifyHermesEvent(event("session.info", { status: "ready" }));
+
+    expect(running).toMatchObject({ kind: "lifecycle", flavor: "running" });
+    expect(terminal).toMatchObject({ kind: "lifecycle", flavor: "terminal" });
+    expect(informational).toMatchObject({ kind: "lifecycle", flavor: "info" });
+    expect(isTerminalHermesEvent(running)).toBe(false);
+    expect(isTerminalHermesEvent(terminal)).toBe(true);
+    expect(isTerminalHermesEvent(informational)).toBe(false);
+  });
+
   it("keys terminal lifecycle flavor from raw type rather than payload status", () => {
     const result = classifyHermesEvent(event("turn.complete", { status: "success" }));
     expect(result.kind).toBe("lifecycle");

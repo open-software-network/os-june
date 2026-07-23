@@ -8608,9 +8608,9 @@ describe("AgentWorkspace", () => {
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
-          type: "lifecycle.complete",
+          type: "session.info",
           session_id: "runtime-session-2",
-          payload: { status: "success" },
+          payload: { running: false },
         });
       }
     });
@@ -9834,7 +9834,7 @@ describe("AgentWorkspace", () => {
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
   });
 
-  it("keeps the Computer use run lease through tool dispatch until lifecycle.complete", async () => {
+  it("keeps the Computer use run lease through tool dispatch until pinned session info reports idle", async () => {
     const statusDetails: AgentSessionStatusDetail[] = [];
     const handleStatus = (event: Event) => {
       statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
@@ -9912,9 +9912,9 @@ describe("AgentWorkspace", () => {
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
-          type: "lifecycle.complete",
+          type: "session.info",
           session_id: "runtime-session-2",
-          payload: { status: "success" },
+          payload: { running: false },
         });
       }
     });
@@ -15764,9 +15764,9 @@ describe("AgentWorkspace", () => {
             payload: { text: "Current response finished." },
           });
           handler({
-            type: "lifecycle.complete",
+            type: "session.info",
             session_id: "runtime-session-1",
-            payload: { status: "success" },
+            payload: { running: false },
           });
         }
       });
