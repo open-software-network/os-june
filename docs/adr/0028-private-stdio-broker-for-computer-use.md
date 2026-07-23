@@ -307,5 +307,9 @@ private driver off the first-action path. App startup, enabling Computer use,
 status refresh, and main-window focus all enter the same driver mutex and cache
 used by a real action, so concurrent attempts remain single-flight. A captured
 task epoch makes Stop, grant revocation, or readiness loss win over an in-flight
-prewarm. Authorization, target validation, rollout, plan, model, billing, and
-approval behavior remain unchanged.
+prewarm. Normal turn completion clears every attended lease, pending approval,
+target, app authorization, capture, and visible companion state, but retains the
+initialized no-authority driver as the next turn's prewarm. Explicit Stop,
+grant revocation, readiness loss, and shutdown still invalidate its epoch and
+terminate it. Authorization, target validation, rollout, plan, model, billing,
+and approval behavior remain unchanged.

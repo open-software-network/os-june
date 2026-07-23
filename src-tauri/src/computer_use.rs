@@ -1560,7 +1560,7 @@ pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> boo
     if let (Some(state), Some(expected_epoch)) =
         (app.try_state::<ComputerUseState>(), expected_epoch)
     {
-        ready = publish_runtime_ready_probe(&state, expected_epoch, ready);
+        ready = publish_runtime_ready_probe(&state, expected_epoch, ready).is_some() && ready;
     }
     if ready {
         schedule_driver_prewarm(app);
@@ -1640,12 +1640,12 @@ pub async fn computer_use_status(
     state: State<'_, ComputerUseState>,
     bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
-    let status = status_inner(&app).await;
+    let (status, previous) = status_with_published_readiness(&app, &state).await;
     let current = ready_state_value(status.ready);
-    let previous = replace_runtime_ready(&state, status.ready);
     if previous != 0 && previous != current {
         if !status.ready {
             stop_inner(&app, &state).await;
+            replace_runtime_ready(&state, false);
         }
         // `current` is the authoritative live readiness observation. If the
         // Hermes config refresh fails, keep that observation instead of
@@ -1672,9 +1672,10 @@ fn runtime_ready_is_current(state: &ComputerUseState, ready: bool) -> bool {
 }
 
 fn replace_runtime_ready(state: &ComputerUseState, ready: bool) -> u32 {
-    let Ok(_publish) = state.runtime_ready_publish.lock() else {
-        return state.runtime_ready_state.load(Ordering::SeqCst);
-    };
+    let _publish = state
+        .runtime_ready_publish
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous = state
         .runtime_ready_state
         .swap(ready_state_value(ready), Ordering::SeqCst);
@@ -1684,20 +1685,41 @@ fn replace_runtime_ready(state: &ComputerUseState, ready: bool) -> u32 {
     previous
 }
 
-fn publish_runtime_ready_probe(state: &ComputerUseState, expected_epoch: u64, ready: bool) -> bool {
-    let Ok(_publish) = state.runtime_ready_publish.lock() else {
-        return false;
-    };
+fn publish_runtime_ready_probe(
+    state: &ComputerUseState,
+    expected_epoch: u64,
+    ready: bool,
+) -> Option<u32> {
+    let _publish = state
+        .runtime_ready_publish
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if state.epoch.load(Ordering::SeqCst) != expected_epoch {
-        return false;
+        return None;
     }
-    state
+    let previous = state
         .runtime_ready_state
-        .store(ready_state_value(ready), Ordering::SeqCst);
+        .swap(ready_state_value(ready), Ordering::SeqCst);
     state
         .runtime_ready_epoch
         .store(expected_epoch, Ordering::SeqCst);
-    ready
+    Some(previous)
+}
+
+async fn status_with_published_readiness(
+    app: &AppHandle,
+    state: &ComputerUseState,
+) -> (ComputerUseStatus, u32) {
+    loop {
+        let expected_epoch = state.epoch.load(Ordering::SeqCst);
+        let status = status_inner(app).await;
+        if let Some(previous) = publish_runtime_ready_probe(state, expected_epoch, status.ready) {
+            return (status, previous);
+        }
+        // Stop or revocation won while the helper/version/permission probe was
+        // suspended. Discard that observation and repeat against the new
+        // lifecycle instead of stamping stale readiness onto its epoch.
+    }
 }
 
 #[tauri::command]
@@ -1719,8 +1741,7 @@ pub async fn set_computer_use_grant(
         replace_runtime_ready(&state, false);
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let status = status_inner(&app).await;
-    replace_runtime_ready(&state, status.ready);
+    let (status, _) = status_with_published_readiness(&app, &state).await;
     if status.ready {
         schedule_driver_prewarm(&app);
     }
@@ -1757,8 +1778,7 @@ pub async fn computer_use_request_permissions(
     driver_version(&path).await?;
     let _ = probe_permissions(&path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let status = status_inner(&app).await;
-    replace_runtime_ready(&state, status.ready);
+    let (status, _) = status_with_published_readiness(&app, &state).await;
     if status.ready {
         schedule_driver_prewarm(&app);
     }
@@ -1957,8 +1977,13 @@ async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
     let _ = set_june_stage_companion(app, false).await;
 }
 
-/// Ends resources for a completed attended run without erasing a newer run
-/// that began while the terminal event was crossing the webview boundary.
+/// Retires a completed attended run without erasing a newer run that began
+/// while the terminal event was crossing the webview boundary.
+///
+/// The initialized driver is intentionally retained as the off-action-path
+/// prewarm for the next turn. It has no authority without an attended lease;
+/// explicit Stop, revocation, readiness loss, and shutdown still invalidate the
+/// epoch and terminate it through `stop_inner`/`stop_for_shutdown`.
 async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64) {
     let _operation = state.operation.lock().await;
     let _cleanup = CleanupInProgress::begin(&state.cleanup_in_progress);
@@ -1968,19 +1993,15 @@ async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64
     if !still_idle {
         return;
     }
-    state.epoch.fetch_add(1, Ordering::SeqCst);
     crate::computer_use_cursor::hide(app);
     cancel_pending(app, state);
-    force_stop_pid(state.driver_pid.swap(0, Ordering::SeqCst));
-    if let Some(driver) = state.driver.lock().await.take() {
-        driver.stop().await;
-    }
     if let Ok(mut target) = state.target.lock() {
         *target = None;
     }
     clear_app_authorizations(state);
     clear_capture_dir(app);
     let _ = set_june_stage_companion(app, false).await;
+    schedule_driver_prewarm(app);
 }
 
 fn clear_app_authorizations(state: &ComputerUseState) {
@@ -4451,6 +4472,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn driver_prewarm_loses_to_stop_and_readiness_loss() {
@@ -4468,14 +4490,22 @@ mod tests {
     }
 
     #[test]
-    fn stale_runtime_readiness_probe_cannot_publish_after_revocation() {
-        let state = ComputerUseState::default();
+    fn blocked_runtime_readiness_probe_cannot_publish_after_revocation() {
+        let state = Arc::new(ComputerUseState::default());
         let probe_epoch = state.epoch.load(Ordering::SeqCst);
+        let probe_blocked = Arc::new(std::sync::Barrier::new(2));
+        let probe_can_publish = Arc::clone(&probe_blocked);
+        let probe_state = Arc::clone(&state);
+        let stale_probe = std::thread::spawn(move || {
+            probe_can_publish.wait();
+            publish_runtime_ready_probe(&probe_state, probe_epoch, true)
+        });
 
         state.epoch.fetch_add(1, Ordering::SeqCst);
         replace_runtime_ready(&state, false);
+        probe_blocked.wait();
 
-        assert!(!publish_runtime_ready_probe(&state, probe_epoch, true));
+        assert_eq!(stale_probe.join().expect("stale probe joins"), None);
         assert!(runtime_ready_is_current(&state, false));
     }
 
@@ -4504,6 +4534,23 @@ mod tests {
             !source[start..end].contains("runtime_ready_state.store(previous"),
             "a config error must not re-arm prewarm after observed readiness loss"
         );
+    }
+
+    #[test]
+    fn completed_run_keeps_driver_readiness_for_immediate_retry() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("async fn stop_if_idle")
+            .expect("completed-run cleanup boundary");
+        let end = source[start..]
+            .find("fn clear_app_authorizations")
+            .map(|offset| start + offset)
+            .expect("completed-run cleanup end");
+        let cleanup = &source[start..end];
+
+        assert!(!cleanup.contains("state.epoch.fetch_add"));
+        assert!(!cleanup.contains("driver.stop().await"));
+        assert!(cleanup.contains("schedule_driver_prewarm(app)"));
     }
 
     #[test]
