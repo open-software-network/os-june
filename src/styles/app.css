@@ -320,8 +320,8 @@ input:focus-visible,
     transparent 0%,
     transparent 30%,
     color-mix(in oklch, var(--brand) 1.5%, transparent) 55%,
-    color-mix(in oklch, var(--brand) 5%, transparent) 78%,
-    color-mix(in oklch, var(--brand) 11%, transparent) 100%
+    color-mix(in oklch, var(--brand) 6%, transparent) 78%,
+    color-mix(in oklch, var(--brand) 14%, transparent) 100%
   );
 }
 
@@ -2296,8 +2296,8 @@ input:focus-visible,
  * what separates her voice from the chrome. Sent messages stay sans. */
 .agent-timeline[data-home="true"] .agent-assistant-turn-body {
   font-family: var(--font-serif);
-  font-size: var(--fs-xl);
-  line-height: 1.55;
+  font-size: var(--fs-2xl);
+  line-height: 1.5;
 }
 
 /* Sent messages: a soft borderless card pill whose bottom-right corner flows
@@ -2309,8 +2309,7 @@ input:focus-visible,
   position: relative;
   max-width: 70%;
   border: 0;
-  border-radius: calc(var(--control-lg) / 2 + var(--sp-1)) calc(var(--control-lg) / 2 + var(--sp-1))
-    0 calc(var(--control-lg) / 2 + var(--sp-1));
+  border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
   background: var(--card);
   /* drop-shadow, not box-shadow: the shadow must wrap the UNION of bubble and
    * tail pseudo as one silhouette. A box-shadow outlines each box separately
@@ -2323,7 +2322,7 @@ input:focus-visible,
   position: absolute;
   z-index: -1;
   right: -10px;
-  bottom: -17px;
+  bottom: 0;
   width: 21px;
   height: 17px;
   background: var(--card);
@@ -2336,12 +2335,6 @@ input:focus-visible,
   mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
   -webkit-mask-size: 100% 100%;
   mask-size: 100% 100%;
-}
-
-/* The tail hangs below the bubble's box, so the following turn gets a bit of
- * extra clearance to keep the timeline rhythm even. */
-.agent-timeline[data-home="true"] .agent-user-turn {
-  margin-bottom: var(--sp-3);
 }
 
 /* Home is the relationship surface, so private chain-of-thought chrome stays
@@ -5559,7 +5552,7 @@ button.agent-user-attachment:hover {
     linear-gradient(
       to bottom,
       transparent,
-      color-mix(in oklch, var(--brand) 10.5%, transparent) 72%
+      color-mix(in oklch, var(--brand) 13.5%, transparent) 72%
     ),
     linear-gradient(to bottom, transparent, var(--card) 72%);
 }
@@ -19508,13 +19501,13 @@ button.memory-project:hover {
  * at one line and stay composed (not stadium-sided) at many. */
 .agent-workspace[data-home="true"] .agent-composer-box {
   display: grid;
-  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  grid-template-columns: var(--control-md) minmax(0, 1fr) auto;
   /* One row: everything optically centered in the pill. The workspace flags
    * the box once the draft soft-wraps (see the measure effect), and only then
    * do the controls pin to the bottom edge with the text growing above. */
   align-items: center;
   gap: var(--sp-1);
-  border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
+  border-radius: calc(var(--control-md) / 2 + var(--sp-1));
 }
 
 /* Wrapped draft: the text takes the full width on top, and the controls
@@ -19541,8 +19534,12 @@ button.memory-project:hover {
 }
 
 .agent-workspace[data-home="true"] .agent-composer-send,
-.agent-workspace[data-home="true"] .agent-composer-attach {
-  /* Circular controls nest concentrically inside the pill's rounded ends. */
+.agent-workspace[data-home="true"] .agent-composer-attach,
+.agent-workspace[data-home="true"] .agent-composer-mic {
+  /* Circular controls one notch smaller than the shared composer's, nesting
+   * concentrically in the tighter pill so the draft sits closer to the +. */
+  width: var(--control-md);
+  height: var(--control-md);
   border-radius: var(--r-pill);
 }
 
@@ -19554,7 +19551,7 @@ button.memory-project:hover {
 
 .agent-workspace[data-home="true"] .agent-composer-editor {
   max-height: calc(var(--control-xl) * 4);
-  padding-inline: var(--sp-2);
+  padding-inline: var(--sp-1);
   font-size: var(--fs-md);
 }
 
