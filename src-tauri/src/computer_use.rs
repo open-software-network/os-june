@@ -212,6 +212,15 @@ struct PermissionProbe {
     screen_recording: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PermissionProbeStatus {
+    accessibility: bool,
+    screen_recording: bool,
+    ready: bool,
+    state: &'static str,
+    error: Option<String>,
+}
+
 #[derive(Default)]
 struct PermissionProbeCoordinator {
     active: AsyncMutex<Option<ActivePermissionProbe>>,
@@ -281,12 +290,14 @@ impl PermissionProbeCoordinator {
                     let run_probe = probe.clone();
                     tauri::async_runtime::spawn(async move {
                         let result = run_probe(prompt).await;
+                        // Publish while this flight is still discoverable. A
+                        // caller in this handoff window must share the completed
+                        // result instead of starting an overlapping probe.
+                        let _ = sender.send(Some(result));
                         let mut active = coordinator.active.lock().await;
                         if active.as_ref().is_some_and(|active| active.id == id) {
                             *active = None;
                         }
-                        drop(active);
-                        let _ = sender.send(Some(result));
                     });
                     (receiver, prompt)
                 }
@@ -661,7 +672,7 @@ impl DriverClient {
             self.terminate();
         }
         if !wait_for_process_exit(self.pid, DRIVER_SHUTDOWN_TIMEOUT).await {
-            signal_process_group(self.pid, libc::SIGKILL);
+            force_stop_pid(self.pid);
         }
         if !wait_for_process_exit(self.pid, DRIVER_KILL_TIMEOUT).await {
             tracing::warn!(
@@ -678,7 +689,7 @@ impl DriverClient {
 impl Drop for DriverClient {
     fn drop(&mut self) {
         if self.pid > 0 {
-            signal_process_group(self.pid, libc::SIGKILL);
+            force_stop_pid(self.pid);
             self.pid = 0;
         }
         let _ = std::fs::remove_dir_all(&self.socket_dir);
@@ -1364,6 +1375,14 @@ fn signature_cache_matches(
     fingerprint: &BundleFingerprint,
     force: bool,
 ) -> bool {
+    // SECURITY: This session-local metadata fingerprint is only a cache
+    // invalidation key after a successful `codesign --verify --strict`; it is
+    // not treated as code identity. An attacker able to restore these fields
+    // still cannot inherit the original helper's TCC grant because macOS keys
+    // that grant to its signed code identity/cdhash, or connect to the genuine
+    // helper because every accepted socket is checked live by audit token
+    // against June's identifier and the helper-derived Team OU. Explicit retry
+    // bypasses this cache, and a new June process begins with an empty cache.
     !force && cached.is_some_and(|cached| cached.fingerprint == *fingerprint)
 }
 
@@ -1861,33 +1880,10 @@ async fn status_inner(app: &AppHandle, computer_use: &ComputerUseState) -> Compu
             error: None,
         };
     }
-    let permissions = match probe_permissions(computer_use, &path, false).await {
-        Ok(permissions) => permissions,
-        Err(error) => {
-            return ComputerUseStatus {
-                platform_supported,
-                plan_eligible,
-                grant_enabled,
-                driver_available: true,
-                driver_version: Some(version),
-                accessibility: false,
-                screen_recording: false,
-                model_supports_vision,
-                generation_model,
-                ready: false,
-                state: "error".to_string(),
-                error: Some(error.message),
-            };
-        }
-    };
-    let ready = permissions.accessibility && permissions.screen_recording && model_supports_vision;
-    let state = if !permissions.accessibility || !permissions.screen_recording {
-        "permission_missing"
-    } else if !model_supports_vision {
-        "model_unsupported"
-    } else {
-        "ready"
-    };
+    let permissions = permission_probe_status(
+        probe_permissions(computer_use, &path, false).await,
+        model_supports_vision,
+    );
     ComputerUseStatus {
         platform_supported,
         plan_eligible,
@@ -1898,9 +1894,42 @@ async fn status_inner(app: &AppHandle, computer_use: &ComputerUseState) -> Compu
         screen_recording: permissions.screen_recording,
         model_supports_vision,
         generation_model,
-        ready,
-        state: state.to_string(),
-        error: None,
+        ready: permissions.ready,
+        state: permissions.state.to_string(),
+        error: permissions.error,
+    }
+}
+
+fn permission_probe_status(
+    result: Result<PermissionProbe, AppError>,
+    model_supports_vision: bool,
+) -> PermissionProbeStatus {
+    match result {
+        Ok(permissions) => {
+            let ready =
+                permissions.accessibility && permissions.screen_recording && model_supports_vision;
+            let state = if !permissions.accessibility || !permissions.screen_recording {
+                "permission_missing"
+            } else if !model_supports_vision {
+                "model_unsupported"
+            } else {
+                "ready"
+            };
+            PermissionProbeStatus {
+                accessibility: permissions.accessibility,
+                screen_recording: permissions.screen_recording,
+                ready,
+                state,
+                error: None,
+            }
+        }
+        Err(error) => PermissionProbeStatus {
+            accessibility: false,
+            screen_recording: false,
+            ready: false,
+            state: "error",
+            error: Some(error.message),
+        },
     }
 }
 
@@ -4768,6 +4797,25 @@ mod tests {
         let second = second.await.expect("second poller").expect("second result");
         assert_eq!(first, second);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn permission_probe_timeout_is_not_reported_as_missing_permissions() {
+        let status = permission_probe_status(
+            Err(AppError::new(
+                "computer_use_driver_timeout",
+                "The Computer use driver did not respond in time.",
+            )),
+            true,
+        );
+
+        assert_eq!(status.state, "error");
+        assert_ne!(
+            (status.accessibility, status.state),
+            (false, "permission_missing")
+        );
+        assert!(!status.ready);
+        assert!(status.error.is_some());
     }
 
     #[test]

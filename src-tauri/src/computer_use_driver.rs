@@ -8,6 +8,8 @@
 //! desktop-control surface.
 
 #[cfg(target_os = "macos")]
+use core_foundation::{base::TCFType, data::CFData};
+#[cfg(target_os = "macos")]
 use cua_driver_core::{
     protocol::{initialize_result, Request, Response},
     tool::ToolRegistry,
@@ -22,6 +24,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     io::{self, Read},
+    os::fd::AsRawFd,
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     sync::Arc,
@@ -34,7 +37,7 @@ use tokio::{
         AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
         BufReader,
     },
-    net::UnixListener,
+    net::{UnixListener, UnixStream},
 };
 
 const UPSTREAM_VERSION: &str = "0.5.0";
@@ -168,7 +171,8 @@ async fn serve_daemon() -> anyhow::Result<()> {
         .peer_cred()?
         .pid()
         .ok_or_else(|| anyhow::anyhow!("the private June peer has no process identity"))?;
-    if !process_is_june(peer_pid) {
+    let peer_audit_token = socket_peer_audit_token(&stream)?;
+    if !process_is_june(peer_pid, Some(&peer_audit_token)) {
         anyhow::bail!("the private helper accepts only June");
     }
     let (reader, writer) = stream.into_split();
@@ -343,11 +347,11 @@ where
 
 #[cfg(target_os = "macos")]
 fn parent_is_june() -> bool {
-    process_is_june(unsafe { libc::getppid() })
+    process_is_june(unsafe { libc::getppid() }, None)
 }
 
 #[cfg(target_os = "macos")]
-fn process_is_june(pid: libc::pid_t) -> bool {
+fn process_is_june(pid: libc::pid_t, audit_token: Option<&[u8]>) -> bool {
     let Some(process_path) = process_path(pid) else {
         return false;
     };
@@ -366,8 +370,12 @@ fn process_is_june(pid: libc::pid_t) -> bool {
         .map(PathBuf::from)
         .collect();
     if let (Some(helper_app), Some(outer_app)) = (app_ancestors.first(), app_ancestors.get(1)) {
+        // Packaged peers must arrive over the private daemon socket so their
+        // non-reusable audit token is available. Direct stdio remains a
+        // development-only path below.
         return same_file(&process_path, &packaged_main_executable(outer_app))
-            && packaged_process_signature_matches(pid, helper_app);
+            && audit_token
+                .is_some_and(|token| packaged_process_signature_matches(token, helper_app));
     }
 
     // Development builds are not nested yet. Accept only the Cargo binary or
@@ -437,7 +445,33 @@ fn development_launcher_name_is_allowed(name: &std::ffi::OsStr) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn packaged_process_signature_matches(pid: libc::pid_t, helper_app: &std::path::Path) -> bool {
+fn socket_peer_audit_token(stream: &UnixStream) -> io::Result<[u8; 32]> {
+    let mut token = [0u8; 32];
+    let mut token_len = libc::socklen_t::try_from(token.len())
+        .map_err(|_| io::Error::other("invalid macOS audit token length"))?;
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERTOKEN,
+            token.as_mut_ptr().cast(),
+            &mut token_len,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if usize::try_from(token_len).ok() != Some(token.len()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the private June peer returned an invalid audit token",
+        ));
+    }
+    Ok(token)
+}
+
+#[cfg(target_os = "macos")]
+fn packaged_process_signature_matches(audit_token: &[u8], helper_app: &std::path::Path) -> bool {
     let Some(helper) = signature_details(helper_app, "co.opensoftware.june.computer-use-driver")
     else {
         return false;
@@ -445,8 +479,9 @@ fn packaged_process_signature_matches(pid: libc::pid_t, helper_app: &std::path::
     let Some(requirement) = june_process_requirement(&helper.team_identifier) else {
         return false;
     };
+    let audit_token = CFData::from_buffer(audit_token);
     let mut attributes = GuestAttributes::new();
-    attributes.set_pid(pid);
+    attributes.set_audit_token(audit_token.as_concrete_TypeRef());
     let Ok(peer) = SecCode::copy_guest_with_attribues(None, &attributes, CodeSigningFlags::NONE)
     else {
         return false;
@@ -470,6 +505,13 @@ fn signature_details(
     path: &std::path::Path,
     expected_identifier: &str,
 ) -> Option<VerifiedSignature> {
+    let mut verification = Command::new("/usr/bin/codesign");
+    verification.args(["--verify", "--strict"]).arg(path);
+    let verification = bounded_child_output(verification, SIGNATURE_DETAILS_TIMEOUT).ok()??;
+    if !verification.status.success() {
+        return None;
+    }
+
     let mut command = Command::new("/usr/bin/codesign");
     command.args(["-dv", "--verbose=4"]).arg(path);
     let details = bounded_child_output(command, SIGNATURE_DETAILS_TIMEOUT).ok()??;
@@ -1124,6 +1166,22 @@ mod tests {
             packaged_main_executable(std::path::Path::new("/Applications/June.app")),
             std::path::PathBuf::from("/Applications/June.app/Contents/MacOS/os-june")
         );
+    }
+
+    #[tokio::test]
+    async fn accepted_private_socket_exposes_peer_audit_token() {
+        let directory = tempfile::tempdir().expect("private socket directory");
+        let socket_path = directory.path().join("driver.sock");
+        let listener = UnixListener::bind(&socket_path).expect("private socket listener");
+        let client = tokio::spawn(UnixStream::connect(socket_path));
+        let (server, _) = listener.accept().await.expect("accepted private peer");
+        let _client = client
+            .await
+            .expect("private peer task")
+            .expect("connected private peer");
+
+        let token = socket_peer_audit_token(&server).expect("peer audit token");
+        assert_ne!(token, [0; 32]);
     }
 
     #[test]
