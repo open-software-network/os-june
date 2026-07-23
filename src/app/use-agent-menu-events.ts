@@ -1,10 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import {
-  AGENT_NEW_SESSION_EVENT,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
-} from "../components/agent/AgentWorkspace";
+} from "../components/agent/session-persistence";
+import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 import { listHermesSessions } from "../lib/hermes-adapter";
 import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,

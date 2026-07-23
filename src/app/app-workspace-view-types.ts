@@ -1,14 +1,14 @@
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
-import { type NotesListHandle } from "../components/notes-list/NotesList";
-import { type SettingsTab } from "../components/settings/AppSettings";
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import { type TabNav } from "./tabs/tabs";
-import { type LiveTranscriptEventDto, type RecoverableRecordingDto } from "../lib/tauri";
+import type { NotesListHandle } from "../components/notes-list/NotesList";
+import type { SettingsTab } from "../components/settings/settings-config";
+import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { TabNav } from "./tabs/tabs";
+import type { LiveTranscriptEventDto, RecoverableRecordingDto } from "../lib/tauri";
 import type { FolderDto, NoteDto, AccountStatus, HermesSessionInfo } from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
-import { type JuneUpdate } from "../lib/updater";
-import { type UpdateCheckMode, type UpdatePromptPayload } from "./update-decision";
+import type { JuneUpdate } from "../lib/updater";
+import type { UpdateCheckMode, UpdatePromptPayload } from "./update-decision";
 import type { NotesAction, NotesState } from "./state/app-state";
 import type * as React from "react";
 

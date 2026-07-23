@@ -3,7 +3,7 @@ import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
   type AgentSessionsChangedDetail,
-} from "../components/agent/AgentWorkspace";
+} from "../lib/agent-events";
 import { assignSessionToFolder } from "../lib/tauri";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { getActiveHermesProfileName } from "../lib/active-hermes-profile";

@@ -2,20 +2,17 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AGENT_NEW_SESSION_EVENT,
-  AGENT_SESSION_RENAMED_EVENT,
   markAgentNewSessionPending,
-  recordManualAgentSessionTitle,
   type AgentNewSessionDetail,
-  type AgentSessionRenamedDetail,
-} from "../components/agent/AgentWorkspace";
+} from "../components/agent/session-persistence";
+import { recordManualAgentSessionTitle } from "../components/agent/agent-session-continuity";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { noteReadyToShare } from "../lib/share-payload";
-import { SETTINGS_TABS } from "../components/settings/AppSettings";
-import { type TabItem } from "../components/tabs/TabBar";
+import { SETTINGS_TABS } from "../components/settings/settings-config";
+import type { TabItem } from "../components/tabs/TabBar";
 import { reorderTabs } from "./tabs/tabs";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import {
@@ -42,8 +39,11 @@ import { preloadRecordingSounds } from "../lib/recording-sounds";
 import { preloadAgentSounds } from "../lib/agent-sounds";
 import {
   AGENT_GALLERY_EVENT,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_SESSION_RENAMED_EVENT,
   emitAgentSessionsChanged,
   type AgentGalleryDetail,
+  type AgentSessionRenamedDetail,
 } from "../lib/agent-events";
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
@@ -89,8 +89,8 @@ import {
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
-import { type MaxUpgradeTransport } from "../lib/billing-actions";
-import { type MaxGrantWait } from "../lib/max-upgrade";
+import type { MaxUpgradeTransport } from "../lib/billing-actions";
+import type { MaxGrantWait } from "../lib/max-upgrade";
 import { reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import {

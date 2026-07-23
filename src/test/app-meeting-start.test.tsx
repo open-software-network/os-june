@@ -314,7 +314,7 @@ describe("meeting start transcription event", () => {
     });
     expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
-    expect(screen.getByLabelText("Note title")).toHaveValue("New meeting");
+    expect(await screen.findByLabelText("Note title")).toHaveValue("New meeting");
   });
 
   it("keeps calendar enrichment that arrives before native meeting startup resolves", async () => {

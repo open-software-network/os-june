@@ -10,6 +10,11 @@ import { initBrand } from "./lib/brand";
 import { initFontScale, installFontScaleShortcuts } from "./lib/font-scale";
 import { installExternalLinkOpener } from "./lib/external-links";
 import { initializeExperimentalFlags } from "./lib/experimental-flags";
+import { isMacLikePlatform, isWindowsPlatform } from "./lib/platform";
+import {
+  prefetchRemainingWorkspacesAfterPaint,
+  preloadInitialWorkspace,
+} from "./app/workspace-lazy";
 import "./styles/app.css";
 
 declare global {
@@ -31,7 +36,16 @@ initFontScale();
 installFontScaleShortcuts();
 installExternalLinkOpener();
 installNativeContextMenuGuard();
-await initializeExperimentalFlags();
+// Intentionally await the default Agent workspace before mounting React. This
+// trades some first-paint parsing for a stable launch with no fallback flash;
+// JUN-391 owns the broader paint-first startup work. The remaining workspaces
+// are fetched after first paint below.
+await Promise.all([
+  initializeExperimentalFlags(),
+  isMacLikePlatform() || isWindowsPlatform()
+    ? preloadInitialWorkspace().catch(() => undefined)
+    : Promise.resolve(),
+]);
 
 // Console driver for the agent HUD overlay window: __agentHud("demo") etc.
 // from this window's devtools. Emits on the Tauri bus only, so fake demo
@@ -92,3 +106,4 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     {import.meta.env.DEV ? <Agentation /> : null}
   </React.StrictMode>,
 );
+prefetchRemainingWorkspacesAfterPaint();

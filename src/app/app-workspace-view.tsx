@@ -1,13 +1,9 @@
 import { FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
-import { AgentWorkspace, markAgentNewSessionPending } from "../components/agent/AgentWorkspace";
+import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
-import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
-import { RoutinesView } from "../components/routines/RoutinesView";
-import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
 import { NotesList } from "../components/notes-list/NotesList";
-import { AppSettings } from "../components/settings/AppSettings";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconProjects } from "central-icons/IconProjects";
 import { retryProcessing, updateNote } from "../lib/tauri";
@@ -21,6 +17,13 @@ import {
   ROUTINE_FUNDING_DISABLED_REASON,
 } from "./app-shell";
 import type { RenderAppWorkspaceDependencies } from "./app-workspace-view-types";
+import {
+  AgentWorkspaceRoute,
+  AppSettingsRoute,
+  FoldersWorkspaceRoute,
+  NoteEditorRoute,
+  RoutinesViewRoute,
+} from "./workspace-lazy";
 
 export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies) {
   const {
@@ -128,7 +131,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
   } = dependencies;
 
   return activeView === "settings" ? (
-    <AppSettings
+    <AppSettingsRoute
       account={account}
       accountLoading={accountLoading}
       sourceMode={sourceMode}
@@ -175,7 +178,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       }}
     />
   ) : activeView === "routines" ? (
-    <RoutinesView
+    <RoutinesViewRoute
       creditActionsDisabledReason={fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined}
       onCreateRoutine={(prompt) => {
         // The agent workspace is unmounted while Routines is shown,
@@ -202,7 +205,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
   ) : activeView === "agent" ? (
     // The origin crumbs render inside the workspace's own sticky
     // session bar, so they persist while the chat scrolls beneath.
-    <AgentWorkspace
+    <AgentWorkspaceRoute
       initialSession={activeAgentSessionSeed}
       initialSessionId={activeAgentSessionId}
       onSessionSelected={setActiveAgentSession}
@@ -360,7 +363,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       onDeleteNotes={(noteIds) => void handleDeleteNotes(noteIds)}
     />
   ) : activeView === "folders" ? (
-    <FoldersWorkspace
+    <FoldersWorkspaceRoute
       folders={state.folders}
       notes={state.notes}
       sessions={agentSessions}
@@ -513,7 +516,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
         />
       )}
       <div ref={noteDetailScrollRef} className="note-detail-scroll" data-has-detail-bar="true">
-        <NoteEditor
+        <NoteEditorRoute
           note={selectedNote}
           transcriptScrollRef={noteDetailScrollRef}
           folders={state.folders}

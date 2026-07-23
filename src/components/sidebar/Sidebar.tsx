@@ -55,12 +55,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  AGENT_SESSION_RENAMED_EVENT,
-  markAgentNewSessionPending,
-  type AgentSessionRenamedDetail,
-  type AgentSessionsChangedDetail,
-} from "../agent/AgentWorkspace";
+import { markAgentNewSessionPending } from "../agent/session-persistence";
 import { CategoryIcon } from "../agent/composer/CategoryIcon";
 import { JuneWordmark } from "../brand/JuneWordmark";
 import { AccountAvatar, accountDisplayName } from "../account/AccountAvatar";
@@ -69,7 +64,10 @@ import {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_SESSIONS_CHANGED_EVENT,
+  AGENT_SESSION_RENAMED_EVENT,
   emitAgentSessionsChanged,
+  type AgentSessionRenamedDetail,
+  type AgentSessionsChangedDetail,
 } from "../../lib/agent-events";
 import {
   deleteHermesSession,
@@ -100,7 +98,7 @@ import {
 } from "../../lib/session-profile-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
-import { SETTINGS_TABS, type SettingsTab } from "../settings/AppSettings";
+import { SETTINGS_TABS, type SettingsTab } from "../settings/settings-config";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { CopyLinkField } from "../ui/CopyLinkField";
 import { Dialog } from "../ui/Dialog";

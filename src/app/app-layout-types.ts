@@ -1,11 +1,11 @@
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
-import { type NotesListHandle } from "../components/notes-list/NotesList";
-import { type SettingsTab } from "../components/settings/AppSettings";
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import { type TabItem } from "../components/tabs/TabBar";
-import { type TabNav } from "./tabs/tabs";
-import { type ReferralNudgeMoment } from "../components/referral/ReferralNudge";
+import type { NotesListHandle } from "../components/notes-list/NotesList";
+import type { SettingsTab } from "../components/settings/settings-config";
+import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { TabItem } from "../components/tabs/TabBar";
+import type { TabNav } from "./tabs/tabs";
+import type { ReferralNudgeMoment } from "../components/referral/ReferralNudge";
 import type {
   FolderDto,
   NoteDto,
@@ -13,16 +13,16 @@ import type {
   AccountStatus,
   HermesSessionInfo,
 } from "../lib/tauri";
-import { type MaxUpgradeTransport } from "../lib/billing-actions";
+import type { MaxUpgradeTransport } from "../lib/billing-actions";
 import type { MaxGrantWait } from "../lib/max-upgrade";
 import type { NoteChat } from "../components/note-chat/useNoteChat";
-import { type JuneUpdate } from "../lib/updater";
-import {
-  type UpdateInstallProgress,
-  type UpdatePromptPayload,
-  type UpdateStatusDisplayState,
+import type { JuneUpdate } from "../lib/updater";
+import type {
+  UpdateInstallProgress,
+  UpdatePromptPayload,
+  UpdateStatusDisplayState,
 } from "./update-decision";
-import { type RecordingInactivityPrompt } from "./app-shell";
+import type { RecordingInactivityPrompt } from "./app-shell";
 import type { NotesAction, NotesState } from "./state/app-state";
 import type * as React from "react";
 

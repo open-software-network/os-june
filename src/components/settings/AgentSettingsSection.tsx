@@ -4,8 +4,8 @@ import {
   FilesystemPanel,
   MessagingPanel,
   MessagingPlatformDetail,
-  messagingTrimEdits,
-} from "../agent/AgentWorkspace";
+} from "../agent/management/MessagingFilesystemPanels";
+import { messagingTrimEdits } from "../agent/management/management-helpers";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import {
