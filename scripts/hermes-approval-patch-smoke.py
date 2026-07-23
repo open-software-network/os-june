@@ -998,10 +998,10 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     )
 
 
-def verify_turn_scoped_toolsets(root: Path) -> None:
+def verify_agent_run_scoped_toolsets(root: Path) -> None:
     server_source = (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
     tree = ast.parse(server_source)
-    normalize = copy.deepcopy(_function(tree, "_normalize_turn_enabled_toolsets"))
+    normalize = copy.deepcopy(_function(tree, "_normalize_agent_run_enabled_toolsets"))
     namespace = {"_load_enabled_toolsets": lambda: ["web", "june_computer_use"]}
     exec(
         compile(
@@ -1011,7 +1011,7 @@ def verify_turn_scoped_toolsets(root: Path) -> None:
         ),
         namespace,
     )
-    normalize_toolsets = namespace["_normalize_turn_enabled_toolsets"]
+    normalize_toolsets = namespace["_normalize_agent_run_enabled_toolsets"]
     assert normalize_toolsets(None) is None
     assert normalize_toolsets(
         ["june_computer_use", "june_computer_use"]
@@ -1022,13 +1022,13 @@ def verify_turn_scoped_toolsets(root: Path) -> None:
         except ValueError:
             pass
         else:
-            raise AssertionError("turn toolsets widened or accepted an invalid shape")
+            raise AssertionError("agent-run toolsets widened or accepted an invalid shape")
 
     make_agent = _function(tree, "_make_agent")
     assert any(
         argument.arg == "enabled_toolsets_override"
         for argument in make_agent.args.args
-    ), "TUI agent constructor omits the turn toolset override"
+    ), "TUI agent constructor omits the agent-run toolset override"
     agent_calls = [
         node
         for node in ast.walk(make_agent)
@@ -1039,7 +1039,105 @@ def verify_turn_scoped_toolsets(root: Path) -> None:
     assert len(agent_calls) == 1
     assert any(
         keyword.arg == "enabled_toolsets" for keyword in agent_calls[0].keywords
-    ), "turn toolsets are not applied to the agent snapshot"
+    ), "agent-run toolsets are not applied to the agent snapshot"
+
+    apply_toolsets = _function(tree, "_apply_agent_run_enabled_toolsets")
+    apply_calls = {
+        node.func.id
+        for node in ast.walk(apply_toolsets)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "refresh_agent_mcp_tools" in apply_calls, (
+        "live agent scope changes do not use the pinned MCP snapshot refresh helper"
+    )
+    refresh_calls = []
+    fake_mcp_tool = types.ModuleType("tools.mcp_tool")
+
+    def refresh_agent_mcp_tools(
+        agent,
+        *,
+        enabled_override=None,
+        disabled_override=None,
+        quiet_mode=True,
+    ):
+        refresh_calls.append((enabled_override, disabled_override, quiet_mode))
+        agent.enabled_toolsets = enabled_override
+        agent.disabled_toolsets = disabled_override
+        return set()
+
+    fake_mcp_tool.refresh_agent_mcp_tools = refresh_agent_mcp_tools
+    previous_mcp_tool = sys.modules.get("tools.mcp_tool")
+    sys.modules["tools.mcp_tool"] = fake_mcp_tool
+    try:
+        class Agent:
+            enabled_toolsets = ["web", "june_computer_use"]
+            disabled_toolsets = ["browser"]
+
+        class Logger:
+            @staticmethod
+            def info(*_args):
+                return None
+
+        sentinel = object()
+        apply_namespace = {
+            "_AGENT_RUN_TOOLSETS_UNSET": sentinel,
+            "_load_enabled_toolsets": lambda: ["web", "june_computer_use"],
+            "_normalize_agent_run_enabled_toolsets": normalize_toolsets,
+            "_wait_for_session_toolsets": lambda _toolsets: None,
+            "logger": Logger(),
+        }
+        exec(
+            compile(
+                "from __future__ import annotations\n" + ast.unparse(copy.deepcopy(apply_toolsets)),
+                str(root / "tui_gateway" / "server.py"),
+                "exec",
+            ),
+            apply_namespace,
+        )
+        session = {"agent": Agent()}
+        apply_scope = apply_namespace["_apply_agent_run_enabled_toolsets"]
+        apply_scope(session, ["june_computer_use"])
+        assert session["agent"].enabled_toolsets == ["june_computer_use"]
+        apply_scope(session, None)
+        assert session["agent"].enabled_toolsets == ["web", "june_computer_use"]
+        assert [call[0] for call in refresh_calls] == [
+            ["june_computer_use"],
+            ["web", "june_computer_use"],
+        ], "scoped-to-ordinary agent-run transition did not refresh both snapshots"
+    finally:
+        if previous_mcp_tool is None:
+            sys.modules.pop("tools.mcp_tool", None)
+        else:
+            sys.modules["tools.mcp_tool"] = previous_mcp_tool
+
+    enqueue_prompt = copy.deepcopy(_function(tree, "_enqueue_prompt"))
+    enqueue_namespace = {"_AGENT_RUN_TOOLSETS_UNSET": object()}
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(enqueue_prompt),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        enqueue_namespace,
+    )
+    enqueue = enqueue_namespace["_enqueue_prompt"]
+    queued_session = {}
+    assert enqueue(
+        queued_session,
+        "first",
+        "transport-a",
+        ["june_computer_use"],
+    )
+    queued_before_mismatch = copy.deepcopy(queued_session["queued_prompt"])
+    assert not enqueue(queued_session, "second", "transport-b", None)
+    assert queued_session["queued_prompt"] == queued_before_mismatch
+    assert enqueue(
+        queued_session,
+        "compatible",
+        "transport-c",
+        ["june_computer_use"],
+    )
+    assert queued_session["queued_prompt"]["text"] == "first\n\ncompatible"
 
     create = _rpc_method(tree, "session.create")
     prompt = _rpc_method(tree, "prompt.submit")
@@ -1053,9 +1151,27 @@ def verify_turn_scoped_toolsets(root: Path) -> None:
         for node in ast.walk(prompt)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert "_normalize_turn_enabled_toolsets" in create_names
-    assert "_normalize_turn_enabled_toolsets" in prompt_names
-    assert "_apply_turn_enabled_toolsets" in prompt_names
+    assert "_normalize_agent_run_enabled_toolsets" in create_names
+    assert "_normalize_agent_run_enabled_toolsets" in prompt_names
+    assert "_apply_agent_run_enabled_toolsets" in prompt_names
+    assert (
+        "if turn_isolation and agent_run_toolsets is None:\n"
+        "        isolated_response = _submit_prompt_to_compute_host("
+    ) in server_source, "scoped prompts can escape through an unscoped compute-host frame"
+    assert (
+        "and queued_agent_run_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)"
+    ) in server_source, "scoped queued prompts can escape through an unscoped compute-host frame"
+    assert (
+        "agent-run-scoped toolsets are unavailable under a named profile"
+    ) in server_source, "named profiles can receive a launch-profile tool scope"
+    assert (
+        "queued prompt tool scope changed; retry after the current agent run"
+    ) in server_source, "queued prompts can merge incompatible tool scopes"
+    assert (
+        'worker = session.get("slash_worker")\n'
+        "    if worker is None:\n"
+        "        return"
+    ) in server_source, "automatic lifecycle paths can eagerly start the broad slash worker"
     assert (
         'if current.get("enabled_toolsets_override") is None:\n'
         "                try:\n"
@@ -1871,7 +1987,7 @@ def main() -> int:
         upstream_root = args.upstream_root.resolve() if args.upstream_root else None
         verify_patch_state_machine(root, upstream_root)
         verify_new_session_image_attach_is_immediate(root)
-        verify_turn_scoped_toolsets(root)
+        verify_agent_run_scoped_toolsets(root)
         verify_tui_memory_deny_propagation(root)
         verify_memory_lifecycle_deny(root)
         verify_cross_process_config_writer(root)

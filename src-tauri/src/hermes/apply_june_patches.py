@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "d49e8b3428b8b0d89d8182ba6b6d958402becc6d8d8b92e002c6fc2b76bca0e5",
+    "tui_gateway/server.py": "10753eb8c4d3bd7a19e0cf839c1edb9876588a3037ce2481b7ffac17d5167081",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -1318,10 +1318,10 @@ def _session_tool_progress_mode(sid: str) -> str:
         '''        return None
 
 
-_TURN_TOOLSETS_UNSET = object()
+_AGENT_RUN_TOOLSETS_UNSET = object()
 
 
-def _normalize_turn_enabled_toolsets(raw):
+def _normalize_agent_run_enabled_toolsets(raw):
     """Validate that a client can narrow, never widen, June's tool surface."""
     if raw is None:
         return None
@@ -1340,7 +1340,7 @@ def _normalize_turn_enabled_toolsets(raw):
 
     allowed = _load_enabled_toolsets()
     if allowed is None:
-        raise ValueError("turn-scoped toolsets require a configured gateway allowlist")
+        raise ValueError("agent-run-scoped toolsets require a configured gateway allowlist")
     allowed_names = set(allowed)
     if any(name not in allowed_names for name in normalized):
         raise ValueError("enabled_toolsets may only narrow the gateway allowlist")
@@ -1399,11 +1399,11 @@ def _wait_for_session_toolsets(enabled_toolsets_override) -> None:
     )
 
 
-def _apply_turn_enabled_toolsets(session: dict, requested) -> None:
+def _apply_agent_run_enabled_toolsets(session: dict, requested) -> None:
     """Retune one live agent snapshot without rebuilding the agent or clients."""
-    if requested is _TURN_TOOLSETS_UNSET:
+    if requested is _AGENT_RUN_TOOLSETS_UNSET:
         return
-    normalized = _normalize_turn_enabled_toolsets(requested)
+    normalized = _normalize_agent_run_enabled_toolsets(requested)
     effective = normalized if normalized is not None else _load_enabled_toolsets()
     _wait_for_session_toolsets(normalized)
     agent = session.get("agent")
@@ -1412,9 +1412,9 @@ def _apply_turn_enabled_toolsets(session: dict, requested) -> None:
         return
     current = getattr(agent, "enabled_toolsets", None)
     if current != effective:
-        from tools.mcp_tool import refresh_agent_tool_snapshot
+        from tools.mcp_tool import refresh_agent_mcp_tools
 
-        refresh_agent_tool_snapshot(
+        refresh_agent_mcp_tools(
             agent,
             enabled_override=effective,
             disabled_override=getattr(agent, "disabled_toolsets", None),
@@ -1429,7 +1429,21 @@ def _apply_turn_enabled_toolsets(session: dict, requested) -> None:
 
 def _session_tool_progress_mode(sid: str) -> str:
 ''',
-        "turn-scoped toolset helpers",
+        "agent-run-scoped toolset helpers",
+    )
+    source = replace_once(
+        source,
+        '''def _restart_slash_worker(sid: str, session: dict):
+    worker = session.get("slash_worker")
+    if worker:
+''',
+        '''def _restart_slash_worker(sid: str, session: dict):
+    worker = session.get("slash_worker")
+    if worker is None:
+        return
+    if worker:
+''',
+        "slash worker restarts only after explicit lazy start",
     )
     source = replace_once(
         source,
@@ -1481,7 +1495,7 @@ def _session_tool_progress_mode(sid: str) -> str:
     except Exception:
         pass
 ''',
-        '''    # A narrowed desktop-control turn waits only for its one local MCP
+        '''    # A narrowed desktop-control agent run waits only for its one local MCP
     # server. Other MCP clients keep connecting in the process-wide background
     # and cannot delay this agent's immutable first tool snapshot.
     _wait_for_session_toolsets(enabled_toolsets_override)
@@ -1529,12 +1543,21 @@ def _session_tool_progress_mode(sid: str) -> str:
     )
     source = replace_once(
         source,
-        '''    title = str(params.get("title") or "").strip()
-    # When set, this is a branch: the new chat copies an existing conversation's
+        '''    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+
+    # The desktop composer owns its model/effort/fast as plain UI state and ships
 ''',
-        '''    title = str(params.get("title") or "").strip()
+        '''    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile is not None and params.get("enabled_toolsets") is not None:
+        return _err(
+            rid,
+            4003,
+            "agent-run-scoped toolsets are unavailable under a named profile",
+        )
     try:
-        enabled_toolsets_override = _normalize_turn_enabled_toolsets(
+        enabled_toolsets_override = _normalize_agent_run_enabled_toolsets(
             params.get("enabled_toolsets")
         )
     except ValueError as exc:
@@ -1544,9 +1567,10 @@ def _session_tool_progress_mode(sid: str) -> str:
         enabled_toolsets_override is not None,
         len(enabled_toolsets_override or []),
     )
-    # When set, this is a branch: the new chat copies an existing conversation's
+
+    # The desktop composer owns its model/effort/fast as plain UI state and ships
 ''',
-        "session create toolset validation",
+        "profile-aware session create toolset validation",
     )
     source = replace_once(
         source,
@@ -1567,8 +1591,8 @@ def _session_tool_progress_mode(sid: str) -> str:
     session: dict,
     text: Any,
     transport: Any,
-    enabled_toolsets=_TURN_TOOLSETS_UNSET,
-) -> None:
+    enabled_toolsets=_AGENT_RUN_TOOLSETS_UNSET,
+) -> bool:
 ''',
         "queued prompt toolset argument",
     )
@@ -1577,12 +1601,19 @@ def _session_tool_progress_mode(sid: str) -> str:
         '''    session["queued_prompt"] = {"text": text, "transport": transport}
 ''',
         '''    queued_toolsets = enabled_toolsets
-    if queued_toolsets is _TURN_TOOLSETS_UNSET and isinstance(existing, dict):
-        queued_toolsets = existing.get("enabled_toolsets", _TURN_TOOLSETS_UNSET)
+    if (
+        isinstance(existing, dict)
+        and existing.get("enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET)
+        != queued_toolsets
+    ):
+        return False
+    if queued_toolsets is _AGENT_RUN_TOOLSETS_UNSET and isinstance(existing, dict):
+        queued_toolsets = existing.get("enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET)
     queued_prompt = {"text": text, "transport": transport}
-    if queued_toolsets is not _TURN_TOOLSETS_UNSET:
+    if queued_toolsets is not _AGENT_RUN_TOOLSETS_UNSET:
         queued_prompt["enabled_toolsets"] = queued_toolsets
     session["queued_prompt"] = queued_prompt
+    return True
 ''',
         "queued prompt toolset storage",
     )
@@ -1598,7 +1629,7 @@ def _session_tool_progress_mode(sid: str) -> str:
     session: dict,
     text: Any,
     transport: Any,
-    enabled_toolsets=_TURN_TOOLSETS_UNSET,
+    enabled_toolsets=_AGENT_RUN_TOOLSETS_UNSET,
 ) -> dict | None:
 ''',
         "busy prompt toolset argument",
@@ -1609,7 +1640,7 @@ def _session_tool_progress_mode(sid: str) -> str:
 ''',
         '''    if (
         mode == "steer"
-        and enabled_toolsets in (_TURN_TOOLSETS_UNSET, None)
+        and enabled_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)
         and agent is not None
         and hasattr(agent, "steer")
     ):
@@ -1620,9 +1651,30 @@ def _session_tool_progress_mode(sid: str) -> str:
         source,
         '''        _enqueue_prompt(session, text, transport)
 ''',
-        '''        _enqueue_prompt(session, text, transport, enabled_toolsets)
+        '''        if not _enqueue_prompt(session, text, transport, enabled_toolsets):
+            return _err(
+                rid,
+                4009,
+                "queued prompt tool scope changed; retry after the current agent run",
+            )
 ''',
         "busy prompt queues toolsets",
+    )
+    source = replace_once(
+        source,
+        '''        if _session_uses_compute_host(session):
+            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+''',
+        '''        queued_agent_run_toolsets = queued.get(
+            "enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET
+        )
+        if (
+            _session_uses_compute_host(session)
+            and queued_agent_run_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)
+        ):
+            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+''',
+        "scoped queued prompt bypasses unscoped compute-host frame",
     )
     source = replace_once(
         source,
@@ -1630,9 +1682,9 @@ def _session_tool_progress_mode(sid: str) -> str:
             _run_prompt_submit(rid, sid, session, queued["text"])
 ''',
         '''        else:
-            _apply_turn_enabled_toolsets(
+            _apply_agent_run_enabled_toolsets(
                 session,
-                queued.get("enabled_toolsets", _TURN_TOOLSETS_UNSET),
+                queued.get("enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET),
             )
             _run_prompt_submit(rid, sid, session, queued["text"])
 ''',
@@ -1642,29 +1694,52 @@ def _session_tool_progress_mode(sid: str) -> str:
         source,
         '''    truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     session, err = _sess_nowait(params, rid)
+    if err:
+        return err
 ''',
         '''    truncate_user_ordinal = params.get("truncate_before_user_ordinal")
-    turn_toolsets = None
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent_run_toolsets = None
     if "enabled_toolsets" in params:
+        if session.get("profile_home") is not None and params.get("enabled_toolsets") is not None:
+            return _err(
+                rid,
+                4003,
+                "agent-run-scoped toolsets are unavailable under a named profile",
+            )
         try:
-            turn_toolsets = _normalize_turn_enabled_toolsets(
+            agent_run_toolsets = _normalize_agent_run_enabled_toolsets(
                 params.get("enabled_toolsets")
             )
         except ValueError as exc:
             return _err(rid, 4003, str(exc))
-    session, err = _sess_nowait(params, rid)
 ''',
-        "prompt toolset validation",
+        "profile-aware prompt toolset validation",
     )
     source = replace_once(
         source,
         '''        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
 ''',
         '''        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, turn_toolsets
+            rid, sid, session, text, busy_transport, agent_run_toolsets
         )
 ''',
         "busy prompt toolset forwarding",
+    )
+    source = replace_once(
+        source,
+        '''    if turn_isolation:
+        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+''',
+        '''    # The compute-host frame has no agent-run tool scope field. Keep
+    # explicitly scoped requests inline so a host cannot silently rebuild the
+    # broad tool surface. Unscoped requests retain configured isolation.
+    if turn_isolation and agent_run_toolsets is None:
+        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+''',
+        "scoped prompt bypasses unscoped compute-host frame",
     )
     source = replace_once(
         source,
@@ -1681,7 +1756,7 @@ def _session_tool_progress_mode(sid: str) -> str:
                 _clear_inflight_turn(session)
                 return
         try:
-            _apply_turn_enabled_toolsets(session, turn_toolsets)
+            _apply_agent_run_enabled_toolsets(session, agent_run_toolsets)
         except Exception as exc:
             _emit("error", sid, {"message": f"June tool setup failed: {exc}"})
             with session["history_lock"]:
@@ -1690,7 +1765,7 @@ def _session_tool_progress_mode(sid: str) -> str:
             return
         _run_prompt_submit(rid, sid, session, text)
 ''',
-        "prompt applies turn-scoped toolsets",
+        "prompt applies agent-run-scoped toolsets",
     )
     source = replace_once(
         source,
@@ -1707,7 +1782,7 @@ def _session_tool_progress_mode(sid: str) -> str:
             try:
                 from tools.approval import (
 ''',
-        '''            # A scoped Computer use turn has no slash command to run.
+        '''            # A scoped Computer use agent run has no slash command to run.
             # Starting its broad HermesCLI child here would reconnect every MCP
             # server and probe optional dependencies while the first model call
             # is in flight. command.dispatch already creates this worker lazily,

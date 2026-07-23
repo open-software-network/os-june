@@ -57,7 +57,7 @@ describe("June Hermes compatibility patch", () => {
     expect(patcher).toContain("tools_to_include.difference_update(resolved)");
     expect(protocolSmoke).toContain("verify_patch_state_machine");
     expect(protocolSmoke).toContain("verify_new_session_image_attach_is_immediate");
-    expect(protocolSmoke).toContain("verify_turn_scoped_toolsets");
+    expect(protocolSmoke).toContain("verify_agent_run_scoped_toolsets");
     expect(protocolSmoke).toContain("verify_tui_memory_deny_propagation");
     expect(protocolSmoke).toContain("verify_cross_process_config_writer");
     expect(protocolSmoke).toContain("verify_model_deny_wins");

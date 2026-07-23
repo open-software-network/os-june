@@ -277,17 +277,21 @@ outer June app as its separate drag source; it never tells the user to add the
 helper to that list. The private transport, helper parent authentication,
 capture execution, and app-owned broker policy are unchanged.
 
-## Addendum - turn-scoped tool exposure and driver prewarm (2026-07-23)
+## Addendum - agent-run-scoped tool exposure and driver prewarm (2026-07-23)
 
-An explicit request to use Computer use narrows the Hermes agent snapshot to
-the single `june_computer_use` MCP server for that turn. The desktop may only
-subtract names from the gateway process allowlist; the gateway rejects an
-attempt to add a toolset. It waits only for requested local MCP servers while
-unrelated MCP discovery continues in the process-wide background. A later
-ordinary turn restores the normal June allowlist by refreshing the existing
-agent snapshot, without rebuilding the agent or reconnecting MCP clients.
-The separate broad slash-command worker remains lazy for a scoped session and
-starts only if the user later dispatches a slash command.
+Under June's default profile, an explicit request to use Computer use narrows
+the Hermes agent snapshot to the single `june_computer_use` MCP server for that
+agent run. The desktop may only subtract names from the gateway process
+allowlist; the gateway rejects an attempt to add a toolset. Named profiles keep
+their own tool policy and reject this launch-profile scope. It waits only for
+requested local MCP servers while unrelated MCP discovery continues in the
+process-wide background. A later ordinary agent run restores the normal June
+allowlist by refreshing the existing agent snapshot, without rebuilding the
+agent or reconnecting MCP clients. Queued prompts with different scopes do not
+merge, and scoped prompts remain in-process until the optional compute-host
+frame can carry the same restriction. The separate broad slash-command worker
+remains lazy for a scoped session and starts only if the user later dispatches
+a slash command.
 
 June deliberately does not use Hermes' deferred tool-search bridge for this
 path. Computer use must remain a direct app-owned tool with its native approval

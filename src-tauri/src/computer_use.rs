@@ -1677,10 +1677,16 @@ pub async fn set_computer_use_grant(
     }
     store_grant(&app, request.enabled).await?;
     if !request.enabled {
+        state
+            .runtime_ready_state
+            .store(ready_state_value(false), Ordering::SeqCst);
         stop_inner(&app, &state).await;
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
     let status = status_inner(&app).await;
+    state
+        .runtime_ready_state
+        .store(ready_state_value(status.ready), Ordering::SeqCst);
     if status.ready {
         schedule_driver_prewarm(&app);
     }
@@ -1711,12 +1717,18 @@ pub async fn computer_use_request_permissions(
             "Computer use is temporarily unavailable for this June or macOS version.",
         ));
     }
+    state
+        .runtime_ready_state
+        .store(ready_state_value(false), Ordering::SeqCst);
     stop_inner(&app, &state).await;
     let path = bundled_driver_executable(&app)?;
     driver_version(&path).await?;
     let _ = probe_permissions(&path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
     let status = status_inner(&app).await;
+    state
+        .runtime_ready_state
+        .store(ready_state_value(status.ready), Ordering::SeqCst);
     if status.ready {
         schedule_driver_prewarm(&app);
     }

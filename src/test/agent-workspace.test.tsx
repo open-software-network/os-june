@@ -8144,7 +8144,7 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
-  it("narrows an explicit Computer use turn to the app-owned toolset", async () => {
+  it("narrows an explicit Computer use agent run to the app-owned toolset", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
       JSON.stringify({
@@ -10293,13 +10293,13 @@ describe("AgentWorkspace", () => {
 
     window.dispatchEvent(
       new CustomEvent(AGENT_NEW_SESSION_EVENT, {
-        detail: { prompt: "draft a research brief" },
+        detail: { prompt: "Use Computer use to draft a research brief" },
       }),
     );
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "draft a research brief",
+        title: "Use Computer use to draft a research brief",
         cols: 96,
         // No `model`: the composer's model is June's GLOBAL generation
         // selection, and sending it as the per-session override would bypass
@@ -10307,6 +10307,10 @@ describe("AgentWorkspace", () => {
         profile: "research",
       }),
     );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-2",
+      text: "Use Computer use to draft a research brief",
+    });
     await waitFor(() =>
       expect(mocks.assignSessionToProfile).toHaveBeenCalledWith("session-2", "research"),
     );
