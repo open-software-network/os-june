@@ -2310,6 +2310,14 @@ input:focus-visible,
   margin-block: 0;
 }
 
+/* Exchange rhythm: a question and its answer sit snug, but a NEW message
+ * after June's reply opens a fuller breath - conversations read in beats,
+ * not as one even-spaced list. (Day markers carry their own margins at day
+ * boundaries, where this adjacency breaks anyway.) */
+.agent-timeline[data-home="true"] .agent-assistant-turn + .agent-user-turn {
+  margin-top: var(--sp-6);
+}
+
 /* The bubble's shadow lives on the UNMASKED parent: masking applies after
  * filtering, so a drop-shadow on the masked body itself is erased outside
  * the silhouette (the same trap as clip-path clipping shadows). Filtering
