@@ -118,7 +118,7 @@ describe("pending action card styles", () => {
     expect(split).toContain("padding: 2px;");
     expect(split).toContain("gap: 2px;");
     // Disabled dims the whole control.
-    expect(cssRuleFor(".agent-approval-split:has(:disabled)")).toContain("opacity: 0.55;");
+    expect(cssRuleFor(".agent-approval-split-disabled")).toContain("opacity: 0.55;");
     // Approve carries the solid gray fill (--surface-subtle), firming to --muted
     // on hover — no green, no dark primary fill.
     const approve = cssRuleFor(".agent-approval-approve");
@@ -214,10 +214,9 @@ describe("pending action card styles", () => {
   it("reserves timestamp clearance below a card-bearing turn only", () => {
     // A turn that holds an action card gets padding-bottom so the absolutely
     // positioned timestamp row (anchored at the turn body floor) clears the
-    // card's bottom border. Scoped via :has() so text turns are untouched.
-    const cleared = cssRuleFor(
-      ".agent-assistant-turn-body:has(.agent-approval-card),\n.agent-assistant-turn-body:has(.agent-clarify-card)",
-    );
+    // card's bottom border. React marks only card-bearing turns, so text turns
+    // remain untouched without an ancestor-sensitive selector.
+    const cleared = cssRuleFor(".agent-assistant-turn-body-action-card");
     expect(cleared).toContain("padding-bottom: var(--sp-2);");
     // The base turn body carries no such padding (text turns stay tight).
     expect(cssRuleFor(".agent-turn-actions-inner")).toContain("padding-top: var(--sp-px);");

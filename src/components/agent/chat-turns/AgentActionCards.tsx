@@ -131,6 +131,12 @@ export type AgentCliAccessCardProps = {
   onEnable: () => void;
 };
 
+type DismissibleAccessCardProps = {
+  /** Controlled by the turn row when its owner needs to mirror card presence. */
+  dismissed?: boolean;
+  onDismiss?: () => void;
+};
+
 /** June asked to enable "Agent CLI access" via the literal token its soul
  * teaches ([REQUEST:AGENT_CLI_ACCESS]). The agent can never flip the setting
  * itself — the flag file sits outside every sandbox write root — so this
@@ -138,8 +144,13 @@ export type AgentCliAccessCardProps = {
  * live setting rather than stored per message: a revisited transcript shows
  * "Enabled" once the grant is on, and re-offers the choice while it is off.
  * Mirrors the approval card chrome. */
-export function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCardProps }) {
-  const [dismissed, setDismissed] = useState(false);
+export function AgentCliAccessCard({
+  cliAccess,
+  dismissed: controlledDismissed,
+  onDismiss,
+}: { cliAccess?: AgentCliAccessCardProps } & DismissibleAccessCardProps) {
+  const [locallyDismissed, setLocallyDismissed] = useState(false);
+  const dismissed = controlledDismissed ?? locallyDismissed;
   const enabled = cliAccess?.enabled === true;
   const resolved = enabled || dismissed;
   const busy = Boolean(cliAccess?.submitting);
@@ -182,7 +193,10 @@ export function AgentCliAccessCard({ cliAccess }: { cliAccess?: AgentCliAccessCa
             type="button"
             className="btn btn-ghost agent-approval-deny"
             disabled={busy}
-            onClick={() => setDismissed(true)}
+            onClick={() => {
+              if (controlledDismissed === undefined) setLocallyDismissed(true);
+              onDismiss?.();
+            }}
           >
             Not now
           </button>
@@ -260,10 +274,11 @@ export function BrowserApprovalCard({
  * grant is on, and re-offers the choice while it is off. */
 export function AgentBrowserAccessCard({
   browserAccess,
-}: {
-  browserAccess?: AgentBrowserAccessCardProps;
-}) {
-  const [dismissed, setDismissed] = useState(false);
+  dismissed: controlledDismissed,
+  onDismiss,
+}: { browserAccess?: AgentBrowserAccessCardProps } & DismissibleAccessCardProps) {
+  const [locallyDismissed, setLocallyDismissed] = useState(false);
+  const dismissed = controlledDismissed ?? locallyDismissed;
   const enabled = browserAccess?.enabled === true;
   const resolved = enabled || dismissed;
   const busy = Boolean(browserAccess?.submitting);
@@ -306,7 +321,10 @@ export function AgentBrowserAccessCard({
             type="button"
             className="btn btn-ghost agent-approval-deny"
             disabled={busy}
-            onClick={() => setDismissed(true)}
+            onClick={() => {
+              if (controlledDismissed === undefined) setLocallyDismissed(true);
+              onDismiss?.();
+            }}
           >
             Not now
           </button>

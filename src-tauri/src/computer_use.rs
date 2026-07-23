@@ -54,6 +54,9 @@ const GRANT_FILE_NAME: &str = "computer-use-grant-v1";
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 const DRIVER_CALL_TIMEOUT: Duration = Duration::from_secs(45);
 const DRIVER_START_TIMEOUT: Duration = Duration::from_secs(12);
+const EXTERNAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const SHUTDOWN_MUTEX_TIMEOUT: Duration = Duration::from_millis(250);
+const DRIVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 const DRIVER_MAX_LINE_BYTES: usize = 24 * 1024 * 1024;
 const SCREENSHOT_MAX_BYTES: usize = 12 * 1024 * 1024;
 const DEFAULT_MAX_ELEMENTS: usize = 100;
@@ -324,16 +327,15 @@ impl DriverClient {
         }
         let socket_path = socket_dir.join("driver.sock");
         let launch = driver_launch_spec(path, &socket_path, &capability, permission_prompt)?;
-        let output = driver_command(&launch.program)
-            .args(&launch.args)
-            .output()
-            .await
-            .map_err(|error| {
-                AppError::new(
-                    "computer_use_driver_start_failed",
-                    format!("Could not launch the bundled Computer use driver. {error}"),
-                )
-            })?;
+        let mut command = driver_command(&launch.program);
+        command.args(&launch.args);
+        let output = bounded_command_output(
+            command,
+            EXTERNAL_COMMAND_TIMEOUT,
+            "computer_use_driver_start_failed",
+            "Could not launch the bundled Computer use driver.",
+        )
+        .await?;
         if !output.status.success() {
             let _ = std::fs::remove_dir_all(&socket_dir);
             return Err(AppError::new(
@@ -536,7 +538,7 @@ impl DriverClient {
     }
 
     async fn stop(mut self) {
-        let _ = self.stdin.shutdown().await;
+        let _ = tokio::time::timeout(DRIVER_SHUTDOWN_TIMEOUT, self.stdin.shutdown()).await;
         self.terminate();
         let _ = tokio::fs::remove_dir_all(&self.socket_dir).await;
     }
@@ -912,6 +914,19 @@ fn driver_command(path: &Path) -> Command {
     command
 }
 
+async fn bounded_command_output(
+    mut command: Command,
+    timeout: Duration,
+    code: &'static str,
+    message: &'static str,
+) -> Result<std::process::Output, AppError> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| AppError::new(code, format!("{message} The command timed out.")))?
+        .map_err(|error| AppError::new(code, format!("{message} {error}")))
+}
+
 fn should_scrub_driver_env(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
     name.starts_with("CUA_DRIVER_RS_")
@@ -1118,11 +1133,15 @@ pub(crate) unsafe fn begin_permission_drag(
 }
 
 async fn driver_version(path: &Path) -> Result<String, AppError> {
-    let output = driver_command(path)
-        .arg("--version")
-        .output()
-        .await
-        .map_err(|error| AppError::new("computer_use_driver_version_failed", error.to_string()))?;
+    let mut command = driver_command(path);
+    command.arg("--version");
+    let output = bounded_command_output(
+        command,
+        EXTERNAL_COMMAND_TIMEOUT,
+        "computer_use_driver_version_failed",
+        "The bundled Computer use driver version check failed.",
+    )
+    .await?;
     if !output.status.success() {
         return Err(AppError::new(
             "computer_use_driver_version_failed",
@@ -1209,8 +1228,8 @@ async fn read_permission_probe(
 async fn rollout_gate() -> RolloutGate {
     let cache = ROLLOUT_GATE.get_or_init(|| Mutex::new(None));
     let refresh = ROLLOUT_REFRESH.get_or_init(|| AsyncMutex::new(()));
-    rollout_gate_with_fetch(cache, refresh, || {
-        crate::june_api::computer_use_rollout(macos_version())
+    rollout_gate_with_fetch(cache, refresh, || async {
+        crate::june_api::computer_use_rollout(macos_version().await).await
     })
     .await
 }
@@ -1284,33 +1303,40 @@ where
     gate
 }
 
-fn macos_version() -> &'static str {
-    MACOS_VERSION
-        .get_or_init(|| {
-            #[cfg(target_os = "macos")]
-            {
-                std::process::Command::new("/usr/bin/sw_vers")
-                    .arg("-productVersion")
-                    .output()
-                    .ok()
-                    .filter(|output| output.status.success())
-                    .and_then(|output| String::from_utf8(output.stdout).ok())
-                    .map(|version| version.trim().to_string())
-                    .filter(|version| {
-                        !version.is_empty()
-                            && version.len() <= 64
-                            && version
-                                .chars()
-                                .all(|character| character.is_ascii_digit() || character == '.')
-                    })
-                    .unwrap_or_else(|| "unknown".to_string())
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                "unsupported".to_string()
-            }
+async fn macos_version() -> &'static str {
+    if let Some(version) = MACOS_VERSION.get() {
+        return version.as_str();
+    }
+
+    #[cfg(target_os = "macos")]
+    let version = {
+        let mut command = Command::new("/usr/bin/sw_vers");
+        command.arg("-productVersion");
+        bounded_command_output(
+            command,
+            EXTERNAL_COMMAND_TIMEOUT,
+            "computer_use_macos_version_failed",
+            "The macOS version check failed.",
+        )
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|version| version.trim().to_string())
+        .filter(|version| {
+            !version.is_empty()
+                && version.len() <= 64
+                && version
+                    .chars()
+                    .all(|character| character.is_ascii_digit() || character == '.')
         })
-        .as_str()
+        .unwrap_or_else(|| "unknown".to_string())
+    };
+    #[cfg(not(target_os = "macos"))]
+    let version = "unsupported".to_string();
+
+    let _ = MACOS_VERSION.set(version);
+    MACOS_VERSION.get().map(String::as_str).unwrap_or("unknown")
 }
 
 async fn status_inner(app: &AppHandle) -> ComputerUseStatus {
@@ -1604,7 +1630,7 @@ pub async fn computer_use_request_permissions(
 
 pub(crate) async fn shutdown(app: &AppHandle) {
     let state = app.state::<ComputerUseState>();
-    stop_inner(app, &state).await;
+    stop_for_shutdown(app, &state).await;
 }
 
 #[tauri::command]
@@ -1745,7 +1771,53 @@ async fn stop_inner(app: &AppHandle, state: &ComputerUseState) {
     }
     clear_app_authorizations(state);
     clear_capture_dir(app);
-    let _ = set_june_stage_companion(app, false);
+    let _ = set_june_stage_companion(app, false).await;
+}
+
+async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
+    let _cleanup = CleanupInProgress::begin(&state.cleanup_in_progress);
+    if let Some(mut runs) =
+        crate::shutdown::try_lock_for(&state.attended_runs, SHUTDOWN_MUTEX_TIMEOUT)
+    {
+        runs.clear();
+    } else {
+        tracing::warn!("computer use shutdown timed out acquiring the run lock");
+    }
+    state.epoch.fetch_add(1, Ordering::SeqCst);
+    crate::computer_use_cursor::hide(app);
+
+    let entries = crate::shutdown::try_lock_for(&state.approvals, SHUTDOWN_MUTEX_TIMEOUT)
+        .map(|mut approvals| {
+            approvals
+                .drain()
+                .map(|(_, entry)| entry)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for entry in entries {
+        let _ = entry.responder.send(false);
+    }
+
+    force_stop_pid(state.driver_pid.swap(0, Ordering::SeqCst));
+    if let Some(mut driver) =
+        crate::shutdown::lock_async_for(&state.driver, SHUTDOWN_MUTEX_TIMEOUT).await
+    {
+        if let Some(driver) = driver.take() {
+            let _ = tokio::time::timeout(DRIVER_SHUTDOWN_TIMEOUT, driver.stop()).await;
+        }
+    } else {
+        tracing::warn!("computer use shutdown timed out acquiring the driver lock");
+    }
+    if let Some(mut target) = crate::shutdown::try_lock_for(&state.target, SHUTDOWN_MUTEX_TIMEOUT) {
+        *target = None;
+    }
+    if let Some(mut authorized_apps) =
+        crate::shutdown::try_lock_for(&state.authorized_apps, SHUTDOWN_MUTEX_TIMEOUT)
+    {
+        authorized_apps.clear();
+    }
+    clear_capture_dir(app);
+    let _ = set_june_stage_companion(app, false).await;
 }
 
 /// Ends resources for a completed attended run without erasing a newer run
@@ -1771,7 +1843,7 @@ async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64
     }
     clear_app_authorizations(state);
     clear_capture_dir(app);
-    let _ = set_june_stage_companion(app, false);
+    let _ = set_june_stage_companion(app, false).await;
 }
 
 fn clear_app_authorizations(state: &ComputerUseState) {
@@ -1783,10 +1855,7 @@ fn clear_app_authorizations(state: &ComputerUseState) {
 fn force_stop_pid(_pid: u32) {
     #[cfg(target_os = "macos")]
     if _pid > 0 {
-        let _ = std::process::Command::new("/bin/kill")
-            .arg("-KILL")
-            .arg(_pid.to_string())
-            .status();
+        let _ = unsafe { libc::kill(_pid as libc::pid_t, libc::SIGKILL) };
     }
 }
 
@@ -2227,7 +2296,7 @@ fn native_stage_join_verified(result: &Value) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
+async fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
 
     let main = app.get_webview_window("main").ok_or_else(|| {
@@ -2250,7 +2319,7 @@ fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), AppErr
     }
 
     let window = handle as usize;
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let (sender, receiver) = oneshot::channel();
     app.run_on_main_thread(move || {
         let window = unsafe { &*(window as *const NSWindow) };
         if enabled {
@@ -2277,17 +2346,25 @@ fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), AppErr
             format!("June could not prepare its window for Computer use. {error}"),
         )
     })?;
-    receiver.recv_timeout(Duration::from_secs(1)).map_err(|_| {
-        AppError::new(
-            "computer_use_window_restore_failed",
-            "June could not prepare its window for Computer use.",
-        )
-    })?;
+    tokio::time::timeout(Duration::from_secs(1), receiver)
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "computer_use_window_restore_failed",
+                "June could not prepare its window for Computer use.",
+            )
+        })?
+        .map_err(|_| {
+            AppError::new(
+                "computer_use_window_restore_failed",
+                "June could not prepare its window for Computer use.",
+            )
+        })?;
     Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn set_june_stage_companion(_app: &AppHandle, _enabled: bool) -> Result<(), AppError> {
+async fn set_june_stage_companion(_app: &AppHandle, _enabled: bool) -> Result<(), AppError> {
     Ok(())
 }
 
@@ -2304,7 +2381,7 @@ async fn join_target_to_june_stage(
         let _ = main.unminimize();
         let _ = main.set_focus();
     }
-    set_june_stage_companion(app, true)?;
+    set_june_stage_companion(app, true).await?;
     tokio::time::sleep(Duration::from_millis(250)).await;
     ensure_task_generation_current(state, task_generation)?;
     let stage_join_result = driver_call(

@@ -191,10 +191,22 @@ pub async fn fetch_update(
     let channel = current_channel(&app);
     let endpoint = tauri::Url::parse(channel.endpoint())
         .map_err(|error| AppError::new("update_check_failed", error.to_string()))?;
-    let update = app
+    let updater = app
         .updater_builder()
         .endpoints(vec![endpoint])
-        .map_err(|error| AppError::new("update_check_failed", error.to_string()))?
+        .map_err(|error| AppError::new("update_check_failed", error.to_string()))?;
+    // On Windows the updater invokes this hook and then calls
+    // `std::process::exit(0)` from `Update::install_inner`; no ExitRequested
+    // event follows. Override Tauri's default hook with June's bounded cleanup,
+    // which calls `cleanup_before_exit` itself as its final step.
+    #[cfg(windows)]
+    let updater = {
+        let exit_app = app.clone();
+        updater.on_before_exit(move || {
+            crate::shutdown::cleanup_before_updater_exit(&exit_app);
+        })
+    };
+    let update = updater
         // The comparator is the sole downgrade gate; routing the default path
         // through `should_update` too keeps all install-decision logic in one
         // tested place. With reconcile=false this is exactly `remote > current`.
@@ -260,8 +272,8 @@ pub async fn install_update(
     Ok(())
 }
 
-/// Relaunches June after an in-app update has been staged, running the same
-/// child-process teardown app quit does *before* the process restarts.
+/// Relaunches June after an in-app update has been staged through the same
+/// idempotent shutdown coordinator used by ordinary app quit.
 ///
 /// The plugin `relaunch()` (and `AppHandle::restart()` on the main thread)
 /// restarts without a guaranteed pass through the `RunEvent::Exit` cleanup that
@@ -270,21 +282,13 @@ pub async fn install_update(
 /// CGEventTap and its stdio — and the relaunched instance then cannot bring up a
 /// clean helper, so every helper-reported permission (dictation mic and
 /// accessibility) reads missing even though the grants are intact (JUN-338).
-/// Tearing down explicitly here guarantees the helpers and Hermes runtime are
-/// gone before the new instance starts. The final restart is dispatched to the
-/// main thread so Tauri restarts directly instead of delivering `RunEvent::Exit`
-/// and synchronously repeating the full cleanup on the UI event loop. That
-/// duplicate exit path can leave the window parked in its disabled relaunching
-/// state while a background service is still winding down.
+/// The coordinator latches Restart, performs teardown off the main event loop,
+/// and schedules the final restart on the main thread after cleanup or its hard
+/// aggregate deadline. A concurrent quit request shares the same cleanup and
+/// cannot replace the already-latched restart.
 #[tauri::command]
 pub async fn relaunch_for_update(app: AppHandle) -> Result<(), AppError> {
-    crate::dictation::stop_helper(&app);
-    crate::computer_use::shutdown(&app).await;
-    crate::hermes_bridge::shutdown(&app).await;
-
-    let restart_app = app.clone();
-    app.run_on_main_thread(move || restart_app.restart())
-        .map_err(|error| AppError::new("update_relaunch_failed", error.to_string()))
+    crate::shutdown::request_restart(&app)
 }
 
 #[tauri::command]

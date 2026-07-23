@@ -29,6 +29,7 @@ pub mod obsidian;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
+mod shutdown;
 pub mod theme_icon;
 pub mod updates;
 pub mod video_download_url;
@@ -409,6 +410,7 @@ pub fn run() {
         .manage(RecordingPresenceBoundsState::default())
         .manage(hermes_bridge::HermesBridge::default())
         .manage(computer_use::ComputerUseState::default())
+        .manage(shutdown::ShutdownCoordinator::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(extension_host::ExtensionHost::default())
         .manage(connectors::ConnectFlow::default())
@@ -443,11 +445,13 @@ pub fn run() {
         .build(context)
         .expect("failed to build June")
         .run(|app, event| match event {
-            tauri::RunEvent::Exit => {
-                dictation::stop_helper(app);
-                tauri::async_runtime::block_on(computer_use::shutdown(app));
-                tauri::async_runtime::block_on(hermes_bridge::shutdown(app));
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                shutdown::handle_exit_requested(app, code, &api);
             }
+            // Tao emits only Exit for macOS logout/application termination.
+            // This is a bounded synchronous backstop when ExitRequested never
+            // had a chance to latch the coordinator.
+            tauri::RunEvent::Exit => shutdown::handle_exit(app),
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}

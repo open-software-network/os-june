@@ -2251,10 +2251,13 @@ function AgentSessionRow({
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
   const time = formatSessionTime(sessionTimestamp(session), dateFormat);
   const menuRef = useRef<HTMLButtonElement>(null);
+  const [menuFocused, setMenuFocused] = useState(false);
 
   return (
     <article
-      className="note-row agent-sidebar-row"
+      className={`note-row agent-sidebar-row${
+        menuFocused ? " agent-sidebar-row-menu-focused" : ""
+      }`}
       data-selected={selected}
       data-status={status}
       data-menu-open={menuOpen || undefined}
@@ -2317,6 +2320,8 @@ function AgentSessionRow({
           aria-haspopup="menu"
           aria-expanded={menuOpen}
           disabled={deleting}
+          onFocus={(event) => setMenuFocused(event.currentTarget.matches(":focus-visible"))}
+          onBlur={() => setMenuFocused(false)}
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
