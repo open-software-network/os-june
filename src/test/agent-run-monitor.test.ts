@@ -425,6 +425,7 @@ describe("agent run monitor", () => {
   });
 
   it("resets heartbeat misses after a successful active-list response", async () => {
+    // timeout, timeout, success, timeout, timeout must not disconnect.
     let activeListCalls = 0;
     monitorMocks.request.mockImplementation((method: string) => {
       if (method !== "session.active_list") return Promise.resolve({});
