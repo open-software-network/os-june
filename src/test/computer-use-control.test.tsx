@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -155,6 +155,88 @@ describe("ComputerUseControl", () => {
     await waitFor(() => expect(tauriMocks.openPrivacySettings).toHaveBeenCalledTimes(2));
     expect(tauriMocks.openPrivacySettings).toHaveBeenLastCalledWith("screenRecording");
     await screen.findByText("Ready");
+  });
+
+  it("waits for each status poll before scheduling the next one", async () => {
+    vi.useFakeTimers();
+    try {
+      const incomplete = status({ grantEnabled: true, state: "permission_missing" });
+      let finishPoll: ((value: ComputerUseStatusDto) => void) | undefined;
+      tauriMocks.computerUseStatus
+        .mockResolvedValueOnce(incomplete)
+        .mockImplementationOnce(
+          () =>
+            new Promise<ComputerUseStatusDto>((resolve) => {
+              finishPoll = resolve;
+            }),
+        )
+        .mockResolvedValue(incomplete);
+
+      render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        finishPoll?.(incomplete);
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("pauses status polling while the settings page is hidden", async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = "visible";
+    const visibilitySpy = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockImplementation(() => visibility);
+    try {
+      const incomplete = status({ grantEnabled: true, state: "permission_missing" });
+      tauriMocks.computerUseStatus.mockResolvedValue(incomplete);
+      render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(2);
+
+      visibility = "hidden";
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(2);
+
+      visibility = "visible";
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+        await Promise.resolve();
+      });
+      expect(tauriMocks.computerUseStatus).toHaveBeenCalledTimes(3);
+    } finally {
+      visibilitySpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("coalesces a permission probe across an unmount and remount", async () => {
