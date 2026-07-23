@@ -3687,9 +3687,18 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
             // Recording finalization, transcript persistence, and UI polling
             // legitimately overlap. WAL lets readers observe progress without
             // blocking the durable job transaction (or vice versa).
-            .journal_mode(SqliteJournalMode::Wal);
+            .journal_mode(SqliteJournalMode::Wal)
+            // WAL still allows only one writer at a time; writers wait this
+            // long for the lock before SQLITE_BUSY. Pinned explicitly (sqlx
+            // defaults to the same 5s) so lock-wait behavior can't drift
+            // under an upstream sqlx bump.
+            .busy_timeout(Duration::from_secs(5));
             let pool = SqlitePoolOptions::new()
                 .max_connections(5)
+                // Tightened from sqlx's 30s default so a stuck writer
+                // starving the pool surfaces as an error in bounded time
+                // instead of stalling callers for half a minute.
+                .acquire_timeout(Duration::from_secs(10))
                 .connect_with(options)
                 .await
                 .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?;
