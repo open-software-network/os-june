@@ -648,6 +648,7 @@ export function AgentWorkspace({
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const [composerHasContent, setComposerHasContent] = useState(Boolean(draft.trim()));
   const [composerClearance, setComposerClearance] = useState(0);
   // A note reference to seed once the editor is ready, set by startNewTask for
   // note-level "Ask June" entry points.
@@ -1162,7 +1163,7 @@ export function AgentWorkspace({
     composerModelSearchRef,
     composerModelTriggerRef,
     composerSteerDemo,
-    draft,
+    composerHasContent,
     errorState,
     fullModeDraftRef,
     gallerySections,
@@ -1592,6 +1593,7 @@ export function AgentWorkspace({
     setAttachMenuOpen,
     setAttachments,
     setCategory,
+    setComposerHasContent,
     setDraft,
     setError,
     setImportingFiles,
@@ -2059,6 +2061,7 @@ export function AgentWorkspace({
   }
 
   function clearComposerCommandDraft(commandText: string) {
+    if (!composerEditorRef.current?.flushPendingChange()) return;
     if (draftRef.current.trim() !== commandText.trim()) return;
     if (categoryRef.current) return;
     composerEditorRef.current?.clear();
@@ -2087,6 +2090,16 @@ export function AgentWorkspace({
 
   let submitImplementation: (event?: FormEvent) => Promise<void>;
   async function submit(event?: FormEvent) {
+    const liveComposer = composerEditorRef.current;
+    if (
+      liveComposer &&
+      !liveComposer.flushPendingChange({
+        changeKey: composerDraftKeyRef.current,
+      })
+    ) {
+      event?.preventDefault();
+      return;
+    }
     return submitImplementation(event);
   }
 
@@ -2519,9 +2532,9 @@ export function AgentWorkspace({
   // remains read-only; transport state stays out of the visual scan line.
   const { renderSteerCard, renderQueuedAttachmentFollowUp } = createQueuedFollowUpRenderers({
     attachments,
+    composerHasContent,
     composerEditorRef,
     deliverQueuedAttachmentFollowUp,
-    draft,
     draftRef,
     editQueuedAttachmentFollowUp,
     queuedAttachmentFollowUpsRef,
@@ -2720,7 +2733,7 @@ export function AgentWorkspace({
   // hovering the chips, has started typing, or has the window backgrounded;
   // never cycles under reduced motion.
   useAgentHeroRotation({
-    draftRef,
+    composerHasContent,
     heroChipsHoverRef,
     heroMode,
     setHeroChipPhase,
@@ -2761,17 +2774,14 @@ export function AgentWorkspace({
     beginAttachmentPreparation,
     cancelComposerDispatch,
     captureSessionModelTarget,
-    category,
     categoryRef,
     clearComposerDraft,
     composerDispatchOrderRef,
     composerDispatchWasInvalidated,
     composerDraftKeyRef,
     composerEditorRef,
-    composerInputSignature,
     composerSizeProceedSignatureRef,
     deferredFailedIssueReportDeliverySessionIdsRef,
-    draft,
     draftRef,
     enqueueAttachmentFollowUp,
     enqueueFailedComposerFollowUp,
@@ -2781,7 +2791,6 @@ export function AgentWorkspace({
     generationModels,
     handleBuiltinComposerSlashCommand,
     heroMode,
-    imageSlashBlockedByModel,
     importingFiles,
     newSessionModeRef,
     pendingSteerBySessionIdRef,
@@ -2826,6 +2835,8 @@ export function AgentWorkspace({
     composerBoxRef,
     composerDraftKeyRef,
     composerEditorRef,
+    composerHasContent,
+    setComposerHasContent,
     onComposerFocusChange: handleComposerFocusChange,
     composerInSteerState,
     composerModelFlyout,
@@ -2839,7 +2850,6 @@ export function AgentWorkspace({
     composerTiptapEditorRef,
     confirmUnrestricted,
     creditActionsDisabledReason,
-    draft,
     draftRef,
     dropActive,
     editOversizeComposerInput,
@@ -3018,11 +3028,11 @@ export function AgentWorkspace({
     compactSessionId,
     composer,
     composerClearance,
+    composerHasContent,
     compressSessionContext,
     deleteSelectedHermesSession,
     detailContent,
     downloadArtifact,
-    draft,
     fetchSessionUsage,
     galleryErrors,
     generationModel,

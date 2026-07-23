@@ -1636,7 +1636,16 @@ describe("AgentWorkspace", () => {
     ).toHaveLength(1);
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.steer", expect.anything());
 
-    await user.click(screen.getByRole("button", { name: "Edit queued message" }));
+    await user.type(composer, "keep my new draft");
+    const editQueuedMessage = screen.getByRole("button", { name: "Edit queued message" });
+    expect(editQueuedMessage).toBeDisabled();
+    expect(editQueuedMessage).toHaveAttribute("title", "Clear the composer before editing");
+    expect(composer).toHaveTextContent("keep my new draft");
+    expect(screen.getByText("review the brief next")).toBeInTheDocument();
+
+    await user.clear(composer);
+    expect(editQueuedMessage).toBeEnabled();
+    await user.click(editQueuedMessage);
     expect(screen.queryByText("Up next")).toBeNull();
     expect(composer).toHaveTextContent("review the brief next");
     expect(screen.getByText("brief.pdf")).toBeInTheDocument();
@@ -12079,6 +12088,58 @@ describe("AgentWorkspace", () => {
     );
     expect(await screen.findByText("Q2 report.pdf")).toBeInTheDocument();
     expect(composer.textContent).toBe("");
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
+      false,
+    );
+  });
+
+  it("keeps text typed while a slash-command file import is pending", async () => {
+    let resolveImport:
+      | ((file: {
+          name: string;
+          path: string;
+          rootLabel: string;
+          size: number;
+          previewDataUrl: null;
+        }) => void)
+      | undefined;
+    mocks.importHermesBridgeFile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveImport = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox");
+    const command = '/file "/Users/alex/Desktop/Q2 report.pdf"';
+    await user.type(composer, command);
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.importHermesBridgeFile).toHaveBeenCalledWith(
+        "/Users/alex/Desktop/Q2 report.pdf",
+      ),
+    );
+
+    await user.type(composer, " keep these instructions");
+    const liveText = composer.textContent;
+    await act(async () => {
+      resolveImport?.({
+        name: "Q2 report.pdf",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/Q2 report.pdf",
+        rootLabel: "Workspace",
+        size: 1234,
+        previewDataUrl: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByText("Q2 report.pdf")).toBeInTheDocument();
+    expect(composer.textContent).toBe(liveText);
+    expect(composer).toHaveTextContent('/file "/Users/alex/Desktop/Q2 report.pdf"');
+    expect(composer).toHaveTextContent("keep these instructions");
     expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
       false,
     );

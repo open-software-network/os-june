@@ -28,6 +28,7 @@ export type createComposerDraftActionsDependencies = {
   setAttachMenuOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setAttachments: React.Dispatch<React.SetStateAction<AgentAttachment[]>>;
   setCategory: React.Dispatch<React.SetStateAction<ReportCategory | null>>;
+  setComposerHasContent: React.Dispatch<React.SetStateAction<boolean>>;
   setDraft: React.Dispatch<React.SetStateAction<string>>;
   setError: (message: string | null, options?: AgentWorkspaceErrorOptions) => void;
   setImportingFiles: React.Dispatch<React.SetStateAction<boolean>>;

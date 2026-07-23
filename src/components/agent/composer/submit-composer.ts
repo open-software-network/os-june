@@ -5,9 +5,13 @@ import { messageFromError } from "../../../lib/errors";
 import { categoryPrompt } from "../../../lib/issue-report-prompt";
 import { ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION } from "./reportCategory";
 import { prepareProjectPrompt } from "../../../lib/agent-project-context";
+import { parseBuiltinComposerSlashCommand } from "../../../lib/agent-composer-slash-commands";
+import { IMAGE_GENERATION_ENABLED } from "../../../lib/feature-flags";
+import { modelSupportsImageInput } from "../../../lib/model-privacy";
 import type { PendingIssueReport } from "../agent-session-continuity";
 import { AttachBlockedError } from "./media-slash-persistence";
 import { type PendingSteer, type PreparedComposerSubmission } from "./follow-up-queue";
+import { composerInputSignatureFor } from "./composer-input-helpers";
 import {
   appendIssueReportFollowUp,
   dispatchIssueReportFollowUpSubmitFailed,
@@ -28,17 +32,14 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
     beginAttachmentPreparation,
     cancelComposerDispatch,
     captureSessionModelTarget,
-    category,
     categoryRef,
     clearComposerDraft,
     composerDispatchOrderRef,
     composerDispatchWasInvalidated,
     composerDraftKeyRef,
     composerEditorRef,
-    composerInputSignature,
     composerSizeProceedSignatureRef,
     deferredFailedIssueReportDeliverySessionIdsRef,
-    draft,
     draftRef,
     enqueueAttachmentFollowUp,
     enqueueFailedComposerFollowUp,
@@ -48,7 +49,6 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
     generationModels,
     handleBuiltinComposerSlashCommand,
     heroMode,
-    imageSlashBlockedByModel,
     importingFiles,
     newSessionModeRef,
     pendingSteerBySessionIdRef,
@@ -81,14 +81,30 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    const message = draft.trim();
+    const message = draftRef.current.trim();
+    const reportCategory = categoryRef.current;
+    const submittedComposerInputSignature = composerInputSignatureFor({
+      message,
+      category: reportCategory,
+      attachments,
+      model: generationModel,
+    });
+    const submittedSlashCommand = parseBuiltinComposerSlashCommand(message);
+    const submittedGenerationModel = generationModel
+      ? generationModels.find((model) => model.id === generationModel.id)
+      : undefined;
+    const submittedImageSlashBlockedByModel =
+      IMAGE_GENERATION_ENABLED &&
+      submittedSlashCommand?.name === "image" &&
+      !!submittedGenerationModel &&
+      !modelSupportsImageInput(submittedGenerationModel);
     if (
       (!message && !attachments.length) ||
       submitting ||
       importingFiles ||
       textActionsDisabledReason ||
       selectedHermesSessionIsProvisional ||
-      imageSlashBlockedByModel
+      submittedImageSlashBlockedByModel
     )
       return;
     // This is the user-visible Send boundary. Skill expansion, file reads, and
@@ -134,7 +150,7 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
     }
     const attachmentQueueSessionId =
       attachments.length > 0 &&
-      !category &&
+      !reportCategory &&
       !newSessionModeRef.current &&
       selectedHermesSessionId &&
       workingSessionIdsRef.current.has(selectedHermesSessionId)
@@ -167,7 +183,7 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
       }
       const sizeWarning = oversizedComposerInputWarning({
         content: sizeEstimateContent(prepared.runtimeContent, attachmentQueueSessionId),
-        inputSignature: composerInputSignature,
+        inputSignature: submittedComposerInputSignature,
         attachments,
         model: generationModel,
         models: generationModels,
@@ -201,14 +217,14 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
     if (
       message &&
       !attachments.length &&
-      !category &&
+      !reportCategory &&
       !newSessionModeRef.current &&
       selectedHermesSessionId &&
       workingSessionIdsRef.current.has(selectedHermesSessionId)
     ) {
       const steerSizeWarning = oversizedComposerInputWarning({
         content: message,
-        inputSignature: composerInputSignature,
+        inputSignature: submittedComposerInputSignature,
         attachments: [],
         model: generationModel,
         models: generationModels,
@@ -274,7 +290,6 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
     // The composer's category chip makes this a report: wrap the prompt to
     // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
-    const reportCategory = category;
     const reportFollowUpSessionId =
       !reportCategory && !newSessionModeRef.current && selectedHermesSessionId
         ? selectedHermesSessionId
@@ -305,6 +320,10 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
         }
       | undefined;
     try {
+      // Keep the post-Send typing position at the end while async skill and
+      // attachment preparation runs. A user can immediately continue editing
+      // the still-visible draft without their text jumping to the front.
+      composerEditorRef.current?.focus();
       const prepared = await prepareComposerSubmission(message, attachments);
       if (composerDispatchWasInvalidated(sentDispatchReservation)) return;
       const runtimeContent = reportCategory
@@ -313,7 +332,7 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
       preparedForRecovery = { ...prepared, runtimeContent };
       const sizeWarning = oversizedComposerInputWarning({
         content: sizeEstimateContent(runtimeContent, selectedHermesSessionId ?? undefined),
-        inputSignature: composerInputSignature,
+        inputSignature: submittedComposerInputSignature,
         attachments,
         model: generationModel,
         models: generationModels,
@@ -341,7 +360,15 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
               attachments.map((attachment) => attachment.path),
             )
           : undefined;
-      if (draftRef.current.trim() === message && categoryRef.current === reportCategory) {
+      const liveComposerIsFinal =
+        composerEditorRef.current?.flushPendingChange({
+          changeKey: composerDraftKeyRef.current,
+        }) ?? true;
+      if (
+        liveComposerIsFinal &&
+        draftRef.current.trim() === message &&
+        categoryRef.current === reportCategory
+      ) {
         composerEditorRef.current?.clear();
         setDraft("");
         setCategory(null);
@@ -384,6 +411,13 @@ export function createSubmitComposer(dependencies: SubmitComposerDependencies) {
     } catch (err) {
       if (composerDispatchWasInvalidated(sentDispatchReservation)) return;
       const errorMessage = messageFromError(err);
+      // A send can fail inside the trailing publish window while the user is
+      // already typing their next message. Publish that live document before
+      // deciding whether the failed message belongs back in the composer or
+      // in Up next.
+      composerEditorRef.current?.flushPendingChange({
+        changeKey: composerDraftKeyRef.current,
+      });
       const composerHasNewInput = Boolean(
         !(composerEditorRef.current?.isEmpty() ?? true) ||
           draftRef.current.trim() ||
