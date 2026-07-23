@@ -1736,9 +1736,33 @@ pub async fn june_home_chat(
     }))
     .await?;
     if !(200..300).contains(&response.status) {
+        // Surface the API's diagnostic (envelope `message`, e.g.
+        // "model_not_priced", or an upstream relay's error.message) instead of
+        // a bare status: a naked "422" names the shape of the failure but not
+        // its cause, which made this path undiagnosable in the field.
+        let status = response.status;
+        let detail = match response.collect_body().await {
+            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("message")
+                        .or_else(|| value.pointer("/error/message"))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                    (!text.is_empty()).then(|| text.chars().take(200).collect())
+                }),
+            Err(_) => None,
+        };
         return Err(AppError::new(
             "home_chat_failed",
-            format!("Home chat returned status {}.", response.status),
+            match detail {
+                Some(detail) => format!("Home chat returned status {status} ({detail})."),
+                None => format!("Home chat returned status {status}."),
+            },
         ));
     }
     let body = response.collect_body().await?;
