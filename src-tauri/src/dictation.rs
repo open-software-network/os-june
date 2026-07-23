@@ -514,6 +514,7 @@ struct ShortcutActivationController {
     toggle_command_in_flight: bool,
     last_toggle_command_at: Option<Instant>,
     helper_finalizing_since: Option<Instant>,
+    pending_composer_request_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -631,6 +632,24 @@ impl ShortcutActivationController {
             || (matches!(command, DictationCommand::ToggleListening) && !self.helper_is_listening)
     }
 
+    fn track_composer_request(&mut self, request_id: Option<String>) {
+        self.pending_composer_request_id = request_id;
+    }
+
+    fn clear_composer_request(&mut self, request_id: &str) {
+        if self.pending_composer_request_id.as_deref() == Some(request_id) {
+            self.pending_composer_request_id = None;
+        }
+    }
+
+    fn reset_for_rejected_composer_request(&mut self, request_id: &str) -> bool {
+        if self.pending_composer_request_id.as_deref() != Some(request_id) {
+            return false;
+        }
+        self.reset();
+        true
+    }
+
     fn reset(&mut self) {
         self.active_mode = None;
         self.push_to_talk_is_down = false;
@@ -638,6 +657,7 @@ impl ShortcutActivationController {
         self.toggle_command_in_flight = false;
         self.last_toggle_command_at = None;
         self.helper_finalizing_since = None;
+        self.pending_composer_request_id = None;
     }
 }
 
@@ -2056,6 +2076,7 @@ fn forward_dictation_command(
     };
 
     let mut helper_command = command.helper_command(shortcut_label);
+    let mut composer_request_id = None;
     if starts_recording {
         if let Ok(registration) = state.composer_registration.lock() {
             if let Some(registration) = registration
@@ -2063,6 +2084,7 @@ fn forward_dictation_command(
                 .filter(|registration| is_foreground_window_handle(registration.window_handle))
             {
                 if let Some(object) = helper_command.as_object_mut() {
+                    composer_request_id = Some(registration.request_id.clone());
                     object.insert(
                         "composerRequestId".into(),
                         serde_json::json!(registration.request_id),
@@ -2081,8 +2103,16 @@ fn forward_dictation_command(
                 }
             }
         }
+        if let Some(activation) = app.try_state::<ShortcutActivationState>() {
+            if let Ok(mut controller) = activation.controller.lock() {
+                controller.track_composer_request(composer_request_id.clone());
+            }
+        }
     }
     if let Err(error) = send_helper_command(&state, helper_command) {
+        if let Some(request_id) = composer_request_id.as_deref() {
+            clear_shortcut_composer_request(app, request_id);
+        }
         emit_dictation_event_value(app, app_error_event(error));
         return false;
     }
@@ -3452,6 +3482,7 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     if let (Some(state), Some(event)) = (app.try_state::<HelperState>(), event.as_ref()) {
         consume_started_composer_registration(&state, event_type, event);
     }
+    handle_shortcut_composer_response(app, event_type, event.as_ref());
 
     if matches!(
         event_type,
@@ -3520,6 +3551,41 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         update_latest_event(app, event_type, Some(line.clone()));
         update_hud_window(app, event_type, None);
         let _ = app.emit("dictation-event", line);
+    }
+}
+
+fn handle_shortcut_composer_response(
+    app: &AppHandle,
+    event_type: Option<&str>,
+    event: Option<&serde_json::Value>,
+) {
+    let Some(payload) = event.and_then(|event| event.get("payload")) else {
+        return;
+    };
+    let Some(request_id) = payload
+        .get("composerRequestId")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return;
+    };
+    if event_type == Some("listening_started") {
+        clear_shortcut_composer_request(app, request_id);
+    } else if event_type == Some("error")
+        && payload.get("code").and_then(serde_json::Value::as_str) == Some("composer_delivery_busy")
+    {
+        if let Some(state) = app.try_state::<ShortcutActivationState>() {
+            if let Ok(mut controller) = state.controller.lock() {
+                controller.reset_for_rejected_composer_request(request_id);
+            }
+        }
+    }
+}
+
+fn clear_shortcut_composer_request(app: &AppHandle, request_id: &str) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.clear_composer_request(request_id);
+        }
     }
 }
 
@@ -7615,6 +7681,37 @@ mod tests {
             .lock()
             .expect("registration")
             .is_none());
+    }
+
+    #[test]
+    fn composer_busy_reset_is_correlated_to_the_shortcut_request() {
+        let mut controller = ShortcutActivationController {
+            active_mode: Some(DictationShortcutKind::Toggle),
+            pending_composer_request_id: Some("request-1".to_string()),
+            ..ShortcutActivationController::default()
+        };
+
+        assert!(!controller.reset_for_rejected_composer_request("stale-request"));
+        assert_eq!(controller.active_mode, Some(DictationShortcutKind::Toggle));
+        assert!(controller.reset_for_rejected_composer_request("request-1"));
+        assert_eq!(controller.active_mode, None);
+        assert_eq!(controller.pending_composer_request_id, None);
+    }
+
+    #[test]
+    fn composer_start_ack_clears_only_the_matching_shortcut_request() {
+        let mut controller = ShortcutActivationController {
+            pending_composer_request_id: Some("request-1".to_string()),
+            ..ShortcutActivationController::default()
+        };
+
+        controller.clear_composer_request("stale-request");
+        assert_eq!(
+            controller.pending_composer_request_id.as_deref(),
+            Some("request-1")
+        );
+        controller.clear_composer_request("request-1");
+        assert_eq!(controller.pending_composer_request_id, None);
     }
 
     #[test]

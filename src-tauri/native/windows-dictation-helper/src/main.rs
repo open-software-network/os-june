@@ -325,7 +325,16 @@ impl HelperApp {
         june_pid: Option<u32>,
         june_window_handle: Option<isize>,
     ) {
-        if self.recorder.is_some() || self.mic_test.is_some() || self.awaiting_transcript {
+        if !self.can_start_listening(composer_request_id.as_deref()) {
+            if self.pending_composer_ack.is_some() {
+                if let Some(request_id) = composer_request_id {
+                    self.writer.emit(composer_error_event(
+                        "composer_delivery_busy",
+                        "June is finishing the previous dictation. Try again.",
+                        &request_id,
+                    ));
+                }
+            }
             return;
         }
         self.cleanup_last_mic_test();
@@ -374,6 +383,13 @@ impl HelperApp {
                 }
             }
         }
+    }
+
+    fn can_start_listening(&self, composer_request_id: Option<&str>) -> bool {
+        self.recorder.is_none()
+            && self.mic_test.is_none()
+            && !self.awaiting_transcript
+            && (composer_request_id.is_none() || self.pending_composer_ack.is_none())
     }
 
     fn stop_and_paste(&mut self) {
@@ -856,6 +872,31 @@ mod tests {
         assert_eq!(event["payload"]["inputSubmitted"], true);
         assert_eq!(event["payload"]["deliveryConfirmed"], false);
         assert_eq!(event["payload"]["eventsSubmitted"], 4);
+    }
+
+    #[test]
+    fn pending_composer_ack_blocks_a_replacement_recording() {
+        let app = HelperApp {
+            writer: EventWriter::new(),
+            recorder: None,
+            mic_test: None,
+            selected_microphone_id: None,
+            pinned_target: None,
+            hotkeys: None,
+            delayed_clipboard_restore: None,
+            direct_composer_request: None,
+            pending_composer_ack: Some(PendingComposerAck {
+                id: "pending-request".to_string(),
+                deadline: std::time::Instant::now() + COMPOSER_ACK_TIMEOUT,
+                text: "first transcript".to_string(),
+                backup: None,
+            }),
+            awaiting_transcript: false,
+            last_mic_test_path: None,
+        };
+
+        assert!(!app.can_start_listening(Some("replacement-request")));
+        assert!(app.can_start_listening(None));
     }
 
     fn restore_with_expiry(
