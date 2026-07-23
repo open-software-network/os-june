@@ -77,4 +77,20 @@ describe("createLeadingTrailingMicrobatch", () => {
 
     expect(publish).toHaveBeenCalledTimes(2);
   });
+
+  it("publishes a pending trailing update before teardown without a duplicate", () => {
+    vi.useFakeTimers();
+    let latest = "leading";
+    const published: string[] = [];
+    const batch = createLeadingTrailingMicrobatch(() => published.push(latest), 50);
+
+    batch.schedule();
+    latest = "pending at teardown";
+    batch.schedule();
+    batch.flushPending();
+    batch.flushPending();
+    vi.runAllTimers();
+
+    expect(published).toEqual(["leading", "pending at teardown"]);
+  });
 });

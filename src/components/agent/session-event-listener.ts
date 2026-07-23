@@ -258,7 +258,10 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     });
     unlisten = () => {
       removeListener();
-      liveEventsBatch.cancel();
+      // Stop, cancellation, listener replacement, and normal teardown all
+      // converge here. Publish any trailing delta before cancelling its timer
+      // so React never remains behind the authoritative event ref.
+      liveEventsBatch.flushPending();
       if (sessionGatewayUnlistenRef.current.get(storedSessionId) === unlisten) {
         sessionGatewayUnlistenRef.current.delete(storedSessionId);
       }

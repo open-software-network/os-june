@@ -4,7 +4,9 @@ export type TrailingMicrobatch = {
   cancel: () => void;
 };
 
-export type LeadingTrailingMicrobatch = TrailingMicrobatch;
+export type LeadingTrailingMicrobatch = TrailingMicrobatch & {
+  flushPending: () => void;
+};
 
 /**
  * Coalesces a burst of publications behind one short trailing timer. The
@@ -69,6 +71,12 @@ export function createLeadingTrailingMicrobatch(
     publish();
   };
 
+  const flushPending = () => {
+    const shouldPublish = trailingPublicationPending;
+    cancel();
+    if (shouldPublish) publish();
+  };
+
   const schedule = () => {
     if (timer === undefined) {
       publish();
@@ -78,5 +86,5 @@ export function createLeadingTrailingMicrobatch(
     trailingPublicationPending = true;
   };
 
-  return { schedule, flush, cancel };
+  return { schedule, flush, flushPending, cancel };
 }
