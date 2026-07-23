@@ -24,8 +24,23 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
         .connect("sqlite::memory:")
         .await
         .expect("memory database");
+    run_migrations(&pool).await.expect("current schema");
+    for statement in [
+        "DROP TABLE session_folders",
+        "DROP TABLE agent_artifacts",
+        "DROP TABLE agent_items",
+        "DROP TABLE agent_runs",
+        "DROP TABLE agent_skill_settings",
+        "DROP TABLE agent_migration_manifests",
+        "DROP TABLE agent_sessions",
+        "DELETE FROM schema_migrations WHERE version = 30",
+    ] {
+        query(statement)
+            .execute(&pool)
+            .await
+            .expect("restore pre-runtime schema");
+    }
     for migration in [
-        include_str!("../migrations/001_init.sql"),
         include_str!("../migrations/007_agent.sql"),
         include_str!("../migrations/009_session_folders.sql"),
     ] {
