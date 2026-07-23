@@ -63,8 +63,12 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
 4. If the session has a queued model choice, June applies it to the idle live
    session with `config.set` before submitting anything. A failed switch blocks
    the send and leaves the choice queued.
-5. Images are attached via `image.attach_bytes` (bytes read at attach time,
-   never stored on state/trace/artifacts).
+5. Images are attached by asking Rust to validate and snapshot the source into
+   a session-scoped workspace directory, then passing that local path through
+   `image.attach`. Image bytes never cross the JS bridge or Hermes WebSocket on
+   this path. `image.attach_bytes` remains an additive fallback for callers
+   without a gateway-local path; neither path stores bytes in state, traces, or
+   artifacts.
 6. `gateway.request("prompt.submit")` (ack-style) → live `event` frames →
    `classifyHermesEvent` → `agent-chat-runtime` builds turns → React renders.
 

@@ -1,5 +1,5 @@
-import { hermesBridgeImageDataUrl } from "../../lib/tauri";
-import { HermesGatewayClient } from "../../lib/hermes-gateway";
+import { hermesBridgeImageDataUrl, prepareHermesBridgeImageAttachment } from "../../lib/tauri";
+import type { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
   createHermesMethods,
   hermesModeFor,
@@ -39,6 +39,9 @@ export function createPendingImageActions(dependencies: createPendingImageAction
       ),
     );
     const deps = {
+      prepareImagePath: prepareHermesBridgeImageAttachment,
+      attachImagePath: methods.attachImagePath,
+      isPathSupported: () => isHermesFeatureSupported("image.attach"),
       attachImage: methods.attachImage,
       readImageData: async (path: string) =>
         heldImageDataByPath.get(path) ?? (await hermesBridgeImageDataUrl(path)),

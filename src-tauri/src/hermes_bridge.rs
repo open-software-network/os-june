@@ -119,6 +119,7 @@ const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const HERMES_SKILL_MAX_BYTES: usize = 512 * 1024;
 const JUNE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
+const JUNE_WORKSPACE_SESSION_ATTACHMENTS_DIR_NAME: &str = "session-attachments";
 // Must sit ABOVE june-api's aggregate request-string cap
 // (`MAX_AGENT_TOTAL_STRING_CHARS`, 6M chars) counted in BYTES, or this proxy
 // rejects an in-window upload before june-api's larger cap can allow it (JUN-169
@@ -291,6 +292,23 @@ const JUNE_CONNECTOR_MCP_ACCOUNT_ENV: &str = "JUNE_CONNECTOR_ACCOUNT";
 /// its proxy calls skip the approval park. Only the auto servers carry it; the
 /// base action servers do not, so their calls always park (approval mode).
 const JUNE_CONNECTOR_MCP_GRANT_ENV: &str = "JUNE_CONNECTOR_GRANT";
+
+/// Writes an app-owned runtime asset only when its exact bytes changed.
+///
+/// Byte equality is intentional: these files are generated from compile-time
+/// assets, so there is no semantic merge to preserve. Keeping the comparison
+/// here makes every caller share the same missing/read-error behavior and lets
+/// tests assert that an unchanged startup performs zero writes.
+fn write_file_if_changed(path: &Path, contents: &[u8]) -> io::Result<bool> {
+    match fs::read(path) {
+        Ok(existing) if existing == contents => return Ok(false),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    fs::write(path, contents)?;
+    Ok(true)
+}
 /// Hermes-side per-tool timeout for the connector action servers. Longer than
 /// the read servers because a mutating call can park on the user's approval
 /// (see connectors::approvals, 600s window).
@@ -1292,6 +1310,24 @@ pub struct ImportHermesFileRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PrepareHermesImageAttachmentRequest {
+    /// The live runtime session that will receive the image. Its digest scopes
+    /// the native snapshot directory without trusting the id as a path.
+    pub session_id: String,
+    /// A June workspace/generated-image reference, never an arbitrary host path.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedHermesImageAttachment {
+    pub path: String,
+    pub mime_type: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportedHermesFile {
     pub name: String,
     pub path: String,
@@ -1688,17 +1724,25 @@ async fn start_hermes_bridge_inner(
         .unwrap_or(default_cwd);
     let cwd_display = Some(cwd.to_string_lossy().into_owned());
     let provider_proxy = ensure_provider_proxy(app, bridge, &hermes_home).await?;
-    let june_context_mcp = sync_june_context_mcp(app, &command)?;
-    let june_web_mcp = sync_june_web_mcp(app, &command)?;
-    let june_obsidian_mcp = sync_june_obsidian_mcp(app, &command)?;
-    let june_image_mcp = sync_june_image_mcp(app, &hermes_home, &command)?;
     let video_generation_enabled = crate::feature_flags::VIDEO_GENERATION_ENABLED;
-    let june_video_mcp = if video_generation_enabled {
-        Some(sync_june_video_mcp(app, &hermes_home, &command)?)
-    } else {
-        None
+    let static_mcps = {
+        let app = app.clone();
+        let hermes_home = hermes_home.clone();
+        let command = command.clone();
+        tokio::task::spawn_blocking(move || {
+            sync_june_static_mcps(&app, &hermes_home, &command, video_generation_enabled)
+        })
+        .await
+        .map_err(|error| AppError::new("hermes_bridge_start_failed", error.to_string()))??
     };
-    let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
+    let JuneStaticMcpConfigs {
+        context: june_context_mcp,
+        web: june_web_mcp,
+        obsidian: june_obsidian_mcp,
+        image: june_image_mcp,
+        video: june_video_mcp,
+        recorder: june_recorder_mcp,
+    } = static_mcps;
     // These readiness paths are independent and used to run serially on the
     // first Hermes launch. Start them together so Browser setup and connector
     // discovery overlap the Computer use permission probe and driver prewarm.
@@ -1721,7 +1765,15 @@ async fn start_hermes_bridge_inner(
     bridge
         .browser_broker
         .replace_routine_grants(june_browser_mcp.routine_grants.clone());
-    let june_computer_use_mcp = sync_june_computer_use_mcp(app, &command, computer_use_ready)?;
+    let june_computer_use_mcp = {
+        let app = app.clone();
+        let command = command.clone();
+        tokio::task::spawn_blocking(move || {
+            sync_june_computer_use_mcp(&app, &command, computer_use_ready)
+        })
+        .await
+        .map_err(|error| AppError::new("hermes_bridge_start_failed", error.to_string()))??
+    };
     // The private-connector MCP servers are registered only when there is
     // something for them to serve: Gmail and Calendar need a connected Google
     // account (v1: the first connected account); Linear reads need a connected
@@ -1733,60 +1785,75 @@ async fn start_hermes_bridge_inner(
     let connectors_registered = june_connector_mcp
         .as_ref()
         .is_some_and(ConnectorMcpConfigs::has_interactive_servers);
-    sync_hermes_config(
-        app,
-        &hermes_home,
-        provider_proxy.port,
-        &provider_proxy.token,
-        &provider_proxy.memory_token,
-        &provider_proxy.recorder_token,
-        &provider_proxy.routine_browser_token,
-        &provider_proxy.connector_token,
-        &provider_proxy.computer_use_token,
-        &provider_proxy.obsidian_token,
-        supports_vision,
-        &june_context_mcp,
-        &june_web_mcp,
-        &june_obsidian_mcp,
-        &june_image_mcp,
-        june_video_mcp.as_ref(),
-        &june_recorder_mcp,
-        &june_browser_mcp,
-        &june_computer_use_mcp,
-        june_connector_mcp.as_ref(),
-    )?;
-
-    // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
-    // its tool calls, and any subprocess it forks all inherit the profile, so
-    // destructive writes (rm -rf of user dirs, dotfile rewrites, TCC db edits)
-    // are denied by the kernel rather than by Hermes' own pattern checks.
-    // Resolved before the soul write so June's self-knowledge about the jail
-    // matches what sandboxed spawns actually enforce.
     let agent_cli_access = agent_cli_access_enabled(app);
-    let sandbox_profile = if full_mode {
-        None
-    } else {
-        prepare_sandbox(app, &hermes_home, agent_cli_access)
+    let browser_use_enabled = crate::experimental_settings::browser_use_enabled(app);
+    let (sandbox_profile, sandbox_available) = {
+        let app = app.clone();
+        let hermes_home = hermes_home.clone();
+        let provider_proxy_port = provider_proxy.port;
+        let provider_proxy_token = provider_proxy.token.clone();
+        let memory_proxy_token = provider_proxy.memory_token.clone();
+        let recorder_proxy_token = provider_proxy.recorder_token.clone();
+        let routine_browser_proxy_token = provider_proxy.routine_browser_token.clone();
+        let connector_proxy_token = provider_proxy.connector_token.clone();
+        let computer_use_proxy_token = provider_proxy.computer_use_token.clone();
+        let obsidian_proxy_token = provider_proxy.obsidian_token.clone();
+        tokio::task::spawn_blocking(move || {
+            sync_hermes_config(
+                &app,
+                &hermes_home,
+                provider_proxy_port,
+                &provider_proxy_token,
+                &memory_proxy_token,
+                &recorder_proxy_token,
+                &routine_browser_proxy_token,
+                &connector_proxy_token,
+                &computer_use_proxy_token,
+                &obsidian_proxy_token,
+                supports_vision,
+                &june_context_mcp,
+                &june_web_mcp,
+                &june_obsidian_mcp,
+                &june_image_mcp,
+                june_video_mcp.as_ref(),
+                &june_recorder_mcp,
+                &june_browser_mcp,
+                &june_computer_use_mcp,
+                june_connector_mcp.as_ref(),
+            )?;
+
+            // Wrap the spawn in a macOS Seatbelt write-jail when possible. The
+            // model and every subprocess inherit it. Resolve it before SOUL so
+            // June's self-knowledge matches the protection actually available.
+            let sandbox_profile = if full_mode {
+                None
+            } else {
+                prepare_sandbox(&app, &hermes_home, agent_cli_access)
+            };
+            let sandboxed = sandbox_profile.is_some();
+            // SOUL.md is shared by both runtime modes, so it describes the
+            // per-session mode split rather than only the process being built.
+            let sandbox_available = if full_mode {
+                sandbox_would_engage(&app, &hermes_home)
+            } else {
+                sandboxed
+            };
+            sync_june_soul(
+                &hermes_home,
+                sandbox_available,
+                agent_cli_access,
+                // None (feature-flagged out) renders no Browser use section.
+                browser_use_enabled.then_some(browser_access),
+                june_memory_enabled(&june_context_mcp.memory_settings_path),
+                video_generation_enabled,
+                connectors_registered,
+            )?;
+            Ok::<_, AppError>((sandbox_profile, sandbox_available))
+        })
+        .await
+        .map_err(|error| AppError::new("hermes_bridge_start_failed", error.to_string()))??
     };
     let sandboxed = sandbox_profile.is_some();
-    // SOUL.md is shared by both processes (single home), so its sandbox
-    // section describes the per-session mode split rather than this spawn.
-    let sandbox_available = if full_mode {
-        sandbox_would_engage(app, &hermes_home)
-    } else {
-        sandboxed
-    };
-    sync_june_soul(
-        &hermes_home,
-        sandbox_available,
-        agent_cli_access,
-        // None (feature-flagged out) renders no browser SOUL section at all;
-        // the grant only matters once the feature exists in this build.
-        crate::experimental_settings::browser_use_enabled(app).then_some(browser_access),
-        june_memory_enabled(&june_context_mcp.memory_settings_path),
-        video_generation_enabled,
-        connectors_registered,
-    )?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -2301,6 +2368,15 @@ struct JuneVideoMcpConfig {
 struct JuneRecorderMcpConfig {
     command: String,
     script_path: PathBuf,
+}
+
+struct JuneStaticMcpConfigs {
+    context: JuneContextMcpConfig,
+    web: JuneWebMcpConfig,
+    obsidian: JuneObsidianMcpConfig,
+    image: JuneImageMcpConfig,
+    video: Option<JuneVideoMcpConfig>,
+    recorder: JuneRecorderMcpConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -4640,6 +4716,22 @@ pub async fn hermes_bridge_image_data_url(
     image_source_data_url(&requested)
 }
 
+/// Validates a June-owned image reference and snapshots it into a directory
+/// scoped to the live runtime session. The frontend passes only the returned
+/// native path to Hermes' `image.attach`; image bytes never enter Tauri IPC or
+/// the WebSocket. The legacy data-url command remains available for callers
+/// that genuinely need the remote-client `image.attach_bytes` contract.
+#[tauri::command]
+pub async fn prepare_hermes_bridge_image_attachment(
+    app: AppHandle,
+    request: PrepareHermesImageAttachmentRequest,
+) -> Result<PreparedHermesImageAttachment, AppError> {
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    tokio::task::spawn_blocking(move || prepare_hermes_image_attachment(&hermes_home, &request))
+        .await
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?
+}
+
 #[tauri::command]
 pub async fn hermes_bridge_file_text(
     app: AppHandle,
@@ -4792,22 +4884,12 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
             "This June file is hidden or sensitive.",
         ));
     }
-    let allowed_roots = filesystem_roots(&hermes_home)?
-        .into_iter()
-        .filter_map(|root| root.path.canonicalize().ok())
-        .collect::<Vec<_>>();
-    let mut extended_allowed_roots = allowed_roots.clone();
     // "image_cache" is where the Hermes runtime copies tool-result images;
     // assistant MEDIA: references point at those copies, so dropping it breaks
     // inline rendering and download of every tool-generated image. Add both
     // video dirs now; QA must confirm the exact runtime cache dir for inline
     // generated-video rendering once the frontend/MCP chunks land.
-    extended_allowed_roots.extend(
-        GENERATED_IMAGE_ROOTS
-            .into_iter()
-            .chain(GENERATED_VIDEO_ROOTS)
-            .filter_map(|relative| hermes_home.join(relative).canonicalize().ok()),
-    );
+    let extended_allowed_roots = hermes_file_allowed_roots(&hermes_home)?;
     let allowed = extended_allowed_roots
         .iter()
         .any(|root| requested.starts_with(root));
@@ -4825,6 +4907,173 @@ fn validate_hermes_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, App
     }
     tracing::info!(requested_path = %path, resolved_path = %requested.display(), "validate_hermes_file_path accepted path");
     Ok(requested)
+}
+
+fn prepare_hermes_image_attachment(
+    hermes_home: &Path,
+    request: &PrepareHermesImageAttachmentRequest,
+) -> Result<PreparedHermesImageAttachment, AppError> {
+    let session_id = request.session_id.trim();
+    if session_id.is_empty() {
+        return Err(AppError::new(
+            "hermes_image_attach_failed",
+            "A runtime session id is required to attach an image.",
+        ));
+    }
+
+    let candidate = resolve_hermes_file_candidate(hermes_home, &request.path);
+    let link_metadata = fs::symlink_metadata(&candidate)
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?;
+    if link_metadata.file_type().is_symlink() {
+        return Err(AppError::new(
+            "hermes_image_attach_denied",
+            "Symbolic links cannot be attached as images.",
+        ));
+    }
+    let source_path = candidate
+        .canonicalize()
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?;
+    if is_hidden_secret_path(&source_path) {
+        return Err(AppError::new(
+            "hermes_image_attach_denied",
+            "Hidden or sensitive files cannot be attached.",
+        ));
+    }
+    let allowed = hermes_image_attachment_allowed_roots(hermes_home)
+        .iter()
+        .any(|root| source_path.starts_with(root));
+    if !allowed {
+        return Err(AppError::new(
+            "hermes_image_attach_denied",
+            "Only images in June's workspace or generated-image directories can be attached.",
+        ));
+    }
+    let mime_type = image_mime_type(&source_path).ok_or_else(|| {
+        AppError::new(
+            "hermes_image_attach_denied",
+            "This file type cannot be attached as an image.",
+        )
+    })?;
+    let mut source = open_image_attachment_source(&source_path)
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?;
+    let metadata = source
+        .metadata()
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?;
+    if !metadata.is_file() {
+        return Err(AppError::new(
+            "hermes_image_attach_denied",
+            "Only image files can be attached.",
+        ));
+    }
+    if metadata.len() > HERMES_IMPORT_MAX_BYTES {
+        return Err(AppError::new(
+            "hermes_image_attach_denied",
+            "Image files must be 50 MB or smaller.",
+        ));
+    }
+
+    // Never interpolate the runtime session id into a path. A stable digest
+    // provides the per-session namespace while treating the wire id as opaque.
+    let session_dir = hermes_home
+        .join("workspace")
+        .join(JUNE_WORKSPACE_SESSION_ATTACHMENTS_DIR_NAME)
+        .join(hex_encode(&sha256_bytes(session_id.as_bytes())));
+    fs::create_dir_all(&session_dir)
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?;
+    let destination = unique_upload_path(&session_dir, &source_path)
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.message))?;
+    snapshot_image_source(&mut source, &source_path, &destination)
+        .map_err(|error| AppError::new("hermes_image_attach_failed", error.to_string()))?;
+
+    Ok(PreparedHermesImageAttachment {
+        path: destination.to_string_lossy().into_owned(),
+        mime_type: mime_type.to_string(),
+        size: metadata.len(),
+    })
+}
+
+fn hermes_file_allowed_roots(hermes_home: &Path) -> Result<Vec<PathBuf>, AppError> {
+    let mut roots = filesystem_roots(hermes_home)?
+        .into_iter()
+        .filter_map(|root| root.path.canonicalize().ok())
+        .collect::<Vec<_>>();
+    roots.extend(
+        GENERATED_IMAGE_ROOTS
+            .into_iter()
+            .chain(GENERATED_VIDEO_ROOTS)
+            .filter_map(|relative| hermes_home.join(relative).canonicalize().ok()),
+    );
+    Ok(roots)
+}
+
+fn hermes_image_attachment_allowed_roots(hermes_home: &Path) -> Vec<PathBuf> {
+    std::iter::once(hermes_home.join("workspace"))
+        .chain(
+            GENERATED_IMAGE_ROOTS
+                .into_iter()
+                .map(|relative| hermes_home.join(relative)),
+        )
+        .filter_map(|root| root.canonicalize().ok())
+        .collect()
+}
+
+#[cfg(unix)]
+fn open_image_attachment_source(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_image_attachment_source(path: &Path) -> io::Result<fs::File> {
+    fs::File::open(path)
+}
+
+fn snapshot_image_source(
+    source: &mut fs::File,
+    source_path: &Path,
+    destination: &Path,
+) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        if fs::hard_link(source_path, destination).is_ok() {
+            let source_metadata = source.metadata()?;
+            let destination_metadata = fs::metadata(destination)?;
+            if source_metadata.dev() == destination_metadata.dev()
+                && source_metadata.ino() == destination_metadata.ino()
+            {
+                return Ok(());
+            }
+            // The source path changed between validation and link creation.
+            // Drop the wrong snapshot and copy from the retained validated
+            // handle, mirroring note_audio_export's validate-to-read discipline.
+            fs::remove_file(destination)?;
+        }
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    // Do not clean up an AlreadyExists failure: another writer owns that path.
+    let mut output = options.open(destination)?;
+    let write_result = (|| -> io::Result<()> {
+        io::copy(source, &mut output)?;
+        output.flush()?;
+        output.sync_all()
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(destination);
+    }
+    write_result
 }
 
 fn validate_dropped_file_path(path: &str) -> Result<PathBuf, AppError> {
@@ -8840,10 +9089,8 @@ const HERMES_RUNTIME_PATCH_SCRIPT: &str = include_str!("hermes/apply_june_patche
 
 fn write_managed_hermes_patch_script(runtime_dir: &Path) -> Result<PathBuf, AppError> {
     let path = runtime_dir.join("apply-june-hermes-patches.py");
-    if fs::read_to_string(&path).ok().as_deref() != Some(HERMES_RUNTIME_PATCH_SCRIPT) {
-        fs::write(&path, HERMES_RUNTIME_PATCH_SCRIPT)
-            .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
-    }
+    write_file_if_changed(&path, HERMES_RUNTIME_PATCH_SCRIPT.as_bytes())
+        .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
     Ok(path)
 }
 
@@ -8885,10 +9132,7 @@ fn ensure_managed_hermes_sitecustomize(install_dir: &Path) -> Result<(), AppErro
         fs::create_dir_all(&site_packages)
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
         let sitecustomize = site_packages.join("sitecustomize.py");
-        if fs::read_to_string(&sitecustomize).ok().as_deref() == Some(HERMES_SITE_CUSTOMIZE) {
-            continue;
-        }
-        fs::write(&sitecustomize, HERMES_SITE_CUSTOMIZE)
+        write_file_if_changed(&sitecustomize, HERMES_SITE_CUSTOMIZE.as_bytes())
             .map_err(|error| AppError::new("hermes_runtime_install_failed", error.to_string()))?;
     }
     Ok(())
@@ -9885,6 +10129,24 @@ const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
 /// applies on top of either.
 const UPSTREAM_DISABLED_TOOLSETS: &[&str] = &["browser", "computer_use"];
 
+fn sync_june_static_mcps(
+    app: &AppHandle,
+    hermes_home: &Path,
+    hermes_command: &str,
+    video_generation_enabled: bool,
+) -> Result<JuneStaticMcpConfigs, AppError> {
+    Ok(JuneStaticMcpConfigs {
+        context: sync_june_context_mcp(app, hermes_command)?,
+        web: sync_june_web_mcp(app, hermes_command)?,
+        obsidian: sync_june_obsidian_mcp(app, hermes_command)?,
+        image: sync_june_image_mcp(app, hermes_home, hermes_command)?,
+        video: video_generation_enabled
+            .then(|| sync_june_video_mcp(app, hermes_home, hermes_command))
+            .transpose()?,
+        recorder: sync_june_recorder_mcp(app, hermes_command)?,
+    })
+}
+
 fn sync_june_context_mcp(
     app: &AppHandle,
     hermes_command: &str,
@@ -9895,7 +10157,7 @@ fn sync_june_context_mcp(
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_CONTEXT_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_CONTEXT_MCP_SCRIPT)
+    write_file_if_changed(&script_path, JUNE_CONTEXT_MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_context_mcp_failed", error.to_string()))?;
 
     let paths = crate::app_paths::AppPaths::from_data_dir(data_dir)
@@ -9939,7 +10201,7 @@ fn sync_june_obsidian_mcp(
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_obsidian_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_OBSIDIAN_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_OBSIDIAN_MCP_SCRIPT)
+    write_file_if_changed(&script_path, JUNE_OBSIDIAN_MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_obsidian_mcp_failed", error.to_string()))?;
     Ok(JuneObsidianMcpConfig {
         command: hermes_python_command(hermes_command),
@@ -9954,7 +10216,7 @@ fn sync_june_web_mcp(app: &AppHandle, hermes_command: &str) -> Result<JuneWebMcp
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_WEB_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_WEB_MCP_SCRIPT)
+    write_file_if_changed(&script_path, JUNE_WEB_MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_web_mcp_failed", error.to_string()))?;
 
     Ok(JuneWebMcpConfig {
@@ -9974,7 +10236,7 @@ fn sync_june_image_mcp(
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_IMAGE_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_IMAGE_MCP_SCRIPT)
+    write_file_if_changed(&script_path, JUNE_IMAGE_MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_image_mcp_failed", error.to_string()))?;
     // Keep generated/edited images in Hermes's image dir. The MCP writes the
     // proxy-returned storage filename here; Rust validates source refs later.
@@ -10006,7 +10268,7 @@ fn sync_june_video_mcp(
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_VIDEO_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_VIDEO_MCP_SCRIPT)
+    write_file_if_changed(&script_path, JUNE_VIDEO_MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_video_mcp_failed", error.to_string()))?;
     let videos_dir = hermes_home.join(JUNE_VIDEO_MCP_VIDEOS_DIR_NAME);
     fs::create_dir_all(&videos_dir)
@@ -10029,7 +10291,7 @@ fn sync_june_recorder_mcp(
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(JUNE_RECORDER_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_RECORDER_MCP_SCRIPT)
+    write_file_if_changed(&script_path, JUNE_RECORDER_MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_recorder_mcp_failed", error.to_string()))?;
 
     Ok(JuneRecorderMcpConfig {
@@ -10051,11 +10313,16 @@ async fn sync_june_browser_mcp(
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
     let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
-    fs::create_dir_all(&mcp_dir)
-        .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
-    let script_path = mcp_dir.join(JUNE_BROWSER_MCP_SCRIPT_NAME);
-    fs::write(&script_path, JUNE_BROWSER_MCP_SCRIPT)
-        .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
+    let script_path = tokio::task::spawn_blocking(move || {
+        fs::create_dir_all(&mcp_dir)
+            .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
+        let script_path = mcp_dir.join(JUNE_BROWSER_MCP_SCRIPT_NAME);
+        write_file_if_changed(&script_path, JUNE_BROWSER_MCP_SCRIPT.as_bytes())
+            .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))?;
+        Ok::<_, AppError>(script_path)
+    })
+    .await
+    .map_err(|error| AppError::new("june_browser_mcp_failed", error.to_string()))??;
 
     // While the Browser use feature flag is off, persisted routine opt-ins
     // stay dormant: no per-routine server is rendered and the broker's grant
@@ -10096,7 +10363,7 @@ fn sync_june_computer_use_mcp(
     fs::create_dir_all(&mcp_dir)
         .map_err(|error| AppError::new("june_computer_use_mcp_failed", error.to_string()))?;
     let script_path = mcp_dir.join(crate::computer_use::MCP_SCRIPT_NAME);
-    fs::write(&script_path, crate::computer_use::MCP_SCRIPT)
+    write_file_if_changed(&script_path, crate::computer_use::MCP_SCRIPT.as_bytes())
         .map_err(|error| AppError::new("june_computer_use_mcp_failed", error.to_string()))?;
 
     Ok(JuneComputerUseMcpConfig {
@@ -10245,43 +10512,60 @@ async fn sync_june_connector_mcps(
     let data_dir = crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("june_connector_mcp_failed", error.to_string()))?;
     let mcp_dir = data_dir.join(JUNE_CONTEXT_MCP_DIR_NAME);
-    fs::create_dir_all(&mcp_dir)
-        .map_err(|error| AppError::new("june_connector_mcp_failed", error.to_string()))?;
     let command = hermes_python_command(hermes_command);
 
-    // Write all six scripts up front: the base servers and every auto server
-    // (which reuses the provider action script) point at these paths.
-    let write_script = |script_name: &str, script: &str| -> Result<PathBuf, AppError> {
-        let script_path = mcp_dir.join(script_name);
-        fs::write(&script_path, script)
+    // The base servers and every auto server reuse these paths. Keep their
+    // content comparisons and any first-run writes off the async runtime.
+    let (
+        gmail_read_path,
+        gmail_actions_path,
+        gcal_read_path,
+        gcal_actions_path,
+        linear_read_path,
+        linear_actions_path,
+        github_read_path,
+        github_actions_path,
+        notion_path,
+        notion_actions_path,
+    ) = tokio::task::spawn_blocking(move || {
+        fs::create_dir_all(&mcp_dir)
             .map_err(|error| AppError::new("june_connector_mcp_failed", error.to_string()))?;
-        Ok(script_path)
-    };
-    let gmail_read_path = write_script(JUNE_GMAIL_MCP_SCRIPT_NAME, JUNE_GMAIL_MCP_SCRIPT)?;
-    let gmail_actions_path = write_script(
-        JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME,
-        JUNE_GMAIL_ACTIONS_MCP_SCRIPT,
-    )?;
-    let gcal_read_path = write_script(JUNE_GCAL_MCP_SCRIPT_NAME, JUNE_GCAL_MCP_SCRIPT)?;
-    let gcal_actions_path = write_script(
-        JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME,
-        JUNE_GCAL_ACTIONS_MCP_SCRIPT,
-    )?;
-    let linear_read_path = write_script(JUNE_LINEAR_MCP_SCRIPT_NAME, JUNE_LINEAR_MCP_SCRIPT)?;
-    let linear_actions_path = write_script(
-        JUNE_LINEAR_ACTIONS_MCP_SCRIPT_NAME,
-        JUNE_LINEAR_ACTIONS_MCP_SCRIPT,
-    )?;
-    let github_read_path = write_script(JUNE_GITHUB_MCP_SCRIPT_NAME, JUNE_GITHUB_MCP_SCRIPT)?;
-    let github_actions_path = write_script(
-        JUNE_GITHUB_ACTIONS_MCP_SCRIPT_NAME,
-        JUNE_GITHUB_ACTIONS_MCP_SCRIPT,
-    )?;
-    let notion_path = write_script(JUNE_NOTION_MCP_SCRIPT_NAME, JUNE_NOTION_MCP_SCRIPT)?;
-    let notion_actions_path = write_script(
-        JUNE_NOTION_ACTIONS_MCP_SCRIPT_NAME,
-        JUNE_NOTION_ACTIONS_MCP_SCRIPT,
-    )?;
+        let write_script = |script_name: &str, script: &str| -> Result<PathBuf, AppError> {
+            let script_path = mcp_dir.join(script_name);
+            write_file_if_changed(&script_path, script.as_bytes())
+                .map_err(|error| AppError::new("june_connector_mcp_failed", error.to_string()))?;
+            Ok(script_path)
+        };
+        Ok::<_, AppError>((
+            write_script(JUNE_GMAIL_MCP_SCRIPT_NAME, JUNE_GMAIL_MCP_SCRIPT)?,
+            write_script(
+                JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME,
+                JUNE_GMAIL_ACTIONS_MCP_SCRIPT,
+            )?,
+            write_script(JUNE_GCAL_MCP_SCRIPT_NAME, JUNE_GCAL_MCP_SCRIPT)?,
+            write_script(
+                JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME,
+                JUNE_GCAL_ACTIONS_MCP_SCRIPT,
+            )?,
+            write_script(JUNE_LINEAR_MCP_SCRIPT_NAME, JUNE_LINEAR_MCP_SCRIPT)?,
+            write_script(
+                JUNE_LINEAR_ACTIONS_MCP_SCRIPT_NAME,
+                JUNE_LINEAR_ACTIONS_MCP_SCRIPT,
+            )?,
+            write_script(JUNE_GITHUB_MCP_SCRIPT_NAME, JUNE_GITHUB_MCP_SCRIPT)?,
+            write_script(
+                JUNE_GITHUB_ACTIONS_MCP_SCRIPT_NAME,
+                JUNE_GITHUB_ACTIONS_MCP_SCRIPT,
+            )?,
+            write_script(JUNE_NOTION_MCP_SCRIPT_NAME, JUNE_NOTION_MCP_SCRIPT)?,
+            write_script(
+                JUNE_NOTION_ACTIONS_MCP_SCRIPT_NAME,
+                JUNE_NOTION_ACTIONS_MCP_SCRIPT,
+            )?,
+        ))
+    })
+    .await
+    .map_err(|error| AppError::new("june_connector_mcp_failed", error.to_string()))??;
 
     let notion_config = notion_connected.then(|| JuneConnectorMcpConfig {
         command: command.clone(),
@@ -10837,6 +11121,17 @@ fn backup_corrupt_hermes_config(config_path: &Path, contents: &[u8]) -> Result<P
 fn write_hermes_config_atomic(config_path: &Path, contents: &str) -> Result<(), AppError> {
     let target_path = hermes_config_replacement_target(config_path)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
+    match fs::read(&target_path) {
+        Ok(existing) if existing == contents.as_bytes() => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(AppError::new(
+                "hermes_bridge_config_failed",
+                error.to_string(),
+            ))
+        }
+    }
     let parent = target_path.parent().ok_or_else(|| {
         AppError::new(
             "hermes_bridge_config_failed",
@@ -12097,7 +12392,7 @@ fn sync_june_soul(
     memory_enabled: bool,
     video_generation_enabled: bool,
     connectors_registered: bool,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     ensure_june_character_file(hermes_home)?;
     let character = load_june_character(hermes_home)
         .unwrap_or_else(|| JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string());
@@ -12138,7 +12433,11 @@ fn sync_june_soul(
     } else {
         format!("{base}{JUNE_SOUL_CONTEXT_MD}{memory_section}{JUNE_SOUL_CLARIFY_MD}{JUNE_SOUL_WEB_MD}{JUNE_SOUL_IMAGE_MD}{video_section}{JUNE_SOUL_RECORDER_MD}{connectors_section}{browser_section}")
     };
-    std::fs::write(hermes_home.join("SOUL.md"), soul)
+    // The identity boundary is never conditional on metadata or a cached
+    // fingerprint: only exact equality with the fully rendered current soul
+    // can skip the write. Any identity, character, grant, or feature change
+    // necessarily produces different bytes and rewrites the whole file.
+    write_file_if_changed(&hermes_home.join("SOUL.md"), soul.as_bytes())
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
 }
 
@@ -17065,6 +17364,129 @@ async fn wait_for_hermes(base_url: &str, token: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn content_aware_startup_assets_skip_exact_bytes_and_replace_changed_patch_script() {
+        let runtime_dir = tempfile::tempdir().expect("runtime dir");
+        let asset = runtime_dir.path().join("asset.py");
+        assert!(write_file_if_changed(&asset, b"current").expect("first write"));
+        assert!(!write_file_if_changed(&asset, b"current").expect("unchanged write"));
+
+        let patch_path = runtime_dir.path().join("apply-june-hermes-patches.py");
+        fs::write(
+            &patch_path,
+            b"PATCH_SET = \"june-approval-memory-previous\"\n",
+        )
+        .expect("stale patch script");
+        let written_path =
+            write_managed_hermes_patch_script(runtime_dir.path()).expect("refresh patch script");
+        assert_eq!(written_path, patch_path);
+        assert_eq!(
+            fs::read(&patch_path).expect("patched script bytes"),
+            HERMES_RUNTIME_PATCH_SCRIPT.as_bytes()
+        );
+        assert!(
+            !write_file_if_changed(&patch_path, HERMES_RUNTIME_PATCH_SCRIPT.as_bytes())
+                .expect("stable patch script"),
+            "the refreshed patch script must not be rewritten again"
+        );
+    }
+
+    #[test]
+    fn soul_hash_guard_skips_only_the_exact_current_identity() {
+        let home = tempfile::tempdir().expect("Hermes home");
+        assert!(
+            sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+                .expect("initial soul")
+        );
+        assert!(
+            !sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+                .expect("unchanged soul"),
+            "an exact current soul must perform zero writes"
+        );
+
+        fs::write(home.path().join("SOUL.md"), "You are Hermes.\n").expect("tamper soul");
+        assert!(
+            sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+                .expect("repair soul"),
+            "identity drift must always rewrite the full soul"
+        );
+        let repaired = fs::read_to_string(home.path().join("SOUL.md")).expect("repaired soul");
+        assert!(repaired.starts_with("You are June"));
+        assert!(!repaired.starts_with("You are Hermes"));
+    }
+
+    #[test]
+    fn workspace_image_attach_snapshot_round_trips_without_base64() {
+        let home = tempfile::tempdir().expect("Hermes home");
+        let uploads = home.path().join("workspace").join("uploads");
+        fs::create_dir_all(&uploads).expect("uploads");
+        let source = uploads.join("diagram.png");
+        let bytes = b"\x89PNG\r\n\x1a\nnative-path-image";
+        fs::write(&source, bytes).expect("source image");
+
+        let prepared = prepare_hermes_image_attachment(
+            home.path(),
+            &PrepareHermesImageAttachmentRequest {
+                session_id: "runtime-session-1".to_string(),
+                path: source.to_string_lossy().into_owned(),
+            },
+        )
+        .expect("prepare image");
+
+        let prepared_path = PathBuf::from(&prepared.path);
+        assert!(prepared_path.starts_with(
+            home.path()
+                .join("workspace")
+                .join(JUNE_WORKSPACE_SESSION_ATTACHMENTS_DIR_NAME)
+        ));
+        assert_eq!(prepared.mime_type, "image/png");
+        assert_eq!(prepared.size, bytes.len() as u64);
+        assert_eq!(fs::read(prepared_path).expect("prepared bytes"), bytes);
+    }
+
+    #[test]
+    fn workspace_image_attach_rejects_paths_outside_allowed_roots() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("hermes");
+        fs::create_dir_all(home.join("workspace")).expect("workspace");
+        let outside = temp.path().join("outside.png");
+        fs::write(&outside, b"\x89PNG\r\n\x1a\noutside").expect("outside image");
+
+        let error = prepare_hermes_image_attachment(
+            &home,
+            &PrepareHermesImageAttachmentRequest {
+                session_id: "runtime-session-1".to_string(),
+                path: outside.to_string_lossy().into_owned(),
+            },
+        )
+        .expect_err("outside path must fail");
+        assert_eq!(error.code, "hermes_image_attach_denied");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_image_attach_rejects_symbolic_links() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().expect("Hermes home");
+        let uploads = home.path().join("workspace").join("uploads");
+        fs::create_dir_all(&uploads).expect("uploads");
+        let target = uploads.join("target.png");
+        fs::write(&target, b"\x89PNG\r\n\x1a\ntarget").expect("target");
+        let link = uploads.join("link.png");
+        symlink(&target, &link).expect("link");
+
+        let error = prepare_hermes_image_attachment(
+            home.path(),
+            &PrepareHermesImageAttachmentRequest {
+                session_id: "runtime-session-1".to_string(),
+                path: link.to_string_lossy().into_owned(),
+            },
+        )
+        .expect_err("symlink must fail");
+        assert_eq!(error.code, "hermes_image_attach_denied");
+    }
+
     // The bundled MCP scripts are written verbatim into the Hermes home and
     // evaluated at import time by the runtime venv. A NameError in module
     // scope (e.g. a tool schema referencing an undefined constant) silently
@@ -21135,6 +21557,28 @@ mcp_servers:
                 .mode()
                 & 0o777,
             0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_atomic_config_performs_zero_replacement_writes() {
+        use std::os::unix::fs::MetadataExt;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let config = home.path().join("config.yaml");
+        let contents = "agent:\n  disabled_toolsets: [memory]\n";
+        write_hermes_config_atomic(&config, contents).expect("initial config write");
+        let before = std::fs::metadata(&config).expect("initial config metadata");
+
+        write_hermes_config_atomic(&config, contents).expect("unchanged config sync");
+        let after = std::fs::metadata(&config).expect("unchanged config metadata");
+
+        assert_eq!(after.dev(), before.dev());
+        assert_eq!(
+            after.ino(),
+            before.ino(),
+            "unchanged config bytes must not replace the file"
         );
     }
 
