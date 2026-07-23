@@ -2310,6 +2310,16 @@ input:focus-visible,
   margin-block: 0;
 }
 
+/* The bubble's shadow lives on the UNMASKED parent: masking applies after
+ * filtering, so a drop-shadow on the masked body itself is erased outside
+ * the silhouette (the same trap as clip-path clipping shadows). Filtering
+ * the parent shadows the child's already-masked raster — the shadow wraps
+ * the curl. One step up from sm so the white card reads against the
+ * unwashed canvas at the top of the thread. */
+.agent-timeline[data-home="true"] .agent-user-turn {
+  filter: var(--drop-shadow-md);
+}
+
 /* Sent messages: a soft borderless card whose little curl turns the surface
  * into speech. This is one continuous silhouette, not a rounded rectangle with
  * a tail glued behind it: the mask owns the side, concave neck, tip, return
@@ -2324,11 +2334,6 @@ input:focus-visible,
   border: 0;
   border-radius: var(--agent-home-bubble-radius);
   background: var(--card);
-  /* drop-shadow follows the mask's alpha (where the curl mask applies), so
-   * the single shadow wraps the silhouette instead of outlining a box. One
-   * step up from sm so the white card reads against the unwashed card canvas
-   * at the top of the thread. */
-  filter: var(--drop-shadow-md);
 }
 
 /* Only the last message of a user run speaks the curl (iMessage grouping);
@@ -19549,6 +19554,12 @@ button.memory-project:hover {
    * do the controls pin to the bottom edge with the text growing above. */
   align-items: center;
   gap: var(--sp-1);
+  /* Fully round on one row regardless of the editor's height... */
+  border-radius: var(--r-pill);
+}
+
+/* ...and composed corners once the draft wraps to its two-row layout. */
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] {
   border-radius: calc(var(--control-md) / 2 + var(--sp-1));
 }
 
