@@ -379,6 +379,7 @@ export type SourceStatusDto = {
   state: SourceState;
   elapsedMs: number;
   bytesWritten: number;
+  droppedSamples?: number;
   level: AudioLevelDto;
   silenceWarning: boolean;
   pathFinalized: boolean;

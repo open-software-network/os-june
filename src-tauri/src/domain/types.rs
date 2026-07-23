@@ -729,6 +729,8 @@ pub struct SourceStatusDto {
     pub state: SourceState,
     pub elapsed_ms: i64,
     pub bytes_written: i64,
+    #[serde(default)]
+    pub dropped_samples: u64,
     pub level: AudioLevelDto,
     pub silence_warning: bool,
     pub path_finalized: bool,

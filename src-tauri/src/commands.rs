@@ -2168,6 +2168,8 @@ pub async fn get_recording_status(
 fn spawn_recording_recovery_checkpoint_worker(repos: Repositories, session_id: String) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(RECOVERY_SNAPSHOT_INTERVAL);
+        let mut reported_dropped_samples = 0_u64;
+        let mut reported_capture_issue = None;
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Tokio intervals tick immediately. The recording-start rows already
         // hold elapsed=0, so wait for the first real checkpoint interval.
@@ -2176,6 +2178,68 @@ fn spawn_recording_recovery_checkpoint_worker(repos: Repositories, session_id: S
             ticker.tick().await;
             match capture_recovery_checkpoint(&session_id) {
                 Ok(Some(checkpoint)) => {
+                    if checkpoint.dropped_samples > reported_dropped_samples {
+                        let dropped_since_last =
+                            checkpoint.dropped_samples - reported_dropped_samples;
+                        match repos
+                            .add_source_checkpoint(
+                                &checkpoint.session_id,
+                                None,
+                                Some(RecordingSource::Microphone.as_db()),
+                                "capture_buffer_overflow",
+                                Some(
+                                    serde_json::json!({
+                                        "droppedSamples": checkpoint.dropped_samples,
+                                        "droppedSinceLastCheckpoint": dropped_since_last,
+                                        "elapsedMs": checkpoint.elapsed_ms,
+                                    })
+                                    .to_string(),
+                                ),
+                            )
+                            .await
+                        {
+                            Ok(()) => {
+                                reported_dropped_samples = checkpoint.dropped_samples;
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "recording overflow checkpoint failed for {}: {}",
+                                    checkpoint.session_id, error
+                                );
+                            }
+                        }
+                    }
+                    if let Some(issue) = checkpoint.capture_issue.as_ref() {
+                        if reported_capture_issue.as_deref() != Some(issue.code.as_str()) {
+                            match repos
+                                .add_source_checkpoint(
+                                    &checkpoint.session_id,
+                                    None,
+                                    Some(RecordingSource::Microphone.as_db()),
+                                    "capture_stream_error",
+                                    Some(
+                                        serde_json::json!({
+                                            "code": issue.code,
+                                            "message": issue.message,
+                                            "elapsedMs": issue.elapsed_ms,
+                                        })
+                                        .to_string(),
+                                    ),
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    reported_capture_issue = Some(issue.code.clone());
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "recording capture issue checkpoint failed for {}: {}",
+                                        checkpoint.session_id, error
+                                    );
+                                }
+                            }
+                        }
+                    }
                     if let Err(error) = persist_recording_recovery_state(
                         &repos,
                         &checkpoint.session_id,
@@ -2349,6 +2413,31 @@ async fn finish_recording_session_with_timing(
         let source_artifact = source_artifacts
             .iter()
             .find(|artifact| artifact.source == source.source.as_db());
+        if source.dropped_samples > 0 {
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    &finished.session_id,
+                    source_artifact.map(|artifact| artifact.id.as_str()),
+                    Some(source.source.as_db()),
+                    "capture_buffer_overflow",
+                    Some(
+                        serde_json::json!({
+                            "droppedSamples": source.dropped_samples,
+                            "final": true,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+            {
+                eprintln!(
+                    "failed to persist capture_buffer_overflow checkpoint for {} source {}: {}",
+                    finished.session_id,
+                    source.source.as_db(),
+                    error
+                );
+            }
+        }
         if let Some(issue) = source.capture_issue.as_ref() {
             if let Err(error) = repos
                 .add_source_checkpoint(
@@ -2358,6 +2447,7 @@ async fn finish_recording_session_with_timing(
                     "capture_stream_error",
                     Some(
                         serde_json::json!({
+                            "code": issue.code,
                             "message": issue.message,
                             "elapsedMs": issue.elapsed_ms,
                         })
