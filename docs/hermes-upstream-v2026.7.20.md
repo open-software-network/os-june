@@ -33,7 +33,7 @@ assets are compiled, then prune the rest of `apps/` from the shipped runtime.
 
 Hermes 0.19 moved Telegram into `plugins/platforms/telegram/adapter.py` and
 incorporated June's prompt image-batch ownership and atomic Telegram config
-write fixes upstream. Patch set `june-approval-memory-v15` retires those
+write fixes upstream. Patch set `june-approval-memory-v16` retires those
 redundant transforms while preserving the remaining checksum-gated changes:
 
 - targeted approval request identity, deduplication, expiry, and fail-closed queues

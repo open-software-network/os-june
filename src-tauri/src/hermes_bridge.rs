@@ -58,7 +58,7 @@ const HERMES_AGENT_INSTALL_COMMIT: &str = "3ef6bbd201263d354fd83ec55b3c306ded2eb
 /// audited `hermes_cli/gateway.py` source hash pins its Label/domain behavior;
 /// the live smoke also corroborates the CLI's reported plist basename.
 const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v15";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v16";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "agent/agent_init.py",

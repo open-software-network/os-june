@@ -1991,7 +1991,7 @@ async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
 /// while the terminal event was crossing the webview boundary.
 ///
 /// The initialized driver is intentionally retained as the off-action-path
-/// prewarm for the next agent run. It has no authority without an attended lease;
+/// prewarm for the next attended task. It has no authority without an attended lease;
 /// explicit Stop, revocation, readiness loss, and shutdown still invalidate the
 /// epoch and terminate it through `stop_inner`/`stop_for_shutdown`.
 async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64) {

@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v15"
+PATCH_SET = "june-approval-memory-v16"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "85b7cb13d6e6306e75d5eec46f193433df680425533b7d35ee99e0f7eab9512a",
