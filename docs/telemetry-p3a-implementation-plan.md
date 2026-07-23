@@ -140,8 +140,12 @@ catalog CI test green.
   the only delivery drain: it reads the durable cursor, sends increments
   serially, persists `p3a_counters.reported_value` after every accepted report,
   and retries failures with bounded exponential backoff. A startup wake-up
-  resumes any pending cursor after restart. Producers never wait for backlog
-  delivery, and concurrent events coalesce into the active or next drain.
+  resumes any pending cursor after restart, and transient repository-open
+  failures retry without terminating the reporter. Producers never wait for
+  backlog delivery, and concurrent events coalesce into the active or next
+  drain. Consent transitions invalidate in-flight attempts: network I/O never
+  holds the transition gate, and a stale result cannot advance the cursor after
+  opt-out, including across a later re-enable.
   Reports still include an ISO week so OS Accounts can aggregate by reporting
   period, but no precise event timestamp is sent.
 - Transport uses `june_api.rs`'s authenticated JSON helper. This protects the

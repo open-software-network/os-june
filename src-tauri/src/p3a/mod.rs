@@ -8,9 +8,18 @@ use crate::{
 };
 use chrono::{Datelike, Utc};
 use serde::{Deserialize, Serialize};
-use std::{fs, future::Future, path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    fs,
+    future::Future,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+    time::Duration,
+};
 use tauri::{AppHandle, Manager, State};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, OwnedRwLockReadGuard, RwLock};
 
 const CONSENT_VERSION: u32 = 1;
 const P3A_SCHEMA_VERSION: u32 = 1;
@@ -21,7 +30,8 @@ const REPORT_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 pub struct P3aSettingsState {
     path: PathBuf,
     settings: Mutex<P3aSettings>,
-    transition_gate: RwLock<()>,
+    transition_gate: Arc<RwLock<()>>,
+    consent_revision: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -47,8 +57,27 @@ struct PendingEventReport {
     bucket: u8,
 }
 
+struct CursorCommitPermit {
+    _consent_guard: Option<OwnedRwLockReadGuard<()>>,
+}
+
+impl CursorCommitPermit {
+    fn for_consent(consent_guard: OwnedRwLockReadGuard<()>) -> Self {
+        Self {
+            _consent_guard: Some(consent_guard),
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test() -> Self {
+        Self {
+            _consent_guard: None,
+        }
+    }
+}
+
 enum SubmitOutcome {
-    Accepted,
+    Accepted(CursorCommitPermit),
     Paused,
     Retry(AppError),
 }
@@ -109,7 +138,8 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(P3aSettingsState {
         path,
         settings: Mutex::new(settings),
-        transition_gate: RwLock::new(()),
+        transition_gate: Arc::new(RwLock::new(())),
+        consent_revision: AtomicU64::new(0),
     });
     app.manage(P3aReporterState { signal_tx });
 
@@ -151,6 +181,7 @@ pub async fn set_p3a_enabled(
     request: SetP3aEnabledRequest,
 ) -> Result<P3aSettingsResponse, AppError> {
     let _transition = state.transition_gate.write().await;
+    state.consent_revision.fetch_add(1, Ordering::AcqRel);
     if !request.enabled {
         clear_local_counters(&app).await?;
     }
@@ -227,24 +258,63 @@ fn signal_reporter(app: &AppHandle) {
 }
 
 fn reporting_enabled(app: &AppHandle) -> Result<bool, AppError> {
-    app.state::<P3aSettingsState>()
+    reporting_enabled_for_state(&app.state::<P3aSettingsState>())
+}
+
+fn reporting_enabled_for_state(state: &P3aSettingsState) -> Result<bool, AppError> {
+    state
         .settings
         .lock()
         .map(|settings| settings.enabled)
         .map_err(|_| AppError::new("p3a_settings_unavailable", "Settings lock failed."))
 }
 
-async fn run_app_reporter(app: AppHandle, signal_rx: mpsc::Receiver<()>) {
-    let repos = match crate::commands::repositories(&app).await {
-        Ok(repos) => repos,
-        Err(error) => {
-            tracing::warn!(
-                error_code = %error.code,
-                error_message = %error.message,
-                "P3A reporter could not open local counters"
-            );
-            return;
+fn enabled_consent_revision(state: &P3aSettingsState) -> Result<Option<u64>, AppError> {
+    reporting_enabled_for_state(state)
+        .map(|enabled| enabled.then(|| state.consent_revision.load(Ordering::Acquire)))
+}
+
+async fn open_reporter_repositories<Open, OpenFuture, Wait, WaitFuture>(
+    signal_rx: &mpsc::Receiver<()>,
+    mut open: Open,
+    wait: Wait,
+) -> Option<Repositories>
+where
+    Open: FnMut() -> OpenFuture,
+    OpenFuture: Future<Output = Result<Repositories, AppError>>,
+    Wait: Fn(Duration) -> WaitFuture,
+    WaitFuture: Future<Output = ()>,
+{
+    let mut retry_delay = REPORT_RETRY_BASE_DELAY;
+    loop {
+        match open().await {
+            Ok(repos) => return Some(repos),
+            Err(error) => {
+                tracing::warn!(
+                    error_code = %error.code,
+                    error_message = %error.message,
+                    retry_delay_ms = retry_delay.as_millis(),
+                    "P3A reporter could not open local counters; retrying"
+                );
+            }
         }
+        if signal_rx.is_closed() {
+            return None;
+        }
+        wait(retry_delay).await;
+        retry_delay = next_retry_delay(retry_delay);
+    }
+}
+
+async fn run_app_reporter(app: AppHandle, signal_rx: mpsc::Receiver<()>) {
+    let Some(repos) = open_reporter_repositories(
+        &signal_rx,
+        || crate::commands::repositories(&app),
+        tokio::time::sleep,
+    )
+    .await
+    else {
+        return;
     };
     let submit_app = app.clone();
     run_reporter(
@@ -350,8 +420,8 @@ where
             epoch: report.epoch.clone(),
             bucket,
         };
-        match submit(event).await {
-            SubmitOutcome::Accepted => {}
+        let commit_permit = match submit(event).await {
+            SubmitOutcome::Accepted(commit_permit) => commit_permit,
             SubmitOutcome::Paused => return FlushOutcome::Paused,
             SubmitOutcome::Retry(error) => {
                 tracing::warn!(
@@ -364,7 +434,7 @@ where
                 );
                 return FlushOutcome::Retry;
             }
-        }
+        };
         reported_value = reported_value.saturating_add(1);
         if let Err(error) = repos
             .mark_p3a_events_reported(question.id(), &report.epoch, reported_value)
@@ -379,32 +449,60 @@ where
             );
             return FlushOutcome::Retry;
         }
+        drop(commit_permit);
     }
     FlushOutcome::Complete
 }
 
-async fn submit_event_report(app: &AppHandle, report: PendingEventReport) -> SubmitOutcome {
-    let state = app.state::<P3aSettingsState>();
-    let _transition = state.transition_gate.read().await;
-    match reporting_enabled(app) {
-        Ok(true) => {}
-        Ok(false) => return SubmitOutcome::Paused,
+async fn submit_with_consent<Submit, SubmitFuture>(
+    state: &P3aSettingsState,
+    submit: Submit,
+) -> SubmitOutcome
+where
+    Submit: FnOnce() -> SubmitFuture,
+    SubmitFuture: Future<Output = Result<(), AppError>>,
+{
+    let attempt_revision = {
+        let _transition = state.transition_gate.read().await;
+        match enabled_consent_revision(state) {
+            Ok(Some(revision)) => revision,
+            Ok(None) => return SubmitOutcome::Paused,
+            Err(error) => return SubmitOutcome::Retry(error),
+        }
+    };
+
+    let result = submit().await;
+
+    // Re-enter the consent gate only after network I/O finishes. A queued
+    // opt-out therefore takes priority and can clear counters immediately.
+    // Keep this short guard through the local cursor update so disable cannot
+    // race between the post-send consent check and durable commit.
+    let consent_guard = state.transition_gate.clone().read_owned().await;
+    match enabled_consent_revision(state) {
+        Ok(Some(current_revision)) if current_revision == attempt_revision => {}
+        Ok(_) => return SubmitOutcome::Paused,
         Err(error) => return SubmitOutcome::Retry(error),
     }
 
-    match submit_p3a_report(JuneP3aReportRequest {
+    match result {
+        Ok(()) => SubmitOutcome::Accepted(CursorCommitPermit::for_consent(consent_guard)),
+        Err(error) => SubmitOutcome::Retry(error),
+    }
+}
+
+async fn submit_event_report(app: &AppHandle, report: PendingEventReport) -> SubmitOutcome {
+    let request = JuneP3aReportRequest {
         schema: P3A_SCHEMA_VERSION,
         question_id: report.question.id().to_string(),
         epoch: report.epoch,
         platform: current_platform().to_string(),
         version_series: current_version_series(),
         bucket: report.bucket,
+    };
+    submit_with_consent(&app.state::<P3aSettingsState>(), || {
+        submit_p3a_report(request)
     })
     .await
-    {
-        Ok(()) => SubmitOutcome::Accepted,
-        Err(error) => SubmitOutcome::Retry(error),
-    }
 }
 
 async fn clear_local_counters(app: &AppHandle) -> Result<(), AppError> {
@@ -530,9 +628,11 @@ fn is_valid_iso_week(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_valid_iso_week, iso_week_for, next_retry_delay, persist_event_and_signal, run_reporter,
-        sanitize_settings, version_series, P3aReporterState, P3aSettings, SubmitOutcome,
-        REPORTER_SIGNAL_CAPACITY, REPORT_RETRY_BASE_DELAY, REPORT_RETRY_MAX_DELAY,
+        is_valid_iso_week, iso_week_for, next_retry_delay, open_reporter_repositories,
+        persist_event_and_signal, run_reporter, sanitize_settings, submit_pending_event_report,
+        submit_with_consent, version_series, CursorCommitPermit, FlushOutcome, P3aReporterState,
+        P3aSettings, P3aSettingsState, SubmitOutcome, REPORTER_SIGNAL_CAPACITY,
+        REPORT_RETRY_BASE_DELAY, REPORT_RETRY_MAX_DELAY,
     };
     use crate::{
         db::{migrations::run_migrations, repositories::Repositories},
@@ -542,14 +642,15 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use sqlx_sqlite::SqlitePoolOptions;
     use std::{
+        path::PathBuf,
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicU64, AtomicUsize, Ordering},
             Arc, Mutex,
         },
         time::Duration,
     };
     use tokio::{
-        sync::{mpsc, Barrier, Notify},
+        sync::{mpsc, Barrier, Notify, RwLock},
         time::{timeout, Instant},
     };
 
@@ -568,6 +669,19 @@ mod tests {
     fn reporter_channel() -> (P3aReporterState, mpsc::Receiver<()>) {
         let (signal_tx, signal_rx) = mpsc::channel(REPORTER_SIGNAL_CAPACITY);
         (P3aReporterState { signal_tx }, signal_rx)
+    }
+
+    fn enabled_settings_state() -> Arc<P3aSettingsState> {
+        Arc::new(P3aSettingsState {
+            path: PathBuf::from("unused-p3a-settings.json"),
+            settings: Mutex::new(P3aSettings {
+                enabled: true,
+                consent_version: 1,
+                consented_at_week: Some(TEST_EPOCH.to_string()),
+            }),
+            transition_gate: Arc::new(RwLock::new(())),
+            consent_revision: AtomicU64::new(0),
+        })
     }
 
     async fn wait_for_reported(repos: &Repositories, question: Question, expected: u64) {
@@ -610,7 +724,7 @@ mod tests {
             }
             self.accepted.fetch_add(1, Ordering::SeqCst);
             self.active.fetch_sub(1, Ordering::SeqCst);
-            SubmitOutcome::Accepted
+            SubmitOutcome::Accepted(CursorCommitPermit::for_test())
         }
     }
 
@@ -641,7 +755,7 @@ mod tests {
                 SubmitOutcome::Retry(AppError::new("test_failure", "Fake sink failed."))
             } else {
                 self.accepted.fetch_add(1, Ordering::SeqCst);
-                SubmitOutcome::Accepted
+                SubmitOutcome::Accepted(CursorCommitPermit::for_test())
             };
             self.active.fetch_sub(1, Ordering::SeqCst);
             outcome
@@ -669,7 +783,7 @@ mod tests {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call < self.accepted_before_failure {
                 self.accepted.fetch_add(1, Ordering::SeqCst);
-                SubmitOutcome::Accepted
+                SubmitOutcome::Accepted(CursorCommitPermit::for_test())
             } else {
                 self.failed.notify_one();
                 SubmitOutcome::Retry(AppError::new("test_failure", "Fake sink failed."))
@@ -719,6 +833,130 @@ mod tests {
         assert!(!is_valid_iso_week("2026-W00"));
         assert!(!is_valid_iso_week("2026-W54"));
         assert!(!is_valid_iso_week("2026-28"));
+    }
+
+    #[tokio::test]
+    async fn disable_does_not_wait_for_stalled_send_or_commit_it_after_reenable() {
+        let repos = test_repositories().await;
+        repos
+            .increment_p3a_counter(Question::DictationSessions.id(), TEST_EPOCH, 1)
+            .await
+            .expect("pending event should persist");
+        let report = repos
+            .unreported_p3a_counters()
+            .await
+            .expect("pending event should load")
+            .pop()
+            .expect("pending event should exist");
+        let state = enabled_settings_state();
+        let send_started = Arc::new(Notify::new());
+        let release_send = Arc::new(Notify::new());
+        let task_repos = repos.clone();
+        let task_state = state.clone();
+        let task_send_started = send_started.clone();
+        let task_release_send = release_send.clone();
+        let delivery = tokio::spawn(async move {
+            submit_pending_event_report(&task_repos, report, &move |_| {
+                let state = task_state.clone();
+                let send_started = task_send_started.clone();
+                let release_send = task_release_send.clone();
+                async move {
+                    submit_with_consent(&state, || async move {
+                        send_started.notify_one();
+                        release_send.notified().await;
+                        Ok(())
+                    })
+                    .await
+                }
+            })
+            .await
+        });
+
+        send_started.notified().await;
+        timeout(Duration::from_secs(1), async {
+            let _transition = state.transition_gate.write().await;
+            state.consent_revision.fetch_add(1, Ordering::AcqRel);
+            repos
+                .clear_p3a_counters()
+                .await
+                .expect("disable should clear pending counters");
+            state.settings.lock().expect("settings lock").enabled = false;
+        })
+        .await
+        .expect("disable should not wait for the stalled network send");
+
+        // Re-enable before the old send completes to cover the consent ABA
+        // race. A sentinel row then makes any stale cursor commit observable.
+        {
+            let _transition = state.transition_gate.write().await;
+            state.consent_revision.fetch_add(1, Ordering::AcqRel);
+            state.settings.lock().expect("settings lock").enabled = true;
+        }
+        repos
+            .increment_p3a_counter(Question::DictationSessions.id(), TEST_EPOCH, 1)
+            .await
+            .expect("sentinel event should persist");
+        release_send.notify_one();
+
+        assert_eq!(
+            delivery.await.expect("delivery task should finish"),
+            FlushOutcome::Paused
+        );
+        let state = repos
+            .p3a_counter_state(Question::DictationSessions.id(), TEST_EPOCH)
+            .await
+            .expect("sentinel state should load")
+            .expect("sentinel state should exist");
+        assert_eq!(state.raw_value, 1);
+        assert_eq!(state.reported_value, 0);
+    }
+
+    #[tokio::test]
+    async fn reporter_retries_repository_open_without_closing_its_receiver() {
+        let repos = test_repositories().await;
+        let (_reporter, signal_rx) = reporter_channel();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let open_attempts = attempts.clone();
+        let open_repos = repos.clone();
+        let delays = Arc::new(Mutex::new(Vec::new()));
+        let retry_delays = delays.clone();
+
+        let opened = open_reporter_repositories(
+            &signal_rx,
+            move || {
+                let attempt = open_attempts.fetch_add(1, Ordering::SeqCst);
+                let repos = open_repos.clone();
+                async move {
+                    if attempt < 2 {
+                        Err(AppError::new(
+                            "test_open_failed",
+                            "Fake repository open failed.",
+                        ))
+                    } else {
+                        Ok(repos)
+                    }
+                }
+            },
+            move |delay| {
+                retry_delays.lock().expect("delay lock").push(delay);
+                async {}
+            },
+        )
+        .await
+        .expect("reporter should recover after transient open failures");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            *delays.lock().expect("delay lock"),
+            vec![
+                REPORT_RETRY_BASE_DELAY,
+                REPORT_RETRY_BASE_DELAY.checked_mul(2).unwrap()
+            ]
+        );
+        opened
+            .increment_p3a_counter(Question::AgentSessions.id(), TEST_EPOCH, 1)
+            .await
+            .expect("recovered repositories should remain usable");
     }
 
     #[tokio::test]
