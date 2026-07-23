@@ -78,13 +78,20 @@ export function serializePlainText(doc: ProseMirrorNode): string {
   });
 }
 
+/** Tiptap reports an editor as destroyed both before its view mounts and after
+ * that view unmounts. Treat both lifecycle windows as unavailable so callers
+ * never reach the throwing `editor.view` proxy. */
+function editorHasView(editor: Editor | null): editor is Editor {
+  return editor !== null && !editor.isDestroyed;
+}
+
 /** Focuses the editor with the caret at the end, synchronously. tiptap's
  * `focus` command defers the actual `view.focus()` to a requestAnimationFrame
  * (for scroll handling); that deferral can land after the user has moved on
  * and steal focus back from, say, a menu they just opened. Focusing the view
  * directly keeps it immediate. */
 function focusEnd(editor: Editor | null) {
-  if (!editor || editor.isDestroyed) return;
+  if (!editorHasView(editor)) return;
   editor.commands.setTextSelection(editor.state.doc.content.size);
   editor.view.focus();
 }
@@ -187,7 +194,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     function updateScrollFades(nextEditor: Editor | null) {
       const frame = frameRef.current;
-      if (!frame || !nextEditor || nextEditor.isDestroyed) return;
+      if (!frame || !editorHasView(nextEditor)) return;
       const scroller = nextEditor.view.dom;
       // A range selection paints a full-width highlight, and the edge fades
       // shave it — which reads as the selection being clipped, not as content
@@ -282,7 +289,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       onCreate: ({ editor }) => {
         queueMicrotask(() => {
           updateScrollFades(editor);
-          if (!editor.isDestroyed) onReadyRef.current?.(editor);
+          if (editorHasView(editor)) onReadyRef.current?.(editor);
         });
       },
       onUpdate: ({ editor }) => {
@@ -299,22 +306,36 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     useEffect(() => {
       if (!editor) return;
-      const scroller = editor.view.dom;
-      let frame = 0;
-      const schedule = () => {
-        window.cancelAnimationFrame(frame);
-        frame = window.requestAnimationFrame(() => updateScrollFades(editor));
+      let detachScrollTracking: (() => void) | null = null;
+      const attachScrollTracking = () => {
+        if (detachScrollTracking || !editorHasView(editor)) return;
+        const scroller = editor.view.dom;
+        let frame = 0;
+        const schedule = () => {
+          window.cancelAnimationFrame(frame);
+          frame = window.requestAnimationFrame(() => updateScrollFades(editor));
+        };
+        scroller.addEventListener("scroll", schedule, { passive: true });
+        window.addEventListener("resize", schedule);
+        const observer =
+          typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+        observer?.observe(scroller);
+        schedule();
+        detachScrollTracking = () => {
+          window.cancelAnimationFrame(frame);
+          scroller.removeEventListener("scroll", schedule);
+          window.removeEventListener("resize", schedule);
+          observer?.disconnect();
+        };
       };
-      scroller.addEventListener("scroll", schedule, { passive: true });
-      window.addEventListener("resize", schedule);
-      const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
-      observer?.observe(scroller);
-      schedule();
+
+      // Register first so a view created between the readiness check and the
+      // subscription still gets its scroll tracking attached.
+      editor.on("create", attachScrollTracking);
+      attachScrollTracking();
       return () => {
-        window.cancelAnimationFrame(frame);
-        scroller.removeEventListener("scroll", schedule);
-        window.removeEventListener("resize", schedule);
-        observer?.disconnect();
+        editor.off("create", attachScrollTracking);
+        detachScrollTracking?.();
       };
     }, [editor]);
 
@@ -322,9 +343,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       ref,
       () => ({
         focus: () => focusEnd(editor),
-        clear: () => editor?.commands.clearContent(true),
+        clear: () => {
+          if (editorHasView(editor)) editor.commands.clearContent(true);
+        },
         setContent: (text, category, options) => {
-          if (!editor) return;
+          if (!editorHasView(editor)) return;
           const staged = options?.selectPlaceholder && !category ? stripPlaceholder(text) : null;
           editor.commands.setContent(
             buildDoc(staged?.text ?? text, category, { rehydrateNoteTokens: !staged }),
@@ -346,13 +369,13 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           }
         },
         insertCategory: (category) => {
-          if (editor) insertReportCategory(editor, category);
+          if (editorHasView(editor)) insertReportCategory(editor, category);
         },
         insertNoteReference: (noteReference) => {
-          if (editor) insertNoteReference(editor, noteReference);
+          if (editorHasView(editor)) insertNoteReference(editor, noteReference);
         },
         insertPlainText: (text) => {
-          if (!editor || editor.isDestroyed) return false;
+          if (!editorHasView(editor)) return false;
           const normalized = text.replace(/\r\n?/g, "\n");
           const content = normalized.split("\n").flatMap((line, index) => {
             const nodes = [];
@@ -367,8 +390,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           editor.view.dispatch(transaction);
           return true;
         },
-        isFocused: () => !!editor?.isFocused && document.hasFocus(),
-        isEmpty: () => editor?.isEmpty ?? true,
+        isFocused: () => editorHasView(editor) && editor.isFocused && document.hasFocus(),
+        isEmpty: () => !editorHasView(editor) || editor.isEmpty,
       }),
       [editor],
     );
