@@ -1,7 +1,7 @@
 import type * as React from "react";
 
 export type useAgentHeroRotationDependencies = {
-  draftRef: React.MutableRefObject<string>;
+  composerHasContent: boolean;
   heroChipsHoverRef: React.MutableRefObject<boolean>;
   heroMode: boolean;
   setHeroChipPhase: React.Dispatch<React.SetStateAction<"in" | "out">>;

@@ -28,6 +28,7 @@ export function createComposerDraftActions(dependencies: createComposerDraftActi
     setAttachMenuOpen,
     setAttachments,
     setCategory,
+    setComposerHasContent,
     setDraft,
     setError,
     setImportingFiles,
@@ -43,6 +44,7 @@ export function createComposerDraftActions(dependencies: createComposerDraftActi
     attachmentsRef.current = [];
     setDraft("");
     setCategory(null);
+    setComposerHasContent(false);
     setAttachments([]);
     forgetComposerDraft(key);
     composerEditorRef.current?.clear();
@@ -51,6 +53,7 @@ export function createComposerDraftActions(dependencies: createComposerDraftActi
   function restoreComposerDraft(key: string | null) {
     const editor = composerEditorRef.current;
     if (!editor) return;
+    if (!editor.flushPendingChange({ persistWithoutRender: true })) return;
     restoredComposerDraftKeyRef.current = key;
     const snapshot = readComposerDraft(key);
     draftRef.current = snapshot?.text ?? "";
@@ -58,9 +61,11 @@ export function createComposerDraftActions(dependencies: createComposerDraftActi
     attachmentsRef.current = snapshot?.attachments ?? [];
     setDraft(snapshot?.text ?? "");
     setCategory(snapshot?.category ?? null);
+    setComposerHasContent(Boolean(snapshot?.text.trim()));
     setAttachments(snapshot?.attachments ?? []);
     editor.setContent(snapshot?.text ?? "", snapshot?.category ?? null, {
       focus: false,
+      changeKey: key,
     });
   }
 

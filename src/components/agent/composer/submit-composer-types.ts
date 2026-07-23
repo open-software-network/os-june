@@ -30,7 +30,6 @@ export type SubmitComposerDependencies = {
   ) => PendingAttachmentPreparation;
   cancelComposerDispatch: (reservation: HermesSessionDispatchReservation | undefined) => void;
   captureSessionModelTarget: (explicitSession?: HermesSessionInfo) => CapturedSessionModelTarget;
-  category: ReportCategory | null;
   categoryRef: React.MutableRefObject<ReportCategory | null>;
   clearComposerDraft: (key?: string) => void;
   composerDispatchOrderRef: React.MutableRefObject<number>;
@@ -39,10 +38,8 @@ export type SubmitComposerDependencies = {
   ) => boolean;
   composerDraftKeyRef: React.MutableRefObject<string | null>;
   composerEditorRef: React.MutableRefObject<ComposerEditorHandle | null>;
-  composerInputSignature: string;
   composerSizeProceedSignatureRef: React.MutableRefObject<string | null>;
   deferredFailedIssueReportDeliverySessionIdsRef: React.MutableRefObject<Set<string>>;
-  draft: string;
   draftRef: React.MutableRefObject<string>;
   enqueueAttachmentFollowUp: (
     sessionId: string,
@@ -73,7 +70,6 @@ export type SubmitComposerDependencies = {
     dispatchReservation?: HermesSessionDispatchReservation,
   ) => Promise<boolean>;
   heroMode: boolean;
-  imageSlashBlockedByModel: boolean;
   importingFiles: boolean;
   newSessionModeRef: React.MutableRefObject<boolean>;
   pendingSteerBySessionIdRef: React.MutableRefObject<Record<string, PendingSteer[]>>;
