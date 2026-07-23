@@ -113,9 +113,7 @@ describe("HermesGatewayClient", () => {
       const connecting = client.connect("ws://gateway");
       const socket = FakeWebSocket.instances[0];
       socket.close = vi.fn();
-      const timedOut = expect(connecting).rejects.toThrow(
-        "Hermes gateway connection timed out.",
-      );
+      const timedOut = expect(connecting).rejects.toThrow("Hermes gateway connection timed out.");
 
       await vi.advanceTimersByTimeAsync(15_000);
       await timedOut;
