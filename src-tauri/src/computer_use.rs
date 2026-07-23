@@ -1641,19 +1641,21 @@ pub async fn computer_use_status(
     bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
     let (status, previous) = status_with_published_readiness(&app, &state).await;
-    let current = ready_state_value(status.ready);
-    if previous != 0 && previous != current {
-        if !status.ready {
-            stop_inner(&app, &state).await;
-            replace_runtime_ready(&state, false);
+    if let Some(previous) = previous {
+        let current = ready_state_value(status.ready);
+        if previous != 0 && previous != current {
+            if !status.ready {
+                stop_inner(&app, &state).await;
+                replace_runtime_ready(&state, false);
+            }
+            // `current` is the authoritative live readiness observation. If the
+            // Hermes config refresh fails, keep that observation instead of
+            // re-arming focus prewarm with the stale previous value.
+            crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
         }
-        // `current` is the authoritative live readiness observation. If the
-        // Hermes config refresh fails, keep that observation instead of
-        // re-arming focus prewarm with the stale previous value.
-        crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    }
-    if status.ready {
-        schedule_driver_prewarm(&app);
+        if status.ready {
+            schedule_driver_prewarm(&app);
+        }
     }
     Ok(status)
 }
@@ -1709,17 +1711,14 @@ fn publish_runtime_ready_probe(
 async fn status_with_published_readiness(
     app: &AppHandle,
     state: &ComputerUseState,
-) -> (ComputerUseStatus, u32) {
-    loop {
-        let expected_epoch = state.epoch.load(Ordering::SeqCst);
-        let status = status_inner(app).await;
-        if let Some(previous) = publish_runtime_ready_probe(state, expected_epoch, status.ready) {
-            return (status, previous);
-        }
-        // Stop or revocation won while the helper/version/permission probe was
-        // suspended. Discard that observation and repeat against the new
-        // lifecycle instead of stamping stale readiness onto its epoch.
-    }
+) -> (ComputerUseStatus, Option<u32>) {
+    let expected_epoch = state.epoch.load(Ordering::SeqCst);
+    let status = status_inner(app).await;
+    let previous = publish_runtime_ready_probe(state, expected_epoch, status.ready);
+    // Stop, revocation, or shutdown may win while the helper/version/permission
+    // probe is suspended. Return the observation to the caller for display, but
+    // do not retry against the newer lifecycle or publish/prewarm into it.
+    (status, previous)
 }
 
 #[tauri::command]
@@ -1741,8 +1740,8 @@ pub async fn set_computer_use_grant(
         replace_runtime_ready(&state, false);
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let (status, _) = status_with_published_readiness(&app, &state).await;
-    if status.ready {
+    let (status, published) = status_with_published_readiness(&app, &state).await;
+    if published.is_some() && status.ready {
         schedule_driver_prewarm(&app);
     }
     Ok(status)
@@ -1778,8 +1777,8 @@ pub async fn computer_use_request_permissions(
     driver_version(&path).await?;
     let _ = probe_permissions(&path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let (status, _) = status_with_published_readiness(&app, &state).await;
-    if status.ready {
+    let (status, published) = status_with_published_readiness(&app, &state).await;
+    if published.is_some() && status.ready {
         schedule_driver_prewarm(&app);
     }
     Ok(status)
@@ -4507,6 +4506,25 @@ mod tests {
 
         assert_eq!(stale_probe.join().expect("stale probe joins"), None);
         assert!(runtime_ready_is_current(&state, false));
+    }
+
+    #[test]
+    fn status_probe_does_not_rebind_after_stop_or_shutdown() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("async fn status_with_published_readiness")
+            .expect("status readiness helper boundary");
+        let end = source[start..]
+            .find("#[tauri::command]")
+            .map(|offset| start + offset)
+            .expect("next command boundary");
+        let helper = &source[start..end];
+
+        assert!(!helper.contains("loop {"));
+        assert_eq!(
+            helper.matches("state.epoch.load(Ordering::SeqCst)").count(),
+            1
+        );
     }
 
     #[test]
