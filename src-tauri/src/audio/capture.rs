@@ -806,9 +806,7 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
     let status = recording.status_with_state(RecordingState::Validating);
-    let writer_capture_issue =
-        microphone_writer_issue(status.elapsed_ms, recording.writer.health().issue);
-    let recording_dto = RecordingSessionDto {
+    let mut recording_dto = RecordingSessionDto {
         id: recording.session_id.clone(),
         note_id: recording.note_id.clone(),
         source_mode: recording.source_mode,
@@ -842,12 +840,13 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
     paused_flag.store(true, Ordering::Release);
     drop(_stream);
     let dropped_samples = writer.stats().dropped_samples;
-    let microphone_finalized = (|| -> Result<(), AppError> {
-        writer
+    let microphone_finalized = (|| -> Result<_, AppError> {
+        let final_writer_health = writer
             .finish()
             .map_err(|error| AppError::new("audio_finalization_failed", error))?;
         std::fs::rename(&partial_path, &final_path)
-            .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))
+            .map_err(|error| AppError::new("audio_finalization_failed", error.to_string()))?;
+        Ok(final_writer_health)
     })();
     if let Some(live_preview) = live_preview {
         live_preview.cancel();
@@ -859,7 +858,13 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
     // dropping `SystemAudioCapture` without `stop()` could leave capture
     // running in the background.
     let system_stopped = system_capture.map(SystemAudioCapture::stop);
-    microphone_finalized?;
+    let final_writer_health = microphone_finalized?;
+    set_final_microphone_bytes(
+        &mut recording_dto.sources,
+        final_writer_health.written_bytes(),
+    );
+    let writer_capture_issue =
+        microphone_writer_issue(recording_dto.elapsed_ms, final_writer_health.issue);
     let mut sources = vec![FinishedSource {
         source: RecordingSource::Microphone,
         final_path: final_path.clone(),
@@ -998,10 +1003,7 @@ impl ActiveRecording {
         let rms = stats.rms;
         let recent_peaks = stats.recent_peaks;
         let writer_health = self.writer.health();
-        let bytes_written = writer_health
-            .written_samples
-            .saturating_mul(2)
-            .min(i64::MAX as u64) as i64;
+        let bytes_written = writer_health.written_bytes();
         let dropped_samples = stats.dropped_samples;
         let elapsed_ms = self.elapsed().as_millis() as i64;
         let microphone_capture_issue = microphone_writer_issue(elapsed_ms, writer_health.issue)
@@ -1193,6 +1195,15 @@ fn source_statuses(
         });
     }
     sources
+}
+
+fn set_final_microphone_bytes(sources: &mut [SourceStatusDto], bytes_written: i64) {
+    if let Some(microphone) = sources
+        .iter_mut()
+        .find(|source| source.source == RecordingSource::Microphone)
+    {
+        microphone.bytes_written = bytes_written;
+    }
 }
 
 fn latch_stall(
@@ -1563,6 +1574,32 @@ mod tests {
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "microphone_buffer_overflow");
+    }
+
+    #[test]
+    fn final_microphone_bytes_replace_the_pre_drain_snapshot_only_for_the_microphone() {
+        let mut sources = source_statuses(
+            RecordingSourceMode::MicrophonePlusSystem,
+            RecordingState::Finalizing,
+            2_000,
+            MicrophoneStatusInput {
+                level: AudioLevelDto::default(),
+                bytes_written: 128,
+                dropped_samples: 0,
+                silence_warning: false,
+                capture_issue: None,
+            },
+            None,
+        );
+        let system_bytes = sources[1].bytes_written;
+
+        set_final_microphone_bytes(&mut sources, 4_096);
+
+        assert_eq!(sources[0].bytes_written, 4_096);
+        assert_eq!(
+            sources[1].bytes_written, system_bytes,
+            "microphone drain progress must not replace system-source metadata"
+        );
     }
 
     #[test]

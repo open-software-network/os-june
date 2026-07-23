@@ -28,10 +28,13 @@ preview).
    after successful WAV writes. The first writer I/O error, panic, unexpected
    exit, or sustained stall stops the drain and immediately enters the existing
    microphone warning path; recovery checkpoints persist its diagnostic code.
+   Each queued block also carries its callback generation, so overflow cannot
+   merge surviving live-preview audio across a dropped callback boundary.
 3. **`finish_recording`** stops the input stream, drains and finalizes the
    writer task, then atomically renames
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
-   preview.
+   preview. Completed microphone byte metadata is replaced from the writer
+   watermark returned after that final drain.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one

@@ -25,6 +25,7 @@ const WRITER_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 struct AudioBlock {
     samples: [i16; AUDIO_BLOCK_SAMPLES],
     len: usize,
+    callback_id: u64,
     ends_callback: bool,
 }
 
@@ -33,7 +34,15 @@ impl AudioBlock {
         Self {
             samples: [0; AUDIO_BLOCK_SAMPLES],
             len: 0,
+            callback_id: 0,
             ends_callback: false,
+        }
+    }
+
+    fn for_callback(callback_id: u64) -> Self {
+        Self {
+            callback_id,
+            ..Self::empty()
         }
     }
 }
@@ -298,14 +307,14 @@ impl CaptureInput {
         }
 
         let ducked = mic_ducked.load(Ordering::Acquire);
-        let mut block = AudioBlock::empty();
+        let mut block = AudioBlock::for_callback(callback);
         let mut callback_peak = 0.0_f32;
         let mut callback_sum_square = 0.0_f64;
         let mut callback_samples = 0_u64;
         for sample in data {
             if block.len == AUDIO_BLOCK_SAMPLES {
                 self.ring.push_overwrite(block);
-                block = AudioBlock::empty();
+                block = AudioBlock::for_callback(callback);
             }
             let clamped = if ducked { 0.0 } else { sample.clamp(-1.0, 1.0) };
             let pcm_sample = (clamped * i16::MAX as f32) as i16;
@@ -393,6 +402,14 @@ pub enum MicrophoneWriterIssue {
 pub struct MicrophoneWriterHealth {
     pub written_samples: u64,
     pub issue: Option<MicrophoneWriterIssue>,
+}
+
+impl MicrophoneWriterHealth {
+    pub fn written_bytes(self) -> i64 {
+        self.written_samples
+            .saturating_mul(std::mem::size_of::<i16>() as u64)
+            .min(i64::MAX as u64) as i64
+    }
 }
 
 struct WriterHealth {
@@ -575,9 +592,10 @@ impl MicrophoneWriter {
                 });
     }
 
-    pub fn finish(mut self) -> Result<(), String> {
+    pub fn finish(mut self) -> Result<MicrophoneWriterHealth, String> {
         self.control.stop_requested.store(true, Ordering::Release);
-        self.join_worker()
+        self.join_worker()?;
+        Ok(self.health())
     }
 
     fn join_worker(&mut self) -> Result<(), String> {
@@ -623,6 +641,43 @@ where
     result
 }
 
+#[derive(Default)]
+struct PreviewAccumulator {
+    callback_id: Option<u64>,
+    samples: Vec<i16>,
+}
+
+impl PreviewAccumulator {
+    fn push<F>(&mut self, block: &AudioBlock, send: &mut F)
+    where
+        F: FnMut(Vec<i16>),
+    {
+        if self
+            .callback_id
+            .is_some_and(|callback_id| callback_id != block.callback_id)
+        {
+            self.flush(send);
+        }
+        self.callback_id = Some(block.callback_id);
+        self.samples.extend_from_slice(&block.samples[..block.len]);
+        if block.ends_callback {
+            self.flush(send);
+        }
+    }
+
+    fn flush<F>(&mut self, send: &mut F)
+    where
+        F: FnMut(Vec<i16>),
+    {
+        if self.samples.is_empty() {
+            self.callback_id = None;
+            return;
+        }
+        send(std::mem::take(&mut self.samples));
+        self.callback_id = None;
+    }
+}
+
 fn drain_audio<W>(
     mut writer: WavWriter<W>,
     ring: &AudioRing,
@@ -635,7 +690,7 @@ fn drain_audio<W>(
 where
     W: Write + Seek,
 {
-    let mut preview_samples = Vec::new();
+    let mut preview_accumulator = PreviewAccumulator::default();
     let mut last_heartbeat = 0;
     loop {
         health.heartbeat();
@@ -662,10 +717,9 @@ where
             }
             health.record_written(written_from_block);
             if let Some(preview) = preview.as_ref() {
-                preview_samples.extend_from_slice(&block.samples[..block.len]);
-                if block.ends_callback {
-                    preview.try_send(std::mem::take(&mut preview_samples));
-                }
+                preview_accumulator.push(&block, &mut |samples| {
+                    preview.try_send(samples);
+                });
             }
         }
 
@@ -694,9 +748,9 @@ where
     }
 
     if let Some(preview) = preview {
-        if !preview_samples.is_empty() {
-            preview.try_send(preview_samples);
-        }
+        preview_accumulator.flush(&mut |samples| {
+            preview.try_send(samples);
+        });
     }
     writer.finalize().map_err(|error| {
         health.fail(StoredWriterFailure::Io);
@@ -714,10 +768,15 @@ mod tests {
     };
 
     fn block(samples: &[i16]) -> AudioBlock {
+        callback_block(samples, 0, true)
+    }
+
+    fn callback_block(samples: &[i16], callback_id: u64, ends_callback: bool) -> AudioBlock {
         let mut block = AudioBlock::empty();
         block.samples[..samples.len()].copy_from_slice(samples);
         block.len = samples.len();
-        block.ends_callback = true;
+        block.callback_id = callback_id;
+        block.ends_callback = ends_callback;
         block
     }
 
@@ -813,6 +872,7 @@ mod tests {
         ring.push_overwrite(block(&[4]));
         ring.push_overwrite(block(&[5, 6]));
         let stats = AtomicCaptureStats::default();
+        stats.record_callback(1.0, 6.0, 6);
         let control = WriterControl::default();
         control.stop_requested.store(true, Ordering::Release);
         let health = WriterHealth::default();
@@ -831,11 +891,48 @@ mod tests {
         write_direct_wav(&direct_path, &[4, 5, 6]);
 
         assert_eq!(ring.dropped_samples(), 3);
-        assert_eq!(health.snapshot(&ring, &control).written_samples, 3);
+        assert_eq!(
+            stats.snapshot(ring.dropped_samples()).samples,
+            6,
+            "producer telemetry still counts every callback sample"
+        );
+        let writer_health = health.snapshot(&ring, &control);
+        assert_eq!(writer_health.written_samples, 3);
+        assert_eq!(
+            writer_health.written_bytes(),
+            6,
+            "writer byte progress must exclude the three overflowed samples"
+        );
         assert_eq!(
             std::fs::read(buffered_path).expect("read buffered overflow WAV"),
             std::fs::read(direct_path).expect("read direct overflow WAV"),
             "overflow must preserve the exact bytes of every surviving sample"
+        );
+    }
+
+    #[test]
+    fn overflowed_callback_end_cannot_merge_surviving_preview_callbacks() {
+        let ring = AudioRing::new(2);
+        let mut preview = PreviewAccumulator::default();
+        let mut batches = Vec::new();
+
+        preview.push(&callback_block(&[1], 1, false), &mut |samples| {
+            batches.push(samples)
+        });
+        ring.push_overwrite(callback_block(&[2], 1, true));
+        ring.push_overwrite(callback_block(&[3], 2, false));
+        ring.push_overwrite(callback_block(&[4], 2, true));
+
+        while let Some(block) = ring.pop() {
+            preview.push(&block, &mut |samples| batches.push(samples));
+        }
+        preview.flush(&mut |samples| batches.push(samples));
+
+        assert_eq!(ring.dropped_samples(), 1);
+        assert_eq!(
+            batches,
+            vec![vec![1], vec![3, 4]],
+            "a callback-id transition must restore the boundary whose end block overflowed"
         );
     }
 
@@ -992,21 +1089,24 @@ mod tests {
             Arc::new(Mutex::new(None)),
         )
         .expect("start buffered writer");
-        let ring = Arc::clone(&writer.ring);
-        let control = Arc::clone(&writer.control);
-        let health = Arc::clone(&writer.health);
-
         input.write(
             samples.iter().copied(),
             &AtomicBool::new(false),
             &AtomicBool::new(false),
         );
-        writer.finish().expect("stop and drain partial block");
+        let final_health = writer.finish().expect("stop and drain partial block");
         write_direct_wav(&direct_path, &expected_samples);
 
+        let finalized_sample_count = WavReader::open(&buffered_path)
+            .expect("read finalized stop-drained WAV")
+            .samples::<i16>()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read finalized stop-drained samples")
+            .len() as u64;
+        assert_eq!(final_health.written_samples, finalized_sample_count);
         assert_eq!(
-            health.snapshot(&ring, &control).written_samples,
-            expected_samples.len() as u64
+            final_health.written_bytes(),
+            finalized_sample_count as i64 * 2
         );
         assert_eq!(
             std::fs::read(buffered_path).expect("read stop-drained WAV"),
@@ -1063,10 +1163,15 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("read recovery-flushed samples");
         assert_eq!(flushed_samples, expected_samples);
-        writer.finish().expect("finish buffered writer");
+        let final_health = writer.finish().expect("finish buffered writer");
 
         write_direct_wav(&direct_path, &expected_samples);
 
+        assert_eq!(
+            final_health.written_samples,
+            expected_samples.len() as u64,
+            "finish must return progress captured after the final ring drain"
+        );
         assert_eq!(
             std::fs::read(buffered_path).expect("read buffered WAV"),
             std::fs::read(direct_path).expect("read direct WAV"),
