@@ -993,12 +993,34 @@ fn detect_legacy_version(
 
     let mut detected = 0;
     let mut first_missing: Option<&Migration> = None;
+    // The first June-owned agent runtime migration intentionally retires the
+    // three Hermes-era agent tables after importing them. Builds that shipped
+    // that migration before the version catalog landed therefore have a
+    // complete, unversioned runtime schema where migrations 9 through 11 are
+    // no longer directly observable. Treat those retired requirements as
+    // satisfied only when the complete replacement schema is present. Every
+    // unrelated historical requirement is still checked normally.
+    let agent_runtime_installed = migrations
+        .iter()
+        .find(|migration| migration.name == "agent_runtime")
+        .is_some_and(|migration| {
+            migration
+                .requirements
+                .iter()
+                .copied()
+                .all(|requirement| snapshot.satisfies(requirement))
+        });
     for migration in migrations {
         let applied = migration
             .requirements
             .iter()
             .copied()
-            .all(|requirement| snapshot.satisfies(requirement));
+            .all(|requirement| snapshot.satisfies(requirement))
+            || (agent_runtime_installed
+                && matches!(
+                    migration.name,
+                    "agent_workspace" | "agent_task_session_identity" | "agent_message_identity"
+                ));
         if applied {
             if let Some(missing) = first_missing {
                 return Err(sqlx::Error::Protocol(format!(
@@ -1272,6 +1294,39 @@ mod tests {
         .expect("delete guard");
     }
 
+    async fn install_runtime_non_replay_guard(pool: &SqlitePool) {
+        query(
+            "INSERT INTO agent_sessions (
+                id, title, status, model, safety_mode, source, created_at, updated_at
+             ) VALUES ('session', 'title', 'idle', 'auto', 'sandboxed', 'user', 'now', 'now')",
+        )
+        .execute(pool)
+        .await
+        .expect("agent session");
+        for (sequence, id) in ["message-1", "message-2"].into_iter().enumerate() {
+            query(
+                "INSERT INTO agent_items (
+                    id, session_id, sequence, kind, payload_json, created_at
+                 ) VALUES (?, 'session', ?, 'assistant_message', '{}', 'now')",
+            )
+            .bind(id)
+            .bind(sequence as i64)
+            .execute(pool)
+            .await
+            .expect("runtime message");
+        }
+        query(
+            "CREATE TRIGGER reject_agent_runtime_replay
+             BEFORE DELETE ON agent_items
+             BEGIN
+               SELECT RAISE(ABORT, 'destructive runtime migration replayed');
+             END",
+        )
+        .execute(pool)
+        .await
+        .expect("runtime delete guard");
+    }
+
     async fn assert_latest_stamp(pool: &SqlitePool) {
         let row = query(
             "SELECT COUNT(*) AS count, MAX(version) AS version
@@ -1370,7 +1425,7 @@ mod tests {
     async fn current_replay_database_is_stamped_without_replaying_sql() {
         let pool = test_pool().await;
         run_migrations(&pool).await.expect("build current schema");
-        install_non_replay_guard(&pool).await;
+        install_runtime_non_replay_guard(&pool).await;
         query("DROP TABLE schema_migrations")
             .execute(&pool)
             .await
@@ -1380,10 +1435,10 @@ mod tests {
             .await
             .expect("stamp current replay database");
 
-        let count: i64 = query("SELECT COUNT(*) AS count FROM agent_messages")
+        let count: i64 = query("SELECT COUNT(*) AS count FROM agent_items")
             .fetch_one(&pool)
             .await
-            .expect("agent messages")
+            .expect("runtime messages")
             .get("count");
         assert_eq!(count, 2);
         assert_latest_stamp(&pool).await;
