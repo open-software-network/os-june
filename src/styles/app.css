@@ -2399,7 +2399,7 @@ input:focus-visible,
 
 @media (prefers-reduced-motion: no-preference) {
   .agent-home-greeting-mark {
-    animation: june-bloom-float 6s var(--ease-in-out) infinite;
+    animation: june-bloom-float 4s var(--ease-in-out) infinite;
   }
 
   .june-bloom[data-animated] {
