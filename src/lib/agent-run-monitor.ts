@@ -1,11 +1,12 @@
 import { dispatchAgentRunSettled, dispatchAgentSessionStatus } from "./agent-events";
-import { hermesConnectionForMode } from "./hermes-connection";
-import { HermesGatewayClient } from "./hermes-gateway";
+import {
+  subscribeHermesActiveSessionSnapshots,
+  type HermesActiveSessionRow,
+} from "./hermes-active-session-snapshots";
 import { watchHermesRunSettlement, type HermesRunSettlementHandle } from "./hermes-run-settlement";
 import {
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
-  hermesBridgeStatus,
   type HermesSessionMessage,
   type HermesSessionInfo,
 } from "./tauri";
@@ -27,23 +28,13 @@ type AgentRunMonitor = StartAgentRunMonitoringInput & {
   settlementCleanupTimer?: ReturnType<typeof setTimeout>;
 };
 
-type ModeObserver = {
-  connected: boolean;
-  connecting?: Promise<void>;
-  gateway: HermesGatewayClient;
-  reconnectTimer?: ReturnType<typeof setTimeout>;
-};
-
 type TerminalOutcome =
   | { kind: "succeeded" }
   | { kind: "failed"; summary: string }
   | { kind: "cancelled" };
 
-const OBSERVER_RECONNECT_MS = 1_000;
-const MONITOR_POLL_INTERVAL_MS = 500;
 const MONITOR_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
 const runs = new Map<string, AgentRunMonitor>();
-const observers = new Map<boolean, ModeObserver>();
 let nextGeneration = 0;
 
 /**
@@ -65,10 +56,6 @@ export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
   };
   runs.set(input.storedSessionId, run);
 
-  if (previous && previous.fullMode !== run.fullMode) {
-    closeObserverWhenUnused(previous.fullMode);
-  }
-  void ensureObserver(run.fullMode).catch(() => scheduleObserverReconnect(run.fullMode));
   startSettlementIfReady(run);
   return run.generation;
 }
@@ -129,53 +116,8 @@ function startSettlementIfReady(run: AgentRunMonitor) {
   run.settlement = watchHermesRunSettlement({
     storedSessionId: run.storedSessionId,
     runtimeSessionId: run.runtimeSessionId,
-    pollIntervalMs: MONITOR_POLL_INTERVAL_MS,
     timeoutMs: MONITOR_TIMEOUT_MS,
-    listActiveSessions: async () => {
-      const observer = await ensureObserver(run.fullMode);
-      const response = await observer.gateway.request<{
-        sessions?: Array<{ id?: string; session_key?: string; status?: string }>;
-      }>("session.active_list", {});
-      const rows = Array.isArray(response?.sessions) ? response.sessions : [];
-      const matchingRows = rows.filter(
-        (row) =>
-          row.id === run.runtimeSessionId ||
-          row.id === run.storedSessionId ||
-          row.session_key === run.runtimeSessionId ||
-          row.session_key === run.storedSessionId,
-      );
-      if (matchingRows.some((row) => row.status !== "idle")) run.observedActive = true;
-
-      // Hermes routes session events only to the transport that created or
-      // resumed that session. The submitting UI can report success as a fast
-      // path, but persisted session state is the correctness path after that
-      // UI disappears.
-      if (
-        !run.succeeded &&
-        (run.observedActive || (run.canProbeBeforeObservedActive && matchingRows.length === 0)) &&
-        matchingRows.every((row) => row.status === "idle")
-      ) {
-        const outcome = await persistedTerminalOutcome(run.storedSessionId);
-        if (outcome?.kind === "succeeded") {
-          run.succeeded = true;
-        } else if (outcome) {
-          finishRun(run);
-          if (outcome.kind === "failed") {
-            dispatchAgentSessionStatus({
-              sessionId: run.storedSessionId,
-              title: run.title,
-              status: "failed",
-              summary: outcome.summary,
-            });
-          }
-        }
-      }
-
-      if (!isCurrent(run) || !run.succeeded || run.settlementHeld) {
-        return [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }];
-      }
-      return rows;
-    },
+    observeActiveSessions: (observer) => observeRunSnapshots(run, observer),
     onSettled: () => {
       if (!isCurrent(run) || run.generation !== generation) return;
       dispatchAgentRunSettled({
@@ -195,6 +137,73 @@ function startSettlementIfReady(run: AgentRunMonitor) {
   run.settlementCleanupTimer = setTimeout(() => {
     if (isCurrent(run) && run.generation === generation) finishRun(run);
   }, MONITOR_TIMEOUT_MS + 1);
+}
+
+function observeRunSnapshots(
+  run: AgentRunMonitor,
+  observer: (rows: readonly HermesActiveSessionRow[] | undefined) => void,
+) {
+  let cancelled = false;
+  let processing = Promise.resolve();
+  const unsubscribe = subscribeHermesActiveSessionSnapshots(run.fullMode, (snapshot) => {
+    processing = processing
+      .then(async () => {
+        if (cancelled || !isCurrent(run)) return;
+        if (!snapshot.reachable) {
+          observer(undefined);
+          return;
+        }
+        const rows = snapshot.rows;
+        const matchingRows = rows.filter(
+          (row) =>
+            row.id === run.runtimeSessionId ||
+            row.id === run.storedSessionId ||
+            row.session_key === run.runtimeSessionId ||
+            row.session_key === run.storedSessionId,
+        );
+        if (matchingRows.some((row) => row.status !== "idle")) run.observedActive = true;
+
+        // Hermes routes session events only to the transport that created or
+        // resumed that session. The submitting UI can report success as a fast
+        // path, but persisted session state is the degraded correctness path
+        // after that UI or its stream disappears.
+        if (
+          !run.succeeded &&
+          (run.observedActive || (run.canProbeBeforeObservedActive && matchingRows.length === 0)) &&
+          matchingRows.every((row) => row.status === "idle")
+        ) {
+          const outcome = await persistedTerminalOutcome(run.storedSessionId);
+          if (cancelled || !isCurrent(run)) return;
+          if (outcome?.kind === "succeeded") {
+            run.succeeded = true;
+          } else if (outcome) {
+            finishRun(run);
+            if (outcome.kind === "failed") {
+              dispatchAgentSessionStatus({
+                sessionId: run.storedSessionId,
+                title: run.title,
+                status: "failed",
+                summary: outcome.summary,
+              });
+            }
+            return;
+          }
+        }
+
+        if (!isCurrent(run) || !run.succeeded || run.settlementHeld) {
+          observer([{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }]);
+          return;
+        }
+        observer(rows);
+      })
+      .catch(() => {
+        if (!cancelled && isCurrent(run)) observer(undefined);
+      });
+  });
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 }
 
 async function persistedTerminalOutcome(
@@ -251,56 +260,10 @@ function terminalOutcomeFromSession(session: HermesSessionInfo): TerminalOutcome
   return undefined;
 }
 
-function createObserver(fullMode: boolean) {
-  const gateway = new HermesGatewayClient();
-  const observer: ModeObserver = { connected: false, gateway };
-  gateway.onClose(() => {
-    if (observers.get(fullMode) !== observer) return;
-    observer.connected = false;
-    scheduleObserverReconnect(fullMode);
-  });
-  observers.set(fullMode, observer);
-  return observer;
-}
-
-async function ensureObserver(fullMode: boolean) {
-  const observer = observers.get(fullMode) ?? createObserver(fullMode);
-  if (observer.connected) return observer;
-  if (!observer.connecting) {
-    const connectionAttempt = (async () => {
-      const status = await hermesBridgeStatus();
-      const connection = hermesConnectionForMode(status, fullMode);
-      if (!connection?.wsUrl) throw new Error("Hermes gateway is not available.");
-      if (observers.get(fullMode) !== observer) throw new Error("Agent run observer was replaced.");
-      await observer.gateway.connect(connection.wsUrl);
-      if (observers.get(fullMode) !== observer) {
-        observer.gateway.close();
-        throw new Error("Agent run observer was replaced.");
-      }
-      observer.connected = true;
-    })().finally(() => {
-      if (observer.connecting === connectionAttempt) observer.connecting = undefined;
-    });
-    observer.connecting = connectionAttempt;
-  }
-  await observer.connecting;
-  return observer;
-}
-
-function scheduleObserverReconnect(fullMode: boolean) {
-  const observer = observers.get(fullMode);
-  if (!observer || observer.reconnectTimer || !hasRunsForMode(fullMode)) return;
-  observer.reconnectTimer = setTimeout(() => {
-    observer.reconnectTimer = undefined;
-    void ensureObserver(fullMode).catch(() => scheduleObserverReconnect(fullMode));
-  }, OBSERVER_RECONNECT_MS);
-}
-
 function finishRun(run: AgentRunMonitor) {
   if (!isCurrent(run)) return;
   runs.delete(run.storedSessionId);
   cancelSettlement(run);
-  closeObserverWhenUnused(run.fullMode);
 }
 
 function cancelSettlement(run: AgentRunMonitor | undefined) {
@@ -317,27 +280,9 @@ function isCurrent(run: AgentRunMonitor) {
   return runs.get(run.storedSessionId)?.generation === run.generation;
 }
 
-function hasRunsForMode(fullMode: boolean) {
-  return [...runs.values()].some((run) => run.fullMode === fullMode);
-}
-
-function closeObserverWhenUnused(fullMode: boolean) {
-  if (hasRunsForMode(fullMode)) return;
-  const observer = observers.get(fullMode);
-  if (!observer) return;
-  observers.delete(fullMode);
-  if (observer.reconnectTimer !== undefined) clearTimeout(observer.reconnectTimer);
-  observer.gateway.close();
-}
-
 /** Clears singleton state between tests. Production ownership lasts for App. */
 export function resetAgentRunMonitoringForTests() {
   for (const run of runs.values()) cancelSettlement(run);
   runs.clear();
-  for (const observer of observers.values()) {
-    if (observer.reconnectTimer !== undefined) clearTimeout(observer.reconnectTimer);
-    observer.gateway.close();
-  }
-  observers.clear();
   nextGeneration = 0;
 }

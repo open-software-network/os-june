@@ -105,7 +105,7 @@ const methods: HermesCompatibilitySection = {
   "session.active_list": {
     status: "supported",
     rationale:
-      "AgentWorkspace polls session.active_list as ground truth for what is actually running.",
+      "The shared Hermes lifecycle scheduler snapshots session.active_list once per runtime mode and distributes it to workspace reconciliation and run settlement.",
     since: PIN,
   },
   "approval.respond": {

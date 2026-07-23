@@ -186,20 +186,34 @@ export function useAgentCoreState(dependencies: UseAgentCoreStateDependencies) {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState !== "hidden") void refreshBrowserApprovals();
+    };
     void refreshBrowserApprovals();
-    const interval = window.setInterval(() => void refreshBrowserApprovals(), 5_000);
     void listen(BROWSER_APPROVALS_CHANGED_EVENT, () => void refreshBrowserApprovals()).then(
       (cleanup) => {
-        if (disposed) cleanup();
-        else unlisten = cleanup;
+        if (disposed) {
+          cleanup();
+          return;
+        }
+        unlisten = cleanup;
+        // Close the race between the initial snapshot and event-subscription
+        // readiness. Re-registering this listener after a remount is also the
+        // approval path's reconnect fallback.
+        void refreshBrowserApprovals();
       },
     );
+    window.addEventListener("focus", refreshWhenVisible);
+    window.addEventListener("online", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       disposed = true;
-      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshWhenVisible);
+      window.removeEventListener("online", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
       unlisten?.();
     };
-  }, [refreshBrowserApprovals]);
+  }, [BROWSER_APPROVALS_CHANGED_EVENT, refreshBrowserApprovals]);
 
   const respondToBrowserApproval = useCallback(
     async (approvalId: string, approve: boolean, allowSite = false) => {

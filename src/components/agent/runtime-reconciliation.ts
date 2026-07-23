@@ -1,5 +1,6 @@
 import { dispatchAgentSessionStatus } from "../../lib/agent-events";
 import { cancelAgentRunMonitoring, releaseAgentRunSettlement } from "../../lib/agent-run-monitor";
+import type { HermesActiveSessionSnapshot } from "../../lib/hermes-active-session-snapshots";
 import { sessionUnrestricted } from "../../lib/agent-session-modes";
 import {
   agentActivityCountsFromStore,
@@ -7,9 +8,13 @@ import {
 } from "./session-state-helpers";
 import type { createRuntimeReconciliationDependencies } from "./runtime-reconciliation-types";
 
+// The shared scheduler runs every 500ms so settlement stays prompt. Preserve
+// the workspace's pre-consolidation five-second registration-race tolerance
+// before treating an absent active row as a missed lifecycle heartbeat.
+const REQUIRED_MISSING_LIFECYCLE_SNAPSHOTS = 11;
+
 export function createRuntimeReconciliation(dependencies: createRuntimeReconciliationDependencies) {
   const {
-    ensureHermesGateway,
     hermesSessionItems,
     pendingAttachmentPreparationsRef,
     pendingSteerBySessionIdRef,
@@ -22,41 +27,11 @@ export function createRuntimeReconciliation(dependencies: createRuntimeReconcili
     workingSessionIdsRef,
   } = dependencies;
 
-  async function liveRuntimeSessionsForModes(modes: boolean[]) {
-    let rows: Array<{ id?: string; session_key?: string; status?: string }> = [];
-    const reachableModes = new Set<boolean>();
-    for (const mode of modes) {
-      try {
-        const gateway = await ensureHermesGateway(mode);
-        const response = await gateway.request<{
-          sessions?: Array<{
-            id?: string;
-            session_key?: string;
-            status?: string;
-          }>;
-        }>("session.active_list", {});
-        rows = rows.concat(Array.isArray(response?.sessions) ? response.sessions : []);
-        reachableModes.add(mode);
-      } catch {
-        // Can't reach this runtime — keep ITS sessions' current state rather
-        // than guess, while the reachable mode still reconciles below.
-      }
-    }
-    const live = new Set<string>();
-    for (const row of rows) {
-      // "idle" means the runtime session exists but isn't processing a turn.
-      if (!row || row.status === "idle") continue;
-      if (row.session_key) live.add(String(row.session_key));
-      if (row.id) live.add(String(row.id));
-    }
-    return { live, reachableModes };
-  }
-
-  function runtimeSnapshotHasSession(snapshot: { live: Set<string> }, sessionId: string) {
+  function runtimeSnapshotHasSession(snapshot: HermesActiveSessionSnapshot, sessionId: string) {
     const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
     return (
-      snapshot.live.has(sessionId) ||
-      Boolean(runtimeSessionId && snapshot.live.has(runtimeSessionId))
+      snapshot.liveSessionIds.has(sessionId) ||
+      Boolean(runtimeSessionId && snapshot.liveSessionIds.has(runtimeSessionId))
     );
   }
 
@@ -78,30 +53,24 @@ export function createRuntimeReconciliation(dependencies: createRuntimeReconcili
     releaseAgentRunSettlement(storedSessionId);
   }
 
-  async function reconcileWorkingSessionsAgainstRuntime() {
-    const working = Array.from(workingSessionIdsRef.current);
+  async function reconcileWorkingSessionsAgainstRuntime(snapshot: HermesActiveSessionSnapshot) {
+    const allWorking = Array.from(workingSessionIdsRef.current);
     const misses = workingReconcileMissesRef.current;
     for (const sessionId of misses.keys()) {
-      if (!working.includes(sessionId)) misses.delete(sessionId);
+      if (!allWorking.includes(sessionId)) misses.delete(sessionId);
     }
+    if (!snapshot.reachable) return;
+    const working = allWorking.filter(
+      (sessionId) => sessionUnrestricted(sessionId) === snapshot.fullMode,
+    );
     if (working.length === 0) return;
-    // Working sessions may span both runtime processes; ask each mode that
-    // has one and union the answers. A mode we can't reach keeps its
-    // sessions' current state rather than guessing — so a one-gateway
-    // failure must not mark the other mode's sessions dead either.
-    const modes = Array.from(new Set(working.map((sessionId) => sessionUnrestricted(sessionId))));
-    const snapshot = await liveRuntimeSessionsForModes(modes);
-    if (snapshot.reachableModes.size === 0) return;
     for (const sessionId of working) {
-      // Sessions of an unreachable mode were not in any answer we got;
-      // counting them as misses would mark live work dead.
-      if (!snapshot.reachableModes.has(sessionUnrestricted(sessionId))) continue;
       if (runtimeSnapshotHasSession(snapshot, sessionId)) {
         misses.delete(sessionId);
         continue;
       }
       const seen = (misses.get(sessionId) ?? 0) + 1;
-      if (seen < 2) {
+      if (seen < REQUIRED_MISSING_LIFECYCLE_SNAPSHOTS) {
         misses.set(sessionId, seen);
         continue;
       }
@@ -131,8 +100,6 @@ export function createRuntimeReconciliation(dependencies: createRuntimeReconcili
   }
 
   return {
-    liveRuntimeSessionsForModes,
-    runtimeSnapshotHasSession,
     cancelAgentRunSettlement,
     hasAutomaticContinuation,
     watchCompletedAgentRunSettle,

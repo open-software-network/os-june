@@ -96,6 +96,18 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   works from classified `JuneHermesEvent`s, never from raw frames. Every
   normalized event carries `receivedAt`; first-party local kinds (`steering`)
   are minted by June and never come out of `classifyHermesEvent`.
+- **Lifecycle reconciliation uses one shared snapshot cycle.**
+  `hermes-active-session-snapshots.ts` requests `session.active_list` once per
+  active runtime mode every cycle and distributes the same result to run
+  settlement and the mounted workspace. The gateway event stream remains the
+  primary message path. Complete persisted history is fetched for a working
+  session only after consecutive missing lifecycle heartbeats or an unexpected
+  stream disconnect; the current bridge has no message-revision or delta
+  contract.
+- **Browser approvals are event-led.** The browser-approval change event
+  refreshes pending approvals promptly. Snapshot reads are limited to initial
+  subscription, listener reattachment, and focus, visibility, or online
+  recovery rather than a permanent timer.
 - **Identity override.** June rewrites the runtime's persona at prompt-build time
   via an injected `SOUL.md`; June presents as June, never as Hermes.
 

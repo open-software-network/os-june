@@ -1,5 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { watchHermesRunSettlement } from "../lib/hermes-run-settlement";
+import {
+  type HermesActiveSessionRow,
+  watchHermesRunSettlement,
+} from "../lib/hermes-run-settlement";
+
+function snapshotSource() {
+  const observers = new Set<(rows: readonly HermesActiveSessionRow[] | undefined) => void>();
+  const observeActiveSessions = vi.fn(
+    (observer: (rows: readonly HermesActiveSessionRow[] | undefined) => void) => {
+      observers.add(observer);
+      return () => observers.delete(observer);
+    },
+  );
+  return {
+    emit(rows: readonly HermesActiveSessionRow[] | undefined) {
+      for (const observer of [...observers]) observer(rows);
+    },
+    observeActiveSessions,
+    observers,
+  };
+}
 
 describe("Hermes run settlement", () => {
   beforeEach(() => {
@@ -11,175 +31,149 @@ describe("Hermes run settlement", () => {
     vi.useRealTimers();
   });
 
-  it("settles after two reachable idle observations", async () => {
-    const listActiveSessions = vi.fn(async () => []);
+  it("settles after two reachable idle observations", () => {
+    const source = snapshotSource();
     const onSettled = vi.fn();
 
     watchHermesRunSettlement({
       storedSessionId: "stored-1",
-      listActiveSessions,
+      observeActiveSessions: source.observeActiveSessions,
       onSettled,
-      pollIntervalMs: 20,
       timeoutMs: 100,
     });
 
-    await vi.advanceTimersByTimeAsync(0);
-    expect(listActiveSessions).toHaveBeenCalledOnce();
+    source.emit([]);
     expect(onSettled).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(20);
-    expect(listActiveSessions).toHaveBeenCalledTimes(2);
+    source.emit([]);
     expect(onSettled).toHaveBeenCalledOnce();
-
-    await vi.advanceTimersByTimeAsync(100);
-    expect(onSettled).toHaveBeenCalledOnce();
+    expect(source.observers).toHaveLength(0);
   });
 
-  it("requires consecutive idle observations and ignores unrelated busy sessions", async () => {
-    const snapshots = [
-      [],
-      [{ session_key: "stored-1", status: "working" }],
-      [{ session_key: "someone-else", status: "working" }],
-      [{ session_key: "stored-1", status: "idle" }],
-    ];
-    const listActiveSessions = vi.fn(async () => snapshots.shift() ?? []);
+  it("requires consecutive idle observations and ignores unrelated busy sessions", () => {
+    const source = snapshotSource();
     const onSettled = vi.fn();
 
     watchHermesRunSettlement({
       storedSessionId: "stored-1",
-      listActiveSessions,
+      observeActiveSessions: source.observeActiveSessions,
       onSettled,
-      pollIntervalMs: 10,
       timeoutMs: 100,
     });
 
-    await vi.advanceTimersByTimeAsync(20);
+    source.emit([]);
+    source.emit([{ session_key: "stored-1", status: "working" }]);
+    source.emit([{ session_key: "someone-else", status: "working" }]);
     expect(onSettled).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
+    source.emit([{ session_key: "stored-1", status: "idle" }]);
 
     expect(onSettled).toHaveBeenCalledOnce();
-    expect(listActiveSessions).toHaveBeenCalledTimes(4);
   });
 
-  it("treats a non-idle runtime-id match as busy", async () => {
-    const snapshots = [
-      [{ id: "runtime-1", status: "working" }],
-      [{ id: "runtime-1", status: "idle" }],
-      [{ id: "runtime-1", status: "idle" }],
-    ];
+  it("treats a non-idle runtime-id match as busy", () => {
+    const source = snapshotSource();
     const onSettled = vi.fn();
 
     watchHermesRunSettlement({
       storedSessionId: "stored-1",
       runtimeSessionId: "runtime-1",
-      listActiveSessions: vi.fn(async () => snapshots.shift() ?? []),
+      observeActiveSessions: source.observeActiveSessions,
       onSettled,
-      pollIntervalMs: 10,
       timeoutMs: 100,
     });
 
-    await vi.advanceTimersByTimeAsync(10);
+    source.emit([{ id: "runtime-1", status: "working" }]);
+    source.emit([{ id: "runtime-1", status: "idle" }]);
     expect(onSettled).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
+    source.emit([{ id: "runtime-1", status: "idle" }]);
     expect(onSettled).toHaveBeenCalledOnce();
   });
 
-  it("retries errors without settling and stops at the timeout", async () => {
-    const listActiveSessions = vi.fn(async () => {
-      throw new Error("gateway unavailable");
-    });
+  it("ignores unreachable observations and stops at the timeout", async () => {
+    const source = snapshotSource();
     const onSettled = vi.fn();
 
     watchHermesRunSettlement({
       storedSessionId: "stored-timeout",
-      listActiveSessions,
+      observeActiveSessions: source.observeActiveSessions,
       onSettled,
-      pollIntervalMs: 10,
       timeoutMs: 25,
     });
 
+    source.emit(undefined);
+    source.emit(undefined);
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(listActiveSessions).toHaveBeenCalledTimes(3);
     expect(onSettled).not.toHaveBeenCalled();
+    expect(source.observers).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("resets an idle streak when a poll fails", async () => {
-    const listActiveSessions = vi
-      .fn<() => Promise<readonly []>>()
-      .mockResolvedValueOnce([])
-      .mockRejectedValueOnce(new Error("gateway unavailable"))
-      .mockResolvedValue([]);
+  it("resets an idle streak when a snapshot is unreachable", () => {
+    const source = snapshotSource();
     const onSettled = vi.fn();
 
     watchHermesRunSettlement({
       storedSessionId: "stored-retry",
-      listActiveSessions,
+      observeActiveSessions: source.observeActiveSessions,
       onSettled,
-      pollIntervalMs: 10,
       timeoutMs: 100,
     });
 
-    await vi.advanceTimersByTimeAsync(20);
+    source.emit([]);
+    source.emit(undefined);
+    source.emit([]);
     expect(onSettled).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
+    source.emit([]);
     expect(onSettled).toHaveBeenCalledOnce();
   });
 
-  it("coalesces a duplicate watch and keeps the first callback", async () => {
-    const listActiveSessions = vi.fn(async () => [
-      { id: "runtime-from-second-call", status: "working" },
-    ]);
+  it("coalesces a duplicate watch and keeps the first callback", () => {
+    const source = snapshotSource();
+    const secondSource = snapshotSource();
     const firstCallback = vi.fn();
     const secondCallback = vi.fn();
     const firstHandle = watchHermesRunSettlement({
       storedSessionId: "stored-shared",
-      listActiveSessions,
+      observeActiveSessions: source.observeActiveSessions,
       onSettled: firstCallback,
-      pollIntervalMs: 10,
       timeoutMs: 100,
     });
     const secondHandle = watchHermesRunSettlement({
       storedSessionId: "stored-shared",
       runtimeSessionId: "runtime-from-second-call",
-      listActiveSessions: vi.fn(async () => []),
+      observeActiveSessions: secondSource.observeActiveSessions,
       onSettled: secondCallback,
-      pollIntervalMs: 1,
       timeoutMs: 2,
     });
 
     expect(secondHandle).toBe(firstHandle);
-    await vi.advanceTimersByTimeAsync(30);
+    source.emit([{ id: "runtime-from-second-call", status: "working" }]);
+    source.emit([]);
+    source.emit([{ id: "runtime-from-second-call", status: "working" }]);
 
     expect(firstCallback).not.toHaveBeenCalled();
     expect(secondCallback).not.toHaveBeenCalled();
-    expect(listActiveSessions).toHaveBeenCalledTimes(4);
+    expect(source.observeActiveSessions).toHaveBeenCalledOnce();
+    expect(secondSource.observeActiveSessions).not.toHaveBeenCalled();
   });
 
-  it("cancels an active watch, including an in-flight observation", async () => {
-    let resolveList: (rows: readonly []) => void = () => undefined;
-    const listActiveSessions = vi.fn(
-      () =>
-        new Promise<readonly []>((resolve) => {
-          resolveList = resolve;
-        }),
-    );
+  it("cancels an active watch and unsubscribes it", async () => {
+    const source = snapshotSource();
     const onSettled = vi.fn();
     const handle = watchHermesRunSettlement({
       storedSessionId: "stored-cancelled",
-      listActiveSessions,
+      observeActiveSessions: source.observeActiveSessions,
       onSettled,
-      pollIntervalMs: 10,
       timeoutMs: 100,
     });
 
     handle.cancel();
-    resolveList([]);
+    source.emit([]);
+    source.emit([]);
     await vi.advanceTimersByTimeAsync(100);
 
-    expect(listActiveSessions).toHaveBeenCalledOnce();
     expect(onSettled).not.toHaveBeenCalled();
+    expect(source.observers).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
   });
 });

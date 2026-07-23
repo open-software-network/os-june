@@ -43,6 +43,7 @@ import { pendingActionStore } from "../lib/hermes-pending-actions";
 import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
+import { resetHermesActiveSessionSnapshotsForTests } from "../lib/hermes-active-session-snapshots";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -75,6 +76,8 @@ function stubNavigatorPlatform(platform: string, userAgent: string) {
 
 const mocks = vi.hoisted(() => ({
   assignSessionToProfile: vi.fn(),
+  browserApprovalRespond: vi.fn(),
+  browserApprovalsPending: vi.fn(),
   invoke: vi.fn(),
   cancelAgentRunMonitoring: vi.fn(),
   cancelAgentTask: vi.fn(),
@@ -175,6 +178,8 @@ vi.mock("../lib/tauri", () => ({
   // The pending skill-writes tray loads through the Rust bridge via this named
   // `invoke`. A quiet stub keeps these workspace tests off that path.
   assignSessionToProfile: mocks.assignSessionToProfile,
+  browserApprovalRespond: mocks.browserApprovalRespond,
+  browserApprovalsPending: mocks.browserApprovalsPending,
   invoke: mocks.invoke,
   cancelAgentTask: mocks.cancelAgentTask,
   computerUseBeginRun: mocks.computerUseBeginRun,
@@ -564,6 +569,7 @@ describe("AgentWorkspace", () => {
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    resetHermesActiveSessionSnapshotsForTests();
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
@@ -669,6 +675,8 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listSessionProfiles.mockResolvedValue([]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
+    mocks.browserApprovalsPending.mockResolvedValue([]);
+    mocks.browserApprovalRespond.mockResolvedValue(undefined);
     mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
     mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
     mocks.registerBrowserExtensionHost.mockResolvedValue({
@@ -757,6 +765,46 @@ describe("AgentWorkspace", () => {
     expect(second.workingSessionIds).toBe(first.workingSessionIds);
     expect(second.waitingSessionIds).toBe(first.waitingSessionIds);
     expect(second.toolCallSessionIds).toBe(first.toolCallSessionIds);
+  });
+
+  it("uses browser approval events with focus fallback instead of permanent polling", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.browserApprovalsPending.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      const callsAfterEventSubscription = mocks.browserApprovalsPending.mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_000);
+      });
+      expect(mocks.browserApprovalsPending).toHaveBeenCalledTimes(callsAfterEventSubscription);
+
+      mocks.browserApprovalsPending.mockResolvedValue([
+        {
+          approvalId: "browser-approval-event",
+          site: "https://shop.example",
+          action: "click",
+          elementLabel: "Purchase now",
+          requestedAtMs: 1,
+        },
+      ]);
+      act(() => {
+        void mocks.eventHandlers.get("june://browser-approvals-changed")?.({});
+      });
+      await settleUnderFakeTimers(() =>
+        expect(screen.getByText("Browser approval required")).toBeInTheDocument(),
+      );
+
+      mocks.browserApprovalsPending.mockResolvedValue([]);
+      act(() => window.dispatchEvent(new Event("focus")));
+      await settleUnderFakeTimers(() =>
+        expect(screen.queryByText("Browser approval required")).toBeNull(),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a session waiting while any distinct pending action remains", () => {
@@ -5919,7 +5967,7 @@ describe("AgentWorkspace", () => {
     );
 
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
@@ -5941,11 +5989,11 @@ describe("AgentWorkspace", () => {
     );
 
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
-  }, 10_000);
+  }, 15_000);
 
   it("rechecks latest messages when a fresh prompt-only suggestion resolves after the reply loads", async () => {
     const rawTitle = "I want you to summarize latest failures";
@@ -6063,7 +6111,7 @@ describe("AgentWorkspace", () => {
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
@@ -6083,12 +6131,12 @@ describe("AgentWorkspace", () => {
     );
 
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
     expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
-  }, 10_000);
+  }, 15_000);
 
   it("keeps a prompt title when the first-exchange suggestion is assistant dialogue", async () => {
     const rawTitle = "I want you to summarize latest failures";
@@ -6157,7 +6205,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Failure summary")).toBeInTheDocument();
 
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
@@ -6193,7 +6241,7 @@ describe("AgentWorkspace", () => {
       "sandboxed",
     );
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2);
 
@@ -6215,7 +6263,7 @@ describe("AgentWorkspace", () => {
       "sandboxed",
     );
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(3));
@@ -6224,7 +6272,7 @@ describe("AgentWorkspace", () => {
       "I fixed the staging persistence race and verified the regression test.",
     );
     expect(await screen.findByText("Staging persistence fix")).toBeInTheDocument();
-  }, 15_000);
+  }, 25_000);
 
   it("keeps a failed fresh title fallback retry to a later natural refresh", async () => {
     const rawTitle = "I want you to summarize latest failures";
@@ -6349,7 +6397,7 @@ describe("AgentWorkspace", () => {
     expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      await new Promise((resolve) => window.setTimeout(resolve, 2600));
+      await new Promise((resolve) => window.setTimeout(resolve, 5200));
     });
 
     await waitFor(() => expect(mocks.suggestAgentSessionTitle).toHaveBeenCalledTimes(2));
@@ -6358,7 +6406,7 @@ describe("AgentWorkspace", () => {
       "I found the failing path and isolated the missing persistence call.",
     );
     expect(await screen.findByText("Persistence Fix")).toBeInTheDocument();
-  }, 10_000);
+  }, 12_000);
 
   it("keeps a sidebar rename from being overwritten by a prompt-title exchange upgrade", async () => {
     const rawTitle = "I want you to summarize latest failures";
@@ -9549,6 +9597,39 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("approval.respond", expect.anything());
   });
 
+  it("refreshes persisted history when the live gateway stream disconnects", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "keep working");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "keep working",
+      }),
+    );
+    expect(await screen.findByText("Thinking…")).toBeInTheDocument();
+    const historyCallsBeforeDisconnect = mocks.listHermesSessionMessages.mock.calls.length;
+
+    act(() => {
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-1",
+        cols: 96,
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        historyCallsBeforeDisconnect,
+      ),
+    );
+  });
+
   it("retires an approval across an unexpected close and does not reopen its replay", async () => {
     const statusDetails: AgentSessionStatusDetail[] = [];
     const handleStatus = (event: Event) => {
@@ -10348,22 +10429,18 @@ describe("AgentWorkspace", () => {
       return Promise.resolve({});
     });
 
-    // The whole flow runs under fake timers so the working-gated poll's
-    // interval is created on the fake clock and can be advanced.
+    // The whole flow runs under fake timers so the shared lifecycle snapshots
+    // are created on the fake clock and can be advanced.
     vi.useFakeTimers();
     try {
       render(<AgentWorkspace />);
       await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
       expect(mocks.computerUseBeginRun).not.toHaveBeenCalled();
 
-      // Two reconcile polls: the first miss is tolerated (a fresh submit can
-      // race the runtime registering), the second clears the activity.
+      // The immediate snapshot starts the original five-second tolerance.
+      // Its expiry confirms the dead runtime and engages history fallback.
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
-      });
-      expect(screen.getByText("Thinking…")).toBeInTheDocument();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
+        await vi.advanceTimersByTimeAsync(5_000);
       });
 
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {});
@@ -10430,15 +10507,13 @@ describe("AgentWorkspace", () => {
       await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
 
       // The run actually finished — the reply is now persisted; the runtime
-      // just forgot the session (active_list []). The next poll's refresh sees
-      // it and dispatches exactly one "completed", never a "June stopped".
+      // just forgot the session (active_list []). The next shared snapshot's
+      // degraded refresh sees it and dispatches exactly one "completed", never
+      // a "June stopped".
       replyPersisted = true;
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
+        await vi.advanceTimersByTimeAsync(5_000);
       });
 
       expect(screen.getByText("Here is the answer.")).toBeInTheDocument();
@@ -10488,10 +10563,7 @@ describe("AgentWorkspace", () => {
       await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
+        await vi.advanceTimersByTimeAsync(1_000);
       });
 
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.active_list", {});
@@ -14086,9 +14158,19 @@ describe("AgentWorkspace", () => {
         timestamp: "2026-06-04T12:00:01.000Z",
       },
     ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "session.active_list") {
+        return Promise.resolve({
+          sessions: [{ id: "runtime-session-1", session_key: "session-1", status: "working" }],
+        });
+      }
+      return Promise.resolve({});
+    });
 
     render(<AgentWorkspace />);
-
     expect(await screen.findByText("older answer")).toBeInTheDocument();
 
     await user.type(screen.getByRole("textbox"), "continue");
@@ -14104,21 +14186,12 @@ describe("AgentWorkspace", () => {
     expect(screen.getAllByText("continue")).toHaveLength(2);
     expect(screen.getByText("Thinking…")).toBeInTheDocument();
 
-    // Let the working-gated poll (2.5s) refresh against the same old
-    // history: the new pending "continue" must survive and the run must not
-    // be marked finished against the old answer.
+    // Healthy lifecycle snapshots do not refetch complete persisted history.
     const refreshCallsBefore = mocks.listHermesSessionMessages.mock.calls.length;
-    await waitFor(
-      () =>
-        expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
-          refreshCallsBefore,
-        ),
-      { timeout: 4000 },
-    );
-    // Give the refresh's state updates time to land before asserting.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      await new Promise((resolve) => setTimeout(resolve, 750));
     });
+    expect(mocks.listHermesSessionMessages).toHaveBeenCalledTimes(refreshCallsBefore);
     expect(screen.getAllByText("continue")).toHaveLength(2);
     expect(screen.getByText("Thinking…")).toBeInTheDocument();
   });
@@ -15389,8 +15462,8 @@ describe("AgentWorkspace", () => {
       }
       return Promise.resolve({});
     });
-    // Hold the submit just before completion so the working poll's interval
-    // is created on the fake clock (a real-clock interval can't be advanced).
+    // Hold the submit just before completion so the shared lifecycle cycle is
+    // created on the fake clock (a real-clock timer can't be advanced).
     let resolveEnsureSession: (value: unknown) => void = () => {};
     mocks.ensureHermesBridgeSession.mockImplementationOnce(
       () =>
@@ -15418,10 +15491,10 @@ describe("AgentWorkspace", () => {
         text: "follow up while racing",
       });
 
-      // The working poll's refresh applies the newer history (follow-up +
+      // The missed-heartbeat fallback applies the newer history (follow-up +
       // reply persisted; the optimistic bubble is dropped against it).
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(2500);
+        await vi.advanceTimersByTimeAsync(5_000);
       });
       expect(screen.getByText("raced reply")).toBeInTheDocument();
 

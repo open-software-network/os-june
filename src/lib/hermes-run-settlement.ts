@@ -11,13 +11,13 @@ export type HermesRunSettlementHandle = {
 export type WatchHermesRunSettlementOptions = {
   storedSessionId: string;
   runtimeSessionId?: string;
-  listActiveSessions: () => Promise<readonly HermesActiveSessionRow[]>;
+  observeActiveSessions: (
+    observer: (rows: readonly HermesActiveSessionRow[] | undefined) => void,
+  ) => () => void;
   onSettled: () => void;
-  pollIntervalMs?: number;
   timeoutMs?: number;
 };
 
-const DEFAULT_POLL_INTERVAL_MS = 200;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const REQUIRED_IDLE_OBSERVATIONS = 2;
 
@@ -26,7 +26,7 @@ type SettlementWatch = {
   handle: HermesRunSettlementHandle;
   idleObservations: number;
   identifiers: Set<string>;
-  nextPollTimer?: ReturnType<typeof setTimeout>;
+  unsubscribe?: () => void;
   timeoutTimer: ReturnType<typeof setTimeout>;
 };
 
@@ -51,9 +51,10 @@ function matchingSessionIsIdle(
  *
  * One watch is shared per stored session. A call made while that session is
  * already being watched returns the shared handle and adds its optional
- * runtime id to the match set. The first call owns the poll function, timings,
- * and callback; later callbacks are intentionally ignored so one run can emit
- * at most one settlement. Cancelling any shared handle cancels that watch.
+ * runtime id to the match set. The first call owns the snapshot subscription,
+ * timeout, and callback; later callbacks are intentionally ignored so one run
+ * can emit at most one settlement. Cancelling any shared handle cancels that
+ * watch.
  */
 export function watchHermesRunSettlement(
   options: WatchHermesRunSettlementOptions,
@@ -64,7 +65,6 @@ export function watchHermesRunSettlement(
     return existing.handle;
   }
 
-  const pollIntervalMs = Math.max(0, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
   const timeoutMs = Math.max(0, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const identifiers = new Set([options.storedSessionId]);
   if (options.runtimeSessionId) identifiers.add(options.runtimeSessionId);
@@ -74,7 +74,8 @@ export function watchHermesRunSettlement(
     if (watch.finished) return;
     watch.finished = true;
     clearTimeout(watch.timeoutTimer);
-    if (watch.nextPollTimer !== undefined) clearTimeout(watch.nextPollTimer);
+    watch.unsubscribe?.();
+    watch.unsubscribe = undefined;
     if (settlementWatches.get(options.storedSessionId) === watch) {
       settlementWatches.delete(options.storedSessionId);
     }
@@ -89,34 +90,23 @@ export function watchHermesRunSettlement(
   };
   settlementWatches.set(options.storedSessionId, watch);
 
-  const scheduleNextPoll = () => {
+  const unsubscribe = options.observeActiveSessions((rows) => {
     if (watch.finished) return;
-    watch.nextPollTimer = setTimeout(() => {
-      watch.nextPollTimer = undefined;
-      void poll();
-    }, pollIntervalMs);
-  };
-  const poll = async () => {
-    try {
-      const rows = await options.listActiveSessions();
-      if (watch.finished) return;
-      if (matchingSessionIsIdle(rows, watch.identifiers)) {
-        watch.idleObservations += 1;
-        if (watch.idleObservations >= REQUIRED_IDLE_OBSERVATIONS) {
-          finish();
-          options.onSettled();
-          return;
-        }
-      } else {
-        watch.idleObservations = 0;
-      }
-    } catch {
-      if (watch.finished) return;
+    if (rows === undefined) {
       watch.idleObservations = 0;
+      return;
     }
-    scheduleNextPoll();
-  };
-
-  void poll();
+    if (matchingSessionIsIdle(rows, watch.identifiers)) {
+      watch.idleObservations += 1;
+      if (watch.idleObservations >= REQUIRED_IDLE_OBSERVATIONS) {
+        finish();
+        options.onSettled();
+      }
+      return;
+    }
+    watch.idleObservations = 0;
+  });
+  if (watch.finished) unsubscribe();
+  else watch.unsubscribe = unsubscribe;
   return handle;
 }
