@@ -12810,7 +12810,7 @@ async fn handle_june_provider_connection(
     }
     let body_mode = provider_proxy_body_mode(&request.method, &request.path);
     let max_body_bytes = provider_proxy_max_body_bytes(&request.path);
-    if body_mode != ProviderProxyBodyMode::StreamedPassthrough && content_length > max_body_bytes {
+    if content_length > max_body_bytes {
         // Enforced here (was inside the old read_http_request) so it runs after
         // auth. Chat bodies keep the context-overflow wording the frontend
         // classifier keys on ("maximum context length" / `prompt_too_long`), so
@@ -15886,9 +15886,10 @@ fn provider_proxy_body_mode(method: &str, path: &str) -> ProviderProxyBodyMode {
     }
 }
 
-/// A content-length-bounded request body that also enforces the route cap on
-/// bytes as they are consumed. The small `prefix` contains only bytes read
-/// alongside the HTTP headers; the remaining body stays in the socket.
+/// A content-length-bounded request body that retains the route cap as defense
+/// in depth if a caller reaches it without the declared-length precheck. The
+/// small `prefix` contains only bytes read alongside the HTTP headers; the
+/// remaining body stays in the socket.
 struct CappedHttpBody<R> {
     reader: R,
     prefix: Vec<u8>,
@@ -16363,10 +16364,9 @@ async fn write_json_response(
 }
 
 /// Streams a web tool request into June API and relays its `ApiResponse`
-/// envelope back to the loopback caller. The route cap is checked by
-/// `CappedHttpBody` while reqwest consumes the downstream socket. An overflow
-/// keeps the same 400 envelope and route-specific wording as the former
-/// pre-buffer check, even if reqwest reports only a transport abort.
+/// envelope back to the loopback caller. Declared over-cap lengths are rejected
+/// before this function; `CappedHttpBody` retains a defense-in-depth overflow
+/// signal and the same 400 envelope if a future caller bypasses that precheck.
 async fn forward_streaming_web_tool(
     stream: &mut (impl AsyncWrite + Unpin),
     path: &str,
@@ -18535,6 +18535,23 @@ assert capped["has_more"] is True, capped
         body: &str,
         video_generation_enabled: bool,
     ) -> String {
+        provider_proxy_response_with_content_length(
+            path,
+            method,
+            body,
+            body.len(),
+            video_generation_enabled,
+        )
+        .await
+    }
+
+    async fn provider_proxy_response_with_content_length(
+        path: &str,
+        method: &str,
+        body: &str,
+        content_length: usize,
+        video_generation_enabled: bool,
+    ) -> String {
         let home = tempfile::tempdir().expect("tempdir");
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -18578,8 +18595,7 @@ assert capped["has_more"] is True, capped
             "proxy-token"
         };
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {content_length}\r\n\r\n{body}"
         );
         stream
             .write_all(request.as_bytes())
@@ -18592,6 +18608,28 @@ assert capped["has_more"] is True, capped
             .expect("read response");
         server.await.expect("server task");
         response
+    }
+
+    struct ScopedEnvVar {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(name: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
     }
 
     async fn receive_streamed_request_body(listener: tokio::net::TcpListener) -> Vec<u8> {
@@ -20728,32 +20766,52 @@ assert capped["has_more"] is True, capped
     }
 
     #[tokio::test]
-    async fn provider_proxy_streamed_limit_keeps_legacy_error_status_and_shape() {
+    async fn provider_proxy_declared_over_cap_stream_rejects_before_upstream_connection() {
         let path = "/v1/web/search";
-        let (mut writer, mut reader) = tokio::io::duplex(4 * 1024);
-        let response = tokio::spawn(async move {
-            write_provider_proxy_body_too_large_response(&mut writer, path)
-                .await
-                .expect("write limit response");
-        });
-        let mut bytes = Vec::new();
-        reader
-            .read_to_end(&mut bytes)
+        let upstream = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
-            .expect("read limit response");
-        response.await.expect("limit response task");
+            .expect("bind mock upstream");
+        let upstream_url = format!(
+            "http://{}",
+            upstream.local_addr().expect("mock upstream address")
+        );
+        let _api_url = ScopedEnvVar::set("JUNE_API_URL", upstream_url);
+        let observed = tokio::spawn(async move {
+            match tokio::time::timeout(Duration::from_millis(250), upstream.accept()).await {
+                Ok(Ok((mut socket, _))) => {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+                        )
+                        .await
+                        .expect("answer unexpected upstream request");
+                    1
+                }
+                Ok(Err(error)) => panic!("mock upstream accept failed: {error}"),
+                Err(_) => 0,
+            }
+        });
 
-        let header_end = bytes
-            .windows(4)
-            .position(|window| window == b"\r\n\r\n")
-            .expect("response headers")
-            + 4;
+        let response = provider_proxy_response_with_content_length(
+            path,
+            "POST",
+            "",
+            provider_proxy_max_body_bytes(path) + 1,
+            false,
+        )
+        .await;
+        assert_eq!(
+            observed.await.expect("mock upstream observer"),
+            0,
+            "declared over-cap requests must be rejected before opening an upstream connection"
+        );
+        let header_end = response.find("\r\n\r\n").expect("response headers") + 4;
         assert!(
-            bytes.starts_with(b"HTTP/1.1 400 Bad Request\r\n"),
+            response.starts_with("HTTP/1.1 400 Bad Request\r\n"),
             "body-limit status must remain 400"
         );
         let body: serde_json::Value =
-            serde_json::from_slice(&bytes[header_end..]).expect("limit JSON envelope");
+            serde_json::from_str(&response[header_end..]).expect("limit JSON envelope");
         assert_eq!(
             body,
             serde_json::json!({
