@@ -2659,7 +2659,9 @@ input:focus-visible,
 }
 
 .agent-home-nudges button:hover {
-  background: var(--brand-tint-strong);
+  /* Halfway between the tint tokens: --brand-tint drowns in the wash and
+   * --brand-tint-strong lands harsh, so the hover sits between them. */
+  background: color-mix(in oklch, var(--brand-tint) 50%, var(--brand-tint-strong));
 }
 
 .agent-home-task-list {
