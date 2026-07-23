@@ -138,7 +138,7 @@ async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClie
     const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
     if (!sharedGateway) {
-      const gateway = new HermesGatewayClient();
+      const gateway = new HermesGatewayClient(false);
       gateway.onEvent((raw) => {
         const event = classifyHermesEvent(raw);
         for (const subscriber of [...eventSubscribers]) subscriber(event);

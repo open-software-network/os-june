@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HermesGatewayClient, HermesGatewayError, isSessionBusyError } from "../lib/hermes-gateway";
+import {
+  forceDisconnectHermesGatewayClients,
+  HermesGatewayClient,
+  HermesGatewayError,
+  isSessionBusyError,
+} from "../lib/hermes-gateway";
 
 type Listener = (event: unknown) => void;
 
@@ -180,5 +185,30 @@ describe("HermesGatewayClient", () => {
     // Intentional teardown → listeners stay quiet.
     client.close();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("force-disconnects a stalled mode and allows its existing client to reconnect", async () => {
+    const client = new HermesGatewayClient(false);
+    const onClose = vi.fn();
+    client.onClose(onClose);
+
+    const first = client.connect("ws://gateway");
+    const stalled = FakeWebSocket.instances[0];
+    stalled.open();
+    await first;
+
+    forceDisconnectHermesGatewayClients(false);
+
+    expect(stalled.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    const recovering = client.connect("ws://gateway");
+    const recovered = FakeWebSocket.instances[1];
+    recovered.open();
+    await recovering;
+
+    expect(recovered.readyState).toBe(FakeWebSocket.OPEN);
+    expect(onClose).toHaveBeenCalledOnce();
+    client.close();
   });
 });

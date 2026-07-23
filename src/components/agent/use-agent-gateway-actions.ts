@@ -35,7 +35,7 @@ export function useAgentGatewayActions(dependencies: UseAgentGatewayActionsDepen
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
     let gateway = gatewaysRef.current.get(fullMode);
     if (!gateway) {
-      gateway = new HermesGatewayClient();
+      gateway = new HermesGatewayClient(fullMode);
       gatewaysRef.current.set(fullMode, gateway);
       // Fires only on unexpected drops — the unmount close() detaches the
       // socket first, and a superseded socket never notifies.
