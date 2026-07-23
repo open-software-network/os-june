@@ -41,6 +41,12 @@ function modeHasListeners(fullMode: boolean) {
   return Boolean(listenersByMode.get(fullMode)?.size);
 }
 
+/** Whether working-session consumers currently keep this mode's shared
+ * lifecycle and heartbeat polling active. */
+export function hasHermesActiveSessionSnapshotSubscribers(fullMode: boolean) {
+  return modeHasListeners(fullMode);
+}
+
 function closeObserver(fullMode: boolean) {
   const observer = observersByMode.get(fullMode);
   if (!observer) return;

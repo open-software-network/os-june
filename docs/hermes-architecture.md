@@ -133,7 +133,13 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   heartbeat: three consecutive request timeouts invalidate every open client
   for that runtime mode, converting a silently stalled OPEN socket into the
   established unexpected-close and reconnect path without adding another
-  periodic request.
+  periodic request. When that polling is dormant because the mode has no
+  working sessions, a new submit first sends one read-only
+  `session.active_list` preflight with a three-second liveness deadline. A
+  timeout force-disconnects the mode and retries only that safe preflight once
+  on the fresh connection. The submit's real requests, including
+  `session.create` and `prompt.submit`, are sent once with their ordinary
+  deadlines.
 - **Browser approvals are event-led.** The browser-approval change event
   refreshes pending approvals promptly. Snapshot reads are limited to initial
   subscription, listener reattachment, and focus, visibility, or online

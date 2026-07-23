@@ -29,12 +29,18 @@ import {
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT } from "../lib/agent-chat-runtime";
+import {
+  HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+  resetHermesIdleSubmitRecoveryForTests,
+} from "../lib/hermes-idle-submit-recovery";
 
 const mocks = vi.hoisted(() => ({
   canAttributeUntaggedAgentRun: vi.fn(() => true),
   cancelAgentRunMonitoring: vi.fn(),
+  forceDisconnectGatewayClients: vi.fn(),
   gatewayRequest: vi.fn(),
   gatewayConnect: vi.fn(),
+  gatewayCloseHandlers: new Set<() => void>(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   hermesBridgeImageDataUrl: vi.fn(),
   prepareHermesBridgeImageAttachment: vi.fn(),
@@ -81,19 +87,45 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
 
-vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
-  HermesGatewayClient: class {
-    connect = mocks.gatewayConnect;
-    close = vi.fn();
-    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
-      mocks.gatewayEventHandlers.add(handler);
-      return () => mocks.gatewayEventHandlers.delete(handler);
-    });
-    onClose = vi.fn();
-    request = mocks.gatewayRequest;
-  },
-}));
+vi.mock("../lib/hermes-gateway", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/hermes-gateway")>();
+  return {
+    ...original,
+    forceDisconnectHermesGatewayClients: mocks.forceDisconnectGatewayClients,
+    HermesGatewayClient: class {
+      connect = mocks.gatewayConnect;
+      close = vi.fn();
+      onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+        mocks.gatewayEventHandlers.add(handler);
+        return () => mocks.gatewayEventHandlers.delete(handler);
+      });
+      onClose = vi.fn((handler: () => void) => {
+        mocks.gatewayCloseHandlers.add(handler);
+        return () => mocks.gatewayCloseHandlers.delete(handler);
+      });
+      request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
+        const response = mocks.gatewayRequest(method, params) as Promise<T>;
+        if (timeoutMs === undefined) return response;
+        return new Promise<T>((resolve, reject) => {
+          const timer = window.setTimeout(
+            () => reject(new original.HermesGatewayRequestTimeoutError(method)),
+            timeoutMs,
+          );
+          void Promise.resolve(response).then(
+            (value) => {
+              window.clearTimeout(timer);
+              resolve(value);
+            },
+            (error) => {
+              window.clearTimeout(timer);
+              reject(error);
+            },
+          );
+        });
+      }
+    },
+  };
+});
 
 const STORAGE_KEY = "june.noteChat.sessionsByNote.v1";
 
@@ -147,7 +179,13 @@ function noteChat(overrides: Partial<NoteChat> = {}): NoteChat {
 
 describe("note chat session map", () => {
   beforeEach(() => {
+    for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    mocks.gatewayCloseHandlers.clear();
     vi.clearAllMocks();
+    mocks.forceDisconnectGatewayClients.mockImplementation(() => {
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
+    resetHermesIdleSubmitRecoveryForTests();
     window.localStorage.clear();
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
@@ -287,6 +325,70 @@ describe("note chat session map", () => {
       text: UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
     });
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+  });
+
+  it("submits exactly once after recovering an idle stall with a cached note-chat runtime", async () => {
+    rememberNoteChatSession("note-1", "stored-note-chat");
+    mocks.listHermesSessions.mockResolvedValue([{ id: "stored-note-chat" }]);
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Launch planning" }));
+
+    await waitFor(() => expect(result.current.storedSessionId).toBe("stored-note-chat"));
+    await act(async () => {
+      expect(await result.current.submit("Warm the runtime.")).toMatchObject({
+        accepted: true,
+        current: true,
+      });
+    });
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "turn.completed",
+          session_id: "runtime-note-chat",
+          payload: { status: "success" },
+        });
+      }
+    });
+    await waitFor(() => expect(result.current.working).toBe(false));
+
+    let activeListCalls = 0;
+    mocks.gatewayRequest.mockClear();
+    mocks.forceDisconnectGatewayClients.mockClear();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        if (activeListCalls === 1) return new Promise(() => undefined);
+        return Promise.resolve({ sessions: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      let recovered: NoteChatSubmitResult | undefined;
+      await act(async () => {
+        const pending = result.current.submit("Use the cached runtime once.");
+        await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+        recovered = await pending;
+      });
+
+      expect(recovered).toMatchObject({ accepted: true, current: true });
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledOnce();
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toEqual([
+        [
+          "prompt.submit",
+          {
+            session_id: "runtime-note-chat",
+            text: "Use the cached runtime once.",
+          },
+        ],
+      ]);
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hydrates the applied model for a legacy chat without a selection entry", async () => {
@@ -1032,6 +1134,7 @@ describe("note chat session map", () => {
     });
 
     expect(mocks.gatewayRequest.mock.calls).toEqual([
+      ["session.active_list", {}],
       [
         "config.set",
         {

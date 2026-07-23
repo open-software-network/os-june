@@ -109,7 +109,10 @@ import {
   resetAgentRunMonitoringForTests,
   startAgentRunMonitoring,
 } from "../lib/agent-run-monitor";
-import { resetHermesActiveSessionSnapshotsForTests } from "../lib/hermes-active-session-snapshots";
+import {
+  hasHermesActiveSessionSnapshotSubscribers,
+  resetHermesActiveSessionSnapshotsForTests,
+} from "../lib/hermes-active-session-snapshots";
 
 const SANDBOXED_CONNECTION = {
   baseUrl: "http://127.0.0.1:9000",
@@ -196,6 +199,18 @@ describe("agent run monitor", () => {
     resetHermesActiveSessionSnapshotsForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it("reports which runtime mode currently has working-session snapshot subscribers", () => {
+    expect(hasHermesActiveSessionSnapshotSubscribers(false)).toBe(false);
+    expect(hasHermesActiveSessionSnapshotSubscribers(true)).toBe(false);
+
+    startRun();
+    expect(hasHermesActiveSessionSnapshotSubscribers(false)).toBe(true);
+    expect(hasHermesActiveSessionSnapshotSubscribers(true)).toBe(false);
+
+    expect(cancelAgentRunMonitoring("stored-1")).toBe(true);
+    expect(hasHermesActiveSessionSnapshotSubscribers(false)).toBe(false);
   });
 
   it("survives the submitting caller going away and settles from persisted runtime state", async () => {
