@@ -5,6 +5,7 @@ import {
 } from "./hermes-gateway";
 
 export const HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS = 3_000;
+const HERMES_IDLE_SUBMIT_PROBE_METHOD = "session.active_list";
 
 export type HermesSubmitGateway = {
   currentGateway(): HermesGatewayClient;
@@ -18,14 +19,63 @@ type HermesIdleSubmitRecoveryOptions = {
   reconnect: () => Promise<HermesGatewayClient>;
 };
 
+const idleSubmitPreflights = new Map<boolean, Promise<HermesGatewayClient>>();
+
+export function resetHermesIdleSubmitRecoveryForTests() {
+  idleSubmitPreflights.clear();
+}
+
+function startIdleSubmitPreflight({
+  fullMode,
+  gateway,
+  reconnect,
+}: Omit<HermesIdleSubmitRecoveryOptions, "shouldProbeFirstRequest">) {
+  const existing = idleSubmitPreflights.get(fullMode);
+  if (existing) return existing;
+
+  const preflight = (async () => {
+    try {
+      await gateway.request(
+        HERMES_IDLE_SUBMIT_PROBE_METHOD,
+        {},
+        HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+      );
+      return gateway;
+    } catch (error) {
+      if (!(error instanceof HermesGatewayRequestTimeoutError)) throw error;
+      forceDisconnectHermesGatewayClients(fullMode);
+      const recoveredGateway = await reconnect();
+      await recoveredGateway.request(
+        HERMES_IDLE_SUBMIT_PROBE_METHOD,
+        {},
+        HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+      );
+      return recoveredGateway;
+    }
+  })();
+  idleSubmitPreflights.set(fullMode, preflight);
+  const clearPreflight = () => {
+    if (idleSubmitPreflights.get(fullMode) === preflight) {
+      idleSubmitPreflights.delete(fullMode);
+    }
+  };
+  void preflight.then(clearPreflight, clearPreflight);
+  return preflight;
+}
+
 /**
- * Gives only the first Gateway request of an idle submit a short deadline.
- * A silent OPEN socket cannot be distinguished from a healthy one before a
- * request, so a timeout converts it into the established unexpected-close
- * path and retries the same transport request once on a fresh connection.
+ * Runs one read-only liveness request before the first Gateway request of an
+ * idle submit.
  *
- * The helper is scoped to one submit. It never retries prompt preparation or
- * the composer action, and later requests keep their caller/default deadlines.
+ * A silent OPEN socket cannot be distinguished from a healthy one before a
+ * request, so a preflight timeout converts it into the established
+ * unexpected-close path and retries only the read-only preflight once on a
+ * fresh connection. The caller's actual request is sent exactly once with its
+ * ordinary deadline. In particular, prompt.submit and session.create are
+ * never the probe and are never transport-retried.
+ *
+ * Same-mode submits share an in-flight preflight so one recovery cannot close
+ * a socket while another submit is sending its first request.
  */
 export function createHermesIdleSubmitGateway({
   fullMode,
@@ -52,22 +102,21 @@ export function createHermesIdleSubmitGateway({
       params: Record<string, unknown> = {},
       timeoutMs?: number,
     ): Promise<T> {
-      const useIdleProbe = firstRequest && shouldProbeFirstRequest();
+      const inFlightPreflight = idleSubmitPreflights.get(fullMode);
+      const useIdleProbe =
+        firstRequest && (inFlightPreflight !== undefined || shouldProbeFirstRequest());
       firstRequest = false;
-      if (!useIdleProbe) return requestNormally<T>(method, params, timeoutMs);
-
-      const probeTimeoutMs =
-        timeoutMs === undefined
-          ? HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS
-          : Math.min(timeoutMs, HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
-      try {
-        return await currentGateway.request<T>(method, params, probeTimeoutMs);
-      } catch (error) {
-        if (!(error instanceof HermesGatewayRequestTimeoutError)) throw error;
-        forceDisconnectHermesGatewayClients(fullMode);
-        currentGateway = await reconnect();
-        return requestNormally<T>(method, params, timeoutMs);
+      if (useIdleProbe) {
+        const preflight =
+          inFlightPreflight ??
+          startIdleSubmitPreflight({
+            fullMode,
+            gateway: currentGateway,
+            reconnect,
+          });
+        currentGateway = await preflight;
       }
+      return requestNormally<T>(method, params, timeoutMs);
     },
   };
 }

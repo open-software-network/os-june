@@ -44,7 +44,11 @@ import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 import { resetHermesActiveSessionSnapshotsForTests } from "../lib/hermes-active-session-snapshots";
-import { HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS } from "../lib/hermes-idle-submit-recovery";
+import {
+  HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+  resetHermesIdleSubmitRecoveryForTests,
+} from "../lib/hermes-idle-submit-recovery";
+import { writeAgentSessionContinuity } from "../components/agent/agent-session-continuity";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -142,6 +146,7 @@ const mocks = vi.hoisted(() => ({
   listHermesSessions: vi.fn(),
   listSessionProfiles: vi.fn(),
   gatewayRequest: vi.fn(),
+  gatewayRequestTimeouts: [] as Array<{ method: string; timeoutMs: number | undefined }>,
   forceDisconnectGatewayClients: vi.fn(),
   markAgentRunSucceeded: vi.fn(),
   releaseAgentRunSettlement: vi.fn(),
@@ -291,6 +296,7 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => {
         return () => mocks.gatewayCloseHandlers.delete(handler);
       });
       request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
+        mocks.gatewayRequestTimeouts.push({ method, timeoutMs });
         const response = mocks.gatewayRequest(method, params) as Promise<T>;
         if (timeoutMs === undefined) return response;
         return new Promise<T>((resolve, reject) => {
@@ -603,10 +609,12 @@ describe("AgentWorkspace", () => {
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    mocks.gatewayRequestTimeouts.length = 0;
     mocks.forceDisconnectGatewayClients.mockImplementation(() => {
       for (const handler of [...mocks.gatewayCloseHandlers]) handler();
     });
     resetHermesActiveSessionSnapshotsForTests();
+    resetHermesIdleSubmitRecoveryForTests();
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
@@ -8301,16 +8309,35 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
-  it("recovers an idle first-submit stall without resubmitting the composer action", async () => {
+  it("recovers an idle preflight stall without duplicating a new session or prompt", async () => {
+    let activeListCalls = 0;
+    let preflightCallsAtCreate = 0;
+    let preflightCallsAtSubmit = 0;
     let createCalls = 0;
     mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        if (activeListCalls === 1) return new Promise(() => undefined);
+        return Promise.resolve({ sessions: [] });
+      }
       if (method === "session.create") {
+        preflightCallsAtCreate = mocks.gatewayRequestTimeouts.filter(
+          (request) =>
+            request.method === "session.active_list" &&
+            request.timeoutMs === HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+        ).length;
         createCalls += 1;
-        if (createCalls === 1) return new Promise(() => undefined);
         return Promise.resolve({
           session_id: "runtime-session-2",
           stored_session_id: "session-2",
         });
+      }
+      if (method === "prompt.submit") {
+        preflightCallsAtSubmit = mocks.gatewayRequestTimeouts.filter(
+          (request) =>
+            request.method === "session.active_list" &&
+            request.timeoutMs === HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+        ).length;
       }
       return Promise.resolve({});
     });
@@ -8323,10 +8350,11 @@ describe("AgentWorkspace", () => {
     try {
       const startedAt = Date.now();
       render(<AgentWorkspace />);
-      await settleUnderFakeTimers(() => expect(createCalls).toBe(1), { maxMs: 1_000 });
+      await settleUnderFakeTimers(() => expect(activeListCalls).toBe(1), { maxMs: 1_000 });
 
-      // The request hangs without a WebSocket close. Its submit-scoped deadline
-      // forces the existing mode disconnect and retries only the transport call.
+      // The read-only preflight hangs without a WebSocket close. Its
+      // submit-scoped deadline forces the existing mode disconnect and retries
+      // only that safe request.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
       });
@@ -8340,7 +8368,12 @@ describe("AgentWorkspace", () => {
       );
 
       expect(Date.now() - startedAt).toBeLessThan(10_000);
-      expect(createCalls).toBe(2);
+      expect(preflightCallsAtCreate).toBe(2);
+      expect(preflightCallsAtSubmit).toBe(2);
+      expect(createCalls).toBe(1);
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toHaveLength(1);
       expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledTimes(1);
       expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledWith(false);
       expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1);
@@ -8350,37 +8383,68 @@ describe("AgentWorkspace", () => {
     }
   });
 
-  it("surfaces the idle-submit retry failure without a third transport attempt", async () => {
-    let createCalls = 0;
+  it("submits exactly once after recovering an idle stall with a cached runtime id", async () => {
+    let activeListCalls = 0;
+    let preflightCallsAtSubmit = 0;
     mocks.gatewayRequest.mockImplementation((method: string) => {
-      if (method === "session.create") {
-        createCalls += 1;
-        if (createCalls === 1) return new Promise(() => undefined);
-        return Promise.reject(new Error("Gateway still unavailable."));
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        if (activeListCalls === 1) return new Promise(() => undefined);
+        return Promise.resolve({ sessions: [] });
+      }
+      if (method === "prompt.submit") {
+        preflightCallsAtSubmit = mocks.gatewayRequestTimeouts.filter(
+          (request) =>
+            request.method === "session.active_list" &&
+            request.timeoutMs === HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+        ).length;
       }
       return Promise.resolve({});
     });
-    window.sessionStorage.setItem(
-      AGENT_NEW_SESSION_PENDING_KEY,
-      JSON.stringify({ createdAt: Date.now(), prompt: "surface the retry failure" }),
-    );
+    writeAgentSessionContinuity({
+      sessionItems: [existingSession],
+      pendingMessages: {},
+      runtimeSessionIds: { "session-1": "runtime-session-1" },
+      liveEvents: {},
+      titleOverrides: {},
+      titleSources: {},
+      pendingIssueReports: {},
+      reviewableIssueReports: {},
+      diagnosisRefreshIssueReportSessionIds: [],
+      submittingIssueReportSessionIds: [],
+      queuedAttachmentFollowUps: {},
+    });
 
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await user.type(
+      await screen.findByRole("textbox", { name: "Message June" }),
+      "recover the cached runtime",
+    );
     vi.useFakeTimers();
     try {
-      render(<AgentWorkspace />);
-      await settleUnderFakeTimers(() => expect(createCalls).toBe(1), { maxMs: 1_000 });
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() => expect(activeListCalls).toBe(1), { maxMs: 1_000 });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
       });
       await settleUnderFakeTimers(
-        () => expect(screen.getByText("Gateway still unavailable.")).toBeInTheDocument(),
+        () =>
+          expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+            session_id: "runtime-session-1",
+            text: "recover the cached runtime",
+          }),
         { maxMs: 2_000 },
       );
 
-      expect(createCalls).toBe(2);
+      expect(preflightCallsAtSubmit).toBe(2);
       expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledTimes(1);
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
-      expect(mocks.startAgentRunMonitoring).not.toHaveBeenCalled();
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toHaveLength(1);
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -9885,6 +9949,7 @@ describe("AgentWorkspace", () => {
       timestamp: new Date().toISOString(),
     };
     let replyPersisted = false;
+    let activeListStalled = false;
     mocks.listHermesSessionMessages.mockImplementation(async () =>
       replyPersisted ? [...userOnly, reply] : userOnly,
     );
@@ -9896,10 +9961,14 @@ describe("AgentWorkspace", () => {
         });
       }
       if (method === "session.active_list") {
+        if (!activeListStalled) return Promise.resolve({ sessions: [] });
         return new Promise(() => undefined);
       }
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-recovered" });
+      }
+      if (method === "prompt.submit") {
+        activeListStalled = true;
       }
       return Promise.resolve({});
     });
