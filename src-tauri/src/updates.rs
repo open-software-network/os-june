@@ -307,23 +307,13 @@ pub async fn install_update(
 /// CGEventTap and its stdio — and the relaunched instance then cannot bring up a
 /// clean helper, so every helper-reported permission (dictation mic and
 /// accessibility) reads missing even though the grants are intact (JUN-338).
-/// Tearing down explicitly here guarantees the helpers and agent runtime are
-/// gone before the new instance starts. The final restart is dispatched to the
-/// main thread so Tauri restarts directly instead of delivering `RunEvent::Exit`
-/// and synchronously repeating the full cleanup on the UI event loop. That
-/// duplicate exit path can leave the window parked in its disabled relaunching
-/// state while a background service is still winding down.
+/// The coordinator latches Restart, performs teardown off the main event loop,
+/// and schedules the final restart on the main thread after cleanup or its hard
+/// aggregate deadline. A concurrent quit request shares the same cleanup and
+/// cannot replace the already-latched restart.
 #[tauri::command]
 pub async fn relaunch_for_update(app: AppHandle) -> Result<(), AppError> {
-    crate::dictation::stop_helper(&app);
-    crate::computer_use::shutdown(&app).await;
-    if let Some(runtime) = app.try_state::<crate::agent_runtime::AgentRuntimeHost>() {
-        runtime.shutdown().await;
-    }
-
-    let restart_app = app.clone();
-    app.run_on_main_thread(move || restart_app.restart())
-        .map_err(|error| AppError::new("update_relaunch_failed", error.to_string()))
+    crate::shutdown::request_restart(&app)
 }
 
 #[tauri::command]

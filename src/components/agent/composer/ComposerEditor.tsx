@@ -59,7 +59,17 @@ export type ComposerEditorHandle = {
 type ComposerEditorProps = {
   placeholder: string;
   skills?: AgentSkillInfo[] | null;
-  onChange: (text: string, category: ReportCategory | null) => void;
+  changeKey?: string | null;
+  onChange: (
+    text: string,
+    category: ReportCategory | null,
+    changeKey: string | null | undefined,
+  ) => void;
+  onPendingChangePersist?: (
+    text: string,
+    category: ReportCategory | null,
+    changeKey: string | null | undefined,
+  ) => void;
   onSubmit: () => void;
   onFocusChange?: (focused: boolean) => void;
   /** Reports cheap document empty/non-empty transitions without serializing

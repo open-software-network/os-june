@@ -2086,9 +2086,12 @@ pub async fn computer_use_status(
 ) -> Result<ComputerUseStatus, AppError> {
     let (status, previous) = status_with_published_readiness(&app, &state).await?;
     let current = ready_state_value(status.ready);
-    let previous = state.runtime_ready_state.swap(current, Ordering::SeqCst);
     if previous != 0 && previous != current && !status.ready {
         stop_inner(&app, &state).await;
+        replace_runtime_ready(&state, false);
+    }
+    if status.ready {
+        schedule_driver_prewarm(&app);
     }
     Ok(status)
 }
@@ -2177,7 +2180,11 @@ pub async fn set_computer_use_grant(
         stop_inner(&app, &state).await;
         replace_runtime_ready(&state, false);
     }
-    Ok(status_inner(&app).await)
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -2208,8 +2215,12 @@ pub async fn computer_use_request_permissions(
     let path = bundled_driver_executable(&app)?;
     verify_packaged_driver_signatures(&state, &path, true).await?;
     driver_version(&path).await?;
-    let _ = probe_permissions(&path, true).await?;
-    Ok(status_inner(&app).await)
+    let _ = probe_permissions(&state, &path, true).await?;
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 pub(crate) async fn shutdown(app: &AppHandle) {

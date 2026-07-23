@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import {
+  AGENT_NEW_SESSION_EVENT,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
 } from "../components/agent/AgentWorkspace";

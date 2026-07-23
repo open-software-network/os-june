@@ -45,7 +45,7 @@ import { buildFolderItemIndex } from "./folder-item-index";
 
 const NO_FOLDERS: FolderDto[] = [];
 const NO_FOLDER_NOTES: readonly NoteListItemDto[] = [];
-const NO_FOLDER_SESSIONS: readonly HermesSessionInfo[] = [];
+const NO_FOLDER_SESSIONS: readonly AgentSessionDto[] = [];
 
 type FoldersWorkspaceProps = {
   folders: FolderDto[];
@@ -396,9 +396,8 @@ function FolderCard({
   onDropNote,
 }: {
   folder: FolderDto;
-  notes: NoteListItemDto[];
-  sessions: AgentSessionDto[];
-  sessionFolderIds: Record<string, string[]>;
+  notes: readonly NoteListItemDto[];
+  sessions: readonly AgentSessionDto[];
   menuOpen: boolean;
   onOpen: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
@@ -955,7 +954,7 @@ function FolderSessionList({
   onRemoveSessionFromFolder,
 }: {
   folder: FolderDto;
-  sessions: AgentSessionDto[];
+  sessions: readonly AgentSessionDto[];
   onSelectSession: (session: AgentSessionDto) => void;
   onOpenSessionMoveDialog: (sessionId: string) => void;
   onRemoveSessionFromFolder: (sessionId: string, folderId: string) => void;

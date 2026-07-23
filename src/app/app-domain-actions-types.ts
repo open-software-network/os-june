@@ -1,5 +1,6 @@
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
+import type { NoteSaveController } from "./note-save-controller";
 import type { NotesAction, NotesState } from "./state/app-state";
 import type * as React from "react";
 

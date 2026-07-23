@@ -44,7 +44,7 @@ use crate::{
             ShareSummaryDto, SourceReadinessDto, StartMeetingRecordingRequest,
             StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
             SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
-            UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest, UpdateNoteResponse,
         },
     },
     meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},

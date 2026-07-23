@@ -4,8 +4,14 @@ import type { NotesListHandle } from "../components/notes-list/NotesList";
 import type { SettingsTab } from "../components/settings/AppSettings";
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { TabNav } from "./tabs/tabs";
-import type { LiveTranscriptEventDto, RecoverableRecordingDto } from "../lib/tauri";
-import type { FolderDto, NoteDto, AccountStatus } from "../lib/tauri";
+import type {
+  AccountStatus,
+  FolderDto,
+  LiveTranscriptEventDto,
+  NoteDto,
+  NoteEditablePatch,
+  RecoverableRecordingDto,
+} from "../lib/tauri";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import type { JuneUpdate } from "../lib/updater";

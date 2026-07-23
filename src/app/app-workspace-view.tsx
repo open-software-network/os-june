@@ -1,9 +1,6 @@
 import { FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
-import { AgentWorkspace } from "../components/agent/AgentWorkspace";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
-import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
-import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
 import { NotesList } from "../components/notes-list/NotesList";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
@@ -23,7 +20,6 @@ import {
   AppSettingsRoute,
   FoldersWorkspaceRoute,
   NoteEditorRoute,
-  RoutinesViewRoute,
 } from "./workspace-lazy";
 
 export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies) {

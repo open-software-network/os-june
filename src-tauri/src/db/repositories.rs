@@ -1,7 +1,7 @@
 use crate::domain::types::{
     AppError, AudioArtifactDto, AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto,
     DictionaryEntryDto, FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto,
-    NoteCalendarEventDto, NoteDto, NoteListItemDto, NoteTranscriptionJobKind,
+    NoteCalendarEventDto, NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind,
     NoteTranscriptionJobPlan, NoteTranscriptionJobRecord, NoteTranscriptionJobStatus,
     ProcessingStatus, ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
     SessionProfileDto, TranscriptCoverageDto, TranscriptDto,

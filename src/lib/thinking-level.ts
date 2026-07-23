@@ -7,7 +7,7 @@
  * (none, minimal, low, medium, high, xhigh). June deliberately exposes only three so the
  * choice stays a simple speed/depth tradeoff:
  *
- * - Low -> "none": the model answers without a separate reasoning pass.
+ * - Low -> "minimal": the model uses the lightest supported reasoning pass.
  * - Medium -> "medium": the default, balancing speed and depth.
  * - High -> "high": substantially more reasoning for harder problems.
  *

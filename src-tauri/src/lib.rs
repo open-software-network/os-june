@@ -397,12 +397,8 @@ pub fn run() {
         .build(context)
         .expect("failed to build June")
         .run(|app, event| match event {
-            tauri::RunEvent::Exit => {
-                dictation::stop_helper(app);
-                tauri::async_runtime::block_on(computer_use::shutdown(app));
-                tauri::async_runtime::block_on(
-                    app.state::<agent_runtime::AgentRuntimeHost>().shutdown(),
-                );
+            tauri::RunEvent::ExitRequested { code, api, .. } => {
+                shutdown::handle_exit_requested(app, code, &api);
             }
             // Tao emits only Exit for macOS logout/application termination.
             // This is a bounded synchronous backstop when ExitRequested never

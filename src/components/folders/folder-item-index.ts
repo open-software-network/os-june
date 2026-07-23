@@ -1,17 +1,18 @@
-import type { HermesSessionInfo, NoteListItemDto } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
+import type { NoteListItemDto } from "../../lib/tauri";
 
 export type FolderItemIndex = {
   notesByFolderId: ReadonlyMap<string, readonly NoteListItemDto[]>;
-  sessionsByFolderId: ReadonlyMap<string, readonly HermesSessionInfo[]>;
+  sessionsByFolderId: ReadonlyMap<string, readonly AgentSessionDto[]>;
 };
 
 export function buildFolderItemIndex(
   notes: readonly NoteListItemDto[],
-  sessions: readonly HermesSessionInfo[],
+  sessions: readonly AgentSessionDto[],
   sessionFolderIds: Readonly<Record<string, string[]>>,
 ): FolderItemIndex {
   const notesByFolderId = new Map<string, NoteListItemDto[]>();
-  const sessionsByFolderId = new Map<string, HermesSessionInfo[]>();
+  const sessionsByFolderId = new Map<string, AgentSessionDto[]>();
 
   for (const note of notes) {
     for (const folderId of new Set(note.folderIds)) {

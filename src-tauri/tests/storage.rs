@@ -24,6 +24,20 @@ async fn count_rows(repos: &Repositories, statement: &str) -> i64 {
         .get("count")
 }
 
+fn legacy_note_preview(
+    title: &str,
+    generated_content: Option<&str>,
+    edited_content: Option<&str>,
+) -> String {
+    let content = edited_content.or(generated_content).unwrap_or_default();
+    let source = if content.trim().is_empty() {
+        title
+    } else {
+        content
+    };
+    source.chars().take(140).collect()
+}
+
 async fn create_agent_session(repos: &Repositories, id: &str) {
     query(
         "INSERT INTO agent_sessions

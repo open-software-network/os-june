@@ -105,8 +105,6 @@ type FoldersWorkspaceModule = typeof import("../components/folders/FoldersWorksp
 type FoldersWorkspaceProps = ComponentProps<FoldersWorkspaceModule["FoldersWorkspace"]>;
 type NoteEditorModule = typeof import("../components/note-editor/NoteEditor");
 type NoteEditorProps = ComponentProps<NoteEditorModule["NoteEditor"]>;
-type RoutinesViewModule = typeof import("../components/routines/RoutinesView");
-type RoutinesViewProps = ComponentProps<RoutinesViewModule["RoutinesView"]>;
 type AppSettingsModule = typeof import("../components/settings/AppSettings");
 type AppSettingsProps = ComponentProps<AppSettingsModule["AppSettings"]>;
 
@@ -122,10 +120,6 @@ const noteEditor = createWorkspaceLoader<NoteEditorModule, NoteEditorProps>(
   () => import("../components/note-editor/NoteEditor"),
   (module) => module.NoteEditor,
 );
-const routinesView = createWorkspaceLoader<RoutinesViewModule, RoutinesViewProps>(
-  () => import("../components/routines/RoutinesView"),
-  (module) => module.RoutinesView,
-);
 const appSettings = createWorkspaceLoader<AppSettingsModule, AppSettingsProps>(
   () => import("../components/settings/AppSettings"),
   (module) => module.AppSettings,
@@ -134,7 +128,6 @@ const appSettings = createWorkspaceLoader<AppSettingsModule, AppSettingsProps>(
 export const AgentWorkspaceRoute = agentWorkspace.Component;
 export const FoldersWorkspaceRoute = foldersWorkspace.Component;
 export const NoteEditorRoute = noteEditor.Component;
-export const RoutinesViewRoute = routinesView.Component;
 export const AppSettingsRoute = appSettings.Component;
 
 const deferredWorkspacePreloads = [
@@ -142,7 +135,6 @@ const deferredWorkspacePreloads = [
   noteEditor.preload,
   appSettings.preload,
   foldersWorkspace.preload,
-  routinesView.preload,
 ];
 
 type IdleCallbackWindow = Window & {

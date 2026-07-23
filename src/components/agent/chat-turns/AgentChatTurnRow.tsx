@@ -1,6 +1,6 @@
 import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconConcise } from "central-icons/IconConcise";
-import { memo, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   displayedComposerUserMessageText,
   stripRenderedMediaReferences,
@@ -116,42 +116,7 @@ export function AgentChatTurnRow({
   fundingTier?: FundingTier;
   onVisibleMarkdownChange?: (visibleMarkdown: string) => void;
   turn: AgentChatTurn;
-};
-
-export const AgentChatTurnRow = memo(function AgentChatTurnRow({
-  activeThinkingKey,
-  approvalSubmitting,
-  artifacts,
-  clarifySubmitting,
-  sudoSubmitting,
-  secretSubmitting,
-  cliAccess,
-  browserAccess,
-  thinkingOpen,
-  onApproval,
-  onClarify,
-  onSudo,
-  onSecret,
-  onDownloadArtifact,
-  onOpenArtifact,
-  onDownloadImage,
-  onOpenImage,
-  onRetryImage,
-  onDownloadVideo,
-  onRetryVideo,
-  onRetryUpstreamFailure,
-  upstreamFailureRetryAttempted,
-  upstreamFailureRetryDisabled,
-  creditActionsDisabledReason,
-  onThinkingOpenChange,
-  onTopUp,
-  topUpLabel,
-  fundingTier,
-  onVisibleMarkdownChange,
-  onBranch,
-  branchingMessageId,
-  turn,
-}: AgentChatTurnRowProps) {
+}) {
   const textParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text",
   );
@@ -542,7 +507,7 @@ export const AgentChatTurnRow = memo(function AgentChatTurnRow({
       </div>
     </article>
   );
-});
+}
 
 type AccessRequestCardKind = "browser" | "cli";
 

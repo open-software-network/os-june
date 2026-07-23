@@ -22,9 +22,9 @@ describe("thinking levels", () => {
   });
 
   it("maps each level onto a agent reasoning effort", () => {
-    // Low skips a separate reasoning pass, Medium is the runtime default, and
+    // Low uses the lightest reasoning pass, Medium is the runtime default, and
     // High reasons substantially more.
-    expect(thinkingEffortForLevel("instant")).toBe("none");
+    expect(thinkingEffortForLevel("instant")).toBe("minimal");
     expect(thinkingEffortForLevel("medium")).toBe("medium");
     expect(thinkingEffortForLevel("hard")).toBe("high");
   });

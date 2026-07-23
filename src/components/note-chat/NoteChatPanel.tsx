@@ -344,8 +344,11 @@ export function NoteChatPanel({
     fade.update();
   }, [turns.length, lastTurnSize, working, fade.update]);
 
-  async function handleSend(text: string) {
+  async function handleSend() {
     if (working || textActionsDisabledReason) return;
+    if (!composerRef.current?.flushPendingChange()) return;
+    const serializedText = draftRef.current;
+    const text = serializedText.trim();
     setComposerError(null);
     const result = await submit(text, attachments);
     // Clear the composer only when this panel still owns the accepted send.

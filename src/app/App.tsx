@@ -5,7 +5,6 @@ import {
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
 } from "../components/agent/session-persistence";
-import { recordManualAgentSessionTitle } from "../components/agent/agent-session-continuity";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
@@ -31,7 +30,6 @@ import {
   revealPath,
   renameFolder,
   renameAgentSession,
-  updateNote,
   agentHudHide,
   agentHudShow,
   completeNoteSaveFlush,

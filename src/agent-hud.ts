@@ -25,6 +25,7 @@ import {
 } from "./lib/agent-hud-settings";
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
+import { createHudLifecycle } from "./lib/hud-lifecycle";
 import { titleFromPrompt } from "./lib/session-title";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
