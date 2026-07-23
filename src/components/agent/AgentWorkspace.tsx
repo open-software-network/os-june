@@ -46,7 +46,12 @@ import { AgentChatTurnRow } from "./chat-turns/AgentChatTurnRow";
 import { AgentArtifactList, type AgentArtifact } from "./chat-turns/AgentArtifactPanel";
 import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
 import { AgentThinking } from "./AgentThinking";
-import { advanceHeroGreeting, AGENT_SHORTCUTS, SANDBOX_OPTIONS } from "./agent-workspace-config";
+import {
+  advanceHeroGreeting,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_SHORTCUTS,
+  SANDBOX_OPTIONS,
+} from "./agent-workspace-config";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
 import { agentComposerClearance } from "./composer/layout";
 import {
@@ -56,6 +61,7 @@ import {
 } from "./composer/ModelPicker";
 import { modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import {
+  type AgentNewSessionDetail,
   pendingNewSessionRequest,
   writeLastOpenSessionId,
   forgetLastOpenSessionId,
@@ -168,6 +174,22 @@ export function AgentWorkspace({
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
+  const startNewSession = useCallback(
+    (request?: AgentNewSessionDetail) => {
+      setSelectedId(undefined);
+      selectedIdRef.current = undefined;
+      setNewSessionMode(true);
+      setProjection(createAgentRuntimeProjection());
+      setArtifacts([]);
+      setDraft(request?.prompt ?? "");
+      setAttachments([]);
+      setSubmitting(false);
+      setError(undefined);
+      onSessionSelected?.(undefined);
+    },
+    [onSessionSelected],
+  );
+
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? projection.session;
   const running = projection.run?.status === "running" || projection.run?.status === "queued";
@@ -240,6 +262,16 @@ export function AgentWorkspace({
     }
     void hydrate(nextId).catch((cause) => setError(messageFromError(cause)));
   }, [hydrate, initialSession?.id, initialSessionId]);
+
+  useEffect(() => {
+    const handleNewSession = (event: Event) => {
+      const pending = pendingNewSessionRequest();
+      const detail = (event as CustomEvent<AgentNewSessionDetail>).detail;
+      startNewSession(detail ?? pending);
+    };
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
+    return () => window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
+  }, [startNewSession]);
 
   useEffect(() => {
     let disposed = false;

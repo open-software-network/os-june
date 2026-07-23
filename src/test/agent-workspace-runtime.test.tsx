@@ -26,7 +26,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 import { AgentWorkspace } from "../components/agent/AgentWorkspace";
+import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import { agentComposerClearance } from "../components/agent/composer/layout";
+import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 
 const session: AgentSessionDto = {
   id: "session-1",
@@ -38,6 +40,13 @@ const session: AgentSessionDto = {
   source: "user",
   createdAt: "2026-07-22T12:00:00Z",
   updatedAt: "2026-07-22T12:00:00Z",
+};
+
+const newSession: AgentSessionDto = {
+  ...session,
+  id: "session-2",
+  title: "Fresh request",
+  workspacePath: "/tmp/session-2",
 };
 
 describe("AgentWorkspace runtime wiring", () => {
@@ -79,6 +88,7 @@ describe("AgentWorkspace runtime wiring", () => {
           ],
         });
       }
+      if (command === "create_agent_session") return Promise.resolve(newSession);
       if (command === "start_agent_run") {
         return Promise.resolve({
           id: "run-1",
@@ -183,5 +193,33 @@ describe("AgentWorkspace runtime wiring", () => {
         },
       }),
     );
+  });
+
+  it("resets an open conversation when a new session is requested", async () => {
+    const user = userEvent.setup();
+    const onSessionSelected = vi.fn();
+    render(<AgentWorkspace initialSession={session} onSessionSelected={onSessionSelected} />);
+    await screen.findByText("Earlier answer");
+
+    act(() => {
+      markAgentNewSessionPending();
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    expect(await screen.findByRole("heading", { level: 2 })).toBeVisible();
+    expect(screen.queryByText("Earlier answer")).not.toBeInTheDocument();
+    expect(onSessionSelected).toHaveBeenLastCalledWith(undefined);
+
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.click(composer);
+    await user.type(composer, "Fresh request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
+        request: expect.objectContaining({ title: "Fresh request" }),
+      }),
+    );
+    expect(onSessionSelected).toHaveBeenLastCalledWith(newSession);
   });
 });
