@@ -10537,6 +10537,32 @@ button.agent-user-attachment:hover {
   width: 62%;
 }
 
+.workspace-load-error {
+  align-items: flex-start;
+  gap: var(--sp-4);
+}
+
+.workspace-load-error h2,
+.workspace-load-error p {
+  margin: 0;
+}
+
+.workspace-load-error h2 {
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  font-weight: 400;
+}
+
+.workspace-load-error p {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+.workspace-load-error .primary-action {
+  margin-top: var(--sp-2);
+}
+
 /* Wrapper gives the editor a real viewport-height box inside the card. Long
  * note content contributes to the card scroller while the recorder is fixed
  * to the card bottom. */

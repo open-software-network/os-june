@@ -1,40 +1,102 @@
-import { type ComponentProps, type ComponentType, createElement, lazy, Suspense } from "react";
+import {
+  Component,
+  type ComponentProps,
+  type ComponentType,
+  createElement,
+  lazy,
+  type ReactNode,
+  Suspense,
+  useMemo,
+  useState,
+} from "react";
 
 type WorkspaceLoader<Props extends object> = {
   Component: ComponentType<Props>;
   preload: () => Promise<void>;
 };
 
-function createWorkspaceLoader<Module, Props extends object>(
+export function createWorkspaceLoader<Module, Props extends object>(
   loadModule: () => Promise<Module>,
   selectComponent: (module: Module) => ComponentType<Props>,
 ): WorkspaceLoader<Props> {
-  let loadedComponent: ComponentType<Props> | undefined;
   let modulePromise: Promise<Module> | undefined;
 
   function load() {
-    modulePromise ??= loadModule().then((module) => {
-      loadedComponent = selectComponent(module);
-      return module;
-    });
+    modulePromise ??= Promise.resolve()
+      .then(loadModule)
+      .catch((error: unknown) => {
+        modulePromise = undefined;
+        throw error;
+      });
     return modulePromise;
   }
 
-  const LazyComponent = lazy(async () => ({
-    default: selectComponent(await load()),
-  }));
+  function createLazyComponent() {
+    return lazy(async () => ({
+      default: selectComponent(await load()),
+    }));
+  }
 
-  function CachedWorkspace(props: Props) {
-    const Component = loadedComponent ?? (LazyComponent as unknown as ComponentType<Props>);
-    return <Suspense fallback={<WorkspaceFallback />}>{createElement(Component, props)}</Suspense>;
+  const InitialLazyComponent = createLazyComponent();
+
+  function WorkspaceRoute(props: Props) {
+    const [attempt, setAttempt] = useState(0);
+    const LazyComponent = useMemo(
+      () => (attempt === 0 ? InitialLazyComponent : createLazyComponent()),
+      [attempt],
+    );
+    const ComponentToRender = LazyComponent as unknown as ComponentType<Props>;
+
+    return (
+      <WorkspaceLoadErrorBoundary key={attempt} onRetry={() => setAttempt((value) => value + 1)}>
+        <Suspense fallback={<WorkspaceFallback />}>
+          {createElement(ComponentToRender, props)}
+        </Suspense>
+      </WorkspaceLoadErrorBoundary>
+    );
   }
 
   return {
-    Component: CachedWorkspace,
+    Component: WorkspaceRoute,
     preload: async () => {
       await load();
     },
   };
+}
+
+type WorkspaceLoadErrorBoundaryProps = {
+  children: ReactNode;
+  onRetry: () => void;
+};
+
+class WorkspaceLoadErrorBoundary extends Component<
+  WorkspaceLoadErrorBoundaryProps,
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <WorkspaceLoadFailure onRetry={this.props.onRetry} />;
+    }
+    return this.props.children;
+  }
+}
+
+function WorkspaceLoadFailure({ onRetry }: { onRetry: () => void }) {
+  return (
+    <section className="workspace-fallback workspace-load-error" role="alert">
+      <h2>Couldn't open this view</h2>
+      <p>June couldn't load this part of the app. Try again.</p>
+      <button type="button" className="primary-action primary-solid" onClick={onRetry}>
+        Try again
+      </button>
+    </section>
+  );
 }
 
 type AgentWorkspaceModule = typeof import("../components/agent/AgentWorkspace");
@@ -74,6 +136,47 @@ export const FoldersWorkspaceRoute = foldersWorkspace.Component;
 export const NoteEditorRoute = noteEditor.Component;
 export const RoutinesViewRoute = routinesView.Component;
 export const AppSettingsRoute = appSettings.Component;
+
+const deferredWorkspacePreloads = [
+  // Meeting-start navigation lands here, so queue the note editor first.
+  noteEditor.preload,
+  appSettings.preload,
+  foldersWorkspace.preload,
+  routinesView.preload,
+];
+
+type IdleCallbackWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+  cancelIdleCallback?: (handle: number) => void;
+};
+
+export function prefetchRemainingWorkspacesAfterPaint() {
+  const idleWindow = window as IdleCallbackWindow;
+  let cancelled = false;
+  let idleHandle: number | undefined;
+  let timeoutHandle: number | undefined;
+
+  const runPrefetch = () => {
+    if (cancelled) return;
+    void Promise.allSettled(deferredWorkspacePreloads.map((preload) => preload()));
+  };
+
+  const frameHandle = window.requestAnimationFrame(() => {
+    if (cancelled) return;
+    if (idleWindow.requestIdleCallback) {
+      idleHandle = idleWindow.requestIdleCallback(runPrefetch, { timeout: 1_500 });
+      return;
+    }
+    timeoutHandle = window.setTimeout(runPrefetch, 0);
+  });
+
+  return () => {
+    cancelled = true;
+    window.cancelAnimationFrame(frameHandle);
+    if (idleHandle !== undefined) idleWindow.cancelIdleCallback?.(idleHandle);
+    if (timeoutHandle !== undefined) window.clearTimeout(timeoutHandle);
+  };
+}
 
 function WorkspaceFallback() {
   return (
