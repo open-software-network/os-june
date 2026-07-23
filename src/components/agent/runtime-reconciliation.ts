@@ -10,8 +10,9 @@ import type { createRuntimeReconciliationDependencies } from "./runtime-reconcil
 
 // The shared scheduler runs every 500ms so settlement stays prompt. Preserve
 // the workspace's pre-consolidation five-second registration-race tolerance
-// before treating an absent active row as a missed lifecycle heartbeat.
+// before native history decides that an absent active row is terminal.
 const REQUIRED_MISSING_LIFECYCLE_SNAPSHOTS = 11;
+const REQUIRED_UNREACHABLE_LIFECYCLE_SNAPSHOTS = 3;
 
 export function createRuntimeReconciliation(dependencies: createRuntimeReconciliationDependencies) {
   const {
@@ -23,7 +24,7 @@ export function createRuntimeReconciliation(dependencies: createRuntimeReconcili
     refreshHermesSession,
     runtimeSessionIdsRef,
     setError,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     workingSessionIdsRef,
   } = dependencies;
 
@@ -55,26 +56,39 @@ export function createRuntimeReconciliation(dependencies: createRuntimeReconcili
 
   async function reconcileWorkingSessionsAgainstRuntime(snapshot: HermesActiveSessionSnapshot) {
     const allWorking = Array.from(workingSessionIdsRef.current);
-    const misses = workingReconcileMissesRef.current;
-    for (const sessionId of misses.keys()) {
-      if (!allWorking.includes(sessionId)) misses.delete(sessionId);
+    const streaks = workingReconcileStreaksRef.current;
+    for (const sessionId of streaks.keys()) {
+      if (!allWorking.includes(sessionId)) streaks.delete(sessionId);
     }
-    if (!snapshot.reachable) return;
     const working = allWorking.filter(
       (sessionId) => sessionUnrestricted(sessionId) === snapshot.fullMode,
     );
     if (working.length === 0) return;
     for (const sessionId of working) {
+      const streak = streaks.get(sessionId) ?? { missing: 0, unreachable: 0 };
+      if (!snapshot.reachable) {
+        const unreachable = streak.unreachable + 1;
+        if (unreachable < REQUIRED_UNREACHABLE_LIFECYCLE_SNAPSHOTS) {
+          streaks.set(sessionId, { missing: 0, unreachable });
+          continue;
+        }
+        streaks.delete(sessionId);
+        // A socket can remain OPEN while frames stop after sleep or a network
+        // transition. Native persistence is socket-independent, so recover
+        // history without interpreting transport failure as a stopped run.
+        await refreshHermesSession(sessionId);
+        continue;
+      }
       if (runtimeSnapshotHasSession(snapshot, sessionId)) {
-        misses.delete(sessionId);
+        streaks.delete(sessionId);
         continue;
       }
-      const seen = (misses.get(sessionId) ?? 0) + 1;
+      const seen = streak.missing + 1;
       if (seen < REQUIRED_MISSING_LIFECYCLE_SNAPSHOTS) {
-        misses.set(sessionId, seen);
+        streaks.set(sessionId, { missing: seen, unreachable: 0 });
         continue;
       }
-      misses.delete(sessionId);
+      streaks.delete(sessionId);
       const freshMessages = await refreshHermesSession(sessionId);
       if (!freshMessages) continue;
       if (sessionHasAssistantAfterLatestUser(freshMessages)) {

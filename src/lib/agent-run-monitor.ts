@@ -1,9 +1,10 @@
 import { dispatchAgentRunSettled, dispatchAgentSessionStatus } from "./agent-events";
+import { subscribeHermesActiveSessionSnapshots } from "./hermes-active-session-snapshots";
 import {
-  subscribeHermesActiveSessionSnapshots,
-  type HermesActiveSessionRow,
-} from "./hermes-active-session-snapshots";
-import { watchHermesRunSettlement, type HermesRunSettlementHandle } from "./hermes-run-settlement";
+  watchHermesRunSettlement,
+  type HermesRunSettlementHandle,
+  type HermesRunSettlementObservation,
+} from "./hermes-run-settlement";
 import {
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
@@ -24,6 +25,7 @@ type AgentRunMonitor = StartAgentRunMonitoringInput & {
   generation: number;
   observedActive: boolean;
   succeeded: boolean;
+  unreachableSnapshots: number;
   settlement?: HermesRunSettlementHandle;
   settlementCleanupTimer?: ReturnType<typeof setTimeout>;
 };
@@ -34,6 +36,7 @@ type TerminalOutcome =
   | { kind: "cancelled" };
 
 const MONITOR_TIMEOUT_MS = 6 * 60 * 60 * 1_000;
+const REQUIRED_UNREACHABLE_SNAPSHOTS = 3;
 const runs = new Map<string, AgentRunMonitor>();
 let nextGeneration = 0;
 
@@ -53,6 +56,7 @@ export function startAgentRunMonitoring(input: StartAgentRunMonitoringInput) {
     generation: ++nextGeneration,
     observedActive: false,
     succeeded: false,
+    unreachableSnapshots: 0,
   };
   runs.set(input.storedSessionId, run);
 
@@ -141,7 +145,7 @@ function startSettlementIfReady(run: AgentRunMonitor) {
 
 function observeRunSnapshots(
   run: AgentRunMonitor,
-  observer: (rows: readonly HermesActiveSessionRow[] | undefined) => void,
+  observer: (observation: HermesRunSettlementObservation) => void,
 ) {
   let cancelled = false;
   let processing = Promise.resolve();
@@ -150,9 +154,42 @@ function observeRunSnapshots(
       .then(async () => {
         if (cancelled || !isCurrent(run)) return;
         if (!snapshot.reachable) {
-          observer(undefined);
+          run.unreachableSnapshots += 1;
+          if (run.unreachableSnapshots < REQUIRED_UNREACHABLE_SNAPSHOTS) {
+            observer({ rows: undefined });
+            return;
+          }
+          if (!run.succeeded) {
+            const outcome = await persistedTerminalOutcome(run.storedSessionId);
+            if (cancelled || !isCurrent(run)) return;
+            if (outcome?.kind === "succeeded") {
+              run.succeeded = true;
+            } else if (outcome) {
+              finishRun(run);
+              if (outcome.kind === "failed") {
+                dispatchAgentSessionStatus({
+                  sessionId: run.storedSessionId,
+                  title: run.title,
+                  status: "failed",
+                  summary: outcome.summary,
+                });
+              }
+              return;
+            }
+          }
+          if (!run.succeeded || run.settlementHeld) {
+            observer({
+              rows: [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }],
+            });
+            return;
+          }
+          // Native persisted state confirmed the run is terminal, or the live
+          // stream already did. Let the bounded unreachable streak satisfy
+          // settlement rather than resetting the idle count forever.
+          observer({ countUnreachableAsIdle: true, rows: undefined });
           return;
         }
+        run.unreachableSnapshots = 0;
         const rows = snapshot.rows;
         const matchingRows = rows.filter(
           (row) =>
@@ -191,13 +228,15 @@ function observeRunSnapshots(
         }
 
         if (!isCurrent(run) || !run.succeeded || run.settlementHeld) {
-          observer([{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }]);
+          observer({
+            rows: [{ id: run.runtimeSessionId ?? run.storedSessionId, status: "working" }],
+          });
           return;
         }
-        observer(rows);
+        observer({ rows });
       })
       .catch(() => {
-        if (!cancelled && isCurrent(run)) observer(undefined);
+        if (!cancelled && isCurrent(run)) observer({ rows: undefined });
       });
   });
   return () => {

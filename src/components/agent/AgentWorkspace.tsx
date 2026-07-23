@@ -467,7 +467,7 @@ export function AgentWorkspace({
     runtimeSessionIds,
     setRuntimeSessionIds,
     runtimeSessionIdsRef,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     stoppingSessionIds,
     setStoppingSessionIds,
     skills,
@@ -1457,7 +1457,7 @@ export function AgentWorkspace({
     refreshHermesSession,
     runtimeSessionIdsRef,
     setError,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     workingSessionIdsRef,
   });
 
@@ -1726,14 +1726,14 @@ export function AgentWorkspace({
     return () => window.clearInterval(interval);
   }, [selectedTask?.id, selectedTask?.status, upsertTask]);
 
-  // One process-wide lifecycle snapshot is shared with run settlement. The
-  // healthy gateway stream remains the message source of truth; only a missed
-  // active-session heartbeat window triggers a persisted-history fallback.
+  // One process-wide active-list poll per mode is shared with run settlement.
+  // Gateway events render live message deltas, while bounded missing-row and
+  // unreachable-snapshot streaks trigger native persisted-history recovery.
   // biome-ignore lint/correctness/useExhaustiveDependencies: subscription ownership follows mode membership; the render-local reconciler reads current refs, and resubscribing every render would force extra immediate snapshots.
   useEffect(() => {
-    for (const sessionId of workingReconcileMissesRef.current.keys()) {
+    for (const sessionId of workingReconcileStreaksRef.current.keys()) {
       if (!workingSessionIds.has(sessionId)) {
-        workingReconcileMissesRef.current.delete(sessionId);
+        workingReconcileStreaksRef.current.delete(sessionId);
       }
     }
     if (!bridge.running || workingSessionIds.size === 0) return;

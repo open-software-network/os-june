@@ -283,7 +283,26 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
       mocks.gatewayCloseHandlers.add(handler);
       return () => mocks.gatewayCloseHandlers.delete(handler);
     });
-    request = mocks.gatewayRequest;
+    request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
+      const response = mocks.gatewayRequest(method, params) as Promise<T>;
+      if (timeoutMs === undefined) return response;
+      return new Promise<T>((resolve, reject) => {
+        const timer = window.setTimeout(
+          () => reject(new Error(`Hermes request timed out: ${method}`)),
+          timeoutMs,
+        );
+        void Promise.resolve(response).then(
+          (value) => {
+            window.clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            window.clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
+    }
   },
 }));
 
@@ -469,8 +488,8 @@ function mockGlmCapabilities(capabilities: string[]) {
  * short (<=1ms) timers each step, so async session hydration that needs a few
  * extra cycles settles instead of racing a single fixed `advanceTimersByTimeAsync(50)`
  * (the root of this suite's CI-load flakes — the initial "Thinking…" render only
- * lost under the loaded CI runner). Capped at 500ms, well under the 2500ms
- * working-session poll, so it never advances into a reconcile tick.
+ * lost under the loaded CI runner). Capped at 500ms, below the bounded
+ * unreachable-snapshot recovery window.
  */
 async function settleUnderFakeTimers(
   assertion: () => void,
@@ -9639,6 +9658,68 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("refreshes native history when active-list stalls without a close event", async () => {
+    const userOnly = [
+      {
+        id: "m1",
+        role: "user" as const,
+        content: "finish after wake",
+        timestamp: new Date().toISOString(),
+      },
+    ];
+    const reply = {
+      id: "m2",
+      role: "assistant" as const,
+      content: "Recovered from native history.",
+      timestamp: new Date().toISOString(),
+    };
+    let replyPersisted = false;
+    mocks.listHermesSessionMessages.mockImplementation(async () =>
+      replyPersisted ? [...userOnly, reply] : userOnly,
+    );
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        return new Promise(() => undefined);
+      }
+      return Promise.resolve({});
+    });
+
+    vi.useFakeTimers();
+    try {
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+      const historyCallsBeforeStallRecovery = mocks.listHermesSessionMessages.mock.calls.length;
+
+      // No gateway close is emitted. The socket stays logically OPEN while
+      // active_list frames stop, as can happen across sleep or a network
+      // transition.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        historyCallsBeforeStallRecovery,
+      );
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
+      expect(screen.queryByText("June stopped before replying.")).toBeNull();
+
+      const historyCallsBeforePersistedReply = mocks.listHermesSessionMessages.mock.calls.length;
+      replyPersisted = true;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_000);
+      });
+
+      expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
+        historyCallsBeforePersistedReply,
+      );
+      expect(screen.getByText("Recovered from native history.")).toBeInTheDocument();
+      expect(screen.queryByText("Thinking…")).toBeNull();
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retires an approval across an unexpected close and does not reopen its replay", async () => {
     const statusDetails: AgentSessionStatusDetail[] = [];
     const handleStatus = (event: Event) => {
@@ -15500,7 +15581,7 @@ describe("AgentWorkspace", () => {
         text: "follow up while racing",
       });
 
-      // The missed-heartbeat fallback applies the newer history (follow-up +
+      // The missing-lifecycle fallback applies the newer history (follow-up +
       // reply persisted; the optimistic bubble is dropped against it).
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5_000);

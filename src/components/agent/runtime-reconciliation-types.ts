@@ -18,6 +18,8 @@ export type createRuntimeReconciliationDependencies = {
   refreshHermesSession: (sessionId: string) => Promise<HermesSessionMessage[] | undefined>;
   runtimeSessionIdsRef: React.MutableRefObject<Record<string, string>>;
   setError: (message: string | null, options?: AgentWorkspaceErrorOptions) => void;
-  workingReconcileMissesRef: React.MutableRefObject<Map<string, number>>;
+  workingReconcileStreaksRef: React.MutableRefObject<
+    Map<string, { missing: number; unreachable: number }>
+  >;
   workingSessionIdsRef: React.MutableRefObject<Set<string>>;
 };

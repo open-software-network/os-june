@@ -1,20 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type HermesActiveSessionRow,
+  type HermesRunSettlementObservation,
   watchHermesRunSettlement,
 } from "../lib/hermes-run-settlement";
 
 function snapshotSource() {
-  const observers = new Set<(rows: readonly HermesActiveSessionRow[] | undefined) => void>();
+  const observers = new Set<(observation: HermesRunSettlementObservation) => void>();
   const observeActiveSessions = vi.fn(
-    (observer: (rows: readonly HermesActiveSessionRow[] | undefined) => void) => {
+    (observer: (observation: HermesRunSettlementObservation) => void) => {
       observers.add(observer);
       return () => observers.delete(observer);
     },
   );
   return {
-    emit(rows: readonly HermesActiveSessionRow[] | undefined) {
-      for (const observer of [...observers]) observer(rows);
+    emit(rows: readonly HermesActiveSessionRow[] | undefined, countUnreachableAsIdle = false) {
+      for (const observer of [...observers]) {
+        observer({ countUnreachableAsIdle, rows });
+      }
     },
     observeActiveSessions,
     observers,
@@ -124,6 +127,25 @@ describe("Hermes run settlement", () => {
     source.emit([]);
     expect(onSettled).not.toHaveBeenCalled();
     source.emit([]);
+    expect(onSettled).toHaveBeenCalledOnce();
+  });
+
+  it("counts unreachable observations after native terminal confirmation", () => {
+    const source = snapshotSource();
+    const onSettled = vi.fn();
+
+    watchHermesRunSettlement({
+      storedSessionId: "stored-native-terminal",
+      observeActiveSessions: source.observeActiveSessions,
+      onSettled,
+      timeoutMs: 100,
+    });
+
+    source.emit(undefined);
+    source.emit(undefined, true);
+    expect(onSettled).not.toHaveBeenCalled();
+    source.emit(undefined, true);
+
     expect(onSettled).toHaveBeenCalledOnce();
   });
 

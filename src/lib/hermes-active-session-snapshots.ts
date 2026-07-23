@@ -24,16 +24,15 @@ type ModeObserver = {
 };
 
 const SNAPSHOT_INTERVAL_MS = 500;
+const SNAPSHOT_REQUEST_TIMEOUT_MS = SNAPSHOT_INTERVAL_MS;
 const listenersByMode = new Map<boolean, Set<SnapshotListener>>();
 const observersByMode = new Map<boolean, ModeObserver>();
-let cycleInFlight = false;
-let cycleTimer: ReturnType<typeof setTimeout> | undefined;
-let immediateCycleRequested = false;
+const cycleInFlightByMode = new Set<boolean>();
+const cycleTimersByMode = new Map<boolean, ReturnType<typeof setTimeout>>();
+const immediateCyclesByMode = new Set<boolean>();
 
-function activeModes() {
-  return [...listenersByMode.entries()]
-    .filter(([, listeners]) => listeners.size > 0)
-    .map(([fullMode]) => fullMode);
+function modeHasListeners(fullMode: boolean) {
+  return Boolean(listenersByMode.get(fullMode)?.size);
 }
 
 function closeObserver(fullMode: boolean) {
@@ -43,20 +42,24 @@ function closeObserver(fullMode: boolean) {
   observer.gateway.close();
 }
 
-function scheduleCycle(delayMs: number) {
-  if (activeModes().length === 0) return;
-  if (cycleInFlight) {
-    if (delayMs === 0) immediateCycleRequested = true;
+function scheduleCycle(fullMode: boolean, delayMs: number) {
+  if (!modeHasListeners(fullMode)) return;
+  if (cycleInFlightByMode.has(fullMode)) {
+    if (delayMs === 0) immediateCyclesByMode.add(fullMode);
     return;
   }
-  if (cycleTimer !== undefined) {
+  const currentTimer = cycleTimersByMode.get(fullMode);
+  if (currentTimer !== undefined) {
     if (delayMs !== 0) return;
-    clearTimeout(cycleTimer);
+    clearTimeout(currentTimer);
   }
-  cycleTimer = setTimeout(() => {
-    cycleTimer = undefined;
-    void runCycle();
-  }, delayMs);
+  cycleTimersByMode.set(
+    fullMode,
+    setTimeout(() => {
+      cycleTimersByMode.delete(fullMode);
+      void runCycle(fullMode);
+    }, delayMs),
+  );
 }
 
 function createObserver(fullMode: boolean) {
@@ -131,30 +134,29 @@ async function pollMode(fullMode: boolean) {
     const observer = await ensureObserver(fullMode);
     const response = await observer.gateway.request<{
       sessions?: HermesActiveSessionRow[];
-    }>("session.active_list", {});
+    }>("session.active_list", {}, SNAPSHOT_REQUEST_TIMEOUT_MS);
     publishSnapshot(fullMode, true, Array.isArray(response?.sessions) ? response.sessions : []);
   } catch {
     // Unreachable is an observation, not an empty active-session list. It
-    // breaks settlement idle streaks while preserving locally-known activity.
+    // engages bounded native-persistence fallbacks while preserving
+    // locally-known activity.
     publishSnapshot(fullMode, false, []);
   }
 }
 
-async function runCycle() {
-  if (cycleInFlight) {
-    immediateCycleRequested = true;
+async function runCycle(fullMode: boolean) {
+  if (cycleInFlightByMode.has(fullMode)) {
+    immediateCyclesByMode.add(fullMode);
     return;
   }
-  const modes = activeModes();
-  if (modes.length === 0) return;
-  cycleInFlight = true;
+  if (!modeHasListeners(fullMode)) return;
+  cycleInFlightByMode.add(fullMode);
   try {
-    await Promise.all(modes.map(pollMode));
+    await pollMode(fullMode);
   } finally {
-    cycleInFlight = false;
-    const delayMs = immediateCycleRequested ? 0 : SNAPSHOT_INTERVAL_MS;
-    immediateCycleRequested = false;
-    if (activeModes().length > 0) scheduleCycle(delayMs);
+    cycleInFlightByMode.delete(fullMode);
+    const delayMs = immediateCyclesByMode.delete(fullMode) ? 0 : SNAPSHOT_INTERVAL_MS;
+    if (modeHasListeners(fullMode)) scheduleCycle(fullMode, delayMs);
   }
 }
 
@@ -170,7 +172,7 @@ export function subscribeHermesActiveSessionSnapshots(
   const listeners = listenersByMode.get(fullMode) ?? new Set<SnapshotListener>();
   listeners.add(listener);
   listenersByMode.set(fullMode, listeners);
-  scheduleCycle(0);
+  scheduleCycle(fullMode, 0);
 
   let subscribed = true;
   return () => {
@@ -180,10 +182,10 @@ export function subscribeHermesActiveSessionSnapshots(
     current?.delete(listener);
     if (current?.size) return;
     listenersByMode.delete(fullMode);
-    if (activeModes().length === 0 && cycleTimer !== undefined) {
-      clearTimeout(cycleTimer);
-      cycleTimer = undefined;
-    }
+    const timer = cycleTimersByMode.get(fullMode);
+    if (timer !== undefined) clearTimeout(timer);
+    cycleTimersByMode.delete(fullMode);
+    immediateCyclesByMode.delete(fullMode);
   };
 }
 
@@ -191,10 +193,10 @@ export function subscribeHermesActiveSessionSnapshots(
  * process-wide: polling pauses without consumers, while observer sockets are
  * reused across short subscriber gaps. */
 export function resetHermesActiveSessionSnapshotsForTests() {
-  if (cycleTimer !== undefined) clearTimeout(cycleTimer);
-  cycleTimer = undefined;
-  cycleInFlight = false;
-  immediateCycleRequested = false;
+  for (const timer of cycleTimersByMode.values()) clearTimeout(timer);
+  cycleTimersByMode.clear();
+  cycleInFlightByMode.clear();
+  immediateCyclesByMode.clear();
   listenersByMode.clear();
   for (const fullMode of [...observersByMode.keys()]) closeObserver(fullMode);
 }

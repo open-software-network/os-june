@@ -8,11 +8,16 @@ export type HermesRunSettlementHandle = {
   cancel: () => void;
 };
 
+export type HermesRunSettlementObservation = {
+  countUnreachableAsIdle?: boolean;
+  rows: readonly HermesActiveSessionRow[] | undefined;
+};
+
 export type WatchHermesRunSettlementOptions = {
   storedSessionId: string;
   runtimeSessionId?: string;
   observeActiveSessions: (
-    observer: (rows: readonly HermesActiveSessionRow[] | undefined) => void,
+    observer: (observation: HermesRunSettlementObservation) => void,
   ) => () => void;
   onSettled: () => void;
   timeoutMs?: number;
@@ -47,7 +52,9 @@ function matchingSessionIsIdle(
 /**
  * Confirms that a completed Hermes run has reached true runtime idle before
  * notifying downstream consumers. An empty active-session snapshot is a
- * reachable idle observation; an error is not.
+ * reachable idle observation. An unreachable observation counts only when
+ * the caller has independently confirmed terminal state through the live
+ * stream or native persistence.
  *
  * One watch is shared per stored session. A call made while that session is
  * already being watched returns the shared handle and adds its optional
@@ -90,10 +97,18 @@ export function watchHermesRunSettlement(
   };
   settlementWatches.set(options.storedSessionId, watch);
 
-  const unsubscribe = options.observeActiveSessions((rows) => {
+  const unsubscribe = options.observeActiveSessions(({ countUnreachableAsIdle, rows }) => {
     if (watch.finished) return;
     if (rows === undefined) {
-      watch.idleObservations = 0;
+      if (countUnreachableAsIdle) {
+        watch.idleObservations += 1;
+        if (watch.idleObservations >= REQUIRED_IDLE_OBSERVATIONS) {
+          finish();
+          options.onSettled();
+        }
+      } else {
+        watch.idleObservations = 0;
+      }
       return;
     }
     if (matchingSessionIsIdle(rows, watch.identifiers)) {
