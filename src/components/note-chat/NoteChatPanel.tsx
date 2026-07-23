@@ -539,12 +539,12 @@ export function NoteChatPanel({
         setModelOpen(false);
         return;
       }
-      if (draftRef.current.trim()) return;
+      if (!draftEmpty) return;
       onCloseRef.current();
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [modelOpen]);
+  }, [draftEmpty, modelOpen]);
 
   // Restore the remembered width once per mount; the var lives on .app-shell
   // because the main card's margin and the editor footer consume it too.
@@ -601,13 +601,18 @@ export function NoteChatPanel({
     fade.update();
   }, [turns.length, lastTurnSize, working, fade.update]);
 
-  async function handleSend(text: string) {
+  async function handleSend() {
     if (working || importing || textActionsDisabledReason) return;
+    if (!composerRef.current?.flushPendingChange()) return;
+    const serializedText = draftRef.current;
+    const text = serializedText.trim();
     setComposerError(null);
     const result = await submit(text, attachments);
     // Clear the composer only when this panel still owns the accepted send.
     // A stale/switched panel must not wipe the draft of the newly selected note.
     if (result.accepted && result.current) {
+      if (!composerRef.current?.flushPendingChange()) return;
+      if (draftRef.current !== serializedText) return;
       draftRef.current = "";
       setDraftEmpty(true);
       setAttachments([]);
@@ -791,7 +796,8 @@ export function NoteChatPanel({
                 draftRef.current = text;
                 setDraftEmpty(!text.trim());
               }}
-              onSubmit={() => void handleSend(draftRef.current)}
+              onContentChange={(hasContent) => setDraftEmpty(!hasContent)}
+              onSubmit={() => void handleSend()}
             />
             <div className="agent-composer-toolbar">
               <button
@@ -852,7 +858,7 @@ export function NoteChatPanel({
                       importing ||
                       (draftEmpty && !attachments.length)
                     }
-                    onClick={() => void handleSend(draftRef.current)}
+                    onClick={() => void handleSend()}
                   >
                     <IconArrowUp size={18} />
                   </button>

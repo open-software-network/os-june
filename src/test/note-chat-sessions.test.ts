@@ -610,6 +610,83 @@ describe("note chat session map", () => {
     expect(composer).toHaveTextContent("Keep this draft");
   });
 
+  it("flushes the exact note-chat text before a send-button submit", async () => {
+    const submit = vi.fn(async () => ({ accepted: false, current: true }));
+    const user = userEvent.setup({ delay: null });
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat({ submit }),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    const composer = await screen.findByRole("textbox");
+    const send = screen.getByRole("button", { name: "Send message" });
+    await user.type(composer, "Exact note follow-up");
+    expect(send).toBeEnabled();
+    fireEvent.click(send);
+
+    await waitFor(() => expect(submit).toHaveBeenCalledWith("Exact note follow-up", []));
+    expect(composer).toHaveTextContent("Exact note follow-up");
+  });
+
+  it("keeps a fresh note-chat draft when Escape lands before trailing publication", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup({ delay: null });
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat(),
+        onClose,
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "Do not close this draft");
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(composer).toHaveTextContent("Do not close this draft");
+  });
+
+  it("keeps text typed while a note-chat submit is in flight", async () => {
+    let resolveSubmit: ((result: NoteChatSubmitResult) => void) | undefined;
+    const submit = vi.fn(
+      () =>
+        new Promise<NoteChatSubmitResult>((resolve) => {
+          resolveSubmit = resolve;
+        }),
+    );
+    const user = userEvent.setup({ delay: null });
+    render(
+      createElement(NoteChatPanel, {
+        note: { id: "note-1", title: "Launch planning" },
+        chat: noteChat({ submit }),
+        onClose: vi.fn(),
+        onOpenInAgent: vi.fn(),
+      }),
+    );
+
+    const composer = await screen.findByRole("textbox");
+    await user.type(composer, "First note question");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith("First note question", []));
+
+    await user.type(composer, " plus a newer draft");
+    const liveText = composer.textContent;
+    await act(async () => {
+      resolveSubmit?.({ accepted: true, current: true });
+      await Promise.resolve();
+    });
+
+    expect(composer.textContent).toBe(liveText);
+    expect(composer).toHaveTextContent("First note question");
+    expect(composer).toHaveTextContent("plus a newer draft");
+  });
+
   it("keeps a spent recovery key after a stale-but-accepted note-chat retry", async () => {
     const { upstreamProviderRecoveryStore } = await import("../lib/upstream-provider-recovery");
     // Process-local store can retain keys from earlier panel tests in this file.

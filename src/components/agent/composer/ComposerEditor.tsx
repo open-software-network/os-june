@@ -327,6 +327,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     useEffect(
       () => () => {
+        // useEditor defers destruction by one task so this later effect can
+        // persist the final pending document while the editor is still live.
         const pendingEditor = pendingChangeEditorRef.current;
         if (
           changePendingRef.current &&

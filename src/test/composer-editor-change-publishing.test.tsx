@@ -1,5 +1,5 @@
 import type { Editor } from "@tiptap/react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +15,7 @@ afterEach(() => {
 
 async function renderComposer(options: {
   onChange?: (text: string) => void;
+  onPendingChangePersist?: (text: string) => void;
   onContentChange?: (hasContent: boolean) => void;
   onSubmit?: () => void;
   onBuiltinSlashCommand?: () => boolean;
@@ -26,6 +27,7 @@ async function renderComposer(options: {
     <ComposerEditor
       placeholder="Message June"
       onChange={(text) => options.onChange?.(text)}
+      onPendingChangePersist={(text) => options.onPendingChangePersist?.(text)}
       onContentChange={options.onContentChange}
       onSubmit={() => options.onSubmit?.()}
       onBuiltinSlashCommand={options.onBuiltinSlashCommand}
@@ -160,5 +162,28 @@ describe("composer change publishing", () => {
 
     expect(serialize).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith("編集中");
+  });
+
+  it("persists a pending document before TipTap destroys the editor on unmount", async () => {
+    const serialize = vi.fn(serializePlainText);
+    const onChange = vi.fn();
+    const onPendingChangePersist = vi.fn();
+    const editor = await renderComposer({
+      onChange,
+      onPendingChangePersist,
+      serialize,
+      changeDelayMs: 10_000,
+    });
+    vi.useFakeTimers();
+
+    act(() => {
+      editor.commands.insertContent("survives teardown");
+    });
+    expect(onChange).not.toHaveBeenCalled();
+
+    cleanup();
+
+    expect(serialize).toHaveBeenCalledTimes(1);
+    expect(onPendingChangePersist).toHaveBeenCalledWith("survives teardown");
   });
 });

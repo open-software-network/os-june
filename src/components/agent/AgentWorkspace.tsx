@@ -1163,7 +1163,7 @@ export function AgentWorkspace({
     composerModelSearchRef,
     composerModelTriggerRef,
     composerSteerDemo,
-    draft,
+    composerHasContent,
     errorState,
     fullModeDraftRef,
     gallerySections,
@@ -2061,6 +2061,7 @@ export function AgentWorkspace({
   }
 
   function clearComposerCommandDraft(commandText: string) {
+    if (!composerEditorRef.current?.flushPendingChange()) return;
     if (draftRef.current.trim() !== commandText.trim()) return;
     if (categoryRef.current) return;
     composerEditorRef.current?.clear();
@@ -2531,9 +2532,9 @@ export function AgentWorkspace({
   // remains read-only; transport state stays out of the visual scan line.
   const { renderSteerCard, renderQueuedAttachmentFollowUp } = createQueuedFollowUpRenderers({
     attachments,
+    composerHasContent,
     composerEditorRef,
     deliverQueuedAttachmentFollowUp,
-    draft,
     draftRef,
     editQueuedAttachmentFollowUp,
     queuedAttachmentFollowUpsRef,
@@ -2732,7 +2733,7 @@ export function AgentWorkspace({
   // hovering the chips, has started typing, or has the window backgrounded;
   // never cycles under reduced motion.
   useAgentHeroRotation({
-    draftRef,
+    composerHasContent,
     heroChipsHoverRef,
     heroMode,
     setHeroChipPhase,
