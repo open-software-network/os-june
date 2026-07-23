@@ -18,16 +18,19 @@ import {
 } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
+import { createHudLifecycle } from "./lib/hud-lifecycle";
 import "./styles/meeting-hud.css";
 
+const lifecycle = createHudLifecycle();
+
 // Recolor this HUD window to the selected accent and keep it live-synced.
-subscribeBrand();
+lifecycle.trackUnlisten(subscribeBrand());
 
 const appWindow = getCurrentWindow();
 const pill = document.querySelector<HTMLDivElement>("#mhud");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".mhud-bar"));
 
-installNativeContextMenuGuard();
+lifecycle.addCleanup(installNativeContextMenuGuard());
 
 // Shares the dictation HUD's + recorder bar's synthesis, ballistics, and
 // travelling-wave motion so all waveforms move identically.
@@ -75,8 +78,8 @@ function applyZone(payload: { vertical: boolean; animate: boolean }) {
   pill.dataset.orient = payload.vertical ? "vertical" : "horizontal";
   if (!payload.animate) {
     // Let the snapped state paint before the transition comes back.
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => pill.classList.remove("mhud-snap"));
+    lifecycle.requestAnimationFrame(() => {
+      lifecycle.requestAnimationFrame(() => pill.classList.remove("mhud-snap"));
     });
   }
 }
@@ -95,9 +98,9 @@ function startBarLoop() {
         : meter.displayed[i];
       bars[i].style.setProperty("--level", value.toFixed(3));
     }
-    window.requestAnimationFrame(tick);
+    lifecycle.requestAnimationFrame(tick);
   };
-  window.requestAnimationFrame(tick);
+  lifecycle.requestAnimationFrame(tick);
 }
 
 function resetBars() {
@@ -123,59 +126,87 @@ const DRAG_THRESHOLD_PX = 4;
 let pressStart: { x: number; y: number } | undefined;
 let dragging = false;
 
-document.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0) return;
-  pressStart = { x: event.screenX, y: event.screenY };
-  dragging = false;
-});
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (event.button !== 0) return;
+    pressStart = { x: event.screenX, y: event.screenY };
+    dragging = false;
+  },
+  { signal: lifecycle.signal },
+);
 
-document.addEventListener("pointermove", (event) => {
-  if (!pressStart || dragging) return;
-  const dx = event.screenX - pressStart.x;
-  const dy = event.screenY - pressStart.y;
-  if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
-    dragging = true;
-    // Native drag takes over the gesture; pointerup won't fire on the element,
-    // so `dragging` stays true and suppresses the click below.
-    void appWindow.startDragging().catch(() => {});
-  }
-});
+document.addEventListener(
+  "pointermove",
+  (event) => {
+    if (!pressStart || dragging) return;
+    const dx = event.screenX - pressStart.x;
+    const dy = event.screenY - pressStart.y;
+    if (Math.hypot(dx, dy) > DRAG_THRESHOLD_PX) {
+      dragging = true;
+      // Native drag takes over the gesture; pointerup won't fire on the element,
+      // so `dragging` stays true and suppresses the click below.
+      void appWindow.startDragging().catch(() => {});
+    }
+  },
+  { signal: lifecycle.signal },
+);
 
-document.addEventListener("pointerup", (event) => {
-  if (event.button !== 0) return;
-  const wasClick = !!pressStart && !dragging;
-  pressStart = undefined;
-  if (wasClick) reopenJune();
-});
+document.addEventListener(
+  "pointerup",
+  (event) => {
+    if (event.button !== 0) return;
+    const wasClick = !!pressStart && !dragging;
+    pressStart = undefined;
+    if (wasClick) reopenJune();
+  },
+  { signal: lifecycle.signal },
+);
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" || event.key === " ") {
-    event.preventDefault();
-    reopenJune();
-  }
-});
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      reopenJune();
+    }
+  },
+  { signal: lifecycle.signal },
+);
 
-void listen<RecordingTelemetryDto>(RECORDING_TELEMETRY_EVENT, (event) => {
-  if (event.payload) applyStatus(event.payload);
-});
+lifecycle.trackUnlisten(
+  listen<RecordingTelemetryDto>(RECORDING_TELEMETRY_EVENT, (event) => {
+    if (event.payload) applyStatus(event.payload);
+  }),
+);
 
-void listen<{ vertical: boolean; animate: boolean }>("meeting-hud-zone", (event) => {
-  if (event.payload) applyZone(event.payload);
-});
+lifecycle.trackUnlisten(
+  listen<{ vertical: boolean; animate: boolean }>("meeting-hud-zone", (event) => {
+    if (event.payload) applyZone(event.payload);
+  }),
+);
 
 // Local mirrors of the Tauri listeners, same as the dictation HUD page:
 // only the dev-only demo driver dispatches these window events (standalone
 // page, no bridge), so production builds skip the dead listeners.
 if (import.meta.env.DEV) {
-  window.addEventListener("meeting-hud-status", (event) => {
-    const status = (event as CustomEvent<RecordingStatusDto>).detail;
-    if (status) applyStatus(status);
-  });
+  window.addEventListener(
+    "meeting-hud-status",
+    (event) => {
+      const status = (event as CustomEvent<RecordingStatusDto>).detail;
+      if (status) applyStatus(status);
+    },
+    { signal: lifecycle.signal },
+  );
 
-  window.addEventListener("meeting-hud-zone", (event) => {
-    const payload = (event as CustomEvent<{ vertical: boolean; animate: boolean }>).detail;
-    if (payload) applyZone(payload);
-  });
+  window.addEventListener(
+    "meeting-hud-zone",
+    (event) => {
+      const payload = (event as CustomEvent<{ vertical: boolean; animate: boolean }>).detail;
+      if (payload) applyZone(payload);
+    },
+    { signal: lifecycle.signal },
+  );
 }
 
 resetBars();
