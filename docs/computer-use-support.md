@@ -34,8 +34,10 @@ are enabled.
    from June into that pane: the helper card for Accessibility, or the outer
    June card for Screen Recording. Removing a macOS grant may require June to
    be quit and reopened before macOS reports the new state.
-4. Return to June. The setup page polls while incomplete and reconfigures the
-   runtime when the signed helper becomes capturable.
+4. Return to June. The visible setup page polls one signed-helper probe at a
+   time while incomplete and reconfigures the runtime when the helper becomes
+   capturable. Polling pauses while the page is hidden and refreshes when it
+   becomes visible again.
 5. If the driver crashed, Stop clears its private child and the next eligible
    task starts a new one. Never start an upstream daemon beside June.
 6. The first access to each target app asks once for access during the current

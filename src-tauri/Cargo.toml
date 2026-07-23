@@ -136,6 +136,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 window-vibrancy = "0.6"
 platform-macos = { git = "https://github.com/trycua/cua", rev = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1" }
+security-framework = "3.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

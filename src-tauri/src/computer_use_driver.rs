@@ -13,13 +13,20 @@ use cua_driver_core::{
     tool::ToolRegistry,
 };
 #[cfg(target_os = "macos")]
+use security_framework::os::macos::code_signing::{
+    Flags as CodeSigningFlags, GuestAttributes, SecCode, SecRequirement,
+};
+#[cfg(target_os = "macos")]
 use serde_json::{json, Value};
 #[cfg(target_os = "macos")]
 use std::{
     collections::{HashMap, HashSet},
-    io,
+    io::{self, Read},
     path::PathBuf,
+    process::{Child, Command, ExitStatus, Stdio},
     sync::Arc,
+    thread,
+    time::{Duration, Instant},
 };
 #[cfg(target_os = "macos")]
 use tokio::{
@@ -35,6 +42,21 @@ const UPSTREAM_COMMIT: &str = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1";
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 #[cfg(target_os = "macos")]
 const POINTER_NOTIFICATION_METHOD: &str = "june/pointer";
+#[cfg(target_os = "macos")]
+const SIGNATURE_DETAILS_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
+const CHILD_TERMINATION_GRACE: Duration = Duration::from_millis(250);
+#[cfg(target_os = "macos")]
+const CHILD_REAP_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(target_os = "macos")]
+const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+#[cfg(target_os = "macos")]
+struct BoundedChildOutput {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -125,6 +147,7 @@ async fn serve_stdio() -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 async fn serve_daemon() -> anyhow::Result<()> {
+    isolate_process_group()?;
     let socket_path = std::env::var("JUNE_COMPUTER_USE_SOCKET")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("the private June socket is missing"))?;
@@ -344,7 +367,7 @@ fn process_is_june(pid: libc::pid_t) -> bool {
         .collect();
     if let (Some(helper_app), Some(outer_app)) = (app_ancestors.first(), app_ancestors.get(1)) {
         return same_file(&process_path, &packaged_main_executable(outer_app))
-            && packaged_signatures_match(outer_app, helper_app);
+            && packaged_process_signature_matches(pid, helper_app);
     }
 
     // Development builds are not nested yet. Accept only the Cargo binary or
@@ -414,15 +437,27 @@ fn development_launcher_name_is_allowed(name: &std::ffi::OsStr) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn packaged_signatures_match(outer_app: &std::path::Path, helper_app: &std::path::Path) -> bool {
-    let Some(outer) = verified_signature(outer_app, "co.opensoftware.june") else {
-        return false;
-    };
-    let Some(helper) = verified_signature(helper_app, "co.opensoftware.june.computer-use-driver")
+fn packaged_process_signature_matches(pid: libc::pid_t, helper_app: &std::path::Path) -> bool {
+    let Some(helper) = signature_details(helper_app, "co.opensoftware.june.computer-use-driver")
     else {
         return false;
     };
-    outer.team_identifier == helper.team_identifier
+    let Some(requirement) = june_process_requirement(&helper.team_identifier) else {
+        return false;
+    };
+    let mut attributes = GuestAttributes::new();
+    attributes.set_pid(pid);
+    let Ok(peer) = SecCode::copy_guest_with_attribues(None, &attributes, CodeSigningFlags::NONE)
+    else {
+        return false;
+    };
+    peer.check_validity(
+        CodeSigningFlags::DO_NOT_VALIDATE_RESOURCES
+            | CodeSigningFlags::STRICT_VALIDATE
+            | CodeSigningFlags::NO_NETWORK_ACCESS,
+        &requirement,
+    )
+    .is_ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -431,24 +466,13 @@ struct VerifiedSignature {
 }
 
 #[cfg(target_os = "macos")]
-fn verified_signature(
+fn signature_details(
     path: &std::path::Path,
     expected_identifier: &str,
 ) -> Option<VerifiedSignature> {
-    let verified = std::process::Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict"])
-        .arg(path)
-        .status()
-        .ok()?
-        .success();
-    if !verified {
-        return None;
-    }
-    let details = std::process::Command::new("/usr/bin/codesign")
-        .args(["-dv", "--verbose=4"])
-        .arg(path)
-        .output()
-        .ok()?;
+    let mut command = Command::new("/usr/bin/codesign");
+    command.args(["-dv", "--verbose=4"]).arg(path);
+    let details = bounded_child_output(command, SIGNATURE_DETAILS_TIMEOUT).ok()??;
     if !details.status.success() {
         return None;
     }
@@ -468,6 +492,23 @@ fn verified_signature(
 }
 
 #[cfg(target_os = "macos")]
+fn june_process_requirement(team_identifier: &str) -> Option<SecRequirement> {
+    if team_identifier.is_empty()
+        || team_identifier.len() > 64
+        || !team_identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    format!(
+        "anchor apple generic and identifier \"co.opensoftware.june\" and certificate leaf[subject.OU] = \"{team_identifier}\""
+    )
+    .parse()
+    .ok()
+}
+
+#[cfg(target_os = "macos")]
 fn signature_value<'a>(details: &'a str, key: &str) -> Option<&'a str> {
     let prefix = format!("{key}=");
     details
@@ -475,6 +516,94 @@ fn signature_value<'a>(details: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn isolate_process_group() -> anyhow::Result<()> {
+    let pid = unsafe { libc::getpid() };
+    if unsafe { libc::getpgrp() } == pid || unsafe { libc::setpgid(0, 0) } == 0 {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "the private helper could not isolate its process group: {}",
+        io::Error::last_os_error()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn bounded_child_output(
+    mut command: Command,
+    timeout: Duration,
+) -> io::Result<Option<BoundedChildOutput>> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stdout_reader = thread::spawn(move || read_pipe(stdout));
+    let stderr_reader = thread::spawn(move || read_pipe(stderr));
+
+    let status = match poll_child_exit(&mut child, timeout)? {
+        Some(status) => status,
+        None => {
+            if !terminate_child_and_reap(child) {
+                // The detached reaper and pipe readers retain ownership until
+                // the late exit. Do not block helper authentication on them.
+                return Ok(None);
+            }
+            return Ok(None);
+        }
+    };
+    let stdout = stdout_reader.join().unwrap_or_else(|_| Ok(Vec::new()))?;
+    let stderr = stderr_reader.join().unwrap_or_else(|_| Ok(Vec::new()))?;
+    Ok(Some(BoundedChildOutput {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
+#[cfg(target_os = "macos")]
+fn read_pipe<R: Read>(pipe: Option<R>) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut bytes)?;
+    }
+    Ok(bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn poll_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait()? {
+            Some(status) => return Ok(Some(status)),
+            None if Instant::now() < deadline => thread::sleep(CHILD_POLL_INTERVAL),
+            None => return Ok(None),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_child_and_reap(mut child: Child) -> bool {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+    if let Ok(Some(_)) = poll_child_exit(&mut child, CHILD_TERMINATION_GRACE) {
+        return true;
+    }
+
+    let _ = child.kill();
+    match poll_child_exit(&mut child, CHILD_REAP_TIMEOUT) {
+        Ok(Some(_)) => true,
+        Ok(None) | Err(_) => {
+            let _ = thread::Builder::new()
+                .name("june-helper-child-reaper".to_string())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -995,6 +1124,30 @@ mod tests {
             packaged_main_executable(std::path::Path::new("/Applications/June.app")),
             std::path::PathBuf::from("/Applications/June.app/Contents/MacOS/os-june")
         );
+    }
+
+    #[test]
+    fn live_process_requirement_rejects_untrusted_team_syntax() {
+        assert!(june_process_requirement("ABCDE12345").is_some());
+        assert!(june_process_requirement("").is_none());
+        assert!(june_process_requirement("ABCDE12345\" or true").is_none());
+    }
+
+    #[test]
+    fn timed_out_signature_child_is_killed_and_reaped() {
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn stuck signature child");
+        let pid = child.id() as libc::pid_t;
+
+        assert!(terminate_child_and_reap(child));
+        let probe = unsafe { libc::kill(pid, 0) };
+        assert_eq!(probe, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
     }
 
     #[test]

@@ -45,8 +45,22 @@ function requirementState(ready: boolean, enabled: boolean) {
 
 type MacOSPermission = "accessibility" | "screenRecording";
 
+const STATUS_POLL_INTERVAL_MS = 2000;
+let pendingStatusRefresh: Promise<ComputerUseStatusDto> | undefined;
 const pendingPermissionRequests = new Map<MacOSPermission, Promise<ComputerUseStatusDto>>();
 let permissionRequestTail: Promise<unknown> = Promise.resolve();
+
+function readComputerUseStatus() {
+  if (pendingStatusRefresh) return pendingStatusRefresh;
+
+  const request = computerUseStatus();
+  pendingStatusRefresh = request;
+  const clear = () => {
+    if (pendingStatusRefresh === request) pendingStatusRefresh = undefined;
+  };
+  void request.then(clear, clear);
+  return request;
+}
 
 function requestComputerUsePermission(permission: MacOSPermission) {
   const pending = pendingPermissionRequests.get(permission);
@@ -83,7 +97,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
 
   const refresh = useCallback(async () => {
     try {
-      setStatus(await computerUseStatus());
+      setStatus(await readComputerUseStatus());
     } catch (error) {
       setMessage(messageFromError(error));
     }
@@ -93,7 +107,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
     let active = true;
     const load = async () => {
       try {
-        const next = await computerUseStatus();
+        const next = await readComputerUseStatus();
         if (active) setStatus(next);
       } catch (error) {
         if (active) setMessage(messageFromError(error));
@@ -113,8 +127,34 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
 
   useEffect(() => {
     if (!status?.grantEnabled || status.ready) return;
-    const timer = window.setInterval(() => void refresh(), 2000);
-    return () => window.clearInterval(timer);
+    let active = true;
+    let timer: number | undefined;
+    const clearTimer = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = undefined;
+    };
+    const schedule = () => {
+      clearTimer();
+      if (!active || document.visibilityState !== "visible") return;
+      timer = window.setTimeout(async () => {
+        await refresh();
+        schedule();
+      }, STATUS_POLL_INTERVAL_MS);
+    };
+    const onVisibilityChange = () => {
+      clearTimer();
+      if (document.visibilityState === "visible") {
+        void refresh().then(schedule);
+      }
+    };
+
+    schedule();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      active = false;
+      clearTimer();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [refresh, status?.grantEnabled, status?.ready]);
 
   const publish = useCallback((next: ComputerUseStatusDto) => {
