@@ -14,9 +14,9 @@ export function createQueuedFollowUpRenderers(
 ) {
   const {
     attachments,
+    composerHasContent,
     composerEditorRef,
     deliverQueuedAttachmentFollowUp,
-    draft,
     draftRef,
     editQueuedAttachmentFollowUp,
     queuedAttachmentFollowUpsRef,
@@ -54,7 +54,7 @@ export function createQueuedFollowUpRenderers(
       (attachment) => attachment.attach.kind === "image" && attachment.attach.status === "attached",
     );
     const locallyEditable = item.status !== "sending" && !hasAttachedImage;
-    const editable = locallyEditable && !draft.trim() && attachments.length === 0;
+    const editable = locallyEditable && !composerHasContent && attachments.length === 0;
     const statusLabel =
       item.status === "sending"
         ? "Sending"

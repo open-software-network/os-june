@@ -23,10 +23,21 @@ import type { ReportCategory } from "./reportCategory";
 import type { HermesSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandName } from "../../../lib/agent-composer-slash-commands";
 
-type SetContentOptions = { selectPlaceholder?: boolean; focus?: boolean };
+type SetContentOptions = {
+  selectPlaceholder?: boolean;
+  focus?: boolean;
+  changeKey?: string | null;
+};
 
 export type ComposerEditorHandle = {
   focus: () => void;
+  /** Publishes the current serialized document immediately. Returns false
+   * while an IME composition is active, when reading the document would
+   * capture an intermediate composition state. */
+  flushPendingChange: (options?: {
+    changeKey?: string | null;
+    persistWithoutRender?: boolean;
+  }) => boolean;
   clear: () => void;
   /** Replaces the whole document with plain text plus an optional leading
    * category chip. Used to prefill (hero shortcuts, HUD replies) and to restore
@@ -48,16 +59,39 @@ export type ComposerEditorHandle = {
 type ComposerEditorProps = {
   placeholder: string;
   skills?: HermesSkillInfo[] | null;
-  onChange: (text: string, category: ReportCategory | null) => void;
+  changeKey?: string | null;
+  onChange: (
+    text: string,
+    category: ReportCategory | null,
+    changeKey: string | null | undefined,
+  ) => void;
+  /** Persists a pending snapshot without updating React state. Used during
+   * teardown and lifecycle-driven draft switches so refs/storage stay
+   * authoritative without causing a nested render. */
+  onPendingChangePersist?: (
+    text: string,
+    category: ReportCategory | null,
+    changeKey: string | null | undefined,
+  ) => void;
   onSubmit: () => void;
   onFocusChange?: (focused: boolean) => void;
+  /** Reports cheap document empty/non-empty transitions without serializing
+   * the prompt, so Send can react immediately during the trailing window. */
+  onContentChange?: (hasContent: boolean) => void;
   /** Returns true when the host handles the selected command as an immediate
    * action instead of inserting its slash text into the draft. */
   onBuiltinSlashCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
   /** Hands the live editor up to the parent (e.g. so the composer box can read
    * its DOM element for layout). */
   onReady?: (editor: Editor) => void;
+  /** Test seam for counting full-document serialization without changing the
+   * production serializer. */
+  testOnlySerializePlainText?: (doc: ProseMirrorNode) => string;
+  /** Test seam for keeping the trailing timer pending during menu interaction. */
+  testOnlyChangeDelayMs?: number;
 };
+
+export const COMPOSER_CHANGE_DELAY_MS = 75;
 
 type PendingEditorAction =
   | { type: "focus" }
@@ -104,6 +138,21 @@ function focusEnd(editor: Editor | null) {
   if (!editorHasView(editor)) return;
   editor.commands.setTextSelection(editor.state.doc.content.size);
   editor.view.focus();
+}
+
+/** Stops at the first sendable leaf without allocating the serialized prompt.
+ * This is normally constant-time for a non-empty draft, while preserving the
+ * existing rule that whitespace and a report-category chip alone cannot send. */
+function hasSubmittableContent(doc: ProseMirrorNode): boolean {
+  let hasContent = false;
+  doc.descendants((node) => {
+    if (node.type.name === NOTE_REFERENCE_NODE || (node.isText && /\S/u.test(node.text ?? ""))) {
+      hasContent = true;
+      return false;
+    }
+    return !hasContent;
+  });
+  return hasContent;
 }
 
 /** Prepares a prefilled single-paragraph prompt for staging: strips the angle
@@ -200,7 +249,11 @@ function setEditorContent(
   }
 }
 
-function applyEditorAction(editor: Editor, action: PendingEditorAction) {
+function applyEditorAction(
+  editor: Editor,
+  action: PendingEditorAction,
+  pendingChangeKeyRef: { current: string | null | undefined },
+) {
   switch (action.type) {
     case "focus":
       focusEnd(editor);
@@ -210,6 +263,12 @@ function applyEditorAction(editor: Editor, action: PendingEditorAction) {
       break;
     case "setContent":
       setEditorContent(editor, action.text, action.category, action.options);
+      // setContent emits its update synchronously, but a session-switch render
+      // may not have updated the prop-backed key yet. Keep queued and immediate
+      // replacements attributed to the destination draft explicitly.
+      if (action.options && "changeKey" in action.options) {
+        pendingChangeKeyRef.current = action.options.changeKey;
+      }
       break;
     case "insertCategory":
       insertReportCategory(editor, action.category);
@@ -238,44 +297,167 @@ function queueEditorAction(
 function flushEditorActions(
   editor: Editor | null,
   pendingActionsRef: { current: PendingEditorAction[] },
+  pendingChangeKeyRef: { current: string | null | undefined },
 ) {
   if (!editorHasView(editor) || pendingActionsRef.current.length === 0) return;
   const pendingActions = pendingActionsRef.current;
   pendingActionsRef.current = [];
   for (const action of pendingActions) {
-    applyEditorAction(editor, action);
+    applyEditorAction(editor, action, pendingChangeKeyRef);
   }
 }
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
   (
-    { placeholder, skills, onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady },
+    {
+      placeholder,
+      skills,
+      changeKey,
+      onChange,
+      onPendingChangePersist,
+      onSubmit,
+      onFocusChange,
+      onContentChange,
+      onBuiltinSlashCommand,
+      onReady,
+      testOnlySerializePlainText,
+      testOnlyChangeDelayMs,
+    },
     ref,
   ) => {
     const frameRef = useRef<HTMLDivElement | null>(null);
     const pendingEditorActionsRef = useRef<PendingEditorAction[]>([]);
     const skillsRef = useRef(skills);
+    const pendingChangeTimerRef = useRef<number | null>(null);
+    const pendingChangeEditorRef = useRef<Editor | null>(null);
+    const pendingChangeKeyRef = useRef<string | null | undefined>(changeKey);
+    const changePendingRef = useRef(false);
+    const composingRef = useRef(false);
+    const hasContentRef = useRef(false);
+    const serializePlainTextRef = useRef(testOnlySerializePlainText ?? serializePlainText);
+    const changeDelayMsRef = useRef(testOnlyChangeDelayMs ?? COMPOSER_CHANGE_DELAY_MS);
+    const changeKeyRef = useRef(changeKey);
+    const flushPendingChangeRef = useRef<
+      (options?: { changeKey?: string | null; persistWithoutRender?: boolean }) => boolean
+    >(() => true);
+    serializePlainTextRef.current = testOnlySerializePlainText ?? serializePlainText;
+    changeDelayMsRef.current = testOnlyChangeDelayMs ?? COMPOSER_CHANGE_DELAY_MS;
+    changeKeyRef.current = changeKey;
     // Latest callbacks behind refs so the editor (created once) never closes
     // over a stale handler.
     const onChangeRef = useRef(onChange);
+    const onPendingChangePersistRef = useRef(onPendingChangePersist);
     const onSubmitRef = useRef(onSubmit);
     const onFocusChangeRef = useRef(onFocusChange);
+    const onContentChangeRef = useRef(onContentChange);
     const onBuiltinSlashCommandRef = useRef(onBuiltinSlashCommand);
     const onReadyRef = useRef(onReady);
     useEffect(() => {
       onChangeRef.current = onChange;
+      onPendingChangePersistRef.current = onPendingChangePersist;
       onSubmitRef.current = onSubmit;
       onFocusChangeRef.current = onFocusChange;
+      onContentChangeRef.current = onContentChange;
       onBuiltinSlashCommandRef.current = onBuiltinSlashCommand;
       onReadyRef.current = onReady;
       skillsRef.current = skills;
-    }, [onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady, skills]);
+    }, [
+      onChange,
+      onPendingChangePersist,
+      onSubmit,
+      onFocusChange,
+      onContentChange,
+      onBuiltinSlashCommand,
+      onReady,
+      skills,
+    ]);
 
     useEffect(() => {
       document.querySelectorAll(".agent-category-menu-host").forEach((host) => {
         host.dispatchEvent(new CustomEvent(CATEGORY_SKILLS_CHANGED_EVENT));
       });
     }, [skills]);
+
+    function clearPendingChangeTimer() {
+      if (pendingChangeTimerRef.current === null) return;
+      window.clearTimeout(pendingChangeTimerRef.current);
+      pendingChangeTimerRef.current = null;
+    }
+
+    function armPendingChangeTimer() {
+      clearPendingChangeTimer();
+      if (composingRef.current || !changePendingRef.current) return;
+      pendingChangeTimerRef.current = window.setTimeout(() => {
+        pendingChangeTimerRef.current = null;
+        flushPendingChangeRef.current();
+      }, changeDelayMsRef.current);
+    }
+
+    function scheduleChange(nextEditor: Editor) {
+      pendingChangeEditorRef.current = nextEditor;
+      pendingChangeKeyRef.current = changeKeyRef.current;
+      changePendingRef.current = true;
+      armPendingChangeTimer();
+    }
+
+    function flushPendingChange(options?: {
+      changeKey?: string | null;
+      persistWithoutRender?: boolean;
+    }) {
+      if (!changePendingRef.current) return true;
+      const nextEditor = pendingChangeEditorRef.current;
+      if (!editorHasView(nextEditor)) {
+        clearPendingChangeTimer();
+        changePendingRef.current = false;
+        return true;
+      }
+      // ProseMirror can retain its composing flag briefly after the DOM's
+      // compositionend event. Keep the trailing publish armed until both
+      // layers agree that the document is final.
+      if (composingRef.current || nextEditor.view.composing) {
+        armPendingChangeTimer();
+        return false;
+      }
+      clearPendingChangeTimer();
+      changePendingRef.current = false;
+      const publish = options?.persistWithoutRender
+        ? onPendingChangePersistRef.current
+        : onChangeRef.current;
+      publish?.(
+        serializePlainTextRef.current(nextEditor.state.doc),
+        categoryFromDoc(nextEditor.state.doc),
+        options && "changeKey" in options ? options.changeKey : pendingChangeKeyRef.current,
+      );
+      return true;
+    }
+    flushPendingChangeRef.current = flushPendingChange;
+
+    useEffect(
+      () => () => {
+        // useEditor's cleanup only schedules destruction for a later task,
+        // leaving the live document available for this cleanup to persist.
+        const pendingEditor = pendingChangeEditorRef.current;
+        if (
+          changePendingRef.current &&
+          editorHasView(pendingEditor) &&
+          !composingRef.current &&
+          !pendingEditor.view.composing
+        ) {
+          onPendingChangePersistRef.current?.(
+            serializePlainTextRef.current(pendingEditor.state.doc),
+            categoryFromDoc(pendingEditor.state.doc),
+            pendingChangeKeyRef.current,
+          );
+        }
+        if (pendingChangeTimerRef.current !== null) {
+          window.clearTimeout(pendingChangeTimerRef.current);
+          pendingChangeTimerRef.current = null;
+        }
+        pendingChangeEditorRef.current = null;
+        changePendingRef.current = false;
+      },
+      [],
+    );
 
     function updateScrollFades(nextEditor: Editor | null) {
       const frame = frameRef.current;
@@ -306,7 +488,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
     const editor = useEditor({
       onFocus: () => onFocusChangeRef.current?.(true),
-      onBlur: () => onFocusChangeRef.current?.(false),
+      onBlur: () => {
+        flushPendingChangeRef.current();
+        onFocusChangeRef.current?.(false);
+      },
       extensions: [
         StarterKit.configure({
           // Truly-plain composer: no block structure or inline marks, just text,
@@ -331,7 +516,10 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         Placeholder.configure({ placeholder }),
         createCategoryChip({
           skills: () => skillsRef.current,
-          onBuiltinCommand: (name) => onBuiltinSlashCommandRef.current?.(name) ?? false,
+          onBuiltinCommand: (name) => {
+            if (!flushPendingChange({ changeKey: changeKeyRef.current })) return false;
+            return onBuiltinSlashCommandRef.current?.(name) ?? false;
+          },
         }),
         createNoteReference(),
       ],
@@ -359,29 +547,55 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           }
           return true;
         },
-        handleKeyDown: (_view, event) => {
-          if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+        handleKeyDown: (view, event) => {
+          if (
+            event.key !== "Enter" ||
+            event.shiftKey ||
+            event.isComposing ||
+            composingRef.current ||
+            view.composing
+          ) {
             return false;
           }
           // Suggestion palettes own Enter while open (they commit the
           // highlighted row); only a closed palette submits the message.
           if (document.querySelector(".agent-category-menu-host")) return false;
           event.preventDefault();
+          if (!flushPendingChange({ changeKey: changeKeyRef.current })) return true;
           onSubmitRef.current();
           return true;
         },
+        handleDOMEvents: {
+          compositionstart: () => {
+            composingRef.current = true;
+            clearPendingChangeTimer();
+            return false;
+          },
+          compositionend: () => {
+            composingRef.current = false;
+            // onUpdate during composition marked the snapshot dirty without
+            // reading it. The final input transaction may arrive just after
+            // compositionend; either way this trailing timer is rescheduled
+            // by that transaction and publishes only the final document.
+            armPendingChangeTimer();
+            return false;
+          },
+        },
       },
       onCreate: ({ editor }) => {
+        pendingChangeEditorRef.current = editor;
         queueMicrotask(() => {
           updateScrollFades(editor);
           if (editorHasView(editor)) onReadyRef.current?.(editor);
         });
       },
       onUpdate: ({ editor }) => {
-        onChangeRef.current(
-          serializePlainText(editor.state.doc),
-          categoryFromDoc(editor.state.doc),
-        );
+        const hasContent = hasSubmittableContent(editor.state.doc);
+        if (hasContentRef.current !== hasContent) {
+          hasContentRef.current = hasContent;
+          onContentChangeRef.current?.(hasContent);
+        }
+        scheduleChange(editor);
         requestAnimationFrame(() => updateScrollFades(editor));
       },
       onSelectionUpdate: ({ editor }) => {
@@ -416,7 +630,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
 
       const handleViewReady = () => {
         attachScrollTracking();
-        flushEditorActions(editor, pendingEditorActionsRef);
+        flushEditorActions(editor, pendingEditorActionsRef, pendingChangeKeyRef);
       };
 
       // Register first so a view created between the readiness check and the
@@ -434,7 +648,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     useImperativeHandle(ref, () => {
       const applyOrQueue = (action: PendingEditorAction) => {
         if (pendingEditorActionsRef.current.length === 0 && editorHasView(editor)) {
-          applyEditorAction(editor, action);
+          applyEditorAction(editor, action, pendingChangeKeyRef);
           return;
         }
         pendingEditorActionsRef.current = queueEditorAction(
@@ -444,11 +658,12 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         // The view can become available before React runs the readiness
         // effect. Flush the reconciled queue now so an older request can never
         // overwrite this newer one when the create event arrives.
-        flushEditorActions(editor, pendingEditorActionsRef);
+        flushEditorActions(editor, pendingEditorActionsRef, pendingChangeKeyRef);
       };
 
       return {
         focus: () => applyOrQueue({ type: "focus" }),
+        flushPendingChange: (options) => flushPendingChangeRef.current(options),
         clear: () => applyOrQueue({ type: "clear" }),
         setContent: (text, category, options) =>
           applyOrQueue({

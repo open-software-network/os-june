@@ -36,7 +36,7 @@ export function useAgentViewState(dependencies: UseAgentViewStateDependencies) {
     composerModelSearchRef,
     composerModelTriggerRef,
     composerSteerDemo,
-    draft,
+    composerHasContent,
     errorState,
     fullModeDraftRef,
     gallerySections,
@@ -231,7 +231,7 @@ export function useAgentViewState(dependencies: UseAgentViewStateDependencies) {
         }
       : undefined;
   const visibleIssueReportHasUnsentContext = Boolean(
-    visibleIssueReportReview && (draft.trim() || attachments.length),
+    visibleIssueReportReview && (composerHasContent || attachments.length),
   );
   const visibleIssueReportImportingFiles = Boolean(visibleIssueReportReview && importingFiles);
   // Holds the prior render's heroMode. Read by both the composer auto-grow

@@ -170,6 +170,7 @@ export function createFollowUpQueueActions(dependencies: createFollowUpQueueActi
     ) {
       return;
     }
+    if (!composerEditorRef.current?.flushPendingChange()) return;
     if (draftRef.current.trim() || attachmentsRef.current.length) return;
     const item = queuedAttachmentFollowUpsRef.current[queueKey]?.find(
       (candidate) => candidate.id === itemId,
