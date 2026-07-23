@@ -4,6 +4,7 @@ import { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
   classifyHermesEvent,
   hermesModeFor,
+  isHermesStreamDelta,
   isTerminalHermesEvent,
 } from "../../lib/hermes-control-plane";
 import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
@@ -24,13 +25,6 @@ import { createLeadingTrailingMicrobatch } from "../../lib/trailing-microbatch";
 import type { createSessionEventListenerDependencies } from "./session-event-listener-types";
 
 const HERMES_STREAM_STATE_BATCH_INTERVAL_MS = 50;
-
-function isHermesStreamDelta(event: ReturnType<typeof classifyHermesEvent>) {
-  return (
-    (event.kind === "transcript" && !event.complete && event.delta !== undefined) ||
-    (event.kind === "reasoning" && !event.full)
-  );
-}
 
 export function createSessionEventListener(dependencies: createSessionEventListenerDependencies) {
   const {

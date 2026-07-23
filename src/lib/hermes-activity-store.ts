@@ -40,7 +40,7 @@ import type {
   HermesMode,
   JuneHermesEvent,
 } from "./hermes-control-plane";
-import { nonEmpty } from "./hermes-control-plane";
+import { isHermesStreamDelta, nonEmpty } from "./hermes-control-plane";
 import { pendingActionStore } from "./hermes-pending-actions";
 import { createLeadingTrailingMicrobatch } from "./trailing-microbatch";
 
@@ -224,7 +224,7 @@ export function createHermesActivityStore(
     projectedBySession.set(sessionId, next);
     evict();
 
-    if (isStreamDelta(event)) {
+    if (isHermesStreamDelta(event)) {
       notificationBatch.schedule();
     } else {
       // Tool, approval, subagent, completion, and failure changes stay prompt.
@@ -503,13 +503,6 @@ function countActiveSubagents(subagents: Map<string, BackgroundHermesActivity>):
     if (!isTerminalSubagentPhase(subagent.phase)) count += 1;
   }
   return count;
-}
-
-function isStreamDelta(event: JuneHermesEvent): boolean {
-  return (
-    (event.kind === "transcript" && !event.complete && event.delta !== undefined) ||
-    (event.kind === "reasoning" && !event.full)
-  );
 }
 
 /**
