@@ -19,7 +19,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../../lib/agent-events";
 
-export type AgentPanel = "chat" | "skills" | "messaging";
+export type AgentPanel = "chat" | "skills";
 
 /**
  * The two write-access modes a new session can start the runtime in. The

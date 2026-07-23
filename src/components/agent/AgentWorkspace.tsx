@@ -315,8 +315,8 @@ export function AgentWorkspace({
       const run = await agentRuntimeBindings.startRun({
         sessionId: activeSession.id,
         prompt,
-        model: activeSession.model || model,
-        safetyMode: activeSession.safetyMode,
+        model,
+        safetyMode,
         workspacePath: activeSession.workspacePath,
         enabledSkillIds: [],
         attachments: attachedPaths,
@@ -515,10 +515,10 @@ export function AgentWorkspace({
         <AgentComposer
           draft={draft}
           setDraft={setDraft}
-          model={selectedSession?.model ?? model}
+          model={model}
           setModel={setModel}
           models={models}
-          safetyMode={selectedSession?.safetyMode ?? safetyMode}
+          safetyMode={safetyMode}
           setSafetyMode={setSafetyMode}
           attachments={attachments}
           setAttachments={setAttachments}
@@ -527,7 +527,6 @@ export function AgentWorkspace({
           onStop={stop}
           working={running || submitting}
           disabledReason={creditActionsDisabledReason}
-          locked
         />
       ) : null}
     </section>
@@ -550,7 +549,6 @@ function AgentComposer({
   working,
   disabledReason,
   hero = false,
-  locked = false,
 }: {
   draft: string;
   setDraft: (value: string) => void;
@@ -567,7 +565,6 @@ function AgentComposer({
   working: boolean;
   disabledReason?: string;
   hero?: boolean;
-  locked?: boolean;
 }) {
   return (
     <form
@@ -620,8 +617,10 @@ function AgentComposer({
           <button
             type="button"
             className="agent-sandbox-trigger"
-            disabled={locked || working}
-            title={locked ? "Safety mode is fixed for this session" : "Change what June can touch"}
+            disabled={working}
+            title={
+              working ? "Safety mode is fixed while June is working" : "Change what June can touch"
+            }
             onClick={() => setSafetyMode(safetyMode === "sandboxed" ? "unrestricted" : "sandboxed")}
           >
             {safetyMode === "sandboxed" ? (
@@ -636,7 +635,7 @@ function AgentComposer({
               className="agent-composer-model-trigger"
               aria-label="Model"
               value={model}
-              disabled={locked || working}
+              disabled={working}
               onChange={(event) => setModel(event.currentTarget.value)}
             >
               {!models.some((item) => item.id === model) ? (

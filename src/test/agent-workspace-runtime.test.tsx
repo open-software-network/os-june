@@ -61,7 +61,11 @@ describe("AgentWorkspace runtime wiring", () => {
       }
       if (command === "list_agent_artifacts") return Promise.resolve([]);
       if (command === "list_venice_models") {
-        return Promise.resolve({ mode: "generation", selectedModel: "auto", models: [] });
+        return Promise.resolve({
+          mode: "generation",
+          selectedModel: "auto",
+          models: [{ id: "fast", name: "Fast" }],
+        });
       }
       if (command === "start_agent_run") {
         return Promise.resolve({
@@ -79,19 +83,48 @@ describe("AgentWorkspace runtime wiring", () => {
     render(<AgentWorkspace initialSession={session} />);
 
     expect(await screen.findByText("Earlier answer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sandboxed" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Sandboxed" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Model" }), {
+      target: { value: "fast" },
+    });
+    expect(screen.getByRole("button", { name: "Unrestricted" })).toBeEnabled();
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("fast");
     const composer = screen.getByRole("textbox", { name: "Message June" });
     fireEvent.change(composer, { target: { value: "New request" } });
     fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(await screen.findByText("New request")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+        request: expect.objectContaining({ model: "fast", safetyMode: "unrestricted" }),
+      }),
     );
+    expect(screen.getByRole("button", { name: "Unrestricted" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Model" })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Stop June" }));
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("cancel_agent_run", { runId: "run-1" }),
     );
+
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-cancelled",
+          sessionId: session.id,
+          runId: "run-1",
+          sequence: 3,
+          method: "run.cancelled",
+          data: { completedAt: "2026-07-22T12:01:00Z" },
+        },
+      });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Unrestricted" })).toBeEnabled());
+    expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled();
   });
 
   it("resolves clarification interruptions through the typed host command", async () => {

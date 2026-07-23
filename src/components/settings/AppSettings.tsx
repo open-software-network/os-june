@@ -2947,8 +2947,7 @@ function StartupSettingsSection() {
         Startup
       </h2>
       <p className="settings-group-description">
-        Dictation shortcuts, meeting detection, and scheduled routines only work while June is
-        running.
+        Dictation shortcuts and meeting detection only work while June is running.
       </p>
       <div className="settings-card">
         <div className="settings-rows">

@@ -1214,7 +1214,7 @@ export function ConnectorsSection({
           if (!disconnecting) setDisconnectTarget(null);
         }}
         title={`Disconnect ${disconnectTarget ? accountDisplayName(disconnectTarget) : ""}?`}
-        description="June stops using this account and removes its tokens from your Keychain. Routines that rely on it will fail until you reconnect."
+        description="June stops using this account and removes its tokens from your Keychain. Agent actions that rely on it will fail until you reconnect."
         footer={
           <>
             <button
