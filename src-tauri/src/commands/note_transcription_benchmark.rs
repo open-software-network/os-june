@@ -1,4 +1,4 @@
-use super::finish_recording_session;
+use super::{finish_recording_session, sqlite_connect_options, sqlite_pool_options};
 use crate::{
     audio::capture::{FinishedRecording, FinishedSource},
     db::{migrations::run_migrations, repositories::Repositories},
@@ -9,12 +9,11 @@ use crate::{
 };
 use serde::Serialize;
 use sqlx::row::Row;
-use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx_sqlite::SqliteJournalMode;
 use std::{
     collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::{Arc, LazyLock, Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -186,12 +185,11 @@ fn remove_benchmark_observer(recording_session_id: &str) {
 
 pub(super) async fn benchmark_repositories(dir: &tempfile::TempDir) -> Repositories {
     let database_path = dir.path().join("june-benchmark.sqlite3");
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{}", database_path.display()))
+    let options = sqlite_connect_options(&database_path)
         .expect("SQLite options")
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal);
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+    let pool = sqlite_pool_options(5)
         .connect_with(options)
         .await
         .expect("benchmark database");
