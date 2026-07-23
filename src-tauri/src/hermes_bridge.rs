@@ -5031,12 +5031,18 @@ pub async fn shutdown(app: &tauri::AppHandle) {
     }
 
     bridge.browser_broker.terminate_sessions();
-    let _ = stop_hermes_bridge_inner(&bridge);
-    let proxy = bridge
-        .provider_proxy
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take());
+    stop_hermes_bridge_for_shutdown(&bridge);
+    let proxy = match crate::shutdown::try_lock_for(&bridge.provider_proxy, SHUTDOWN_MUTEX_TIMEOUT)
+    {
+        Some(mut guard) => guard.take(),
+        None => {
+            tracing::warn!(
+                timeout_ms = SHUTDOWN_MUTEX_TIMEOUT.as_millis(),
+                "timed out acquiring the provider proxy lock during app shutdown"
+            );
+            None
+        }
+    };
     if let Some(mut proxy) = proxy {
         if let Some(shutdown) = proxy.shutdown.take() {
             let _ = shutdown.send(());
@@ -5069,16 +5075,7 @@ async fn shutdown_hermes_gateway(
             None
         }
     };
-    let gateway_connection = bridge
-        .routine_gateway_connection
-        .lock()
-        .ok()
-        .and_then(|mut connection| connection.take())
-        .or_else(|| {
-            live_connections(bridge)
-                .ok()
-                .and_then(|connections| connections.into_iter().next())
-        });
+    let gateway_connection = shutdown_gateway_connection(bridge);
     // Remove persistence before the bounded async unload work. Even if the
     // aggregate shutdown deadline expires, a later login cannot reload the
     // stale service definition while June's provider proxy is absent.
@@ -5118,6 +5115,8 @@ async fn shutdown_hermes_gateway(
 /// child before draining. The window it guards (spawn -> register) is short, so
 /// this is only a safety bound; teardown proceeds regardless once it elapses.
 const SHUTDOWN_START_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
+const SHUTDOWN_MUTEX_TIMEOUT: Duration = Duration::from_millis(250);
+const SHUTDOWN_CHILD_REAP_TIMEOUT: Duration = Duration::from_millis(250);
 /// Gateway lifecycle commands are serialized with shutdown, so every command
 /// needs a deadline: a stuck start/restart must not keep app teardown waiting
 /// on the lifecycle lock indefinitely. Fifteen seconds leaves room for the
@@ -5165,6 +5164,40 @@ fn await_starts_quiesced(bridge: &HermesBridge, timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn shutdown_gateway_connection(bridge: &HermesBridge) -> Option<HermesBridgeConnection> {
+    if let Some(mut connection) =
+        crate::shutdown::try_lock_for(&bridge.routine_gateway_connection, SHUTDOWN_MUTEX_TIMEOUT)
+    {
+        if let Some(connection) = connection.take() {
+            return Some(connection);
+        }
+    } else {
+        tracing::warn!(
+            timeout_ms = SHUTDOWN_MUTEX_TIMEOUT.as_millis(),
+            "timed out acquiring the routine gateway connection lock during app shutdown"
+        );
+    }
+
+    let Some(mut processes) =
+        crate::shutdown::try_lock_for(&bridge.processes, SHUTDOWN_MUTEX_TIMEOUT)
+    else {
+        tracing::warn!(
+            timeout_ms = SHUTDOWN_MUTEX_TIMEOUT.as_millis(),
+            "timed out acquiring the Hermes process lock for gateway shutdown"
+        );
+        return None;
+    };
+    for full_mode in [false, true] {
+        let Some(process) = processes.get_mut(&full_mode) else {
+            continue;
+        };
+        if matches!(process.child.try_wait(), Ok(None)) {
+            return Some(process.connection.clone());
+        }
+    }
+    None
 }
 
 pub(crate) fn release_shared_browser_tab(app: &tauri::AppHandle, tab_id: i64) {
@@ -6785,8 +6818,11 @@ fn wait_with_timeout(mut child: Child, timeout: Duration) -> Result<BoundedOutpu
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = crate::shutdown::terminate_child(
+                        &mut child,
+                        Duration::ZERO,
+                        SHUTDOWN_CHILD_REAP_TIMEOUT,
+                    );
                     timed_out = true;
                     exit_success = false;
                     break;
@@ -8061,6 +8097,23 @@ fn stop_hermes_bridge_inner(bridge: &HermesBridge) -> Result<(), AppError> {
     Ok(())
 }
 
+fn stop_hermes_bridge_for_shutdown(bridge: &HermesBridge) {
+    let processes: Vec<HermesProcess> =
+        match crate::shutdown::try_lock_for(&bridge.processes, SHUTDOWN_MUTEX_TIMEOUT) {
+            Some(mut guard) => guard.drain().map(|(_, process)| process).collect(),
+            None => {
+                tracing::warn!(
+                    timeout_ms = SHUTDOWN_MUTEX_TIMEOUT.as_millis(),
+                    "timed out acquiring the Hermes process lock during app shutdown"
+                );
+                return;
+            }
+        };
+    for process in processes {
+        shutdown_hermes_process(Some(process));
+    }
+}
+
 /// Stops only the process spawned by the start attempt identified by
 /// `generation`, whichever mode slot it sits in. A stop (or stop+restart)
 /// that raced with that start leaves a different process in the slot, which
@@ -8088,9 +8141,13 @@ fn shutdown_hermes_process(process: Option<HermesProcess>) {
         // reap the tracked child itself.
         #[cfg(unix)]
         kill_process_group(process.child.id());
-        let _ = process.child.kill();
-        match process.child.wait() {
-            Ok(_) => {
+        match crate::shutdown::terminate_child(
+            &mut process.child,
+            Duration::ZERO,
+            SHUTDOWN_CHILD_REAP_TIMEOUT,
+        ) {
+            crate::shutdown::ChildTermination::Exited
+            | crate::shutdown::ChildTermination::Killed => {
                 if let Err(error) =
                     remove_hermes_ownership_record(process.ownership_record.as_deref())
                 {
@@ -8100,11 +8157,11 @@ fn shutdown_hermes_process(process: Option<HermesProcess>) {
                     );
                 }
             }
-            Err(error) => {
+            outcome => {
                 // Retain the record when the leader was not confirmed reaped;
                 // the next startup must make the fail-closed recovery decision.
                 tracing::warn!(
-                    %error,
+                    ?outcome,
                     pid = process.child.id(),
                     "Hermes runtime leader could not be reaped; retaining ownership record"
                 );
@@ -8121,8 +8178,10 @@ fn shutdown_hermes_process(process: Option<HermesProcess>) {
 fn reap_unregistered_child(child: &mut Child, ownership_record: Option<&Path>) {
     #[cfg(unix)]
     kill_process_group(child.id());
-    let _ = child.kill();
-    if child.wait().is_ok() {
+    if matches!(
+        crate::shutdown::terminate_child(child, Duration::ZERO, SHUTDOWN_CHILD_REAP_TIMEOUT,),
+        crate::shutdown::ChildTermination::Exited | crate::shutdown::ChildTermination::Killed
+    ) {
         if let Err(error) = remove_hermes_ownership_record(ownership_record) {
             tracing::warn!(
                 %error,
@@ -8620,13 +8679,9 @@ fn wait_for_recorded_hermes_runtime_exit(
 /// group id.
 #[cfg(unix)]
 fn kill_process_group(pid: u32) {
-    let _ = Command::new("/bin/kill")
-        .arg("-KILL")
-        .arg(format!("-{pid}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
 }
 
 async fn resolve_hermes_command(

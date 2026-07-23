@@ -244,9 +244,28 @@ impl ManagedSessionResources {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Ok(mut browser) = self.browser.lock() {
-            browser.kill();
+        let mut browser = self
+            .browser
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        browser.kill();
+        self.proxy.shutdown();
+        self.profile.delete();
+    }
+
+    fn teardown_for_shutdown(&self) {
+        if self.closed.load(Ordering::SeqCst) {
+            return;
         }
+        let Some(mut browser) =
+            crate::shutdown::try_lock_for(&self.browser, Duration::from_millis(250))
+        else {
+            return;
+        };
+        if self.closed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        browser.kill();
         self.proxy.shutdown();
         self.profile.delete();
     }
@@ -295,6 +314,19 @@ impl StartingManagedSession {
             .cloned()
         {
             resources.teardown();
+        }
+        if !self.begun.load(Ordering::SeqCst) {
+            self.finish();
+        }
+    }
+
+    fn terminate_for_shutdown(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Some(resources) =
+            crate::shutdown::try_lock_for(&self.resources, Duration::from_millis(250))
+                .and_then(|resources| resources.as_ref().cloned())
+        {
+            resources.teardown_for_shutdown();
         }
         if !self.begun.load(Ordering::SeqCst) {
             self.finish();
@@ -1082,6 +1114,21 @@ impl ManagedBrowserTransport {
         }
     }
 
+    fn terminate_session_for_shutdown(&self, session_id: &str) {
+        let starting =
+            crate::shutdown::try_lock_for(&self.inner.starting, Duration::from_millis(250))
+                .and_then(|starting| starting.get(session_id).cloned());
+        if let Some(starting) = starting {
+            starting.terminate_for_shutdown();
+        }
+        let session =
+            crate::shutdown::try_lock_for(&self.inner.sessions, Duration::from_millis(250))
+                .and_then(|mut sessions| sessions.remove(session_id));
+        if let Some(session) = session {
+            session.resources.teardown_for_shutdown();
+        }
+    }
+
     async fn close_session(&self, session_id: &str) {
         let starting = self.starting().get(session_id).cloned();
         self.terminate_session(session_id);
@@ -1190,6 +1237,10 @@ impl BrowserTransport for ManagedBrowserTransport {
 
     fn terminate_session(&self, session_id: &str) {
         ManagedBrowserTransport::terminate_session(self, session_id);
+    }
+
+    fn terminate_session_for_shutdown(&self, session_id: &str) {
+        ManagedBrowserTransport::terminate_session_for_shutdown(self, session_id);
     }
 }
 

@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -50,6 +50,12 @@ pub(crate) trait BrowserTransport: Send + Sync {
     /// override this so revoke and app exit kill Chromium even when another
     /// request still holds the session and is awaiting CDP.
     fn terminate_session(&self, _session_id: &str) {}
+
+    /// App-shutdown variant. Managed transports override this to keep mutex
+    /// acquisition bounded; other transports retain their existing teardown.
+    fn terminate_session_for_shutdown(&self, session_id: &str) {
+        self.terminate_session(session_id);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -676,7 +682,12 @@ impl BrowserBroker {
     /// in-flight request can keep Chromium or its ephemeral profile alive.
     pub(crate) fn terminate_sessions(&self) {
         let (transports, sessions, approvals_changed) = {
-            let mut state = self.lock();
+            let Some(mut state) =
+                crate::shutdown::try_lock_for(&self.state, Duration::from_millis(250))
+            else {
+                tracing::warn!("browser shutdown timed out acquiring the broker state lock");
+                return;
+            };
             state.transition_blocked = true;
             let approvals_changed = !state.pending_approvals.is_empty();
             state.pending_approvals.clear();
@@ -695,7 +706,7 @@ impl BrowserBroker {
         }
         for (session_id, kind) in sessions {
             if let Some(transport) = transports.get(&kind) {
-                transport.terminate_session(&session_id);
+                transport.terminate_session_for_shutdown(&session_id);
             }
         }
     }
@@ -2285,12 +2296,15 @@ mod tests {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             if let Some(mut child) = state
                 .child
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
+                .try_lock()
+                .ok()
+                .and_then(|mut child| child.take())
             {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = crate::shutdown::terminate_child(
+                    &mut child,
+                    Duration::ZERO,
+                    Duration::from_millis(250),
+                );
             }
             let _ = std::fs::remove_dir_all(&state.profile);
             state.release.notify_waiters();

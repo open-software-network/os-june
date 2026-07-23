@@ -28,6 +28,16 @@ to "reconnect" existing clients.
 with `launchctl bootout gui/$UID/ai.hermes.gateway`. June re-registers it on
 next launch.
 
+**App teardown is ordered and bounded.** Ordinary quit enters the idempotent
+shutdown coordinator from `RunEvent::ExitRequested`; update relaunch enters the
+same coordinator from its command. Cleanup runs off the main event loop and
+Hermes keeps this order: latch and quiesce starts, unload the launchd Gateway
+while the provider proxy is alive, reap interactive runtime process groups,
+then stop the provider proxy. `RunEvent::Exit` performs no cleanup because work
+started there can be dropped before it runs. Every leaf has its own deadline,
+and a five-second aggregate deadline schedules the final exit or restart even
+if a leaf remains stuck.
+
 ## Config
 
 **`config.yaml` has two writers — June must merge, never overwrite.** June

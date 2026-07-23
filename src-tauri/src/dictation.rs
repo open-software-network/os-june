@@ -1590,9 +1590,20 @@ pub fn stop_helper(app: &AppHandle) {
     // (woken by the resulting stdout EOF) skips respawning instead of fighting
     // app quit.
     state.shutting_down.store(true, Ordering::SeqCst);
-    // Take the helper out from under the lock, then kill outside it so the
-    // blocking wait() cannot stall a concurrent command thread.
-    let helper = state.process.lock().ok().and_then(|mut guard| guard.take());
+    // Take the helper out under a bounded lock, then stop it outside the
+    // critical section. A command thread stuck while writing to the helper
+    // must not hold app shutdown forever.
+    let helper = match crate::shutdown::try_lock_for(&state.process, HELPER_SHUTDOWN_MUTEX_TIMEOUT)
+    {
+        Some(mut guard) => guard.take(),
+        None => {
+            tracing::warn!(
+                timeout_ms = HELPER_SHUTDOWN_MUTEX_TIMEOUT.as_millis(),
+                "dictation helper shutdown timed out acquiring the process lock"
+            );
+            None
+        }
+    };
     if let Some(helper) = helper {
         abandon_helper(helper);
     }
@@ -2898,8 +2909,11 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
             error = %error.message,
             "dictation: could not record helper ownership; killing untracked helper"
         );
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = crate::shutdown::terminate_child(
+            &mut child,
+            Duration::ZERO,
+            HELPER_FORCED_REAP_TIMEOUT,
+        );
         return Err(error);
     }
 
@@ -3156,7 +3170,11 @@ fn decide_and_record_respawn(
 fn reap_exited_helper(state: &HelperState) -> bool {
     if let Ok(mut guard) = state.process.lock() {
         if let Some(mut process) = guard.take() {
-            let _ = process.child.wait();
+            let _ = crate::shutdown::terminate_child(
+                &mut process.child,
+                Duration::from_millis(100),
+                HELPER_FORCED_REAP_TIMEOUT,
+            );
             return true;
         }
     }
@@ -3194,36 +3212,60 @@ fn store_respawned_helper(state: &HelperState, mut helper: HelperProcess) -> Sto
 }
 
 const HELPER_SHUTDOWN_GRACE: Duration = Duration::from_millis(750);
-const HELPER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const HELPER_FORCED_REAP_TIMEOUT: Duration = Duration::from_millis(250);
+const HELPER_SHUTDOWN_MUTEX_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Stops a helper we spawned but will not install (shutdown raced the respawn).
 /// Dropping a [`Child`] only detaches it, so we kill explicitly to avoid an
 /// orphaned helper holding the global hotkey tap. Give a cooperative shutdown a
 /// short grace period first so the helper can restore clipboard state and remove
 /// temporary recordings before the forced-kill fallback.
-fn abandon_helper(mut helper: HelperProcess) {
-    let _ = helper.stdin.write_all(b"{\"type\":\"shutdown\"}\n");
-    let _ = helper.stdin.flush();
-    if wait_for_helper_exit(&mut helper.child, HELPER_SHUTDOWN_GRACE) {
-        return;
+fn abandon_helper(helper: HelperProcess) {
+    let HelperProcess { mut child, stdin } = helper;
+    send_helper_shutdown_nonblocking(stdin);
+    let outcome = crate::shutdown::terminate_child(
+        &mut child,
+        HELPER_SHUTDOWN_GRACE,
+        HELPER_FORCED_REAP_TIMEOUT,
+    );
+    if matches!(
+        outcome,
+        crate::shutdown::ChildTermination::TimedOut | crate::shutdown::ChildTermination::WaitFailed
+    ) {
+        tracing::warn!(
+            ?outcome,
+            helper_pid = child.id(),
+            "dictation helper could not be reaped before shutdown continued"
+        );
     }
-    let _ = helper.child.kill();
-    let _ = helper.child.wait();
 }
 
-fn wait_for_helper_exit(child: &mut Child, grace: Duration) -> bool {
-    let deadline = Instant::now() + grace;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) => {}
-            Err(_) => return true,
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        thread::sleep(HELPER_SHUTDOWN_POLL_INTERVAL);
+/// The helper normally needs one final command to restore clipboard and
+/// recording state. Mark the pipe nonblocking before the single small write so
+/// a wedged helper with a full stdin pipe cannot wedge app shutdown too.
+#[cfg(unix)]
+fn send_helper_shutdown_nonblocking(mut stdin: ChildStdin) {
+    use std::os::fd::AsRawFd;
+
+    let fd = stdin.as_raw_fd();
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        tracing::warn!("dictation helper shutdown could not make stdin nonblocking");
+        return;
     }
+    let _ = stdin.write(b"{\"type\":\"shutdown\"}\n");
+}
+
+#[cfg(not(unix))]
+fn send_helper_shutdown_nonblocking(mut stdin: ChildStdin) {
+    // Windows anonymous pipes do not expose a portable nonblocking flag. Move
+    // the best-effort write onto its own detached thread; the bounded child
+    // reaper below remains independent of whether this write ever returns.
+    let _ = thread::Builder::new()
+        .name("dictation-shutdown-pipe".to_string())
+        .spawn(move || {
+            let _ = stdin.write_all(b"{\"type\":\"shutdown\"}\n");
+        });
 }
 
 /// Re-applies the persisted microphone and shortcut settings to a just-respawned

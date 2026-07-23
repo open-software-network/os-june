@@ -15,6 +15,7 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// A supported Chromium-family browser. The variant order is the detection
 /// priority order fixed by the PRD (Chrome, then Edge, then Brave, then stock
@@ -210,9 +211,15 @@ impl LaunchedBrowser {
         if self.killed {
             return;
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        self.killed = true;
+        let outcome = crate::shutdown::terminate_child(
+            &mut self.child,
+            Duration::ZERO,
+            Duration::from_millis(250),
+        );
+        self.killed = matches!(
+            outcome,
+            crate::shutdown::ChildTermination::Exited | crate::shutdown::ChildTermination::Killed
+        );
     }
 
     /// The process id while the child has not been reaped, for diagnostics and
