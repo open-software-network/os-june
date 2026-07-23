@@ -2,6 +2,7 @@ use os_june_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };
+use sqlx::query::query;
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -378,6 +379,96 @@ async fn generated_note_composes_distinct_session_blocks_in_order() {
     assert_eq!(
         updated.generated_content.as_deref(),
         Some("First transcript result\n\nSecond transcript result")
+    );
+}
+
+#[tokio::test]
+async fn generated_note_preserves_user_edit_written_after_its_read() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+
+    // Generation inserts its session block after reading the note and before
+    // updating it. Use that exact boundary to deterministically model an
+    // autosave that commits while generation is still working from its stale
+    // `edited_content = NULL` snapshot.
+    query(
+        "CREATE TRIGGER simulate_concurrent_note_autosave
+         AFTER INSERT ON note_generation_blocks
+         BEGIN
+             UPDATE notes
+             SET title = 'User title persisted during generation',
+                 edited_content = 'User edit persisted during generation'
+             WHERE id = NEW.note_id;
+         END",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("install concurrent autosave trigger");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "Generated content".to_string(),
+        )
+        .await
+        .expect("generated note");
+
+    assert_eq!(updated.title, "User title persisted during generation");
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("User edit persisted during generation")
+    );
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("Generated content")
+    );
+}
+
+#[tokio::test]
+async fn generated_note_preserves_newer_non_null_user_edit_written_after_its_read() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    repos
+        .update_note(&note.id, None, Some("Initial user edit".to_string()), None)
+        .await
+        .expect("initial user edit");
+
+    // The trigger fires after generation has read the existing edit and
+    // changes it before generation's final compare-and-set update.
+    query(
+        "CREATE TRIGGER simulate_concurrent_non_null_note_autosave
+         AFTER INSERT ON note_generation_blocks
+         BEGIN
+             UPDATE notes
+             SET edited_content = 'Newer user edit persisted during generation'
+             WHERE id = NEW.note_id;
+         END",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("install concurrent autosave trigger");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "Generated content".to_string(),
+        )
+        .await
+        .expect("generated note");
+
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("Newer user edit persisted during generation")
+    );
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("Generated content")
     );
 }
 
