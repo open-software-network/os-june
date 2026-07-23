@@ -87,6 +87,8 @@ export function NotePreview({
         onChange(noteId, editorMarkdown);
       },
       onBlur: () => {
+        // ProseMirror flushes an active IME composition through onUpdate
+        // before invoking onBlur, so this cache includes its final text.
         // `noteId` here is the value at editor-creation time — the
         // useEditor dep list tears the editor down on note change, so
         // this closure always reflects the note the editor was bound
@@ -99,7 +101,6 @@ export function NotePreview({
               serializationState.lastSerializedMarkdown,
               pendingExternalMarkdown,
             );
-            serializationState.lastSerializedMarkdown = mergedMarkdown;
             onChange(noteId, mergedMarkdown);
           }
           serializationState.editorDirty = false;

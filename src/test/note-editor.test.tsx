@@ -1061,9 +1061,30 @@ describe("NoteEditor", () => {
         })}
       />,
     );
+    await user.type(editor, " written live");
     fireEvent.blur(editor);
 
-    expect(onContentChange).toHaveBeenLastCalledWith("note-1", "Manual notes\n\nGenerated note");
+    expect(onContentChange).toHaveBeenLastCalledWith(
+      "note-1",
+      "Manual notes written live\n\nGenerated note",
+    );
+
+    const mergedMarkdown = onContentChange.mock.lastCall?.[1];
+    expect(mergedMarkdown).toBe("Manual notes written live\n\nGenerated note");
+    rerender(
+      <NoteEditor
+        {...props}
+        onContentChange={onContentChange}
+        note={note({
+          generatedContent: "Generated note",
+          editedContent: mergedMarkdown,
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).toHaveTextContent("Generated note");
+    });
   });
 
   it("offers retry when transcript failed and audio exists", async () => {
