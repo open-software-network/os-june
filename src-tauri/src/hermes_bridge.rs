@@ -58,7 +58,7 @@ const HERMES_AGENT_INSTALL_COMMIT: &str = "3ef6bbd201263d354fd83ec55b3c306ded2eb
 /// audited `hermes_cli/gateway.py` source hash pins its Label/domain behavior;
 /// the live smoke also corroborates the CLI's reported plist basename.
 const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
-const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v14";
+const HERMES_RUNTIME_PATCH_SET: &str = "june-approval-memory-v16";
 const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "agent/agent_init.py",
@@ -74,7 +74,7 @@ const HERMES_RUNTIME_PATCHED_SOURCE_HASHES: &[(&str, &str)] = &[
     ),
     (
         "tui_gateway/server.py",
-        "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
+        "a0d57103021a758507299b95d816038aea3bfc5b7d013a4032bfd4273aa0c33b",
     ),
     (
         "cron/scheduler.py",
@@ -1699,27 +1699,34 @@ async fn start_hermes_bridge_inner(
         None
     };
     let june_recorder_mcp = sync_june_recorder_mcp(app, &command)?;
-    // Read the Browser access grant fresh for the rendered `june_browser`
-    // `enabled` leaf. Broker authorization does not use this spawn snapshot: it
-    // re-reads the persisted flag for every `/v1/browser/*` request.
+    // These readiness paths are independent and used to run serially on the
+    // first Hermes launch. Start them together so Browser setup and connector
+    // discovery overlap the Computer use permission probe and driver prewarm.
+    // Each still owns the same grant/config boundary it had before this join.
     let browser_access = browser_access_enabled(app);
-    let june_browser_mcp = sync_june_browser_mcp(app, &command, browser_access).await?;
+    let (june_browser_mcp, (supports_vision, computer_use_ready), june_connector_mcp) = tokio::join!(
+        sync_june_browser_mcp(app, &command, browser_access),
+        async {
+            // Resolved from the live catalog so Hermes' vision tools attach
+            // an image straight to a vision-capable model's context instead
+            // of falling back to the unconfigured auxiliary vision LLM.
+            let supports_vision = crate::providers::generation_model_supports_vision().await;
+            let computer_use_ready = crate::computer_use::runtime_ready(app, supports_vision).await;
+            (supports_vision, computer_use_ready)
+        },
+        sync_june_connector_mcps(app, &command),
+    );
+    let june_browser_mcp = june_browser_mcp?;
+    let june_connector_mcp = june_connector_mcp?;
     bridge
         .browser_broker
         .replace_routine_grants(june_browser_mcp.routine_grants.clone());
-    // Resolved from the live catalog so Hermes' vision tools attach an image
-    // straight to a vision-capable model's context instead of falling back to
-    // the (unconfigured) auxiliary vision LLM. `provider: custom` hides the
-    // capability from Hermes, so June has to declare it via config.
-    let supports_vision = crate::providers::generation_model_supports_vision().await;
-    let computer_use_ready = crate::computer_use::runtime_ready(app, supports_vision).await;
     let june_computer_use_mcp = sync_june_computer_use_mcp(app, &command, computer_use_ready)?;
     // The private-connector MCP servers are registered only when there is
     // something for them to serve: Gmail and Calendar need a connected Google
     // account (v1: the first connected account); Linear reads need a connected
     // workspace with selected teams and actions also need write scope; Notion
     // reads and actions need a connected hosted MCP account.
-    let june_connector_mcp = sync_june_connector_mcps(app, &command).await?;
     // The soul describes connector toolsets only when an interactive server
     // is registered. Notion's servers are interactive even without a Google
     // or Linear base config.
@@ -10534,8 +10541,8 @@ fn sync_hermes_config_with_external_dirs(
         serde_yaml::from_str::<serde_yaml::Value>(&merge_hermes_config(&config_path, &config))
             .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))?;
     let repaired_memory_shape = apply_memory_toolset_policy(&mut merged, memory_enabled);
-    let repaired_obsidian_shape = apply_obsidian_skill_policy(&mut merged);
-    let repaired_invalid_shape = repaired_memory_shape || repaired_obsidian_shape;
+    let repaired_skill_shape = apply_bundled_skill_policy(&mut merged);
+    let repaired_invalid_shape = repaired_memory_shape || repaired_skill_shape;
     if repaired_invalid_shape && !source_backup_created {
         match fs::read(&config_path) {
             Ok(existing) => {
@@ -10640,10 +10647,13 @@ fn apply_memory_toolset_policy(config: &mut serde_yaml::Value, memory_enabled: b
     repaired_invalid_shape
 }
 
-/// The pinned upstream `obsidian` skill guesses an ambient vault path. June
-/// owns the replacement under a distinct name, so disable only that upstream
-/// identity while preserving every unrelated user skill preference.
-fn apply_obsidian_skill_policy(config: &mut serde_yaml::Value) -> bool {
+/// Disable bundled skills whose instructions conflict with June-owned
+/// boundaries while preserving every unrelated user skill preference.
+///
+/// `obsidian` guesses an ambient vault path instead of using June's broker.
+/// `macos-computer-use` documents the upstream driver and duplicates a large
+/// workflow that June now carries concisely in its one app-owned tool schema.
+fn apply_bundled_skill_policy(config: &mut serde_yaml::Value) -> bool {
     let serde_yaml::Value::Mapping(root) = config else {
         return false;
     };
@@ -10670,8 +10680,10 @@ fn apply_obsidian_skill_policy(config: &mut serde_yaml::Value) -> bool {
     let disabled = disabled
         .as_sequence_mut()
         .expect("skills.disabled was normalized to a sequence");
-    disabled.retain(|item| item.as_str() != Some("obsidian"));
-    disabled.push(serde_yaml::Value::String("obsidian".to_string()));
+    for forced_disabled in ["obsidian", "macos-computer-use"] {
+        disabled.retain(|item| item.as_str() != Some(forced_disabled));
+        disabled.push(serde_yaml::Value::String(forced_disabled.to_string()));
+    }
     repaired_invalid_shape
 }
 
@@ -10691,7 +10703,7 @@ fn memory_policy_has_invalid_shape(config: &serde_yaml::Value) -> bool {
         .is_some_and(|disabled| !disabled.is_sequence())
 }
 
-fn obsidian_skill_policy_has_invalid_shape(config: &serde_yaml::Value) -> bool {
+fn bundled_skill_policy_has_invalid_shape(config: &serde_yaml::Value) -> bool {
     let Some(skills) = config.get("skills") else {
         return false;
     };
@@ -10726,7 +10738,7 @@ fn preserve_replaced_hermes_config_if_needed(
         Ok(ref config) => {
             hermes_config_has_invalid_root(config)
                 || (!memory_enabled && memory_policy_has_invalid_shape(config))
-                || obsidian_skill_policy_has_invalid_shape(config)
+                || bundled_skill_policy_has_invalid_shape(config)
         }
         Err(_) => true,
     };
@@ -20959,34 +20971,34 @@ mcp_servers:
     }
 
     #[test]
-    fn obsidian_skill_policy_disables_only_the_upstream_skill() {
+    fn bundled_skill_policy_disables_only_the_conflicting_upstream_skills() {
         let mut config: serde_yaml::Value = serde_yaml::from_str(
-            "skills:\n  disabled: [other, obsidian, obsidian]\n  config:\n    user-skill:\n      enabled: true\n",
+            "skills:\n  disabled: [other, obsidian, obsidian, macos-computer-use]\n  config:\n    user-skill:\n      enabled: true\n",
         )
         .expect("valid config");
 
-        apply_obsidian_skill_policy(&mut config);
+        apply_bundled_skill_policy(&mut config);
 
         assert_eq!(
             config["skills"]["disabled"],
-            serde_yaml::from_str::<serde_yaml::Value>("[other, obsidian]")
+            serde_yaml::from_str::<serde_yaml::Value>("[other, obsidian, macos-computer-use]",)
                 .expect("expected disabled skills")
         );
         assert_eq!(config["skills"]["config"]["user-skill"]["enabled"], true);
     }
 
     #[test]
-    fn obsidian_skill_policy_repairs_invalid_shapes_and_preserves_source() {
+    fn bundled_skill_policy_repairs_invalid_shapes_and_preserves_source() {
         for source in [
             "skills: false\n",
             "skills:\n  disabled: false\n  config:\n    user-skill:\n      enabled: true\n",
         ] {
             let mut config: serde_yaml::Value = serde_yaml::from_str(source).expect("valid yaml");
-            assert!(apply_obsidian_skill_policy(&mut config));
+            assert!(apply_bundled_skill_policy(&mut config));
             assert_eq!(
                 config["skills"]["disabled"],
-                serde_yaml::from_str::<serde_yaml::Value>("[obsidian]")
-                    .expect("expected disabled skill")
+                serde_yaml::from_str::<serde_yaml::Value>("[obsidian, macos-computer-use]",)
+                    .expect("expected disabled skills")
             );
             if source.contains("user-skill") {
                 assert_eq!(config["skills"]["config"]["user-skill"]["enabled"], true);

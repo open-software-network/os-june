@@ -13,7 +13,7 @@ import sys
 from typing import Callable, Dict
 
 
-PATCH_SET = "june-approval-memory-v14"
+PATCH_SET = "june-approval-memory-v16"
 
 UPSTREAM_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "85b7cb13d6e6306e75d5eec46f193433df680425533b7d35ee99e0f7eab9512a",
@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "750a80a72e7310295f7b9a32624be56fa348c49412442853f26813fb848e7367",
+    "tui_gateway/server.py": "a0d57103021a758507299b95d816038aea3bfc5b7d013a4032bfd4273aa0c33b",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -577,6 +577,23 @@ def patch_mcp_tool(source: str) -> str:
 
 
 def patch_server(source: str) -> str:
+    source = replace_once(
+        source,
+        '''def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
+    if not _turn_isolation_enabled(cfg):
+        return False
+''',
+        '''def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
+    if not _turn_isolation_enabled(cfg):
+        return False
+    # The current compute-host frame cannot carry a per-agent-run tool scope.
+    # Once a session needs one, keep that session on the inline executor so
+    # history and controls always target the same live agent.
+    if session.get("_june_inline_executor"):
+        return False
+''',
+        "scoped sessions stay on one executor",
+    )
     source = replace_once(
         source,
         '''    lock = session.setdefault("agent_build_lock", threading.Lock())
@@ -1307,6 +1324,645 @@ def _(rid, params: dict) -> dict:
         '@method("config.set")\n',
         handler,
         "targeted approval response",
+    )
+    source = replace_once(
+        source,
+        '''        return None
+
+
+def _session_tool_progress_mode(sid: str) -> str:
+''',
+        '''        return None
+
+
+_AGENT_RUN_TOOLSETS_UNSET = object()
+
+
+def _normalize_agent_run_enabled_toolsets(raw):
+    """Validate that a client can narrow, never widen, June's tool surface."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("enabled_toolsets must be an array or null")
+    if len(raw) > 32:
+        raise ValueError("enabled_toolsets has too many entries")
+
+    normalized = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("enabled_toolsets entries must be non-empty strings")
+        name = item.strip()
+        if name not in normalized:
+            normalized.append(name)
+
+    allowed = _load_enabled_toolsets()
+    if allowed is None:
+        raise ValueError("agent-run-scoped toolsets require a configured gateway allowlist")
+    allowed_names = set(allowed)
+    if any(name not in allowed_names for name in normalized):
+        raise ValueError("enabled_toolsets may only narrow the gateway allowlist")
+    return normalized
+
+
+def _wait_for_session_toolsets(enabled_toolsets_override) -> None:
+    """Wait only for requested MCP servers; unrelated discovery stays async."""
+    started_at = time.monotonic()
+    if enabled_toolsets_override is None:
+        try:
+            from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+            wait_for_mcp_discovery()
+        except Exception:
+            pass
+        try:
+            from tui_gateway.entry import wait_for_mcp_discovery
+
+            wait_for_mcp_discovery()
+        except Exception:
+            pass
+        logger.info(
+            "June tool stage: scoped=false toolsets=default registry_wait_ms=%d",
+            round((time.monotonic() - started_at) * 1000),
+        )
+        return
+
+    cfg = _load_cfg()
+    mcp_servers = cfg.get("mcp_servers")
+    configured = set(mcp_servers) if isinstance(mcp_servers, dict) else set()
+    requested_servers = []
+    for toolset in enabled_toolsets_override:
+        server_name = toolset[4:] if toolset.startswith("mcp-") else toolset
+        if server_name in configured:
+            requested_servers.append(server_name)
+    if requested_servers:
+        from tools.registry import registry
+
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            missing = [
+                name
+                for name in requested_servers
+                if not registry.get_tool_names_for_toolset(f"mcp-{name}")
+            ]
+            if not missing:
+                break
+            time.sleep(0.01)
+        else:
+            raise RuntimeError("A requested June tool server did not become ready")
+    logger.info(
+        "June tool stage: scoped=true toolsets=%d registry_wait_ms=%d",
+        len(enabled_toolsets_override),
+        round((time.monotonic() - started_at) * 1000),
+    )
+
+
+def _apply_agent_run_enabled_toolsets(session: dict, requested) -> None:
+    """Retune one live agent snapshot without rebuilding the agent or clients."""
+    if requested is _AGENT_RUN_TOOLSETS_UNSET:
+        return
+    normalized = _normalize_agent_run_enabled_toolsets(requested)
+    effective = normalized if normalized is not None else _load_enabled_toolsets()
+    _wait_for_session_toolsets(normalized)
+    agent = session.get("agent")
+    if agent is None:
+        session["enabled_toolsets_override"] = normalized
+        return
+    current = getattr(agent, "enabled_toolsets", None)
+    if current != effective:
+        from tools.mcp_tool import refresh_agent_mcp_tools
+
+        refresh_agent_mcp_tools(
+            agent,
+            enabled_override=effective,
+            disabled_override=getattr(agent, "disabled_toolsets", None),
+        )
+    session["enabled_toolsets_override"] = normalized
+    logger.info(
+        "June tool stage: scoped=%s toolsets=%d schema_ready=true",
+        normalized is not None,
+        len(effective or []),
+    )
+
+
+def _session_tool_progress_mode(sid: str) -> str:
+''',
+        "agent-run-scoped toolset helpers",
+    )
+    source = replace_once(
+        source,
+        '''def _restart_slash_worker(sid: str, session: dict):
+    worker = session.get("slash_worker")
+    if worker:
+''',
+        '''def _restart_slash_worker(sid: str, session: dict):
+    worker = session.get("slash_worker")
+    if worker is None:
+        return
+    if worker:
+''',
+        "slash worker restarts only after explicit lazy start",
+    )
+    source = replace_once(
+        source,
+        '''def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    session_db=None,
+    model_override: dict | str | None = None,
+    provider_override: str | None = None,
+    reasoning_config_override: dict | None = None,
+    service_tier_override: str | None = None,
+    platform_override: str | None = None,
+):
+''',
+        '''def _make_agent(
+    sid: str,
+    key: str,
+    session_id: str | None = None,
+    session_db=None,
+    model_override: dict | str | None = None,
+    provider_override: str | None = None,
+    reasoning_config_override: dict | None = None,
+    service_tier_override: str | None = None,
+    platform_override: str | None = None,
+    enabled_toolsets_override: list[str] | None = None,
+):
+''',
+        "session-scoped agent toolsets argument",
+    )
+    source = replace_once(
+        source,
+        '''    # MCP tool discovery runs in a background daemon thread at startup so a
+    # dead server can't freeze the shell.  The agent snapshots its tool list
+    # once here and never re-reads it, so briefly wait for in-flight discovery
+    # to land before building — bounded, so a slow/dead server still can't
+    # block. Dashboard /api/ws uses hermes_cli.mcp_startup; TUI stdio keeps
+    # its existing tui_gateway.entry-owned thread.
+    try:
+        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+    try:
+        from tui_gateway.entry import wait_for_mcp_discovery
+
+        wait_for_mcp_discovery()
+    except Exception:
+        pass
+''',
+        '''    # A narrowed Computer use agent run waits only for its one local MCP
+    # server. Other MCP clients keep connecting in the process-wide background
+    # and cannot delay this agent's immutable first tool snapshot.
+    _wait_for_session_toolsets(enabled_toolsets_override)
+''',
+        "targeted MCP discovery wait",
+    )
+    source = replace_once(
+        source,
+        '''        enabled_toolsets=_load_enabled_toolsets(),
+        disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
+''',
+        '''        enabled_toolsets=(
+            enabled_toolsets_override
+            if enabled_toolsets_override is not None
+            else _load_enabled_toolsets()
+        ),
+        disabled_toolsets=agent_cfg.get("disabled_toolsets") or [],
+''',
+        "session-scoped agent toolsets selection",
+    )
+    source = replace_once(
+        source,
+        '''                    if (tier := current.get("create_service_tier_override")) is not None:
+                        kw["service_tier_override"] = tier
+                agent = _make_agent(sid, key, **kw)
+''',
+        '''                    if (tier := current.get("create_service_tier_override")) is not None:
+                        kw["service_tier_override"] = tier
+                if (toolsets := current.get("enabled_toolsets_override")) is not None:
+                    kw["enabled_toolsets_override"] = toolsets
+                agent = _make_agent(sid, key, **kw)
+''',
+        "session toolsets forwarded to lazy build",
+    )
+    source = replace_once(
+        source,
+        '''                    service_tier_override=session.get("create_service_tier_override"),
+                )
+''',
+        '''                    service_tier_override=session.get("create_service_tier_override"),
+                    enabled_toolsets_override=session.get("enabled_toolsets_override"),
+                )
+''',
+        "session toolsets preserved across reset",
+    )
+    source = replace_once(
+        source,
+        '''    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+
+    # The desktop composer owns its model/effort/fast as plain UI state and ships
+''',
+        '''    profile = (params.get("profile") or "").strip() or None
+    profile_home = _profile_home(profile)
+    if profile is not None and params.get("enabled_toolsets") is not None:
+        return _err(
+            rid,
+            4003,
+            "agent-run-scoped toolsets are unavailable under a named profile",
+        )
+    try:
+        enabled_toolsets_override = _normalize_agent_run_enabled_toolsets(
+            params.get("enabled_toolsets")
+        )
+    except ValueError as exc:
+        return _err(rid, 4003, str(exc))
+    logger.info(
+        "June tool stage: session_create scoped=%s toolsets=%d",
+        enabled_toolsets_override is not None,
+        len(enabled_toolsets_override or []),
+    )
+
+    # The desktop composer owns its model/effort/fast as plain UI state and ships
+''',
+        "profile-aware session create toolset validation",
+    )
+    source = replace_once(
+        source,
+        '''            "model_override": session_model_override,
+            "create_reasoning_override": create_reasoning_override,
+''',
+        '''            "model_override": session_model_override,
+            "enabled_toolsets_override": enabled_toolsets_override,
+            "create_reasoning_override": create_reasoning_override,
+''',
+        "session toolset storage",
+    )
+    source = replace_once(
+        source,
+        '''def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+''',
+        '''def _enqueue_prompt(
+    session: dict,
+    text: Any,
+    transport: Any,
+    enabled_toolsets=_AGENT_RUN_TOOLSETS_UNSET,
+) -> bool:
+''',
+        "queued prompt toolset argument",
+    )
+    source = replace_once(
+        source,
+        '''    session["queued_prompt"] = {"text": text, "transport": transport}
+''',
+        '''    queued_toolsets = enabled_toolsets
+    if (
+        isinstance(existing, dict)
+        and existing.get("enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET)
+        != queued_toolsets
+    ):
+        return False
+    if queued_toolsets is _AGENT_RUN_TOOLSETS_UNSET and isinstance(existing, dict):
+        queued_toolsets = existing.get("enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET)
+    queued_prompt = {"text": text, "transport": transport}
+    if queued_toolsets is not _AGENT_RUN_TOOLSETS_UNSET:
+        queued_prompt["enabled_toolsets"] = queued_toolsets
+    session["queued_prompt"] = queued_prompt
+    return True
+''',
+        "queued prompt toolset storage",
+    )
+    source = replace_once(
+        source,
+        '''def _handle_busy_submit(
+    rid, sid: str, session: dict, text: Any, transport: Any
+) -> dict | None:
+''',
+        '''def _handle_busy_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    enabled_toolsets=_AGENT_RUN_TOOLSETS_UNSET,
+) -> dict | None:
+''',
+        "busy prompt toolset argument",
+    )
+    source = replace_once(
+        source,
+        '''    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+''',
+        '''    if (
+        mode == "steer"
+        and enabled_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)
+        and agent is not None
+        and hasattr(agent, "steer")
+    ):
+''',
+        "scoped busy prompt avoids unsafe steer",
+    )
+    source = replace_once(
+        source,
+        '''        _enqueue_prompt(session, text, transport)
+''',
+        '''        if not _enqueue_prompt(session, text, transport, enabled_toolsets):
+            return _err(
+                rid,
+                4009,
+                "queued prompt tool scope changed; retry after the current agent run",
+            )
+''',
+        "busy prompt queues toolsets",
+    )
+    source = replace_once(
+        source,
+        '''        session["queued_prompt"] = None
+        session["running"] = True
+''',
+        '''        session["queued_prompt"] = None
+        if queued.get(
+            "enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET
+        ) not in (_AGENT_RUN_TOOLSETS_UNSET, None):
+            session["_june_inline_executor"] = True
+        session["running"] = True
+''',
+        "queued scoped prompt pins executor before claim",
+    )
+    source = replace_once(
+        source,
+        '''        if _session_uses_compute_host(session):
+            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+''',
+        '''        queued_agent_run_toolsets = queued.get(
+            "enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET
+        )
+        if (
+            _session_uses_compute_host(session)
+            and queued_agent_run_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)
+        ):
+            resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
+''',
+        "scoped queued prompt bypasses unscoped compute-host frame",
+    )
+    source = replace_once(
+        source,
+        '''        else:
+            _run_prompt_submit(rid, sid, session, queued["text"])
+''',
+        '''        else:
+            _dispatch_inline_prompt(
+                rid,
+                sid,
+                session,
+                queued["text"],
+                queued_agent_run_toolsets,
+            )
+''',
+        "queued prompt uses the readiness-gated inline dispatcher",
+    )
+    source = replace_once(
+        source,
+        '''# ── Methods: prompt ──────────────────────────────────────────────────
+
+
+@method("prompt.submit")
+''',
+        '''# ── Methods: prompt ──────────────────────────────────────────────────
+
+
+def _record_failed_inline_prompt_setup(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    message: str,
+) -> None:
+    """Keep an acknowledged prompt durable when inline setup cannot start it."""
+    failed_message = {"role": "user", "content": text}
+    with session["history_lock"]:
+        session.setdefault("history", []).append(failed_message)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        session["running"] = False
+        _clear_inflight_turn(session)
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                db.append_message(
+                    session_id=session.get("session_key", ""),
+                    role="user",
+                    content=text,
+                )
+            except Exception:
+                logger.debug("failed to persist an acknowledged prompt", exc_info=True)
+    _emit("error", sid, {"message": message})
+    _drain_queued_prompt(rid, sid, session)
+
+
+def _dispatch_inline_prompt(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    agent_run_toolsets=_AGENT_RUN_TOOLSETS_UNSET,
+) -> None:
+    """Run an acknowledged inline prompt only after its agent is ready."""
+    _ensure_session_db_row(session)
+    _persist_branch_seed(session)
+    _start_agent_build(sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            _record_failed_inline_prompt_setup(
+                rid,
+                sid,
+                session,
+                text,
+                err.get("error", {}).get(
+                    "message", "agent initialization failed"
+                ),
+            )
+            return
+        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
+        try:
+            _apply_agent_run_enabled_toolsets(session, agent_run_toolsets)
+        except Exception as exc:
+            _record_failed_inline_prompt_setup(
+                rid,
+                sid,
+                session,
+                text,
+                f"June tool setup failed: {exc}",
+            )
+            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+    session["_run_thread"] = run_thread
+    run_thread.start()
+
+
+@method("prompt.submit")
+''',
+        "shared readiness-gated inline prompt dispatcher",
+    )
+    source = replace_once(
+        source,
+        '''    truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+''',
+        '''    truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent_run_toolsets = (
+        _AGENT_RUN_TOOLSETS_UNSET
+        if session.get("profile_home") is not None
+        else None
+    )
+    if "enabled_toolsets" in params:
+        if session.get("profile_home") is not None:
+            if params.get("enabled_toolsets") is not None:
+                return _err(
+                    rid,
+                    4003,
+                    "agent-run-scoped toolsets are unavailable under a named profile",
+                )
+        else:
+            try:
+                agent_run_toolsets = _normalize_agent_run_enabled_toolsets(
+                    params.get("enabled_toolsets")
+                )
+            except ValueError as exc:
+                return _err(rid, 4003, str(exc))
+''',
+        "profile-aware prompt toolset validation preserves omitted scope",
+    )
+    source = replace_once(
+        source,
+        '''        busy_response = _handle_busy_submit(rid, sid, session, text, busy_transport)
+''',
+        '''        busy_response = _handle_busy_submit(
+            rid, sid, session, text, busy_transport, agent_run_toolsets
+        )
+''',
+        "busy prompt toolset forwarding",
+    )
+    source = replace_once(
+        source,
+        '''        session["running"] = True
+        session["_turn_cancel_requested"] = False
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+''',
+        '''        if agent_run_toolsets not in (_AGENT_RUN_TOOLSETS_UNSET, None):
+            session["_june_inline_executor"] = True
+        session["running"] = True
+        session["_turn_cancel_requested"] = False
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+''',
+        "scoped prompt pins executor before claim",
+    )
+    source = replace_once(
+        source,
+        '''    if turn_isolation:
+        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+''',
+        '''    # The compute-host frame has no agent-run tool scope field. Keep
+    # explicitly scoped requests inline, and pin that session to the inline
+    # executor so later history/control operations cannot target a stale host.
+    if agent_run_toolsets not in (_AGENT_RUN_TOOLSETS_UNSET, None):
+        turn_isolation = False
+    if turn_isolation:
+        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+''',
+        "scoped prompt pins one executor",
+    )
+    source = replace_once(
+        source,
+        '''        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
+        _run_prompt_submit(rid, sid, session, text)
+''',
+        '''        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
+        try:
+            _apply_agent_run_enabled_toolsets(session, agent_run_toolsets)
+        except Exception as exc:
+            _emit("error", sid, {"message": f"June tool setup failed: {exc}"})
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(rid, sid, session, text)
+''',
+        "prompt applies agent-run-scoped toolsets",
+    )
+    source = replace_region(
+        source,
+        "    # Persist the DB row lazily, now that the user has actually sent a message.\n",
+        '    return _ok(rid, {"status": "streaming"})\n',
+        '''    _dispatch_inline_prompt(
+        rid,
+        sid,
+        session,
+        text,
+        agent_run_toolsets,
+    )
+''',
+        "direct prompt uses shared readiness-gated inline dispatcher",
+    )
+    source = replace_once(
+        source,
+        '''            try:
+                worker = _SlashWorker(
+                    key,
+                    getattr(agent, "model", _resolve_model()),
+                    profile_home=current.get("profile_home"),
+                )
+                _attach_worker(sid, current, worker)
+            except Exception:
+                pass
+
+            try:
+                from tools.approval import (
+''',
+        '''            # A scoped Computer use agent run has no slash command to run.
+            # Starting its broad HermesCLI child here would reconnect every MCP
+            # server and probe optional dependencies while the first model call
+            # is in flight. command.dispatch already creates this worker lazily,
+            # so leave it absent until a later slash command actually needs it.
+            if current.get("enabled_toolsets_override") is None:
+                try:
+                    worker = _SlashWorker(
+                        key,
+                        getattr(agent, "model", _resolve_model()),
+                        profile_home=current.get("profile_home"),
+                    )
+                    _attach_worker(sid, current, worker)
+                except Exception:
+                    pass
+
+            try:
+                from tools.approval import (
+''',
+        "scoped session defers broad slash worker",
     )
     save_config = r'''def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path

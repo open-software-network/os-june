@@ -27,6 +27,7 @@ const props = {
   checkingSourceReadiness: false,
   onTitleChange: vi.fn(),
   onContentChange: vi.fn(),
+  onFlushNote: vi.fn(),
   onSourceModeChange: vi.fn(),
   onEnableSystemAudio: vi.fn(),
   onEnableMicrophone: vi.fn(),
@@ -89,10 +90,21 @@ describe("NoteEditor", () => {
   it("edits title and renders the generated note as a preview", async () => {
     const user = userEvent.setup();
     const onTitleChange = vi.fn();
-    render(<NoteEditor {...props} note={note()} onTitleChange={onTitleChange} />);
+    const onFlushNote = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        onTitleChange={onTitleChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
 
-    await user.type(screen.getByLabelText("Note title"), " updated");
+    const title = screen.getByLabelText("Note title");
+    await user.type(title, " updated");
     expect(onTitleChange).toHaveBeenCalled();
+    fireEvent.blur(title);
+    expect(onFlushNote).toHaveBeenCalledWith("note-1");
 
     // The note body is a rendered preview, not an editable textarea.
     expect(screen.getByText("Section one")).toBeInTheDocument();
@@ -936,6 +948,28 @@ describe("NoteEditor", () => {
     await user.type(editor, "# Heading");
 
     expect(editor.querySelector("h1")).toHaveTextContent("Heading");
+  });
+
+  it("reports content while typing and flushes it on blur", async () => {
+    const user = userEvent.setup();
+    const onContentChange = vi.fn();
+    const onFlushNote = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note({ generatedContent: "", editedContent: "" })}
+        onContentChange={onContentChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Generated note" });
+
+    await user.click(editor);
+    await user.type(editor, "Unsaved thought");
+
+    expect(onContentChange).toHaveBeenLastCalledWith("note-1", "Unsaved thought");
+    fireEvent.blur(editor);
+    expect(onFlushNote).toHaveBeenCalledWith("note-1");
   });
 
   it("does not erase generated append content that arrives while editing", async () => {

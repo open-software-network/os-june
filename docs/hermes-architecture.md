@@ -46,7 +46,20 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
    from `gatewaysRef` — **one gateway per write-mode**.
 3. `gateway.request("session.create")` returns **both** a `stored_session_id`
    (June's persistent id) and a `session_id` (the live runtime id);
-   `ensureHermesBridgeSession` persists the mapping.
+   `ensureHermesBridgeSession` persists the mapping. An explicit request to use
+   Computer use also carries `enabled_toolsets: ["june_computer_use"]`.
+   Hermes validates that this list only subtracts from the process allowlist,
+   waits for that local MCP server instead of every configured server, and
+   builds the first agent snapshot with no unrelated tool schemas. Each
+   `prompt.submit` repeats the agent run's requested scope, so a later ordinary
+   agent run restores June's normal tool surface without rebuilding the agent
+   or MCP clients. Because the optional compute-host frame cannot carry this
+   per-run restriction, a session that uses the scope stays on its inline
+   executor thereafter; this keeps history, steering, and interruption bound to
+   one live agent. The broad slash-command child is also left lazy for scoped
+   sessions until a slash command is actually dispatched. Named profiles retain
+   their independent tool policy and do not accept the default profile's narrow
+   scope.
 4. If the session has a queued model choice, June applies it to the idle live
    session with `config.set` before submitting anything. A failed switch blocks
    the send and leaves the choice queued.

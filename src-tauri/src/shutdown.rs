@@ -1,6 +1,6 @@
 use crate::domain::types::AppError;
 use std::process::Child;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 use std::sync::{Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,19 +10,28 @@ use tauri::Manager;
 /// is slow or stuck. The supervisor is separate from the cleanup worker, so a
 /// blocking syscall in one leaf cannot postpone the final exit/restart.
 ///
-/// The dictation (1.25 s) and Computer use (2.5 s) branches run concurrently
-/// with Hermes, so neither can consume Hermes' ordered budget: start quiescence
+/// Pending renderer note saves get a bounded first step (10 s), long enough for
+/// an in-flight SQLite patch to return before the renderer acknowledges.
+/// Dictation (1.25 s) and Computer use (2.5 s) then run concurrently with
+/// Hermes, so neither can consume Hermes' ordered budget: start quiescence
 /// (2 s) + Gateway unload (6 s) + process/browser/proxy finalization (2 s).
-const SHUTDOWN_AGGREGATE_DEADLINE_MS: u64 = 10_000;
+const SHUTDOWN_AGGREGATE_DEADLINE_MS: u64 = 20_000;
 const SHUTDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_millis(SHUTDOWN_AGGREGATE_DEADLINE_MS);
 const HERMES_FINALIZATION_BUDGET_MS: u64 = 2_000;
-const EXIT_FALLBACK_DEADLINE: Duration = Duration::from_secs(3);
+const EXIT_FALLBACK_DEADLINE: Duration = SHUTDOWN_AGGREGATE_DEADLINE;
+#[cfg(windows)]
+const UPDATER_AGGREGATE_DEADLINE_MS: u64 = SHUTDOWN_AGGREGATE_DEADLINE_MS
+    + crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS
+    + HERMES_FINALIZATION_BUDGET_MS;
+#[cfg(windows)]
+const UPDATER_AGGREGATE_DEADLINE: Duration = Duration::from_millis(UPDATER_AGGREGATE_DEADLINE_MS);
 const MUTEX_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const _: () = assert!(
     SHUTDOWN_AGGREGATE_DEADLINE_MS
-        >= crate::hermes_bridge::SHUTDOWN_START_QUIESCE_TIMEOUT_MS
+        >= crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS
+            + crate::hermes_bridge::SHUTDOWN_START_QUIESCE_TIMEOUT_MS
             + crate::hermes_bridge::GATEWAY_SHUTDOWN_TOTAL_TIMEOUT_MS
             + HERMES_FINALIZATION_BUDGET_MS
 );
@@ -73,6 +82,20 @@ enum BeginShutdown {
     AlreadyRunning(ShutdownTarget),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupOutcome {
+    Completed,
+    NoteSaveFlushFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundedCleanupResult {
+    Skipped,
+    Completed,
+    NoteSaveFlushFailed,
+    TimedOut,
+}
+
 pub(crate) struct ShutdownCoordinator {
     phase: Mutex<ShutdownPhase>,
     phase_changed: Condvar,
@@ -114,27 +137,20 @@ impl ShutdownCoordinator {
         self.phase_changed.notify_all();
     }
 
+    fn cancel(&self, target: ShutdownTarget) {
+        let mut phase = self.lock_phase();
+        if *phase == ShutdownPhase::Running(target) {
+            *phase = ShutdownPhase::Idle;
+            self.phase_changed.notify_all();
+        }
+    }
+
     fn final_exit_is_allowed(&self) -> bool {
         matches!(*self.lock_phase(), ShutdownPhase::Finalizing(_))
     }
 
     fn is_idle(&self) -> bool {
         matches!(*self.lock_phase(), ShutdownPhase::Idle)
-    }
-
-    #[cfg(windows)]
-    fn wait_until_finalizing(&self, timeout: Duration) -> bool {
-        let phase = self.lock_phase();
-        if matches!(*phase, ShutdownPhase::Finalizing(_)) {
-            return true;
-        }
-        let (phase, _) = self
-            .phase_changed
-            .wait_timeout_while(phase, timeout, |phase| {
-                !matches!(phase, ShutdownPhase::Finalizing(_))
-            })
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        matches!(*phase, ShutdownPhase::Finalizing(_))
     }
 }
 
@@ -190,16 +206,24 @@ pub(crate) fn handle_exit(app: &tauri::AppHandle) {
     let coordinator = app.state::<ShutdownCoordinator>();
     let cleanup_app = app.clone();
     let cleanup_deadline = ShutdownDeadline::after(EXIT_FALLBACK_DEADLINE);
-    if matches!(
-        run_bounded_cleanup_if_idle(
-            &coordinator,
-            ShutdownTarget::Exit(0),
-            EXIT_FALLBACK_DEADLINE,
-            move || { tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)) },
-        ),
-        Some(true)
+    match run_bounded_cleanup_if_idle(
+        &coordinator,
+        ShutdownTarget::Exit(0),
+        EXIT_FALLBACK_DEADLINE,
+        move || tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)),
     ) {
-        tracing::info!("completed last-chance cleanup from RunEvent::Exit");
+        BoundedCleanupResult::Completed => {
+            tracing::info!("completed last-chance cleanup from RunEvent::Exit");
+        }
+        BoundedCleanupResult::NoteSaveFlushFailed => {
+            // RunEvent::Exit cannot be prevented, but a failed renderer
+            // barrier must still remain a failed coordinator state rather
+            // than being promoted to Finalizing.
+            tracing::error!(
+                "last-chance note-save flush failed after OS finalization had already started"
+            );
+        }
+        BoundedCleanupResult::Skipped | BoundedCleanupResult::TimedOut => {}
     }
 }
 
@@ -207,33 +231,86 @@ pub(crate) fn request_restart(app: &tauri::AppHandle) -> Result<(), AppError> {
     request(app, ShutdownTarget::Restart)
 }
 
-/// Windows' updater exits the process from `Update::install_inner` after this
-/// hook and never emits ExitRequested. Run the same idempotent cleanup
-/// synchronously, then perform Tauri's own cleanup as the final API call before
-/// the plugin invokes `std::process::exit`.
+/// Prepares Windows for the updater's non-cancellable `install_inner` exit.
+///
+/// This runs before entering `Update::install`, while returning an error can
+/// still prevent process finalization. A second renderer flush after native
+/// cleanup catches edits queued while the helpers were shutting down.
 #[cfg(windows)]
-pub(crate) fn cleanup_before_updater_exit(app: &tauri::AppHandle) {
+pub(crate) fn prepare_for_updater_exit(app: &tauri::AppHandle) -> Result<(), AppError> {
     let coordinator = app.state::<ShutdownCoordinator>();
     let cleanup_app = app.clone();
     match coordinator.begin(ShutdownTarget::Restart) {
         BeginShutdown::Started(target) => {
-            let cleanup_deadline = ShutdownDeadline::after(SHUTDOWN_AGGREGATE_DEADLINE);
-            let completed = run_bounded_cleanup(SHUTDOWN_AGGREGATE_DEADLINE, move || {
-                tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline));
+            let cleanup_deadline = ShutdownDeadline::after(UPDATER_AGGREGATE_DEADLINE);
+            let outcome = run_bounded_cleanup(UPDATER_AGGREGATE_DEADLINE, move || {
+                tauri::async_runtime::block_on(run_updater_cleanup(&cleanup_app, cleanup_deadline))
             });
-            if !completed {
-                tracing::warn!(
-                    timeout_ms = SHUTDOWN_AGGREGATE_DEADLINE.as_millis(),
-                    "Windows updater cleanup hit its aggregate deadline"
-                );
+            match outcome {
+                // Stay in Running until the updater's on_before_exit callback.
+                // `Update::install` can still fail while extracting the
+                // package, and that failure must leave ordinary shutdown
+                // retryable.
+                Some(CleanupOutcome::Completed) => Ok(()),
+                Some(CleanupOutcome::NoteSaveFlushFailed) => {
+                    coordinator.cancel(target);
+                    Err(AppError::new(
+                        "update_note_save_failed",
+                        "Pending note edits could not be saved. Try installing the update again.",
+                    ))
+                }
+                None => {
+                    coordinator.cancel(target);
+                    tracing::warn!(
+                        timeout_ms = UPDATER_AGGREGATE_DEADLINE.as_millis(),
+                        "Windows updater cleanup hit its aggregate deadline"
+                    );
+                    Err(AppError::new(
+                        "update_cleanup_timed_out",
+                        "June could not finish preparing for the update. Try installing it again.",
+                    ))
+                }
             }
-            coordinator.mark_finalizing(target);
         }
-        BeginShutdown::AlreadyRunning(_) => {
-            let _ = coordinator.wait_until_finalizing(SHUTDOWN_AGGREGATE_DEADLINE);
-        }
+        BeginShutdown::AlreadyRunning(_) => Err(AppError::new(
+            "update_cleanup_incomplete",
+            "June is already shutting down. Try installing the update again.",
+        )),
     }
+}
+
+/// Called only by the updater after package extraction has succeeded and
+/// immediately before it launches the installer and exits the process.
+#[cfg(windows)]
+pub(crate) fn finalize_updater_exit(app: &tauri::AppHandle) {
+    app.state::<ShutdownCoordinator>()
+        .mark_finalizing(ShutdownTarget::Restart);
     app.cleanup_before_exit();
+}
+
+/// Restores ordinary shutdown when `Update::install` fails before its
+/// on-before-exit callback.
+#[cfg(windows)]
+pub(crate) fn cancel_updater_exit(app: &tauri::AppHandle) {
+    app.state::<ShutdownCoordinator>()
+        .cancel(ShutdownTarget::Restart);
+}
+
+#[cfg(windows)]
+async fn run_updater_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) -> CleanupOutcome {
+    let outcome = run_cleanup(app, deadline).await;
+    if outcome != CleanupOutcome::Completed {
+        return outcome;
+    }
+
+    if !crate::note_save_flush::request(app).await {
+        tracing::warn!(
+            timeout_ms = crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS,
+            "final Windows updater note-save flush failed"
+        );
+        return CleanupOutcome::NoteSaveFlushFailed;
+    }
+    CleanupOutcome::Completed
 }
 
 fn request(app: &tauri::AppHandle, requested: ShutdownTarget) -> Result<(), AppError> {
@@ -248,16 +325,28 @@ fn request(app: &tauri::AppHandle, requested: ShutdownTarget) -> Result<(), AppE
     spawn_supervised_shutdown(
         SHUTDOWN_AGGREGATE_DEADLINE,
         move || tauri::async_runtime::block_on(run_cleanup(&cleanup_app, cleanup_deadline)),
-        move |completed| {
-            if completed {
-                tracing::info!(?target, "app shutdown cleanup completed");
-            } else {
-                tracing::warn!(
-                    ?target,
-                    timeout_ms = SHUTDOWN_AGGREGATE_DEADLINE.as_millis(),
-                    "app shutdown cleanup hit its aggregate deadline"
-                );
+        move |outcome| {
+            match outcome {
+                Some(CleanupOutcome::Completed) => {
+                    tracing::info!(?target, "app shutdown cleanup completed");
+                }
+                Some(CleanupOutcome::NoteSaveFlushFailed) => {
+                    tracing::warn!(
+                        ?target,
+                        "app shutdown cancelled because pending note saves could not be flushed"
+                    );
+                    final_app.state::<ShutdownCoordinator>().cancel(target);
+                    return;
+                }
+                None => {
+                    tracing::warn!(
+                        ?target,
+                        timeout_ms = SHUTDOWN_AGGREGATE_DEADLINE.as_millis(),
+                        "app shutdown cleanup hit its aggregate deadline"
+                    );
+                }
             }
+
             final_app
                 .state::<ShutdownCoordinator>()
                 .mark_finalizing(target);
@@ -267,14 +356,10 @@ fn request(app: &tauri::AppHandle, requested: ShutdownTarget) -> Result<(), AppE
     .map_err(|error| AppError::new("shutdown_start_failed", error.to_string()))
 }
 
-fn spawn_supervised_shutdown<C, F>(
-    deadline: Duration,
-    cleanup: C,
-    finalize: F,
-) -> std::io::Result<()>
+fn spawn_supervised_shutdown<C, F>(deadline: Duration, cleanup: C, finish: F) -> std::io::Result<()>
 where
-    C: FnOnce() + Send + 'static,
-    F: FnOnce(bool) + Send + 'static,
+    C: FnOnce() -> CleanupOutcome + Send + 'static,
+    F: FnOnce(Option<CleanupOutcome>) + Send + 'static,
 {
     thread::Builder::new()
         .name("june-shutdown-supervisor".to_string())
@@ -283,16 +368,23 @@ where
             let cleanup_spawn = thread::Builder::new()
                 .name("june-shutdown-cleanup".to_string())
                 .spawn(move || {
-                    cleanup();
-                    let _ = done_tx.send(());
+                    let _ = done_tx.send(cleanup());
                 });
-            let completed = cleanup_spawn.is_ok() && wait_for_cleanup(&done_rx, deadline);
-            finalize(completed);
+            let outcome = cleanup_spawn
+                .ok()
+                .and_then(|_| done_rx.recv_timeout(deadline).ok());
+            finish(outcome);
         })
         .map(|_| ())
 }
 
-async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) {
+async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) -> CleanupOutcome {
+    // Renderer autosaves must drain while the webview and command runtime are
+    // still alive. Keep this ordered before native child-process teardown.
+    if !crate::note_save_flush::request(app).await {
+        return CleanupOutcome::NoteSaveFlushFailed;
+    }
+
     let dictation_app = app.clone();
     let dictation =
         tauri::async_runtime::spawn_blocking(move || crate::dictation::stop_helper(&dictation_app));
@@ -305,25 +397,23 @@ async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) {
     if let Err(error) = dictation_result {
         tracing::warn!(%error, "dictation shutdown worker could not be joined");
     }
+    CleanupOutcome::Completed
 }
 
-fn wait_for_cleanup(receiver: &Receiver<()>, timeout: Duration) -> bool {
-    receiver.recv_timeout(timeout).is_ok()
-}
-
-fn run_bounded_cleanup<C>(deadline: Duration, cleanup: C) -> bool
+fn run_bounded_cleanup<C>(deadline: Duration, cleanup: C) -> Option<CleanupOutcome>
 where
-    C: FnOnce() + Send + 'static,
+    C: FnOnce() -> CleanupOutcome + Send + 'static,
 {
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let spawned = thread::Builder::new()
         .name("june-shutdown-cleanup".to_string())
         .spawn(move || {
-            cleanup();
-            let _ = done_tx.send(());
+            let _ = done_tx.send(cleanup());
         })
         .is_ok();
-    spawned && wait_for_cleanup(&done_rx, deadline)
+    spawned
+        .then(|| done_rx.recv_timeout(deadline).ok())
+        .flatten()
 }
 
 fn run_bounded_cleanup_if_idle<C>(
@@ -331,23 +421,32 @@ fn run_bounded_cleanup_if_idle<C>(
     target: ShutdownTarget,
     deadline: Duration,
     cleanup: C,
-) -> Option<bool>
+) -> BoundedCleanupResult
 where
-    C: FnOnce() + Send + 'static,
+    C: FnOnce() -> CleanupOutcome + Send + 'static,
 {
     let BeginShutdown::Started(target) = coordinator.begin(target) else {
-        return None;
+        return BoundedCleanupResult::Skipped;
     };
-    let completed = run_bounded_cleanup(deadline, cleanup);
-    if !completed {
-        tracing::warn!(
-            ?target,
-            timeout_ms = deadline.as_millis(),
-            "last-chance app cleanup hit its deadline"
-        );
+    match run_bounded_cleanup(deadline, cleanup) {
+        Some(CleanupOutcome::Completed) => {
+            coordinator.mark_finalizing(target);
+            BoundedCleanupResult::Completed
+        }
+        Some(CleanupOutcome::NoteSaveFlushFailed) => {
+            coordinator.cancel(target);
+            BoundedCleanupResult::NoteSaveFlushFailed
+        }
+        None => {
+            tracing::warn!(
+                ?target,
+                timeout_ms = deadline.as_millis(),
+                "last-chance app cleanup hit its deadline"
+            );
+            coordinator.cancel(target);
+            BoundedCleanupResult::TimedOut
+        }
     }
-    coordinator.mark_finalizing(target);
-    Some(completed)
 }
 
 fn finalize(app: tauri::AppHandle, target: ShutdownTarget) {
@@ -526,23 +625,28 @@ mod tests {
 
     #[test]
     fn cleanup_wait_obeys_the_aggregate_deadline() {
-        let (sender, receiver) = mpsc::sync_channel(1);
+        let (sender, receiver) = mpsc::sync_channel::<()>(1);
         let started = Instant::now();
-        assert!(!wait_for_cleanup(&receiver, Duration::from_millis(20)));
+        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         assert!(started.elapsed() < Duration::from_secs(1));
         drop(sender);
     }
 
     #[test]
-    fn aggregate_deadline_covers_the_ordered_hermes_leaf_budgets() {
+    fn aggregate_deadline_covers_note_flush_and_ordered_hermes_leaf_budgets() {
         assert!(deadline_covers_ordered_leaves(
             SHUTDOWN_AGGREGATE_DEADLINE_MS,
             &[
+                crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS,
                 crate::hermes_bridge::SHUTDOWN_START_QUIESCE_TIMEOUT_MS,
                 crate::hermes_bridge::GATEWAY_SHUTDOWN_TOTAL_TIMEOUT_MS,
                 HERMES_FINALIZATION_BUDGET_MS,
             ],
         ));
+        assert!(
+            EXIT_FALLBACK_DEADLINE
+                >= Duration::from_millis(crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS)
+        );
     }
 
     #[test]
@@ -557,9 +661,10 @@ mod tests {
                 Duration::from_secs(1),
                 move || {
                     first_calls.fetch_add(1, Ordering::SeqCst);
+                    CleanupOutcome::Completed
                 },
             ),
-            Some(true)
+            BoundedCleanupResult::Completed
         );
         assert!(matches!(
             *coordinator.lock_phase(),
@@ -574,9 +679,10 @@ mod tests {
                 Duration::from_secs(1),
                 move || {
                     duplicate_calls.fetch_add(1, Ordering::SeqCst);
+                    CleanupOutcome::Completed
                 },
             ),
-            None
+            BoundedCleanupResult::Skipped
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -592,8 +698,55 @@ mod tests {
                 Duration::from_secs(1),
                 || panic!("running cleanup must remain owned by its first caller"),
             ),
-            None
+            BoundedCleanupResult::Skipped
         );
+    }
+
+    #[test]
+    fn exit_fallback_keeps_failed_note_flush_out_of_finalizing() {
+        let coordinator = ShutdownCoordinator::default();
+
+        assert_eq!(
+            run_bounded_cleanup_if_idle(
+                &coordinator,
+                ShutdownTarget::Exit(0),
+                Duration::from_secs(1),
+                || CleanupOutcome::NoteSaveFlushFailed,
+            ),
+            BoundedCleanupResult::NoteSaveFlushFailed
+        );
+
+        assert!(coordinator.is_idle());
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Exit(0)),
+            BeginShutdown::Started(ShutdownTarget::Exit(0))
+        );
+    }
+
+    #[test]
+    fn exit_fallback_keeps_timed_out_cleanup_out_of_finalizing() {
+        let coordinator = ShutdownCoordinator::default();
+        let (release_tx, release_rx) = mpsc::sync_channel(1);
+
+        assert_eq!(
+            run_bounded_cleanup_if_idle(
+                &coordinator,
+                ShutdownTarget::Exit(0),
+                Duration::from_millis(20),
+                move || {
+                    let _ = release_rx.recv();
+                    CleanupOutcome::Completed
+                },
+            ),
+            BoundedCleanupResult::TimedOut
+        );
+
+        assert!(coordinator.is_idle());
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Exit(0)),
+            BeginShutdown::Started(ShutdownTarget::Exit(0))
+        );
+        let _ = release_tx.send(());
     }
 
     #[test]
@@ -605,9 +758,10 @@ mod tests {
             Duration::from_millis(20),
             move || {
                 let _ = release_rx.recv();
+                CleanupOutcome::Completed
             },
-            move |completed| {
-                let _ = final_tx.send(completed);
+            move |outcome| {
+                let _ = final_tx.send(outcome);
             },
         )
         .expect("spawn supervisor");
@@ -616,12 +770,30 @@ mod tests {
             "request path must return control to the main event loop"
         );
         assert!(
-            !final_rx
+            final_rx
                 .recv_timeout(Duration::from_secs(1))
-                .expect("deadline finalizer"),
+                .expect("deadline finalizer")
+                .is_none(),
             "deadline must finalize while cleanup remains blocked"
         );
         let _ = release_tx.send(());
+    }
+
+    #[test]
+    fn failed_note_flush_cancels_shutdown_and_allows_retry() {
+        let coordinator = ShutdownCoordinator::default();
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Restart),
+            BeginShutdown::Started(ShutdownTarget::Restart)
+        );
+
+        coordinator.cancel(ShutdownTarget::Restart);
+
+        assert!(coordinator.is_idle());
+        assert_eq!(
+            coordinator.begin(ShutdownTarget::Restart),
+            BeginShutdown::Started(ShutdownTarget::Restart)
+        );
     }
 
     #[test]

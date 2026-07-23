@@ -8294,6 +8294,32 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
+  it("narrows an explicit Computer use agent run to the app-owned toolset", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "Use Computer use to open Calculator and click 7.",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "Use Computer use to open Calculator and click 7.",
+        enabled_toolsets: ["june_computer_use"],
+      }),
+    );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
+      title: "Use Computer use to open Calculator and click 7.",
+      cols: 96,
+      reasoning_effort: "medium",
+      enabled_toolsets: ["june_computer_use"],
+    });
+  });
+
   it("submits a new-session prompt before its AI title resolves", async () => {
     let resolveTitle: ((value: { title: string }) => void) | undefined;
     mocks.suggestAgentSessionTitle.mockImplementationOnce(
@@ -10650,13 +10676,13 @@ describe("AgentWorkspace", () => {
 
     window.dispatchEvent(
       new CustomEvent(AGENT_NEW_SESSION_EVENT, {
-        detail: { prompt: "draft a research brief" },
+        detail: { prompt: "Use Computer use to draft a research brief" },
       }),
     );
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.create", {
-        title: "draft a research brief",
+        title: "Use Computer use to draft a research brief",
         cols: 96,
         // No `model`: the composer's model is June's GLOBAL generation
         // selection, and sending it as the per-session override would bypass
@@ -10664,6 +10690,10 @@ describe("AgentWorkspace", () => {
         profile: "research",
       }),
     );
+    expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-session-2",
+      text: "Use Computer use to draft a research brief",
+    });
     await waitFor(() =>
       expect(mocks.assignSessionToProfile).toHaveBeenCalledWith("session-2", "research"),
     );
@@ -11030,9 +11060,11 @@ describe("AgentWorkspace", () => {
         true,
       ),
     );
-    expect(textbox).toHaveTextContent(
-      "/repo-build-pr implement issue JUN-46 and keep this draft edit",
-    );
+    // jsdom cannot map pointer coordinates to a contenteditable caret, so the
+    // inserted phrase's position is undefined. This assertion is about keeping
+    // both the submitted prompt and the edit made while preparation awaited.
+    expect(textbox).toHaveTextContent("/repo-build-pr implement issue JUN-46");
+    expect(textbox).toHaveTextContent("and keep this draft edit");
   });
 
   it("reserves the session dispatch order before skill preparation finishes", async () => {

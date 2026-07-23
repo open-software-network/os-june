@@ -24,6 +24,7 @@ pub mod meeting_detection;
 pub mod meeting_hud;
 pub mod menu_bar;
 mod note_audio_export;
+mod note_save_flush;
 pub mod notifications;
 pub mod obsidian;
 pub mod os_accounts;
@@ -171,6 +172,7 @@ pub fn run() {
             commands::get_note,
             commands::download_note_audio,
             commands::update_note,
+            note_save_flush::complete_note_save_flush,
             commands::delete_note,
             commands::delete_notes,
             commands::create_folder,
@@ -408,6 +410,7 @@ pub fn run() {
             updates::relaunch_for_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
+        .manage(note_save_flush::NoteSaveFlushState::default())
         .manage(hermes_bridge::HermesBridge::default())
         .manage(computer_use::ComputerUseState::default())
         .manage(shutdown::ShutdownCoordinator::default())
@@ -739,11 +742,16 @@ fn setup_main_window_lifecycle(app: &mut tauri::App) {
 fn register_main_window_lifecycle(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
     install_main_window_first_mouse_bridge(app, window);
     let close_window = window.clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    let lifecycle_app = app.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let _ = close_window.hide();
         }
+        tauri::WindowEvent::Focused(true) => {
+            computer_use::schedule_driver_prewarm(&lifecycle_app);
+        }
+        _ => {}
     });
 }
 

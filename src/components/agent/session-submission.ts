@@ -8,6 +8,7 @@ import { prepareProjectPrompt } from "../../lib/agent-project-context";
 import { startAgentRunMonitoring } from "../../lib/agent-run-monitor";
 import { rememberSessionMode, sessionUnrestricted } from "../../lib/agent-session-modes";
 import { withTimeout } from "../../lib/async-timeout";
+import { toolsetsForComputerUseAgentRun } from "../../lib/computer-use-agent-run";
 import { messageFromError } from "../../lib/errors";
 import { titleFromPrompt } from "../../lib/hermes-adapter";
 import { createHermesMethods, hermesModeFor } from "../../lib/hermes-control-plane";
@@ -38,7 +39,7 @@ import {
 import { rememberSessionThinkingLevel, thinkingEffortForLevel } from "../../lib/thinking-level";
 import { AUTO_MODEL_ID } from "../settings/ModelPickerDialog";
 import type { PendingIssueReport } from "./agent-session-continuity";
-import { type HermesRuntimeSessionResponse } from "./agent-session-continuity";
+import type { HermesRuntimeSessionResponse } from "./agent-session-continuity";
 import type { AgentAttachment } from "./agent-workspace-models";
 import { unsupportedImageInputPrompt } from "./composer/composer-input-helpers";
 import {
@@ -245,6 +246,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
       ),
       heldVideoContexts,
     );
+    const agentRunToolsets =
+      options?.issueReport || options?.skipPrompt
+        ? null
+        : toolsetsForComputerUseAgentRun(displayContent);
     // Start the AI title request early, but never put it on the prompt's
     // critical path. The session starts with the deterministic fallback and
     // the suggestion patches it in the background once a stored id exists.
@@ -313,7 +318,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           nextUnderProfileName !== undefined && nextUnderProfileName !== "default";
         const nextCreated = targetStoredSessionId
           ? undefined
-          : await nextGateway.request<HermesRuntimeSessionResponse>("session.create", {
+          : await createHermesMethods(nextGateway).createSession<HermesRuntimeSessionResponse>({
               title: fallbackSessionTitle,
               cols: 96,
               // session.create treats `model` as a per-session override.
@@ -323,9 +328,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
               // thinking level's reasoning_effort follows the same rule.
               ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
               ...(!underProfile
-                ? { reasoning_effort: thinkingEffortForLevel(thinkingLevelRef.current) }
+                ? { reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) }
                 : {}),
               ...(underProfile ? { profile: nextUnderProfileName } : {}),
+              ...(agentRunToolsets && !underProfile ? { enabledToolsets: agentRunToolsets } : {}),
             });
         const nextStoredSessionId =
           targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
@@ -350,6 +356,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
       );
       profileOwnedSessionIdsRef.current.add(storedSessionId);
     }
+    const scopedAgentRunToolsets =
+      createdUnderProfile || profileOwnedSessionIdsRef.current.has(storedSessionId)
+        ? null
+        : agentRunToolsets;
     const createdSessionModelId = createdUnderProfile ? undefined : targetSessionModelId;
     const activeDispatchReservation =
       dispatchReservation ?? reserveHermesSessionDispatch(storedSessionId);
@@ -683,9 +693,10 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           method: "prompt.submit",
           params: { session_id: runtimeSessionId, text: preparedProjectPrompt.text },
         });
-        await gateway.request("prompt.submit", {
-          session_id: runtimeSessionId,
+        await createHermesMethods(gateway).submitPrompt({
+          sessionId: runtimeSessionId,
           text: preparedProjectPrompt.text,
+          ...(scopedAgentRunToolsets ? { enabledToolsets: scopedAgentRunToolsets } : {}),
         });
         startAgentRunMonitoring({
           storedSessionId,

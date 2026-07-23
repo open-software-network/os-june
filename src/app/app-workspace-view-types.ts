@@ -5,7 +5,13 @@ import type { SettingsTab } from "../components/settings/settings-config";
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { TabNav } from "./tabs/tabs";
 import type { LiveTranscriptEventDto, RecoverableRecordingDto } from "../lib/tauri";
-import type { FolderDto, NoteDto, AccountStatus, HermesSessionInfo } from "../lib/tauri";
+import type {
+  AccountStatus,
+  FolderDto,
+  HermesSessionInfo,
+  NoteDto,
+  NoteEditablePatch,
+} from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import type { JuneUpdate } from "../lib/updater";
 import type { UpdateCheckMode, UpdatePromptPayload } from "./update-decision";
@@ -44,6 +50,7 @@ export type RenderAppWorkspaceDependencies = {
   handleEnableMicrophone: () => void;
   handleEnableSystemAudio: () => void;
   handleFinishRecording: (sessionId: string, options?: { rethrow?: boolean }) => Promise<void>;
+  handleFlushNote: (noteId: string) => Promise<void>;
   handleFoldersImported: (folders: FolderDto[]) => void;
   handleNewAgentSession: () => void;
   handleNewAgentSessionInProject: (folderId: string) => void;
@@ -66,6 +73,7 @@ export type RenderAppWorkspaceDependencies = {
   handleRenameFolder: (folderId: string, name: string, description?: string) => Promise<void>;
   handleReportIssue: (category?: ReportCategory) => void;
   handleResumeRecording: (sessionId: string) => Promise<void>;
+  handleSaveNoteNow: (noteId: string, patch: NoteEditablePatch) => Promise<void>;
   handleReturnToAgentOriginFolder: () => void;
   handleReturnToAgentsList: () => void;
   handleReturnToNote: (noteId: string) => Promise<void>;
@@ -89,7 +97,7 @@ export type RenderAppWorkspaceDependencies = {
   handleStartRecording: () => Promise<void>;
   handleToggleSessionCompleted: (sessionId: string, completed: boolean) => Promise<void>;
   handleTopUp: () => void;
-  handleUpdateNote: (patch: Partial<Pick<NoteDto, "title" | "editedContent">>) => Promise<void>;
+  handleUpdateNote: (noteId: string, patch: NoteEditablePatch) => void;
   memoryFolderFilter: string | undefined;
   microphoneBlocked: boolean;
   microphoneStatus: string | undefined;
