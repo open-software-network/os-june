@@ -2043,17 +2043,26 @@ function seedHomeDemoTurns(storedSessionId: string) {
 }
 
 if (import.meta.env.DEV && typeof window !== "undefined") {
-  (window as unknown as Record<string, unknown>).__homeDemo = (enable: boolean = true) => {
-    homeDemoCannedReplies = enable;
-    if (!enable) return "Home demo off; sends go through June API again.";
+  (window as unknown as Record<string, unknown>).__homeDemo = (mode: boolean | "empty" = true) => {
+    if (mode === false) {
+      homeDemoCannedReplies = false;
+      return "Home demo off; sends go through June API again.";
+    }
+    homeDemoCannedReplies = true;
     const profile = "default";
     let storedSessionId = readJuneHomeSessionId(profile);
     if (!storedSessionId) {
       storedSessionId = "home-demo-session";
       writeJuneHomeSessionId(profile, storedSessionId);
     }
+    if (mode === "empty") {
+      // The first-open state: greeting, bloom, and suggestion chips.
+      persistHomeDirectTurns(storedSessionId, []);
+      window.dispatchEvent(new CustomEvent(HOME_DEMO_SEEDED_EVENT));
+      return "Home cleared to the empty view (canned local replies stay on). __homeDemo() re-seeds the populated thread; __homeDemo(false) restores real sends.";
+    }
     seedHomeDemoTurns(storedSessionId);
-    return "Home seeded with a multi-day thread; sends now get canned local replies (no API). Open Home (reload if it was empty). Run __homeDemo(false) to restore real sends.";
+    return 'Home seeded with a multi-day thread; sends now get canned local replies (no API). Open Home (reload if it was empty). __homeDemo("empty") shows the first-open view; __homeDemo(false) restores real sends.';
   };
 }
 

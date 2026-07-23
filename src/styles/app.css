@@ -2330,7 +2330,10 @@ input:focus-visible,
 
   position: relative;
   max-width: 70%;
-  padding-inline: var(--sp-5);
+  /* The mask's right band renders --sp-px wider than the left (the curl's
+   * slice), so the right padding carries the same extra to keep the text
+   * optically centered in the visible shape. */
+  padding-inline: var(--sp-5) calc(var(--sp-5) + var(--sp-px));
   border: 0;
   border-radius: var(--agent-home-bubble-radius);
   background: var(--card);
@@ -19600,10 +19603,18 @@ button.memory-project:hover {
   grid-row: 1;
   grid-column: 2;
   align-self: stretch;
+  /* Follows the home editor's tighter one-line height so the 28px controls
+   * sit perfectly inset (--sp-1 all around) in the 38px pill. */
+  min-height: var(--control-md);
 }
 
 .agent-workspace[data-home="true"] .agent-composer-editor {
+  /* One line sits at exactly --control-md (line box ~20px + 2x --sp-1), so
+   * the 28px circular controls are perfectly inset in the 38px pill: the
+   * same --sp-1 breathes on every side. */
+  min-height: var(--control-md);
   max-height: calc(var(--control-xl) * 4);
+  padding-block: var(--sp-1);
   padding-inline: var(--sp-1);
   font-size: var(--fs-md);
 }
