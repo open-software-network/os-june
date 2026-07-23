@@ -158,6 +158,7 @@ export function prefetchRemainingWorkspacesAfterPaint() {
 
   const runPrefetch = () => {
     if (cancelled) return;
+    // Failed idle imports reset in load() and remain retryable on navigation.
     void Promise.allSettled(deferredWorkspacePreloads.map((preload) => preload()));
   };
 
