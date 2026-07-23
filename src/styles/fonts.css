@@ -22,21 +22,10 @@
   font-display: swap;
 }
 
-/* Light previously covered 300-400, so every "serif 400" in the app really
- * rendered Light. Regular now owns 400 (chat-body serif needs a true text
- * weight); Light stays for any explicit 300 display moment. */
 @font-face {
   font-family: "Martina Plantijn";
   src: url("/martina-plantijn-light.woff2") format("woff2");
-  font-weight: 300;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Martina Plantijn";
-  src: url("/martina-plantijn-regular.woff2") format("woff2");
-  font-weight: 400;
+  font-weight: 300 400;
   font-style: normal;
   font-display: swap;
 }

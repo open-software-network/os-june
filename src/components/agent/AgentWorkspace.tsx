@@ -2175,6 +2175,8 @@ function homeTaskSessionMatchScore(prompt: string, title: string): number {
 // Auto's lowest-cost route consistently selects the quickest eligible private
 // conversational model. The picker still labels this band "Economy", while an
 // explicit user selection continues to win after the one-time Home migration.
+const HOME_NUDGE_PROMPTS = ["Plan my day", "Catch me up", "What needs attention?"];
+
 const HOME_CONVERSATIONAL_COST_QUALITY = 0;
 const HOME_CONVERSATIONAL_DEFAULT_MIGRATION_PREFIX = "june.home.conversationalDefaultMigrated.v2:";
 
@@ -2805,6 +2807,7 @@ export function AgentWorkspace({
   );
   const homeDirectTurnsRef = useRef(homeDirectTurns);
   const [homeOptimisticTurn, setHomeOptimisticTurn] = useState<AgentChatTurn | null>(null);
+  const [homeIdleNudgesVisible, setHomeIdleNudgesVisible] = useState(false);
   const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
   // Read once per mount (lazy initializer): the continuity snapshot the
@@ -5522,6 +5525,9 @@ export function AgentWorkspace({
     if (!parsed) return false;
 
     if (parsed.name === "model") {
+      // Home auto-selects its route, so /model is not a command there — the
+      // text falls through and sends as ordinary conversation.
+      if (homeMode) return false;
       await runModelSlashCommand(parsed.argument, commandText, modelTarget);
       return true;
     }
@@ -11478,6 +11484,24 @@ export function AgentWorkspace({
     });
   }, []);
 
+  // Re-offer the day-start suggestions after an active thread sits idle for a
+  // beat: only with an empty draft and no reply in flight, and gone again the
+  // moment either changes.
+  const homeThreadActive = homeMode && hermesTurns.length + homeDirectTurns.length > 0;
+  useEffect(() => {
+    if (
+      !homeThreadActive ||
+      draft.trim() ||
+      homeOptimisticTurn ||
+      homeDirectPendingCountValue > 0
+    ) {
+      setHomeIdleNudgesVisible(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setHomeIdleNudgesVisible(true), 5000);
+    return () => window.clearTimeout(timer);
+  }, [homeThreadActive, draft, homeOptimisticTurn, homeDirectPendingCountValue]);
+
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep
   // the scroller pinned to the bottom.
@@ -11951,6 +11975,19 @@ export function AgentWorkspace({
             </motion.section>
           ) : null}
         </AnimatePresence>
+        {homeMode && homeIdleNudgesVisible ? (
+          // Quiet re-offer of the day-start suggestions: they drift in after
+          // the thread has been idle a beat and step aside the moment a draft
+          // begins (the unmount is instant on purpose - the eye is on the
+          // text by then).
+          <div className="agent-home-nudges agent-home-nudges-idle" aria-label="Suggestions">
+            {HOME_NUDGE_PROMPTS.map((prompt) => (
+              <button key={prompt} type="button" onClick={() => prefillHomeNudge(prompt)}>
+                {prompt}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div ref={composerBoxRef} className="agent-composer-box">
           {attachments.length ? (
             <div className="agent-composer-attachments">
@@ -12047,8 +12084,11 @@ export function AgentWorkspace({
               );
             }}
             onSubmit={() => void submit()}
+            hiddenBuiltinSlashCommands={homeMode ? ["model"] : undefined}
             onBuiltinSlashCommand={(name) => {
               if (name !== "model") return false;
+              // Home has no model surface: the thread auto-selects its route.
+              if (homeMode) return false;
               // The slash row commits on mousedown. Mounting the palette in
               // that same event lets its window-level outside-click listener
               // observe the now-removed row and close immediately. Queue the
@@ -12067,7 +12107,7 @@ export function AgentWorkspace({
               type="button"
               ref={attachTriggerRef}
               className="agent-composer-attach"
-              aria-label="Add files, notes, or reports"
+              aria-label={homeMode ? "Add files or notes" : "Add files, notes, or reports"}
               title="Add"
               aria-haspopup="menu"
               aria-expanded={attachMenuOpen}
@@ -12104,24 +12144,28 @@ export function AgentWorkspace({
               </button>
             ) : null}
             <div className="agent-composer-actions">
-              <ComposerModelPicker
-                open={composerModelOpen}
-                model={generationModel}
-                detail={
-                  generationModel?.id === AUTO_MODEL_ID
-                    ? autoPillDesignation(activeGenerationCostQuality)
-                    : undefined
-                }
-                effort={composerThinkingLevel}
-                triggerRef={composerModelTriggerRef}
-                onToggleOpen={() => {
-                  if (composerModelOpen) {
-                    setComposerModelOpen(false);
-                    return;
+              {!homeMode ? (
+                // Home auto-selects: sends ride the Auto route at the
+                // conversational band, so the picker stays out of the pill.
+                <ComposerModelPicker
+                  open={composerModelOpen}
+                  model={generationModel}
+                  detail={
+                    generationModel?.id === AUTO_MODEL_ID
+                      ? autoPillDesignation(activeGenerationCostQuality)
+                      : undefined
                   }
-                  openComposerModelPicker();
-                }}
-              />
+                  effort={composerThinkingLevel}
+                  triggerRef={composerModelTriggerRef}
+                  onToggleOpen={() => {
+                    if (composerModelOpen) {
+                      setComposerModelOpen(false);
+                      return;
+                    }
+                    openComposerModelPicker();
+                  }}
+                />
+              ) : null}
               <button
                 type="button"
                 className="agent-composer-mic"
@@ -12225,8 +12269,29 @@ export function AgentWorkspace({
             ref={attachMenuRef}
             className="agent-attach-menu"
             role="menu"
-            aria-label="Add files, notes, or reports"
+            aria-label={homeMode ? "Add files or notes" : "Add files, notes, or reports"}
           >
+            {homeMode ? (
+              // The focused-session escape hatch lives here rather than as a
+              // floating corner control: it is an action you take from the
+              // conversation, and the corner pill read as detached chrome.
+              <>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+                  }}
+                >
+                  <span className="agent-attach-menu-icon">
+                    <IconBubble3 size={16} aria-hidden />
+                  </span>
+                  <span className="agent-attach-menu-label">Start focused session</span>
+                </button>
+                <div className="agent-attach-menu-divider" role="separator" />
+              </>
+            ) : null}
             <button
               type="button"
               role="menuitem"
@@ -12268,22 +12333,28 @@ export function AgentWorkspace({
               </span>
               <span className="agent-attach-menu-label">Reference a note</span>
             </button>
-            <div className="agent-attach-menu-divider" role="separator" />
-            {REPORT_CATEGORIES.map((reportCategory) => (
-              <button
-                key={reportCategory.key}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  openReportDialog(reportCategory.key);
-                }}
-              >
-                <span className="agent-attach-menu-icon" data-category={reportCategory.key}>
-                  <CategoryIcon category={reportCategory.key} size={16} />
-                </span>
-                <span className="agent-attach-menu-label">{reportCategory.label}</span>
-              </button>
-            ))}
+            {/* Reports stay a focused-session affordance; the Home DM keeps
+                its + menu to conversation material. */}
+            {!homeMode ? (
+              <>
+                <div className="agent-attach-menu-divider" role="separator" />
+                {REPORT_CATEGORIES.map((reportCategory) => (
+                  <button
+                    key={reportCategory.key}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      openReportDialog(reportCategory.key);
+                    }}
+                  >
+                    <span className="agent-attach-menu-icon" data-category={reportCategory.key}>
+                      <CategoryIcon category={reportCategory.key} size={16} />
+                    </span>
+                    <span className="agent-attach-menu-label">{reportCategory.label}</span>
+                  </button>
+                ))}
+              </>
+            ) : null}
           </div>
         ) : null}
         {reportDialogOpen ? (
@@ -12301,7 +12372,7 @@ export function AgentWorkspace({
             onSent={handleReportDialogSent}
           />
         ) : null}
-        {composerModelOpen ? (
+        {!homeMode && composerModelOpen ? (
           <ModelPickerPopover
             mode="generation"
             flyout={composerModelFlyout}
@@ -12447,8 +12518,9 @@ export function AgentWorkspace({
   const homeMergedTurns = [homeCheckInTurn, ...homeConversationTurns].sort((left, right) =>
     left.createdAt.localeCompare(right.createdAt),
   );
+  const homeGreetingVisible = homeMergedTurns.at(-1) === homeCheckInTurn;
   const visibleHermesTurns = homeMode
-    ? homeMergedTurns.at(-1) === homeCheckInTurn
+    ? homeGreetingVisible
       ? homeMergedTurns
       : homeMergedTurns.filter((turn) => turn !== homeCheckInTurn)
     : hermesTurns;
@@ -12731,7 +12803,7 @@ export function AgentWorkspace({
       homeDirectTurns.length === 0 &&
       !homeOptimisticTurn ? (
         <div className="agent-home-nudges" aria-label="Suggestions">
-          {["Plan my day", "Catch me up", "What needs attention?"].map((prompt) => (
+          {HOME_NUDGE_PROMPTS.map((prompt) => (
             <button key={prompt} type="button" onClick={() => prefillHomeNudge(prompt)}>
               {prompt}
             </button>
@@ -12919,21 +12991,14 @@ export function AgentWorkspace({
       />
       {homeMode ? (
         /* Home carries no identity chrome — June's presence lives in the daily
-         * greeting and the composer, the way a conversation does. The one
-         * affordance is an escape hatch into a fresh focused session, for work
-         * that shouldn't happen in the relationship thread. The home workspace
-         * instance ignores this event (see handleNewSession); the app shell
-         * listens and navigates to a new focused session. */
-        <div className="agent-home-actions">
-          <button
-            type="button"
-            className="agent-home-new-session"
-            onClick={() => window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT))}
-          >
-            <IconPlusMedium size={14} ariaHidden />
-            New session
-          </button>
-        </div>
+         * greeting and the composer. Once the greeting retires (the thread has
+         * moved past it), her bloom keeps quiet watch from the corner: she is
+         * listening. The focused-session escape hatch lives in the + menu. */
+        !homeGreetingVisible ? (
+          <span className="agent-home-listening" aria-hidden>
+            <JuneBloom size={22} animated />
+          </span>
+        ) : null
       ) : !heroMode && !(!newSessionMode && !selectedHermesSessionId && selectedTask) ? (
         <AgentSessionBar
           origin={origin}

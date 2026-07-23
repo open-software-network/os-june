@@ -728,7 +728,6 @@ describe("AgentWorkspace", () => {
     expect(
       home.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
     ).toBeInTheDocument();
-    expect(home.getByRole("button", { name: "New session" })).toBeInTheDocument();
     expect(home.queryByText("Your personal assistant")).not.toBeInTheDocument();
     expect(home.queryByText("Online")).not.toBeInTheDocument();
     expect(home.queryByText("Here with you")).not.toBeInTheDocument();
@@ -757,7 +756,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Right here.")).toBeInTheDocument();
   });
 
-  it("hands off to a fresh focused session from Home's new-session control", async () => {
+  it("hands off to a fresh focused session from the Home + menu", async () => {
     const user = userEvent.setup();
     const newSessionEvents: Event[] = [];
     const record = (event: Event) => newSessionEvents.push(event);
@@ -765,11 +764,13 @@ describe("AgentWorkspace", () => {
     try {
       render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
-      await user.click(screen.getByRole("button", { name: "New session" }));
+      await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+      await user.click(await screen.findByRole("menuitem", { name: "Start focused session" }));
 
       // The app shell owns the navigation (Home stays mounted); the workspace
-      // only announces the intent.
+      // only announces the intent. Reports stay out of the Home menu.
       expect(newSessionEvents).toHaveLength(1);
+      expect(screen.queryByRole("menuitem", { name: "Bug report" })).toBeNull();
     } finally {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, record);
     }
@@ -984,7 +985,8 @@ describe("AgentWorkspace", () => {
 
     expect(screen.getByText("Are you there?")).toBeInTheDocument();
     expect(screen.getByRole("status")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
+    // Home auto-selects its route; no model control renders.
+    expect(screen.queryByRole("button", { name: /^Model:/ })).toBeNull();
 
     resolveHomeChat?.({ content: "Yes — right here." });
     expect(await screen.findByText("Yes — right here.")).toBeInTheDocument();
@@ -1052,7 +1054,6 @@ describe("AgentWorkspace", () => {
 
     const first = render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
-    expect(await screen.findByRole("button", { name: "Model: Auto" })).toBeInTheDocument();
     await waitFor(() =>
       expect(readSessionModelSelections()[existingSession.id]?.selection).toEqual({
         modelId: "open-software/auto",
@@ -1064,37 +1065,12 @@ describe("AgentWorkspace", () => {
     stageSessionModelSelection(existingSession.id, { modelId: "zai-org-glm-5-2" });
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
-    expect(await screen.findByRole("button", { name: "Model: GLM 5.2" })).toBeInTheDocument();
-  });
-
-  it("honors explicit Home model and effort choices on the lightweight path", async () => {
-    window.localStorage.setItem(
-      `june.home.conversationalDefaultMigrated.v2:${existingSession.id}`,
-      "1",
-    );
-    stageSessionModelSelection(existingSession.id, { modelId: "zai-org-glm-5-2" });
-    const user = userEvent.setup();
-    render(<AgentWorkspace homeMode initialSession={existingSession} />);
-
-    await user.click(await screen.findByRole("button", { name: "Model: GLM 5.2" }));
-    const dialog = await screen.findByRole("dialog", { name: "Choose text model" });
-    await user.click(within(dialog).getByRole("button", { name: "Effort Low" }));
-    const submenu = await screen.findByRole("group", { name: "Thinking level" });
-    await user.click(within(submenu).getByRole("menuitemradio", { name: /^High / }));
-
-    const composer = await screen.findByRole("textbox", { name: "Message June" });
-    await user.type(composer, "Think this through");
-    await user.click(screen.getByRole("button", { name: "Send message" }));
-
-    await waitFor(() =>
-      expect(mocks.juneHomeChat).toHaveBeenCalledWith(
-        [{ role: "user", content: "Think this through" }],
-        {
-          model: "__june_remote_generation__:zai-org-glm-5-2",
-          reasoningEffort: "high",
-        },
-      ),
-    );
+    // The v2 migration marker survives the remount, so the re-staged explicit
+    // choice stays put (no model control renders in Home to assert through).
+    await screen.findByRole("textbox", { name: "Message June" });
+    expect(readSessionModelSelections()[existingSession.id]?.selection).toEqual({
+      modelId: "zai-org-glm-5-2",
+    });
   });
 
   it("reuses activity projection set identities when membership is unchanged", () => {

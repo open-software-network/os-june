@@ -51,6 +51,8 @@ type ComposerEditorProps = {
   /** Returns true when the host handles the selected command as an immediate
    * action instead of inserting its slash text into the draft. */
   onBuiltinSlashCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
+  /** Builtin commands the host surface does not offer in the slash menu. */
+  hiddenBuiltinSlashCommands?: readonly BuiltinComposerSlashCommandName[];
   /** Hands the live editor up to the parent (e.g. so the composer box can read
    * its DOM element for layout). */
   onReady?: (editor: Editor) => void;
@@ -152,7 +154,18 @@ export function buildDoc(
 }
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
-  ({ placeholder, skills, onChange, onSubmit, onBuiltinSlashCommand, onReady }, ref) => {
+  (
+    {
+      placeholder,
+      skills,
+      onChange,
+      onSubmit,
+      onBuiltinSlashCommand,
+      hiddenBuiltinSlashCommands,
+      onReady,
+    },
+    ref,
+  ) => {
     const frameRef = useRef<HTMLDivElement | null>(null);
     const skillsRef = useRef(skills);
     // Latest callbacks behind refs so the editor (created once) never closes
@@ -160,14 +173,16 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     const onChangeRef = useRef(onChange);
     const onSubmitRef = useRef(onSubmit);
     const onBuiltinSlashCommandRef = useRef(onBuiltinSlashCommand);
+    const hiddenBuiltinSlashCommandsRef = useRef(hiddenBuiltinSlashCommands);
     const onReadyRef = useRef(onReady);
     useEffect(() => {
       onChangeRef.current = onChange;
       onSubmitRef.current = onSubmit;
       onBuiltinSlashCommandRef.current = onBuiltinSlashCommand;
+      hiddenBuiltinSlashCommandsRef.current = hiddenBuiltinSlashCommands;
       onReadyRef.current = onReady;
       skillsRef.current = skills;
-    }, [onChange, onSubmit, onBuiltinSlashCommand, onReady, skills]);
+    }, [onChange, onSubmit, onBuiltinSlashCommand, hiddenBuiltinSlashCommands, onReady, skills]);
 
     useEffect(() => {
       document.querySelectorAll(".agent-category-menu-host").forEach((host) => {
@@ -228,6 +243,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
         createCategoryChip({
           skills: () => skillsRef.current,
           onBuiltinCommand: (name) => onBuiltinSlashCommandRef.current?.(name) ?? false,
+          hiddenBuiltinCommands: () => hiddenBuiltinSlashCommandsRef.current,
         }),
         createNoteReference(),
       ],

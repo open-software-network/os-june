@@ -2278,6 +2278,9 @@ input:focus-visible,
 .agent-timeline[data-home="true"] {
   gap: var(--sp-3);
   padding-top: var(--sp-6);
+  /* Match the composer pill's inner inset so the conversation column aligns
+   * with the + on the left and the send on the right, like sessions. */
+  padding-inline: var(--sp-1);
   /* Conversation gravity: a short thread (first open, first day) settles by
    * the composer, where the transcript pins anyway once it grows — instead of
    * floating at the top of a mostly-empty canvas. The timeline stretches to
@@ -2291,15 +2294,6 @@ input:focus-visible,
   margin-block: 0;
 }
 
-/* June's replies speak in the serif (the same face as the greeting), sized up
- * a step: a text serif at UI sizes reads cramped, and the larger measure is
- * what separates her voice from the chrome. Sent messages stay sans. */
-.agent-timeline[data-home="true"] .agent-assistant-turn-body {
-  font-family: var(--font-serif);
-  font-size: var(--fs-2xl);
-  line-height: 1.5;
-}
-
 /* Sent messages: a soft borderless card pill whose bottom-right corner flows
  * into a tail — the chatty cue. The corner itself goes square, and the tail
  * piece below supplies the corner arc, the tail tip, and BOTH smoothed joins
@@ -2309,12 +2303,11 @@ input:focus-visible,
   position: relative;
   max-width: 70%;
   border: 0;
-  /* The tail-side corner is tighter so both of the tail's silhouette
-   * crossings land on STRAIGHT edges, where the piece's near-vertical entry
-   * and flat underside are tangent to the bubble — tangency is what makes the
-   * joins curve smoothly instead of kinking against the corner arc. */
+  /* The tail corner goes square: the tail piece's concave sweep enters
+   * vertically (as drawn), so it continues the squared edge seamlessly and
+   * owns all curvature from there down. */
   border-radius: calc(var(--control-lg) / 2 + var(--sp-1)) calc(var(--control-lg) / 2 + var(--sp-1))
-    var(--r-lg) calc(var(--control-lg) / 2 + var(--sp-1));
+    0 calc(var(--control-lg) / 2 + var(--sp-1));
   background: var(--card);
   /* drop-shadow, not box-shadow: the shadow must wrap the UNION of bubble and
    * tail pseudo as one silhouette. A box-shadow outlines each box separately
@@ -2326,16 +2319,19 @@ input:focus-visible,
   content: "";
   position: absolute;
   z-index: -1;
-  right: calc(-1 * var(--sp-2));
-  bottom: 0;
-  width: 26px;
-  height: 20px;
+  right: -6px;
+  /* A hair above true abutment: the top strip tucks under the bubble fill so
+   * the glue line cannot antialias into a seam. */
+  bottom: -10.5px;
+  width: 14px;
+  height: 11.5px;
   background: var(--card);
-  /* The corner-and-tail piece (Andrew's chat tail.svg, 38x31 viewBox scaled to
-   * 21x17): its flat top edge glues under the bubble's squared corner, the big
-   * convex arc replaces the corner rounding, and the concave sweep fillets the
-   * tail into the right edge. Masked because a background-colored carve would
-   * need a flat canvas color the wash gradient cannot provide. */
+  /* Andrew's chat tail.svg, verbatim, in its drawn orientation: the flat top
+   * edge glues under the bubble's bottom edge, the concave sweep's vertical
+   * entry continues the squared corner's edge, and the big arc carries the
+   * silhouette down into the flick. Nothing is redrawn — scale and placement
+   * only. Masked because a background-colored carve cannot sit on the wash
+   * gradient. */
   -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
   mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
   -webkit-mask-size: 100% 100%;
@@ -2485,7 +2481,8 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .agent-home-greeting-mark {
+  .agent-home-greeting-mark,
+  .agent-home-listening {
     animation: june-bloom-float 4s var(--ease-in-out) infinite;
   }
 
@@ -2587,6 +2584,28 @@ input:focus-visible,
   flex-wrap: wrap;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+
+/* The idle re-offer above the composer. The fixed composer column is
+ * pointer-events: none, so the chips restore their own interactivity. */
+.agent-home-nudges-idle {
+  pointer-events: auto;
+  justify-content: center;
+  margin: 0 0 var(--sp-3);
+  animation: june-home-nudges-in var(--t-slow) var(--ease-out);
+}
+
+@keyframes june-home-nudges-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--sp-1));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-home-nudges-idle {
+    animation: none;
+  }
 }
 
 .agent-home-nudges button {
@@ -8341,6 +8360,15 @@ button.agent-user-attachment:hover {
   left: var(--sp-3);
   bottom: calc(var(--control-lg) + var(--sp-2));
   z-index: 40;
+}
+
+/* Home's pill insets its + tighter, so the menu tracks the trigger's left
+ * edge (and the shorter control height) to stay flush above it. The pill is
+ * centered inside the full-column form, so the anchor derives the pill's left
+ * offset instead of hugging the form edge. */
+.agent-workspace[data-home="true"] .agent-attach-menu {
+  left: max(var(--sp-1), calc((100% - min(var(--chat-max), var(--content-max))) / 2 + var(--sp-1)));
+  bottom: calc(var(--control-md) + var(--sp-2));
 }
 
 /* Issue report dialog extras. Chrome, textarea, field labels, and the
@@ -19465,37 +19493,18 @@ button.memory-project:hover {
   -webkit-backdrop-filter: saturate(140%) blur(14px);
 }
 
-/* Home has no identity header — the canvas is the surface. The lone floating
- * control is the escape hatch into a fresh focused session; it carries its own
- * card surface so content can scroll beneath it. */
-.agent-home-actions {
+/* Home has no identity header — the canvas is the surface. Once the daily
+ * greeting retires, June's bloom keeps quiet watch from the top-left corner
+ * (floating and occasionally winking): she is listening. Decorative only, so
+ * it never intercepts a click. */
+.agent-home-listening {
   position: absolute;
-  top: var(--sp-2);
-  right: 0;
+  top: var(--sp-3);
+  left: 0;
   z-index: 4;
-}
-
-.agent-home-new-session {
   display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-3);
-  border: var(--border-width) solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  background: var(--card);
-  box-shadow: var(--shadow-md);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease-out),
-    color var(--t-fast) var(--ease-out);
-}
-
-.agent-home-new-session:hover {
-  background: var(--brand-tint);
-  color: var(--foreground);
+  color: var(--brand);
+  pointer-events: none;
 }
 
 /* Messages keeps its input as one compact row. Preserve June's model and

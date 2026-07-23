@@ -14,8 +14,6 @@ only where the content is literally code or a technical identifier the user is
 meant to read as such.
 
 **Exceptions.** The existing serif empty-state titles
-(`.empty-state-title`) are canon, not a violation. So is June's voice on the
-Home relationship thread: her replies there (and the daily greeting) render in
-`--font-serif` at `--fs-xl`, deliberately separating the person she is from
-the UI chrome around her. Sent messages and every focused-session surface stay
-sans.
+(`.empty-state-title`) are canon, not a violation, as is the Home thread's
+serif daily greeting (a display moment). Chat bodies everywhere - including
+June's Home replies - stay sans.
