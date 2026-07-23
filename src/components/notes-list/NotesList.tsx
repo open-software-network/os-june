@@ -8,6 +8,7 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -21,6 +22,7 @@ import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { primaryShiftShortcutLabel } from "../../lib/platform";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
+import { filterNotesByQuery } from "./notes-list-helpers";
 
 const NO_NOTES: NoteListItemDto[] = [];
 
@@ -89,13 +91,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
     () => [...notes].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     [notes],
   );
-  const filteredNotes = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return sortedNotes;
-    return sortedNotes.filter((note) => {
-      return `${note.title} ${note.preview}`.toLowerCase().includes(normalized);
-    });
-  }, [sortedNotes, query]);
+  const filteredNotes = useMemo(() => filterNotesByQuery(sortedNotes, query), [sortedNotes, query]);
 
   const selectedNoteIds = useMemo(
     () => sortedNotes.filter((note) => selectedIds.has(note.id)).map((note) => note.id),
@@ -146,14 +142,25 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
     }
   }, [notes]);
 
-  function toggleSelected(noteId: string) {
+  const toggleSelected = useCallback((noteId: string) => {
     setSelectedIds((previous) => {
       const next = new Set(previous);
       if (next.has(noteId)) next.delete(noteId);
       else next.add(noteId);
       return next;
     });
-  }
+  }, []);
+
+  const selectNote = useCallback((noteId: string) => onSelectNote(noteId), [onSelectNote]);
+  const openNoteMenu = useCallback((noteId: string, position: MenuPosition) => {
+    setOpenMenu({ noteId, ...position });
+  }, []);
+  const closeNoteMenu = useCallback(() => setOpenMenu(null), []);
+  const openMoveDialog = useCallback(
+    (noteId: string) => onOpenMoveDialog(noteId),
+    [onOpenMoveDialog],
+  );
+  const deleteNote = useCallback((noteId: string) => onDeleteNote(noteId), [onDeleteNote]);
 
   // A deliberate dismiss — ×, Escape, post-delete — slides the bar out.
   const resetSelection = useCallback(() => {
@@ -256,17 +263,15 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
             <AllNoteRow
               key={note.id}
               note={note}
-              activeRecordingNoteId={activeRecordingNoteId}
-              menu={
-                openMenu?.noteId === note.id ? { right: openMenu.right, top: openMenu.top } : null
-              }
-              onSelect={() => onSelectNote(note.id)}
+              liveRecording={note.id === activeRecordingNoteId}
+              menu={openMenu?.noteId === note.id ? openMenu : null}
+              onSelect={selectNote}
               checked={selectedIds.has(note.id)}
-              onToggleSelected={() => toggleSelected(note.id)}
-              onOpenMenu={(position) => setOpenMenu({ noteId: note.id, ...position })}
-              onCloseMenu={() => setOpenMenu(null)}
-              onOpenMove={() => onOpenMoveDialog(note.id)}
-              onDelete={() => onDeleteNote(note.id)}
+              onToggleSelected={toggleSelected}
+              onOpenMenu={openNoteMenu}
+              onCloseMenu={closeNoteMenu}
+              onOpenMove={openMoveDialog}
+              onDelete={deleteNote}
             />
           ))}
         </ul>
@@ -342,9 +347,9 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
   );
 });
 
-function AllNoteRow({
+const AllNoteRow = memo(function AllNoteRow({
   note,
-  activeRecordingNoteId,
+  liveRecording,
   menu,
   onSelect,
   checked,
@@ -355,18 +360,17 @@ function AllNoteRow({
   onDelete,
 }: {
   note: NoteListItemDto;
-  activeRecordingNoteId?: string;
+  liveRecording: boolean;
   menu: MenuPosition | null;
-  onSelect: () => void;
+  onSelect: (noteId: string) => void;
   checked: boolean;
-  onToggleSelected: () => void;
-  onOpenMenu: (position: MenuPosition) => void;
+  onToggleSelected: (noteId: string) => void;
+  onOpenMenu: (noteId: string, position: MenuPosition) => void;
   onCloseMenu: () => void;
-  onOpenMove: () => void;
-  onDelete: () => void;
+  onOpenMove: (noteId: string) => void;
+  onDelete: (noteId: string) => void;
 }) {
   const title = note.title.trim() || "New note";
-  const liveRecording = note.id === activeRecordingNoteId;
   const effectiveStatus =
     note.processingStatus === "recording" && !liveRecording ? "draft" : note.processingStatus;
   const preview =
@@ -388,13 +392,13 @@ function AllNoteRow({
             type="checkbox"
             checked={checked}
             aria-label={`Select ${title}`}
-            onChange={onToggleSelected}
+            onChange={() => onToggleSelected(note.id)}
           />
           <span className="folder-note-select-box" aria-hidden>
             {checked ? <IconCheckmark2Medium size={10} /> : null}
           </span>
         </label>
-        <button type="button" className="folder-note-main" onClick={onSelect}>
+        <button type="button" className="folder-note-main" onClick={() => onSelect(note.id)}>
           <MeetingRowContent
             title={title}
             preview={preview}
@@ -418,7 +422,7 @@ function AllNoteRow({
                 onCloseMenu();
                 return;
               }
-              onOpenMenu(meetingMenuPosition(event.currentTarget));
+              onOpenMenu(note.id, meetingMenuPosition(event.currentTarget));
             }}
           >
             <IconDotGrid1x3Horizontal size={13} />
@@ -436,7 +440,7 @@ function AllNoteRow({
               role="menuitem"
               onClick={() => {
                 onCloseMenu();
-                onOpenMove();
+                onOpenMove(note.id);
               }}
             >
               <IconMoveFolder size={14} />
@@ -461,7 +465,7 @@ function AllNoteRow({
       <ConfirmDialog
         open={confirmDelete}
         onClose={() => setConfirmDelete(false)}
-        onConfirm={onDelete}
+        onConfirm={() => onDelete(note.id)}
         title={`Delete "${title}"?`}
         description="This cannot be undone."
         confirmLabel="Delete note"
@@ -469,7 +473,7 @@ function AllNoteRow({
       />
     </li>
   );
-}
+});
 
 function MeetingRowContent({
   title,

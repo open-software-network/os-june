@@ -115,6 +115,7 @@ import {
   type DateFormatChangedDetail,
   type DateFormatPreference,
 } from "../../lib/date-format";
+import { buildSidebarSessionLists } from "./sidebar-session-lists";
 
 const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
 
@@ -542,41 +543,22 @@ export function Sidebar({
       `${session.title ?? ""} ${session.preview ?? ""}`.toLowerCase().includes(normalized),
     );
   }, [agentSessions, query]);
-  const pinnedAgentSessionOrder = useMemo(
-    () => buildPinnedSessionOrderIndex(pinnedAgentSessionIds),
-    [pinnedAgentSessionIds],
-  );
-  const pinnedAgentSessions = useMemo(
+  const sidebarSessionLists = useMemo(
     () =>
-      filteredAgentSessions
-        .filter(
-          (session) => pinnedAgentSessionIds.has(session.id) && !completedSessionIds[session.id],
-        )
-        .sort(
-          (a, b) =>
-            pinnedSessionOrder(pinnedAgentSessionOrder, a.id) -
-            pinnedSessionOrder(pinnedAgentSessionOrder, b.id),
-        ),
-    [filteredAgentSessions, pinnedAgentSessionIds, pinnedAgentSessionOrder, completedSessionIds],
-  );
-  const visibleAgentSessions = useMemo(
-    () =>
-      filteredAgentSessions
-        .filter(
-          (session) => !pinnedAgentSessionIds.has(session.id) && !completedSessionIds[session.id],
-        )
-        .slice(0, AGENT_SIDEBAR_SESSION_LIMIT),
+      buildSidebarSessionLists(
+        filteredAgentSessions,
+        pinnedAgentSessionIds,
+        completedSessionIds,
+        AGENT_SIDEBAR_SESSION_LIMIT,
+      ),
     [filteredAgentSessions, pinnedAgentSessionIds, completedSessionIds],
   );
-  const completedAgentSessions = useMemo(
-    () =>
-      filteredAgentSessions
-        .filter((session) => Boolean(completedSessionIds[session.id]))
-        .sort((a, b) =>
-          (completedSessionIds[b.id] ?? "").localeCompare(completedSessionIds[a.id] ?? ""),
-        ),
-    [filteredAgentSessions, completedSessionIds],
-  );
+  const pinnedAgentSessions = sidebarSessionLists.pinned;
+  const visibleAgentSessions = sidebarSessionLists.visible;
+  const completedAgentSessions = sidebarSessionLists.completed;
+  const hasMorePinnedAgentSessions = sidebarSessionLists.pinnedTotal > pinnedAgentSessions.length;
+  const hasMoreCompletedAgentSessions =
+    sidebarSessionLists.completedTotal > completedAgentSessions.length;
 
   async function loadReferralSummary() {
     if (!account.signedIn || account.localDev) return;
@@ -1306,8 +1288,19 @@ export function Sidebar({
               className="sidebar-section sidebar-pinned-section"
               aria-label="Pinned agent sessions"
             >
-              <div className="section-title">
+              <div
+                className={`section-title${hasMorePinnedAgentSessions ? " section-title-with-action" : ""}`}
+              >
                 <span className="section-title-label">Pinned</span>
+                {hasMorePinnedAgentSessions ? (
+                  <button
+                    type="button"
+                    className="section-view-all"
+                    onClick={() => onChangeView("agent-sessions")}
+                  >
+                    View all
+                  </button>
+                ) : null}
               </div>
               <div className="notes-nav sidebar-pinned-list">
                 {pinnedAgentSessions.map((session) => (
@@ -1409,7 +1402,18 @@ export function Sidebar({
                 >
                   Completed
                 </button>
-                <span className="folders-count">{completedAgentSessions.length}</span>
+                <span className="sidebar-section-title-meta">
+                  <span className="folders-count">{sidebarSessionLists.completedTotal}</span>
+                  {hasMoreCompletedAgentSessions ? (
+                    <button
+                      type="button"
+                      className="section-view-all"
+                      onClick={() => onChangeView("agent-sessions")}
+                    >
+                      View all
+                    </button>
+                  ) : null}
+                </span>
               </div>
               {completedCollapsed ? null : (
                 <div className="notes-nav sidebar-completed-list">
@@ -2214,20 +2218,6 @@ function writePinnedAgentSessionIds(ids: ReadonlySet<string>) {
   } catch {
     // Private browsing / locked-down WebViews may reject storage writes.
   }
-}
-
-function buildPinnedSessionOrderIndex(ids: ReadonlySet<string>) {
-  const indexById = new Map<string, number>();
-  let index = 0;
-  for (const id of ids) {
-    indexById.set(id, index);
-    index += 1;
-  }
-  return indexById;
-}
-
-function pinnedSessionOrder(indexById: ReadonlyMap<string, number>, sessionId: string) {
-  return indexById.get(sessionId) ?? Number.MAX_SAFE_INTEGER;
 }
 
 function AgentSessionRow({
