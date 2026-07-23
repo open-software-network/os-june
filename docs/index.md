@@ -46,6 +46,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0034](adr/0034-obsidian-vault-discovery-mcp.md) - Obsidian vault discovery uses a June-owned MCP server, not an ambient environment variable
 - [adr/0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
 - [adr/0036](adr/0036-github-connector-app-user-tokens.md) - GitHub connector uses GitHub App user access tokens only (no app private key on device or backend), local-mode custody per ADR-0016, June-side read/write gating, approval-only writes
+- [adr/0037](adr/0037-versioned-local-sqlite-migrations.md) - June's local SQLite schema uses an append-only release-ordered catalog, introspection-based legacy stamping, and one transaction for all pending migrations
 
 ## Enforceable rules (spec/)
 
