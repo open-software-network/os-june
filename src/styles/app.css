@@ -2642,14 +2642,15 @@ input:focus-visible,
 .agent-home-nudges button {
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  /* Accent-family chips (they are June's suggestions): the themed line at
-   * rest, and a hover tint STRONGER than the canvas wash so the state change
-   * reads clearly on every preset - the weak tint drowned in the wash, and a
-   * neutral grey step read rough against it. */
-  border: var(--border-width) solid var(--brand-line);
+  /* The chatbox's surface restraint: no drawn border - a 60%-alpha hairline
+   * ring composed into the shadow stack (the composer-box recipe), so the
+   * edge blends with the elevation instead of striking a line. */
+  border: var(--border-width) solid transparent;
   border-radius: var(--r-pill);
   background: var(--card);
-  box-shadow: var(--shadow-sm);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
   color: var(--foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
@@ -2659,9 +2660,9 @@ input:focus-visible,
 }
 
 .agent-home-nudges button:hover {
-  /* Halfway between the tint tokens: --brand-tint drowns in the wash and
-   * --brand-tint-strong lands harsh, so the hover sits between them. */
-  background: color-mix(in oklch, var(--brand-tint) 50%, var(--brand-tint-strong));
+  /* The standard light accent tint: over the chip's opaque card base it
+   * reads as a very light themed press. */
+  background: var(--brand-tint);
 }
 
 .agent-home-task-list {
