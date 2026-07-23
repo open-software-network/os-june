@@ -89,7 +89,7 @@ export function createRecordingTelemetryStore(
             sources: nextStatus.sources,
           }
         : undefined;
-      elapsed = nextElapsed;
+      if (elapsedChanged) elapsed = nextElapsed;
 
       notify(statusListeners);
       notify(levelListeners);

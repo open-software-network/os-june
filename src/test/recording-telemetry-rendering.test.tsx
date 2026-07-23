@@ -181,4 +181,18 @@ describe("recording telemetry render isolation", () => {
     );
     expect(appRender).toHaveBeenCalledTimes(3);
   });
+
+  it("keeps the elapsed snapshot identity stable within a whole-second boundary", () => {
+    const initialStatus = status();
+    const store = createRecordingTelemetryStore(initialStatus);
+    const initialElapsed = store.getElapsedSnapshot();
+
+    store.setStatus({
+      ...initialStatus,
+      elapsedMs: 900,
+      level: { peak: 0.8, rms: 0.5, recentPeaks: [0.7, 0.8] },
+    });
+
+    expect(store.getElapsedSnapshot()).toBe(initialElapsed);
+  });
 });
