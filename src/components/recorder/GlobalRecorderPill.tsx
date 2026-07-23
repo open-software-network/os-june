@@ -36,7 +36,7 @@ export function GlobalRecorderPill({ status, title, onOpen }: GlobalRecorderPill
       aria-label={`Open recording: ${title}`}
       title="Open recording"
     >
-      <Waveform level={meterLevel} active={recording} />
+      <Waveform level={meterLevel} sessionId={status.sessionId} active={recording} />
     </button>
   );
 }

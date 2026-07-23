@@ -2,6 +2,7 @@ import { IconPause } from "central-icons-filled/IconPause";
 import { IconPlay } from "central-icons-filled/IconPlay";
 import { IconStop } from "central-icons-filled/IconStop";
 import type { RecordingStatusDto } from "../../lib/tauri";
+import { useRecordingElapsedMs } from "../../lib/recording-telemetry-store";
 import { combineSourceAudioLevels, Waveform } from "./Waveform";
 
 type RecorderBarProps = {
@@ -14,6 +15,7 @@ type RecorderBarProps = {
 export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarProps) {
   const paused = status.state === "paused";
   const controlsEnabled = status.state === "recording" || status.state === "paused";
+  const elapsedMs = useRecordingElapsedMs(status.sessionId, status.elapsedMs);
   // status.level is mic-only; status.sources carries mic+system when available.
   const meterLevel =
     status.sources && status.sources.length > 0
@@ -40,8 +42,12 @@ export function RecorderBar({ status, onPause, onResume, onDone }: RecorderBarPr
         {paused ? <IconPlay size={14} /> : <IconPause size={14} />}
       </button>
       <div className="recorder-meter">
-        <span className="elapsed">{formatElapsed(status.elapsedMs)}</span>
-        <Waveform level={meterLevel} active={status.state === "recording"} />
+        <span className="elapsed">{formatElapsed(elapsedMs)}</span>
+        <Waveform
+          level={meterLevel}
+          sessionId={status.sessionId}
+          active={status.state === "recording"}
+        />
       </div>
       <button
         type="button"

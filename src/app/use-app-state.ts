@@ -11,6 +11,10 @@ import type { AgentSessionStatusDetail } from "../lib/agent-events";
 import { useActiveHermesProfileName } from "../lib/active-hermes-profile";
 import type { SessionProfileMap } from "../lib/session-profile-filter";
 import type { RecordingInactivityTracker } from "../lib/recording-inactivity";
+import {
+  createRecordingTelemetryStore,
+  type RecordingTelemetryStore,
+} from "../lib/recording-telemetry-store";
 import { getAgentHudEnabled } from "../lib/agent-hud-settings";
 import type { NoteDto, HermesSessionInfo } from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
@@ -235,6 +239,11 @@ export function useAppState() {
   // setRecordingNote so they can't drift.
   const [recordingNoteId, setRecordingNoteIdState] = useState<string | undefined>(undefined);
   const recordingStatusRef = useRef(state.recordingStatus);
+  const recordingTelemetryStoreRef = useRef<RecordingTelemetryStore | null>(null);
+  if (!recordingTelemetryStoreRef.current) {
+    recordingTelemetryStoreRef.current = createRecordingTelemetryStore(state.recordingStatus);
+  }
+  const recordingTelemetryStore = recordingTelemetryStoreRef.current;
   const dictationWorkflowActiveRef = useRef(false);
   const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
@@ -244,7 +253,8 @@ export function useAppState() {
   const [liveTranscriptEvents, setLiveTranscriptEvents] = useState<LiveTranscriptEventDto[]>([]);
   useEffect(() => {
     recordingStatusRef.current = state.recordingStatus;
-  }, [state.recordingStatus]);
+    recordingTelemetryStore.setStatus(state.recordingStatus);
+  }, [recordingTelemetryStore, state.recordingStatus]);
   const setRecordingNote = useCallback((noteId: string | undefined) => {
     recordingNoteIdRef.current = noteId;
     setRecordingNoteIdState(noteId);
@@ -370,6 +380,7 @@ export function useAppState() {
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,
+    recordingTelemetryStore,
     recordingStatusRef,
     dictationWorkflowActiveRef,
     recordingInactivityTrackerRef,

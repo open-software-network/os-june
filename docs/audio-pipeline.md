@@ -49,7 +49,11 @@ While capture is active, the native meeting-HUD supervisor samples capture at
 10 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
 payload carries the recording session id, state, elapsed time, audio levels,
 and live warnings; both the main renderer and meeting HUD subscribe to that
-single stream. Stable metadata still comes from the recording commands, and
+single stream. In the main renderer, the latest sample stays in a narrow
+external store: waveform subscribers receive level samples at 10 Hz, elapsed
+time subscribers publish only on whole-second boundaries, and the root App
+reducer receives only lifecycle, Source-health, and actionable-warning changes.
+Stable metadata still comes from the recording commands, and
 `get_recording_status` remains available as a read-only compatibility command.
 Recovery durability is independent of telemetry: a recording-scoped worker
 requests a ring watermark flush and checkpoints elapsed time every 500 ms after
