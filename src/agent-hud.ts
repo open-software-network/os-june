@@ -1,4 +1,4 @@
-import { listen } from "@tauri-apps/api/event";
+import { listenUntilUnload } from "./lib/listen-until-unload";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCircleQuestionmark } from "central-icons/IconCircleQuestionmark";
@@ -1107,27 +1107,27 @@ window.addEventListener("storage", (event) => {
   }
 });
 
-void listen<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, (event) =>
+listenUntilUnload<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, (event) =>
   applySessionsChanged(event.payload),
-).catch(() => {});
+);
 
-void listen<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, (event) =>
+listenUntilUnload<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, (event) =>
   applyStatus(event.payload),
-).catch(() => {});
+);
 
-void listen<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, (event) =>
+listenUntilUnload<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, (event) =>
   applyRunSettled(event.payload),
-).catch(() => {});
+);
 
-void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
+listenUntilUnload<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
   applyVisibility(event.payload.enabled),
-).catch(() => {});
+);
 
 // The native panel intercepts the right-/ctrl-click and asks us to open the
 // menu. The click never reaches the DOM, so there is no competing
 // pointerdown to close it again (the window pointerdown handler only fires
 // for clicks the webview actually receives).
-void listen(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu()).catch(() => {});
+listenUntilUnload(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu());
 
 setIcon(pillChevron, IconChevronDownSmall, 14);
 render();

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listenUntilUnload } from "./lib/listen-until-unload";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
@@ -1125,25 +1125,25 @@ meetingDismissButton?.addEventListener("click", (event) => {
   void hideHud();
 });
 
-void listen("dictation-event", async (event) => {
+listenUntilUnload("dictation-event", async (event) => {
   await handleDictationEventPayload(event.payload);
-}).catch(() => {});
+});
 
-void listen("meeting-detection-event", async (event) => {
+listenUntilUnload("meeting-detection-event", async (event) => {
   await handleMeetingDetectionEventPayload(event.payload);
-}).catch(() => {});
+});
 
-void listen<boolean>("hud-stop-hover", (event) => {
+listenUntilUnload<boolean>("hud-stop-hover", (event) => {
   setStopHover(Boolean(event.payload));
-}).catch(() => {});
+});
 
-void listen<boolean>("hud-dismiss-hover", (event) => {
+listenUntilUnload<boolean>("hud-dismiss-hover", (event) => {
   setDismissHover(Boolean(event.payload));
-}).catch(() => {});
+});
 
-void listen<boolean>("hud-record-hover", (event) => {
+listenUntilUnload<boolean>("hud-record-hover", (event) => {
   setRecordHover(Boolean(event.payload));
-}).catch(() => {});
+});
 
 // Cold-start companion to the await in syncWindowToPill: the Diatype load
 // may only BEGIN once the prompt first paints text, after the measurement.
