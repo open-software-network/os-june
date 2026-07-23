@@ -1,6 +1,8 @@
 import type { NoteEditablePatch, NotePatchDto } from "../lib/tauri";
 
 export const NOTE_SAVE_DEBOUNCE_MS = 500;
+export const NOTE_SAVE_MAX_FLUSH_PASSES = 8;
+export const NOTE_SAVE_MAX_RETRIES = 2;
 
 type NoteSaveControllerOptions = {
   persist: (noteId: string, patch: NoteEditablePatch) => Promise<NotePatchDto>;
@@ -20,6 +22,7 @@ export class NoteSaveController {
   private readonly pending = new Map<string, NoteEditablePatch>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly inFlight = new Map<string, Promise<boolean>>();
+  private readonly retryAttempts = new Map<string, number>();
   private readonly debounceMs: number;
 
   constructor(private readonly options: NoteSaveControllerOptions) {
@@ -28,6 +31,7 @@ export class NoteSaveController {
 
   queue(noteId: string, patch: NoteEditablePatch) {
     if (!hasPatchFields(patch)) return;
+    this.retryAttempts.delete(noteId);
     this.pending.set(noteId, {
       ...this.pending.get(noteId),
       ...patch,
@@ -53,11 +57,26 @@ export class NoteSaveController {
   }
 
   async flushAll() {
-    for (const noteId of this.timers.keys()) {
-      this.clearTimer(noteId);
+    for (let pass = 0; pass < NOTE_SAVE_MAX_FLUSH_PASSES; pass += 1) {
+      for (const noteId of [...this.timers.keys()]) {
+        this.clearTimer(noteId);
+      }
+      const noteIds = new Set([...this.pending.keys(), ...this.inFlight.keys()]);
+      if (noteIds.size > 0) {
+        await Promise.all([...noteIds].map((noteId) => this.drain(noteId)));
+      }
+
+      // Let promise continuations that were already queued publish any final
+      // editor patch before deciding the queue is stable-empty.
+      await Promise.resolve();
+      if (!this.hasPending()) return;
     }
-    const noteIds = new Set([...this.pending.keys(), ...this.inFlight.keys()]);
-    await Promise.all([...noteIds].map((noteId) => this.drain(noteId)));
+
+    const error = new Error(
+      `Could not drain pending note saves after ${NOTE_SAVE_MAX_FLUSH_PASSES} passes`,
+    );
+    this.options.onError?.(error, "all");
+    throw error;
   }
 
   hasPending(noteId?: string) {
@@ -70,6 +89,7 @@ export class NoteSaveController {
   discard(noteId: string) {
     this.clearTimer(noteId);
     this.pending.delete(noteId);
+    this.retryAttempts.delete(noteId);
   }
 
   private async drain(noteId: string): Promise<void> {
@@ -104,6 +124,7 @@ export class NoteSaveController {
         ...persisted,
         ...this.pending.get(noteId),
       });
+      this.retryAttempts.delete(noteId);
       return true;
     } catch (error) {
       // Keep the failed fields available for the next edit/flush. Newer values
@@ -113,6 +134,7 @@ export class NoteSaveController {
         ...this.pending.get(noteId),
       });
       this.options.onError?.(error, noteId);
+      this.scheduleRetry(noteId);
       return false;
     }
   }
@@ -123,6 +145,20 @@ export class NoteSaveController {
       clearTimeout(timer);
       this.timers.delete(noteId);
     }
+  }
+
+  private scheduleRetry(noteId: string) {
+    const attempts = (this.retryAttempts.get(noteId) ?? 0) + 1;
+    this.retryAttempts.set(noteId, attempts);
+    if (attempts > NOTE_SAVE_MAX_RETRIES || this.timers.has(noteId)) return;
+
+    this.timers.set(
+      noteId,
+      setTimeout(() => {
+        this.timers.delete(noteId);
+        void this.drain(noteId);
+      }, this.debounceMs),
+    );
   }
 }
 

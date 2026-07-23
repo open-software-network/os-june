@@ -10,14 +10,15 @@ use tauri::Manager;
 /// is slow or stuck. The supervisor is separate from the cleanup worker, so a
 /// blocking syscall in one leaf cannot postpone the final exit/restart.
 ///
-/// Pending renderer note saves get a bounded first step (2 s). The dictation
-/// (1.25 s) and Computer use (2.5 s) branches then run concurrently with
+/// Pending renderer note saves get a bounded first step (10 s), long enough for
+/// an in-flight SQLite patch to return before the renderer acknowledges.
+/// Dictation (1.25 s) and Computer use (2.5 s) then run concurrently with
 /// Hermes, so neither can consume Hermes' ordered budget: start quiescence
 /// (2 s) + Gateway unload (6 s) + process/browser/proxy finalization (2 s).
-const SHUTDOWN_AGGREGATE_DEADLINE_MS: u64 = 12_000;
+const SHUTDOWN_AGGREGATE_DEADLINE_MS: u64 = 20_000;
 const SHUTDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_millis(SHUTDOWN_AGGREGATE_DEADLINE_MS);
 const HERMES_FINALIZATION_BUDGET_MS: u64 = 2_000;
-const EXIT_FALLBACK_DEADLINE: Duration = Duration::from_secs(3);
+const EXIT_FALLBACK_DEADLINE: Duration = SHUTDOWN_AGGREGATE_DEADLINE;
 const MUTEX_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -550,6 +551,10 @@ mod tests {
                 HERMES_FINALIZATION_BUDGET_MS,
             ],
         ));
+        assert!(
+            EXIT_FALLBACK_DEADLINE
+                >= Duration::from_millis(crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS)
+        );
     }
 
     #[test]

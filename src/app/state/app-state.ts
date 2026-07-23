@@ -196,7 +196,7 @@ function applyNotePatch(
 
 function mergeDefined<T extends object>(current: T, patch: Partial<T>): T {
   const defined = Object.fromEntries(
-    Object.entries(patch).filter(([, value]) => value !== undefined),
+    Object.entries(patch).filter(([, value]) => value !== undefined && value !== null),
   ) as Partial<T>;
   return { ...current, ...defined };
 }

@@ -1588,6 +1588,7 @@ export function App() {
     agentSessions,
     completedSessions,
     dispatch,
+    noteSaveController,
     pendingSessionProjectRef,
     sessionCompletionTouchedRef,
     sessionCompletionWritesRef,

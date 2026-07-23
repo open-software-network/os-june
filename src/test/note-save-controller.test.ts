@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NOTE_SAVE_DEBOUNCE_MS, NoteSaveController } from "../app/note-save-controller";
+import {
+  NOTE_SAVE_DEBOUNCE_MS,
+  NOTE_SAVE_MAX_RETRIES,
+  NoteSaveController,
+} from "../app/note-save-controller";
 import type { NoteEditablePatch, NotePatchDto } from "../lib/tauri";
 
 function persistedPatch(noteId: string, patch: NoteEditablePatch): NotePatchDto {
@@ -74,6 +78,65 @@ describe("NoteSaveController", () => {
       editedContent: "Second note body",
     });
     expect(controller.hasPending()).toBe(false);
+  });
+
+  it("drains a patch queued after the shutdown snapshot", async () => {
+    let finishFirst: ((patch: NotePatchDto) => void) | undefined;
+    const persist = vi
+      .fn<(noteId: string, patch: NoteEditablePatch) => Promise<NotePatchDto>>()
+      .mockImplementationOnce(
+        (_noteId, patch) =>
+          new Promise((resolve) => {
+            finishFirst = resolve;
+            expect(patch).toEqual({ title: "First note" });
+          }),
+      )
+      .mockImplementation(async (noteId, patch) => persistedPatch(noteId, patch));
+    const controller = new NoteSaveController({ persist });
+
+    controller.queue("note-1", { title: "First note" });
+    const flushing = controller.flushAll();
+    controller.queue("note-2", { editedContent: "Late blur" });
+    finishFirst?.(persistedPatch("note-1", { title: "First note" }));
+    await flushing;
+
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenNthCalledWith(2, "note-2", {
+      editedContent: "Late blur",
+    });
+    expect(controller.hasPending()).toBe(false);
+  });
+
+  it("retries a failed save a bounded number of times", async () => {
+    vi.useFakeTimers();
+    const persist = vi.fn().mockRejectedValue(new Error("database busy"));
+    const controller = new NoteSaveController({ persist });
+
+    controller.queue("note-1", { title: "Retry me" });
+    await vi.advanceTimersByTimeAsync(NOTE_SAVE_DEBOUNCE_MS * (NOTE_SAVE_MAX_RETRIES + 1));
+
+    expect(persist).toHaveBeenCalledTimes(NOTE_SAVE_MAX_RETRIES + 1);
+    expect(controller.hasPending("note-1")).toBe(true);
+  });
+
+  it("persists a debounced edit before flush resolves and reads the row back", async () => {
+    const rows = new Map<string, NoteEditablePatch>([
+      ["note-1", { title: "Draft", editedContent: "Old body" }],
+    ]);
+    const controller = new NoteSaveController({
+      persist: async (noteId, patch) => {
+        rows.set(noteId, { ...rows.get(noteId), ...patch });
+        return persistedPatch(noteId, rows.get(noteId) ?? {});
+      },
+    });
+
+    controller.queue("note-1", { title: "Final title", editedContent: "Final body" });
+    await controller.flushAll();
+
+    expect(rows.get("note-1")).toEqual({
+      title: "Final title",
+      editedContent: "Final body",
+    });
   });
 
   it("serializes edits queued while a save is in flight", async () => {

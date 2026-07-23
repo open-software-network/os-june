@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 pub(crate) const NOTE_SAVE_FLUSH_REQUESTED_EVENT: &str = "june://flush-pending-note-saves";
-pub(crate) const NOTE_SAVE_FLUSH_TIMEOUT_MS: u64 = 2_000;
+pub(crate) const NOTE_SAVE_FLUSH_TIMEOUT_MS: u64 = 10_000;
 const NOTE_SAVE_FLUSH_TIMEOUT: Duration = Duration::from_millis(NOTE_SAVE_FLUSH_TIMEOUT_MS);
 
 #[derive(Default)]
@@ -36,7 +36,9 @@ pub(crate) fn complete_note_save_flush(
 }
 
 /// Gives the renderer a bounded opportunity to drain its debounced note-row
-/// writes while the webview and command runtime are still alive.
+/// writes while the webview and command runtime are still alive. The shutdown
+/// supervisor includes this full budget so a patch already executing in SQLite
+/// can finish before native teardown advances.
 pub(crate) async fn request(app: &tauri::AppHandle) {
     let request_id = Uuid::new_v4().to_string();
     let (sender, receiver) = oneshot::channel();

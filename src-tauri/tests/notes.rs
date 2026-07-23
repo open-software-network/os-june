@@ -3,6 +3,7 @@ use os_june_lib::{
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };
 use sqlx::query::query;
+use sqlx::row::Row;
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -61,6 +62,42 @@ async fn update_note_returns_its_patch_without_hydrating_related_note_data() {
     assert_eq!(updated.title, "Single statement");
     assert_eq!(updated.preview, "Returned patch");
     assert_eq!(updated.edited_content.as_deref(), Some("Returned patch"));
+    assert_eq!(updated.active_tab.as_deref(), Some("notes"));
+    let persisted = query("SELECT title, edited_content, active_tab FROM notes WHERE id = ?")
+        .bind(&note.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("persisted note row");
+    assert_eq!(persisted.get::<String, _>("title"), "Single statement");
+    assert_eq!(
+        persisted
+            .get::<Option<String>, _>("edited_content")
+            .as_deref(),
+        Some("Returned patch")
+    );
+    assert_eq!(
+        persisted.get::<Option<String>, _>("active_tab").as_deref(),
+        Some("notes")
+    );
+}
+
+#[tokio::test]
+async fn update_note_returns_null_content_and_normalizes_a_null_active_tab() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    query("UPDATE notes SET edited_content = NULL, active_tab = NULL WHERE id = ?")
+        .bind(&note.id)
+        .execute(&repos.pool)
+        .await
+        .expect("nullable note row");
+
+    let updated = repos
+        .update_note(&note.id, Some("Title only".to_string()), None, None)
+        .await
+        .expect("patch nullable row");
+
+    assert_eq!(updated.title, "Title only");
+    assert_eq!(updated.edited_content, None);
     assert_eq!(updated.active_tab.as_deref(), Some("notes"));
 }
 
