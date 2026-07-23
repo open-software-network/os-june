@@ -11484,23 +11484,28 @@ export function AgentWorkspace({
     });
   }, []);
 
-  // Re-offer the day-start suggestions after an active thread sits idle for a
-  // beat: only with an empty draft and no reply in flight, and gone again the
-  // moment either changes.
+  // Re-offer the day-start suggestions when a draft is ABANDONED: someone
+  // typed, thought better of it, and cleared the box back to empty — that is
+  // the moment a prompt helps. No timer. Sending consumes the draft (pending
+  // reply state resets the flag), so the chips never chase a sent message.
   const homeThreadActive = homeMode && hermesTurns.length + homeDirectTurns.length > 0;
+  const homeDraftAbandonableRef = useRef(false);
   useEffect(() => {
-    if (
-      !homeThreadActive ||
-      draft.trim() ||
-      homeOptimisticTurn ||
-      homeDirectPendingCountValue > 0
-    ) {
+    if (!homeMode) return;
+    if (draft.trim()) {
+      homeDraftAbandonableRef.current = true;
       setHomeIdleNudgesVisible(false);
       return;
     }
-    const timer = window.setTimeout(() => setHomeIdleNudgesVisible(true), 5000);
-    return () => window.clearTimeout(timer);
-  }, [homeThreadActive, draft, homeOptimisticTurn, homeDirectPendingCountValue]);
+    if (homeOptimisticTurn || homeDirectPendingCountValue > 0) {
+      homeDraftAbandonableRef.current = false;
+      setHomeIdleNudgesVisible(false);
+      return;
+    }
+    if (homeThreadActive && homeDraftAbandonableRef.current) {
+      setHomeIdleNudgesVisible(true);
+    }
+  }, [homeMode, homeThreadActive, draft, homeOptimisticTurn, homeDirectPendingCountValue]);
 
   // Aggregate size of the rendered conversation so streaming deltas — which
   // grow text inside an existing turn without changing any count — still keep

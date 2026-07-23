@@ -2598,7 +2598,7 @@ input:focus-visible,
 @keyframes june-home-nudges-in {
   from {
     opacity: 0;
-    transform: translateY(var(--sp-1));
+    transform: translateY(var(--sp-3));
   }
 }
 
@@ -2611,11 +2611,13 @@ input:focus-visible,
 .agent-home-nudges button {
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  border: var(--border-width) solid var(--border-subtle);
+  /* The hero chips' accent-family line (follows the user's preset), so the
+   * suggestions read themed at rest like new-session's do. */
+  border: var(--border-width) solid var(--brand-line);
   border-radius: var(--r-pill);
   background: var(--card);
   box-shadow: var(--shadow-sm);
-  color: var(--muted-foreground);
+  color: var(--foreground);
   font-size: var(--fs-sm);
   cursor: pointer;
   transition:
@@ -19499,8 +19501,10 @@ button.memory-project:hover {
  * it never intercepts a click. */
 .agent-home-listening {
   position: absolute;
-  top: var(--sp-3);
-  left: 0;
+  /* Equal inset from the CARD's corner: the workspace's left edge sits one
+   * --sp-8 gutter inside the card, so the bloom reaches back across it. */
+  top: var(--sp-4);
+  left: calc(var(--sp-4) - var(--sp-8));
   z-index: 4;
   display: inline-flex;
   color: var(--brand);

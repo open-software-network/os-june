@@ -1256,6 +1256,12 @@ export function Sidebar({
               </span>
               <span className="sidebar-nav-label">Home</span>
             </button>
+            <button type="button" className="sidebar-nav-item" onClick={handleNewAgentSession}>
+              <span className="sidebar-nav-icon">
+                <IconPlusMedium size={15} />
+              </span>
+              <span className="sidebar-nav-label">New session</span>
+            </button>
             <button
               type="button"
               className="sidebar-nav-item"
