@@ -160,92 +160,108 @@ export function applyAgentRuntimeEvent(
 }
 
 export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
-  return [...items].sort(compareAgentItems).map((item): AgentChatTurn => {
-    const base = {
-      id: item.id,
-      createdAt: item.createdAt,
-      status: itemIsRunning(item) ? ("running" as const) : ("complete" as const),
-    };
-    switch (item.kind) {
-      case "message":
-        return {
-          ...base,
-          role: item.role,
-          parts: [
-            ...((item.attachments ?? []).map(
-              (artifact): AgentChatPart => ({
-                type: "attachment",
-                name: artifact.name,
-                path: artifact.path,
-                kind: artifact.mimeType?.startsWith("image/") ? "image" : "file",
-              }),
-            ) ?? []),
-            { type: "text", text: item.text, status: base.status },
-          ],
-        };
-      case "reasoning":
-        return {
-          ...base,
-          role: "assistant",
-          parts: [{ type: "reasoning", text: item.text, status: base.status }],
-        };
-      case "context_summary":
-        return {
-          ...base,
-          role: "system",
-          parts: [
-            {
-              type: "context",
-              text: item.text,
-              preview: item.text.slice(0, 160),
-              status: "complete",
-            },
-          ],
-        };
-      case "tool_call":
-        return {
-          ...base,
-          role: "assistant",
-          parts: [
-            {
-              type: "tool",
-              id: item.callId,
-              name: item.name,
-              text: readableValue(item.arguments),
-              status: item.status,
-            },
-          ],
-        };
-      case "tool_result":
-        return {
-          ...base,
-          role: "assistant",
-          parts: [
-            {
-              type: "tool",
-              id: item.callId,
-              name: item.name,
-              text: readableValue(item.output),
-              status: item.isError ? "failed" : "complete",
-            },
-          ],
-        };
-      case "interruption":
-        return {
-          ...base,
-          role: "assistant",
-          parts: [interruptionToPart(item.interruption)],
-        };
-      case "error":
-        return {
-          ...base,
-          role: "system",
-          parts: [{ type: "text", text: item.message, status: "complete" }],
-        };
-      default:
-        return assertNever(item);
-    }
-  });
+  const orderedItems = [...items].sort(compareAgentItems);
+  const settledToolCalls = new Set(
+    orderedItems
+      .filter((item) => item.kind === "tool_result")
+      .map((item) => toolCallKey(item.runId, item.callId)),
+  );
+
+  return orderedItems
+    .filter(
+      (item) =>
+        item.kind !== "tool_call" || !settledToolCalls.has(toolCallKey(item.runId, item.callId)),
+    )
+    .map((item): AgentChatTurn => {
+      const base = {
+        id: item.id,
+        createdAt: item.createdAt,
+        status: itemIsRunning(item) ? ("running" as const) : ("complete" as const),
+      };
+      switch (item.kind) {
+        case "message":
+          return {
+            ...base,
+            role: item.role,
+            parts: [
+              ...((item.attachments ?? []).map(
+                (artifact): AgentChatPart => ({
+                  type: "attachment",
+                  name: artifact.name,
+                  path: artifact.path,
+                  kind: artifact.mimeType?.startsWith("image/") ? "image" : "file",
+                }),
+              ) ?? []),
+              { type: "text", text: item.text, status: base.status },
+            ],
+          };
+        case "reasoning":
+          return {
+            ...base,
+            role: "assistant",
+            parts: [{ type: "reasoning", text: item.text, status: base.status }],
+          };
+        case "context_summary":
+          return {
+            ...base,
+            role: "system",
+            parts: [
+              {
+                type: "context",
+                text: item.text,
+                preview: item.text.slice(0, 160),
+                status: "complete",
+              },
+            ],
+          };
+        case "tool_call":
+          return {
+            ...base,
+            role: "assistant",
+            parts: [
+              {
+                type: "tool",
+                id: item.callId,
+                name: item.name,
+                text: readableValue(item.arguments),
+                status: item.status,
+              },
+            ],
+          };
+        case "tool_result":
+          return {
+            ...base,
+            role: "assistant",
+            parts: [
+              {
+                type: "tool",
+                id: item.callId,
+                name: item.name,
+                text: readableValue(item.output),
+                status: item.isError ? "failed" : "complete",
+              },
+            ],
+          };
+        case "interruption":
+          return {
+            ...base,
+            role: "assistant",
+            parts: [interruptionToPart(item.interruption)],
+          };
+        case "error":
+          return {
+            ...base,
+            role: "system",
+            parts: [{ type: "text", text: item.message, status: "complete" }],
+          };
+        default:
+          return assertNever(item);
+      }
+    });
+}
+
+function toolCallKey(runId: string | undefined, callId: string) {
+  return `${runId ?? ""}:${callId}`;
 }
 
 function interruptionToPart(

@@ -146,6 +146,48 @@ describe("agent runtime adapter", () => {
     ]);
   });
 
+  it("replaces a running tool card with its persisted result", () => {
+    const started: AgentRuntimeEvent = {
+      ...frame,
+      eventId: "event-tool-started",
+      sequence: 1,
+      method: "tool.started",
+      data: {
+        itemId: "tool-call-1",
+        callId: "call-1",
+        name: "list_files",
+        arguments: { path: "." },
+        createdAt: "2026-07-22T12:00:01Z",
+      },
+    };
+    const completed: AgentRuntimeEvent = {
+      ...frame,
+      eventId: "event-tool-completed",
+      sequence: 2,
+      method: "tool.completed",
+      data: {
+        itemId: "tool-result-1",
+        callId: "call-1",
+        name: "list_files",
+        output: [],
+        createdAt: "2026-07-22T12:00:02Z",
+      },
+    };
+
+    let projection = createAgentRuntimeProjection();
+    projection = applyAgentRuntimeEvent(projection, started);
+    expect(agentItemsToChatTurns(projection.items)).toHaveLength(1);
+
+    projection = applyAgentRuntimeEvent(projection, completed);
+    expect(agentItemsToChatTurns(projection.items)).toMatchObject([
+      {
+        id: "tool-result-1",
+        status: "complete",
+        parts: [{ type: "tool", id: "call-1", name: "list_files", status: "complete" }],
+      },
+    ]);
+  });
+
   it("rejects an incompatible protocol version", () => {
     const event = {
       ...frame,
