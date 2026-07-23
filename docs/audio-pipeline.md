@@ -122,8 +122,14 @@ Energy-based, per-source, **no diarization**:
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a
-reuse-original shortcut when already loud enough), then split into
-**≤30-second** chunks with rolling context.
+reuse-original shortcut when already loud enough). Normalization uses two
+streaming passes over bounded raw-sample chunks: the first computes the
+downmixed peak and sample count, and the second carries one global linear
+resampler position across chunks while applying gain and writing incrementally.
+Its working memory is fixed regardless of recording duration, and its global
+resampler position preserves the historical whole-buffer output byte for byte.
+The normalized WAV is then split into **≤30-second** chunks with rolling
+context.
 
 ## Recovery
 
