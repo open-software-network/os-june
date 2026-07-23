@@ -3132,6 +3132,7 @@ impl Repositories {
         } else {
             append_note_content(current.generated_content.clone(), content.clone())
         };
+        let expected_edited_content = current.edited_content.clone();
         let next_edited_content = current.edited_content.map(|edited_content| {
             if existing_session_block {
                 if edited_content.trim()
@@ -3151,11 +3152,32 @@ impl Repositories {
                 append_note_content(Some(edited_content), content)
             }
         });
+        // Title and edited content are user-owned. Apply generation's changes
+        // only while the exact snapshots it read are still current; a NULL
+        // edited-content snapshot never authorizes a write to that column.
         query(
-            "UPDATE notes SET title = ?, generated_content = ?, edited_content = ?, active_tab = 'notes', processing_status = 'ready', last_error = NULL, updated_at = ? WHERE id = ?",
+            "UPDATE notes
+             SET title = CASE
+                     WHEN title IS ? THEN ?
+                     ELSE title
+                 END,
+                 generated_content = ?,
+                 edited_content = CASE
+                     WHEN ? IS NULL THEN edited_content
+                     WHEN edited_content IS ? THEN ?
+                     ELSE edited_content
+                 END,
+                 active_tab = 'notes',
+                 processing_status = 'ready',
+                 last_error = NULL,
+                 updated_at = ?
+             WHERE id = ?",
         )
+        .bind(current.title.as_str())
         .bind(title)
         .bind(next_generated_content)
+        .bind(expected_edited_content.as_deref())
+        .bind(expected_edited_content.as_deref())
         .bind(next_edited_content)
         .bind(timestamp())
         .bind(note_id)
