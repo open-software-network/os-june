@@ -313,17 +313,41 @@ jobs:
             $(security list-keychains -d user | tr -d '"')
           rm -f "$cert"
 
-      - name: Cache bundled Hermes runtime
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: .tauri-hermes/hermes
-          # v2 is the dual-runtime layout. Never restore a host-only v1 cache.
-          key: hermes-bundle-macos-universal-v2-${{ runner.os }}-${{ hashFiles('scripts/bundle-hermes-runtime.sh', 'scripts/audit-hermes-runtime.sh', 'scripts/hermes-native-import-smoke.py', 'src-tauri/src/hermes_bridge.rs', 'src-tauri/src/hermes/apply_june_patches.py', 'src-tauri/src/hermes/sitecustomize.py') }}
-
-      - name: Bundle Hermes runtime into app resources
+      - name: Build signed universal agent runtime
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-        run: ./scripts/bundle-hermes-runtime.sh
+        run: |
+          set -euo pipefail
+          node_version="$(node -p 'process.versions.node')"
+          download_dir="$RUNNER_TEMP/node-24-sea"
+          mkdir -p "$download_dir"
+          curl --fail --silent --show-error --location \
+            "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt" \
+            --output "$download_dir/SHASUMS256.txt"
+          for architecture in arm64 x64; do
+            archive="node-v${node_version}-darwin-${architecture}.tar.gz"
+            curl --fail --silent --show-error --location \
+              "https://nodejs.org/dist/v${node_version}/${archive}" \
+              --output "$download_dir/$archive"
+            (
+              cd "$download_dir"
+              grep "  ${archive}$" SHASUMS256.txt | shasum -a 256 -c -
+              tar -xzf "$archive"
+            )
+          done
+          echo "JUNE_AGENT_RUNTIME_TARGET=universal-apple-darwin" >> "$GITHUB_ENV"
+          echo "JUNE_AGENT_RUNTIME_NODE_ARM64=$download_dir/node-v${node_version}-darwin-arm64/bin/node" >> "$GITHUB_ENV"
+          echo "JUNE_AGENT_RUNTIME_NODE_X64=$download_dir/node-v${node_version}-darwin-x64/bin/node" >> "$GITHUB_ENV"
+          export JUNE_AGENT_RUNTIME_TARGET=universal-apple-darwin
+          export JUNE_AGENT_RUNTIME_NODE_ARM64="$download_dir/node-v${node_version}-darwin-arm64/bin/node"
+          export JUNE_AGENT_RUNTIME_NODE_X64="$download_dir/node-v${node_version}-darwin-x64/bin/node"
+          pnpm agent-runtime:build
+          node scripts/build-agent-runtime.mjs
+          smoke_dir="$RUNNER_TEMP/June agent runtime smoke"
+          mkdir -p "$smoke_dir"
+          cp .tauri-agent-runtime/june-agent-runtime "$smoke_dir/june-agent-runtime"
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch arm64
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch x86_64
 
       - name: Prepare universal Computer use helper
         run: pnpm computer-use:prepare -- --release --target universal-apple-darwin
@@ -332,6 +356,7 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          JUNE_AGENT_RUNTIME_PREBUILT: "1"
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
@@ -385,8 +410,22 @@ jobs:
             exit 1
           fi
           app="${apps[0]}"
-          ./scripts/audit-hermes-runtime.sh \
-            "$app/Contents/Resources/native/hermes" --require-signed
+          runtime="$app/Contents/Resources/native/bin/june-agent-runtime"
+          checksum="$runtime.sha256"
+          test -x "$runtime"
+          test -s "$checksum"
+          test "$(shasum -a 256 "$runtime" | awk '{print $1}')" = "$(tr -d '[:space:]' < "$checksum")"
+          test "$(lipo -archs "$runtime" | tr ' ' '\n' | sort | tr '\n' ' ')" = "arm64 x86_64 "
+          codesign --verify --strict --verbose=2 "$runtime"
+          if find "$app/Contents/Resources" \( -iname '*hermes*' -o -iname 'python.exe' -o -iname 'python3' \) -print -quit | grep -q .; then
+            echo "::error::The rc app still contains a Hermes or Python payload."
+            exit 1
+          fi
+          smoke_dir="$RUNNER_TEMP/June packaged runtime smoke"
+          mkdir -p "$smoke_dir"
+          cp "$runtime" "$smoke_dir/june-agent-runtime"
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch arm64
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch x86_64
           codesign --verify --deep --strict --verbose=2 "$app"
 
           dmg="${dmgs[0]}"

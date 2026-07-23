@@ -12,10 +12,11 @@ recording, dictation shortcuts and paste, note generation, folders, and settings
 backed by the production June API. macOS system-audio capture and Seatbelt
 sandbox features are macOS-only.
 
-Production Windows builds bundle the pinned Hermes runtime under `native/hermes`,
-so June can start the agent on a clean machine without Python, GitHub downloads,
-or a first-run runtime install. Agent and routines workflows still run without
-the macOS Seatbelt write-jail until Windows has its own isolation layer.
+Production Windows builds bundle the signed Node 24 agent sidecar, so June can
+start the agent on a clean machine without Python, GitHub downloads, or a
+first-run runtime install. Sandboxed mode restricts host file tools to the
+workspace and disables shell execution on Windows. Unrestricted mode supports
+shell execution with approval for sensitive actions.
 
 ## One-time prerequisites
 
@@ -74,11 +75,9 @@ The Windows workflow performs the release steps in order:
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
 5. Runs `pnpm typecheck` and `pnpm test`.
-6. Builds the bundled Hermes runtime with
-   `scripts/bundle-hermes-runtime-windows.ps1`: the pinned hermes-agent
-   checkout, a relocatable CPython, Python deps, prebuilt dashboard UI, and a
-   relocatable `bin/hermes.exe` launcher.
-7. Authenticode-signs the bundled Hermes `.exe`, `.dll`, and `.pyd` binaries.
+6. Builds the Node 24 agent runtime as `june-agent-runtime.exe`, writes its
+   SHA-256 checksum, and runs a startup smoke test from a path with spaces.
+7. Authenticode-signs the agent runtime executable and verifies its signature.
 8. Builds and signs the Windows dictation helper, then builds the Windows NSIS
    installer with production OS Accounts and June API configuration embedded as
    fallback runtime config.
@@ -86,7 +85,8 @@ The Windows workflow performs the release steps in order:
    `scripts/windows-sign.ps1`.
 10. Verifies Authenticode status for the executable and installer, checks the
     updater signature file exists, and inspects the NSIS payload, including the
-    bundled dictation helper, Hermes launcher, and Python runtime.
+    bundled dictation helper and agent runtime, while rejecting Hermes and
+    Python payloads.
 11. Uploads the NSIS output as a workflow artifact.
 12. Uploads Windows release assets and merges `windows-x86_64` into
     `latest.json` without removing macOS updater entries or the generated

@@ -198,28 +198,39 @@ jobs:
           pnpm typecheck
           pnpm test
 
-      - name: Bundle Hermes runtime into app resources
+      - name: Build agent runtime
         shell: pwsh
-        run: ./scripts/bundle-hermes-runtime-windows.ps1
+        run: |
+          pnpm agent-runtime:build
+          node scripts/build-agent-runtime.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent runtime SEA build failed."
+          }
 
-      - name: Sign bundled Hermes runtime
+      - name: Sign and smoke test agent runtime
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
         run: |
-          $binaries = Get-ChildItem ".tauri-hermes/hermes" -Recurse -File |
-            Where-Object { $_.Extension -in @(".exe", ".dll", ".pyd") }
-          if (($binaries | Measure-Object).Count -eq 0) {
-            throw "Bundled Hermes runtime contains no Windows binaries to sign."
+          $runtime = Get-Item ".tauri-agent-runtime/june-agent-runtime.exe" -ErrorAction Stop
+          ./scripts/windows-sign.ps1 $runtime.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent runtime signing failed."
           }
-
-          foreach ($binary in $binaries) {
-            ./scripts/windows-sign.ps1 $binary.FullName
-            $signature = Get-AuthenticodeSignature -FilePath $binary.FullName
-            if ($signature.Status -ne "Valid") {
-              throw "Bundled Hermes binary signature is $($signature.Status) for $($binary.FullName). $($signature.StatusMessage)"
-            }
+          $signature = Get-AuthenticodeSignature -FilePath $runtime.FullName
+          if ($signature.Status -ne "Valid") {
+            throw "Agent runtime signature is $($signature.Status). $($signature.StatusMessage)"
+          }
+          $digest = (Get-FileHash -Algorithm SHA256 $runtime.FullName).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$($runtime.FullName).sha256" -Value $digest -NoNewline
+          $smokeDir = Join-Path $env:RUNNER_TEMP "June agent runtime smoke"
+          New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+          $smokeRuntime = Join-Path $smokeDir "june-agent-runtime.exe"
+          Copy-Item -LiteralPath $runtime.FullName -Destination $smokeRuntime -Force
+          node scripts/build-agent-runtime.mjs --smoke $smokeRuntime
+          if ($LASTEXITCODE -ne 0) {
+            throw "Signed agent runtime smoke test failed."
           }
 
       - name: Build production Windows installer
@@ -237,6 +248,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+          JUNE_AGENT_RUNTIME_PREBUILT: "1"
         run: pnpm tauri:build
 
       - name: Verify Windows signatures and payload
@@ -278,9 +290,14 @@ jobs:
               throw "NSIS installer payload does not include $expected."
             }
           }
-          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml", "native/bin/june-dictation-helper.exe")) {
+          foreach ($expected in @("native/bin/june-agent-runtime.exe", "native/bin/june-agent-runtime.exe.sha256", "native/bin/june-dictation-helper.exe")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
               throw "NSIS installer payload does not include bundled file $expected."
+            }
+          }
+          foreach ($forbidden in @("native/hermes", "python.exe", ".pyd", "hermes-agent")) {
+            if ($listingText -match [regex]::Escape($forbidden)) {
+              throw "NSIS installer payload still includes forbidden Hermes or Python content: $forbidden."
             }
           }
 

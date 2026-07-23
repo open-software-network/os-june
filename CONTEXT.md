@@ -4,7 +4,7 @@ June is a Tauri desktop app that records meetings/dictation, transcribes
 the audio, turns the transcript into structured notes, and hosts an AI agent
 you can chat with over those notes. It depends on the **OS Accounts**
 identity-and-credits platform for sign-in and for billing metered AI usage,
-and embeds the **Hermes** runtime as its agent brain.
+and runs a June-owned **agent harness** built on the OpenAI Agents SDK.
 
 This document is a glossary, not a spec. Terms are canonical; the `_Avoid_`
 lines are binding. Implementation, endpoints, and code shape live under
@@ -56,7 +56,7 @@ API requests `preferred` private routing; the service selects Venice private
 zero-retention first and Phala TEE as fallback, without falling below
 zero-retention. Venice BYOK requests remain direct and do not use this routing
 policy.
-_Avoid_: gateway (reserved for Hermes), router (unqualified).
+_Avoid_: gateway, router (unqualified).
 
 ### Notes
 
@@ -91,8 +91,7 @@ table — global or scoped to one project — written by the agent through
 editable in the "Memory" settings tab and the project detail view. Deletion
 is a hard DELETE plus a tombstone row (future-proofing for any later
 multi-device sync; nothing reads tombstones today).
-_Avoid_: the Hermes memory toolset's `memories/` files (the upstream
-mechanism June does not use for this), Biography (the connector-built user
+_Avoid_: skill-owned `memories/` files, Biography (the connector-built user
 profile).
 
 ### Audio & recording
@@ -207,47 +206,35 @@ paste.
 _Avoid_: foreground app, frontmost app (both name a live value, not the pin);
 focus target.
 
-### Agent runtime (Hermes)
+### Agent runtime
 
-**Hermes**:
-The embedded upstream (Nous Research) agent runtime June bundles, pinned to a
-commit and SHA-verified. June drives it as the chat/agent brain but presents
-as June, never as Hermes (an injected `SOUL.md` asserts the identity).
-_Avoid_: the model, the LLM, the agent (unqualified).
+**Agent harness**:
+The June-owned local service that runs the OpenAI Agents SDK model and tool
+loop. It is a trusted orchestration process, while Rust owns secrets,
+persistence, approvals, and every machine-touching tool.
+_Avoid_: brain, Hermes, gateway.
 
-**Bridge**:
-The Rust layer (`src-tauri/src/hermes_bridge.rs`) that spawns, sandboxes, and
-proxies to Hermes child processes and exposes them as Tauri commands.
-_Avoid_: server, daemon.
-
-**Gateway**:
-The Hermes JSON-RPC-over-WebSocket endpoint and its client
-(`HermesGatewayClient`) — pure transport (connect coalescing, req/resp
-correlation, timeouts).
-_Avoid_: control plane, API.
-
-**Control plane**:
-The typed seam (`src/lib/hermes-control-plane/`) that turns raw Hermes frames
-into the total `JuneHermesEvent` union and typed outbound methods. The union
-also carries locally minted first-party events (see **Steer**) that the
-classifier never emits.
-_Avoid_: gateway, adapter.
+**Runtime protocol**:
+June's versioned newline-delimited JSON-RPC contract over the agent harness's
+stdin and stdout. It carries run requests, host tool calls, streaming events,
+interruptions, cancellation, and shutdown without exposing a localhost port.
+_Avoid_: gateway, WebSocket control plane.
 
 **Runtime mode**:
-The write-access mode of a spawned Hermes process: `sandboxed` (a Seatbelt
-write-jail, default) or `unrestricted`. Opt-in is per session; June keeps one
-gateway per mode so an unrestricted session can't un-sandbox others.
+The per-session execution policy applied by Rust tools: `sandboxed` or
+`unrestricted`. The trusted harness itself is not sandboxed. On macOS,
+sandboxed shell tools use Seatbelt. On Windows, sandboxed file tools are
+workspace-scoped and sandboxed shell execution is unavailable.
 _Avoid_: permission, profile.
 
-**Profile** (Hermes profile):
-A named Hermes configuration (its own home subtree, SOUL, model default,
-skills, MCP servers) a session runs under; `default` always exists. The
-**active profile** is the sticky default new sessions pick up — June writes
-it on switch and also threads it explicitly on `session.create` (ADR 0030).
-Managed in Settings under Profiles. A profile may specialize June, but the
-agent still presents as June.
-_Avoid_: "profile" for Runtime mode, the Seatbelt sandbox profile, or the
-Account snapshot; account profile.
+### Legacy agent data
+
+**Legacy agent home**:
+The preserved on-disk home from June versions that used Hermes. The migration
+reads its state database once, transactionally, then retains the directory
+only as recovery data. The current app never starts or reads the retired
+runtime after a successful import.
+_Avoid_: runtime home, active profile.
 
 **Browser use**:
 The consent-gated capability (JUN-278, ADR 0017) that lets the agent operate

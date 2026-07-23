@@ -245,8 +245,7 @@ with:
 - [release-windows.md](release-windows.md)
 - [reproducible-builds.md](reproducible-builds.md)
 
-Bumping the bundled Hermes runtime follows its own gate. Work through
-[hermes-upgrade-checklist.md](hermes-upgrade-checklist.md) (start a new pin
-note from [hermes-upstream-template.md](hermes-upstream-template.md)), then run
-`pnpm hermes:upgrade-check` to confirm the compatibility matrix, the pin note,
-and the checklist all name the same version.
+Changes to the local agent sidecar or its OpenAI Agents SDK pin must pass
+`pnpm agent-runtime:typecheck`, `pnpm agent-runtime:test`, and
+`pnpm agent-runtime:build`. Release jobs package the result as a signed Node 24
+single executable and verify its checksum and startup from a path with spaces.

@@ -1,11 +1,11 @@
 //! June-owned Computer use trust boundary.
 //!
-//! Hermes reaches one internal MCP server. That server can only call the
-//! authenticated loopback broker in `hermes_bridge`; it never receives the
+//! The agent runtime reaches one internal tool broker. That server can only call the
+//! authenticated native broker; it never receives the
 //! bundled driver's path or a direct driver transport. The Rust broker owns a
 //! private stdio child and requires one attended authorization for each target
 //! app used by the current task. This is intentionally structural: a model prompt, inherited
-//! environment variable, or unrestricted Hermes process cannot bypass it.
+//! environment variable, or unrestricted agent process cannot bypass it.
 
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -42,8 +42,6 @@ use tokio::{
 };
 
 pub const MCP_SERVER_NAME: &str = "june_computer_use";
-pub const MCP_SCRIPT: &str = include_str!("../resources/hermes-mcp/june_computer_use_mcp.py");
-pub const MCP_SCRIPT_NAME: &str = "june_computer_use_mcp.py";
 pub const PROXY_PATH: &str = "/v1/computer-use/action";
 pub const APPROVALS_CHANGED_EVENT: &str = "june://computer-use-approvals-changed";
 
@@ -1118,8 +1116,8 @@ async fn bounded_command_output(
 fn should_scrub_driver_env(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
     name.starts_with("CUA_DRIVER_RS_")
-        || name.starts_with("HERMES_CUA_DRIVER")
-        || name == "HERMES_COMPUTER_USE_BACKEND"
+        || name.starts_with("JUNE_CUA_DRIVER")
+        || name == "JUNE_COMPUTER_USE_BACKEND"
         || name == "JUNE_COMPUTER_USE_HELPER_CAPABILITY"
         || name == "JUNE_COMPUTER_USE_PERMISSION_PROMPT"
         || name == "JUNE_COMPUTER_USE_SOCKET"
@@ -1970,6 +1968,7 @@ fn subscription_plan_eligible(subscribed: bool, plan: Option<&str>) -> bool {
             .unwrap_or(true)
 }
 
+#[allow(dead_code)] // Preserved for the neutral agent capability adapter follow-up.
 pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> bool {
     let state = app.state::<ComputerUseState>();
     let expected_epoch = app
@@ -2084,22 +2083,12 @@ fn driver_prewarm_is_current(state: &ComputerUseState, expected_epoch: u64) -> b
 pub async fn computer_use_status(
     app: AppHandle,
     state: State<'_, ComputerUseState>,
-    bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
     let (status, previous) = status_with_published_readiness(&app, &state).await?;
     let current = ready_state_value(status.ready);
-    if previous != 0 && previous != current {
-        if !status.ready {
-            stop_inner(&app, &state).await;
-            replace_runtime_ready(&state, false);
-        }
-        // `current` is the authoritative live readiness observation. If the
-        // Hermes config refresh fails, keep that observation instead of
-        // re-arming focus prewarm with the stale previous value.
-        crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    }
-    if status.ready {
-        schedule_driver_prewarm(&app);
+    let previous = state.runtime_ready_state.swap(current, Ordering::SeqCst);
+    if previous != 0 && previous != current && !status.ready {
+        stop_inner(&app, &state).await;
     }
     Ok(status)
 }
@@ -2175,7 +2164,6 @@ async fn status_with_published_readiness(
 pub async fn set_computer_use_grant(
     app: AppHandle,
     state: State<'_, ComputerUseState>,
-    bridge: State<'_, crate::hermes_bridge::HermesBridge>,
     request: SetComputerUseGrantRequest,
 ) -> Result<ComputerUseStatus, AppError> {
     if request.enabled && !plan_eligible().await {
@@ -2189,19 +2177,13 @@ pub async fn set_computer_use_grant(
         stop_inner(&app, &state).await;
         replace_runtime_ready(&state, false);
     }
-    crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let (status, _) = status_with_published_readiness(&app, &state).await?;
-    if status.ready {
-        schedule_driver_prewarm(&app);
-    }
-    Ok(status)
+    Ok(status_inner(&app).await)
 }
 
 #[tauri::command]
 pub async fn computer_use_request_permissions(
     app: AppHandle,
     state: State<'_, ComputerUseState>,
-    bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
     if !grant_enabled(&app).await {
         return Err(AppError::new(
@@ -2226,13 +2208,8 @@ pub async fn computer_use_request_permissions(
     let path = bundled_driver_executable(&app)?;
     verify_packaged_driver_signatures(&state, &path, true).await?;
     driver_version(&path).await?;
-    let _ = probe_permissions(&state, &path, true).await?;
-    crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    let (status, _) = status_with_published_readiness(&app, &state).await?;
-    if status.ready {
-        schedule_driver_prewarm(&app);
-    }
-    Ok(status)
+    let _ = probe_permissions(&path, true).await?;
+    Ok(status_inner(&app).await)
 }
 
 pub(crate) async fn shutdown(app: &AppHandle) {
@@ -2250,7 +2227,7 @@ pub async fn computer_use_stop(
 }
 
 /// Opens the Computer use broker only for a turn submitted from June's visible
-/// chat surface. The Hermes dashboard receives the matching loopback
+/// chat surface. The agent workspace receives the matching loopback
 /// capability; the launchd routine gateway does not. This in-process lease is
 /// a second gate, and makes Stop sticky until the user starts another turn.
 #[tauri::command]
@@ -4411,7 +4388,7 @@ fn save_capture(app: &AppHandle, result: &Value) -> Result<Option<String>, AppEr
 fn capture_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     Ok(crate::app_paths::app_data_dir(app)
         .map_err(|error| AppError::new("computer_use_capture_failed", error.to_string()))?
-        .join("hermes")
+        .join("agent-workspaces")
         .join("computer-use")
         .join("captures"))
 }
@@ -5468,9 +5445,9 @@ mod tests {
             "CUA_DRIVER_RS_MCP_NO_RELAUNCH",
             "CUA_DRIVER_RS_PERMISSIONS_GATE",
             "CUA_DRIVER_RS_FUTURE_ESCAPE",
-            "HERMES_CUA_DRIVER_CMD",
-            "HERMES_CUA_DRIVER_VERSION",
-            "HERMES_COMPUTER_USE_BACKEND",
+            "JUNE_CUA_DRIVER_CMD",
+            "JUNE_CUA_DRIVER_VERSION",
+            "JUNE_COMPUTER_USE_BACKEND",
             "HTTPS_PROXY",
         ] {
             assert!(should_scrub_driver_env(OsStr::new(name)), "{name}");
@@ -5714,14 +5691,6 @@ mod tests {
         }
         assert!(!blocked_key_combo("cmd+s"));
         assert!(!blocked_key_combo("return"));
-    }
-
-    #[test]
-    fn mcp_guidance_forbids_non_computer_use_fallbacks() {
-        assert!(MCP_SCRIPT
-            .contains("Never use Terminal, a shell, AppleScript, execute_code, or a substitute"));
-        assert!(MCP_SCRIPT.contains("Never claim success unless a "));
-        assert!(MCP_SCRIPT.contains("Computer use capture confirms the requested state."));
     }
 
     #[cfg(target_os = "macos")]

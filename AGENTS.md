@@ -16,8 +16,9 @@ into a structured note, and hosts an AI agent you can chat with over your
 notes. The frontend is **React** (`src/`), the native shell is **Rust**
 (`src-tauri/`), and a confidential **Rust backend, June API** (`june-api/`),
 proxies all upstream AI and runs metered billing. Identity and credits come
-from **OS Accounts**; the agent brain is an embedded, pinned build of the
-**Hermes** runtime; AI models are served through **Venice**. June API runs
+from **OS Accounts**; the agent harness is a June-owned TypeScript service
+built on the **OpenAI Agents SDK**; AI models are served through June's model
+routing. June API runs
 inside a TEE (Phala) so prompt data is not readable by its own infra.
 
 > Read **[CONTEXT.md](CONTEXT.md)** before naming anything, and
@@ -30,12 +31,12 @@ os-june/
 ├── src/                     # React frontend
 │   ├── app/                 # app shell, routing, update-decision
 │   ├── components/          # agent (chat), settings, account, onboarding, note-editor, recorder, sidebar, ...
-│   ├── lib/                 # hermes-gateway, hermes-control-plane/, model-privacy, tauri bindings, ...
+│   ├── lib/                 # agent runtime contracts, model privacy, Tauri bindings, ...
 │   ├── styles/              # app.css + tokens.css (design tokens)
 │   └── test/                # vitest suites (all frontend tests live here)
 ├── src-tauri/               # Rust native shell (Cargo package `os-june`)
 │   ├── src/audio/           # recording, source separation, turn detection, live preview
-│   ├── src/hermes_bridge.rs # spawns + sandboxes the embedded Hermes agent runtime
+│   ├── src/agent_runtime/   # sidecar protocol, tools, persistence, and migration
 │   ├── src/os_accounts.rs   # OS Accounts login (PKCE), keychain token store
 │   ├── src/providers/       # model-settings persistence
 │   ├── src/commands.rs      # the Tauri command surface
@@ -55,8 +56,8 @@ os-june/
 
 - **[CONTEXT.md](CONTEXT.md)** — the domain glossary / ubiquitous language.
   Read before naming anything; terms are canonical and the `_Avoid_` lists are
-  binding (dictation vs note transcription, Source vs channel, Hermes vs "the
-  model", credit price vs cost, stored vs runtime session id).
+  binding (dictation vs note transcription, Source vs channel, agent harness
+  vs model, credit price vs cost, stored vs runtime session id).
 - **[docs/index.md](docs/index.md)** — the annotated index of every doc: ADRs,
   subsystem docs, release/ops runbooks, PRDs, QA, and the feature specs.
 - **[docs/adr/](docs/adr/)** — Architecture Decision Records. Read the ADRs for
@@ -190,9 +191,9 @@ build scripts in `pnpm-workspace.yaml` — live in
   and do not "fix" the tests.
 - **Rust tests:** `pnpm test:rust` (src-tauri) and `pnpm test:june-api` (the
   backend workspace).
-- **Hermes pin gate:** `pnpm test:hermes-smoke` + `pnpm hermes:upgrade-check`
-  before bumping the pinned Hermes runtime (see
-  [docs/hermes-upgrade-checklist.md](docs/hermes-upgrade-checklist.md)).
+- **Agent runtime gate:** `pnpm agent-runtime:typecheck` +
+  `pnpm agent-runtime:test` + `pnpm agent-runtime:build` before changing the
+  sidecar or its OpenAI Agents SDK pin.
 - **Lint / format:** `pnpm check` (Biome: format + lint for `src/` and
   `scripts/`, including the lucide import ban) and `pnpm typecheck`
   (`tsc --noEmit`); `pnpm format` / `pnpm check:write` apply Biome fixes. Rust
@@ -223,8 +224,8 @@ build scripts in `pnpm-workspace.yaml` — live in
   `/v1/*` contracts. Never remove or repurpose an existing endpoint, request
   field, or response shape; add new optional fields or new endpoints instead. A
   breaking API change strands every app version that has not updated yet.
-- **June presents as June, never as Hermes.** The embedded runtime is an
-  implementation detail; an injected `SOUL.md` asserts June's identity.
+- **June presents as June.** The local harness is an implementation detail;
+  product instructions assert June's identity.
 - **Identity and credits are OS Accounts'.** June is an on-device client of OS
   Accounts and never owns user or wallet state. The dependency arrow points
   June → OS Accounts, never the reverse.

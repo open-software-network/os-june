@@ -599,13 +599,9 @@ fn parse_event_start(start: &str) -> Option<DateTime<Utc>> {
 /// (bridge or gateway unavailable) must leave the trigger's cursor unadvanced so
 /// the event is retried, not skipped.
 async fn fire(app: &AppHandle, job_id: &str) -> bool {
-    match crate::hermes_bridge::trigger_cron_job(app, job_id).await {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::warn!(error_code = %error.code, "connector trigger fire failed");
-            false
-        }
-    }
+    let _ = (app, job_id);
+    tracing::debug!("connector routine trigger ignored because routines are not supported");
+    false
 }
 
 /// True when the machine is on battery below the low threshold and
