@@ -104,6 +104,32 @@ describe("HermesGatewayClient", () => {
     expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
+  it("unregisters a mode client when its initial connection times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const onClose = vi.fn();
+      client.onClose(onClose);
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.close = vi.fn();
+      const timedOut = expect(connecting).rejects.toThrow(
+        "Hermes gateway connection timed out.",
+      );
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await timedOut;
+
+      // A delayed open event from the failed socket must not resurrect the
+      // client in the mode registry or participate in future disconnects.
+      socket.open();
+      forceDisconnectHermesGatewayClients(false);
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores a stale socket's close event for requests pending on the new socket", async () => {
     const client = new HermesGatewayClient();
     const first = client.connect("ws://gateway");

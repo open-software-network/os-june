@@ -117,14 +117,24 @@ export class HermesGatewayClient {
       this.handleUnexpectedClose(socket);
     });
     const connectPromise = new Promise<void>((resolve, reject) => {
+      let opened = false;
+      const failInitialConnection = (error: Error) => {
+        if (opened) return;
+        if (this.socket === socket) {
+          this.socket = undefined;
+          this.unregisterFromMode();
+        }
+        reject(error);
+      };
       const timer = window.setTimeout(() => {
-        reject(new Error("Hermes gateway connection timed out."));
+        failInitialConnection(new Error("Hermes gateway connection timed out."));
         socket.close();
       }, 15000);
       socket.addEventListener(
         "open",
         () => {
           window.clearTimeout(timer);
+          opened = true;
           resolve();
         },
         { once: true },
@@ -133,7 +143,7 @@ export class HermesGatewayClient {
         "error",
         () => {
           window.clearTimeout(timer);
-          reject(new Error("Could not connect to Hermes gateway."));
+          failInitialConnection(new Error("Could not connect to Hermes gateway."));
         },
         { once: true },
       );
