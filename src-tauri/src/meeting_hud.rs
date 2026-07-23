@@ -879,6 +879,7 @@ mod tests {
                 state: SourceState::Recording,
                 elapsed_ms: 1_250,
                 bytes_written: 8_192,
+                dropped_samples: 0,
                 level,
                 silence_warning: false,
                 path_finalized: false,

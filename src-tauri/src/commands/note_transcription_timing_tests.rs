@@ -69,6 +69,7 @@ fn timing_finished_recording(
             source: RecordingSource::Microphone,
             final_path: path,
             elapsed_ms: 1_000,
+            dropped_samples: 0,
             capture_issue: None,
             failure: None,
         }],
