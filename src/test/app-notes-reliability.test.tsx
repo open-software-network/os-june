@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
+import { NOTE_PROCESSING_RECONCILE_INTERVAL_MS } from "../app/use-note-processing-events";
 import {
   resetActiveHermesProfileForTests,
   setActiveHermesProfileName,
@@ -77,6 +78,7 @@ const mocks = vi.hoisted(() => ({
   osAccountsLogin: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsLogout: vi.fn(),
+  osAccountsReferralSummary: vi.fn(async () => undefined),
   osAccountsUpgrade: vi.fn(),
   osAccountsUpgradeSession: vi.fn(),
   osAccountsChangePlan: vi.fn(),
@@ -186,6 +188,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsLogin: mocks.osAccountsLogin,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsLogout: mocks.osAccountsLogout,
+  osAccountsReferralSummary: mocks.osAccountsReferralSummary,
   osAccountsUpgrade: mocks.osAccountsUpgrade,
   osAccountsUpgradeSession: mocks.osAccountsUpgradeSession,
   osAccountsChangePlan: mocks.osAccountsChangePlan,
@@ -1568,6 +1571,138 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(1));
     expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
     expect(await screen.findByText("The completed note is visible.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["window focus", () => window.dispatchEvent(new Event("focus"))],
+    ["visible document", () => document.dispatchEvent(new Event("visibilitychange"))],
+  ])("recovers a dropped done event when the %s resumes", async (_surface, resume) => {
+    const selectedNote = note({
+      processingStatus: "transcribing",
+      activeTab: "transcription",
+      sourceTranscripts: [],
+    });
+    const completedNote = {
+      ...selectedNote,
+      processingStatus: "ready" as const,
+      updatedAt: "2026-05-19T10:00:03Z",
+      sourceTranscripts: [
+        {
+          id: "turn-focus-recovery",
+          text: "Recovered after the done event was dropped.",
+          source: "microphone" as const,
+          sourceMode: "microphonePlusSystem" as const,
+          startMs: 0,
+          endMs: 4_000,
+          turnIndex: 0,
+          language: "en",
+          status: "succeeded" as const,
+          recordedSilence: false,
+        },
+      ],
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    let processingDone = false;
+    mocks.getNote.mockImplementation(async () => (processingDone ? completedNote : selectedNote));
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
+    await waitFor(() => expect(screen.getByText("Transcribing audio")).toBeInTheDocument());
+
+    mocks.getNote.mockClear();
+    processingDone = true;
+    await act(async () => resume());
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(1));
+    expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
+    expect(
+      await screen.findByText("Recovered after the done event was dropped."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not install the slow backstop when no note is actively processing", async () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    try {
+      render(<App />);
+      await waitFor(() => expect(mocks.listeners.has("note-processing-progress")).toBe(true));
+      expect(
+        setIntervalSpy.mock.calls.some(
+          ([, delay]) => delay === NOTE_PROCESSING_RECONCILE_INTERVAL_MS,
+        ),
+      ).toBe(false);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("recovers a dropped done event through the slow processing-only backstop", async () => {
+    const selectedNote = note({
+      processingStatus: "generating",
+      activeTab: "transcription",
+      sourceTranscripts: [],
+    });
+    const completedNote = {
+      ...selectedNote,
+      processingStatus: "ready" as const,
+      updatedAt: "2026-05-19T10:00:04Z",
+      sourceTranscripts: [
+        {
+          id: "turn-backstop-recovery",
+          text: "Recovered by the slow processing backstop.",
+          source: "system" as const,
+          sourceMode: "microphonePlusSystem" as const,
+          startMs: 0,
+          endMs: 4_000,
+          turnIndex: 0,
+          language: "en",
+          status: "succeeded" as const,
+          recordedSilence: false,
+        },
+      ],
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    let processingDone = false;
+    mocks.getNote.mockImplementation(async () => (processingDone ? completedNote : selectedNote));
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+
+    try {
+      render(<App />);
+      await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+      await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
+
+      let backstop: TimerHandler | undefined;
+      await waitFor(() => {
+        backstop = setIntervalSpy.mock.calls.find(
+          ([, delay]) => delay === NOTE_PROCESSING_RECONCILE_INTERVAL_MS,
+        )?.[0];
+        expect(backstop).toBeTypeOf("function");
+      });
+
+      mocks.getNote.mockClear();
+      processingDone = true;
+      await act(async () => {
+        if (typeof backstop === "function") backstop();
+      });
+
+      await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(1));
+      expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
+      expect(
+        await screen.findByText("Recovered by the slow processing backstop."),
+      ).toBeInTheDocument();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it("keeps retry failures scoped to the failed note", async () => {

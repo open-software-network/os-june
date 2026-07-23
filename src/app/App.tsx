@@ -1439,6 +1439,7 @@ export function App() {
   useNoteProcessingEvents({
     dispatch,
     noteSaveController,
+    notes: state.notes,
     setError,
   });
 
