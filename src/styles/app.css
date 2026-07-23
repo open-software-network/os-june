@@ -2309,7 +2309,12 @@ input:focus-visible,
   position: relative;
   max-width: 70%;
   border: 0;
-  border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
+  /* The tail-side corner is tighter so both of the tail's silhouette
+   * crossings land on STRAIGHT edges, where the piece's near-vertical entry
+   * and flat underside are tangent to the bubble — tangency is what makes the
+   * joins curve smoothly instead of kinking against the corner arc. */
+  border-radius: calc(var(--control-lg) / 2 + var(--sp-1)) calc(var(--control-lg) / 2 + var(--sp-1))
+    var(--r-lg) calc(var(--control-lg) / 2 + var(--sp-1));
   background: var(--card);
   /* drop-shadow, not box-shadow: the shadow must wrap the UNION of bubble and
    * tail pseudo as one silhouette. A box-shadow outlines each box separately
@@ -2321,10 +2326,10 @@ input:focus-visible,
   content: "";
   position: absolute;
   z-index: -1;
-  right: -10px;
+  right: calc(-1 * var(--sp-2));
   bottom: 0;
-  width: 21px;
-  height: 17px;
+  width: 26px;
+  height: 20px;
   background: var(--card);
   /* The corner-and-tail piece (Andrew's chat tail.svg, 38x31 viewBox scaled to
    * 21x17): its flat top edge glues under the bubble's squared corner, the big
