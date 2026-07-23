@@ -4359,7 +4359,7 @@ describe("AgentWorkspace", () => {
         title: "write a project update",
         cols: 96,
         model: "__june_remote_generation__:zai-org-glm-5-2",
-        reasoning_effort: "none",
+        reasoning_effort: "minimal",
       }),
     );
   });
