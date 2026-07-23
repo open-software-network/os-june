@@ -43,6 +43,7 @@ export type ComposerEditorHandle = {
   insertNoteReference: (ref: NoteReferenceInput) => void;
   /** Replaces the current selection with literal text without changing focus. */
   insertPlainText: (text: string) => boolean;
+  isFocused: () => boolean;
   isEmpty: () => boolean;
 };
 
@@ -51,6 +52,7 @@ type ComposerEditorProps = {
   skills?: HermesSkillInfo[] | null;
   onChange: (text: string, category: ReportCategory | null) => void;
   onSubmit: () => void;
+  onFocusChange?: (focused: boolean) => void;
   /** Returns true when the host handles the selected command as an immediate
    * action instead of inserting its slash text into the draft. */
   onBuiltinSlashCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
@@ -155,22 +157,27 @@ export function buildDoc(
 }
 
 export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorProps>(
-  ({ placeholder, skills, onChange, onSubmit, onBuiltinSlashCommand, onReady }, ref) => {
+  (
+    { placeholder, skills, onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady },
+    ref,
+  ) => {
     const frameRef = useRef<HTMLDivElement | null>(null);
     const skillsRef = useRef(skills);
     // Latest callbacks behind refs so the editor (created once) never closes
     // over a stale handler.
     const onChangeRef = useRef(onChange);
     const onSubmitRef = useRef(onSubmit);
+    const onFocusChangeRef = useRef(onFocusChange);
     const onBuiltinSlashCommandRef = useRef(onBuiltinSlashCommand);
     const onReadyRef = useRef(onReady);
     useEffect(() => {
       onChangeRef.current = onChange;
       onSubmitRef.current = onSubmit;
+      onFocusChangeRef.current = onFocusChange;
       onBuiltinSlashCommandRef.current = onBuiltinSlashCommand;
       onReadyRef.current = onReady;
       skillsRef.current = skills;
-    }, [onChange, onSubmit, onBuiltinSlashCommand, onReady, skills]);
+    }, [onChange, onSubmit, onFocusChange, onBuiltinSlashCommand, onReady, skills]);
 
     useEffect(() => {
       document.querySelectorAll(".agent-category-menu-host").forEach((host) => {
@@ -206,6 +213,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
     }
 
     const editor = useEditor({
+      onFocus: () => onFocusChangeRef.current?.(true),
+      onBlur: () => onFocusChangeRef.current?.(false),
       extensions: [
         StarterKit.configure({
           // Truly-plain composer: no block structure or inline marks, just text,
@@ -358,6 +367,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           editor.view.dispatch(transaction);
           return true;
         },
+        isFocused: () => !!editor?.isFocused && document.hasFocus(),
         isEmpty: () => editor?.isEmpty ?? true,
       }),
       [editor],

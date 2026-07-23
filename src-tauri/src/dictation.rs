@@ -84,8 +84,16 @@ pub struct HelperProcess {
     stdin: ChildStdin,
 }
 
+struct ComposerDeliveryRegistration {
+    request_id: String,
+    window_handle: isize,
+}
+
 pub struct HelperState {
     process: Mutex<Option<HelperProcess>>,
+    /// One composer request registered while the main-window editor owns
+    /// focus. Shortcut start consumes it atomically before reaching the helper.
+    composer_registration: Mutex<Option<ComposerDeliveryRegistration>>,
     /// Set only on intentional teardown (app quit / [`stop_helper`]) so the
     /// supervisor can tell a deliberate stop from a crash and skip respawning.
     shutting_down: AtomicBool,
@@ -98,6 +106,7 @@ impl Default for HelperState {
     fn default() -> Self {
         Self {
             process: Mutex::new(None),
+            composer_registration: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             respawn_failures: AtomicU32::new(0),
         }
@@ -497,6 +506,9 @@ const FINALIZING_SUPPRESSION_EXPIRY: Duration = Duration::from_secs(30);
 #[derive(Debug, Default)]
 struct ShortcutActivationController {
     active_mode: Option<DictationShortcutKind>,
+    /// Updated only from helper lifecycle events. Unlike `active_mode`, this
+    /// also reflects recordings started by the composer button.
+    helper_is_listening: bool,
     push_to_talk_is_down: bool,
     push_started_at: Option<Instant>,
     toggle_command_in_flight: bool,
@@ -608,6 +620,15 @@ impl ShortcutActivationController {
 
     fn clear_helper_finalizing(&mut self) {
         self.helper_finalizing_since = None;
+    }
+
+    fn set_helper_listening(&mut self, listening: bool) {
+        self.helper_is_listening = listening;
+    }
+
+    fn command_starts_recording(&self, command: DictationCommand) -> bool {
+        matches!(command, DictationCommand::StartListening)
+            || (matches!(command, DictationCommand::ToggleListening) && !self.helper_is_listening)
     }
 
     fn reset(&mut self) {
@@ -1020,6 +1041,7 @@ pub fn set_dictation_language(
 #[tauri::command]
 pub fn dictation_helper_command(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, HelperState>,
     command: serde_json::Value,
 ) -> Result<(), AppError> {
@@ -1035,6 +1057,61 @@ pub fn dictation_helper_command(
             ));
         }
     }
+    let command_type = command
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if matches!(
+        command_type.as_str(),
+        "register_composer_delivery" | "unregister_composer_delivery"
+    ) {
+        if window.label() != "main" {
+            return Err(AppError::new(
+                "dictation_composer_registration_forbidden",
+                "Only June's main window can register composer delivery.",
+            ));
+        }
+        let request_id = command
+            .get("composerRequestId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                AppError::new(
+                    "dictation_composer_request_invalid",
+                    "The dictation composer request was invalid.",
+                )
+            })?;
+        let mut registration = state.composer_registration.lock().map_err(|_| {
+            AppError::new(
+                "dictation_composer_registration_unavailable",
+                "The dictation composer registration was unavailable.",
+            )
+        })?;
+        if command_type == "register_composer_delivery" {
+            *registration = Some(ComposerDeliveryRegistration {
+                request_id: request_id.to_string(),
+                window_handle: webview_window_handle(&window)?,
+            });
+        } else if registration
+            .as_ref()
+            .is_some_and(|registration| registration.request_id == request_id)
+        {
+            *registration = None;
+        }
+        return Ok(());
+    }
+    if command.get("composerRequestId").is_some()
+        && matches!(
+            command_type.as_str(),
+            "start_listening" | "toggle_listening"
+        )
+        && window.label() != "main"
+    {
+        return Err(AppError::new(
+            "dictation_composer_registration_forbidden",
+            "Only June's main window can start composer delivery.",
+        ));
+    }
     #[cfg(target_os = "windows")]
     let command = {
         let mut command = command;
@@ -1043,6 +1120,10 @@ pub fn dictation_helper_command(
                 object.insert(
                     "juneProcessId".into(),
                     serde_json::json!(std::process::id()),
+                );
+                object.insert(
+                    "juneWindowHandle".into(),
+                    serde_json::json!(webview_window_handle(&window)?),
                 );
             }
         }
@@ -1063,7 +1144,59 @@ pub fn dictation_helper_command(
         return handle_missing_helper_command(&app, &command);
     }
 
-    send_helper_command(&state, command)
+    let composer_request_id = command
+        .get("composerRequestId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let result = send_helper_command(&state, command);
+    if result.is_ok()
+        && matches!(
+            command_type.as_str(),
+            "start_listening" | "toggle_listening"
+        )
+    {
+        if let Some(request_id) = composer_request_id {
+            if let Ok(mut registration) = state.composer_registration.lock() {
+                if registration
+                    .as_ref()
+                    .is_some_and(|registration| registration.request_id == request_id)
+                {
+                    *registration = None;
+                }
+            }
+        }
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn webview_window_handle(window: &WebviewWindow) -> Result<isize, AppError> {
+    window
+        .hwnd()
+        .map(|handle| handle.0 as isize)
+        .map_err(|error| {
+            AppError::new(
+                "dictation_composer_window_unavailable",
+                format!("June could not identify the composer window: {error}"),
+            )
+        })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn webview_window_handle(_window: &WebviewWindow) -> Result<isize, AppError> {
+    Ok(0)
+}
+
+#[cfg(target_os = "windows")]
+fn is_foreground_window_handle(window_handle: isize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    unsafe { GetForegroundWindow().0 as isize == window_handle }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_foreground_window_handle(_window_handle: isize) -> bool {
+    false
 }
 
 fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> bool {
@@ -1806,14 +1939,14 @@ fn handle_shortcut_key_event(
         return;
     };
 
-    let command = app
+    let action = app
         .try_state::<ShortcutActivationState>()
         .and_then(|state| {
-            state
-                .controller
-                .lock()
-                .ok()
-                .and_then(|mut state| state.handle_edge(edge, kind, Instant::now()))
+            state.controller.lock().ok().and_then(|mut state| {
+                let command = state.handle_edge(edge, kind, Instant::now())?;
+                let starts_recording = state.command_starts_recording(command);
+                Some((command, starts_recording))
+            })
         });
 
     let shortcut = match kind {
@@ -1821,8 +1954,8 @@ fn handle_shortcut_key_event(
         DictationShortcutKind::Toggle => settings.toggle_shortcut,
     };
 
-    if let Some(command) = command {
-        send_dictation_command(app, command, &shortcut.label);
+    if let Some((command, starts_recording)) = action {
+        send_dictation_command(app, command, &shortcut.label, starts_recording);
     }
 }
 
@@ -1871,7 +2004,20 @@ fn update_shortcut_helper_finalizing(app: &AppHandle, finalizing: bool) {
     }
 }
 
-fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
+fn update_shortcut_helper_listening(app: &AppHandle, listening: bool) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.set_helper_listening(listening);
+        }
+    }
+}
+
+fn send_dictation_command(
+    app: &AppHandle,
+    command: DictationCommand,
+    shortcut_label: &str,
+    starts_recording: bool,
+) {
     // The start path needs a signed-in OS Accounts session for the
     // transcription that follows, but the token check must not sit between
     // the key press and the microphone: capture is local and the token is
@@ -1884,7 +2030,7 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
     // before. ToggleListening can also start, but we can't tell
     // start-from-stop without extra state; transcribe_recording_ready acts
     // as the backstop there.
-    let forwarded = forward_dictation_command(app, command, shortcut_label);
+    let forwarded = forward_dictation_command(app, command, shortcut_label, starts_recording);
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
     }
@@ -1900,7 +2046,12 @@ fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_l
                 // the finalized audio and shows a retriable error.
                 DictationAuthGate::Unavailable(_) => {}
                 DictationAuthGate::SignedOut => {
-                    forward_dictation_command(&app, DictationCommand::DiscardListening, &label);
+                    forward_dictation_command(
+                        &app,
+                        DictationCommand::DiscardListening,
+                        &label,
+                        false,
+                    );
                     notify_dictation_not_signed_in(&app);
                     reset_shortcut_activation(&app);
                 }
@@ -1913,6 +2064,7 @@ fn forward_dictation_command(
     app: &AppHandle,
     command: DictationCommand,
     shortcut_label: &str,
+    starts_recording: bool,
 ) -> bool {
     let Some(state) = app.try_state::<HelperState>() else {
         emit_dictation_event_value(
@@ -1925,9 +2077,50 @@ fn forward_dictation_command(
         return false;
     };
 
-    if let Err(error) = send_helper_command(&state, command.helper_command(shortcut_label)) {
+    let mut helper_command = command.helper_command(shortcut_label);
+    if starts_recording {
+        if let Ok(registration) = state.composer_registration.lock() {
+            if let Some(registration) = registration
+                .as_ref()
+                .filter(|registration| is_foreground_window_handle(registration.window_handle))
+            {
+                if let Some(object) = helper_command.as_object_mut() {
+                    object.insert(
+                        "composerRequestId".into(),
+                        serde_json::json!(registration.request_id),
+                    );
+                    #[cfg(target_os = "windows")]
+                    {
+                        object.insert(
+                            "juneProcessId".into(),
+                            serde_json::json!(std::process::id()),
+                        );
+                        object.insert(
+                            "juneWindowHandle".into(),
+                            serde_json::json!(registration.window_handle),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let composer_request_id = helper_command
+        .get("composerRequestId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    if let Err(error) = send_helper_command(&state, helper_command) {
         emit_dictation_event_value(app, app_error_event(error));
         return false;
+    }
+    if let Some(request_id) = composer_request_id {
+        if let Ok(mut registration) = state.composer_registration.lock() {
+            if registration
+                .as_ref()
+                .is_some_and(|registration| registration.request_id == request_id)
+            {
+                *registration = None;
+            }
+        }
     }
     true
 }
@@ -3277,6 +3470,7 @@ fn reapply_helper_settings(app: &AppHandle) {
 }
 
 fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
+    update_shortcut_helper_listening(app, false);
     let event = helper_unavailable_event(reason, message);
     if let Some(status) = app.try_state::<HotkeyStatus>() {
         set_hotkey_status(&status, event.clone());
@@ -3314,8 +3508,16 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         acknowledge_shortcut_toggle(app);
     }
     match event_type {
-        Some("finalizing_transcript") => update_shortcut_helper_finalizing(app, true),
-        Some("listening_started" | "recording_discarded" | "final_transcript" | "error") => {
+        Some("listening_started") => {
+            update_shortcut_helper_listening(app, true);
+            update_shortcut_helper_finalizing(app, false);
+        }
+        Some("finalizing_transcript") => {
+            update_shortcut_helper_listening(app, false);
+            update_shortcut_helper_finalizing(app, true);
+        }
+        Some("recording_discarded" | "final_transcript" | "error") => {
+            update_shortcut_helper_listening(app, false);
             update_shortcut_helper_finalizing(app, false);
         }
         _ => {}
@@ -6624,6 +6826,21 @@ mod tests {
             controller.handle_edge(ShortcutKeyEdge::Down, DictationShortcutKind::Toggle, now),
             Some(DictationCommand::ToggleListening)
         );
+    }
+
+    #[test]
+    fn toggle_start_detection_follows_helper_confirmed_listening_state() {
+        let mut controller = ShortcutActivationController::default();
+
+        assert!(controller.command_starts_recording(DictationCommand::ToggleListening));
+        controller.set_helper_listening(true);
+        assert!(!controller.command_starts_recording(DictationCommand::ToggleListening));
+        controller.reset();
+        assert!(!controller.command_starts_recording(DictationCommand::ToggleListening));
+        controller.set_helper_listening(false);
+        assert!(controller.command_starts_recording(DictationCommand::ToggleListening));
+        assert!(controller.command_starts_recording(DictationCommand::StartListening));
+        assert!(!controller.command_starts_recording(DictationCommand::StopAndPaste));
     }
 
     #[test]

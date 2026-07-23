@@ -3531,7 +3531,61 @@ export function AgentWorkspace({
   const composerDictationRequestRef = useRef<{
     id: string;
     draftKey: string | null;
+    active: boolean;
   } | null>(null);
+  const composerDeliveryIpcRef = useRef(Promise.resolve());
+  const queueComposerDeliveryCommand = useCallback(
+    (command: Parameters<typeof dictationHelperCommand>[0]) => {
+      const pending = composerDeliveryIpcRef.current.then(() => dictationHelperCommand(command));
+      composerDeliveryIpcRef.current = pending.catch(() => {});
+      return pending;
+    },
+    [],
+  );
+  const registerComposerDelivery = useCallback(() => {
+    if (
+      !isWindowsPlatform() ||
+      composerDictationRequestRef.current ||
+      !composerEditorRef.current?.isFocused()
+    ) {
+      return;
+    }
+    const registration = {
+      id: crypto.randomUUID(),
+      draftKey: composerDraftKeyRef.current,
+      active: false,
+    };
+    composerDictationRequestRef.current = registration;
+    void queueComposerDeliveryCommand({
+      type: "register_composer_delivery",
+      composerRequestId: registration.id,
+    }).catch(() => {
+      if (composerDictationRequestRef.current === registration) {
+        composerDictationRequestRef.current = null;
+      }
+    });
+  }, [queueComposerDeliveryCommand]);
+  const releaseComposerDelivery = useCallback(
+    (registration = composerDictationRequestRef.current) => {
+      if (!registration) return;
+      if (composerDictationRequestRef.current === registration) {
+        composerDictationRequestRef.current = null;
+      }
+      if (!registration.active) {
+        void queueComposerDeliveryCommand({
+          type: "unregister_composer_delivery",
+          composerRequestId: registration.id,
+        }).catch(() => {});
+      }
+    },
+    [queueComposerDeliveryCommand],
+  );
+  useEffect(() => {
+    const registration = composerDictationRequestRef.current;
+    if (!registration || registration.active || registration.draftKey === composerDraftKey) return;
+    releaseComposerDelivery(registration);
+    window.queueMicrotask(registerComposerDelivery);
+  }, [composerDraftKey, registerComposerDelivery, releaseComposerDelivery]);
   const restoredComposerDraftKeyRef = useRef<string | null>();
   const chatArtifacts = useMemo(
     () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
@@ -3609,12 +3663,21 @@ export function AgentWorkspace({
       if (!helperEvent) return;
       const payload = helperEvent.payload;
       if (
+        helperEvent.type === "listening_started" &&
+        typeof payload?.composerRequestId === "string" &&
+        composerDictationRequestRef.current?.id === payload.composerRequestId
+      ) {
+        composerDictationRequestRef.current.active = true;
+      }
+      if (
         helperEvent.type !== "final_transcript" ||
         payload?.delivery !== "agent_composer" ||
         typeof payload.composerRequestId !== "string"
       ) {
         if (helperEvent.type === "helper_unavailable") {
-          composerDictationRequestRef.current = null;
+          const registration = composerDictationRequestRef.current;
+          releaseComposerDelivery(registration);
+          window.queueMicrotask(registerComposerDelivery);
         } else if (
           (helperEvent.type === "recording_discarded" ||
             helperEvent.type === "paste_completed" ||
@@ -3624,6 +3687,7 @@ export function AgentWorkspace({
           composerDictationRequestRef.current?.id === payload.composerRequestId
         ) {
           composerDictationRequestRef.current = null;
+          window.queueMicrotask(registerComposerDelivery);
         }
         return;
       }
@@ -3641,10 +3705,12 @@ export function AgentWorkspace({
         type: "composer_delivery_result",
         composerRequestId: armed.id,
         inserted,
-      }).catch(() => {
-        // Insertion is already consumed. Retrying could restore the clipboard
-        // after a stale acknowledgement or encourage duplicate delivery.
-      });
+      })
+        .catch(() => {
+          // Insertion is already consumed. Retrying could restore the clipboard
+          // after a stale acknowledgement or encourage duplicate delivery.
+        })
+        .finally(registerComposerDelivery);
     }).then((remove) => {
       if (disposed) remove();
       else unlisten = remove;
@@ -3652,8 +3718,9 @@ export function AgentWorkspace({
     return () => {
       disposed = true;
       unlisten?.();
+      releaseComposerDelivery();
     };
-  }, []);
+  }, [registerComposerDelivery, releaseComposerDelivery]);
 
   // New-session hero: greeting + centered composer + suggestion chips, shown
   // whenever nothing is selected — the same condition as the conversation
@@ -6742,18 +6809,19 @@ export function AgentWorkspace({
       isWindowsPlatform() && existingRequest
         ? existingRequest
         : isWindowsPlatform()
-          ? { id: crypto.randomUUID(), draftKey: composerDraftKeyRef.current }
+          ? { id: crypto.randomUUID(), draftKey: composerDraftKeyRef.current, active: false }
           : null;
     if (armedRequest) composerDictationRequestRef.current = armedRequest;
     try {
-      await dictationHelperCommand({
+      await queueComposerDeliveryCommand({
         type: "toggle_listening",
         shortcut: "Dictation",
         ...(armedRequest ? { composerRequestId: armedRequest.id } : {}),
       });
     } catch (err) {
-      if (!existingRequest && composerDictationRequestRef.current === armedRequest) {
-        composerDictationRequestRef.current = null;
+      if (composerDictationRequestRef.current === armedRequest) {
+        releaseComposerDelivery(armedRequest);
+        window.queueMicrotask(registerComposerDelivery);
       }
       setError(messageFromError(err));
     }
@@ -11396,6 +11464,15 @@ export function AgentWorkspace({
                 nextCategory,
                 attachmentsRef.current,
               );
+            }}
+            onFocusChange={(focused) => {
+              if (focused) {
+                registerComposerDelivery();
+                return;
+              }
+              const registration = composerDictationRequestRef.current;
+              if (!registration || registration.active) return;
+              releaseComposerDelivery(registration);
             }}
             onSubmit={() => void submit()}
             onBuiltinSlashCommand={(name) => {

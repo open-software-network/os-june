@@ -141,3 +141,22 @@ the random request id and captured draft key pin the composer, and the frontend
 rejects a changed session or missing editor. Requiring start and stop foreground
 handles to match incorrectly rejected valid flows stopped through the separate
 non-focusable dictation HUD without adding routing safety.
+
+### Focused global shortcuts (2026-07-23)
+
+The same direct-delivery path may serve a global shortcut only when the session
+composer pre-registers a one-shot request while its editor owns focus. Tauri
+stores that request with the exact main-window `HWND`, consumes it only for a
+shortcut command that starts recording while that same `HWND` is foreground,
+and injects both the trusted process id and exact window handle into the helper
+command. The helper independently requires its captured start target to match
+both values. A shortcut started in another application, another June window,
+or another field in June therefore retains native synthetic paste.
+
+Registration and removal commands are ordered and request-id conditional so a
+late removal cannot clear a newer registration. Session changes, editor blur,
+workspace teardown, helper failure, and rejected starts retire stale requests;
+a still-focused composer re-arms after terminal outcomes. Toggle start versus
+stop decisions follow helper-confirmed listening state, so only actual starts
+can consume a registration. Direct delivery remains insertion-only and never
+auto-submits the composer.

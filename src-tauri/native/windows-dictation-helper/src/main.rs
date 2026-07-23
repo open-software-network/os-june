@@ -60,6 +60,7 @@ struct DelayedClipboardRestore {
 struct DirectComposerRequest {
     id: String,
     june_pid: Option<u32>,
+    june_window_handle: Option<isize>,
     start_target: Option<PinnedTarget>,
 }
 
@@ -240,15 +241,21 @@ impl HelperApp {
                     hotkeys.cancel_capture();
                 }
             }
-            "start_listening" => {
-                self.start_listening(command.composer_request_id, command.june_process_id)
-            }
+            "start_listening" => self.start_listening(
+                command.composer_request_id,
+                command.june_process_id,
+                command.june_window_handle,
+            ),
             "stop_and_paste" => self.stop_and_paste(),
             "toggle_listening" => {
                 if self.recorder.is_some() {
                     self.stop_and_paste();
                 } else {
-                    self.start_listening(command.composer_request_id, command.june_process_id);
+                    self.start_listening(
+                        command.composer_request_id,
+                        command.june_process_id,
+                        command.june_window_handle,
+                    );
                 }
             }
             "paste_text" => self.paste_text(
@@ -312,7 +319,12 @@ impl HelperApp {
         }
     }
 
-    fn start_listening(&mut self, composer_request_id: Option<String>, june_pid: Option<u32>) {
+    fn start_listening(
+        &mut self,
+        composer_request_id: Option<String>,
+        june_pid: Option<u32>,
+        june_window_handle: Option<isize>,
+    ) {
         if self.recorder.is_some() || self.mic_test.is_some() || self.awaiting_transcript {
             return;
         }
@@ -323,17 +335,30 @@ impl HelperApp {
                 self.recorder = Some(recorder);
                 self.pinned_target = None;
                 self.direct_composer_request = composer_request_id.map(|id| {
-                    let verified_start_target = match (june_pid, start_target) {
-                        (Some(pid), Some(target)) if target.pid() == pid => Some(target),
+                    let verified_start_target = match (june_pid, june_window_handle, start_target) {
+                        (Some(pid), Some(hwnd), Some(target))
+                            if target.pid() == pid && target.hwnd_value() == hwnd =>
+                        {
+                            Some(target)
+                        }
                         _ => None,
                     };
                     DirectComposerRequest {
                         id,
                         june_pid,
+                        june_window_handle,
                         start_target: verified_start_target,
                     }
                 });
-                self.writer.emit(simple_event("listening_started"));
+                self.writer.emit(event(
+                    "listening_started",
+                    serde_json::json!({
+                        "composerRequestId": self
+                            .direct_composer_request
+                            .as_ref()
+                            .map(|request| request.id.as_str()),
+                    }),
+                ));
                 self.spawn_level_thread();
             }
             Err(error) => {
@@ -467,7 +492,9 @@ impl HelperApp {
         if let Some(request) = self.direct_composer_request.take() {
             let exact_request = composer_request_id.as_deref() == Some(request.id.as_str());
             let exact_target = request.start_target.is_some_and(|start_target| {
-                request.june_pid == Some(start_target.pid()) && start_target.has_exact_identity()
+                request.june_pid == Some(start_target.pid())
+                    && request.june_window_handle == Some(start_target.hwnd_value())
+                    && start_target.has_exact_identity()
             });
             self.pinned_target = None;
             if !exact_request || !exact_target {

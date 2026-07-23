@@ -989,7 +989,8 @@ describe("AgentWorkspace", () => {
     const restorePlatform = stubNavigatorPlatform("Win32", "Windows");
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
-      .mockReturnValue("12345678-1234-4234-8234-123456789abc");
+      .mockReturnValueOnce("12345678-1234-4234-8234-123456789abc")
+      .mockReturnValue("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     try {
       mocks.dictationHelperCommand.mockResolvedValue(undefined);
       const user = userEvent.setup();
@@ -1000,6 +1001,10 @@ describe("AgentWorkspace", () => {
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "toggle_listening",
         shortcut: "Dictation",
+        composerRequestId: "12345678-1234-4234-8234-123456789abc",
+      });
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "register_composer_delivery",
         composerRequestId: "12345678-1234-4234-8234-123456789abc",
       });
       await waitFor(() => expect(mocks.eventHandlers.has("dictation-event")).toBe(true));
@@ -1020,7 +1025,6 @@ describe("AgentWorkspace", () => {
 
       await emitDirectDictation("wrong-request");
       expect(composer).toHaveTextContent("");
-      expect(mocks.dictationHelperCommand).toHaveBeenCalledTimes(1);
 
       await act(async () => {
         await mocks.eventHandlers.get("dictation-event")?.({
@@ -1037,7 +1041,7 @@ describe("AgentWorkspace", () => {
 
       await emitDirectDictation("12345678-1234-4234-8234-123456789abc");
       expect(composer).toHaveTextContent("Inserted directly");
-      expect(mocks.dictationHelperCommand).toHaveBeenLastCalledWith({
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "composer_delivery_result",
         composerRequestId: "12345678-1234-4234-8234-123456789abc",
         inserted: true,
@@ -1045,7 +1049,60 @@ describe("AgentWorkspace", () => {
 
       await emitDirectDictation("12345678-1234-4234-8234-123456789abc");
       expect(composer).toHaveTextContent("Inserted directly");
-      expect(mocks.dictationHelperCommand).toHaveBeenCalledTimes(2);
+      expect(
+        mocks.dictationHelperCommand.mock.calls.filter(
+          ([command]) => command.type === "composer_delivery_result",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      randomUUID.mockRestore();
+      restorePlatform();
+    }
+  });
+
+  it("pre-registers a focused Windows composer for global shortcut delivery", async () => {
+    const restorePlatform = stubNavigatorPlatform("Win32", "Windows");
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValueOnce("87654321-4321-4321-8321-cba987654321")
+      .mockReturnValue("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    try {
+      mocks.dictationHelperCommand.mockResolvedValue(undefined);
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={existingSession} />);
+      const composer = await screen.findByRole("textbox", { name: "Message June" });
+      await user.click(composer);
+
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "register_composer_delivery",
+        composerRequestId: "87654321-4321-4321-8321-cba987654321",
+      });
+      await waitFor(() => expect(mocks.eventHandlers.has("dictation-event")).toBe(true));
+      await act(async () => {
+        await mocks.eventHandlers.get("dictation-event")?.({
+          payload: JSON.stringify({
+            type: "listening_started",
+            payload: { composerRequestId: "87654321-4321-4321-8321-cba987654321" },
+          }),
+        });
+        await mocks.eventHandlers.get("dictation-event")?.({
+          payload: JSON.stringify({
+            type: "final_transcript",
+            payload: {
+              text: "Shortcut insertion",
+              delivery: "agent_composer",
+              composerRequestId: "87654321-4321-4321-8321-cba987654321",
+            },
+          }),
+        });
+      });
+
+      expect(composer).toHaveTextContent("Shortcut insertion");
+      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+        type: "composer_delivery_result",
+        composerRequestId: "87654321-4321-4321-8321-cba987654321",
+        inserted: true,
+      });
     } finally {
       randomUUID.mockRestore();
       restorePlatform();

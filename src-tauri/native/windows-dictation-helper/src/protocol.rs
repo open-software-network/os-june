@@ -21,6 +21,8 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub june_process_id: Option<u32>,
     #[serde(default)]
+    pub june_window_handle: Option<isize>,
+    #[serde(default)]
     pub inserted: Option<bool>,
     #[serde(default)]
     pub duration_seconds: Option<u64>,
@@ -82,6 +84,18 @@ mod tests {
             command.shortcut,
             Some(Value::String("Ctrl+Alt+T".to_string()))
         );
+    }
+
+    #[test]
+    fn composer_command_accepts_exact_june_window_identity() {
+        let command: CommandEnvelope = serde_json::from_str(
+            r#"{"type":"start_listening","composerRequestId":"request-1","juneProcessId":42,"juneWindowHandle":1234}"#,
+        )
+        .expect("composer command parses");
+
+        assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
+        assert_eq!(command.june_process_id, Some(42));
+        assert_eq!(command.june_window_handle, Some(1234));
     }
 
     #[test]
