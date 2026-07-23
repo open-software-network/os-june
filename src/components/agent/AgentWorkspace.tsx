@@ -1,12 +1,26 @@
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { IconArrowUp } from "central-icons/IconArrowUp";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
+import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
+import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconFileText } from "central-icons/IconFileText";
+import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldCheck } from "central-icons/IconShieldCheck";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   agentItemsToChatTurns,
   applyAgentRuntimeEvent,
@@ -20,14 +34,27 @@ import type {
   AgentSafetyMode,
   AgentSessionDto,
 } from "../../lib/agent-runtime-contract";
-import { agentRuntimeBindings, listVeniceModels, type VeniceModelDto } from "../../lib/tauri";
+import {
+  agentRuntimeBindings,
+  dictationHelperCommand,
+  listVeniceModels,
+  type VeniceModelDto,
+} from "../../lib/tauri";
 import { dispatchAgentSessionStatus, dispatchAgentSessionsChanged } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
 import { AgentChatTurnRow } from "./chat-turns/AgentChatTurnRow";
 import { AgentArtifactList, type AgentArtifact } from "./chat-turns/AgentArtifactPanel";
 import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
 import { AgentThinking } from "./AgentThinking";
-import { advanceHeroGreeting, AGENT_SHORTCUTS } from "./agent-workspace-config";
+import { advanceHeroGreeting, AGENT_SHORTCUTS, SANDBOX_OPTIONS } from "./agent-workspace-config";
+import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
+import { agentComposerClearance } from "./composer/layout";
+import {
+  ComposerModelPicker,
+  ComposerModelPopover,
+  type ComposerModelFlyout,
+} from "./composer/ModelPicker";
+import { modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import {
   pendingNewSessionRequest,
   writeLastOpenSessionId,
@@ -135,7 +162,9 @@ export function AgentWorkspace({
   const [clarifySubmitting, setClarifySubmitting] = useState<Record<string, string>>({});
   const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
   const [heroGreeting] = useState(advanceHeroGreeting);
-  const listRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLFormElement>(null);
+  const [composerClearance, setComposerClearance] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
@@ -253,11 +282,36 @@ export function AgentWorkspace({
   }, [hydrate, refreshSessions]);
 
   useEffect(() => {
-    const list = listRef.current;
-    if (list && typeof list.scrollTo === "function") {
-      list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+    const scroller = scrollRef.current;
+    if (scroller && typeof scroller.scrollTo === "function") {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
     }
   }, [projection.items]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    const composer = composerRef.current;
+    if (newSessionMode || !selectedSession || !scroller || !composer) {
+      setComposerClearance(0);
+      return;
+    }
+    const measure = () => {
+      const next = agentComposerClearance(
+        scroller.getBoundingClientRect().bottom,
+        composer.getBoundingClientRect().top,
+      );
+      setComposerClearance((current) => (current === next ? current : next));
+    };
+    measure();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : undefined;
+    observer?.observe(scroller);
+    observer?.observe(composer);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [newSessionMode, selectedSession]);
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -392,6 +446,18 @@ export function AgentWorkspace({
     setAttachments((current) => [...new Set([...current, ...paths])].slice(0, 8));
   }
 
+  async function startDictation() {
+    if (creditActionsDisabledReason) {
+      setError(creditActionsDisabledReason);
+      return;
+    }
+    try {
+      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+    } catch (cause) {
+      setError(messageFromError(cause));
+    }
+  }
+
   async function rename(title: string) {
     if (!selectedId) return;
     const updated = await agentRuntimeBindings.renameSession(selectedId, title);
@@ -437,7 +503,11 @@ export function AgentWorkspace({
           onDelete={remove}
         />
       ) : null}
-      <div className="agent-scroll">
+      <div
+        ref={scrollRef}
+        className="agent-scroll"
+        style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
+      >
         <main className="agent-main" data-hero={heroMode ? "true" : undefined}>
           {error ? (
             <div className="agent-composer-notice" role="alert">
@@ -450,6 +520,7 @@ export function AgentWorkspace({
                 <h2 className="agent-hero-title">{heroGreeting}</h2>
               </div>
               <AgentComposer
+                formRef={composerRef}
                 draft={draft}
                 setDraft={setDraft}
                 model={model}
@@ -460,6 +531,7 @@ export function AgentWorkspace({
                 attachments={attachments}
                 setAttachments={setAttachments}
                 onPickAttachments={pickAttachments}
+                onDictate={startDictation}
                 onSubmit={submit}
                 onStop={stop}
                 working={running || submitting}
@@ -486,7 +558,7 @@ export function AgentWorkspace({
               </div>
             </>
           ) : (
-            <div ref={listRef} className="agent-timeline">
+            <div className="agent-timeline">
               {turns.map((turn) => (
                 <AgentChatTurnRow
                   key={turn.id}
@@ -513,6 +585,7 @@ export function AgentWorkspace({
       </div>
       {!heroMode ? (
         <AgentComposer
+          formRef={composerRef}
           draft={draft}
           setDraft={setDraft}
           model={model}
@@ -523,6 +596,7 @@ export function AgentWorkspace({
           attachments={attachments}
           setAttachments={setAttachments}
           onPickAttachments={pickAttachments}
+          onDictate={startDictation}
           onSubmit={submit}
           onStop={stop}
           working={running || submitting}
@@ -534,6 +608,7 @@ export function AgentWorkspace({
 }
 
 function AgentComposer({
+  formRef,
   draft,
   setDraft,
   model,
@@ -544,12 +619,14 @@ function AgentComposer({
   attachments,
   setAttachments,
   onPickAttachments,
+  onDictate,
   onSubmit,
   onStop,
   working,
   disabledReason,
   hero = false,
 }: {
+  formRef: RefObject<HTMLFormElement>;
   draft: string;
   setDraft: (value: string) => void;
   model: string;
@@ -560,14 +637,52 @@ function AgentComposer({
   attachments: string[];
   setAttachments: (value: string[]) => void;
   onPickAttachments: () => Promise<void>;
+  onDictate: () => Promise<void>;
   onSubmit: (event?: FormEvent) => Promise<void>;
   onStop: () => Promise<void>;
   working: boolean;
   disabledReason?: string;
   hero?: boolean;
 }) {
+  const editorRef = useRef<ComposerEditorHandle>(null);
+  const publishedDraftRef = useRef(draft);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelFlyout, setModelFlyout] = useState<ComposerModelFlyout>(null);
+  const [modelSearch, setModelSearch] = useState("");
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
+  const modelPopoverRef = useRef<HTMLDivElement>(null);
+  const modelSearchRef = useRef<HTMLInputElement>(null);
+  const [safetyOpen, setSafetyOpen] = useState(false);
+  const safetyTriggerRef = useRef<HTMLButtonElement>(null);
+  const safetyMenuRef = useRef<HTMLDivElement>(null);
+  const activeModel = selectedModel(models, model);
+
+  useEffect(() => {
+    if (draft === publishedDraftRef.current) return;
+    publishedDraftRef.current = draft;
+    editorRef.current?.setContent(draft, null, { focus: false });
+  }, [draft]);
+
+  useEffect(() => {
+    if (!modelOpen && !safetyOpen) return;
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (modelPopoverRef.current?.contains(target) || modelTriggerRef.current?.contains(target)) {
+        return;
+      }
+      if (safetyTriggerRef.current?.contains(target)) return;
+      if (safetyMenuRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest(".agent-composer-model-hovercard")) return;
+      setModelOpen(false);
+      setSafetyOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [modelOpen, safetyOpen]);
+
   return (
     <form
+      ref={formRef}
       className="agent-composer"
       data-hero={hero ? "true" : undefined}
       onSubmit={(event) => void onSubmit(event)}
@@ -584,44 +699,43 @@ function AgentComposer({
                   aria-label={`Remove ${path.split(/[\\/]/).pop() || path}`}
                   onClick={() => setAttachments(attachments.filter((item) => item !== path))}
                 >
-                  ×
+                  <IconCrossSmall size={12} aria-hidden />
                 </button>
               </span>
             ))}
           </div>
         ) : null}
-        <textarea
-          className="agent-composer-editor"
-          aria-label="Message June"
-          placeholder="Ask June anything"
-          value={draft}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              void onSubmit();
-            }
+        <ComposerEditor
+          ref={editorRef}
+          placeholder={hero ? "Ask June anything, run / commands" : "Send a message"}
+          onChange={(text) => {
+            publishedDraftRef.current = text;
+            setDraft(text);
           }}
+          onSubmit={() => void onSubmit()}
         />
         <div className="agent-composer-toolbar">
           <button
             type="button"
-            className="agent-composer-add"
-            aria-label="Attach files"
-            title="Attach files"
+            className="agent-composer-attach"
+            aria-label="Add files"
+            title="Add"
             onClick={() => void onPickAttachments()}
           >
             <IconPlusMedium size={18} />
-            <IconFileText size={14} />
           </button>
           <button
+            ref={safetyTriggerRef}
             type="button"
             className="agent-sandbox-trigger"
+            data-unrestricted={safetyMode === "unrestricted" ? "true" : undefined}
             disabled={working}
+            aria-haspopup="menu"
+            aria-expanded={safetyOpen}
             title={
               working ? "Safety mode is fixed while June is working" : "Change what June can touch"
             }
-            onClick={() => setSafetyMode(safetyMode === "sandboxed" ? "unrestricted" : "sandboxed")}
+            onClick={() => setSafetyOpen((open) => !open)}
           >
             {safetyMode === "sandboxed" ? (
               <IconShieldCheck size={14} />
@@ -629,24 +743,29 @@ function AgentComposer({
               <IconShieldCrossed size={14} />
             )}
             {safetyMode === "sandboxed" ? "Sandboxed" : "Unrestricted"}
+            <IconChevronDownSmall size={12} aria-hidden />
           </button>
           <div className="agent-composer-actions">
-            <select
-              className="agent-composer-model-trigger"
-              aria-label="Model"
-              value={model}
-              disabled={working}
-              onChange={(event) => setModel(event.currentTarget.value)}
+            <ComposerModelPicker
+              open={modelOpen}
+              model={activeModel}
+              readOnly={working}
+              triggerRef={modelTriggerRef}
+              onToggleOpen={() => setModelOpen((open) => !open)}
+            />
+            <button
+              type="button"
+              className="agent-composer-mic"
+              aria-label="Dictate"
+              title={disabledReason ?? "Start dictation"}
+              disabled={Boolean(disabledReason)}
+              onClick={() => {
+                editorRef.current?.focus();
+                void onDictate();
+              }}
             >
-              {!models.some((item) => item.id === model) ? (
-                <option value={model}>{model}</option>
-              ) : null}
-              {models.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
+              <IconMicrophone size={18} />
+            </button>
             {working ? (
               <button
                 type="button"
@@ -670,6 +789,60 @@ function AgentComposer({
           </div>
         </div>
       </div>
+      {safetyOpen ? (
+        <div
+          ref={safetyMenuRef}
+          className="agent-sandbox-menu"
+          role="menu"
+          aria-label="Safety mode"
+        >
+          <p className="agent-sandbox-menu-title">Choose what June can touch</p>
+          {SANDBOX_OPTIONS.map((option) => {
+            const value: AgentSafetyMode = option.unrestricted ? "unrestricted" : "sandboxed";
+            return (
+              <button
+                key={value}
+                type="button"
+                role="menuitemradio"
+                aria-checked={safetyMode === value}
+                onClick={() => {
+                  setSafetyMode(value);
+                  setSafetyOpen(false);
+                }}
+              >
+                {option.icon}
+                <span className="agent-sandbox-option">
+                  <span className="agent-sandbox-option-title">{option.title}</span>
+                  <span className="agent-sandbox-option-desc">{option.description}</span>
+                </span>
+                {safetyMode === value ? (
+                  <IconCheckmark2Small
+                    size={14}
+                    aria-hidden
+                    className="agent-sandbox-option-check"
+                  />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {modelOpen ? (
+        <ComposerModelPopover
+          flyout={modelFlyout}
+          model={activeModel}
+          options={modelOptions(models, model)}
+          search={modelSearch}
+          popoverRef={modelPopoverRef}
+          searchRef={modelSearchRef}
+          onFlyoutChange={setModelFlyout}
+          onSearchChange={setModelSearch}
+          onSelect={(nextModel) => {
+            setModel(nextModel);
+            setModelOpen(false);
+          }}
+        />
+      ) : null}
     </form>
   );
 }

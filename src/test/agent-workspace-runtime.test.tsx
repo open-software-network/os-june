@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, AgentSessionDto } from "../lib/agent-runtime-contract";
 
@@ -25,12 +26,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 import { AgentWorkspace } from "../components/agent/AgentWorkspace";
+import { agentComposerClearance } from "../components/agent/composer/layout";
 
 const session: AgentSessionDto = {
   id: "session-1",
   title: "Existing session",
   status: "idle",
-  model: "auto",
+  model: "fast",
   safetyMode: "sandboxed",
   workspacePath: "/tmp/session-1",
   source: "user",
@@ -64,7 +66,17 @@ describe("AgentWorkspace runtime wiring", () => {
         return Promise.resolve({
           mode: "generation",
           selectedModel: "auto",
-          models: [{ id: "fast", name: "Fast" }],
+          modelType: "text",
+          models: [
+            {
+              provider: "june",
+              id: "fast",
+              name: "Fast",
+              modelType: "text",
+              traits: [],
+              capabilities: ["tools"],
+            },
+          ],
         });
       }
       if (command === "start_agent_run") {
@@ -79,21 +91,25 @@ describe("AgentWorkspace runtime wiring", () => {
     });
   });
 
+  it("reserves the overlap between the transcript and fixed composer", () => {
+    expect(agentComposerClearance(800, 620)).toBe(180);
+    expect(agentComposerClearance(600, 620)).toBe(0);
+  });
+
   it("hydrates history, shows an optimistic turn, and cancels", async () => {
+    const user = userEvent.setup();
     render(<AgentWorkspace initialSession={session} />);
 
     expect(await screen.findByText("Earlier answer")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sandboxed" })).toBeEnabled();
-    expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Sandboxed" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Model" }), {
-      target: { value: "fast" },
-    });
+    expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Sandboxed" }));
+    await user.click(screen.getByRole("menuitemradio", { name: /Unrestricted/ }));
     expect(screen.getByRole("button", { name: "Unrestricted" })).toBeEnabled();
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue("fast");
     const composer = screen.getByRole("textbox", { name: "Message June" });
-    fireEvent.change(composer, { target: { value: "New request" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await user.click(composer);
+    await user.type(composer, "New request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(await screen.findByText("New request")).toBeInTheDocument();
     await waitFor(() =>
@@ -102,7 +118,8 @@ describe("AgentWorkspace runtime wiring", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "Unrestricted" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Model" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Model: Fast" })).not.toBeInTheDocument();
+    expect(screen.getByText("Fast")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Stop June" }));
     await waitFor(() =>
@@ -124,7 +141,7 @@ describe("AgentWorkspace runtime wiring", () => {
     });
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Unrestricted" })).toBeEnabled());
-    expect(screen.getByRole("combobox", { name: "Model" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
   });
 
   it("resolves clarification interruptions through the typed host command", async () => {

@@ -287,10 +287,7 @@ async fn handle_runtime_request(
                     let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
                     return Err(AppError::new(
                         "agent_model_request_failed",
-                        body.get("error")
-                            .and_then(|error| error.get("message"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("June's model gateway rejected the request."),
+                        model_gateway_error_message(&body),
                     ));
                 }
                 let stream_id = Uuid::new_v4().to_string();
@@ -340,6 +337,14 @@ async fn handle_runtime_request(
             "Request method is required.",
         )),
     }
+}
+
+fn model_gateway_error_message(body: &Value) -> &str {
+    body.get("error")
+        .and_then(|error| error.get("message").or(Some(error)))
+        .and_then(Value::as_str)
+        .or_else(|| body.get("message").and_then(Value::as_str))
+        .unwrap_or("June's model gateway rejected the request.")
 }
 
 async fn poll_model_stream(
@@ -672,4 +677,25 @@ fn sanitize_log(value: &str) -> String {
         value.truncate(2_000);
     }
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_gateway_errors_preserve_top_level_messages() {
+        assert_eq!(
+            model_gateway_error_message(&json!({ "message": "model_required" })),
+            "model_required"
+        );
+    }
+
+    #[test]
+    fn model_gateway_errors_preserve_nested_messages() {
+        assert_eq!(
+            model_gateway_error_message(&json!({ "error": { "message": "invalid tool result" } })),
+            "invalid tool result"
+        );
+    }
 }

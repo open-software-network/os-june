@@ -123,8 +123,9 @@ async fn search_june(context: &ToolContext, arguments: &Value) -> Result<Value, 
     Ok(json!({ "notes": notes, "dictations": dictations }))
 }
 
-async fn web(_context: &ToolContext, path: &str, arguments: &Value) -> Result<Value, AppError> {
-    let response = crate::june_api::forward_web_request(path, arguments).await?;
+async fn web(context: &ToolContext, path: &str, arguments: &Value) -> Result<Value, AppError> {
+    let request = web_request(arguments, context.call_id.as_deref());
+    let response = crate::june_api::forward_web_request(path, &request).await?;
     if response.status >= 400 {
         return Err(AppError::new(
             "agent_web_failed",
@@ -133,6 +134,16 @@ async fn web(_context: &ToolContext, path: &str, arguments: &Value) -> Result<Va
     }
     serde_json::from_slice(&response.body)
         .map_err(|error| AppError::new("agent_web_invalid_response", error.to_string()))
+}
+
+fn web_request(arguments: &Value, call_id: Option<&str>) -> Value {
+    let mut request = arguments.clone();
+    request["requestId"] = Value::String(
+        call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+    );
+    request
 }
 
 async fn list_files(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -513,11 +524,20 @@ fn io_error(error: std::io::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn sandbox_profile_only_grants_workspace_and_tmp_writes() {
         let profile = sandbox_profile(Path::new("/Users/example/June Workspace"));
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains("/Users/example/June Workspace"));
         assert!(!profile.contains("(allow file-write*)"));
+    }
+
+    #[test]
+    fn web_requests_use_the_tool_call_id() {
+        let request = web_request(&json!({ "query": "OpenAI Agents SDK" }), Some("call-42"));
+
+        assert_eq!(request["query"], "OpenAI Agents SDK");
+        assert_eq!(request["requestId"], "call-42");
     }
 }
