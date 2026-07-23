@@ -117,9 +117,11 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   is fetched for a working session only after a bounded streak of unreachable
   polls, consecutive reachable snapshots that omit it, or an unexpected stream
   disconnect; the current bridge has no message-revision or delta contract.
-  Gateway events render message deltas but are not a lifecycle heartbeat.
-  JUN-414 tracks detecting a silently stalled OPEN socket and forcing
-  reconnect.
+  The same existing `session.active_list` traffic is also the Gateway
+  heartbeat: three consecutive request timeouts invalidate every open client
+  for that runtime mode, converting a silently stalled OPEN socket into the
+  established unexpected-close and reconnect path without adding another
+  periodic request.
 - **Browser approvals are event-led.** The browser-approval change event
   refreshes pending approvals promptly. Snapshot reads are limited to initial
   subscription, listener reattachment, and focus, visibility, or online

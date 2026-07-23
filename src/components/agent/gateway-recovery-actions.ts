@@ -32,6 +32,7 @@ export function createGatewayRecoveryActions(
     recordHermesActivityAndDeriveStatus,
     refreshHermesSession,
     selectedHermesSessionIdRef,
+    sessionGatewayUnlistenRef,
     setBridge,
     setBridgeStarting,
     setError,
@@ -120,6 +121,12 @@ export function createGatewayRecoveryActions(
       ),
     );
     if (!activeSessionIds.size) return;
+    // A listener owns the exact attended Computer use lease opened with its
+    // prompt. Tear listeners down before reconnect work so a stalled socket
+    // cannot retain that authority through the reconnect timeout or failure.
+    for (const sessionId of activeSessionIds) {
+      sessionGatewayUnlistenRef.current.get(sessionId)?.();
+    }
     gatewayRecoveringRef.current.add(fullMode);
     // The patched Hermes gateway denies and drains unresolved MCP approvals
     // when its notification socket disconnects. Mirror that fail-closed

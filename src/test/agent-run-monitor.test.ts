@@ -16,8 +16,11 @@ const monitorMocks = vi.hoisted(() => {
   const sessionMessages = vi.fn();
   const dispatchSettled = vi.fn();
   const dispatchStatus = vi.fn();
+  const forceDisconnect = vi.fn();
   const instances: MockGateway[] = [];
   const requestContexts: MockGateway[] = [];
+
+  class MockGatewayRequestTimeoutError extends Error {}
 
   class MockGateway {
     readonly eventHandlers = new Set<EventHandler>();
@@ -44,7 +47,7 @@ const monitorMocks = vi.hoisted(() => {
       const response = request.call(this, method, params) as Promise<T>;
       return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(
-          () => reject(new Error(`Hermes request timed out: ${method}`)),
+          () => reject(new MockGatewayRequestTimeoutError(`Hermes request timed out: ${method}`)),
           timeoutMs,
         );
         void Promise.resolve(response).then(
@@ -70,7 +73,9 @@ const monitorMocks = vi.hoisted(() => {
     bridgeStatus,
     dispatchSettled,
     dispatchStatus,
+    forceDisconnect,
     instances,
+    MockGatewayRequestTimeoutError,
     request,
     requestContexts,
     sessions,
@@ -79,7 +84,9 @@ const monitorMocks = vi.hoisted(() => {
 });
 
 vi.mock("../lib/hermes-gateway", () => ({
+  forceDisconnectHermesGatewayClients: monitorMocks.forceDisconnect,
   HermesGatewayClient: monitorMocks.MockGateway,
+  HermesGatewayRequestTimeoutError: monitorMocks.MockGatewayRequestTimeoutError,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -181,6 +188,7 @@ describe("agent run monitor", () => {
     monitorMocks.sessionMessages.mockReset().mockResolvedValue({ messages: [] });
     monitorMocks.dispatchSettled.mockReset();
     monitorMocks.dispatchStatus.mockReset();
+    monitorMocks.forceDisconnect.mockReset();
   });
 
   afterEach(() => {
@@ -413,7 +421,25 @@ describe("agent run monitor", () => {
 
     expect(monitorMocks.sessions).toHaveBeenCalled();
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
-    expect(monitorMocks.instances[0]?.close).not.toHaveBeenCalled();
+    expect(monitorMocks.forceDisconnect).toHaveBeenCalledWith(false);
+  });
+
+  it("resets heartbeat misses after a successful active-list response", async () => {
+    // timeout, timeout, success, timeout, timeout must not disconnect.
+    let activeListCalls = 0;
+    monitorMocks.request.mockImplementation((method: string) => {
+      if (method !== "session.active_list") return Promise.resolve({});
+      activeListCalls += 1;
+      if (activeListCalls === 3) return Promise.resolve({ sessions: [] });
+      return new Promise(() => undefined);
+    });
+    startRun();
+
+    await flush();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(activeListCalls).toBe(5);
+    expect(monitorMocks.forceDisconnect).not.toHaveBeenCalled();
   });
 
   it("distributes one active-session request per cycle to runs in the same mode", async () => {

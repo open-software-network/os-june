@@ -254,11 +254,15 @@ export function createSessionEventListener(dependencies: createSessionEventListe
         }
       }
     });
+    let listening = true;
     unlisten = () => {
+      if (!listening) return;
+      listening = false;
       removeListener();
-      // This listener owns exactly the lease opened with its prompt. Replacing
-      // the runtime listener (for example after a gateway reconnect) must fail
-      // that lease closed without revoking a newer listener's lease.
+      // This listener owns exactly the lease opened with its prompt. Terminal
+      // events, explicit teardown, and listener replacement (including
+      // gateway-stall recovery) fail that lease closed without revoking a
+      // newer listener's lease.
       if (computerUseRunLeaseId) {
         void releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
       }

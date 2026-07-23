@@ -44,6 +44,8 @@ type Frame = {
   error?: { code?: number; message?: string };
 };
 
+const clientsByMode = new Map<boolean, Set<HermesGatewayClient>>();
+
 /** RPC rejection from the gateway, keeping the JSON-RPC error code so callers
  * can branch on well-known conditions instead of matching message strings. */
 export class HermesGatewayError extends Error {
@@ -53,6 +55,28 @@ export class HermesGatewayError extends Error {
     super(message);
     this.name = "HermesGatewayError";
     this.code = code;
+  }
+}
+
+/** A request received no response before its caller-owned deadline. Keeping
+ * this distinct from ordinary gateway failures lets the existing active-list
+ * poll count silent stalls without treating explicit disconnects as misses. */
+export class HermesGatewayRequestTimeoutError extends Error {
+  readonly method: string;
+
+  constructor(method: string) {
+    super(`Hermes request timed out: ${method}`);
+    this.name = "HermesGatewayRequestTimeoutError";
+    this.method = method;
+  }
+}
+
+/** Converts a mode-wide liveness failure into the same unexpected-close signal
+ * used for ordinary transport drops. Each client immediately detaches its
+ * silent socket, so reconnect does not wait for the browser's TCP close timer. */
+export function forceDisconnectHermesGatewayClients(fullMode: boolean) {
+  for (const client of [...(clientsByMode.get(fullMode) ?? [])]) {
+    client.forceDisconnect();
   }
 }
 
@@ -72,6 +96,10 @@ export class HermesGatewayClient {
   private handlers = new Set<(event: HermesGatewayEvent) => void>();
   private closeHandlers = new Set<() => void>();
 
+  constructor(private readonly fullMode?: boolean) {
+    this.registerForMode();
+  }
+
   async connect(wsUrl: string) {
     if (this.socket?.readyState === WebSocket.OPEN) return;
     // Coalesce concurrent connects: a second caller arriving while the
@@ -79,26 +107,34 @@ export class HermesGatewayClient {
     // just awaits the same connection attempt.
     if (this.connectPromise) return this.connectPromise;
     this.close();
+    this.registerForMode();
     const socket = new WebSocket(wsUrl);
     this.socket = socket;
     socket.addEventListener("message", (event) => this.handleMessage(event.data));
     socket.addEventListener("close", () => {
       // A stale socket's close event must not reject requests pending on
       // the socket that replaced it, nor notify close listeners.
-      if (this.socket !== socket) return;
-      this.socket = undefined;
-      this.rejectAll(new Error("Hermes gateway connection closed."));
-      for (const handler of [...this.closeHandlers]) handler();
+      this.handleUnexpectedClose(socket);
     });
     const connectPromise = new Promise<void>((resolve, reject) => {
+      let opened = false;
+      const failInitialConnection = (error: Error) => {
+        if (opened) return;
+        if (this.socket === socket) {
+          this.socket = undefined;
+          this.unregisterFromMode();
+        }
+        reject(error);
+      };
       const timer = window.setTimeout(() => {
-        reject(new Error("Hermes gateway connection timed out."));
+        failInitialConnection(new Error("Hermes gateway connection timed out."));
         socket.close();
       }, 15000);
       socket.addEventListener(
         "open",
         () => {
           window.clearTimeout(timer);
+          opened = true;
           resolve();
         },
         { once: true },
@@ -107,7 +143,7 @@ export class HermesGatewayClient {
         "error",
         () => {
           window.clearTimeout(timer);
-          reject(new Error("Could not connect to Hermes gateway."));
+          failInitialConnection(new Error("Could not connect to Hermes gateway."));
         },
         { once: true },
       );
@@ -125,7 +161,19 @@ export class HermesGatewayClient {
     // identity guard in the close handler then skips rejectAll/onClose.
     const socket = this.socket;
     this.socket = undefined;
+    this.unregisterFromMode();
     socket?.close();
+  }
+
+  /** Declares the current OPEN socket unhealthy and synchronously runs the
+   * unexpected-close path. Browser WebSocket.close() can itself wait on a
+   * wedged TCP peer, so detach and notify before asking the old socket to
+   * close. */
+  forceDisconnect() {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    this.handleUnexpectedClose(socket);
+    socket.close();
   }
 
   onEvent(handler: (event: HermesGatewayEvent) => void) {
@@ -155,7 +203,7 @@ export class HermesGatewayClient {
       };
       pending.timer = window.setTimeout(() => {
         if (this.pending.delete(id)) {
-          reject(new Error(`Hermes request timed out: ${method}`));
+          reject(new HermesGatewayRequestTimeoutError(method));
         }
       }, timeoutMs);
       this.pending.set(id, pending);
@@ -195,6 +243,28 @@ export class HermesGatewayClient {
       pending.reject(error);
       this.pending.delete(id);
     }
+  }
+
+  private handleUnexpectedClose(socket: WebSocket) {
+    if (this.socket !== socket) return;
+    this.socket = undefined;
+    this.unregisterFromMode();
+    this.rejectAll(new Error("Hermes gateway connection closed."));
+    for (const handler of [...this.closeHandlers]) handler();
+  }
+
+  private registerForMode() {
+    if (this.fullMode === undefined) return;
+    const clients = clientsByMode.get(this.fullMode) ?? new Set<HermesGatewayClient>();
+    clients.add(this);
+    clientsByMode.set(this.fullMode, clients);
+  }
+
+  private unregisterFromMode() {
+    if (this.fullMode === undefined) return;
+    const clients = clientsByMode.get(this.fullMode);
+    clients?.delete(this);
+    if (clients?.size === 0) clientsByMode.delete(this.fullMode);
   }
 }
 

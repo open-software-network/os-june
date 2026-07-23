@@ -140,6 +140,7 @@ const mocks = vi.hoisted(() => ({
   listHermesSessions: vi.fn(),
   listSessionProfiles: vi.fn(),
   gatewayRequest: vi.fn(),
+  forceDisconnectGatewayClients: vi.fn(),
   markAgentRunSucceeded: vi.fn(),
   releaseAgentRunSettlement: vi.fn(),
   startAgentRunMonitoring: vi.fn(),
@@ -266,45 +267,49 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   titleFromPrompt: mocks.titleFromPrompt,
 }));
 
-vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
-  // Real HermesGatewayError / isSessionBusyError — only the client is faked.
-  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
-  HermesGatewayClient: class {
-    constructor() {
-      mocks.gatewayInstances.push(this as unknown as (typeof mocks.gatewayInstances)[number]);
-    }
-    connect = vi.fn();
-    close = vi.fn();
-    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
-      mocks.gatewayEventHandlers.add(handler);
-      return () => mocks.gatewayEventHandlers.delete(handler);
-    });
-    onClose = vi.fn((handler: () => void) => {
-      mocks.gatewayCloseHandlers.add(handler);
-      return () => mocks.gatewayCloseHandlers.delete(handler);
-    });
-    request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
-      const response = mocks.gatewayRequest(method, params) as Promise<T>;
-      if (timeoutMs === undefined) return response;
-      return new Promise<T>((resolve, reject) => {
-        const timer = window.setTimeout(
-          () => reject(new Error(`Hermes request timed out: ${method}`)),
-          timeoutMs,
-        );
-        void Promise.resolve(response).then(
-          (value) => {
-            window.clearTimeout(timer);
-            resolve(value);
-          },
-          (error) => {
-            window.clearTimeout(timer);
-            reject(error);
-          },
-        );
+vi.mock("../lib/hermes-gateway", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/hermes-gateway")>();
+  return {
+    // Real error types and helpers — only the client and mode invalidation are faked.
+    ...original,
+    forceDisconnectHermesGatewayClients: mocks.forceDisconnectGatewayClients,
+    HermesGatewayClient: class {
+      constructor() {
+        mocks.gatewayInstances.push(this as unknown as (typeof mocks.gatewayInstances)[number]);
+      }
+      connect = vi.fn();
+      close = vi.fn();
+      onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+        mocks.gatewayEventHandlers.add(handler);
+        return () => mocks.gatewayEventHandlers.delete(handler);
       });
-    }
-  },
-}));
+      onClose = vi.fn((handler: () => void) => {
+        mocks.gatewayCloseHandlers.add(handler);
+        return () => mocks.gatewayCloseHandlers.delete(handler);
+      });
+      request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
+        const response = mocks.gatewayRequest(method, params) as Promise<T>;
+        if (timeoutMs === undefined) return response;
+        return new Promise<T>((resolve, reject) => {
+          const timer = window.setTimeout(
+            () => reject(new original.HermesGatewayRequestTimeoutError(method)),
+            timeoutMs,
+          );
+          void Promise.resolve(response).then(
+            (value) => {
+              window.clearTimeout(timer);
+              resolve(value);
+            },
+            (error) => {
+              window.clearTimeout(timer);
+              reject(error);
+            },
+          );
+        });
+      }
+    },
+  };
+});
 
 const existingTask = {
   id: "task-1",
@@ -595,6 +600,9 @@ describe("AgentWorkspace", () => {
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    mocks.forceDisconnectGatewayClients.mockImplementation(() => {
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
     resetHermesActiveSessionSnapshotsForTests();
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
@@ -9789,16 +9797,37 @@ describe("AgentWorkspace", () => {
       replyPersisted ? [...userOnly, reply] : userOnly,
     );
     mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
       if (method === "session.active_list") {
         return new Promise(() => undefined);
       }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-recovered" });
+      }
       return Promise.resolve({});
     });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "finish after wake" }),
+    );
 
     vi.useFakeTimers();
     try {
       render(<AgentWorkspace />);
-      await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+      await settleUnderFakeTimers(
+        () => {
+          expect(mocks.computerUseBeginRun).toHaveBeenCalled();
+          expect(screen.getByText("Thinking…")).toBeInTheDocument();
+        },
+        { maxMs: 2_000 },
+      );
+      const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+      expect(computerUseRunLeaseId).toMatch(/^session-2:/);
       const historyCallsBeforeStallRecovery = mocks.listHermesSessionMessages.mock.calls.length;
 
       // No gateway close is emitted. The socket stays logically OPEN while
@@ -9808,6 +9837,12 @@ describe("AgentWorkspace", () => {
         await vi.advanceTimersByTimeAsync(3_000);
       });
 
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledWith(false);
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId);
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-2",
+        cols: 96,
+      });
       expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
         historyCallsBeforeStallRecovery,
       );
@@ -9825,7 +9860,7 @@ describe("AgentWorkspace", () => {
       );
       expect(screen.getByText("Recovered from native history.")).toBeInTheDocument();
       expect(screen.queryByText("Thinking…")).toBeNull();
-      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1");
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-2");
     } finally {
       vi.useRealTimers();
     }

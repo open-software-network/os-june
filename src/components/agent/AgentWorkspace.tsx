@@ -2355,6 +2355,7 @@ export function AgentWorkspace({
     recordHermesActivityAndDeriveStatus,
     refreshHermesSession,
     selectedHermesSessionIdRef,
+    sessionGatewayUnlistenRef,
     setBridge,
     setBridgeStarting,
     setError,
