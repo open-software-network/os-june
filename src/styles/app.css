@@ -2300,16 +2300,17 @@ input:focus-visible,
   line-height: 1.55;
 }
 
-/* Sent messages: a soft borderless card pill with a small tail curl peeking
- * from the bottom-right — the chatty cue, dialed back (no accent fill, no
- * full comma tail). The nub hides behind the bubble (z-index -1) so the two
- * shapes merge without a carve, which would need a flat canvas color the
- * wash gradient can't provide. */
+/* Sent messages: a soft borderless card pill whose bottom-right corner flows
+ * into a tail — the chatty cue. The corner itself goes square, and the tail
+ * piece below supplies the corner arc, the tail tip, and BOTH smoothed joins
+ * (a concave fillet into the right edge, a soft hill into the bottom edge) as
+ * one continuous curve, so bubble and tail read as a single drawn shape. */
 .agent-timeline[data-home="true"] .agent-user-turn-body {
   position: relative;
   max-width: 70%;
   border: 0;
-  border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
+  border-radius: calc(var(--control-lg) / 2 + var(--sp-1)) calc(var(--control-lg) / 2 + var(--sp-1))
+    0 calc(var(--control-lg) / 2 + var(--sp-1));
   background: var(--card);
   /* drop-shadow, not box-shadow: the shadow must wrap the UNION of bubble and
    * tail pseudo as one silhouette. A box-shadow outlines each box separately
@@ -2321,23 +2322,26 @@ input:focus-visible,
   content: "";
   position: absolute;
   z-index: -1;
-  right: calc(-1 * var(--sp-2));
-  bottom: 0;
-  width: 26px;
-  height: 14px;
+  right: -10px;
+  bottom: -17px;
+  width: 21px;
+  height: 17px;
   background: var(--card);
-  /* The curly cue. The mask's left half is a SOLID block that reaches 20px
-   * under the bubble — past the deepest inset of its 20px corner arc — so the
-   * horn can only ever emerge through the bubble's own curve; without that
-   * block, the corner arc sweeps inward and leaves a canvas wedge between
-   * bubble and tail (the "sitting behind" disconnect). The right half is the
-   * concave horn, underside curved so the tip lifts into a flick. Masked
-   * because a background-colored carve would need a flat canvas color the
-   * wash gradient cannot provide. */
-  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 14"><path d="M0 0 L14 0 C15.5 6 19.5 10.5 26 13.2 C21 14.3 17 14.4 14 14 L0 14 Z"/></svg>');
-  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 14"><path d="M0 0 L14 0 C15.5 6 19.5 10.5 26 13.2 C21 14.3 17 14.4 14 14 L0 14 Z"/></svg>');
+  /* The corner-and-tail piece (Andrew's chat tail.svg, 38x31 viewBox scaled to
+   * 21x17): its flat top edge glues under the bubble's squared corner, the big
+   * convex arc replaces the corner rounding, and the concave sweep fillets the
+   * tail into the right edge. Masked because a background-colored carve would
+   * need a flat canvas color the wash gradient cannot provide. */
+  -webkit-mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
+  mask-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 38 31"><path d="M36.0138 26.3173C27.5346 21.3366 21.6755 12.3749 21.0039 1.99989C20.9326 0.897626 20.044 0 18.9394 0H1.93941C0.834839 0 -0.0674024 0.898144 0.00396203 2.00041C1.03418 17.9126 14.2668 30.5 30.4394 30.5C32.2254 30.5 33.9755 30.3465 35.6773 30.052C37.5125 29.7344 37.6197 27.2607 36.0138 26.3173Z"/></svg>');
   -webkit-mask-size: 100% 100%;
   mask-size: 100% 100%;
+}
+
+/* The tail hangs below the bubble's box, so the following turn gets a bit of
+ * extra clearance to keep the timeline rhythm even. */
+.agent-timeline[data-home="true"] .agent-user-turn {
+  margin-bottom: var(--sp-3);
 }
 
 /* Home is the relationship surface, so private chain-of-thought chrome stays
@@ -19513,8 +19517,27 @@ button.memory-project:hover {
   border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
 }
 
+/* Wrapped draft: the text takes the full width on top, and the controls
+ * (+ / model / dictation / send) hold their own row beneath it. The
+ * attachments rules further down intentionally out-cascade these when both
+ * states apply. */
 .agent-workspace[data-home="true"] .agent-composer-box[data-multiline] {
   align-items: end;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-editor-root {
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-attach {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-actions {
+  grid-row: 2;
+  grid-column: 3;
 }
 
 .agent-workspace[data-home="true"] .agent-composer-send,
