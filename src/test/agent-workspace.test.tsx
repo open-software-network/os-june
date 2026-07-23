@@ -6606,7 +6606,9 @@ describe("AgentWorkspace", () => {
 
     // Already granted resolves to the quiet collapsed receipt row — the full
     // "requested" prompt title is not shown, only the enabled outcome.
-    expect(await screen.findByText("Agent CLI access enabled")).toBeInTheDocument();
+    expect(
+      (await screen.findByText("Agent CLI access enabled")).closest(".agent-assistant-turn-body"),
+    ).not.toHaveClass("agent-assistant-turn-body-action-card");
     expect(screen.queryByText("Agent CLI access requested")).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable Agent CLI access" })).toBeNull();
   });
@@ -6728,7 +6730,9 @@ describe("AgentWorkspace", () => {
 
     // Already granted resolves to the quiet collapsed receipt row — the full
     // "requested" prompt title is not shown, only the enabled outcome.
-    expect(await screen.findByText("Browser use enabled")).toBeInTheDocument();
+    expect(
+      (await screen.findByText("Browser use enabled")).closest(".agent-assistant-turn-body"),
+    ).not.toHaveClass("agent-assistant-turn-body-action-card");
     expect(screen.queryByText("Browser use requested")).toBeNull();
     expect(screen.queryByRole("button", { name: "Enable Browser use" })).toBeNull();
   });
