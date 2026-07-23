@@ -2311,7 +2311,10 @@ input:focus-visible,
   border: 0;
   border-radius: calc(var(--control-lg) / 2 + var(--sp-1));
   background: var(--card);
-  box-shadow: var(--shadow-sm);
+  /* drop-shadow, not box-shadow: the shadow must wrap the UNION of bubble and
+   * tail pseudo as one silhouette. A box-shadow outlines each box separately
+   * and draws a seam where the tail meets the bubble. */
+  filter: var(--drop-shadow-sm);
 }
 
 .agent-timeline[data-home="true"] .agent-user-turn-body::after {
@@ -5537,6 +5540,21 @@ button.agent-user-attachment:hover {
   height: 48px;
   border-bottom-left-radius: var(--r-window);
   background: linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
+/* Home's dissolve must vanish into the warm floor, not paint a card-white
+ * band over it. The card layer still dissolves the scrolling conversation;
+ * the alpha-brand layer on top re-applies the wash's floor intensity with the
+ * same compositing math (brand alpha over card) as the workspace wash, so
+ * the veil is invisible against it. */
+.agent-workspace[data-home="true"] .agent-composer:not([data-hero="true"])::before {
+  background:
+    linear-gradient(
+      to bottom,
+      transparent,
+      color-mix(in oklch, var(--brand) 10.5%, transparent) 72%
+    ),
+    linear-gradient(to bottom, transparent, var(--card) 72%);
 }
 
 /* Floating "jump to live edge" pill. Absolute (never fixed on its own: a
