@@ -32,21 +32,20 @@ const SLASH_MENU_SKILL_LIMIT = Number.MAX_SAFE_INTEGER;
 const CATEGORY_SUGGESTION_PLUGIN_KEY = new PluginKey("agentCategorySuggestion");
 export const CATEGORY_SKILLS_CHANGED_EVENT = "agent-category-skills-changed";
 
-/** Reads the active category from a doc by scanning for the chip node. The
- * single-chip invariant (enforced on insert) means the first hit is the
- * answer. */
+/** Reads the active category from the first paragraph's inline children.
+ * Category drafts are built with a leading chip, but a pointer can still place
+ * the caret before that atom. Scanning sibling nodes preserves that case
+ * without descending through every block or walking any text characters. */
 export function categoryFromDoc(doc: ProseMirrorNode): ReportCategory | null {
-  let category: ReportCategory | null = null;
-  doc.descendants((node) => {
-    if (category) return false;
-    if (node.type.name === CATEGORY_CHIP_NODE) {
-      const value = node.attrs.category;
-      if (typeof value === "string") category = value as ReportCategory;
-      return false;
-    }
-    return true;
-  });
-  return category;
+  const firstBlock = doc.firstChild;
+  if (!firstBlock) return null;
+  for (let index = 0; index < firstBlock.childCount; index += 1) {
+    const inlineNode = firstBlock.child(index);
+    if (inlineNode.type.name !== CATEGORY_CHIP_NODE) continue;
+    const value = inlineNode.attrs.category;
+    return typeof value === "string" ? (value as ReportCategory) : null;
+  }
+  return null;
 }
 
 /** Removes every existing chip from `tr`, deleting from the end so the earlier
@@ -103,11 +102,15 @@ function insertCategoryCommand(category: ReportCategory, range?: { from: number;
   };
 }
 
-/** Inserts (or swaps) the category chip at the current selection. Kept for
- * restored older drafts and focused tests; new report entry points use the
- * direct-submit popover instead. */
+/** Inserts (or swaps) the category chip at the start of the first paragraph.
+ * Kept for restored older drafts and focused tests; new report entry points
+ * use the direct-submit popover instead. */
 export function insertReportCategory(editor: Editor, category: ReportCategory) {
-  editor.chain().focus().command(insertCategoryCommand(category)).run();
+  editor
+    .chain()
+    .focus()
+    .command(insertCategoryCommand(category, { from: 1, to: 1 }))
+    .run();
 }
 
 /** The inline atom chip ("Bug report" / "Feedback" / "Feature request"). Built

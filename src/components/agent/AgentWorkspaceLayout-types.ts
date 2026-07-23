@@ -44,11 +44,11 @@ export type RenderAgentWorkspaceLayoutDependencies = {
   compactSessionId: string | null;
   composer: JSX.Element | null;
   composerClearance: number;
+  composerHasContent: boolean;
   compressSessionContext: (sessionId: string) => Promise<CompressSessionResult>;
   deleteSelectedHermesSession: (sessionId: string) => Promise<void>;
   detailContent: JSX.Element | null;
   downloadArtifact: (artifact: AgentArtifact) => void;
-  draft: string;
   fetchSessionUsage: (storedSessionId: string) => Promise<SessionUsage>;
   galleryErrors: boolean;
   generationModel: VeniceModelDto | undefined;

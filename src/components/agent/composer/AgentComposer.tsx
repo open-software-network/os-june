@@ -23,15 +23,34 @@ import { CategoryIcon } from "./CategoryIcon";
 import { REPORT_CATEGORIES } from "./reportCategory";
 import { ReportDialog } from "../ReportDialog";
 import {
+  PROVISIONAL_HERMES_SESSION_PREFIX,
   SANDBOX_OPTIONS,
   rememberUnrestrictedAcknowledged,
   unrestrictedAcknowledged,
 } from "../agent-workspace-config";
-import { rememberComposerDraft } from "../agent-session-continuity";
+import { NEW_SESSION_DRAFT_KEY, rememberComposerDraft } from "../agent-session-continuity";
 import { AgentScrollToLatestButton } from "../chat-turns/TranscriptViews";
 import { formatComposerTokenCount } from "./composer-input-helpers";
 import { AgentAttachmentTile } from "../agent-workspace-support";
 import type { RenderAgentComposerDependencies } from "./AgentComposer-types";
+
+function resolveChangedDraftKey(
+  changedDraftKey: string | null | undefined,
+  currentDraftKey: string | null,
+) {
+  const targetDraftKey = changedDraftKey === undefined ? currentDraftKey : changedDraftKey;
+  // A failed new-session create rolls its provisional session draft back to
+  // the canonical new-session key while the old composer is being removed.
+  // Its teardown snapshot is still the visible next draft and must follow
+  // that rollback rather than being stranded under the retired key.
+  if (
+    currentDraftKey === NEW_SESSION_DRAFT_KEY &&
+    targetDraftKey?.startsWith(`session:${PROVISIONAL_HERMES_SESSION_PREFIX}`)
+  ) {
+    return currentDraftKey;
+  }
+  return targetDraftKey;
+}
 
 export function renderAgentComposer(dependencies: RenderAgentComposerDependencies) {
   const {
@@ -48,6 +67,8 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
     composerBoxRef,
     composerDraftKeyRef,
     composerEditorRef,
+    composerHasContent,
+    setComposerHasContent,
     onComposerFocusChange,
     composerInSteerState,
     composerModelFlyout,
@@ -61,7 +82,6 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
     composerTiptapEditorRef,
     confirmUnrestricted,
     creditActionsDisabledReason,
-    draft,
     draftRef,
     dropActive,
     editOversizeComposerInput,
@@ -222,7 +242,8 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
               disabled={
                 visibleIssueReportReview.submitting ||
                 visibleIssueReportImportingFiles ||
-                visibleIssueReportHasUnsentContext
+                visibleIssueReportHasUnsentContext ||
+                composerHasContent
               }
               onClick={() => void sendReviewableIssueReport(visibleIssueReportReview.sessionId)}
             >
@@ -233,7 +254,7 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
                 ? "Sending"
                 : visibleIssueReportImportingFiles
                   ? "Attaching files"
-                  : visibleIssueReportHasUnsentContext
+                  : visibleIssueReportHasUnsentContext || composerHasContent
                     ? "Send message first"
                     : "Send report"}
             </button>
@@ -384,7 +405,9 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
         ) : null}
         <ComposerEditor
           ref={composerEditorRef}
+          changeKey={composerDraftKeyRef.current}
           onFocusChange={onComposerFocusChange}
+          onContentChange={setComposerHasContent}
           skills={skills}
           placeholder={
             generatingVideo
@@ -403,25 +426,37 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
                       ? "Ask June anything, run / commands"
                       : "Send a message"
           }
-          onChange={(text, nextCategory) => {
-            draftRef.current = text;
-            categoryRef.current = nextCategory;
-            setDraft(text);
-            setCategory(nextCategory);
-            if (
-              !skills &&
-              !skillCommandLoading &&
-              text.trimStart().startsWith("/") &&
-              !isBuiltinComposerSlashCommand(text)
-            ) {
-              void loadSkillCommands({ silent: true });
-            }
-            rememberComposerDraft(
+          onChange={(text, nextCategory, changedDraftKey) => {
+            const targetDraftKey = resolveChangedDraftKey(
+              changedDraftKey,
               composerDraftKeyRef.current,
-              text,
-              nextCategory,
-              attachmentsRef.current,
             );
+            if (targetDraftKey === composerDraftKeyRef.current) {
+              draftRef.current = text;
+              categoryRef.current = nextCategory;
+              setDraft(text);
+              setCategory(nextCategory);
+              if (
+                !skills &&
+                !skillCommandLoading &&
+                text.trimStart().startsWith("/") &&
+                !isBuiltinComposerSlashCommand(text)
+              ) {
+                void loadSkillCommands({ silent: true });
+              }
+            }
+            rememberComposerDraft(targetDraftKey, text, nextCategory, attachmentsRef.current);
+          }}
+          onPendingChangePersist={(text, nextCategory, changedDraftKey) => {
+            const targetDraftKey = resolveChangedDraftKey(
+              changedDraftKey,
+              composerDraftKeyRef.current,
+            );
+            if (targetDraftKey === composerDraftKeyRef.current) {
+              draftRef.current = text;
+              categoryRef.current = nextCategory;
+            }
+            rememberComposerDraft(targetDraftKey, text, nextCategory, attachmentsRef.current);
           }}
           onSubmit={() => void submit()}
           onBuiltinSlashCommand={(name) => {
@@ -517,7 +552,7 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
               // redirects the run mid-flight (session.steer) without
               // interrupting it. Stop returns when the draft clears, and
               // Escape interrupts the turn at any time.
-              draft.trim().length > 0 || attachments.length > 0 ? (
+              composerHasContent || attachments.length > 0 ? (
                 // Keyed so the swap remounts (button-for-button in one slot
                 // would be updated in place) and the scale-in trade plays.
                 <button
@@ -566,7 +601,7 @@ export function renderAgentComposer(dependencies: RenderAgentComposerDependencie
                   Boolean(textActionsDisabledReason) ||
                   selectedHermesSessionIsProvisional ||
                   imageSlashBlockedByModel ||
-                  (!draft.trim() && !attachments.length)
+                  (!composerHasContent && !attachments.length)
                 }
                 title={
                   imageSlashBlockedByModel
