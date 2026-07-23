@@ -2381,11 +2381,13 @@ input:focus-visible,
   color: var(--brand);
 }
 
-/* The bloom's life signs. A wink is a gesture, not a sprite swap, so three
- * things sell it: an asymmetric eyelid (snaps shut in ~70ms, lingers closed
- * for a beat, reopens slower), a small head-cock through the moment, and a
- * long irregular-feeling cycle (14s, out of phase with the 6s float). Static
- * open eyes under reduced motion. */
+/* The bloom's life signs: a slow float, a head-cock, and a periodic wink on a
+ * long cycle (14s, out of phase with the 6s float). The two eye states are
+ * FULL-BODY paths, so they must swap in a single frame (step-end): any
+ * crossfade has both bodies semi-transparent at once, dimming the whole
+ * flower into a visible flash. The wink reads through the held closed beat
+ * (~360ms) and the eased tilt, not through eyelid fades. Static open eyes
+ * under reduced motion. */
 .june-bloom {
   display: block;
   transform-origin: 50% 55%;
@@ -2405,11 +2407,11 @@ input:focus-visible,
   }
 
   .june-bloom[data-animated] .june-bloom-open {
-    animation: june-bloom-eyes-open 14s linear infinite;
+    animation: june-bloom-eyes-open 14s step-end infinite;
   }
 
   .june-bloom[data-animated] .june-bloom-wink {
-    animation: june-bloom-eyes-wink 14s linear infinite;
+    animation: june-bloom-eyes-wink 14s step-end infinite;
   }
 }
 
@@ -2423,33 +2425,31 @@ input:focus-visible,
   }
 }
 
-/* 1% of the 14s cycle is 140ms: shut by half a step, held ~260ms, reopened
- * over ~150ms. The eyelid pair must stay complementary or the face doubles. */
+/* step-end holds each segment's starting value, so the pair flips at exactly
+ * 80% and back at 82.6% (a ~360ms closed beat) with no intermediate frames.
+ * The keyframe positions must stay identical across both, or the face
+ * double-exposes. */
 @keyframes june-bloom-eyes-open {
-  0%,
-  80% {
+  0% {
     opacity: 1;
   }
-  80.5%,
-  82.4% {
+  80% {
     opacity: 0;
   }
-  83.5%,
+  82.6%,
   100% {
     opacity: 1;
   }
 }
 
 @keyframes june-bloom-eyes-wink {
-  0%,
-  80% {
+  0% {
     opacity: 0;
   }
-  80.5%,
-  82.4% {
+  80% {
     opacity: 1;
   }
-  83.5%,
+  82.6%,
   100% {
     opacity: 0;
   }
