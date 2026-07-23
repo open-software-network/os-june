@@ -27,6 +27,7 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
+import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
@@ -80,6 +81,12 @@ import { useDismiss } from "../../lib/use-dismiss";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
+import { useForcedProfileSwitcherState } from "../../lib/profile-switcher-demo";
+import {
+  canActivateProfile,
+  useProfileManager,
+  type ProfileManagerState,
+} from "../../lib/hermes-admin";
 import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds";
 import { isPrimaryShortcut, primaryShortcutLabel } from "../../lib/platform";
 import type {
@@ -1462,6 +1469,11 @@ export function Sidebar({
             setIdentityMenuOpen(false);
             onChangeView("settings");
           }}
+          onManageProfiles={() => {
+            setIdentityMenuOpen(false);
+            onSettingsTabChange?.("profile-builder");
+            onChangeView("settings");
+          }}
           onReportIssue={
             onReportIssue
               ? (category) => {
@@ -2110,13 +2122,14 @@ const REPORT_MENU_ITEMS: { category: ReportCategory; label: string }[] = [
   { category: "feedback", label: "Send feedback" },
   { category: "feature", label: "Request a feature" },
 ];
-function SidebarIdentity({
+export function SidebarIdentity({
   account,
   menuOpen,
   onToggleMenu,
   onCloseMenu,
   onInviteFriends,
   onOpenSettings,
+  onManageProfiles,
   onReportIssue,
   onSignOut,
 }: {
@@ -2126,6 +2139,7 @@ function SidebarIdentity({
   onCloseMenu: () => void;
   onInviteFriends?: () => void;
   onOpenSettings: () => void;
+  onManageProfiles: () => void;
   onReportIssue?: (category: ReportCategory) => void;
   onSignOut?: () => void;
 }) {
@@ -2133,6 +2147,18 @@ function SidebarIdentity({
   const name = accountDisplayName(account);
 
   useDismiss(wrapRef, menuOpen, onCloseMenu);
+
+  const realProfileState = useProfileManager("sandboxed");
+  const forcedProfileState = useForcedProfileSwitcherState();
+  const profileState = forcedProfileState ?? realProfileState;
+  // Re-read the list and sticky active pointer whenever the menu opens, so an
+  // out-of-band switch (settings surface, Hermes CLI, dashboard) is reflected
+  // before the user picks a row. refresh is bound once per controller, so
+  // this effect does not refire on snapshot churn.
+  const refreshProfiles = profileState.refresh;
+  useEffect(() => {
+    if (menuOpen) refreshProfiles();
+  }, [menuOpen, refreshProfiles]);
 
   return (
     <div className="sidebar-identity-wrap" ref={wrapRef}>
@@ -2149,6 +2175,11 @@ function SidebarIdentity({
       </button>
       {menuOpen ? (
         <div className="sidebar-identity-menu" role="menu">
+          <SidebarProfileSwitcher
+            state={profileState}
+            onSwitched={onCloseMenu}
+            onManageProfiles={onManageProfiles}
+          />
           {onInviteFriends ? (
             <button
               type="button"
@@ -2191,6 +2222,81 @@ function SidebarIdentity({
         </div>
       ) : null}
     </div>
+  );
+}
+
+// The profiles group at the top of the account menu: one-click switching
+// between profiles (each keeps its own notes, sessions, and settings, per
+// ADR 0031) without a trip through Settings. Hidden until a second profile
+// exists, so the menu stays quiet for everyone who never made one; creating
+// and deleting stay on the Settings -> Profiles surface. The leading check
+// slot mirrors native macOS menus: it carries the active check, or the
+// in-flight spinner while Hermes confirms a switch.
+export function SidebarProfileSwitcher({
+  state,
+  onSwitched,
+  onManageProfiles,
+}: {
+  state: ProfileManagerState;
+  onSwitched: () => void;
+  onManageProfiles: () => void;
+}) {
+  if (state.status !== "ready" || state.profiles.length < 2) return null;
+  const switching = state.pendingAction?.kind === "activate" ? state.pendingAction.name : null;
+
+  return (
+    <>
+      <div className="sidebar-profile-group" role="group" aria-label="Profiles">
+        <span className="sidebar-profile-group-label" aria-hidden>
+          Profiles
+        </span>
+        {state.profiles.map((profile) => {
+          const isActive = profile.name === state.activeName;
+          const guard = canActivateProfile(profile.name, state.activeName, state.activeConfirmed);
+          return (
+            <button
+              key={profile.name}
+              type="button"
+              role="menuitemradio"
+              aria-checked={isActive}
+              className="sidebar-profile-item"
+              disabled={switching !== null || (!isActive && !guard.ok)}
+              title={!isActive && !guard.ok ? guard.reason : undefined}
+              onClick={() => {
+                // Picking the already-active row is a no-op select: close,
+                // like a native menu.
+                if (isActive) {
+                  onSwitched();
+                  return;
+                }
+                void state.activate(profile.name).then((switched) => {
+                  if (switched) onSwitched();
+                });
+              }}
+            >
+              <span className="sidebar-profile-check" aria-hidden>
+                {switching === profile.name ? (
+                  <DotSpinner />
+                ) : isActive ? (
+                  <IconCheckmark2Small size={14} />
+                ) : null}
+              </span>
+              <span className="sidebar-profile-name">{profile.name}</span>
+            </button>
+          );
+        })}
+        {state.error ? (
+          <p className="sidebar-profile-error" role="alert">
+            {state.error}
+          </p>
+        ) : null}
+        <button type="button" role="menuitem" onClick={onManageProfiles}>
+          <IconMagicWand size={14} />
+          Manage profiles
+        </button>
+      </div>
+      <div className="context-menu-separator" role="separator" />
+    </>
   );
 }
 
