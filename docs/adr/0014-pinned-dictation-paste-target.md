@@ -131,3 +131,13 @@ usual delayed restoration of a previous clipboard backup. Rejection, timeout,
 or any missing, stale, malformed, or mismatched identity leaves the transcript
 on the clipboard with manual-paste guidance. Direct delivery never falls back
 to synthetic `Ctrl+V`; this avoids duplicate or misdirected text.
+
+### Correction (2026-07-23)
+
+Direct delivery revalidates the initiating `HWND` and process identity but does
+not require that window to remain foreground when recording stops. The stop
+foreground is the destination only for synthetic paste. For direct delivery,
+the random request id and captured draft key pin the composer, and the frontend
+rejects a changed session or missing editor. Requiring start and stop foreground
+handles to match incorrectly rejected valid flows stopped through the separate
+non-focusable dictation HUD without adding routing safety.

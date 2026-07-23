@@ -467,9 +467,7 @@ impl HelperApp {
         if let Some(request) = self.direct_composer_request.take() {
             let exact_request = composer_request_id.as_deref() == Some(request.id.as_str());
             let exact_target = request.start_target.is_some_and(|start_target| {
-                self.pinned_target == Some(start_target)
-                    && request.june_pid == Some(start_target.pid())
-                    && start_target.has_exact_identity()
+                request.june_pid == Some(start_target.pid()) && start_target.has_exact_identity()
             });
             self.pinned_target = None;
             if !exact_request || !exact_target {
