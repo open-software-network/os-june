@@ -1,7 +1,7 @@
 use crate::{
     app_paths::AppPaths,
     audio::{
-        capture_buffer::{CaptureInput, MicrophoneWriter},
+        capture_buffer::{CaptureInput, MicrophoneWriter, MicrophoneWriterIssue},
         live_preview::{
             start_live_transcript_preview, start_system_live_transcript_preview,
             LivePreviewController, SystemLivePreviewController,
@@ -56,6 +56,8 @@ pub const RECOVERY_SNAPSHOT_INTERVAL: Duration = Duration::from_millis(500);
 const MICROPHONE_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
     "Microphone input stopped unexpectedly. Audio after this point may be missing.";
+const MICROPHONE_WRITER_WARNING_MESSAGE: &str =
+    "June stopped saving microphone audio. Stop the recording now to preserve the audio already written.";
 const MICROPHONE_BUFFER_OVERFLOW_WARNING_MESSAGE: &str =
     "Microphone recording could not keep up. Some audio may be missing.";
 
@@ -111,6 +113,7 @@ pub struct RecordingRecoveryCheckpoint {
     pub state: RecordingState,
     pub elapsed_ms: i64,
     pub dropped_samples: u64,
+    pub capture_issue: Option<MicrophoneStreamIssue>,
 }
 
 struct ActiveRecording {
@@ -560,7 +563,7 @@ pub fn start_capture_with_cancel(
                 bytes_written: 0,
                 dropped_samples: 0,
                 silence_warning: false,
-                stream_issue: None,
+                capture_issue: None,
             },
             system_capture.as_ref(),
         ),
@@ -803,6 +806,8 @@ pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
     let status = recording.status_with_state(RecordingState::Validating);
+    let writer_capture_issue =
+        microphone_writer_issue(status.elapsed_ms, recording.writer.health().issue);
     let recording_dto = RecordingSessionDto {
         id: recording.session_id.clone(),
         note_id: recording.note_id.clone(),
@@ -860,14 +865,17 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
         final_path: final_path.clone(),
         elapsed_ms: recording_dto.elapsed_ms,
         dropped_samples,
-        capture_issue: microphone_stream_issue(
-            recording_dto.elapsed_ms,
-            RecordingState::Validating,
-            &stream_error,
-            &last_callback_at,
-            false,
-        )
-        .or_else(|| stall_latch.lock().ok().and_then(|latch| latch.clone())),
+        capture_issue: writer_capture_issue
+            .or_else(|| {
+                microphone_stream_issue(
+                    recording_dto.elapsed_ms,
+                    RecordingState::Validating,
+                    &stream_error,
+                    &last_callback_at,
+                    false,
+                )
+            })
+            .or_else(|| stall_latch.lock().ok().and_then(|latch| latch.clone())),
         failure: None,
     }];
     if let Some(system_result) = system_stopped {
@@ -989,20 +997,27 @@ impl ActiveRecording {
         let peak = stats.peak;
         let rms = stats.rms;
         let recent_peaks = stats.recent_peaks;
-        let bytes_written = stats.samples.saturating_mul(2).min(i64::MAX as u64) as i64;
+        let writer_health = self.writer.health();
+        let bytes_written = writer_health
+            .written_samples
+            .saturating_mul(2)
+            .min(i64::MAX as u64) as i64;
         let dropped_samples = stats.dropped_samples;
         let elapsed_ms = self.elapsed().as_millis() as i64;
-        let microphone_stream_issue = microphone_stream_issue(
-            elapsed_ms,
-            state,
-            &self.stream_error,
-            &self.last_callback_at,
-            self.writer.has_unobserved_callback(),
-        );
-        latch_stall(&self.stall_latch, microphone_stream_issue.as_ref());
+        let microphone_capture_issue = microphone_writer_issue(elapsed_ms, writer_health.issue)
+            .or_else(|| {
+                microphone_stream_issue(
+                    elapsed_ms,
+                    state,
+                    &self.stream_error,
+                    &self.last_callback_at,
+                    self.writer.has_unobserved_callback(),
+                )
+            });
+        latch_stall(&self.stall_latch, microphone_capture_issue.as_ref());
         // A dead stream must not keep animating the last healthy peaks: the
         // waveform reads level, not silence_warning, so zero it on an issue.
-        let level = if microphone_stream_issue.is_some() {
+        let level = if microphone_capture_issue.is_some() {
             AudioLevelDto {
                 peak: 0.0,
                 rms: 0.0,
@@ -1036,11 +1051,11 @@ impl ActiveRecording {
                     dropped_samples,
                     silence_warning: self.started.elapsed() >= Duration::from_secs(10)
                         && rms < DEFAULT_SILENCE_THRESHOLD,
-                    stream_issue: microphone_stream_issue.clone(),
+                    capture_issue: microphone_capture_issue.clone(),
                 },
                 self.system_capture.as_ref(),
             ),
-            warnings: source_warnings(microphone_stream_issue.as_ref(), dropped_samples),
+            warnings: source_warnings(microphone_capture_issue.as_ref(), dropped_samples),
         }
     }
 
@@ -1070,15 +1085,28 @@ impl ActiveRecording {
         }
         self.last_recovery_snapshot_elapsed_ms = elapsed_ms;
         self.writer.flush_for_recovery();
+        let state = if self.paused {
+            RecordingState::Paused
+        } else {
+            RecordingState::Recording
+        };
+        let capture_issue = microphone_writer_issue(elapsed_ms, self.writer.health().issue)
+            .or_else(|| {
+                microphone_stream_issue(
+                    elapsed_ms,
+                    state,
+                    &self.stream_error,
+                    &self.last_callback_at,
+                    self.writer.has_unobserved_callback(),
+                )
+            });
+        latch_stall(&self.stall_latch, capture_issue.as_ref());
         Some(RecordingRecoveryCheckpoint {
             session_id: self.session_id.clone(),
-            state: if self.paused {
-                RecordingState::Paused
-            } else {
-                RecordingState::Recording
-            },
+            state,
             elapsed_ms,
             dropped_samples: self.writer.stats().dropped_samples,
+            capture_issue,
         })
     }
 }
@@ -1112,7 +1140,7 @@ struct MicrophoneStatusInput {
     bytes_written: i64,
     dropped_samples: u64,
     silence_warning: bool,
-    stream_issue: Option<MicrophoneStreamIssue>,
+    capture_issue: Option<MicrophoneStreamIssue>,
 }
 
 fn source_statuses(
@@ -1137,10 +1165,10 @@ fn source_statuses(
         bytes_written: microphone.bytes_written,
         dropped_samples: microphone.dropped_samples,
         level: microphone.level,
-        silence_warning: microphone.silence_warning || microphone.stream_issue.is_some(),
+        silence_warning: microphone.silence_warning || microphone.capture_issue.is_some(),
         path_finalized: false,
         last_error: microphone
-            .stream_issue
+            .capture_issue
             .map(|issue| issue.message)
             .or_else(|| {
                 (microphone.dropped_samples > 0)
@@ -1177,6 +1205,23 @@ fn latch_stall(
             *latch = Some(issue.clone());
         }
     }
+}
+
+fn microphone_writer_issue(
+    elapsed_ms: i64,
+    issue: Option<MicrophoneWriterIssue>,
+) -> Option<MicrophoneStreamIssue> {
+    let code = match issue? {
+        MicrophoneWriterIssue::Io => "microphone_writer_io_error",
+        MicrophoneWriterIssue::Panicked => "microphone_writer_panicked",
+        MicrophoneWriterIssue::StoppedUnexpectedly => "microphone_writer_stopped",
+        MicrophoneWriterIssue::Stalled => "microphone_writer_stalled",
+    };
+    Some(MicrophoneStreamIssue {
+        code: code.to_string(),
+        message: MICROPHONE_WRITER_WARNING_MESSAGE.to_string(),
+        elapsed_ms,
+    })
 }
 
 fn microphone_stream_issue(
@@ -1218,15 +1263,19 @@ fn microphone_stream_issue(
 }
 
 fn source_warnings(
-    microphone_stream_issue: Option<&MicrophoneStreamIssue>,
+    microphone_capture_issue: Option<&MicrophoneStreamIssue>,
     dropped_samples: u64,
 ) -> Vec<SourceWarningDto> {
     let mut warnings = Vec::new();
-    if let Some(issue) = microphone_stream_issue {
+    if let Some(issue) = microphone_capture_issue {
         warnings.push(SourceWarningDto {
             source: RecordingSource::Microphone,
             code: issue.code.clone(),
-            message: MICROPHONE_STREAM_WARNING_MESSAGE.to_string(),
+            message: if issue.code.starts_with("microphone_writer_") {
+                MICROPHONE_WRITER_WARNING_MESSAGE.to_string()
+            } else {
+                MICROPHONE_STREAM_WARNING_MESSAGE.to_string()
+            },
         });
     }
     if dropped_samples > 0 {
@@ -1433,7 +1482,7 @@ mod tests {
                 bytes_written: 1_024,
                 dropped_samples: 0,
                 silence_warning: false,
-                stream_issue: Some(issue.clone()),
+                capture_issue: Some(issue.clone()),
             },
             None,
         );
@@ -1456,6 +1505,41 @@ mod tests {
     }
 
     #[test]
+    fn microphone_writer_failure_appears_in_status_and_warnings() {
+        let issue = microphone_writer_issue(2_000, Some(MicrophoneWriterIssue::Io))
+            .expect("writer failure becomes a capture issue");
+        let sources = source_statuses(
+            RecordingSourceMode::MicrophoneOnly,
+            RecordingState::Recording,
+            2_000,
+            MicrophoneStatusInput {
+                level: AudioLevelDto::default(),
+                bytes_written: 512,
+                dropped_samples: 0,
+                silence_warning: false,
+                capture_issue: Some(issue.clone()),
+            },
+            None,
+        );
+        let warnings = source_warnings(Some(&issue), 0);
+
+        assert_eq!(sources[0].bytes_written, 512);
+        assert_eq!(
+            sources[0].last_error.as_deref(),
+            Some(MICROPHONE_WRITER_WARNING_MESSAGE)
+        );
+        assert!(sources[0].silence_warning);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, "microphone_writer_io_error");
+        assert_eq!(warnings[0].message, MICROPHONE_WRITER_WARNING_MESSAGE);
+
+        let panic_issue = microphone_writer_issue(2_500, Some(MicrophoneWriterIssue::Panicked))
+            .expect("worker panic becomes a capture issue");
+        assert_eq!(panic_issue.code, "microphone_writer_panicked");
+        assert_eq!(panic_issue.message, MICROPHONE_WRITER_WARNING_MESSAGE);
+    }
+
+    #[test]
     fn buffer_overflow_count_appears_in_status_and_warnings() {
         let sources = source_statuses(
             RecordingSourceMode::MicrophoneOnly,
@@ -1466,7 +1550,7 @@ mod tests {
                 bytes_written: 1_024,
                 dropped_samples: 37,
                 silence_warning: false,
-                stream_issue: None,
+                capture_issue: None,
             },
             None,
         );

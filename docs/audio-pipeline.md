@@ -23,7 +23,11 @@ preview).
    channel count, with a memory cap for unusual high-channel devices. If disk
    writing ever falls more than that capacity behind, the oldest queued blocks
    are dropped, exact dropped-sample counts appear in recording status, and
-   recovery/finalization checkpoints persist the count.
+   recovery/finalization checkpoints persist the count. Writer progress is
+   tracked separately from callback production: `bytesWritten` advances only
+   after successful WAV writes. The first writer I/O error, panic, unexpected
+   exit, or sustained stall stops the drain and immediately enters the existing
+   microphone warning path; recovery checkpoints persist its diagnostic code.
 3. **`finish_recording`** stops the input stream, drains and finalizes the
    writer task, then atomically renames
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
@@ -47,7 +51,9 @@ single stream. Stable metadata still comes from the recording commands, and
 Recovery durability is independent of telemetry: a recording-scoped worker
 requests a ring watermark flush and checkpoints elapsed time every 500 ms after
 the recording rows are created. The WAV task drains through that watermark and
-flushes the WAV before the recovery row advances.
+flushes the WAV before the recovery row advances. A dead writer releases the
+flush wait so recovery state and diagnostics continue advancing instead of
+waiting for the full timeout.
 
 ## Key files
 

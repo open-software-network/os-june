@@ -3,10 +3,10 @@ use hound::WavWriter;
 use std::{
     cell::UnsafeCell,
     fs::File,
-    io::BufWriter,
+    io::{BufWriter, Seek, Write},
     mem::MaybeUninit,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
         Arc, Condvar, Mutex,
     },
     thread::{self, JoinHandle},
@@ -19,6 +19,7 @@ const MAX_AUDIO_BUFFER_BLOCKS: usize = 16_384;
 const RECENT_PEAK_CAPACITY: usize = 24;
 const WRITER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const RECOVERY_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITER_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 
 #[derive(Debug)]
 struct AudioBlock {
@@ -95,7 +96,10 @@ impl AudioRing {
                     Ordering::Relaxed,
                 );
             }
-        } else {
+        } else if !self.try_push_at(enqueue_position, &mut block) {
+            // The consumer may have released the contested slot after the
+            // discard probe. Retry once before accounting the incoming block
+            // as dropped; never spin on the real-time callback.
             self.dropped_samples.fetch_add(
                 block.as_ref().map_or(0, |block| block.len as u64),
                 Ordering::Relaxed,
@@ -250,6 +254,7 @@ impl AtomicCaptureStats {
             } else {
                 (sum_square / samples as f64).sqrt() as f32
             },
+            #[cfg(test)]
             samples,
             recent_peaks,
             dropped_samples,
@@ -261,6 +266,7 @@ impl AtomicCaptureStats {
 pub struct CaptureStatsSnapshot {
     pub peak: f32,
     pub rms: f32,
+    #[cfg(test)]
     pub samples: u64,
     pub recent_peaks: Vec<f32>,
     pub dropped_samples: u64,
@@ -355,10 +361,113 @@ impl Default for WriterControl {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum StoredWriterFailure {
+    None = 0,
+    Io = 1,
+    Panicked = 2,
+    StoppedUnexpectedly = 3,
+}
+
+impl StoredWriterFailure {
+    fn from_raw(raw: u8) -> Self {
+        match raw {
+            1 => Self::Io,
+            2 => Self::Panicked,
+            3 => Self::StoppedUnexpectedly,
+            _ => Self::None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneWriterIssue {
+    Io,
+    Panicked,
+    StoppedUnexpectedly,
+    Stalled,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MicrophoneWriterHealth {
+    pub written_samples: u64,
+    pub issue: Option<MicrophoneWriterIssue>,
+}
+
+struct WriterHealth {
+    started: Instant,
+    heartbeat_ms: AtomicU64,
+    written_samples: AtomicU64,
+    failure: AtomicU8,
+}
+
+impl Default for WriterHealth {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            heartbeat_ms: AtomicU64::new(0),
+            written_samples: AtomicU64::new(0),
+            failure: AtomicU8::new(StoredWriterFailure::None as u8),
+        }
+    }
+}
+
+impl WriterHealth {
+    fn heartbeat(&self) {
+        self.heartbeat_ms.store(
+            self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            Ordering::Release,
+        );
+    }
+
+    fn record_written(&self, samples: usize) {
+        self.written_samples
+            .fetch_add(samples as u64, Ordering::Release);
+        self.heartbeat();
+    }
+
+    fn fail(&self, failure: StoredWriterFailure) {
+        let _ = self.failure.compare_exchange(
+            StoredWriterFailure::None as u8,
+            failure as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn snapshot(&self, ring: &AudioRing, control: &WriterControl) -> MicrophoneWriterHealth {
+        let stored_failure = StoredWriterFailure::from_raw(self.failure.load(Ordering::Acquire));
+        let issue = match stored_failure {
+            StoredWriterFailure::Io => Some(MicrophoneWriterIssue::Io),
+            StoredWriterFailure::Panicked => Some(MicrophoneWriterIssue::Panicked),
+            StoredWriterFailure::StoppedUnexpectedly => {
+                Some(MicrophoneWriterIssue::StoppedUnexpectedly)
+            }
+            StoredWriterFailure::None => {
+                let now_ms = self.started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                let heartbeat_age_ms =
+                    now_ms.saturating_sub(self.heartbeat_ms.load(Ordering::Acquire));
+                let has_backlog = ring.read_position() < ring.write_position();
+                (has_backlog
+                    && heartbeat_age_ms
+                        > WRITER_STALL_THRESHOLD.as_millis().min(u64::MAX as u128) as u64
+                    && !control.stop_requested.load(Ordering::Acquire))
+                .then_some(MicrophoneWriterIssue::Stalled)
+            }
+        };
+        MicrophoneWriterHealth {
+            written_samples: self.written_samples.load(Ordering::Acquire),
+            issue,
+        }
+    }
+}
+
 pub struct MicrophoneWriter {
     ring: Arc<AudioRing>,
     stats: Arc<AtomicCaptureStats>,
     control: Arc<WriterControl>,
+    health: Arc<WriterHealth>,
     worker: Option<JoinHandle<Result<(), String>>>,
 }
 
@@ -387,28 +496,25 @@ impl MicrophoneWriter {
         let ring = Arc::new(AudioRing::new(capacity));
         let stats = Arc::new(AtomicCaptureStats::default());
         let control = Arc::new(WriterControl::default());
+        let health = Arc::new(WriterHealth::default());
         let worker_ring = Arc::clone(&ring);
         let worker_stats = Arc::clone(&stats);
         let worker_control = Arc::clone(&control);
+        let worker_health = Arc::clone(&health);
         let worker = thread::Builder::new()
             .name("microphone-wav-writer".to_string())
             .spawn(move || {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_drain_worker(&worker_control, &worker_health, || {
                     drain_audio(
                         writer,
                         &worker_ring,
                         &worker_stats,
                         &worker_control,
+                        &worker_health,
                         preview,
                         &last_callback_at,
                     )
-                }))
-                .unwrap_or_else(|_| Err("Microphone WAV writer task panicked.".to_string()));
-                worker_control
-                    .worker_finished
-                    .store(true, Ordering::Release);
-                worker_control.flush_changed.notify_all();
-                result
+                })
             })
             .map_err(|error| error.to_string())?;
         let input = CaptureInput {
@@ -421,6 +527,7 @@ impl MicrophoneWriter {
                 ring,
                 stats,
                 control,
+                health,
                 worker: Some(worker),
             },
         ))
@@ -428,6 +535,10 @@ impl MicrophoneWriter {
 
     pub fn stats(&self) -> CaptureStatsSnapshot {
         self.stats.snapshot(self.ring.dropped_samples())
+    }
+
+    pub fn health(&self) -> MicrophoneWriterHealth {
+        self.health.snapshot(&self.ring, &self.control)
     }
 
     pub fn has_unobserved_callback(&self) -> bool {
@@ -486,18 +597,48 @@ impl Drop for MicrophoneWriter {
     }
 }
 
-fn drain_audio(
-    mut writer: WavWriter<BufWriter<File>>,
+fn run_drain_worker<F>(
+    control: &WriterControl,
+    health: &WriterHealth,
+    drain: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    let mut result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(drain)) {
+        Ok(result) => result,
+        Err(_) => {
+            health.fail(StoredWriterFailure::Panicked);
+            Err("Microphone WAV writer task panicked.".to_string())
+        }
+    };
+    if result.is_err() {
+        health.fail(StoredWriterFailure::Io);
+    } else if !control.stop_requested.load(Ordering::Acquire) {
+        health.fail(StoredWriterFailure::StoppedUnexpectedly);
+        result = Err("Microphone WAV writer task stopped unexpectedly.".to_string());
+    }
+    control.worker_finished.store(true, Ordering::Release);
+    control.flush_changed.notify_all();
+    result
+}
+
+fn drain_audio<W>(
+    mut writer: WavWriter<W>,
     ring: &AudioRing,
     stats: &AtomicCaptureStats,
     control: &WriterControl,
+    health: &WriterHealth,
     preview: Option<LivePreviewSink>,
     last_callback_at: &Mutex<Option<Instant>>,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    W: Write + Seek,
+{
     let mut preview_samples = Vec::new();
     let mut last_heartbeat = 0;
-    let mut first_error = None;
     loop {
+        health.heartbeat();
         let heartbeat = stats.callback_heartbeat.load(Ordering::Acquire);
         if heartbeat != last_heartbeat {
             last_heartbeat = heartbeat;
@@ -510,11 +651,16 @@ fn drain_audio(
         let mut drained_any = false;
         while let Some(block) = ring.pop() {
             drained_any = true;
+            let mut written_from_block = 0;
             for sample in &block.samples[..block.len] {
                 if let Err(error) = writer.write_sample(*sample) {
-                    first_error.get_or_insert_with(|| error.to_string());
+                    health.record_written(written_from_block);
+                    health.fail(StoredWriterFailure::Io);
+                    return Err(error.to_string());
                 }
+                written_from_block += 1;
             }
+            health.record_written(written_from_block);
             if let Some(preview) = preview.as_ref() {
                 preview_samples.extend_from_slice(&block.samples[..block.len]);
                 if block.ends_callback {
@@ -528,7 +674,8 @@ fn drain_audio(
             && ring.read_position() >= control.flush_target.load(Ordering::Acquire)
         {
             if let Err(error) = writer.flush() {
-                first_error.get_or_insert_with(|| error.to_string());
+                health.fail(StoredWriterFailure::Io);
+                return Err(error.to_string());
             }
             control
                 .flushed_generation
@@ -551,17 +698,20 @@ fn drain_audio(
             preview.try_send(preview_samples);
         }
     }
-    if let Err(error) = writer.finalize() {
-        first_error.get_or_insert_with(|| error.to_string());
-    }
-    first_error.map_or(Ok(()), Err)
+    writer.finalize().map_err(|error| {
+        health.fail(StoredWriterFailure::Io);
+        error.to_string()
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hound::{SampleFormat, WavReader, WavSpec};
-    use std::path::Path;
+    use std::{
+        io::{Cursor, Error, SeekFrom},
+        path::Path,
+    };
 
     fn block(samples: &[i16]) -> AudioBlock {
         let mut block = AudioBlock::empty();
@@ -571,17 +721,59 @@ mod tests {
         block
     }
 
+    fn wav_spec() -> WavSpec {
+        WavSpec {
+            channels: 1,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        }
+    }
+
     fn wav_writer(path: &Path) -> WavWriter<BufWriter<File>> {
-        WavWriter::create(
-            path,
-            WavSpec {
-                channels: 1,
-                sample_rate: 48_000,
-                bits_per_sample: 16,
-                sample_format: SampleFormat::Int,
-            },
-        )
-        .expect("create WAV writer")
+        WavWriter::create(path, wav_spec()).expect("create WAV writer")
+    }
+
+    fn write_direct_wav(path: &Path, samples: &[i16]) {
+        let mut direct = wav_writer(path);
+        for sample in samples {
+            direct.write_sample(*sample).expect("write direct sample");
+        }
+        direct.finalize().expect("finalize direct WAV");
+    }
+
+    struct FailAfter {
+        inner: Cursor<Vec<u8>>,
+        limit: u64,
+    }
+
+    impl FailAfter {
+        fn new(limit: u64) -> Self {
+            Self {
+                inner: Cursor::new(Vec::new()),
+                limit,
+            }
+        }
+    }
+
+    impl Write for FailAfter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            let remaining = self.limit.saturating_sub(self.inner.position()) as usize;
+            if remaining == 0 {
+                return Err(Error::other("test disk is full"));
+            }
+            self.inner.write(&buffer[..buffer.len().min(remaining)])
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    impl Seek for FailAfter {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(position)
+        }
     }
 
     #[test]
@@ -609,6 +801,42 @@ mod tests {
         assert_eq!(ring.pop().unwrap().samples[..2], [5, 6]);
         assert!(ring.pop().is_none());
         assert_eq!(ring.dropped_samples(), 3);
+    }
+
+    #[test]
+    fn overflow_drain_wav_bytes_match_the_surviving_samples() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let buffered_path = dir.path().join("overflow-buffered.wav");
+        let direct_path = dir.path().join("overflow-direct.wav");
+        let ring = AudioRing::new(2);
+        ring.push_overwrite(block(&[1, 2, 3]));
+        ring.push_overwrite(block(&[4]));
+        ring.push_overwrite(block(&[5, 6]));
+        let stats = AtomicCaptureStats::default();
+        let control = WriterControl::default();
+        control.stop_requested.store(true, Ordering::Release);
+        let health = WriterHealth::default();
+        let last_callback_at = Mutex::new(None);
+
+        drain_audio(
+            wav_writer(&buffered_path),
+            &ring,
+            &stats,
+            &control,
+            &health,
+            None,
+            &last_callback_at,
+        )
+        .expect("drain surviving overflow samples");
+        write_direct_wav(&direct_path, &[4, 5, 6]);
+
+        assert_eq!(ring.dropped_samples(), 3);
+        assert_eq!(health.snapshot(&ring, &control).written_samples, 3);
+        assert_eq!(
+            std::fs::read(buffered_path).expect("read buffered overflow WAV"),
+            std::fs::read(direct_path).expect("read direct overflow WAV"),
+            "overflow must preserve the exact bytes of every surviving sample"
+        );
     }
 
     #[test]
@@ -666,6 +894,128 @@ mod tests {
     }
 
     #[test]
+    fn first_write_error_stops_the_worker_and_publishes_exact_progress() {
+        let ring = AudioRing::new(2);
+        ring.push_overwrite(block(&[10, 20, 30]));
+        ring.push_overwrite(block(&[40, 50]));
+        let stats = AtomicCaptureStats::default();
+        let control = WriterControl::default();
+        let health = WriterHealth::default();
+        let last_callback_at = Mutex::new(None);
+        // A mono 16-bit WAV header is 44 bytes. Permit exactly one sample
+        // after it, then fail the next underlying write.
+        let writer =
+            WavWriter::new(FailAfter::new(46), wav_spec()).expect("create failing WAV writer");
+
+        let error = run_drain_worker(&control, &health, || {
+            drain_audio(
+                writer,
+                &ring,
+                &stats,
+                &control,
+                &health,
+                None,
+                &last_callback_at,
+            )
+        })
+        .expect_err("disk failure stops the writer");
+        let snapshot = health.snapshot(&ring, &control);
+
+        assert!(error.contains("test disk is full"));
+        assert_eq!(snapshot.written_samples, 1);
+        assert_eq!(snapshot.issue, Some(MicrophoneWriterIssue::Io));
+        assert!(control.worker_finished.load(Ordering::Acquire));
+        assert_eq!(
+            ring.read_position(),
+            1,
+            "the failed worker must leave later queued blocks untouched"
+        );
+    }
+
+    #[test]
+    fn worker_panic_is_caught_and_published_as_a_health_issue() {
+        let control = WriterControl::default();
+        let health = WriterHealth::default();
+        let ring = AudioRing::new(1);
+
+        let error = run_drain_worker(&control, &health, || -> Result<(), String> {
+            panic!("injected drain panic");
+        })
+        .expect_err("panic becomes a worker failure");
+
+        assert_eq!(error, "Microphone WAV writer task panicked.");
+        assert_eq!(
+            health.snapshot(&ring, &control).issue,
+            Some(MicrophoneWriterIssue::Panicked)
+        );
+        assert!(control.worker_finished.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn stalled_writer_with_backlog_publishes_an_independent_health_issue() {
+        let ring = AudioRing::new(1);
+        ring.push_overwrite(block(&[1, 2]));
+        let control = WriterControl::default();
+        let health = WriterHealth {
+            started: Instant::now() - WRITER_STALL_THRESHOLD - Duration::from_secs(1),
+            heartbeat_ms: AtomicU64::new(0),
+            written_samples: AtomicU64::new(0),
+            failure: AtomicU8::new(StoredWriterFailure::None as u8),
+        };
+
+        assert_eq!(
+            health.snapshot(&ring, &control).issue,
+            Some(MicrophoneWriterIssue::Stalled)
+        );
+    }
+
+    #[test]
+    fn stop_drains_a_partial_callback_block_byte_exactly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let buffered_path = dir.path().join("stop-buffered.wav");
+        let direct_path = dir.path().join("stop-direct.wav");
+        let samples = (0..(AUDIO_BLOCK_SAMPLES / 2 + 7))
+            .map(|index| match index % 3 {
+                0 => 0.75_f32,
+                1 => -0.5,
+                _ => 0.125,
+            })
+            .collect::<Vec<_>>();
+        let expected_samples = samples
+            .iter()
+            .map(|sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+            .collect::<Vec<_>>();
+        let (input, writer) = MicrophoneWriter::start_with_capacity(
+            wav_writer(&buffered_path),
+            8,
+            None,
+            Arc::new(Mutex::new(None)),
+        )
+        .expect("start buffered writer");
+        let ring = Arc::clone(&writer.ring);
+        let control = Arc::clone(&writer.control);
+        let health = Arc::clone(&writer.health);
+
+        input.write(
+            samples.iter().copied(),
+            &AtomicBool::new(false),
+            &AtomicBool::new(false),
+        );
+        writer.finish().expect("stop and drain partial block");
+        write_direct_wav(&direct_path, &expected_samples);
+
+        assert_eq!(
+            health.snapshot(&ring, &control).written_samples,
+            expected_samples.len() as u64
+        );
+        assert_eq!(
+            std::fs::read(buffered_path).expect("read stop-drained WAV"),
+            std::fs::read(direct_path).expect("read direct stop WAV"),
+            "stop must drain a callback block shorter than the ring block size"
+        );
+    }
+
+    #[test]
     fn writer_drain_matches_direct_wav_bytes_and_recovery_flushes() {
         let dir = tempfile::tempdir().expect("tempdir");
         let buffered_path = dir.path().join("buffered.wav");
@@ -702,6 +1052,11 @@ mod tests {
             0,
             "the writer must drain every sample without overflow"
         );
+        assert_eq!(
+            writer.health().written_samples,
+            expected_samples.len() as u64,
+            "status progress must come from successful writer calls"
+        );
         let flushed_samples = WavReader::open(&buffered_path)
             .expect("recovery-flushed WAV is readable")
             .samples::<i16>()
@@ -710,11 +1065,7 @@ mod tests {
         assert_eq!(flushed_samples, expected_samples);
         writer.finish().expect("finish buffered writer");
 
-        let mut direct = wav_writer(&direct_path);
-        for sample in &expected_samples {
-            direct.write_sample(*sample).expect("write direct sample");
-        }
-        direct.finalize().expect("finalize direct WAV");
+        write_direct_wav(&direct_path, &expected_samples);
 
         assert_eq!(
             std::fs::read(buffered_path).expect("read buffered WAV"),

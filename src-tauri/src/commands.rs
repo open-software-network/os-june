@@ -2158,6 +2158,7 @@ fn spawn_recording_recovery_checkpoint_worker(repos: Repositories, session_id: S
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(RECOVERY_SNAPSHOT_INTERVAL);
         let mut reported_dropped_samples = 0_u64;
+        let mut reported_capture_issue = None;
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Tokio intervals tick immediately. The recording-start rows already
         // hold elapsed=0, so wait for the first real checkpoint interval.
@@ -2194,6 +2195,37 @@ fn spawn_recording_recovery_checkpoint_worker(repos: Repositories, session_id: S
                                     "recording overflow checkpoint failed for {}: {}",
                                     checkpoint.session_id, error
                                 );
+                            }
+                        }
+                    }
+                    if let Some(issue) = checkpoint.capture_issue.as_ref() {
+                        if reported_capture_issue.as_deref() != Some(issue.code.as_str()) {
+                            match repos
+                                .add_source_checkpoint(
+                                    &checkpoint.session_id,
+                                    None,
+                                    Some(RecordingSource::Microphone.as_db()),
+                                    "capture_stream_error",
+                                    Some(
+                                        serde_json::json!({
+                                            "code": issue.code,
+                                            "message": issue.message,
+                                            "elapsedMs": issue.elapsed_ms,
+                                        })
+                                        .to_string(),
+                                    ),
+                                )
+                                .await
+                            {
+                                Ok(()) => {
+                                    reported_capture_issue = Some(issue.code.clone());
+                                }
+                                Err(error) => {
+                                    eprintln!(
+                                        "recording capture issue checkpoint failed for {}: {}",
+                                        checkpoint.session_id, error
+                                    );
+                                }
                             }
                         }
                     }
@@ -2404,6 +2436,7 @@ async fn finish_recording_session_with_timing(
                     "capture_stream_error",
                     Some(
                         serde_json::json!({
+                            "code": issue.code,
                             "message": issue.message,
                             "elapsedMs": issue.elapsed_ms,
                         })
