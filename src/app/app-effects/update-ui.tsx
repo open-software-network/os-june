@@ -1,5 +1,6 @@
 import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
+import type { CSSProperties } from "react";
 import type { AgentSessionStatusDetail } from "../../lib/agent-events";
 import type { JuneUpdate } from "../../lib/updater";
 import { JuneMark } from "../../components/account/AccountGate";
@@ -172,7 +173,14 @@ function UpdateStatusCard({
       {progress ? (
         <div className="update-progress" aria-hidden>
           <div className="update-progress-track">
-            <div className="update-progress-fill" style={{ width: progressWidth }} />
+            <div
+              className="update-progress-fill"
+              style={
+                {
+                  "--update-progress-clip": `calc(100% - max(var(--sp-2), ${progressWidth}))`,
+                } as CSSProperties
+              }
+            />
           </div>
           {percent !== undefined ? (
             <span className="update-progress-percent update-digit-group">

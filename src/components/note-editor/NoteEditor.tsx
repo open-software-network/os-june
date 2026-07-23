@@ -474,7 +474,11 @@ export function NoteEditor({
         {activeTab === "transcription" ? (
           <div className="transcript-view">
             {transcriptText ? (
-              <div className="transcript-toolbar">
+              <div
+                className={`transcript-toolbar${
+                  hasBothSources ? " transcript-toolbar-filtered" : ""
+                }`}
+              >
                 {hasBothSources ? (
                   <SegmentedControl
                     className="transcript-source-filter"
@@ -620,7 +624,7 @@ export function NoteEditor({
                   transition={{ duration: 0.22, ease: "easeOut" }}
                 >
                   <InlineNotice
-                    className="record-consent-note-surface"
+                    className="record-consent-note-surface record-consent-note-surface-actions"
                     aria-label="Recording consent reminder"
                     body="Make sure everyone has agreed to be recorded."
                     actions={

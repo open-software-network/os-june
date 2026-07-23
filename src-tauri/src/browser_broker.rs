@@ -7,6 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(test)]
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -50,6 +53,17 @@ pub(crate) trait BrowserTransport: Send + Sync {
     /// override this so revoke and app exit kill Chromium even when another
     /// request still holds the session and is awaiting CDP.
     fn terminate_session(&self, _session_id: &str) {}
+
+    /// App-shutdown variant. Managed transports override this to keep mutex
+    /// acquisition inside the supervised aggregate deadline; other transports
+    /// retain their existing teardown.
+    fn terminate_session_for_shutdown(
+        &self,
+        session_id: &str,
+        _deadline: crate::shutdown::ShutdownDeadline,
+    ) {
+        self.terminate_session(session_id);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -276,6 +290,12 @@ struct BrowserBrokerState {
     transport_policy: BrowserTransportPolicy,
     #[cfg(test)]
     routine_entitlement_override: Option<bool>,
+}
+
+struct BrowserShutdownPlan {
+    transports: HashMap<BrowserTransportKind, Arc<dyn BrowserTransport>>,
+    sessions: Vec<(String, BrowserTransportKind)>,
+    approvals_changed: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 struct BrowserSession {
@@ -674,28 +694,50 @@ impl BrowserBroker {
 
     /// App-exit backstop. Managed transports terminate synchronously so no
     /// in-flight request can keep Chromium or its ephemeral profile alive.
-    pub(crate) fn terminate_sessions(&self) {
-        let (transports, sessions, approvals_changed) = {
-            let mut state = self.lock();
-            state.transition_blocked = true;
-            let approvals_changed = !state.pending_approvals.is_empty();
-            state.pending_approvals.clear();
-            state.pending_by_action.clear();
-            state.resolved_actions.clear();
-            let transports = state.transports.clone();
-            let sessions = state
-                .sessions
-                .drain()
-                .map(|(id, session)| (id, session.transport_kind))
-                .collect::<Vec<_>>();
-            (transports, sessions, approvals_changed)
+    pub(crate) fn terminate_sessions(&self, deadline: crate::shutdown::ShutdownDeadline) {
+        let Some(mut state) = deadline.try_lock(&self.state) else {
+            tracing::warn!(
+                "browser shutdown exhausted the aggregate deadline acquiring the broker state lock"
+            );
+            return;
         };
-        if approvals_changed {
-            self.notify_approvals_changed();
+        let shutdown = Self::drain_sessions_for_shutdown(&mut state);
+        drop(state);
+        self.finish_session_termination(shutdown, deadline);
+    }
+
+    fn drain_sessions_for_shutdown(state: &mut BrowserBrokerState) -> BrowserShutdownPlan {
+        state.transition_blocked = true;
+        let approvals_changed = (!state.pending_approvals.is_empty())
+            .then(|| state.approvals_changed.clone())
+            .flatten();
+        state.pending_approvals.clear();
+        state.pending_by_action.clear();
+        state.resolved_actions.clear();
+        let transports = state.transports.clone();
+        let sessions = state
+            .sessions
+            .drain()
+            .map(|(id, session)| (id, session.transport_kind))
+            .collect::<Vec<_>>();
+        BrowserShutdownPlan {
+            transports,
+            sessions,
+            approvals_changed,
         }
-        for (session_id, kind) in sessions {
-            if let Some(transport) = transports.get(&kind) {
-                transport.terminate_session(&session_id);
+    }
+
+    fn finish_session_termination(
+        &self,
+        plan: BrowserShutdownPlan,
+        deadline: crate::shutdown::ShutdownDeadline,
+    ) {
+        if let Some(notify) = plan.approvals_changed {
+            notify();
+        }
+        for (session_id, kind) in plan.sessions {
+            if let Some(transport) = plan.transports.get(&kind) {
+                transport.terminate_session_for_shutdown(&session_id, deadline);
             }
         }
     }
@@ -2283,14 +2325,17 @@ mod tests {
             state
                 .terminated
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            if let Some(mut child) = state
+            if let Some(child) = state
                 .child
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
+                .try_lock()
+                .ok()
+                .and_then(|mut child| child.take())
             {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = crate::shutdown::terminate_child(
+                    child,
+                    Duration::ZERO,
+                    Duration::from_millis(250),
+                );
             }
             let _ = std::fs::remove_dir_all(&state.profile);
             state.release.notify_waiters();
@@ -3282,6 +3327,58 @@ mod tests {
             self.terminated
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn shutdown_waits_for_contended_broker_state_before_terminating_sessions() {
+        let broker = Arc::new(BrowserBroker::default());
+        let transport = Arc::new(TeardownTrackingTransport::default());
+        {
+            let mut state = broker.lock();
+            state
+                .transports
+                .insert(BrowserTransportKind::Managed, transport.clone());
+            state.sessions.insert(
+                "contended-session".to_string(),
+                BrowserSession {
+                    transport_kind: BrowserTransportKind::Managed,
+                    ..BrowserSession::default()
+                },
+            );
+        }
+
+        let state_guard = broker
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown_broker = Arc::clone(&broker);
+        let shutdown = std::thread::spawn(move || {
+            shutdown_broker.terminate_sessions(crate::shutdown::ShutdownDeadline::after(
+                Duration::from_secs(2),
+            ));
+            let _ = done_tx.send(());
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "supervised browser teardown must retain ownership past the old 250 ms lock attempt"
+        );
+        drop(state_guard);
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("shutdown completes after broker state is released");
+        shutdown.join().expect("shutdown thread");
+
+        let state = broker.lock();
+        assert!(state.transition_blocked);
+        assert!(state.sessions.is_empty());
+        assert_eq!(
+            transport
+                .terminated
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
     }
 
     #[tokio::test]
