@@ -259,9 +259,10 @@ export function createSessionEventListener(dependencies: createSessionEventListe
       if (!listening) return;
       listening = false;
       removeListener();
-      // This listener owns exactly the lease opened with its prompt. A
-      // terminal event, explicit teardown, or gateway-stall recovery all
-      // release that lease through the same boundary.
+      // This listener owns exactly the lease opened with its prompt. Terminal
+      // events, explicit teardown, and listener replacement (including
+      // gateway-stall recovery) fail that lease closed without revoking a
+      // newer listener's lease.
       if (computerUseRunLeaseId) {
         void releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
       }

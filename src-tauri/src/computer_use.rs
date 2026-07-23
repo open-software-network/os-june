@@ -2092,6 +2092,10 @@ pub fn computer_use_begin_run(
         ));
     }
     let session_id = validate_run_session_id(&request.session_id)?;
+    begin_run_lease(&state, session_id)
+}
+
+fn begin_run_lease(state: &ComputerUseState, session_id: String) -> Result<(), AppError> {
     let mut runs = state
         .attended_runs
         .lock()
@@ -2111,10 +2115,19 @@ pub fn computer_use_begin_run(
     if inserted {
         state.attended_generation.fetch_add(1, Ordering::SeqCst);
         if starts_new_task {
-            clear_app_authorizations(&state);
+            clear_app_authorizations(state);
         }
     }
     Ok(())
+}
+
+fn end_run_lease(state: &ComputerUseState, session_id: &str) -> Result<Option<u64>, AppError> {
+    let mut runs = state
+        .attended_runs
+        .lock()
+        .map_err(|_| AppError::new("computer_use_unavailable", "Run lease lock failed."))?;
+    let removed = runs.remove(session_id);
+    Ok((removed && runs.is_empty()).then(|| state.attended_generation.load(Ordering::SeqCst)))
 }
 
 #[tauri::command]
@@ -2124,15 +2137,7 @@ pub async fn computer_use_end_run(
     request: ComputerUseRunRequest,
 ) -> Result<(), AppError> {
     let session_id = validate_run_session_id(&request.session_id)?;
-    let idle_generation = {
-        let mut runs = state
-            .attended_runs
-            .lock()
-            .map_err(|_| AppError::new("computer_use_unavailable", "Run lease lock failed."))?;
-        runs.remove(&session_id);
-        runs.is_empty()
-            .then(|| state.attended_generation.load(Ordering::SeqCst))
-    };
+    let idle_generation = end_run_lease(&state, &session_id)?;
     if let Some(generation) = idle_generation {
         stop_if_idle(&app, &state, generation).await;
     }
@@ -2259,10 +2264,7 @@ async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
 async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64) {
     let _operation = state.operation.lock().await;
     let _cleanup = CleanupInProgress::begin(&state.cleanup_in_progress);
-    let still_idle = state.attended_runs.lock().is_ok_and(|runs| {
-        runs.is_empty() && state.attended_generation.load(Ordering::SeqCst) == generation
-    });
-    if !still_idle {
+    if !idle_generation_is_current(state, generation) {
         return;
     }
     state.epoch.fetch_add(1, Ordering::SeqCst);
@@ -2278,6 +2280,12 @@ async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64
     clear_app_authorizations(state);
     clear_capture_dir(app);
     let _ = set_june_stage_companion(app, false).await;
+}
+
+fn idle_generation_is_current(state: &ComputerUseState, generation: u64) -> bool {
+    state.attended_runs.lock().is_ok_and(|runs| {
+        runs.is_empty() && state.attended_generation.load(Ordering::SeqCst) == generation
+    })
 }
 
 fn clear_app_authorizations(state: &ComputerUseState) {
@@ -4846,6 +4854,49 @@ mod tests {
         let mut changed = fingerprint.clone();
         changed.outer_executable.length += 1;
         assert!(!signature_cache_matches(Some(&cached), &changed, false));
+    }
+
+    #[test]
+    fn duplicate_run_release_is_idempotent() {
+        let state = ComputerUseState::default();
+        begin_run_lease(&state, "run-a".to_string()).expect("begin first run");
+        let generation = state.attended_generation.load(Ordering::SeqCst);
+
+        assert_eq!(
+            end_run_lease(&state, "run-a").expect("end first run"),
+            Some(generation)
+        );
+        assert_eq!(
+            end_run_lease(&state, "run-a").expect("repeat end first run"),
+            None
+        );
+        assert!(idle_generation_is_current(&state, generation));
+    }
+
+    #[test]
+    fn successor_run_blocks_stale_idle_cleanup() {
+        let state = ComputerUseState::default();
+        begin_run_lease(&state, "run-a".to_string()).expect("begin first run");
+        let stale_generation = end_run_lease(&state, "run-a")
+            .expect("end first run")
+            .expect("idle generation");
+
+        begin_run_lease(&state, "run-b".to_string()).expect("begin successor run");
+
+        assert!(!idle_generation_is_current(&state, stale_generation));
+        assert_eq!(
+            end_run_lease(&state, "run-a").expect("repeat end predecessor"),
+            None
+        );
+        assert!(
+            state
+                .attended_runs
+                .lock()
+                .expect("run lease lock")
+                .contains("run-b"),
+            "a duplicate predecessor release must not remove the successor"
+        );
+        assert!(ensure_attended_run(&state).is_ok());
     }
 
     #[test]

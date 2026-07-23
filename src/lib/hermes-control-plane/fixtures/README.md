@@ -39,7 +39,7 @@ The `frames` are consumed by `replayFixture` / `replayFixtureFrames` in
 One file per event family (some combine a request with its response, or several
 related bespoke types):
 
-`normal-message`, `tool-call-success`, `tool-call-failure`,
+`normal-message`, `plain-prose-turn`, `tool-call-success`, `tool-call-failure`,
 `approval-request-response`, `clarify-request-response`, `sudo-request-response`,
 `secret-request-response`, `subagent-lifecycle`,
 `subagent-background-completion`, `image-attachment`, `model-switch`,
@@ -49,6 +49,11 @@ related bespoke types):
 `raw-events.sample.json` is the original feature-01 seed (one frame per known
 family); the files above extend it into the full replay corpus. Both are safe to
 commit.
+
+`plain-prose-turn` was captured from the exact v2026.7.20 pinned runtime through
+the dashboard gateway with a token-free local provider. Its final run-level
+edge is `session.info` with `running: false`; the runtime does not emit
+`lifecycle.complete` or `turn.completed` for that no-tool prose turn.
 
 ## Recording and sanitizing a new fixture
 

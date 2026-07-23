@@ -8755,6 +8755,16 @@ describe("AgentWorkspace", () => {
     expect(screen.getByText("Thought").closest("summary")).toHaveAttribute("aria-label", "Thought");
     expect(screen.getByText("Thought").closest("details")).toHaveAttribute("open");
 
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "session.info",
+          session_id: "runtime-session-2",
+          payload: { running: false },
+        });
+      }
+    });
+
     await user.type(screen.getByRole("textbox"), "next request");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() =>
@@ -9847,6 +9857,9 @@ describe("AgentWorkspace", () => {
         text: "connect Todoist",
       }),
     );
+    const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+    expect(computerUseRunLeaseId).toMatch(/^session-2:/);
+    expect(mocks.computerUseEndRun).not.toHaveBeenCalled();
 
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
@@ -9872,6 +9885,9 @@ describe("AgentWorkspace", () => {
         session_id: "session-2",
         cols: 96,
       }),
+    );
+    await waitFor(() =>
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId),
     );
     expect(await screen.findByText("Approval expired")).toBeInTheDocument();
     expect(hermesActivityStore.getRecord("session-2")?.phase).toBe("running");
@@ -10085,6 +10101,101 @@ describe("AgentWorkspace", () => {
     );
     await waitFor(() =>
       expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId),
+    );
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
+    window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+  });
+
+  it("keeps the Computer use run lease through tool dispatch until pinned session info reports idle", async () => {
+    const statusDetails: AgentSessionStatusDetail[] = [];
+    const handleStatus = (event: Event) => {
+      statusDetails.push((event as CustomEvent<AgentSessionStatusDetail>).detail);
+    };
+    window.addEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "open Calculator",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "open Calculator",
+      }),
+    );
+    const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+    expect(computerUseRunLeaseId).toMatch(/^session-2:/);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.complete",
+          session_id: "runtime-session-2",
+          payload: {
+            message_id: "assistant-tool-call",
+            role: "assistant",
+            tool_calls: [
+              {
+                id: "computer-use-1",
+                name: "mcp__june_computer_use__computer_use",
+              },
+            ],
+          },
+        });
+      }
+    });
+
+    expect(mocks.computerUseEndRun).not.toHaveBeenCalled();
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+    expect(statusDetails).not.toContainEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "completed" }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.start",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_call_id: "computer-use-1",
+            name: "mcp__june_computer_use__computer_use",
+          },
+        });
+        handler({
+          type: "tool.complete",
+          session_id: "runtime-session-2",
+          payload: {
+            tool_call_id: "computer-use-1",
+            name: "mcp__june_computer_use__computer_use",
+            result: { ok: true },
+          },
+        });
+      }
+    });
+
+    expect(mocks.computerUseEndRun).not.toHaveBeenCalled();
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "session.info",
+          session_id: "runtime-session-2",
+          payload: { running: false },
+        });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId),
+    );
+    expect(statusDetails).toContainEqual(
+      expect.objectContaining({ sessionId: "session-2", status: "completed" }),
     );
     expect(mocks.gatewayEventHandlers.size).toBe(0);
     window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleStatus);
@@ -15967,6 +16078,11 @@ describe("AgentWorkspace", () => {
             type: "message.complete",
             session_id: "runtime-session-1",
             payload: { text: "Current response finished." },
+          });
+          handler({
+            type: "session.info",
+            session_id: "runtime-session-1",
+            payload: { running: false },
           });
         }
       });
