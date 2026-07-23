@@ -362,6 +362,9 @@ export class HermesGatewayClient {
       if (queued.socket === this.socket) {
         try {
           for (const handler of queued.handlers) {
+            // Deliberately drop in-flight frames when external teardown
+            // unsubscribes after ingress. Unlike the old synchronous loop,
+            // this is benign for the realistic Stop-mid-stream case.
             if (this.handlers.has(handler)) handler(queued.event);
           }
         } catch (error) {
