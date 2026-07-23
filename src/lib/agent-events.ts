@@ -4,6 +4,7 @@ export const AGENT_NEW_SESSION_EVENT = "june:agent:new-session";
 export const AGENT_DELETE_SESSION_EVENT = "june:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "june:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "june:agent:new-session-pending";
+export const AGENT_SESSION_RENAMED_EVENT = "june:agent:session-renamed";
 export const AGENT_SESSION_STATUS_EVENT = "june:agent:session-status";
 export const AGENT_RUN_SETTLED_EVENT = "june:agent:run-settled";
 export const AGENT_OPEN_EVENT = "june:agent:open";
@@ -12,6 +13,12 @@ export const AGENT_OPEN_EVENT = "june:agent:open";
 export const AGENT_GALLERY_EVENT = "june:agent:gallery";
 
 export type AgentGalleryDetail = { show: boolean; errors?: boolean };
+
+/** Stored session id (not the runtime session id). */
+export type AgentSessionRenamedDetail = {
+  sessionId: string;
+  title: string;
+};
 
 export type AgentSessionStatusKind =
   | "received"

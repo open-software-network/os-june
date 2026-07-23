@@ -10497,6 +10497,46 @@ button.agent-user-attachment:hover {
   height: 100%;
 }
 
+.workspace-fallback {
+  display: flex;
+  flex-direction: column;
+  align-self: start;
+  width: min(100%, var(--content-max));
+  margin: 0 auto;
+  padding: var(--sp-10) 0;
+  gap: var(--sp-8);
+}
+
+.workspace-fallback-title,
+.workspace-fallback-lines span {
+  display: block;
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+}
+
+.workspace-fallback-title {
+  width: 38%;
+  height: var(--sp-6);
+}
+
+.workspace-fallback-lines {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.workspace-fallback-lines span {
+  width: 100%;
+  height: var(--sp-3);
+}
+
+.workspace-fallback-lines span:nth-child(2) {
+  width: 84%;
+}
+
+.workspace-fallback-lines span:nth-child(3) {
+  width: 62%;
+}
+
 /* Wrapper gives the editor a real viewport-height box inside the card. Long
  * note content contributes to the card scroller while the recorder is fixed
  * to the card bottom. */

@@ -37,6 +37,20 @@ export default defineConfig({
         "agent-hud": fileURLToPath(new URL("./agent-hud.html", import.meta.url)),
         "meeting-hud": fileURLToPath(new URL("./meeting-hud.html", import.meta.url)),
       },
+      output: {
+        manualChunks(id) {
+          if (!id.includes("/node_modules/")) return;
+
+          if (id.includes("/@tiptap/") || id.includes("/prosemirror-")) {
+            return "vendor-editor";
+          }
+          if (id.includes("/react-dom/server.") || id.includes("/react-dom/cjs/react-dom-server")) {
+            return "vendor-react-server";
+          }
+          if (id.includes("/react-dom/")) return "vendor-react-dom";
+          if (id.includes("/react/")) return "vendor-react";
+        },
+      },
     },
   },
   test: {

@@ -1,22 +1,22 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { markAgentNewSessionPending } from "../components/agent/AgentWorkspace";
+import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
-import { type NotesListHandle } from "../components/notes-list/NotesList";
-import { type SettingsTab } from "../components/settings/AppSettings";
-import { type SidebarView } from "../components/sidebar/Sidebar";
+import type { NotesListHandle } from "../components/notes-list/NotesList";
+import type { SettingsTab } from "../components/settings/settings-config";
+import type { SidebarView } from "../components/sidebar/Sidebar";
 import { defaultNav, makeTabId, type Tab, type TabNav } from "./tabs/tabs";
-import { type LiveTranscriptEventDto } from "../lib/tauri";
+import type { LiveTranscriptEventDto } from "../lib/tauri";
 import { isMacLikePlatform, isWindowsPlatform } from "../lib/platform";
-import { type AgentSessionStatusDetail } from "../lib/agent-events";
+import type { AgentSessionStatusDetail } from "../lib/agent-events";
 import { useActiveHermesProfileName } from "../lib/active-hermes-profile";
-import { type SessionProfileMap } from "../lib/session-profile-filter";
-import { type RecordingInactivityTracker } from "../lib/recording-inactivity";
+import type { SessionProfileMap } from "../lib/session-profile-filter";
+import type { RecordingInactivityTracker } from "../lib/recording-inactivity";
 import { getAgentHudEnabled } from "../lib/agent-hud-settings";
 import type { NoteDto, HermesSessionInfo } from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { shouldReplayOnboarding } from "../lib/onboarding";
-import { type JuneUpdate } from "../lib/updater";
+import type { JuneUpdate } from "../lib/updater";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
   INITIAL_UPDATE_STATUS_DISPLAY,

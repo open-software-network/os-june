@@ -1,12 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import {
-  AGENT_NEW_SESSION_EVENT,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
-} from "../components/agent/AgentWorkspace";
+} from "../components/agent/session-persistence";
 import { recordDictationFinished } from "../lib/referral-nudge";
-import { dispatchAgentSessionStatus } from "../lib/agent-events";
+import { AGENT_NEW_SESSION_EVENT, dispatchAgentSessionStatus } from "../lib/agent-events";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
 import { titleFromPrompt } from "../lib/hermes-adapter";
 import { stringPayloadValue } from "./app-helpers";

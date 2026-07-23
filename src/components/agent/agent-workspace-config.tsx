@@ -14,6 +14,8 @@ import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
+  AGENT_SESSION_RENAMED_EVENT,
+  type AgentSessionRenamedDetail,
   type AgentSessionsChangedDetail,
 } from "../../lib/agent-events";
 
@@ -230,19 +232,12 @@ export function shuffleAgentShortcuts(): AgentShortcut[] {
   return pool;
 }
 
-export const AGENT_SESSION_RENAMED_EVENT = "june:agent:session-renamed";
-
-/** stored session id (not the runtime session id). */
-export type AgentSessionRenamedDetail = {
-  sessionId: string;
-  title: string;
-};
-
 export {
   AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_SESSIONS_CHANGED_EVENT,
+  AGENT_SESSION_RENAMED_EVENT,
 };
 
-export type { AgentSessionsChangedDetail };
+export type { AgentSessionRenamedDetail, AgentSessionsChangedDetail };

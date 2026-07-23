@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
-  AGENT_NEW_SESSION_EVENT,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
-} from "../components/agent/AgentWorkspace";
+} from "../components/agent/session-persistence";
+import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 import { defaultNav, makeTabId, navEquals, type TabNav } from "./tabs/tabs";
 import { getNote } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";

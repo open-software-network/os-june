@@ -1,8 +1,8 @@
 import {
-  AGENT_NEW_SESSION_EVENT,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
-} from "../components/agent/AgentWorkspace";
+} from "../components/agent/session-persistence";
+import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import {
   assignNoteToFolder,
