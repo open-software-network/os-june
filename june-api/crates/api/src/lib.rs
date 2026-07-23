@@ -70,6 +70,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/verify", get(handlers::verify::verify))
         .route("/robots.txt", get(handlers::share_viewer::robots))
         .route("/s/{share_id}", get(handlers::share_viewer::shell))
+        .route("/s/assets/{asset}", get(handlers::share_viewer::asset))
         .route(
             "/v1/share-viewer/token",
             post(handlers::share_viewer::token_exchange),
@@ -191,6 +192,7 @@ pub fn viewer_router(state: ApiState) -> Router {
         .route("/verify", get(handlers::verify::verify))
         .route("/robots.txt", get(handlers::share_viewer::robots))
         .route("/s/{share_id}", get(handlers::share_viewer::shell))
+        .route("/s/assets/{asset}", get(handlers::share_viewer::asset))
         .route(
             "/v1/share-viewer/token",
             post(handlers::share_viewer::token_exchange),

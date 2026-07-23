@@ -1,3 +1,39 @@
+/* App typefaces, served from this same origin (embedded in june-api; see
+ * share_viewer.rs). Stacks mirror src/styles/tokens.css so the page reads
+ * as June: Diatype is the voice, the serif is for the note title, mono for
+ * code. Weights follow the app: 400 and 600 (the medium face) only. */
+@font-face {
+  font-family: "ABC Diatype";
+  src: url("/s/assets/ABCDiatype-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "ABC Diatype";
+  src: url("/s/assets/ABCDiatype-Medium.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("/s/assets/martina-plantijn-light.woff2") format("woff2");
+  font-weight: 300 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("/s/assets/BerkeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
   --page: #f2f1ee;
@@ -44,8 +80,8 @@ body {
   background: var(--page);
   color: var(--fg);
   font:
-    13px/1.55 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+    13px/1.55 "ABC Diatype", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -85,18 +121,20 @@ a:focus-visible {
   align-items: center;
   gap: 8px;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
-#topbar-title::before {
-  width: 8px;
-  height: 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 3px;
-  background: var(--card);
-  box-shadow: inset 0 0 0 2px var(--surface);
-  content: "";
+.june-mark {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.june-mark-card {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 14px;
 }
 
 #download-cta {
@@ -108,7 +146,7 @@ a:focus-visible {
   background: transparent;
   color: var(--body-copy);
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   text-decoration: none;
   transition:
     background-color 120ms ease,
@@ -185,14 +223,14 @@ a:focus-visible {
   margin: 0 0 10px;
   color: var(--muted);
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0.02em;
 }
 
 #passcode h1 {
   margin: 0;
   font-size: 17px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.3;
 }
@@ -289,7 +327,7 @@ a:focus-visible {
   border-radius: 9px;
   background: var(--primary);
   color: var(--primary-fg);
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
   transition:
     filter 120ms ease,
@@ -311,12 +349,14 @@ a:focus-visible {
   padding: 12px 4px 0;
 }
 
+/* The note title reads in the serif at 400, like .note-title in the app. */
 #content-title {
   margin: 0 0 6px;
   color: var(--fg);
+  font-family: "Martina Plantijn", "Iowan Old Style", Georgia, serif;
   font-size: 30px;
-  font-weight: 500;
-  letter-spacing: -0.025em;
+  font-weight: 400;
+  letter-spacing: 0;
   line-height: 1.15;
 }
 
@@ -337,7 +377,7 @@ a:focus-visible {
 #content-body h3 {
   margin: 32px 0 10px;
   color: var(--fg);
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -0.015em;
   line-height: 1.3;
 }
@@ -369,7 +409,7 @@ a:focus-visible {
 
 #content-body a:hover { text-decoration-color: var(--fg); }
 
-#content-body strong { font-weight: 500; }
+#content-body strong { font-weight: 600; }
 
 #content-body pre {
   margin: 18px 0;
@@ -385,7 +425,9 @@ a:focus-visible {
   border-radius: 4px;
   background: var(--surface);
   color: var(--fg);
-  font: 0.875em ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font:
+    0.875em "Berkeley Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    monospace;
 }
 
 #content-body pre code {

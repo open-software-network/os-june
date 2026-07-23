@@ -11,8 +11,8 @@
 use crate::{auth::client_address, error::ApiError, state::ApiState};
 use axum::{
     Json,
-    extract::State,
-    http::{HeaderMap, HeaderValue, header},
+    extract::{Path, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Response},
 };
 use base64::Engine as _;
@@ -23,6 +23,28 @@ use std::sync::OnceLock;
 const PAGE_TEMPLATE: &str = include_str!("share_viewer_page.html");
 const PAGE_SCRIPT: &str = include_str!("share_viewer_page.js");
 const PAGE_STYLE: &str = include_str!("share_viewer_page.css");
+
+/// The app's brand fonts, embedded so the viewer page renders with June's real
+/// typography. The bytes live inside `june-api/` (not referenced from the
+/// repo-root `public/`) because the Docker build context is `june-api/` alone.
+const VIEWER_FONTS: &[(&str, &[u8])] = &[
+    (
+        "ABCDiatype-Regular.woff2",
+        include_bytes!("share_viewer_assets/ABCDiatype-Regular.woff2"),
+    ),
+    (
+        "ABCDiatype-Medium.woff2",
+        include_bytes!("share_viewer_assets/ABCDiatype-Medium.woff2"),
+    ),
+    (
+        "martina-plantijn-light.woff2",
+        include_bytes!("share_viewer_assets/martina-plantijn-light.woff2"),
+    ),
+    (
+        "BerkeleyMono-Regular.woff2",
+        include_bytes!("share_viewer_assets/BerkeleyMono-Regular.woff2"),
+    ),
+];
 
 fn csp_hash(source: &str) -> String {
     let digest = Sha256::digest(source.as_bytes());
@@ -37,8 +59,8 @@ fn csp_header() -> &'static str {
     CSP.get_or_init(|| {
         format!(
             "default-src 'none'; script-src {script}; style-src {style}; \
-             connect-src 'self'; base-uri 'none'; form-action 'none'; \
-             frame-ancestors 'none'",
+             font-src 'self'; connect-src 'self'; base-uri 'none'; \
+             form-action 'none'; frame-ancestors 'none'",
             script = csp_hash(PAGE_SCRIPT),
             style = csp_hash(PAGE_STYLE),
         )
@@ -85,6 +107,23 @@ pub(crate) async fn shell(State(state): State<ApiState>) -> Response {
         return ApiError::SharingUnavailable.into_response();
     }
     shell_response(&state)
+}
+
+/// `GET /s/assets/{asset}` — the viewer's embedded brand fonts. Static and
+/// byte-identical for everyone, so serving them (even while sharing is
+/// disabled) reveals nothing about any share.
+pub(crate) async fn asset(Path(asset): Path<String>) -> Response {
+    let Some((_, bytes)) = VIEWER_FONTS.iter().find(|(name, _)| *name == asset) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "font/woff2"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        *bytes,
+    )
+        .into_response()
 }
 
 /// `GET /robots.txt` — private share pages must never be indexed.

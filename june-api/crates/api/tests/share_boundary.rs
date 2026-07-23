@@ -919,6 +919,54 @@ async fn viewer_shell_is_static_noindex_and_identical_for_any_id() {
 }
 
 #[tokio::test]
+async fn viewer_font_assets_are_served_with_immutable_caching() {
+    let router = share_router();
+    for asset in [
+        "ABCDiatype-Regular.woff2",
+        "ABCDiatype-Medium.woff2",
+        "martina-plantijn-light.woff2",
+        "BerkeleyMono-Regular.woff2",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/s/assets/{asset}"))
+                    .body(Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("request completes");
+        assert_eq!(response.status(), StatusCode::OK, "{asset} should serve");
+        let headers = response.headers();
+        assert_eq!(
+            headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("font/woff2")
+        );
+        assert_eq!(
+            headers
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+    }
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/s/assets/not-a-real-font.woff2")
+                .body(Body::empty())
+                .expect("request builds"),
+        )
+        .await
+        .expect("request completes");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn robots_txt_disallows_share_paths() {
     let router = share_router();
     let response = router
