@@ -119,6 +119,44 @@ describe("NoteSaveController", () => {
     expect(controller.hasPending("note-1")).toBe(true);
   });
 
+  it("retries the newest edit queued while an older save is failing", async () => {
+    vi.useFakeTimers();
+    let rejectFirst: ((error: Error) => void) | undefined;
+    const persistedRows = new Map<string, NoteEditablePatch>();
+    const persist = vi
+      .fn<(noteId: string, patch: NoteEditablePatch) => Promise<NotePatchDto>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockImplementation(async (noteId, patch) => {
+        persistedRows.set(noteId, patch);
+        return persistedPatch(noteId, patch);
+      });
+    const controller = new NoteSaveController({ persist });
+
+    controller.queue("note-1", { title: "First title", editedContent: "Old body" });
+    await vi.advanceTimersByTimeAsync(NOTE_SAVE_DEBOUNCE_MS);
+    controller.queue("note-1", { editedContent: "Newest body" });
+    await vi.advanceTimersByTimeAsync(NOTE_SAVE_DEBOUNCE_MS);
+
+    rejectFirst?.(new Error("database busy"));
+    await vi.runAllTimersAsync();
+
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(persist).toHaveBeenNthCalledWith(2, "note-1", {
+      title: "First title",
+      editedContent: "Newest body",
+    });
+    expect(persistedRows.get("note-1")).toEqual({
+      title: "First title",
+      editedContent: "Newest body",
+    });
+    expect(controller.hasPending("note-1")).toBe(false);
+  });
+
   it("persists a debounced edit before flush resolves and reads the row back", async () => {
     const rows = new Map<string, NoteEditablePatch>([
       ["note-1", { title: "Draft", editedContent: "Old body" }],

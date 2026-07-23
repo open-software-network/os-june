@@ -538,9 +538,11 @@ export function App() {
     const previousNoteId = previousVisibleEditorNoteIdRef.current;
     previousVisibleEditorNoteIdRef.current = visibleEditorNoteId;
     if (previousNoteId && previousNoteId !== visibleEditorNoteId) {
-      void noteSaveController.flush(previousNoteId);
+      void noteSaveController.flush(previousNoteId).catch((saveError) => {
+        setError(messageFromError(saveError));
+      });
     }
-  }, [noteSaveController, visibleEditorNoteId]);
+  }, [noteSaveController, setError, visibleEditorNoteId]);
   const selectedNoteLiveTranscript = useMemo(
     () => liveTranscriptEvents.filter((event) => event.noteId === selectedNoteId),
     [liveTranscriptEvents, selectedNoteId],

@@ -90,7 +90,11 @@ export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
   }
 
   async function handleFlushNote(noteId: string) {
-    await noteSaveController.flush(noteId);
+    try {
+      await noteSaveController.flush(noteId);
+    } catch (err) {
+      setError(messageFromError(err));
+    }
   }
 
   async function handleSaveNoteNow(noteId: string, patch: NoteEditablePatch) {
@@ -99,7 +103,11 @@ export function createNoteActions(dependencies: CreateNoteActionsDependencies) {
       noteId,
       patch: { ...patch, updatedAt: new Date().toISOString() },
     });
-    await noteSaveController.saveNow(noteId, patch);
+    try {
+      await noteSaveController.saveNow(noteId, patch);
+    } catch (err) {
+      setError(messageFromError(err));
+    }
   }
 
   return {

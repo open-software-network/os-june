@@ -11,6 +11,8 @@ type NoteSaveControllerOptions = {
   debounceMs?: number;
 };
 
+type NoteSaveResult = { succeeded: true } | { succeeded: false; error: unknown };
+
 /**
  * Coalesces note-row edits per note and serializes writes for the same note.
  *
@@ -21,7 +23,7 @@ type NoteSaveControllerOptions = {
 export class NoteSaveController {
   private readonly pending = new Map<string, NoteEditablePatch>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly inFlight = new Map<string, Promise<boolean>>();
+  private readonly inFlight = new Map<string, Promise<NoteSaveResult>>();
   private readonly retryAttempts = new Map<string, number>();
   private readonly debounceMs: number;
 
@@ -53,7 +55,8 @@ export class NoteSaveController {
 
   async flush(noteId: string) {
     this.clearTimer(noteId);
-    await this.drain(noteId);
+    const result = await this.drain(noteId);
+    if (!result.succeeded) throw result.error;
   }
 
   async flushAll() {
@@ -92,32 +95,33 @@ export class NoteSaveController {
     this.retryAttempts.delete(noteId);
   }
 
-  private async drain(noteId: string): Promise<void> {
+  private async drain(noteId: string): Promise<NoteSaveResult> {
     const active = this.inFlight.get(noteId);
     if (active) {
-      const succeeded = await active;
-      if (succeeded && this.pending.has(noteId)) {
-        await this.drain(noteId);
+      const result = await active;
+      if (result.succeeded && this.pending.has(noteId)) {
+        return this.drain(noteId);
       }
-      return;
+      return result;
     }
 
     const patch = this.pending.get(noteId);
-    if (!patch) return;
+    if (!patch) return { succeeded: true };
     this.pending.delete(noteId);
 
     const operation = this.persist(noteId, patch);
     this.inFlight.set(noteId, operation);
-    const succeeded = await operation;
+    const result = await operation;
     if (this.inFlight.get(noteId) === operation) {
       this.inFlight.delete(noteId);
     }
-    if (succeeded && this.pending.has(noteId)) {
-      await this.drain(noteId);
+    if (result.succeeded && this.pending.has(noteId)) {
+      return this.drain(noteId);
     }
+    return result;
   }
 
-  private async persist(noteId: string, patch: NoteEditablePatch): Promise<boolean> {
+  private async persist(noteId: string, patch: NoteEditablePatch): Promise<NoteSaveResult> {
     try {
       const persisted = await this.options.persist(noteId, patch);
       this.options.onPersisted?.({
@@ -125,7 +129,7 @@ export class NoteSaveController {
         ...this.pending.get(noteId),
       });
       this.retryAttempts.delete(noteId);
-      return true;
+      return { succeeded: true };
     } catch (error) {
       // Keep the failed fields available for the next edit/flush. Newer values
       // win when the user changed the same field while this write was running.
@@ -135,7 +139,7 @@ export class NoteSaveController {
       });
       this.options.onError?.(error, noteId);
       this.scheduleRetry(noteId);
-      return false;
+      return { succeeded: false, error };
     }
   }
 
