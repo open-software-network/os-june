@@ -219,7 +219,7 @@ export function agentStatusFromHermesEvent(
     return hasOpenPendingAction ? "waitingForUser" : "running";
   }
   if (event.kind === "transcript" && event.complete) {
-    return event.failed ? "failed" : "completed";
+    return event.failed ? "failed" : undefined;
   }
   if (event.kind === "lifecycle" && event.flavor === "terminal") {
     const status = event.status.toLowerCase();

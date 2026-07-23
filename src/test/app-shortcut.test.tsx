@@ -1100,7 +1100,9 @@ describe("App shortcuts", () => {
 
     await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
 
-    mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
 
     expect(
       await screen.findByRole("heading", { name: "General" }, { timeout: 10_000 }),
