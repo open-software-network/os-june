@@ -2642,9 +2642,10 @@ input:focus-visible,
 .agent-home-nudges button {
   min-height: var(--control-md);
   padding: 0 var(--sp-3);
-  /* The hero chips' accent-family line (follows the user's preset), so the
-   * suggestions read themed at rest like new-session's do. */
-  border: var(--border-width) solid var(--brand-line);
+  /* The system's quiet floating control: neutral hairline as its own layer,
+   * pure-elevation --shadow-sm, and a neutral hover step. The accent-line
+   * variant read as a colored glow against a cool preset's wash. */
+  border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--r-pill);
   background: var(--card);
   box-shadow: var(--shadow-sm);
@@ -2657,8 +2658,7 @@ input:focus-visible,
 }
 
 .agent-home-nudges button:hover {
-  background: var(--brand-tint);
-  color: var(--foreground);
+  background: color-mix(in oklch, var(--muted) 55%, var(--card));
 }
 
 .agent-home-task-list {
