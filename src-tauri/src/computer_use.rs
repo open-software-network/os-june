@@ -1976,7 +1976,6 @@ pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> boo
         .try_state::<ComputerUseState>()
         .map(|state| state.epoch.load(Ordering::SeqCst));
     let mut ready = if !rollout_gate().await.enabled
-    let mut ready = if !rollout_gate().await.enabled
         || !supports_vision
         || !plan_eligible().await
         || !grant_enabled(app).await
@@ -2158,7 +2157,7 @@ async fn status_with_published_readiness(
     state: &ComputerUseState,
 ) -> Result<(ComputerUseStatus, u32), AppError> {
     let expected_epoch = state.epoch.load(Ordering::SeqCst);
-    let status = status_inner(app).await;
+    let status = status_inner(app, state).await;
     let previous =
         publish_runtime_ready_probe(state, expected_epoch, status.ready).ok_or_else(|| {
             // Stop, revocation, or shutdown won while the helper/version/permission
