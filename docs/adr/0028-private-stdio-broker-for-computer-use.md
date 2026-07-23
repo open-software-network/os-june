@@ -288,10 +288,12 @@ requested local MCP servers while unrelated MCP discovery continues in the
 process-wide background. A later ordinary agent run restores the normal June
 allowlist by refreshing the existing agent snapshot, without rebuilding the
 agent or reconnecting MCP clients. Queued prompts with different scopes do not
-merge, and scoped prompts remain in-process until the optional compute-host
-frame can carry the same restriction. The separate broad slash-command worker
-remains lazy for a scoped session and starts only if the user later dispatches
-a slash command.
+merge. The optional compute-host frame cannot carry the restriction, so a
+session that uses the scope stays on its inline executor thereafter. This
+preserves one owner for history, steering, and interruption instead of switching
+between stale live agents. The separate broad slash-command worker remains lazy
+for a scoped session and starts only if the user later dispatches a slash
+command.
 
 June deliberately does not use Hermes' deferred tool-search bridge for this
 path. Computer use must remain a direct app-owned tool with its native approval

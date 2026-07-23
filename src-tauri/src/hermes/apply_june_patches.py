@@ -30,7 +30,7 @@ PATCHED_SHA256: Dict[str, str] = {
     "agent/agent_init.py": "a3f6f64cc7932df2de66c4a93bcaef3cfe1cccd20a927e48e023c2185c8da5a5",
     "tools/approval.py": "c0d941fd952b578739afff0096b8896f4d7f742d66518aefef0a9c9b3b344900",
     "tools/mcp_tool.py": "764758773737bc1c1c46d244857198eea83dfbf52c0a1460ed0bc3418c1ceb7a",
-    "tui_gateway/server.py": "10753eb8c4d3bd7a19e0cf839c1edb9876588a3037ce2481b7ffac17d5167081",
+    "tui_gateway/server.py": "6a655b6b8c1c966772d5953cc8e63d9aea35435c4f2a7088acba2d05514481be",
     "utils.py": "0795233ec93398fe0f13e785d8b7c66768f60ee83b29d853c24009e1558e0174",
     "plugins/platforms/telegram/adapter.py": "b4fab048d4986ab49615a1b5abb0dafeade4a25196578bf93cb065b793d67c8b",
 }
@@ -577,6 +577,23 @@ def patch_mcp_tool(source: str) -> str:
 
 
 def patch_server(source: str) -> str:
+    source = replace_once(
+        source,
+        '''def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
+    if not _turn_isolation_enabled(cfg):
+        return False
+''',
+        '''def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
+    if not _turn_isolation_enabled(cfg):
+        return False
+    # The current compute-host frame cannot carry a per-agent-run tool scope.
+    # Once a session needs one, keep that session on the inline executor so
+    # history and controls always target the same live agent.
+    if session.get("_june_inline_executor"):
+        return False
+''',
+        "scoped sessions stay on one executor",
+    )
     source = replace_once(
         source,
         '''    lock = session.setdefault("agent_build_lock", threading.Lock())
@@ -1662,6 +1679,20 @@ def _session_tool_progress_mode(sid: str) -> str:
     )
     source = replace_once(
         source,
+        '''        session["queued_prompt"] = None
+        session["running"] = True
+''',
+        '''        session["queued_prompt"] = None
+        if queued.get(
+            "enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET
+        ) not in (_AGENT_RUN_TOOLSETS_UNSET, None):
+            session["_june_inline_executor"] = True
+        session["running"] = True
+''',
+        "queued scoped prompt pins executor before claim",
+    )
+    source = replace_once(
+        source,
         '''        if _session_uses_compute_host(session):
             resp = _submit_prompt_to_compute_host(rid, sid, session, queued["text"])
 ''',
@@ -1682,13 +1713,77 @@ def _session_tool_progress_mode(sid: str) -> str:
             _run_prompt_submit(rid, sid, session, queued["text"])
 ''',
         '''        else:
-            _apply_agent_run_enabled_toolsets(
+            _dispatch_inline_prompt(
+                rid,
+                sid,
                 session,
-                queued.get("enabled_toolsets", _AGENT_RUN_TOOLSETS_UNSET),
+                queued["text"],
+                queued_agent_run_toolsets,
             )
-            _run_prompt_submit(rid, sid, session, queued["text"])
 ''',
-        "queued prompt applies toolsets",
+        "queued prompt uses the readiness-gated inline dispatcher",
+    )
+    source = replace_once(
+        source,
+        '''# ── Methods: prompt ──────────────────────────────────────────────────
+
+
+@method("prompt.submit")
+''',
+        '''# ── Methods: prompt ──────────────────────────────────────────────────
+
+
+def _dispatch_inline_prompt(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    agent_run_toolsets=_AGENT_RUN_TOOLSETS_UNSET,
+) -> None:
+    """Run an acknowledged inline prompt only after its agent is ready."""
+    _ensure_session_db_row(session)
+    _persist_branch_seed(session)
+    _start_agent_build(sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        with session["history_lock"]:
+            if session.get("_turn_cancel_requested") or not session.get("running"):
+                session["running"] = False
+                _clear_inflight_turn(session)
+                return
+        try:
+            _apply_agent_run_enabled_toolsets(session, agent_run_toolsets)
+        except Exception as exc:
+            _emit("error", sid, {"message": f"June tool setup failed: {exc}"})
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+    session["_run_thread"] = run_thread
+    run_thread.start()
+
+
+@method("prompt.submit")
+''',
+        "shared readiness-gated inline prompt dispatcher",
     )
     source = replace_once(
         source,
@@ -1701,22 +1796,28 @@ def _session_tool_progress_mode(sid: str) -> str:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    agent_run_toolsets = None
+    agent_run_toolsets = (
+        _AGENT_RUN_TOOLSETS_UNSET
+        if session.get("profile_home") is not None
+        else None
+    )
     if "enabled_toolsets" in params:
-        if session.get("profile_home") is not None and params.get("enabled_toolsets") is not None:
-            return _err(
-                rid,
-                4003,
-                "agent-run-scoped toolsets are unavailable under a named profile",
-            )
-        try:
-            agent_run_toolsets = _normalize_agent_run_enabled_toolsets(
-                params.get("enabled_toolsets")
-            )
-        except ValueError as exc:
-            return _err(rid, 4003, str(exc))
+        if session.get("profile_home") is not None:
+            if params.get("enabled_toolsets") is not None:
+                return _err(
+                    rid,
+                    4003,
+                    "agent-run-scoped toolsets are unavailable under a named profile",
+                )
+        else:
+            try:
+                agent_run_toolsets = _normalize_agent_run_enabled_toolsets(
+                    params.get("enabled_toolsets")
+                )
+            except ValueError as exc:
+                return _err(rid, 4003, str(exc))
 ''',
-        "profile-aware prompt toolset validation",
+        "profile-aware prompt toolset validation preserves omitted scope",
     )
     source = replace_once(
         source,
@@ -1730,16 +1831,34 @@ def _session_tool_progress_mode(sid: str) -> str:
     )
     source = replace_once(
         source,
+        '''        session["running"] = True
+        session["_turn_cancel_requested"] = False
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+''',
+        '''        if agent_run_toolsets not in (_AGENT_RUN_TOOLSETS_UNSET, None):
+            session["_june_inline_executor"] = True
+        session["running"] = True
+        session["_turn_cancel_requested"] = False
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+''',
+        "scoped prompt pins executor before claim",
+    )
+    source = replace_once(
+        source,
         '''    if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
 ''',
         '''    # The compute-host frame has no agent-run tool scope field. Keep
-    # explicitly scoped requests inline so a host cannot silently rebuild the
-    # broad tool surface. Unscoped requests retain configured isolation.
-    if turn_isolation and agent_run_toolsets is None:
+    # explicitly scoped requests inline, and pin that session to the inline
+    # executor so later history/control operations cannot target a stale host.
+    if agent_run_toolsets not in (_AGENT_RUN_TOOLSETS_UNSET, None):
+        turn_isolation = False
+    if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
 ''',
-        "scoped prompt bypasses unscoped compute-host frame",
+        "scoped prompt pins one executor",
     )
     source = replace_once(
         source,
@@ -1766,6 +1885,20 @@ def _session_tool_progress_mode(sid: str) -> str:
         _run_prompt_submit(rid, sid, session, text)
 ''',
         "prompt applies agent-run-scoped toolsets",
+    )
+    source = replace_region(
+        source,
+        "    # Persist the DB row lazily, now that the user has actually sent a message.\n",
+        '    return _ok(rid, {"status": "streaming"})\n',
+        '''    _dispatch_inline_prompt(
+        rid,
+        sid,
+        session,
+        text,
+        agent_run_toolsets,
+    )
+''',
+        "direct prompt uses shared readiness-gated inline dispatcher",
     )
     source = replace_once(
         source,

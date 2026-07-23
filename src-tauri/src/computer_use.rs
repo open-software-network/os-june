@@ -1643,10 +1643,10 @@ pub async fn computer_use_status(
         if !status.ready {
             stop_inner(&app, &state).await;
         }
-        if let Err(error) = crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await {
-            state.runtime_ready_state.store(previous, Ordering::SeqCst);
-            return Err(error);
-        }
+        // `current` is the authoritative live readiness observation. If the
+        // Hermes config refresh fails, keep that observation instead of
+        // re-arming focus prewarm with the stale previous value.
+        crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
     }
     if status.ready {
         schedule_driver_prewarm(&app);
@@ -4449,6 +4449,23 @@ mod tests {
         assert!(!DriverPrewarmInProgress::try_begin(&in_flight));
         drop(first);
         assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+    }
+
+    #[test]
+    fn status_refresh_does_not_restore_stale_readiness_on_config_error() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("pub async fn computer_use_status")
+            .expect("status command boundary");
+        let end = source[start..]
+            .find("fn ready_state_value")
+            .map(|offset| start + offset)
+            .expect("readiness helper boundary");
+
+        assert!(
+            !source[start..end].contains("runtime_ready_state.store(previous"),
+            "a config error must not re-arm prewarm after observed readiness loss"
+        );
     }
 
     #[test]

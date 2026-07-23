@@ -1153,17 +1153,28 @@ def verify_agent_run_scoped_toolsets(root: Path) -> None:
     }
     assert "_normalize_agent_run_enabled_toolsets" in create_names
     assert "_normalize_agent_run_enabled_toolsets" in prompt_names
-    assert "_apply_agent_run_enabled_toolsets" in prompt_names
+    assert "_dispatch_inline_prompt" in prompt_names
     assert (
-        "if turn_isolation and agent_run_toolsets is None:\n"
+        "if agent_run_toolsets not in (_AGENT_RUN_TOOLSETS_UNSET, None):\n"
+        "        turn_isolation = False\n"
+        "    if turn_isolation:\n"
         "        isolated_response = _submit_prompt_to_compute_host("
-    ) in server_source, "scoped prompts can escape through an unscoped compute-host frame"
+    ) in server_source, "scoped prompts can escape or switch back to the compute host"
     assert (
         "and queued_agent_run_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)"
     ) in server_source, "scoped queued prompts can escape through an unscoped compute-host frame"
     assert (
+        'if session.get("_june_inline_executor"):\n'
+        "        return False"
+    ) in server_source, "scoped sessions can switch executors and lose history or controls"
+    assert (
         "agent-run-scoped toolsets are unavailable under a named profile"
     ) in server_source, "named profiles can receive a launch-profile tool scope"
+    assert (
+        "agent_run_toolsets = (\n"
+        "        _AGENT_RUN_TOOLSETS_UNSET\n"
+        '        if session.get("profile_home") is not None'
+    ) in server_source, "named-profile prompts can restore the launch profile tool policy"
     assert (
         "queued prompt tool scope changed; retry after the current agent run"
     ) in server_source, "queued prompts can merge incompatible tool scopes"
@@ -1177,6 +1188,61 @@ def verify_agent_run_scoped_toolsets(root: Path) -> None:
         "                try:\n"
         "                    worker = _SlashWorker("
     ) in server_source, "scoped sessions still eagerly start the broad slash worker"
+
+    dispatch_inline = copy.deepcopy(_function(tree, "_dispatch_inline_prompt"))
+    ready_gate = threading.Event()
+    dispatch_calls = []
+    dispatch_namespace = {
+        "_AGENT_RUN_TOOLSETS_UNSET": object(),
+        "_ensure_session_db_row": lambda _session: dispatch_calls.append("persist"),
+        "_persist_branch_seed": lambda _session: dispatch_calls.append("branch"),
+        "_start_agent_build": lambda _sid, _session: dispatch_calls.append("build"),
+        "_wait_agent": lambda _session, _rid: (
+            ready_gate.wait(timeout=2),
+            dispatch_calls.append("ready"),
+            None,
+        )[-1],
+        "_apply_agent_run_enabled_toolsets": lambda _session, _toolsets: dispatch_calls.append(
+            "scope"
+        ),
+        "_run_prompt_submit": lambda _rid, _sid, _session, _text: dispatch_calls.append(
+            "run"
+        ),
+        "_emit": lambda *_args, **_kwargs: None,
+        "_clear_inflight_turn": lambda _session: None,
+        "threading": threading,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(dispatch_inline),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        dispatch_namespace,
+    )
+    blocked_session = {
+        "history_lock": threading.Lock(),
+        "running": True,
+    }
+    dispatch_namespace["_dispatch_inline_prompt"](
+        "rid",
+        "sid",
+        blocked_session,
+        "prompt",
+        ["june_computer_use"],
+    )
+    time.sleep(0.02)
+    assert "run" not in dispatch_calls, "queued scoped prompt ran before agent readiness"
+    ready_gate.set()
+    blocked_session["_run_thread"].join(timeout=2)
+    assert dispatch_calls == [
+        "persist",
+        "branch",
+        "build",
+        "ready",
+        "scope",
+        "run",
+    ], "queued scoped prompt did not use the full readiness-gated inline path"
 
 
 def verify_tui_memory_deny_propagation(root: Path) -> None:
