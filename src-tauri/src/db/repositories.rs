@@ -1064,6 +1064,41 @@ impl Repositories {
         Ok(())
     }
 
+    /// Advance a Gmail acknowledgement only while the exact subscription that
+    /// produced the poll snapshot still exists. The INSERT and trigger check
+    /// are one SQLite statement, so removal cannot race a stale cursor write.
+    pub async fn set_email_trigger_cursor_if_active(
+        &self,
+        trigger_id: &str,
+        job_id: &str,
+        account_id: &str,
+        cursor: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let now = timestamp();
+        let result = query(
+            "INSERT INTO trigger_cursors (account_id, kind, cursor, updated_at)
+             SELECT ?, ?, ?, ?
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM connector_triggers
+                 WHERE id = ? AND job_id = ? AND kind = 'email_received' AND account_id = ?
+             )
+             ON CONFLICT(account_id, kind) DO UPDATE SET
+               cursor = excluded.cursor,
+               updated_at = excluded.updated_at",
+        )
+        .bind(account_id)
+        .bind(format!("email_received:{job_id}"))
+        .bind(cursor)
+        .bind(&now)
+        .bind(trigger_id)
+        .bind(job_id)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Remove the polling cursor for one account+kind so the next daemon poll
     /// re-establishes a baseline. Used when a new subscription must not fire for
     /// items that arrived before it existed (a fresh Gmail subscription reusing
@@ -8510,21 +8545,29 @@ mod tests {
             .delete_connector_trigger(&removed.id)
             .await
             .expect("remove subscription"));
+        assert!(!repos
+            .set_email_trigger_cursor_if_active(&removed.id, "job-1", "user@example.com", "100",)
+            .await
+            .expect("stale snapshot rejected"));
         assert!(repos
             .trigger_cursor("user@example.com", "email_received:job-1")
             .await
             .unwrap()
             .is_none());
 
-        repos
+        let reenabled = repos
             .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
             .await
             .expect("re-enable subscription");
         assert!(repos
+            .set_email_trigger_cursor_if_active(&reenabled.id, "job-1", "user@example.com", "100",)
+            .await
+            .expect("active snapshot accepted"));
+        assert!(repos
             .trigger_cursor("user@example.com", "email_received:job-1")
             .await
             .unwrap()
-            .is_none());
+            .is_some());
         assert_eq!(
             repos
                 .trigger_cursor("user@example.com", "email_received")

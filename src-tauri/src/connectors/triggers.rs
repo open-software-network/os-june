@@ -114,15 +114,15 @@ async fn poll_kind(app: &AppHandle, kind: &str) -> bool {
 
     if kind == EMAIL_KIND {
         // One history.list per account, firing every job subscribed to it.
-        let mut by_account: HashMap<String, Vec<String>> = HashMap::new();
+        let mut by_account: HashMap<String, Vec<ConnectorTriggerRecord>> = HashMap::new();
         for trigger in relevant {
             by_account
-                .entry(trigger.account_id)
+                .entry(trigger.account_id.clone())
                 .or_default()
-                .push(trigger.job_id);
+                .push(trigger);
         }
-        for (account_id, job_ids) in by_account {
-            if let Err(error) = poll_email_account(app, &repos, &account_id, &job_ids).await {
+        for (account_id, triggers) in by_account {
+            if let Err(error) = poll_email_account(app, &repos, &account_id, &triggers).await {
                 tracing::warn!(error_code = %error.code, kind, "connector email trigger poll failed");
             }
         }
@@ -138,7 +138,7 @@ async fn poll_email_account(
     app: &AppHandle,
     repos: &Repositories,
     account_id: &str,
-    job_ids: &[String],
+    triggers: &[ConnectorTriggerRecord],
 ) -> Result<(), AppError> {
     let token = crate::connectors::google_access_token(app, account_id).await?;
     let cursor = repos.trigger_cursor(account_id, EMAIL_KIND).await?;
@@ -151,9 +151,14 @@ async fn poll_email_account(
             repos
                 .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
                 .await?;
-            for job_id in job_ids {
+            for trigger in triggers {
                 repos
-                    .set_trigger_cursor(account_id, &email_cursor_kind(job_id), &history_id)
+                    .set_email_trigger_cursor_if_active(
+                        &trigger.id,
+                        &trigger.job_id,
+                        account_id,
+                        &history_id,
+                    )
                     .await?;
             }
         }
@@ -163,17 +168,14 @@ async fn poll_email_account(
     // Each routine owns an acknowledgement cursor. Jobs at the same cursor
     // share one Gmail request, while a failed job can retry independently
     // without replaying the delta into subscribers that already succeeded.
-    let mut jobs_by_cursor: HashMap<String, Vec<&String>> = HashMap::new();
-    for job_id in job_ids {
-        let kind = email_cursor_kind(job_id);
+    let mut jobs_by_cursor: HashMap<String, Vec<&ConnectorTriggerRecord>> = HashMap::new();
+    for trigger in triggers {
+        let kind = email_cursor_kind(&trigger.job_id);
         let job_cursor = match repos.trigger_cursor(account_id, &kind).await? {
             Some(cursor) => cursor,
-            None => {
-                repos.set_trigger_cursor(account_id, &kind, &cursor).await?;
-                cursor.clone()
-            }
+            None => cursor.clone(),
         };
-        jobs_by_cursor.entry(job_cursor).or_default().push(job_id);
+        jobs_by_cursor.entry(job_cursor).or_default().push(trigger);
     }
 
     let mut latest_account_cursor = cursor;
@@ -187,9 +189,14 @@ async fn poll_email_account(
                 if let Some(history_id) = profile.history_id {
                     latest_account_cursor =
                         newer_history_id(latest_account_cursor, history_id.clone());
-                    for job_id in cursor_jobs {
+                    for trigger in cursor_jobs {
                         repos
-                            .set_trigger_cursor(account_id, &email_cursor_kind(job_id), &history_id)
+                            .set_email_trigger_cursor_if_active(
+                                &trigger.id,
+                                &trigger.job_id,
+                                account_id,
+                                &history_id,
+                            )
                             .await?;
                     }
                 }
@@ -201,12 +208,17 @@ async fn poll_email_account(
             continue;
         };
         latest_account_cursor = newer_history_id(latest_account_cursor, history_id.clone());
-        for job_id in cursor_jobs {
+        for trigger in cursor_jobs {
             let acknowledged =
-                delta.added.is_empty() || email_outcome_acknowledged(fire(app, job_id).await);
+                delta.added.is_empty() || email_outcome_acknowledged(fire(app, trigger).await);
             if acknowledged {
                 repos
-                    .set_trigger_cursor(account_id, &email_cursor_kind(job_id), &history_id)
+                    .set_email_trigger_cursor_if_active(
+                        &trigger.id,
+                        &trigger.job_id,
+                        account_id,
+                        &history_id,
+                    )
                     .await?;
             }
         }
@@ -503,7 +515,7 @@ async fn apply_calendar_events_to_trigger(
     // Wake the routine once for the batch, and record the events as fired only
     // when the wake actually queued. A failed or temporarily ineligible wake
     // leaves them unrecorded so this routine can retry independently.
-    if !to_fire.is_empty() && fire(app, job_id).await == FireOutcome::Queued {
+    if !to_fire.is_empty() && fire(app, trigger).await == FireOutcome::Queued {
         for (event_id, start_ts) in to_fire {
             fired.insert(event_id, start_ts);
         }
@@ -642,14 +654,22 @@ fn email_outcome_acknowledged(outcome: FireOutcome) -> bool {
 /// Wake a routine and distinguish an ineligible subscription from a dispatch
 /// failure. Email delivery acknowledges ineligible subscriptions, while
 /// calendar delivery keeps its per-routine event pending.
-async fn fire(app: &AppHandle, job_id: &str) -> FireOutcome {
-    match crate::routines::trigger_from_connector(app, job_id).await {
+async fn fire(app: &AppHandle, trigger: &ConnectorTriggerRecord) -> FireOutcome {
+    match crate::routines::trigger_from_connector(
+        app,
+        &trigger.job_id,
+        &trigger.id,
+        &trigger.kind,
+        &trigger.account_id,
+    )
+    .await
+    {
         Ok(true) => FireOutcome::Queued,
         Ok(false) => FireOutcome::NotQueued,
         Err(error) => {
             tracing::warn!(
                 error_code = %error.code,
-                routine_id = %job_id,
+                routine_id = %trigger.job_id,
                 "connector routine trigger failed"
             );
             FireOutcome::Failed

@@ -334,6 +334,22 @@ pub async fn claim(
     trigger_kind: &str,
     require_due: bool,
 ) -> Result<Option<Claim>, AppError> {
+    claim_with_connector_guard(pool, routine_id, trigger_kind, require_due, None).await
+}
+
+struct ConnectorClaimGuard<'a> {
+    trigger_id: &'a str,
+    kind: &'a str,
+    account_id: &'a str,
+}
+
+async fn claim_with_connector_guard(
+    pool: &SqlitePool,
+    routine_id: &str,
+    trigger_kind: &str,
+    require_due: bool,
+    connector: Option<ConnectorClaimGuard<'_>>,
+) -> Result<Option<Claim>, AppError> {
     // Serialize the eligibility read with the claim write. A deferred
     // transaction can fail with SQLITE_BUSY_SNAPSHOT when a scheduler,
     // connector, and manual trigger race after reading the same free row.
@@ -341,8 +357,12 @@ pub async fn claim(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(app_error)?;
-    let routine = query("SELECT id, name, prompt, schedule, model, safety_mode, next_run_at, metadata_json, tool_catalog_version FROM routines WHERE id = ? AND state = 'scheduled' AND enabled = 1 AND claim_token IS NULL AND NOT EXISTS (SELECT 1 FROM routine_runs active WHERE active.routine_id = routines.id AND active.status IN ('queued', 'running', 'waiting_for_user'))")
-        .bind(routine_id).fetch_optional(&mut *transaction).await.map_err(app_error)?;
+    let trigger_id = connector.as_ref().map(|guard| guard.trigger_id);
+    let trigger_guard_kind = connector.as_ref().map(|guard| guard.kind);
+    let trigger_account_id = connector.as_ref().map(|guard| guard.account_id);
+    let routine = query("SELECT id, name, prompt, schedule, model, safety_mode, next_run_at, metadata_json, tool_catalog_version FROM routines WHERE id = ? AND state = 'scheduled' AND enabled = 1 AND claim_token IS NULL AND NOT EXISTS (SELECT 1 FROM routine_runs active WHERE active.routine_id = routines.id AND active.status IN ('queued', 'running', 'waiting_for_user')) AND (? IS NULL OR EXISTS (SELECT 1 FROM connector_triggers trigger WHERE trigger.id = ? AND trigger.job_id = routines.id AND trigger.kind = ? AND trigger.account_id = ?))")
+        .bind(routine_id).bind(trigger_id).bind(trigger_id).bind(trigger_guard_kind).bind(trigger_account_id)
+        .fetch_optional(&mut *transaction).await.map_err(app_error)?;
     let Some(routine) = routine else {
         transaction.commit().await.map_err(app_error)?;
         return Ok(None);
@@ -592,12 +612,25 @@ pub async fn trigger_and_start(
 /// Shared entry point for connector event triggers. `false` means the routine
 /// was paused, missing, or already active. Callers decide whether that is an
 /// acknowledged wake or one that should remain pending for their event type.
-pub async fn trigger_from_connector(app: &AppHandle, routine_id: &str) -> Result<bool, AppError> {
+pub async fn trigger_from_connector(
+    app: &AppHandle,
+    routine_id: &str,
+    trigger_id: &str,
+    kind: &str,
+    account_id: &str,
+) -> Result<bool, AppError> {
     let pool = repositories(app).await?.pool;
     let host = app.state::<AgentRuntimeHost>();
-    Ok(trigger_and_start(app, &host, &pool, routine_id)
-        .await?
-        .is_some())
+    reconcile(&pool).await?;
+    let guard = ConnectorClaimGuard {
+        trigger_id,
+        kind,
+        account_id,
+    };
+    match claim_with_connector_guard(&pool, routine_id, kind, false, Some(guard)).await? {
+        Some(claim) => start_claim(app, &host, &pool, claim).await.map(|_| true),
+        None => Ok(false),
+    }
 }
 
 /// Attach a created agent session/run to the already-durable claim. Keeping
@@ -1256,6 +1289,7 @@ mod tests {
         for statement in [
             "CREATE TABLE agent_sessions (id TEXT PRIMARY KEY)",
             "CREATE TABLE agent_runs (id TEXT PRIMARY KEY, status TEXT, updated_at TEXT, completed_at TEXT, error_code TEXT, error_message TEXT)",
+            "CREATE TABLE connector_triggers (id TEXT PRIMARY KEY, job_id TEXT, kind TEXT, account_id TEXT)",
         ] {
             query(statement).execute(&pool).await.unwrap();
         }
@@ -1429,6 +1463,45 @@ mod tests {
             .expect("active event routine should be claimable");
         assert_eq!(claim.enabled_toolsets, vec!["web", "june_gmail"]);
         assert_eq!(claim.routine_id, "routine-1");
+    }
+
+    #[tokio::test]
+    async fn connector_claim_rejects_a_removed_poll_snapshot() {
+        let pool = pool().await;
+        create(&pool, create_request("2099-01-01T09:00:00Z"))
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO connector_triggers (id, job_id, kind, account_id)
+             VALUES ('trigger-1', 'routine-1', 'email_received', 'user@example.com')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("DELETE FROM connector_triggers WHERE id = 'trigger-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let guard = ConnectorClaimGuard {
+            trigger_id: "trigger-1",
+            kind: "email_received",
+            account_id: "user@example.com",
+        };
+        assert!(claim_with_connector_guard(
+            &pool,
+            "routine-1",
+            "email_received",
+            false,
+            Some(guard),
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(list_runs(&pool, Some("routine-1"))
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
