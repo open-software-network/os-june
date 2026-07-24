@@ -39,6 +39,7 @@ import {
   withLocalGenerationOption,
 } from "../../lib/local-generation";
 import { useScrollFade } from "../../lib/use-scroll-fade";
+import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
 import {
   dictationHelperCommand,
@@ -209,6 +210,7 @@ export function NoteChatPanel({
   note,
   chat,
   recordingActive,
+  dictationActive,
   creditActionsDisabledReason,
   renderFundingNotice,
   onClose,
@@ -222,6 +224,10 @@ export function NoteChatPanel({
    * ducks the recording's mic while dictation listens (so a dictated question
    * never lands in the note); this only tunes the tooltip to say so. */
   recordingActive?: boolean;
+  /** True while a dictation take is live (JUN-383 workflow state, mirrored
+   * reactively). Surfaces the "press Esc to stop" hint on the Dictate button
+   * so the meeting-notes-scoped stop shortcut is discoverable (JUN-351). */
+  dictationActive?: boolean;
   creditActionsDisabledReason?: string;
   /** App owns the account and billing action; the composer owns the active
    * session model and picker. */
@@ -829,15 +835,23 @@ export function NoteChatPanel({
                   aria-label="Dictate"
                   title={
                     creditActionsDisabledReason ??
-                    (recordingActive
-                      ? "Dictate a question (kept out of the recording)"
-                      : "Start dictation")
+                    (dictationActive
+                      ? "Stop dictation (press Esc)"
+                      : recordingActive
+                        ? "Dictate a question (kept out of the recording)"
+                        : "Start dictation")
                   }
                   disabled={Boolean(creditActionsDisabledReason)}
                   onClick={() => void startDictation()}
                 >
                   <IconMicrophone size={18} />
                 </button>
+                {dictationActive ? (
+                  // Discoverable stop affordance: the meeting-notes-scoped Esc
+                  // shortcut (App.tsx keydown) only exists while a take is live,
+                  // so the chip only shows then (JUN-351 AC #3).
+                  <KeycapShortcut label="Esc" />
+                ) : null}
                 {working ? (
                   <button
                     type="button"

@@ -54,6 +54,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
     appMaxGrantWaitRef,
     billingNotice,
     captureActive,
+    dictationActive,
     changeSettingsTab,
     checkingUpdate,
     closeOtherTabs,
@@ -405,6 +406,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
             note={{ id: selectedNote.id, title: selectedNote.title }}
             chat={noteChat}
             recordingActive={captureActive}
+            dictationActive={dictationActive}
             creditActionsDisabledReason={
               fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined
             }

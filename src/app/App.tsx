@@ -106,6 +106,7 @@ import {
   isCreateNoteShortcut,
   isMicrophoneRecordingBlocked,
   isNewSessionShortcut,
+  isStopDictationShortcut,
 } from "./app-helpers";
 export { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "./app-helpers";
 import {
@@ -297,6 +298,8 @@ export function App() {
     recordingTelemetryStore,
     recordingStatusRef,
     dictationWorkflowActiveRef,
+    dictationActive,
+    setDictationActive,
     recordingInactivityTrackerRef,
     recordingInactivityPrompt,
     setRecordingInactivityPrompt,
@@ -1134,6 +1137,7 @@ export function App() {
 
   useDictationEvents({
     dictationWorkflowActiveRef,
+    setDictationActive,
     setAccessibilityStatus,
     setActiveView,
     setMicrophoneStatus,
@@ -1529,6 +1533,21 @@ export function App() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (document.querySelector('[role="dialog"]')) return;
+      // Escape stops an active dictation from the meeting-notes view and keeps
+      // the captured text (stop_and_paste, never discard). Gated on live
+      // dictation so Escape keeps its other meanings (dropdown close) when
+      // nothing is listening — hence no preventDefault on the inactive path.
+      // activeViewRef.current, not the captured value: this effect never
+      // re-subscribes on view change (see deps below).
+      if (
+        isStopDictationShortcut(event) &&
+        activeViewRef.current === "meetings" &&
+        dictationWorkflowActiveRef.current
+      ) {
+        event.preventDefault();
+        void dictationHelperCommand({ type: "stop_and_paste" });
+        return;
+      }
       if (isNewSessionShortcut(event)) {
         event.preventDefault();
         handleNewAgentSession();
@@ -2045,6 +2064,7 @@ export function App() {
     appMaxGrantWaitRef,
     billingNotice,
     captureActive,
+    dictationActive,
     changeSettingsTab,
     checkingUpdate,
     closeOtherTabs,
