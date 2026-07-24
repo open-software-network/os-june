@@ -317,7 +317,7 @@ input:focus-visible,
  * veil. The hero rim never renders in home, so its pseudo is free. */
 .agent-workspace[data-home="true"]::after {
   bottom: auto;
-  height: 56px;
+  height: var(--home-top-fade-size);
   z-index: 3;
   border-radius: 0;
   box-shadow: none;
@@ -2318,10 +2318,11 @@ input:focus-visible,
  * wash and the serif greeting, not from painting messages orange. */
 .agent-timeline[data-home="true"] {
   gap: var(--sp-3);
-  padding-top: var(--sp-6);
-  /* Align the conversation with the + glyph's line inside the pill (button
-   * inset plus a step), matching the sessions relationship. */
-  padding-inline: var(--sp-3);
+  padding-top: var(--sp-8);
+  /* Match the wrapped draft's optical text edge: composer hairline + frame
+   * padding + its multiline text inset. Replies and a growing draft now share
+   * one quiet rail instead of shifting a few pixels at the wrap boundary. */
+  padding-inline: calc(var(--sp-px) + var(--sp-1) + var(--sp-2));
   /* Conversation gravity: a short thread (first open, first day) settles by
    * the composer, where the transcript pins anyway once it grows — instead of
    * floating at the top of a mostly-empty canvas. The timeline stretches to
@@ -2335,10 +2336,14 @@ input:focus-visible,
   margin-block: 0;
 }
 
-/* Exchange rhythm: a question and its answer sit snug, but a NEW message
- * after June's reply opens a fuller breath - conversations read in beats,
- * not as one even-spaced list. (Day markers carry their own margins at day
- * boundaries, where this adjacency breaks anyway.) */
+/* Exchange rhythm: the reply gets enough separation from the sent bubble to
+ * read as a new voice, while a new message after June's reply opens an even
+ * fuller breath. Conversations read in beats, not as one even-spaced list.
+ * Day markers carry their own margins at boundaries. */
+.agent-timeline[data-home="true"] .agent-user-turn + .agent-assistant-turn {
+  margin-top: var(--sp-5);
+}
+
 .agent-timeline[data-home="true"] .agent-assistant-turn + .agent-user-turn {
   margin-top: var(--sp-8);
 }
@@ -2410,17 +2415,17 @@ input:focus-visible,
 
 .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
   opacity: 0.12;
-  filter: blur(2.5px);
-  animation: june-home-typing-breath 1.9s var(--ease-in-out) infinite;
+  filter: blur(var(--home-typing-blur));
+  animation: june-home-typing-breath var(--home-typing-breath-dur) var(--ease-in-out) infinite;
   transform: none;
 }
 
 .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span:nth-child(2) {
-  animation-delay: 0.24s;
+  animation-delay: var(--t-slow);
 }
 
 .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span:nth-child(3) {
-  animation-delay: 0.48s;
+  animation-delay: calc(var(--t-slow) * 2);
 }
 
 /* Each dot drifts between a blurred haze and a brief moment of focus, so the
@@ -2430,7 +2435,7 @@ input:focus-visible,
   0%,
   100% {
     opacity: 0.12;
-    filter: blur(2.5px);
+    filter: blur(var(--home-typing-blur));
   }
   50% {
     opacity: 0.66;
@@ -2515,7 +2520,7 @@ input:focus-visible,
 }
 
 /* The bloom's life signs: a slow float, a head-cock, and a periodic wink on a
- * long cycle (14s, out of phase with the 6s float). The two eye states are
+ * long cycle that runs out of phase with the float. The two eye states are
  * FULL-BODY paths, so they must swap in a single frame (step-end): any
  * crossfade has both bodies semi-transparent at once, dimming the whole
  * flower into a visible flash. The wink reads through the held closed beat
@@ -2533,19 +2538,19 @@ input:focus-visible,
 @media (prefers-reduced-motion: no-preference) {
   .agent-home-greeting-mark,
   .agent-home-listening {
-    animation: june-bloom-float 4s var(--ease-in-out) infinite;
+    animation: june-bloom-float var(--home-presence-float-dur) var(--ease-in-out) infinite;
   }
 
   .june-bloom[data-animated] {
-    animation: june-bloom-tilt 14s var(--ease-in-out) infinite;
+    animation: june-bloom-tilt var(--home-presence-wink-dur) var(--ease-in-out) infinite;
   }
 
   .june-bloom[data-animated] .june-bloom-open {
-    animation: june-bloom-eyes-open 14s step-end infinite;
+    animation: june-bloom-eyes-open var(--home-presence-wink-dur) step-end infinite;
   }
 
   .june-bloom[data-animated] .june-bloom-wink {
-    animation: june-bloom-eyes-wink 14s step-end infinite;
+    animation: june-bloom-eyes-wink var(--home-presence-wink-dur) step-end infinite;
   }
 }
 
@@ -2555,12 +2560,12 @@ input:focus-visible,
     transform: translateY(0);
   }
   50% {
-    transform: translateY(-2px);
+    transform: translateY(var(--home-presence-float-y));
   }
 }
 
 /* step-end holds each segment's starting value, so the pair flips at exactly
- * 80% and back at 82.6% (a ~360ms closed beat) with no intermediate frames.
+ * 80% and back at 81.9% (a ~360ms closed beat) with no intermediate frames.
  * The keyframe positions must stay identical across both, or the face
  * double-exposes. */
 @keyframes june-bloom-eyes-open {
@@ -2570,7 +2575,7 @@ input:focus-visible,
   80% {
     opacity: 0;
   }
-  82.6%,
+  81.9%,
   100% {
     opacity: 1;
   }
@@ -2583,7 +2588,7 @@ input:focus-visible,
   80% {
     opacity: 1;
   }
-  82.6%,
+  81.9%,
   100% {
     opacity: 0;
   }
@@ -2591,16 +2596,86 @@ input:focus-visible,
 
 @keyframes june-bloom-tilt {
   0%,
-  79% {
+  79.3% {
     transform: rotate(0deg);
   }
-  80.8%,
-  82.6% {
-    transform: rotate(-4deg);
+  80.4%,
+  81.9% {
+    transform: rotate(var(--home-presence-tilt));
   }
-  84.5%,
+  83%,
   100% {
     transform: rotate(0deg);
+  }
+}
+
+/* The small listening bloom acknowledges direct attention with one wink. The
+ * periodic idle cycle yields to this short one-shot while hovered, then returns
+ * with open eyes. Reduced-motion users get the same state change without the
+ * timed head tilt. */
+.agent-home-listening:hover .june-bloom-open {
+  opacity: 0;
+}
+
+.agent-home-listening:hover .june-bloom-wink {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-home-listening:hover .june-bloom[data-animated] {
+    animation: june-bloom-hover-tilt calc(var(--t-slow) * 2) var(--ease-out) 1;
+  }
+
+  .agent-home-listening:hover .june-bloom-open {
+    opacity: 1;
+    animation: june-bloom-hover-eyes-open calc(var(--t-slow) * 2) step-end 1;
+  }
+
+  .agent-home-listening:hover .june-bloom-wink {
+    opacity: 0;
+    animation: june-bloom-hover-eyes-wink calc(var(--t-slow) * 2) step-end 1;
+  }
+}
+
+@keyframes june-bloom-hover-eyes-open {
+  0%,
+  24% {
+    opacity: 1;
+  }
+  25%,
+  58% {
+    opacity: 0;
+  }
+  59%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes june-bloom-hover-eyes-wink {
+  0%,
+  24% {
+    opacity: 0;
+  }
+  25%,
+  58% {
+    opacity: 1;
+  }
+  59%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes june-bloom-hover-tilt {
+  0%,
+  20%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35%,
+  62% {
+    transform: rotate(var(--home-presence-tilt));
   }
 }
 
@@ -2649,14 +2724,14 @@ input:focus-visible,
   width: 100%;
   max-width: min(var(--chat-max), var(--content-max));
   margin: 0 auto;
-  padding-inline: var(--sp-1);
+  padding-inline: 0;
   pointer-events: auto;
   justify-content: flex-start;
 }
 
 .agent-home-nudges-idle button {
-  animation: june-home-chip-in 300ms var(--ease-out) both;
-  animation-delay: calc(var(--chip-i, 0) * 70ms);
+  animation: june-home-chip-in var(--t-slow) var(--ease-out) both;
+  animation-delay: calc(var(--chip-i, 0) * var(--t-fast));
 }
 
 @keyframes june-home-chip-in {
@@ -2777,45 +2852,49 @@ input:focus-visible,
 
 .agent-home-task-message {
   display: grid;
-  gap: var(--sp-3);
+  /* Tighter than the old pill gap: with no drawn surface, the button's own
+   * hit-target padding already contributes optical air above the label. */
+  gap: var(--sp-2);
 }
 
 .agent-home-task-message > span:first-child {
   color: var(--foreground);
 }
 
-.agent-home-task-message small {
-  color: var(--destructive);
-  font-size: var(--fs-sm);
-}
-
+/* No pill: Home already stacks the suggestion chips over the composer
+ * capsule, and a third pill here read as one shape too many. The action is a
+ * quiet brand-colored line under June's sentence — the capsule exists only
+ * as the hover tint. The negative start margin cancels the hover padding so
+ * the label sits flush with the message text at rest. */
 .agent-home-task-message > button {
   display: inline-flex;
   width: fit-content;
   min-height: var(--control-md);
   align-items: center;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-3);
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  margin-inline-start: calc(-1 * var(--sp-2));
   border: 0;
   border-radius: var(--r-pill);
-  background: var(--brand-tint-strong);
+  background: none;
   color: var(--brand);
-  font-size: var(--fs-sm);
+  /* Inherits the thread's --fs-lg: the link is a continuation of June's
+   * sentence, so it reads at the same size as the message text above it. */
   font-weight: var(--fw-medium);
   cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
 .agent-home-task-message > button:hover {
-  background: color-mix(in oklch, var(--brand-tint-strong) 75%, var(--brand));
+  background: var(--brand-tint);
 }
 
 .agent-home-task-pending {
   display: inline-flex;
-  width: var(--control-md);
-  height: var(--control-md);
   align-items: center;
-  justify-content: center;
+  justify-self: start;
   color: var(--muted-foreground);
+  line-height: 1;
 }
 
 .agent-user-attachments {
@@ -3038,8 +3117,8 @@ button.agent-user-attachment:hover {
 /* While a turn streams, each newly revealed word mounts as a span and fades
  * in over a deliberately long window: a quick rise to ~30% ink so new words
  * are readable at once, then a slow linear crawl to full. Because the crawl
- * far outlasts the gap between chunks, the last second-or-so of prose reads
- * as a soft ink gradient trailing the reveal — SmoothedStreamingMarkdown
+ * outlasts several chunk batches, the newest prose reads as a soft ink
+ * gradient trailing the reveal — SmoothedStreamingMarkdown
  * batches deltas so words that arrived together mount together and settle
  * together. Opacity-only on purpose: batches land several times a second and
  * blur/transform here would churn compositor layers in WKWebView. The
@@ -3195,6 +3274,11 @@ button.agent-user-attachment:hover {
 .agent-md-table td {
   border-bottom: 1px solid var(--border-subtle);
   padding: var(--sp-2) var(--sp-4) var(--sp-2) 0;
+  /* Preserve whole words in the table's intrinsic width calculation. The
+   * surrounding markdown uses `anywhere` for long paths and URLs, which made
+   * ordinary labels collapse into letter-wide columns here. */
+  overflow-wrap: break-word;
+  vertical-align: top;
 }
 
 .agent-md-table th {
@@ -5703,7 +5787,15 @@ button.agent-user-attachment:hover {
   transition:
     opacity 120ms ease,
     transform 120ms ease,
+    bottom 120ms ease,
     background-color var(--t-fast) var(--ease-out);
+}
+
+/* The abandoned-draft chips re-offer hovers in the same slot above the box
+ * (.agent-home-nudges-idle); when it's up, the pill steps one chip row higher
+ * so the chips never cover the arrow. */
+.agent-composer:has(.agent-home-nudges-idle) .agent-scroll-to-latest {
+  bottom: calc(100% + var(--sp-2) + var(--control-md) + var(--sp-2));
 }
 
 .agent-scroll-to-latest[data-visible="true"] {
@@ -7249,92 +7341,6 @@ button.agent-user-attachment:hover {
   flex: 0 0 auto;
 }
 
-/* ============================================================================
- * Scroll fades (design system)
- *
- * A scroller melts its clipped edge when content is hidden above or below the
- * viewport. Driven by the `useScrollFade` hook, which sets `data-fade-top` /
- * `data-fade-bottom` only on the edge(s) with hidden content (so a fade never
- * shows when everything fits). Two flavors, one contract:
- *
- *  - `.scroll-fade`      — contained overlays: `::before`/`::after` gradients
- *    pinned to the wrapper's edges. WKWebView-safe for popovers (a mask on the
- *    scroller rides the scrolled content in WebKit and bleeds past the bounds).
- *    Put the class + data attributes on a non-scrolling wrapper; the scroller
- *    is its child. Tunables: `--scroll-fade-size`, `--scroll-fade-color`,
- *    `--scroll-fade-inset-right`.
- *  - `.scroll-fade-mask` — mask-image gradient on the scroller itself. Reveals
- *    the real content at the edge (clean in light + dark) for large panel
- *    scrollers. Put the class + data attributes on the scroller. Tunable:
- *    `--scroll-fade-size`.
- * ============================================================================ */
-.scroll-fade {
-  position: relative;
-}
-
-.scroll-fade::before,
-.scroll-fade::after {
-  content: "";
-  position: absolute;
-  right: var(--scroll-fade-inset-right, 0);
-  left: 0;
-  z-index: 1;
-  height: var(--scroll-fade-size, 24px);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.scroll-fade::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--scroll-fade-color, var(--popover)), transparent);
-}
-
-.scroll-fade::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--scroll-fade-color, var(--popover)), transparent);
-}
-
-.scroll-fade[data-fade-top]::before,
-.scroll-fade[data-fade-bottom]::after {
-  opacity: 1;
-}
-
-.scroll-fade-mask[data-fade-top][data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--scroll-fade-size, 28px),
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--scroll-fade-size, 28px),
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-}
-
-.scroll-fade-mask[data-fade-top]:not([data-fade-bottom]) {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
-}
-
-.scroll-fade-mask:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-}
-
 /* The card always shows the full description (no "Show more" toggle): a capped,
  * scrollable box so the card can never grow after it opens, which keeps the
  * open-time viewport clamp correct and the expansion keyboard-neutral. It rides
@@ -8070,6 +8076,17 @@ button.agent-user-attachment:hover {
   --scroll-fade-size: 18px;
   --scroll-fade-color: var(--agent-composer-scroll-fade);
   --scroll-fade-inset-right: var(--sp-1);
+}
+
+/* A composer fade may still be transitioning out after its data-fade flag is
+ * removed. Never let that residual overlay wash across the active first or
+ * final line: while the edge caret is visible, its overlay drops atomically.
+ * Scrolling the caret out of view removes data-caret-edge, so genuinely hidden
+ * content keeps the normal shared fade. */
+.agent-composer-editor-root[data-caret-edge="start"]::before,
+.agent-composer-editor-root[data-caret-edge="end"]::after {
+  opacity: 0;
+  transition: none;
 }
 
 .agent-composer-editor p {
@@ -19587,7 +19604,7 @@ button.memory-project:hover {
 /* Home has no identity header — the canvas is the surface. Once the daily
  * greeting retires, June's bloom keeps quiet watch from the top-left corner
  * (floating and occasionally winking): she is listening. Decorative only, so
- * it never intercepts a click. */
+ * it has no click action; its tiny hit area only acknowledges a direct hover. */
 .agent-home-listening {
   position: absolute;
   /* Equal inset from the CARD's corner: the workspace's left edge sits one
@@ -19597,7 +19614,7 @@ button.memory-project:hover {
   z-index: 4;
   display: inline-flex;
   color: var(--brand);
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 /* Messages keeps its input as one compact row. Preserve June's model and
@@ -19618,19 +19635,16 @@ button.memory-project:hover {
   border-radius: var(--r-pill);
 }
 
-/* ...and composed corners once the draft wraps to its two-row layout. */
+/* Wrapped drafts use composed corners and pin the controls to the bottom row. */
 .agent-workspace[data-home="true"] .agent-composer-box[data-multiline] {
   border-radius: calc(var(--control-md) / 2 + var(--sp-1));
-}
-
-/* Wrapped draft: the text takes the full width on top, and the controls
- * (+ / model / dictation / send) hold their own row beneath it. The
- * attachments rules further down intentionally out-cascade these when both
- * states apply. */
-.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] {
   align-items: end;
 }
 
+/* The text takes the full width on top, and the controls hold their own row
+ * beneath it. The layout probe in AgentWorkspace measures the one-row width,
+ * so this expansion cannot feed back into the multiline decision. Attachment
+ * rules further down intentionally out-cascade these when both states apply. */
 .agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-editor-root {
   grid-row: 1;
   grid-column: 1 / -1;
@@ -19678,6 +19692,12 @@ button.memory-project:hover {
   padding-block: var(--sp-1);
   padding-inline: var(--sp-1);
   font-size: var(--fs-md);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-editor {
+  /* The full-width wrapped editor no longer has the leading + control as an
+   * inset. Give the text its own edge so it breathes like the top padding. */
+  padding-inline: var(--sp-2);
 }
 
 .agent-workspace[data-home="true"] .agent-composer-toolbar {

@@ -161,8 +161,10 @@ type SidebarProps = {
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
   onNewAgentSession: () => void;
+  /** Home depends on the bundled Hermes runtime, which is currently macOS-only. */
+  homeEnabled?: boolean;
   /** The persistent Home conversation is not shown among focused sessions. */
-  homeSessionId?: string;
+  homeStoredSessionId?: string;
   /** stored session id (not the runtime session id). */
   onRenameAgentSession: (sessionId: string, title: string) => void;
   onSelectAgentSession: (session: HermesSessionInfo) => void;
@@ -415,7 +417,8 @@ export function Sidebar({
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
   onNewAgentSession,
-  homeSessionId,
+  homeEnabled = true,
+  homeStoredSessionId,
   onRenameAgentSession,
   onSelectAgentSession,
   sessionFolderIds,
@@ -470,7 +473,7 @@ export function Sidebar({
   // "No sessions yet" line as a fresh install would, real data untouched.
   const agentSessions = useForcedEmptyStates()
     ? NO_AGENT_SESSIONS
-    : profileAgentSessions.filter((session) => session.id !== homeSessionId);
+    : profileAgentSessions.filter((session) => session.id !== homeStoredSessionId);
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
@@ -692,13 +695,17 @@ export function Sidebar({
       .slice(0, 6);
 
     const quickItems: CommandPromptItem[] = [
-      {
-        id: "quick:home",
-        label: "Go to Home",
-        icon: <IconHomeOpen size={15} />,
-        searchText: normalizeCommandQuery("home june personal assistant conversation"),
-        action: () => onChangeView("home"),
-      },
+      ...(homeEnabled
+        ? [
+            {
+              id: "quick:home",
+              label: "Go to Home",
+              icon: <IconHomeOpen size={15} />,
+              searchText: normalizeCommandQuery("home june personal assistant conversation"),
+              action: () => onChangeView("home"),
+            } satisfies CommandPromptItem,
+          ]
+        : []),
       {
         id: "quick:new-session",
         label: "New session",
@@ -843,6 +850,7 @@ export function Sidebar({
     account.signedIn,
     agentSessions,
     commandQuery,
+    homeEnabled,
     notes,
     onChangeView,
     onOpenRecording,
@@ -1244,18 +1252,20 @@ export function Sidebar({
           </label>
 
           <nav className="sidebar-nav" aria-label="Primary">
-            <button
-              type="button"
-              className="sidebar-nav-item"
-              data-active={activeView === "home" || undefined}
-              aria-current={activeView === "home" ? "page" : undefined}
-              onClick={() => onChangeView("home")}
-            >
-              <span className="sidebar-nav-icon">
-                <IconHomeOpen size={15} />
-              </span>
-              <span className="sidebar-nav-label">Home</span>
-            </button>
+            {homeEnabled ? (
+              <button
+                type="button"
+                className="sidebar-nav-item"
+                data-active={activeView === "home" || undefined}
+                aria-current={activeView === "home" ? "page" : undefined}
+                onClick={() => onChangeView("home")}
+              >
+                <span className="sidebar-nav-icon">
+                  <IconHomeOpen size={15} />
+                </span>
+                <span className="sidebar-nav-label">Home</span>
+              </button>
+            ) : null}
             <button type="button" className="sidebar-nav-item" onClick={handleNewAgentSession}>
               <span className="sidebar-nav-icon">
                 <IconPlusMedium size={15} />

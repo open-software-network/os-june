@@ -20,7 +20,11 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       style={{ display: "flex", flex: 1, minHeight: 0 }}
     >
       <div className="workspace" style={{ display: "flex", flex: 1, minWidth: 0 }}>
-        <AgentWorkspace homeMode initialSessionId="home-session" />
+        <AgentWorkspace
+          homeMode
+          homeUserDisplayName="Preview Person"
+          initialSessionId="home-preview-session"
+        />
       </div>
     </div>
   </div>,

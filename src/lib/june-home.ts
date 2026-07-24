@@ -8,7 +8,192 @@ export type JuneHomeTaskRequest = {
   title: string;
   prompt: string;
   summary?: string;
+  requiresCurrentResearch?: boolean;
 };
+
+export type JuneHomeConversationMessage = {
+  role: "user" | "assistant";
+  content: string;
+  createdAt?: string;
+};
+
+export type JuneHomeConversationContext = {
+  recentMessages: Array<Pick<JuneHomeConversationMessage, "role" | "content">>;
+  earlierContext?: string;
+};
+
+const HOME_RECENT_MESSAGE_LIMIT = 80;
+const HOME_RECENT_CHARACTER_LIMIT = 48_000;
+const HOME_EARLIER_EXCERPT_LIMIT = 24;
+const HOME_EARLIER_EXCERPT_CHARACTER_LIMIT = 12_000;
+const HOME_EARLIER_MESSAGE_CHARACTER_LIMIT = 600;
+const HOME_CONTEXT_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "also",
+  "because",
+  "been",
+  "before",
+  "could",
+  "from",
+  "have",
+  "just",
+  "like",
+  "more",
+  "that",
+  "their",
+  "them",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "what",
+  "when",
+  "where",
+  "which",
+  "with",
+  "would",
+  "your",
+]);
+
+function homeContextTerms(content: string): Set<string> {
+  return new Set(
+    content
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(
+        (term) => term.length >= 3 && !HOME_CONTEXT_STOP_WORDS.has(term) && !/^\d+$/.test(term),
+      ),
+  );
+}
+
+function homeExcerptLine(message: JuneHomeConversationMessage): string {
+  const characters = Array.from(message.content);
+  const excerpt = characters.slice(0, HOME_EARLIER_MESSAGE_CHARACTER_LIMIT).join("");
+  const truncated =
+    characters.length > HOME_EARLIER_MESSAGE_CHARACTER_LIMIT
+      ? `${excerpt.trimEnd()}...`
+      : excerpt.trimEnd();
+  const date = /^\d{4}-\d{2}-\d{2}/.exec(message.createdAt ?? "")?.[0];
+  return `${date ? `${date} ` : ""}${message.role === "user" ? "User" : "June"}: ${truncated}`;
+}
+
+function earlierHomeExcerpt(
+  messages: JuneHomeConversationMessage[],
+  latestUserMessage: string,
+): string | undefined {
+  if (!messages.length) return undefined;
+
+  const selected = new Set<number>();
+  const addWithNeighbor = (index: number) => {
+    if (index < 0 || index >= messages.length || selected.size >= HOME_EARLIER_EXCERPT_LIMIT)
+      return;
+    selected.add(index);
+    if (selected.size >= HOME_EARLIER_EXCERPT_LIMIT) return;
+    const neighbor = messages[index].role === "user" ? index + 1 : index - 1;
+    if (neighbor >= 0 && neighbor < messages.length) selected.add(neighbor);
+  };
+
+  const currentTerms = homeContextTerms(latestUserMessage);
+  const relevant = messages
+    .map((message, index) => {
+      const overlap = [...homeContextTerms(message.content)].filter((term) =>
+        currentTerms.has(term),
+      ).length;
+      const preference =
+        message.role === "user" &&
+        /\b(?:i prefer|i usually|keep that in mind|remember|my favorite|works best for me)\b/i.test(
+          message.content,
+        )
+          ? 1
+          : 0;
+      return { index, score: overlap * 100 + preference * 20 + index / messages.length };
+    })
+    .filter((candidate) => candidate.score >= 20)
+    .sort((left, right) => right.score - left.score);
+  for (const candidate of relevant.slice(0, 8)) addWithNeighbor(candidate.index);
+
+  for (
+    let index = messages.length - 1;
+    index >= 0 && selected.size < HOME_EARLIER_EXCERPT_LIMIT - 4;
+    index -= 1
+  ) {
+    addWithNeighbor(index);
+  }
+
+  const userIndices = messages
+    .map((message, index) => (message.role === "user" ? index : -1))
+    .filter((index) => index >= 0);
+  const sampleCount = Math.min(4, userIndices.length);
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    const at =
+      sampleCount === 1
+        ? userIndices.length - 1
+        : Math.round((sample * (userIndices.length - 1)) / (sampleCount - 1));
+    addWithNeighbor(userIndices[at]);
+  }
+
+  const lines: string[] = [];
+  let characters = 0;
+  for (const index of [...selected].sort((left, right) => left - right)) {
+    const line = homeExcerptLine(messages[index]);
+    const lineCharacters = Array.from(line).length;
+    if (characters + lineCharacters > HOME_EARLIER_EXCERPT_CHARACTER_LIMIT) break;
+    lines.push(line);
+    characters += lineCharacters;
+  }
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+export function buildJuneHomeConversationContext(
+  messages: ReadonlyArray<JuneHomeConversationMessage>,
+): JuneHomeConversationContext {
+  const normalized = messages
+    .map((message, sourceIndex) => ({
+      ...message,
+      sourceIndex,
+      content: message.content.trim(),
+    }))
+    .filter((message) => message.content);
+  if (!normalized.length) return { recentMessages: [] };
+
+  const retained: typeof normalized = [];
+  let retainedCharacters = 0;
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const message = normalized[index];
+    const characters = Array.from(message.content).length;
+    if (
+      retained.length > 0 &&
+      (retained.length >= HOME_RECENT_MESSAGE_LIMIT ||
+        retainedCharacters + characters > HOME_RECENT_CHARACTER_LIMIT)
+    ) {
+      break;
+    }
+    retained.push(message);
+    retainedCharacters += characters;
+  }
+  retained.reverse();
+  while (retained[0]?.role === "assistant") retained.shift();
+
+  const recentStart = retained[0]?.sourceIndex ?? normalized.length;
+  const recentMessages = retained.map(({ role, content }) => ({ role, content }));
+  const latestUserMessage =
+    [...recentMessages].reverse().find((message) => message.role === "user")?.content ?? "";
+  const earlierContext = earlierHomeExcerpt(
+    normalized.slice(0, recentStart).map(({ role, content, createdAt }) => ({
+      role,
+      content,
+      createdAt,
+    })),
+    latestUserMessage,
+  );
+  return {
+    recentMessages,
+    ...(earlierContext ? { earlierContext } : {}),
+  };
+}
 
 export type JuneHomeCheckIn = {
   createdAt: string;
@@ -51,12 +236,12 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
-export function readJuneHomeSessionId(profile: string): string | undefined {
+export function readJuneHomeStoredSessionId(profile: string): string | undefined {
   const storedSessionId = readStringMap(HOME_SESSION_IDS_STORAGE_KEY)[profile]?.trim();
   return storedSessionId || undefined;
 }
 
-export function writeJuneHomeSessionId(profile: string, storedSessionId: string): void {
+export function writeJuneHomeStoredSessionId(profile: string, storedSessionId: string): void {
   const normalizedProfile = profile.trim() || "default";
   const normalizedSessionId = storedSessionId.trim();
   if (!normalizedSessionId) return;
@@ -66,7 +251,10 @@ export function writeJuneHomeSessionId(profile: string, storedSessionId: string)
   });
 }
 
-export function forgetJuneHomeSessionId(profile: string, expectedStoredSessionId?: string): void {
+export function forgetJuneHomeStoredSessionId(
+  profile: string,
+  expectedStoredSessionId?: string,
+): void {
   const records = readStringMap(HOME_SESSION_IDS_STORAGE_KEY);
   if (expectedStoredSessionId && records[profile] !== expectedStoredSessionId) return;
   if (!(profile in records)) return;
@@ -85,6 +273,56 @@ export function withJuneHomeContext(prompt: string): string {
     JUNE_HOME_CONTEXT_CLOSE,
     "",
     visiblePrompt,
+  ].join("\n");
+}
+
+export function withJuneHomeCurrentResearch(
+  prompt: string,
+  conversation: JuneHomeConversationContext = { recentMessages: [] },
+): string {
+  const visiblePrompt = prompt.trim();
+  const context = conversation.recentMessages
+    .map((message) => ({ ...message, content: message.content.trim() }))
+    .filter((message) => message.content)
+    .filter(
+      (message, index, messages) =>
+        !(
+          index === messages.length - 1 &&
+          message.role === "user" &&
+          message.content === visiblePrompt
+        ),
+    )
+    .slice(-12)
+    .map(
+      (message) =>
+        `${message.role === "user" ? "User" : "June"}: ${Array.from(message.content)
+          .slice(0, 600)
+          .join("")}`,
+    );
+  return [
+    visiblePrompt,
+    "",
+    "--- Attached Context ---",
+    "This request depends on current external information.",
+    "Before answering, use June's web_search and web_fetch tools to retrieve current sources.",
+    "Prefer authoritative sources, verify time-sensitive claims, and include links to the sources that support the answer.",
+    "If current sources cannot be retrieved, say so instead of answering from model memory.",
+    ...(context.length
+      ? [
+          "",
+          "Recent Home conversation, provided only to resolve references in the current request:",
+          ...context,
+          "Do not treat factual claims in the prior conversation as verified sources.",
+        ]
+      : []),
+    ...(conversation.earlierContext
+      ? [
+          "",
+          "Relevant excerpts from older Home history, also provided only to resolve references:",
+          conversation.earlierContext,
+          "These excerpts are not current sources and may be incomplete.",
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -207,28 +445,66 @@ export function juneHomeDayLabel(iso: string, now = new Date()): string {
 /** The live greeting for the Home surface, derived from the CURRENT clock
  * (unlike the stored check-in, whose text is pinned to its creation time).
  * Early hours read as evening: "Good morning" at 00:37 feels wrong. */
-export function juneHomeGreetingParts(now = new Date()): {
+export type JuneHomeGreetingContext = {
+  displayName?: string;
+  returning?: boolean;
+};
+
+function firstNameFromDisplayName(displayName: string | undefined): string | undefined {
+  return displayName?.trim().split(/\s+/)[0] || undefined;
+}
+
+export function juneHomeGreetingParts(
+  now = new Date(),
+  context: JuneHomeGreetingContext = {},
+): {
   salutation: string;
   question: string;
 } {
   const hour = now.getHours();
+  const firstName = firstNameFromDisplayName(context.displayName);
+  const personalized = (salutation: string) =>
+    firstName ? `${salutation}, ${firstName}` : salutation;
   if (hour >= 5 && hour < 12) {
-    return { salutation: "Good morning", question: "What would make today feel lighter?" };
+    return {
+      salutation: personalized("Good morning"),
+      question: context.returning
+        ? "What should we pick up today?"
+        : "What would you like help with today?",
+    };
   }
   if (hour >= 12 && hour < 18) {
     return {
-      salutation: "Good afternoon",
-      question: "Is there anything you want me to take off your plate?",
+      salutation: personalized("Good afternoon"),
+      question: context.returning
+        ? "What should we pick up this afternoon?"
+        : "What would you like help with this afternoon?",
     };
   }
-  return { salutation: "Good evening", question: "Want to wrap anything up before the day ends?" };
+  return {
+    salutation: personalized("Good evening"),
+    question: context.returning
+      ? "What should we pick up this evening?"
+      : "What would you like help with this evening?",
+  };
+}
+
+/** Quiet first-step prompts that follow the user's local day without claiming
+ * access to context June has not actually loaded. */
+export function juneHomeNudgePrompts(now = new Date()): readonly string[] {
+  const hour = now.getHours();
+  if (hour >= 5 && hour < 12) {
+    return ["Plan my day", "Think through a decision", "Help me get something done"];
+  }
+  if (hour >= 12 && hour < 18) {
+    return ["Plan the rest of my day", "Work through a blocker", "Help me prioritize"];
+  }
+  return ["Review my day", "Plan tomorrow", "Think through a decision"];
 }
 
 function checkInText(now: Date): string {
-  const hour = now.getHours();
-  if (hour < 12) return "Good morning. What would make today feel lighter?";
-  if (hour < 18) return "Good afternoon. Is there anything you want me to take off your plate?";
-  return "Good evening. Want to wrap anything up before the day ends?";
+  const greeting = juneHomeGreetingParts(now);
+  return `${greeting.salutation}. ${greeting.question}`;
 }
 
 export function juneHomeDailyCheckIn(profile: string, now = new Date()): JuneHomeCheckIn {

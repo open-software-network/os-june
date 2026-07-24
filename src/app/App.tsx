@@ -74,7 +74,7 @@ import { markReferralNudgeClickedThrough, recordDictationFinished } from "../lib
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import { Dialog } from "../components/ui/Dialog";
 import { Spinner } from "../components/ui/Spinner";
-import { readJuneHomeSessionId, writeJuneHomeSessionId } from "../lib/june-home";
+import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import {
   assignNoteToFolder,
   assignSessionToFolder,
@@ -477,15 +477,15 @@ export function App() {
   // native menu state.
   const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
   const [homeSessionRevision, setHomeSessionRevision] = useState(0);
-  const homeSessionId = useMemo(
-    () => readJuneHomeSessionId(activeHermesProfileName),
+  const homeStoredSessionId = useMemo(
+    () => readJuneHomeStoredSessionId(activeHermesProfileName),
     [activeHermesProfileName, homeSessionRevision],
   );
-  const homeSessionIdRef = useRef(homeSessionId);
-  homeSessionIdRef.current = homeSessionId;
+  const homeStoredSessionIdRef = useRef(homeStoredSessionId);
+  homeStoredSessionIdRef.current = homeStoredSessionId;
   const focusedAgentSessions = useMemo(
-    () => agentSessions.filter((session) => session.id !== homeSessionId),
-    [agentSessions, homeSessionId],
+    () => agentSessions.filter((session) => session.id !== homeStoredSessionId),
+    [agentSessions, homeStoredSessionId],
   );
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
   const activeAgentSessionIdRef = useRef(activeAgentSessionId);
@@ -497,7 +497,7 @@ export function App() {
   }, []);
   const rememberHomeSession = useCallback(
     (sessionId: string) => {
-      writeJuneHomeSessionId(activeHermesProfileName, sessionId);
+      writeJuneHomeStoredSessionId(activeHermesProfileName, sessionId);
       setHomeSessionRevision((revision) => revision + 1);
     },
     [activeHermesProfileName],
@@ -1129,7 +1129,8 @@ export function App() {
         // (JUN-203 review).
         sessions: agentMenuBarSessionsRef.current.filter(
           (session) =>
-            session.id !== homeSessionIdRef.current && !completedSessionsRef.current[session.id],
+            session.id !== homeStoredSessionIdRef.current &&
+            !completedSessionsRef.current[session.id],
         ),
         workingSessionIds: agentMenuBarWorkingSessionIdsRef.current,
         waitingSessionIds: agentMenuBarWaitingSessionIdsRef.current,
@@ -1144,10 +1145,10 @@ export function App() {
   // persisted, so prune and republish when that id becomes known.
   useEffect(() => {
     agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
-      (session) => session.id !== homeSessionId,
+      (session) => session.id !== homeStoredSessionId,
     );
     publishAgentMenuBarState();
-  }, [homeSessionId, publishAgentMenuBarState]);
+  }, [homeStoredSessionId, publishAgentMenuBarState]);
   // Keep the menu bar in step with completion changes: marking a session
   // complete (or active again) must add/remove it from the native shortcuts,
   // not just the in-app lists.
@@ -4224,7 +4225,8 @@ export function App() {
       <Sidebar
         notes={state.notes}
         activeView={activeView}
-        homeSessionId={homeSessionId}
+        homeEnabled={isMacLikePlatform()}
+        homeStoredSessionId={homeStoredSessionId}
         account={account}
         settingsTab={settingsTab}
         onSettingsTabChange={changeSettingsTab}
@@ -4474,7 +4476,8 @@ export function App() {
                 <AgentWorkspace
                   key={`home:${activeHermesProfileName}`}
                   homeMode
-                  initialSessionId={homeSessionId}
+                  homeUserDisplayName={account.user?.displayName}
+                  initialSessionId={homeStoredSessionId}
                   onHomeSessionCreated={rememberHomeSession}
                   onOpenHomeTaskSession={(sessionId, title) => {
                     const session = agentSessions.find((item) => item.id === sessionId) ?? {

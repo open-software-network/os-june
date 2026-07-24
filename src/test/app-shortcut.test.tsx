@@ -1476,6 +1476,8 @@ describe("App shortcuts", () => {
       render(<App />);
 
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+      expect(screen.queryByRole("button", { name: "Home" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Home" })).toBeNull();
 
       // The Cmd key does nothing on Windows — Ctrl is the primary modifier.
       fireEvent.keyDown(window, { key: "n", metaKey: true });

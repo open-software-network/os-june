@@ -725,17 +725,131 @@ describe("AgentWorkspace", () => {
   });
 
   it("opens Home as a quiet thread: serif greeting, no identity chrome, a new-session escape hatch", () => {
-    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+    render(
+      <AgentWorkspace
+        homeMode
+        homeUserDisplayName="Alex Rivera"
+        initialSession={existingSession}
+      />,
+    );
 
     const home = within(screen.getByRole("region", { name: "Home" }));
     // June's presence lives in the daily greeting and the composer, not a
     // support-widget header (avatar, subtitle, presence dot).
     expect(
-      home.getByRole("heading", { name: /Good (morning|afternoon|evening)/ }),
+      home.getByRole("heading", { name: /Good (morning|afternoon|evening), Alex/ }),
     ).toBeInTheDocument();
     expect(home.queryByText("Your personal assistant")).not.toBeInTheDocument();
     expect(home.queryByText("Online")).not.toBeInTheDocument();
     expect(home.queryByText("Here with you")).not.toBeInTheDocument();
+  });
+
+  it("populates the Home demo and restores only the profiled thread afterward", () => {
+    window.localStorage.setItem(
+      "june:home:session-ids:v1",
+      JSON.stringify({ default: "session-1" }),
+    );
+    const originalTurns = [{ marker: "original Home turns" }];
+    window.localStorage.setItem(
+      "june.home.directTurns.v1",
+      JSON.stringify({
+        "session-1": originalTurns,
+        "other-session": [{ marker: "before demo" }],
+      }),
+    );
+    const originalHandoffs = [{ marker: "original Home handoffs" }];
+    window.localStorage.setItem(
+      "june.home.taskHandoffs.v1",
+      JSON.stringify({
+        "session-1": originalHandoffs,
+        "other-session": [{ marker: "before demo" }],
+      }),
+    );
+    const homeDemo = (
+      window as unknown as {
+        __homeDemo: (mode?: boolean | "empty") => string;
+      }
+    ).__homeDemo;
+
+    homeDemo();
+    const seededTurns = JSON.parse(window.localStorage.getItem("june.home.directTurns.v1") ?? "{}")[
+      "session-1"
+    ] as Array<{ parts: Array<{ id?: string; text?: string }> }>;
+    expect(
+      seededTurns
+        .flatMap((turn) => turn.parts)
+        .map((part) => part.text)
+        .join("\n"),
+    ).toContain("## Launch snapshot");
+    expect(seededTurns.flatMap((turn) => turn.parts).map((part) => part.id)).toEqual(
+      expect.arrayContaining(["demo-starting", "demo-running", "demo-failed"]),
+    );
+    expect(
+      JSON.parse(window.localStorage.getItem("june.home.taskHandoffs.v1") ?? "{}")["session-1"],
+    ).toEqual([
+      expect.objectContaining({ status: "starting" }),
+      expect.objectContaining({
+        status: "running",
+        storedSessionId: "home-demo-focused-session",
+      }),
+      expect.objectContaining({ status: "failed" }),
+    ]);
+
+    const onOpenHomeTaskSession = vi.fn();
+    render(
+      <AgentWorkspace
+        homeMode
+        initialSession={existingSession}
+        onOpenHomeTaskSession={onOpenHomeTaskSession}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "Launch snapshot" })).toBeInTheDocument();
+    expect(
+      screen.getByText("I'm creating a session for “Draft launch brief”…"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("I created a session for “Review launch risks”.")).toBeInTheDocument();
+    expect(
+      screen.getByText("I couldn't create the session for “Build rollout checklist”."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open session" }));
+    expect(onOpenHomeTaskSession).toHaveBeenCalledWith(
+      "home-demo-focused-session",
+      "Review launch risks",
+    );
+
+    setActiveHermesProfileName("work");
+    expect(homeDemo()).toContain("Home demo is active for default");
+    expect(
+      JSON.parse(window.localStorage.getItem("june:home:session-ids:v1") ?? "{}"),
+    ).not.toHaveProperty("work");
+    setActiveHermesProfileName("default");
+    const duringDemo = JSON.parse(
+      window.localStorage.getItem("june.home.directTurns.v1") ?? "{}",
+    ) as Record<string, unknown>;
+    duringDemo["other-session"] = [{ marker: "changed while demo was active" }];
+    window.localStorage.setItem("june.home.directTurns.v1", JSON.stringify(duringDemo));
+    const handoffsDuringDemo = JSON.parse(
+      window.localStorage.getItem("june.home.taskHandoffs.v1") ?? "{}",
+    ) as Record<string, unknown>;
+    handoffsDuringDemo["other-session"] = [{ marker: "changed while demo was active" }];
+    window.localStorage.setItem("june.home.taskHandoffs.v1", JSON.stringify(handoffsDuringDemo));
+
+    act(() => {
+      homeDemo(false);
+    });
+    const restored = JSON.parse(
+      window.localStorage.getItem("june.home.directTurns.v1") ?? "{}",
+    ) as Record<string, unknown>;
+    expect(restored["session-1"]).toEqual(originalTurns);
+    expect(restored["other-session"]).toEqual([{ marker: "changed while demo was active" }]);
+    const restoredHandoffs = JSON.parse(
+      window.localStorage.getItem("june.home.taskHandoffs.v1") ?? "{}",
+    ) as Record<string, unknown>;
+    expect(restoredHandoffs["session-1"]).toEqual(originalHandoffs);
+    expect(restoredHandoffs["other-session"]).toEqual([
+      { marker: "changed while demo was active" },
+    ]);
+    expect(window.localStorage.getItem("june.home.demoBackup.v2")).toBeNull();
   });
 
   it("retires the daily greeting once the conversation moves past it", async () => {
@@ -881,6 +995,101 @@ describe("AgentWorkspace", () => {
     expect(returnedHomeScrollTo).toHaveBeenCalledWith({ top: 1600, behavior: "auto" });
   });
 
+  it("lets a failed Home handoff retry the original focused-session request", async () => {
+    const user = userEvent.setup();
+    let createAttempts = 0;
+    mocks.juneHomeChat.mockResolvedValueOnce({
+      task: {
+        title: "Review launch risks",
+        prompt: "Research and summarize the launch risks.",
+      },
+    });
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        createAttempts += 1;
+        if (createAttempts === 1) {
+          return Promise.reject(new Error("The session service is unavailable."));
+        }
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Review the launch risks in a focused session");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText("I couldn't create the session for “Review launch risks”."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("The session service is unavailable.")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(
+      await screen.findByText("I created a session for “Review launch risks”."),
+    ).toBeInTheDocument();
+    expect(createAttempts).toBe(2);
+    expect(
+      JSON.parse(window.localStorage.getItem("june.home.taskHandoffs.v1") ?? "{}")["session-1"],
+    ).toEqual([
+      expect.objectContaining({
+        prompt: "Research and summarize the launch risks.",
+        status: "running",
+        storedSessionId: "session-2",
+      }),
+    ]);
+  });
+
+  it("requires web research in a focused session for current Home questions", async () => {
+    const user = userEvent.setup();
+    mocks.juneHomeChat
+      .mockResolvedValueOnce({ content: "Got it. Those are the teams you follow." })
+      .mockResolvedValueOnce({
+        task: {
+          title: "Sports today",
+          prompt: "What was going on in sports today?",
+          requiresCurrentResearch: true,
+        },
+      });
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "I follow the Nuggets and Avalanche.");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText("Got it. Those are the teams you follow.")).toBeInTheDocument();
+
+    await user.type(composer, "What was going on in sports today?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({
+          text: expect.stringContaining("What was going on in sports today?"),
+        }),
+      ),
+    );
+    const promptSubmit = mocks.gatewayRequest.mock.calls.find(
+      ([method]) => method === "prompt.submit",
+    )?.[1] as { text?: string } | undefined;
+    expect(promptSubmit?.text).toContain("web_search");
+    expect(promptSubmit?.text).toContain("web_fetch");
+    expect(promptSubmit?.text).toContain("instead of answering from model memory");
+    expect(promptSubmit?.text).toContain("User: I follow the Nuggets and Avalanche.");
+    expect(promptSubmit?.text).toContain("June: Got it. Those are the teams you follow.");
+    expect(screen.queryByText("This request depends on current external information.")).toBeNull();
+    expect(await screen.findByText("I created a session for “Sports today”.")).toBeInTheDocument();
+  });
+
   it("upgrades a legacy Home task tool row into a compact session handoff", async () => {
     const user = userEvent.setup();
     const onOpenHomeTaskSession = vi.fn();
@@ -977,10 +1186,21 @@ describe("AgentWorkspace", () => {
   it("shows a sent Home message immediately while the lightweight reply is pending", async () => {
     const user = userEvent.setup();
     let resolveHomeChat: ((value: { content: string }) => void) | undefined;
+    let streamHomeDelta: ((content: string) => void) | undefined;
     const homeReply = new Promise<{ content: string }>((resolve) => {
       resolveHomeChat = resolve;
     });
-    mocks.juneHomeChat.mockReturnValueOnce(homeReply);
+    mocks.juneHomeChat.mockImplementationOnce(
+      (
+        _messages: unknown,
+        options: {
+          onDelta?: (content: string) => void;
+        },
+      ) => {
+        streamHomeDelta = options.onDelta;
+        return homeReply;
+      },
+    );
 
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
 
@@ -993,11 +1213,119 @@ describe("AgentWorkspace", () => {
     // Home auto-selects its route; no model control renders.
     expect(screen.queryByRole("button", { name: /^Model:/ })).toBeNull();
 
-    resolveHomeChat?.({ content: "Yes — right here." });
+    await waitFor(() => expect(streamHomeDelta).toBeTypeOf("function"));
+    act(() => streamHomeDelta?.("Yes"));
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn")?.textContent).toContain("Yes"),
+    );
+    act(() => streamHomeDelta?.(" — right here."));
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn")?.textContent).toContain(
+        "Yes — right here.",
+      ),
+    );
+
+    act(() => resolveHomeChat?.({ content: "Yes — right here." }));
     expect(await screen.findByText("Yes — right here.")).toBeInTheDocument();
     expect(screen.getByText("Are you there?")).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+
+    act(() => streamHomeDelta?.(" This late delta must be ignored."));
+    expect(document.querySelector(".agent-assistant-turn")?.textContent).not.toContain(
+      "late delta",
+    );
+  });
+
+  it("keeps the lightweight Home reply streaming after a markdown table", async () => {
+    const user = userEvent.setup();
+    let resolveHomeChat: ((value: { content: string }) => void) | undefined;
+    let streamHomeDelta: ((content: string) => void) | undefined;
+    const homeReply = new Promise<{ content: string }>((resolve) => {
+      resolveHomeChat = resolve;
+    });
+    mocks.juneHomeChat.mockImplementationOnce(
+      (
+        _messages: unknown,
+        options: {
+          onDelta?: (content: string) => void;
+        },
+      ) => {
+        streamHomeDelta = options.onDelta;
+        return homeReply;
+      },
+    );
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Put that in a table");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(streamHomeDelta).toBeTypeOf("function"));
+
+    const table = "| Item | Status |\n| --- | --- |\n| Streaming | Working |\n";
+    act(() => streamHomeDelta?.("| Item | Status |\n"));
+    act(() => streamHomeDelta?.("| --- | --- |\n| Streaming | Working |\n"));
+    await waitFor(() => expect(document.querySelector(".agent-md-table")).not.toBeNull());
+
+    const trailing = "\nThe reply continues after the table.";
+    act(() => streamHomeDelta?.(trailing));
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn")?.textContent).toContain(
+        "The reply continues after the table.",
+      ),
+    );
+
+    act(() => resolveHomeChat?.({ content: `${table}${trailing}` }));
+    expect(await screen.findByText("The reply continues after the table.")).toBeInTheDocument();
+    expect(document.querySelector(".agent-md-table")).not.toBeNull();
+  });
+
+  it("sends a deep recent Home thread with relevant older excerpts", async () => {
+    const user = userEvent.setup();
+    const turns = Array.from({ length: 84 }, (_, index) => ({
+      id: `deep-home-${index}`,
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      status: "complete" as const,
+      parts: [
+        {
+          type: "text" as const,
+          text:
+            index === 0
+              ? "I prefer to call the launch plan Project Nebula."
+              : index === 1
+                ? "Understood. Project Nebula is the launch plan."
+                : `Conversation message ${index}`,
+          status: "complete" as const,
+        },
+      ],
+    }));
+    window.localStorage.setItem(
+      "june.home.directTurns.v1",
+      JSON.stringify({ [existingSession.id]: turns }),
+    );
+    mocks.juneHomeChat.mockResolvedValueOnce({ content: "Project Nebula is the launch plan." });
+
+    render(<AgentWorkspace homeMode initialSession={existingSession} />);
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "What did we call the Nebula plan?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(mocks.juneHomeChat).toHaveBeenCalledTimes(1));
+    const [recentMessages, options] = mocks.juneHomeChat.mock.calls[0] as [
+      Array<{ role: string; content: string }>,
+      { historyContext?: string },
+    ];
+    expect(recentMessages.length).toBeGreaterThan(20);
+    expect(recentMessages.length).toBeLessThanOrEqual(80);
+    expect(recentMessages.at(-1)?.content).toBe("What did we call the Nebula plan?");
+    expect(recentMessages.some((message) => message.content.includes("Project Nebula"))).toBe(
+      false,
+    );
+    expect(options.historyContext).toContain("Project Nebula");
+    expect(await screen.findByText("Project Nebula is the launch plan.")).toBeInTheDocument();
   });
 
   it("keeps rapid Home messages in the conversation without showing Up next", async () => {

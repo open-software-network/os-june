@@ -160,6 +160,8 @@
   --control-md: 28px;
   --control-lg: 32px;
   --control-xl: 36px;
+  /* Shared width for the model picker's nested detail and choice panels. */
+  --model-picker-nested-w: 248px;
   /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */
@@ -368,9 +370,18 @@
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-pop: cubic-bezier(0.34, 1.45, 0.64, 1);
+  --ease-linear: linear;
   --t-fast: 100ms;
   --t-med: 160ms;
   --t-slow: 240ms;
+  --stream-word-fade-dur: 480ms;
+  --home-typing-breath-dur: 1900ms;
+  --home-typing-blur: 2.5px;
+  --home-presence-float-dur: 7s;
+  --home-presence-float-y: -2px;
+  --home-presence-wink-dur: 19s;
+  --home-presence-tilt: -4deg;
+  --home-top-fade-size: 56px;
   --icon-swap-dur: 250ms;
   --icon-swap-blur: 2px;
   --icon-swap-start-scale: 0.25;

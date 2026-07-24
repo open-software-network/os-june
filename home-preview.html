@@ -33,7 +33,8 @@
           close() {}
         };
 
-        const HOME_SESSION_ID = "home-session";
+        const HOME_SESSION_ID = "home-preview-session";
+        const HOME_PROFILE = "home-preview";
         const now = new Date();
         const at = (daysAgo, hours, minutes) => {
           const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysAgo, hours, minutes);
@@ -60,18 +61,29 @@
           String(now.getMonth() + 1).padStart(2, "0") +
           "-" +
           String(now.getDate()).padStart(2, "0");
-        localStorage.setItem(
-          "june:home:check-ins:v1",
-          JSON.stringify({ default: { date: dateKey, createdAt: minutesAgo(200) } }),
-        );
-        localStorage.setItem(
-          "june:home:session-ids:v1",
-          JSON.stringify({ default: HOME_SESSION_ID }),
-        );
+        const mergeStorageRecord = (key, value) => {
+          let records = {};
+          try {
+            records = JSON.parse(localStorage.getItem(key) || "{}");
+          } catch {}
+          localStorage.setItem(key, JSON.stringify({ ...records, [HOME_PROFILE]: value }));
+        };
+        mergeStorageRecord("june:home:check-ins:v1", {
+          date: dateKey,
+          createdAt: minutesAgo(200),
+        });
+        mergeStorageRecord("june:home:session-ids:v1", HOME_SESSION_ID);
         // Direct-turn persistence from previous preview loads would double the
-        // transcript; each load starts from the fake history alone.
-        localStorage.removeItem("june.home.directTurns.v1");
-        localStorage.removeItem("june.home.taskHandoffs.v1");
+        // transcript. Clear only this preview's isolated record, never a real
+        // local-development profile's Home data.
+        for (const key of ["june.home.directTurns.v1", "june.home.taskHandoffs.v1"]) {
+          let records = {};
+          try {
+            records = JSON.parse(localStorage.getItem(key) || "{}");
+          } catch {}
+          delete records[HOME_SESSION_ID];
+          localStorage.setItem(key, JSON.stringify(records));
+        }
 
         const HISTORY = EMPTY
           ? []
@@ -79,14 +91,14 @@
               {
                 id: "m1",
                 role: "user",
-                content: "Can you keep an eye on my reading list and nudge me when I stall?",
+                content: "I stalled on The Maintenance Race again.",
                 created_at: at(4, 16, 20),
               },
               {
                 id: "m2",
                 role: "assistant",
                 content:
-                  "Happy to. I will check in when a book sits untouched for a week — gently, no guilt. Right now you are two chapters into *The Maintenance Race*.",
+                  "Two chapters still counts. Want to talk through what lost you, or leave it alone for a week without turning it into homework?",
                 created_at: at(4, 16, 21),
               },
               {
@@ -99,20 +111,20 @@
                 id: "m4",
                 role: "assistant",
                 content:
-                  "Cleanly. All three services are on the new tokens and nothing hit the fallback path overnight.\n\nThe one loose end is the staging cron — it still points at the old audience. Want me to open a session to fix it?",
+                  "I do not have the migration details in this thread. I can open a focused session to check the notes and give you a reliable answer.",
                 created_at: at(1, 9, 31),
               },
               {
                 id: "m5",
                 role: "user",
-                content: "Morning! What does my day look like?",
+                content: "Morning! Help me decide what to protect time for today.",
                 created_at: minutesAgo(180),
               },
               {
                 id: "m6",
                 role: "assistant",
                 content:
-                  "Light, for once. Two meetings: standup at 10 and the design review at 2. Your notes from last week's review are ready if you want a refresher before it.",
+                  "The one thing you keep circling is the Home polish pass. Protect a clean hour for that before the reactive stuff gets loud.",
                 created_at: minutesAgo(179),
               },
             ];
@@ -181,13 +193,22 @@
                 return { messages: sessionId === HOME_SESSION_ID ? HISTORY : [] };
               }
               case "list_session_profiles":
-                return [];
+                return [{ sessionId: HOME_SESSION_ID, profile: HOME_PROFILE }];
               case "june_home_chat": {
-                // Slow enough to show the typing dots.
-                await new Promise((resolve) => setTimeout(resolve, 1800));
+                const content =
+                  "I’m with you. Tell me which part feels heaviest, and we’ll make the next step smaller.";
+                // A real delta sequence exercises the same Tauri Channel seam
+                // as production instead of validating a one-shot imitation.
+                await new Promise((resolve) => setTimeout(resolve, 700));
+                for (const chunk of content.match(/.{1,18}(?:\s|$)/g) || [content]) {
+                  args.onEvent?.onmessage?.({
+                    event: "delta",
+                    data: { content: chunk },
+                  });
+                  await new Promise((resolve) => setTimeout(resolve, 140));
+                }
                 return {
-                  content:
-                    "On it. I will keep that in the back of my mind and surface it when it matters.",
+                  content,
                 };
               }
               case "list_agent_tasks":
@@ -244,7 +265,7 @@
               case "browser_approvals_pending":
                 return [];
               case "sticky_active_profile":
-                return "default";
+                return HOME_PROFILE;
               case "get_share_base_url":
                 return "https://june.example/share";
               case "share_key_get":

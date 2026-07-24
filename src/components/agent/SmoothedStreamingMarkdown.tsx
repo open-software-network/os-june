@@ -270,7 +270,7 @@ function pendingTableHeaderStart(segment: string): number {
  * later jumping parse branches. Append-only text can turn literal prose into
  * emphasis / a link once its closing token arrives (`**important` becomes a
  * `<strong>`), which moves the word into a different parent element, remounts
- * its `.agent-stream-word` span at opacity 0, and re-fades it for 1.5s — a word
+ * its `.agent-stream-word` span at opacity 0, and re-fades it for a moment — a word
  * blinking out. We withhold an incomplete trailing construct until it closes;
  * crossing the safety cap reveals it but disables further word fades for that
  * turn. Exported for tests.

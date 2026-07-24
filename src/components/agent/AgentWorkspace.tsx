@@ -432,15 +432,20 @@ import {
   upstreamProviderRecoveryStore,
 } from "../../lib/upstream-provider-recovery";
 import {
+  buildJuneHomeConversationContext,
   isJuneHomeStartTaskTool,
   juneHomeDailyCheckIn,
   juneHomeDayKey,
   juneHomeDayLabel,
   juneHomeGreetingParts,
+  juneHomeNudgePrompts,
   juneHomeTaskRequestFromPayload,
-  readJuneHomeSessionId,
+  forgetJuneHomeStoredSessionId,
+  readJuneHomeStoredSessionId,
+  withJuneHomeCurrentResearch,
   withJuneHomeContext,
-  writeJuneHomeSessionId,
+  writeJuneHomeStoredSessionId,
+  type JuneHomeConversationContext,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
 
@@ -1840,6 +1845,8 @@ type AgentWorkspaceProps = {
   initialSessionId?: string;
   /** Persistent relationship-level conversation, distinct from focused sessions. */
   homeMode?: boolean;
+  /** Best-effort OS Accounts display name used only for Home's daily greeting. */
+  homeUserDisplayName?: string;
   onHomeSessionCreated?: (storedSessionId: string) => void;
   onOpenHomeTaskSession?: (storedSessionId: string, title: string) => void;
   origin?: AgentWorkspaceOrigin;
@@ -1954,13 +1961,25 @@ function persistHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTur
     const records = JSON.parse(
       window.localStorage.getItem(HOME_DIRECT_TURNS_STORAGE_KEY) ?? "{}",
     ) as Record<string, unknown>;
-    window.localStorage.setItem(
-      HOME_DIRECT_TURNS_STORAGE_KEY,
-      // Home is one continual stream: keep a deep local tail (the model
-      // context window is trimmed separately at send time).
-      JSON.stringify({ ...records, [homeStoredSessionId]: turns.slice(-400) }),
-    );
-    emitHomeDirectQueueChange();
+    // Home is one continual stream. Preserve the whole local transcript when
+    // storage allows it; if a WebView quota is eventually reached, retain the
+    // deepest viable recent tail instead of failing the newest write.
+    const candidates = [turns, turns.slice(-2000), turns.slice(-1000), turns.slice(-400)];
+    const attemptedLengths = new Set<number>();
+    for (const candidate of candidates) {
+      if (attemptedLengths.has(candidate.length)) continue;
+      attemptedLengths.add(candidate.length);
+      try {
+        window.localStorage.setItem(
+          HOME_DIRECT_TURNS_STORAGE_KEY,
+          JSON.stringify({ ...records, [homeStoredSessionId]: candidate }),
+        );
+        emitHomeDirectQueueChange();
+        return;
+      } catch {
+        // Try a smaller durable tail below.
+      }
+    }
   } catch {
     // Home remains usable when browser storage is unavailable.
   }
@@ -1968,32 +1987,99 @@ function persistHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTur
 
 // Dev-tools Home thread driver (window.__homeDemo). Seeds the persistent Home
 // conversation with a believable multi-day script and flips replies to canned
-// local responses (~1.3s delay, no June API call), so the whole loop — day
-// markers, greeting, send, typing dots, reply, task handoff — can be exercised
-// offline or while the API path is unavailable. Dev builds only.
+// local responses (no June API call), so the whole loop — day markers,
+// greeting, send, typing dots, and streamed reply — can be exercised offline
+// or while the API path is unavailable. Dev builds only.
 const HOME_DEMO_SEEDED_EVENT = "june:agent:home-demo-seeded";
-let homeDemoCannedReplies = false;
+const HOME_DEMO_BACKUP_STORAGE_KEY = "june.home.demoBackup.v2";
 
 const HOME_DEMO_REPLIES = [
-  "On it. I will keep that in the back of my mind and surface it when it matters.",
-  "Noted. Want me to fold that into tomorrow's morning rundown?",
-  "Done. I also nudged your reading list while I was at it, since you asked me to keep an eye on it.",
+  "That makes sense. What would help you move it forward?",
+  "I’m with you. We can talk it through here, or open a focused session if it needs deeper work.",
+  "Got it. I’ll stay with what you’ve shared here and won’t fill in missing context.",
 ];
 let homeDemoReplyIndex = 0;
+type HomeDemoStorageSnapshot = {
+  profile: string;
+  storedSessionId?: string;
+  demoSessionId: string;
+  directTurnsEntry: string | null;
+  directTurnsStorageExisted: boolean;
+  taskHandoffsEntry?: string | null;
+  taskHandoffsStorageExisted?: boolean;
+};
 
-async function homeDemoReply(prompt: string): Promise<JuneHomeChatResponse> {
-  await new Promise((resolve) => setTimeout(resolve, 1300));
-  if (/\b(research|session|plan a|look into)\b/i.test(prompt)) {
-    return {
-      task: {
-        title: "Focused follow-up",
-        prompt,
-        summary: "I will dig into that in a focused session.",
-      },
-    };
+function homeDemoStorageRecord(storageKey: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}") as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
   }
+}
+
+function homeDemoDirectTurnsRecord(): Record<string, unknown> {
+  return homeDemoStorageRecord(HOME_DIRECT_TURNS_STORAGE_KEY);
+}
+
+function homeDemoTaskHandoffsRecord(): Record<string, unknown> {
+  return homeDemoStorageRecord(HOME_TASK_HANDOFFS_STORAGE_KEY);
+}
+
+function readHomeDemoStorageSnapshot(): HomeDemoStorageSnapshot | undefined {
+  if (!import.meta.env.DEV || typeof window === "undefined") return undefined;
+  try {
+    const value = JSON.parse(
+      window.localStorage.getItem(HOME_DEMO_BACKUP_STORAGE_KEY) ?? "null",
+    ) as Partial<HomeDemoStorageSnapshot> | null;
+    if (
+      !value ||
+      typeof value.profile !== "string" ||
+      (value.storedSessionId !== undefined && typeof value.storedSessionId !== "string") ||
+      typeof value.demoSessionId !== "string" ||
+      (value.directTurnsEntry !== null && typeof value.directTurnsEntry !== "string") ||
+      typeof value.directTurnsStorageExisted !== "boolean" ||
+      (value.taskHandoffsEntry !== undefined &&
+        value.taskHandoffsEntry !== null &&
+        typeof value.taskHandoffsEntry !== "string") ||
+      (value.taskHandoffsStorageExisted !== undefined &&
+        typeof value.taskHandoffsStorageExisted !== "boolean")
+    ) {
+      return undefined;
+    }
+    if (value.directTurnsEntry !== null) {
+      JSON.parse(value.directTurnsEntry);
+    }
+    if (value.taskHandoffsEntry) {
+      JSON.parse(value.taskHandoffsEntry);
+    }
+    return {
+      profile: value.profile,
+      storedSessionId: value.storedSessionId,
+      demoSessionId: value.demoSessionId,
+      directTurnsEntry: value.directTurnsEntry,
+      directTurnsStorageExisted: value.directTurnsStorageExisted,
+      taskHandoffsEntry: value.taskHandoffsEntry,
+      taskHandoffsStorageExisted: value.taskHandoffsStorageExisted,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+let homeDemoStorageSnapshot = readHomeDemoStorageSnapshot();
+let homeDemoCannedReplies = Boolean(homeDemoStorageSnapshot);
+
+async function homeDemoReply(onDelta: (content: string) => void): Promise<JuneHomeChatResponse> {
+  await new Promise((resolve) => setTimeout(resolve, 700));
   const content = HOME_DEMO_REPLIES[homeDemoReplyIndex % HOME_DEMO_REPLIES.length];
   homeDemoReplyIndex += 1;
+  for (const chunk of content.match(/.{1,18}(?:\s|$)/g) ?? [content]) {
+    onDelta(chunk);
+    await new Promise((resolve) => setTimeout(resolve, 140));
+  }
   return { content };
 }
 
@@ -2012,34 +2098,127 @@ function seedHomeDemoTurns(storedSessionId: string) {
     status: "complete",
     parts: [{ type: "text", text, status: "complete" }],
   });
+  const taskTurn = (id: string, createdAt: string): AgentChatTurn => ({
+    id: `home-demo-${id}`,
+    role: "assistant",
+    createdAt,
+    status: "complete",
+    parts: [
+      {
+        type: "tool",
+        id,
+        name: "mcp_june_home_start_task",
+        text: "",
+        status: "complete",
+      },
+    ],
+  });
   persistHomeDirectTurns(storedSessionId, [
     turn(
       "u1",
       "user",
-      "Can you keep an eye on my reading list and nudge me when I stall?",
+      "I do my best writing before noon. Can we keep that in mind when we plan my days?",
       at(4 * 24 * 60 + 90),
     ),
     turn(
       "a1",
       "assistant",
-      "Happy to. I will check in when a book sits untouched for a week, gently and without guilt.",
+      "That’s useful context. In this thread, I’ll treat mornings as your preferred writing window.",
       at(4 * 24 * 60 + 89),
     ),
-    turn("u2", "user", "How did the accounts migration land yesterday?", at(24 * 60 + 30)),
+    turn(
+      "rich-user",
+      "user",
+      "Give me a quick launch snapshot and show me how you’d structure it.",
+      at(2 * 24 * 60 + 40),
+    ),
+    turn(
+      "rich-assistant",
+      "assistant",
+      `## Launch snapshot
+
+The migration is **complete**, the staging cron is *still open*, and \`release/verify\` is next.
+
+- Production tokens are healthy
+- ~~Re-run the migration~~ is no longer needed
+- The [release notes](https://example.com) still need a final pass
+
+1. Fix the staging audience
+2. Run the release check
+3. Share the result
+
+> Protect the morning writing block. Put this work in one contained afternoon slot.
+
+| Area | State | Next step |
+| --- | --- | --- |
+| Migration | Complete | Monitor |
+| Staging cron | Open | Fix audience |
+| Release | Ready | Verify |
+
+\`\`\`ts
+const nextStep = "verify staging cron";
+\`\`\`
+
+---
+
+Anything after a table or code block keeps rendering in the same response.`,
+      at(2 * 24 * 60 + 39),
+    ),
+    turn(
+      "u2",
+      "user",
+      "The accounts migration landed cleanly yesterday. The only loose end is the staging cron.",
+      at(24 * 60 + 30),
+    ),
     turn(
       "a2",
       "assistant",
-      "Cleanly. All three services are on the new tokens and nothing hit the fallback path overnight. The one loose end is the staging cron. Want me to open a session to fix it?",
+      "Nice. I’ve got the shape of it: the migration is done, and the staging cron remains. Want to leave it here or open a focused session for the cron?",
       at(24 * 60 + 29),
     ),
-    turn("u3", "user", "Morning! What does my day look like?", at(170)),
+    turn(
+      "u3",
+      "user",
+      "Morning. I want to protect my writing time, but the staging cron is still nagging at me.",
+      at(170),
+    ),
     turn(
       "a3",
       "assistant",
-      "Light, for once. Two meetings: standup at 10 and the design review at 2. Your notes from last week's review are ready if you want a refresher.",
+      "Then keep the morning for writing. Give the cron one contained slot after lunch; if it turns out deeper, I can open a focused session.",
       at(169),
     ),
+    turn("starting-user", "user", "Create a focused session to draft the launch brief.", at(150)),
+    taskTurn("demo-starting", at(149)),
+    turn("running-user", "user", "Open a focused session to review the launch risks.", at(135)),
+    taskTurn("demo-running", at(134)),
+    turn("failed-user", "user", "Start another session for the rollout checklist.", at(120)),
+    taskTurn("demo-failed", at(119)),
   ]);
+  const taskHandoffRecords = homeDemoTaskHandoffsRecord();
+  taskHandoffRecords[storedSessionId] = [
+    {
+      id: "home-task-demo-starting",
+      title: "Draft launch brief",
+      prompt: "Draft the launch brief.",
+      status: "starting",
+    },
+    {
+      id: "home-task-demo-running",
+      title: "Review launch risks",
+      prompt: "Research and summarize the launch risks.",
+      status: "running",
+      storedSessionId: "home-demo-focused-session",
+    },
+    {
+      id: "home-task-demo-failed",
+      title: "Build rollout checklist",
+      prompt: "Build the rollout checklist.",
+      status: "failed",
+      error: "The session could not be created. Please try again.",
+    },
+  ] satisfies HomeTaskHandoff[];
+  window.localStorage.setItem(HOME_TASK_HANDOFFS_STORAGE_KEY, JSON.stringify(taskHandoffRecords));
   window.dispatchEvent(new CustomEvent(HOME_DEMO_SEEDED_EVENT));
 }
 
@@ -2047,28 +2226,120 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
   (window as unknown as Record<string, unknown>).__homeDemo = (mode: boolean | "empty" = true) => {
     if (mode === false) {
       homeDemoCannedReplies = false;
-      return "Home demo off; sends go through June API again.";
+      homeDemoStorageSnapshot ??= readHomeDemoStorageSnapshot();
+      if (homeDemoStorageSnapshot) {
+        const {
+          profile,
+          storedSessionId,
+          demoSessionId,
+          directTurnsEntry,
+          directTurnsStorageExisted,
+          taskHandoffsEntry,
+          taskHandoffsStorageExisted,
+        } = homeDemoStorageSnapshot;
+        const directTurnRecords = homeDemoDirectTurnsRecord();
+        if (directTurnsEntry === null) {
+          delete directTurnRecords[demoSessionId];
+        } else {
+          directTurnRecords[demoSessionId] = JSON.parse(directTurnsEntry);
+        }
+        if (!directTurnsStorageExisted && Object.keys(directTurnRecords).length === 0) {
+          window.localStorage.removeItem(HOME_DIRECT_TURNS_STORAGE_KEY);
+        } else {
+          window.localStorage.setItem(
+            HOME_DIRECT_TURNS_STORAGE_KEY,
+            JSON.stringify(directTurnRecords),
+          );
+        }
+        if (taskHandoffsEntry !== undefined && taskHandoffsStorageExisted !== undefined) {
+          const taskHandoffRecords = homeDemoTaskHandoffsRecord();
+          if (taskHandoffsEntry === null) {
+            delete taskHandoffRecords[demoSessionId];
+          } else {
+            taskHandoffRecords[demoSessionId] = JSON.parse(taskHandoffsEntry);
+          }
+          if (!taskHandoffsStorageExisted && Object.keys(taskHandoffRecords).length === 0) {
+            window.localStorage.removeItem(HOME_TASK_HANDOFFS_STORAGE_KEY);
+          } else {
+            window.localStorage.setItem(
+              HOME_TASK_HANDOFFS_STORAGE_KEY,
+              JSON.stringify(taskHandoffRecords),
+            );
+          }
+        }
+        if (storedSessionId) {
+          writeJuneHomeStoredSessionId(profile, storedSessionId);
+        } else {
+          forgetJuneHomeStoredSessionId(profile, demoSessionId);
+        }
+        window.localStorage.removeItem(HOME_DEMO_BACKUP_STORAGE_KEY);
+        homeDemoStorageSnapshot = undefined;
+        emitHomeDirectQueueChange();
+        window.dispatchEvent(new CustomEvent(HOME_DEMO_SEEDED_EVENT));
+        if (!storedSessionId) {
+          window.setTimeout(() => window.location.reload(), 0);
+        }
+      }
+      return "Home demo off; the previous thread is restored and sends go through June API again. A fresh Home reloads automatically.";
+    }
+    const profile = getActiveHermesProfileName();
+    if (homeDemoStorageSnapshot && homeDemoStorageSnapshot.profile !== profile) {
+      return `Home demo is active for ${homeDemoStorageSnapshot.profile}. Run __homeDemo(false) before starting it for ${profile}.`;
     }
     homeDemoCannedReplies = true;
-    const profile = "default";
-    let storedSessionId = readJuneHomeSessionId(profile);
+    if (!homeDemoStorageSnapshot) {
+      const storedSessionId = readJuneHomeStoredSessionId(profile);
+      const demoSessionId = storedSessionId ?? "home-demo-session";
+      const directTurnsStorageExisted =
+        window.localStorage.getItem(HOME_DIRECT_TURNS_STORAGE_KEY) !== null;
+      const directTurnsEntry = homeDemoDirectTurnsRecord()[demoSessionId];
+      const taskHandoffsStorageExisted =
+        window.localStorage.getItem(HOME_TASK_HANDOFFS_STORAGE_KEY) !== null;
+      const taskHandoffsEntry = homeDemoTaskHandoffsRecord()[demoSessionId];
+      homeDemoStorageSnapshot = {
+        profile,
+        storedSessionId,
+        demoSessionId,
+        directTurnsEntry:
+          directTurnsEntry === undefined ? null : (JSON.stringify(directTurnsEntry) ?? null),
+        directTurnsStorageExisted,
+        taskHandoffsEntry:
+          taskHandoffsEntry === undefined ? null : (JSON.stringify(taskHandoffsEntry) ?? null),
+        taskHandoffsStorageExisted,
+      };
+      window.localStorage.setItem(
+        HOME_DEMO_BACKUP_STORAGE_KEY,
+        JSON.stringify(homeDemoStorageSnapshot),
+      );
+    }
+    let storedSessionId = readJuneHomeStoredSessionId(profile);
     if (!storedSessionId) {
       storedSessionId = "home-demo-session";
-      writeJuneHomeSessionId(profile, storedSessionId);
+      writeJuneHomeStoredSessionId(profile, storedSessionId);
     }
     if (mode === "empty") {
       // The first-open state: greeting, bloom, and suggestion chips.
       persistHomeDirectTurns(storedSessionId, []);
+      const taskHandoffRecords = homeDemoTaskHandoffsRecord();
+      taskHandoffRecords[storedSessionId] = [];
+      window.localStorage.setItem(
+        HOME_TASK_HANDOFFS_STORAGE_KEY,
+        JSON.stringify(taskHandoffRecords),
+      );
       window.dispatchEvent(new CustomEvent(HOME_DEMO_SEEDED_EVENT));
       return "Home cleared to the empty view (canned local replies stay on). __homeDemo() re-seeds the populated thread; __homeDemo(false) restores real sends.";
     }
     seedHomeDemoTurns(storedSessionId);
-    return 'Home seeded with a multi-day thread; sends now get canned local replies (no API). Open Home (reload if it was empty). __homeDemo("empty") shows the first-open view; __homeDemo(false) restores real sends.';
+    return 'Home seeded with a multi-day thread, rich response examples, and focused-session cards; sends now get canned local replies (no API). Open Home (reload if it was empty). __homeDemo("empty") shows the first-open view; __homeDemo(false) restores real sends.';
   };
 }
 
-function juneHomeChatMessagesFromTurns(turns: AgentChatTurn[]) {
-  return turns
+function juneHomeChatContextFromTurns(turns: AgentChatTurn[]): JuneHomeConversationContext {
+  const messages = [...turns]
+    .sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    )
     .filter(
       (turn): turn is AgentChatTurn & { role: "user" | "assistant" } =>
         (turn.role === "user" || turn.role === "assistant") &&
@@ -2087,10 +2358,11 @@ function juneHomeChatMessagesFromTurns(turns: AgentChatTurn[]) {
       return {
         role: turn.role,
         content: text || (delegated ? "I created a focused session for that task." : ""),
+        createdAt: turn.createdAt,
       };
     })
-    .filter((message) => message.content)
-    .slice(-20);
+    .filter((message) => message.content);
+  return buildJuneHomeConversationContext(messages);
 }
 
 function readPersistedHomeTaskHandoffs(homeStoredSessionId: string | undefined): HomeTaskHandoff[] {
@@ -2117,9 +2389,11 @@ function readPersistedHomeTaskHandoffs(homeStoredSessionId: string | undefined):
         typeof (value as HomeTaskHandoff).id === "string" &&
         typeof (value as HomeTaskHandoff).title === "string" &&
         typeof (value as HomeTaskHandoff).prompt === "string" &&
-        ((value as HomeTaskHandoff).status === "running" ||
+        ((value as HomeTaskHandoff).status === "starting" ||
+          (value as HomeTaskHandoff).status === "running" ||
           (value as HomeTaskHandoff).status === "failed") &&
-        ((value as HomeTaskHandoff).status === "failed" ||
+        ((value as HomeTaskHandoff).status === "starting" ||
+          (value as HomeTaskHandoff).status === "failed" ||
           typeof (value as HomeTaskHandoff).storedSessionId === "string"),
     );
   } catch {
@@ -2187,8 +2461,6 @@ function homeTaskSessionMatchScore(prompt: string, title: string): number {
 // Auto's lowest-cost route consistently selects the quickest eligible private
 // conversational model. The picker still labels this band "Economy", while an
 // explicit user selection continues to win after the one-time Home migration.
-const HOME_NUDGE_PROMPTS = ["Plan my day", "Catch me up", "What needs attention?"];
-
 const HOME_CONVERSATIONAL_COST_QUALITY = 0;
 const HOME_CONVERSATIONAL_DEFAULT_MIGRATION_PREFIX = "june.home.conversationalDefaultMigrated.v2:";
 
@@ -2790,6 +3062,7 @@ export function AgentWorkspace({
   initialSession,
   initialSessionId: initialSessionIdProp,
   homeMode = false,
+  homeUserDisplayName,
   onHomeSessionCreated,
   onOpenHomeTaskSession,
   origin,
@@ -2807,10 +3080,33 @@ export function AgentWorkspace({
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id ?? initialSessionIdProp;
   const activeHermesProfile = useActiveHermesProfile();
+  const reduceMotion = useReducedMotion() ?? false;
+  const [homeNow, setHomeNow] = useState(() => new Date());
+  useEffect(() => {
+    if (!homeMode) return;
+    let timer: number | undefined;
+    const scheduleNextMinute = () => {
+      const delay = 60_050 - (Date.now() % 60_000);
+      timer = window.setTimeout(() => {
+        setHomeNow(new Date());
+        scheduleNextMinute();
+      }, delay);
+    };
+    const refreshWhenVisible = () => {
+      if (!document.hidden) setHomeNow(new Date());
+    };
+    scheduleNextMinute();
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [homeMode]);
   const homeCheckIn = useMemo(
-    () => juneHomeDailyCheckIn(activeHermesProfile.name),
-    [activeHermesProfile.name],
+    () => juneHomeDailyCheckIn(activeHermesProfile.name, homeNow),
+    [activeHermesProfile.name, homeNow],
   );
+  const homeNudgePrompts = useMemo(() => juneHomeNudgePrompts(homeNow), [homeNow]);
   const [homeTaskHandoffs, setHomeTaskHandoffs] = useState<HomeTaskHandoff[]>(() =>
     homeMode ? readPersistedHomeTaskHandoffs(initialSessionId) : [],
   );
@@ -2820,9 +3116,8 @@ export function AgentWorkspace({
   const homeDirectTurnsRef = useRef(homeDirectTurns);
   const [homeOptimisticTurn, setHomeOptimisticTurn] = useState<AgentChatTurn | null>(null);
   const [homeIdleNudgesVisible, setHomeIdleNudgesVisible] = useState(false);
-  // Transient assistant turn being progressively revealed (Home's streaming
-  // feel: june_home_chat returns one shot, so the reveal is client-paced and
-  // the finished turn persists once the last words have faded in).
+  // Transient assistant turn built from June API's live SSE deltas. The
+  // finished turn persists atomically after the stream terminates.
   const [homeStreamingReply, setHomeStreamingReply] = useState<AgentChatTurn | null>(null);
   const homeTaskRequestsByToolCallRef = useRef(new Map<string, JuneHomeTaskRequest>());
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
@@ -4428,24 +4723,81 @@ export function AgentWorkspace({
   }, [activePanel, heroMode, selectedFollowUpCount, steerQueueOpen]);
 
   // Home's one-row composer centers its controls in the pill; once the draft
-  // soft-wraps, the controls drop to the bottom edge and the text grows above
-  // them. CSS cannot observe soft wrapping, so measure the editor against its
-  // own line height and flag the box. Attribute toggling (not state) keeps
-  // keystrokes from re-rendering the workspace.
+  // soft-wraps, the text takes the full row above them. Measuring the live
+  // editor after that width change creates a feedback loop: the wider row can
+  // unwrap, remove data-multiline, narrow, and wrap again. Instead, clone the
+  // current box into an inert offscreen probe with data-multiline removed. Its
+  // editor always has the one-row width, so the decision remains stable while
+  // the visible layout changes around it.
   useLayoutEffect(() => {
     if (!homeMode || activePanel !== "chat") return;
     const composer = composerRef.current;
     const editor = composer?.querySelector<HTMLElement>(".agent-composer-editor");
     const box = composer?.querySelector<HTMLElement>(".agent-composer-box");
     if (!editor || !box) return;
+
+    const probeHost = document.createElement("div");
+    probeHost.className = "agent-workspace";
+    probeHost.dataset.home = "true";
+    probeHost.setAttribute("aria-hidden", "true");
+    probeHost.setAttribute("inert", "");
+    Object.assign(probeHost.style, {
+      position: "fixed",
+      top: "0",
+      left: "-10000px",
+      zIndex: "-1",
+      display: "block",
+      height: "auto",
+      visibility: "hidden",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(probeHost);
+
+    let measureFrame: number | undefined;
     const measure = () => {
-      const lineHeight = Number.parseFloat(getComputedStyle(editor).lineHeight) || 20;
-      box.toggleAttribute("data-multiline", editor.clientHeight > lineHeight * 1.8);
+      measureFrame = undefined;
+      const probeBox = box.cloneNode(true) as HTMLElement;
+      probeBox.removeAttribute("data-multiline");
+      probeBox.style.width = `${box.getBoundingClientRect().width}px`;
+      probeBox.querySelectorAll<HTMLElement>("[id]").forEach((element) => {
+        element.removeAttribute("id");
+      });
+      probeBox.querySelectorAll<HTMLElement>("[contenteditable]").forEach((element) => {
+        element.setAttribute("contenteditable", "false");
+      });
+      probeHost.replaceChildren(probeBox);
+      try {
+        const probeEditor = probeBox.querySelector<HTMLElement>(".agent-composer-editor");
+        if (!probeEditor) return;
+        const lineHeight = Number.parseFloat(getComputedStyle(probeEditor).lineHeight) || 20;
+        box.toggleAttribute("data-multiline", probeEditor.clientHeight > lineHeight * 1.8);
+      } finally {
+        // The clone only needs to be connected for the synchronous layout
+        // read. Leaving it mounted would retain an invisible copy of draft
+        // text in the document until the next measurement.
+        probeHost.replaceChildren();
+      }
     };
-    measure();
-    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : undefined;
-    observer?.observe(editor);
-    return () => observer?.disconnect();
+    const scheduleMeasure = () => {
+      if (measureFrame !== undefined) return;
+      measureFrame = window.requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+    const resizeObserver =
+      typeof ResizeObserver === "function" ? new ResizeObserver(scheduleMeasure) : undefined;
+    const contentObserver = new MutationObserver(scheduleMeasure);
+    resizeObserver?.observe(editor);
+    resizeObserver?.observe(box);
+    contentObserver.observe(editor, { childList: true, characterData: true, subtree: true });
+    window.addEventListener("resize", scheduleMeasure);
+    return () => {
+      if (measureFrame !== undefined) window.cancelAnimationFrame(measureFrame);
+      resizeObserver?.disconnect();
+      contentObserver.disconnect();
+      window.removeEventListener("resize", scheduleMeasure);
+      probeHost.remove();
+    };
   }, [homeMode, activePanel]);
 
   // Dev-only: __homeDemo seeds the persisted thread from the console; a
@@ -4454,7 +4806,9 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!import.meta.env.DEV || !homeMode) return;
     function refreshSeededTurns() {
-      setHomeDirectTurns(readPersistedHomeDirectTurns(selectedHermesSessionIdRef.current));
+      const storedSessionId = selectedHermesSessionIdRef.current;
+      setHomeDirectTurns(readPersistedHomeDirectTurns(storedSessionId));
+      setHomeTaskHandoffs(readPersistedHomeTaskHandoffs(storedSessionId));
     }
     window.addEventListener(HOME_DEMO_SEEDED_EVENT, refreshSeededTurns);
     return () => window.removeEventListener(HOME_DEMO_SEEDED_EVENT, refreshSeededTurns);
@@ -6626,10 +6980,22 @@ export function AgentWorkspace({
       imageSlashBlockedByModel
     )
       return;
+    const sentHomeProfile = homeMode ? activeHermesProfile.name : undefined;
+    const sentWithHomeDemo =
+      homeDemoCannedReplies && homeDemoStorageSnapshot?.profile === sentHomeProfile;
+    if (sentWithHomeDemo && (attachments.length > 0 || category || message.startsWith("/"))) {
+      setError(
+        "Home demo supports text messages only. Turn it off before sending attachments, reports, or commands.",
+      );
+      return;
+    }
     // This is the user-visible Send boundary. Skill expansion, file reads,
     // title generation, and session resume can all await; a picker change
     // during any of them belongs to the following run.
     const sentModelTarget = captureSessionModelTarget();
+    const sentFocusedTaskModelTarget = homeMode
+      ? captureFocusedSessionDefaultModelTarget()
+      : undefined;
     const sentThinkingLevel = composerThinkingLevel;
     const sentDispatchOrder = ++composerDispatchOrderRef.current;
     const sentDispatchReservation = sentModelTarget.targetStoredSessionId
@@ -6938,6 +7304,10 @@ export function AgentWorkspace({
         // the single task-handoff tool, avoiding both the stale loopback bearer
         // that can surface as a 401 and the full agent prompt's prefill cost.
         submittedSessionId = selectedHermesSessionIdRef.current;
+        if (!submittedSessionId && sentWithHomeDemo) {
+          submittedSessionId =
+            readJuneHomeStoredSessionId(sentHomeProfile ?? "") ?? "home-demo-session";
+        }
         if (!submittedSessionId) {
           submittedSessionId = await submitHermesSession(runtimeContent, undefined, {
             skipPrompt: true,
@@ -6979,49 +7349,53 @@ export function AgentWorkspace({
           const currentTurns = readPersistedHomeDirectTurns(homeStoredSessionId);
           const userIndex = currentTurns.findIndex((turn) => turn.id === userTurn.id);
           const contextTurns = userIndex < 0 ? currentTurns : currentTurns.slice(0, userIndex + 1);
-          const response = homeDemoCannedReplies
-            ? await homeDemoReply(prepared.displayContent)
-            : await juneHomeChat(juneHomeChatMessagesFromTurns([...hermesTurns, ...contextTurns]), {
-                model: sentModelTarget.hermesModelId,
-                reasoningEffort: thinkingEffortForLevel(sentThinkingLevel),
-              });
-          // Plain replies stream in: words fade at a model-like pace through
-          // SmoothedStreamingMarkdown (part status "running"), and the turn
-          // persists complete once the reveal lands. Handoff replies keep the
-          // instant card. The queue holds until the reveal finishes, so rapid
-          // follow-ups stay ordered behind it.
+          const streamingTurnId = `home:direct:assistant:${directTurnId}`;
+          const streamingStartedAt = new Date().toISOString();
+          let streamedContent = "";
+          let acceptingDeltas = true;
+          const onHomeDelta = (content: string) => {
+            if (!acceptingDeltas) return;
+            streamedContent += content;
+            setHomeStreamingReply({
+              id: `${streamingTurnId}:stream`,
+              role: "assistant",
+              createdAt: streamingStartedAt,
+              status: "running",
+              parts: [{ type: "text", text: streamedContent, status: "running" }],
+            });
+          };
+          let response: JuneHomeChatResponse;
+          const homeConversation = juneHomeChatContextFromTurns([...hermesTurns, ...contextTurns]);
+          try {
+            response = sentWithHomeDemo
+              ? await homeDemoReply(onHomeDelta)
+              : await juneHomeChat(homeConversation.recentMessages, {
+                  profile: sentHomeProfile,
+                  model: sentModelTarget.hermesModelId,
+                  reasoningEffort: thinkingEffortForLevel(sentThinkingLevel),
+                  ...(homeConversation.earlierContext
+                    ? { historyContext: homeConversation.earlierContext }
+                    : {}),
+                  onDelta: onHomeDelta,
+                });
+          } finally {
+            // A queued Channel callback must not resurrect the transient bubble
+            // after the command has settled or the user has left Home.
+            acceptingDeltas = false;
+          }
           if (!response.task) {
-            const fullText = response.content?.trim() || "I'm here.";
-            const streamingTurnId = `home:direct:assistant:${directTurnId}`;
-            const tokens = fullText.split(/(\s+)/);
-            const startedAt = new Date().toISOString();
-            let visible = "";
-            for (let index = 0; index < tokens.length; index += 2) {
-              visible += tokens.slice(index, index + 2).join("");
-              setHomeStreamingReply({
-                // Distinct id from the persisted turn: the reveal instance
-                // keeps its fade spans through settling, so the final turn
-                // must mount fresh (plain text) rather than inherit them.
-                id: `${streamingTurnId}:reveal`,
-                role: "assistant",
-                createdAt: startedAt,
-                status: "running",
-                parts: [{ type: "text", text: visible, status: "running" }],
-              });
-              if (index + 2 < tokens.length) {
-                await new Promise((resolve) => window.setTimeout(resolve, 55));
-              }
-            }
+            const fullText = response.content?.trim() || streamedContent.trim() || "I'm here.";
             insertHomeDirectReply(homeStoredSessionId, userTurn.id, {
               id: streamingTurnId,
               role: "assistant",
-              createdAt: startedAt,
+              createdAt: streamingStartedAt,
               status: "complete",
               parts: [{ type: "text", text: fullText, status: "complete" }],
             });
             setHomeStreamingReply(null);
             return;
           }
+          setHomeStreamingReply(null);
           const taskToolCallId = response.task ? `home-direct-${directTurnId}` : "";
           const assistantTurn: AgentChatTurn = response.task
             ? {
@@ -7054,7 +7428,12 @@ export function AgentWorkspace({
               };
           insertHomeDirectReply(homeStoredSessionId, userTurn.id, assistantTurn);
           if (response.task && taskToolCallId) {
-            void startHomeTask(response.task, taskToolCallId);
+            void startHomeTask(
+              response.task,
+              taskToolCallId,
+              sentFocusedTaskModelTarget,
+              homeConversation,
+            );
           }
         });
         await request;
@@ -7095,16 +7474,17 @@ export function AgentWorkspace({
       let recoveredInFollowUpQueue = false;
       if (homeDirectUserCommitted && homeDirectStoredSessionId && homeDirectUserTurnId) {
         const failedUserTurnId = homeDirectUserTurnId;
-        const retained = readPersistedHomeDirectTurns(homeDirectStoredSessionId).filter(
-          (turn) =>
-            turn.id !== failedUserTurnId &&
-            turn.id !== failedUserTurnId.replace(":user:", ":assistant:"),
-        );
-        commitHomeDirectTurns(homeDirectStoredSessionId, retained);
         if (!composerHasNewInput && (composerEditorRef.current?.isEmpty() ?? true)) {
+          const retained = readPersistedHomeDirectTurns(homeDirectStoredSessionId).filter(
+            (turn) =>
+              turn.id !== failedUserTurnId &&
+              turn.id !== failedUserTurnId.replace(":user:", ":assistant:"),
+          );
+          commitHomeDirectTurns(homeDirectStoredSessionId, retained);
           composerEditorRef.current?.setContent(message, reportCategory);
           rememberComposerDraft(submittedDraftKey, message, reportCategory, attachments);
         }
+        setHomeStreamingReply(null);
       }
       // Restore the composer so a failed send doesn't eat the message, its
       // category chip, or its attachments. A model switch can wait for Hermes
@@ -7841,14 +8221,40 @@ export function AgentWorkspace({
     await Promise.all(leases.map((lease) => computerUseEndRun(lease).catch(() => undefined)));
   }
 
-  async function startHomeTask(request: JuneHomeTaskRequest, toolCallId: string) {
+  function captureFocusedSessionDefaultModelTarget(): CapturedSessionModelTarget {
+    const defaultModelId = defaultGenerationModelIdRef.current;
+    const selection: SessionModelSelection =
+      defaultModelId === AUTO_MODEL_ID && generationCostQualityRef.current !== undefined
+        ? { modelId: defaultModelId, costQuality: generationCostQualityRef.current }
+        : { modelId: defaultModelId };
+    return {
+      targetStoredSessionId: null,
+      selection,
+      hermesModelId: hermesModelIdForSelection(selection),
+      shouldApply: false,
+      globalIntentRevision: generationSelectionIntentRevisionRef.current,
+    };
+  }
+
+  async function startHomeTask(
+    request: JuneHomeTaskRequest,
+    toolCallId: string,
+    sentModelTarget = captureFocusedSessionDefaultModelTarget(),
+    conversation: JuneHomeConversationContext = { recentMessages: [] },
+  ) {
     if (handledHomeTaskToolCallsRef.current.has(toolCallId)) return;
     handledHomeTaskToolCallsRef.current.add(toolCallId);
     const handoffId = `home-task-${toolCallId}`;
-    setHomeTaskHandoffs((current) => [
-      ...current,
-      { ...request, id: handoffId, status: "starting" },
-    ]);
+    setHomeTaskHandoffs((current) => {
+      const startingHandoff: HomeTaskHandoff = {
+        ...request,
+        id: handoffId,
+        status: "starting",
+      };
+      return current.some((handoff) => handoff.id === handoffId)
+        ? current.map((handoff) => (handoff.id === handoffId ? startingHandoff : handoff))
+        : [...current, startingHandoff];
+    });
     const updateHandoff = (patch: Partial<HomeTaskHandoff>) => {
       setHomeTaskHandoffs((current) => {
         const next = current.map((handoff) =>
@@ -7860,26 +8266,19 @@ export function AgentWorkspace({
       });
     };
     try {
-      // A handoff returns to the normal new-session defaults. Home's implicit
-      // Auto Economy + Low route is for conversational latency, not task work.
-      const defaultModelId = defaultGenerationModelIdRef.current;
-      const selection: SessionModelSelection =
-        defaultModelId === AUTO_MODEL_ID && generationCostQualityRef.current !== undefined
-          ? { modelId: defaultModelId, costQuality: generationCostQualityRef.current }
-          : { modelId: defaultModelId };
-      const modelTarget: CapturedSessionModelTarget = {
-        targetStoredSessionId: null,
-        selection,
-        hermesModelId: hermesModelIdForSelection(selection),
-        shouldApply: false,
-        globalIntentRevision: generationSelectionIntentRevisionRef.current,
-      };
-      const storedSessionId = await submitHermesSession(request.prompt, undefined, {
+      // A handoff uses the normal new-session defaults captured when the Home
+      // message was sent. Home's implicit Auto Economy route is only for the
+      // conversational turn, and a settings change while that turn streams
+      // belongs to the following run.
+      const runtimePrompt = request.requiresCurrentResearch
+        ? withJuneHomeCurrentResearch(request.prompt, conversation)
+        : request.prompt;
+      const storedSessionId = await submitHermesSession(runtimePrompt, undefined, {
         displayContent: request.prompt,
         titleContent: request.title,
         sessionTitle: request.title,
         selectSession: false,
-        modelTarget,
+        modelTarget: sentModelTarget,
       });
       if (!storedSessionId) throw new Error("June could not create the focused session.");
       updateHandoff({ status: "running", storedSessionId });
@@ -7890,11 +8289,31 @@ export function AgentWorkspace({
     }
   }
 
+  function retryHomeTask(handoff: HomeTaskHandoff) {
+    if (handoff.status !== "failed") return;
+    const handoffPrefix = "home-task-";
+    const retryToolCallId = handoff.id.startsWith(handoffPrefix)
+      ? handoff.id.slice(handoffPrefix.length) || handoff.id
+      : handoff.id;
+    handledHomeTaskToolCallsRef.current.delete(retryToolCallId);
+    const request: JuneHomeTaskRequest = {
+      title: handoff.title,
+      prompt: handoff.prompt,
+      ...(handoff.summary ? { summary: handoff.summary } : {}),
+      ...(handoff.requiresCurrentResearch ? { requiresCurrentResearch: true } : {}),
+    };
+    const storedSessionId = selectedHermesSessionIdRef.current;
+    const conversation = juneHomeChatContextFromTurns([
+      ...hermesTurns,
+      ...readPersistedHomeDirectTurns(storedSessionId),
+    ]);
+    void startHomeTask(request, retryToolCallId, undefined, conversation);
+  }
+
   function commitHomeDirectTurns(homeStoredSessionId: string, turns: AgentChatTurn[]) {
-    const retained = turns.slice(-80);
-    homeDirectTurnsRef.current = retained;
-    setHomeDirectTurns(retained);
-    persistHomeDirectTurns(homeStoredSessionId, retained);
+    homeDirectTurnsRef.current = turns;
+    setHomeDirectTurns(turns);
+    persistHomeDirectTurns(homeStoredSessionId, turns);
   }
 
   function insertHomeDirectReply(
@@ -11395,19 +11814,6 @@ export function AgentWorkspace({
         ...(videoTurnsBySession[selectedHermesSessionId] ?? []),
       ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     : [];
-  useEffect(() => {
-    if (!homeMode || !homeOptimisticTurn) return;
-    const optimisticText = userPromptTextForTurn(homeOptimisticTurn);
-    const persisted = [...hermesTurns, ...homeDirectTurns].some(
-      (turn) =>
-        turn.role === "user" &&
-        turn.createdAt >= homeOptimisticTurn.createdAt &&
-        userPromptTextForTurn(turn) === optimisticText,
-    );
-    if (persisted) {
-      setHomeOptimisticTurn((current) => (current?.id === homeOptimisticTurn.id ? null : current));
-    }
-  }, [hermesTurns, homeDirectTurns, homeMode, homeOptimisticTurn]);
   const upstreamFailureRecoveryIds = upstreamProviderRecoveryIds(hermesTurns);
   const taskTurns = selectedTask
     ? mergeThinkingTurns(
@@ -12043,12 +12449,15 @@ export function AgentWorkspace({
               key="home-idle-nudges"
               className="agent-home-nudges agent-home-nudges-idle"
               aria-label="Suggestions"
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: reduceMotion ? 1 : 0, y: reduceMotion ? 0 : 6 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 4 }}
-              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              exit={{ opacity: 0, y: reduceMotion ? 0 : 4 }}
+              transition={{
+                duration: reduceMotion ? 0 : 0.24,
+                ease: [0.22, 1, 0.36, 1],
+              }}
             >
-              {HOME_NUDGE_PROMPTS.map((prompt, index) => (
+              {homeNudgePrompts.map((prompt, index) => (
                 <button
                   key={prompt}
                   type="button"
@@ -12593,7 +13002,10 @@ export function AgentWorkspace({
     left.createdAt.localeCompare(right.createdAt),
   );
   const homeGreetingVisible = homeMergedTurns.at(-1) === homeCheckInTurn;
-  const homeGreeting = juneHomeGreetingParts();
+  const homeGreeting = juneHomeGreetingParts(homeNow, {
+    displayName: homeUserDisplayName,
+    returning: homeConversationTurns.length > 0,
+  });
   const homeGreetingPrevTurn = homeMergedTurns.at(-2);
   const homeGreetingDayMarker =
     homeGreetingVisible &&
@@ -12765,6 +13177,7 @@ export function AgentWorkspace({
               turn={turn}
               homeTaskHandoff={homeTaskHandoffByTurnId.get(turn.id)}
               onOpenHomeTaskSession={onOpenHomeTaskSession}
+              onRetryHomeTask={retryHomeTask}
               activeThinkingKey={activeThinkingKey}
               artifacts={turnArtifacts.get(turn.id)}
               approvalSubmitting={approvalSubmitting}
@@ -12870,8 +13283,11 @@ export function AgentWorkspace({
           <motion.div
             key="home-greeting"
             initial={false}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            exit={{ opacity: 0, y: reduceMotion ? 0 : -6 }}
+            transition={{
+              duration: reduceMotion ? 0 : 0.3,
+              ease: [0.22, 1, 0.36, 1],
+            }}
           >
             {homeGreetingDayMarker ? (
               <div className="agent-home-day">{juneHomeDayLabel(homeCheckIn.createdAt)}</div>
@@ -12891,7 +13307,7 @@ export function AgentWorkspace({
       homeDirectTurns.length === 0 &&
       !homeOptimisticTurn ? (
         <div className="agent-home-nudges" aria-label="Suggestions">
-          {HOME_NUDGE_PROMPTS.map((prompt) => (
+          {homeNudgePrompts.map((prompt) => (
             <button key={prompt} type="button" onClick={() => prefillHomeNudge(prompt)}>
               {prompt}
             </button>
@@ -13259,7 +13675,10 @@ export function AgentWorkspace({
               } as CSSProperties
             }
           >
-            <section className="agent-main" aria-label="Agent task details">
+            <section
+              className="agent-main"
+              aria-label={homeMode ? "Home conversation" : "Agent task details"}
+            >
               {galleryErrors ? (
                 <AgentErrorBanner
                   message="Could not connect to Hermes gateway."
@@ -14902,6 +15321,7 @@ function AgentChatTurnRow({
   branchingMessageId,
   homeTaskHandoff,
   onOpenHomeTaskSession,
+  onRetryHomeTask,
   turn,
 }: {
   activeThinkingKey?: string;
@@ -14954,6 +15374,7 @@ function AgentChatTurnRow({
    * created session; the relationship thread owns only this acknowledgement. */
   homeTaskHandoff?: HomeTaskHandoff;
   onOpenHomeTaskSession?: (storedSessionId: string, title: string) => void;
+  onRetryHomeTask?: (handoff: HomeTaskHandoff) => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -15150,7 +15571,11 @@ function AgentChatTurnRow({
           <div className="agent-home-task-message" data-status={homeTaskHandoff.status}>
             <span>{handoffCopy}</span>
             {homeTaskHandoff.status === "failed" ? (
-              <small>{homeTaskHandoff.error || "Please try again."}</small>
+              onRetryHomeTask ? (
+                <button type="button" onClick={() => onRetryHomeTask(homeTaskHandoff)}>
+                  Try again
+                </button>
+              ) : null
             ) : homeTaskHandoff.storedSessionId ? (
               <button
                 type="button"
@@ -15159,7 +15584,7 @@ function AgentChatTurnRow({
                 }
               >
                 Open session
-                <IconArrowUpRight size={14} aria-hidden />
+                <IconChevronRightSmall size={14} aria-hidden />
               </button>
             ) : (
               <span className="agent-home-task-pending" aria-label="Creating session">

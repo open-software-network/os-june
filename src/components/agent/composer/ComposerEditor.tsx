@@ -103,6 +103,31 @@ export function stripPlaceholder(text: string): { text: string; from: number; to
   };
 }
 
+/** Clearance used when scrolling the caret inside the composer. The active
+ * line must clear both the editor padding and the shared fade overlay. */
+export function composerScrollMargin(fadeSize: string, paddingBottom: string): number {
+  const parsedFadeSize = Number.parseFloat(fadeSize);
+  const parsedPadding = Number.parseFloat(paddingBottom);
+  return Math.max(
+    Number.isFinite(parsedFadeSize) ? parsedFadeSize : 0,
+    Number.isFinite(parsedPadding) ? parsedPadding : 6,
+  );
+}
+
+export type ComposerDocumentEdge = "start" | "end";
+
+/** Returns the document edge occupied by a collapsed composer selection.
+ * ProseMirror's selectable text range sits one position inside each document
+ * boundary, so position 1 is the start and `content.size - 1` is the end. */
+export function composerDocumentEdge(
+  selectionHead: number,
+  documentEnd: number,
+): ComposerDocumentEdge | null {
+  if (selectionHead <= 1) return "start";
+  if (selectionHead >= documentEnd - 1) return "end";
+  return null;
+}
+
 /** Splits a line into text nodes and note-reference chips. Drafts persist as
  * the serialized plain string, so a restored draft carries reference tokens
  * as text; rebuilding the chip here keeps the pill UX across restores. The
@@ -200,7 +225,24 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
       if (!nextEditor.state.selection.empty) {
         delete frame.dataset.fadeTop;
         delete frame.dataset.fadeBottom;
+        delete frame.dataset.caretEdge;
         return;
+      }
+      const selectionEdge = composerDocumentEdge(
+        nextEditor.state.selection.head,
+        nextEditor.state.doc.content.size,
+      );
+      if (selectionEdge) {
+        const caret = nextEditor.view.coordsAtPos(nextEditor.state.selection.head);
+        const box = scroller.getBoundingClientRect();
+        const caretVisible = caret.bottom >= box.top && caret.top <= box.bottom;
+        if (caretVisible) {
+          frame.dataset.caretEdge = selectionEdge;
+        } else {
+          delete frame.dataset.caretEdge;
+        }
+      } else {
+        delete frame.dataset.caretEdge;
       }
       const overflow = scroller.scrollHeight - scroller.clientHeight > 1;
       const atTop = scroller.scrollTop <= 1;
@@ -263,7 +305,40 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, ComposerEditorPro
           const scroller = view.dom;
           const caret = view.coordsAtPos(view.state.selection.head);
           const box = scroller.getBoundingClientRect();
-          const margin = 6; // the editor's own vertical padding
+          const frame = frameRef.current;
+          const selectionHead = view.state.selection.head;
+          const documentEnd = view.state.doc.content.size;
+          const selectionEdge = composerDocumentEdge(selectionHead, documentEnd);
+          if (frame) {
+            if (selectionEdge) {
+              frame.dataset.caretEdge = selectionEdge;
+            } else {
+              delete frame.dataset.caretEdge;
+            }
+          }
+          // At a real document edge there is no content to protect under that
+          // edge's fade. Snap to the true scroll boundary and drop the overlay
+          // immediately; applying the intermediate-line clearance here would
+          // leave the editor perpetually one fade-width short of the bottom.
+          if (selectionEdge === "start") {
+            scroller.scrollTop = 0;
+            if (frame) delete frame.dataset.fadeTop;
+            return true;
+          }
+          if (selectionEdge === "end") {
+            scroller.scrollTop = scroller.scrollHeight;
+            if (frame) delete frame.dataset.fadeBottom;
+            return true;
+          }
+          const frameStyles = frameRef.current ? getComputedStyle(frameRef.current) : null;
+          const scrollerStyles = getComputedStyle(scroller);
+          // Keep the active line above the shared fade overlay, not merely
+          // inside the editor's padding. At the real bottom the scroller clamps
+          // and updateScrollFades removes the overlay as before.
+          const margin = composerScrollMargin(
+            frameStyles?.getPropertyValue("--scroll-fade-size") ?? "",
+            scrollerStyles.paddingBottom,
+          );
           if (caret.top < box.top + margin) {
             scroller.scrollTop -= box.top + margin - caret.top;
           } else if (caret.bottom > box.bottom - margin) {

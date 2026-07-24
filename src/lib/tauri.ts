@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { parseDictationHelperEvent } from "./dictation-events";
 
 // Re-exported so modules that build their own command calls (e.g. the Hermes
@@ -1098,14 +1098,21 @@ export type JuneHomeChatResponse = {
     title: string;
     prompt: string;
     summary?: string;
+    requiresCurrentResearch?: boolean;
   };
 };
 
 export type JuneHomeChatOptions = {
+  /** Active Hermes profile captured at the Send boundary for memory isolation. */
+  profile?: string;
+  /** Bounded excerpts from older turns outside the verbatim recent window. */
+  historyContext?: string;
   /** June's tagged per-run model id captured at the Send boundary. */
   model?: string;
   /** OpenAI-compatible reasoning effort captured at the Send boundary. */
   reasoningEffort?: string;
+  /** Receives upstream model text as it arrives. */
+  onDelta?: (content: string) => void;
 };
 
 /** Lightweight private conversation path for Home. Concrete work is returned
@@ -1114,8 +1121,19 @@ export async function juneHomeChat(
   messages: JuneHomeChatMessage[],
   options: JuneHomeChatOptions = {},
 ) {
+  const onEvent = new Channel<{ event: "delta"; data: { content: string } }>();
+  onEvent.onmessage = (event) => {
+    if (event.event === "delta") options.onDelta?.(event.data.content);
+  };
   return invoke<JuneHomeChatResponse>("june_home_chat", {
-    request: { messages, ...options },
+    request: {
+      profile: options.profile,
+      ...(options.historyContext ? { historyContext: options.historyContext } : {}),
+      model: options.model,
+      reasoningEffort: options.reasoningEffort,
+      messages,
+    },
+    onEvent,
   });
 }
 

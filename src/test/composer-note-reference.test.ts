@@ -4,7 +4,12 @@ import StarterKit from "@tiptap/starter-kit";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CATEGORY_CHIP_NODE, CategoryChip } from "../components/agent/composer/categoryChip";
-import { buildDoc, serializePlainText } from "../components/agent/composer/ComposerEditor";
+import {
+  buildDoc,
+  composerDocumentEdge,
+  composerScrollMargin,
+  serializePlainText,
+} from "../components/agent/composer/ComposerEditor";
 import {
   NOTE_REFERENCE_NODE,
   createNoteReference,
@@ -48,6 +53,19 @@ function nodeCount(doc: ProseMirrorNode, name: string) {
   });
   return count;
 }
+
+describe("composer scrolling", () => {
+  it("keeps the caret clear of the shared fade as well as editor padding", () => {
+    expect(composerScrollMargin("18px", "6px")).toBe(18);
+    expect(composerScrollMargin("", "6px")).toBe(6);
+  });
+
+  it("identifies only the selectable document edges", () => {
+    expect(composerDocumentEdge(1, 20)).toBe("start");
+    expect(composerDocumentEdge(10, 20)).toBeNull();
+    expect(composerDocumentEdge(19, 20)).toBe("end");
+  });
+});
 
 describe("note reference token", () => {
   it("serializes a normal title", () => {
