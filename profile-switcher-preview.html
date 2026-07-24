@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  Dev-only preview for the sidebar profile switcher. Renders the real
+  SidebarIdentity (account menu + profiles group) in a plain browser by faking
+  the Tauri IPC bridge and pre-arming __profileSwitcherDemo(), so the switcher
+  can be designed and screenshotted without the native build or a Hermes
+  runtime. Nothing here ships (vite builds only the configured entries).
+  Usage: pnpm dev, open /profile-switcher-preview.html.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>June profile switcher preview</title>
+    <script>
+      (function () {
+        const callbacks = new Map();
+        let nextId = 1;
+        const listeners = new Map();
+        window.__TAURI_INTERNALS__ = {
+          transformCallback(cb) {
+            const id = nextId++;
+            callbacks.set(id, cb);
+            return id;
+          },
+          unregisterCallback(id) {
+            callbacks.delete(id);
+          },
+          convertFileSrc(p) {
+            return p;
+          },
+          async invoke(cmd, args = {}) {
+            switch (cmd) {
+              case "plugin:event|listen": {
+                listeners.set(args.event, args.handler);
+                return args.handler;
+              }
+              case "plugin:event|unlisten":
+                return null;
+              default:
+                console.log("[preview] unstubbed invoke:", cmd, args);
+                return null;
+            }
+          },
+        };
+        window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+          unregisterListener() {},
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/profile-switcher-preview.tsx"></script>
+  </body>
+</html>

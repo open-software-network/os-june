@@ -9359,6 +9359,46 @@ button.agent-user-attachment:hover {
   color: var(--muted-foreground);
 }
 
+/* Profiles group at the top of the account menu — one-click switching once a
+ * second profile exists. Rows inherit the shared menu-button treatment; the
+ * fixed leading slot mirrors native macOS menus, carrying the active check or
+ * the in-flight spinner so names stay aligned either way. */
+.sidebar-profile-group-label {
+  padding: var(--sp-1) var(--sp-3) 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.sidebar-profile-check {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 14px;
+}
+
+.sidebar-profile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* While a switch is in flight every row disables; keep them legible but
+ * clearly parked, and suppress the hover wash so nothing invites a click. */
+.sidebar-identity-menu button:disabled {
+  color: var(--muted-foreground);
+}
+
+.sidebar-identity-menu button:disabled:hover {
+  background: transparent;
+}
+
+.sidebar-profile-error {
+  margin: 0;
+  padding: var(--sp-1) var(--sp-3);
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+}
+
 /* Settings nav — replaces the main sidebar list while the settings page is
  * open, with a quiet back affordance to notes at the top. */
 .sidebar-settings-section {

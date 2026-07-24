@@ -92,6 +92,12 @@ if (import.meta.env.DEV) {
   void import("./lib/project-memory-demo").then(({ registerProjectMemoryDemo }) =>
     registerProjectMemoryDemo(),
   );
+  // __profileSwitcherDemo() forces a fake multi-profile state into the
+  // sidebar account menu so the profile switcher renders without a Hermes
+  // runtime; call again or __profileSwitcherDemo(false) to reset.
+  void import("./lib/profile-switcher-demo").then(({ registerProfileSwitcherDemo }) =>
+    registerProfileSwitcherDemo(),
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
