@@ -27,6 +27,11 @@ static LAST_AGENT_STATE: Mutex<Option<AgentMenuBarState>> = Mutex::new(None);
 /// directly: template rendering keeps only the alpha channel, so the icon's
 /// opaque squircle background becomes a solid blob instead of the glyph.
 const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-template.png");
+/// A microphone mark, shown in place of the logo while a dictation take runs so
+/// the menu bar carries an always-visible dictation indicator (not just the
+/// tooltip). Same template constraints as TRAY_ICON_TEMPLATE_PNG.
+const TRAY_ICON_DICTATING_TEMPLATE_PNG: &[u8] =
+    include_bytes!("../icons/tray-icon-dictating-template.png");
 const AGENT_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:agent-state";
 /// Carries the native dictation indicator (a bare `true`/`false`) from the
 /// dictation seam to the tray, so all tray mutation stays inside this module.
@@ -299,6 +304,23 @@ fn update_tray<R: Runtime>(
     // beside the icon in the menu bar.
     let _ = tray.set_title::<&str>(None);
     let _ = tray.set_tooltip(Some(tray_tooltip(state, dictation_active)));
+    apply_tray_icon(tray, dictation_active);
+}
+
+/// Swaps the menu-bar icon to the microphone mark while dictating and back to
+/// the June logo otherwise. On a decode failure the current icon is left in
+/// place — a stale-but-present icon beats a missing one. `set_icon_as_template`
+/// is macOS-only and a no-op elsewhere.
+fn apply_tray_icon<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, dictation_active: bool) {
+    let bytes = if dictation_active {
+        TRAY_ICON_DICTATING_TEMPLATE_PNG
+    } else {
+        TRAY_ICON_TEMPLATE_PNG
+    };
+    if let Ok(icon) = tauri::image::Image::from_bytes(bytes) {
+        let _ = tray.set_icon(Some(icon));
+        let _ = tray.set_icon_as_template(true);
+    }
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -425,24 +447,40 @@ mod tests {
     }
 
     #[test]
-    fn tray_template_icon_is_a_real_template_image() {
-        let icon = tauri::image::Image::from_bytes(TRAY_ICON_TEMPLATE_PNG)
-            .expect("embedded tray template PNG must decode");
-        assert_eq!(icon.width(), icon.height(), "menu bar icons are square");
-        // macOS template rendering uses only the alpha channel: the mark must
-        // be opaque and the background transparent, or the menu bar shows a
-        // solid blob (the bug this asset exists to fix). Both must be present.
-        let alphas: Vec<u8> = icon.rgba().chunks(4).map(|px| px[3]).collect();
-        assert!(
-            alphas.contains(&0),
-            "template needs a transparent background"
-        );
-        assert!(alphas.contains(&255), "template needs an opaque mark");
-        // Corners stay transparent — an opaque squircle background (the app
-        // icon's shape) would fail here.
-        let side = icon.width() as usize;
-        for corner in [0, side - 1, side * (side - 1), side * side - 1] {
-            assert_eq!(alphas[corner], 0, "corner pixels must be transparent");
+    fn tray_template_icons_are_real_template_images() {
+        for (name, bytes) in [
+            ("logo", TRAY_ICON_TEMPLATE_PNG),
+            ("dictating", TRAY_ICON_DICTATING_TEMPLATE_PNG),
+        ] {
+            let icon = tauri::image::Image::from_bytes(bytes)
+                .unwrap_or_else(|_| panic!("embedded {name} tray template PNG must decode"));
+            assert_eq!(
+                icon.width(),
+                icon.height(),
+                "{name} menu bar icon must be square"
+            );
+            // macOS template rendering uses only the alpha channel: the mark
+            // must be opaque and the background transparent, or the menu bar
+            // shows a solid blob (the bug this asset exists to fix). Both must
+            // be present.
+            let alphas: Vec<u8> = icon.rgba().chunks(4).map(|px| px[3]).collect();
+            assert!(
+                alphas.contains(&0),
+                "{name} template needs a transparent background"
+            );
+            assert!(
+                alphas.contains(&255),
+                "{name} template needs an opaque mark"
+            );
+            // Corners stay transparent — an opaque squircle background (the app
+            // icon's shape) would fail here.
+            let side = icon.width() as usize;
+            for corner in [0, side - 1, side * (side - 1), side * side - 1] {
+                assert_eq!(
+                    alphas[corner], 0,
+                    "{name} corner pixels must be transparent"
+                );
+            }
         }
     }
 }
