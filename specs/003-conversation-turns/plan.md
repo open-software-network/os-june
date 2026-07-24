@@ -58,7 +58,7 @@ specs/003-conversation-turns/
 - Later turn transcription receives recent valid transcript context through provider prompt support where available.
 - Consecutive same-source transcript fragments are coalesced before persistence so the UI and generation use the same cleaned turn list.
 - OpenAI transcription receives an optional `language` parameter from local configuration when `OS_NOTETAKER_TRANSCRIPTION_LANGUAGE` is set to a valid ISO-639-1 code.
-- After successful validation, `finish_recording` returns a note in `transcribing` state and launches processing on a backend task; the frontend polls selected notes while they are `transcribing` or `generating`.
+- After successful validation, `finish_recording` returns a note in `transcribing` state and launches processing on a background task; additive Tauri progress events carry `transcribing` and `generating` transitions, and the renderer hydrates the full note once when the terminal `done` event arrives.
 - Dual-source turn transcription is scheduled as source-specific lanes: microphone turns stay sequential with microphone context, system turns stay sequential with system context, and both lanes run concurrently before final chronological assembly.
 - Manual note text stored in `edited_content` before generation is passed to the generation provider as `Manual notes` context together with the transcript.
 - `set_generated_note` continues appending generated content below existing edited content so manual notes remain visible and editable.

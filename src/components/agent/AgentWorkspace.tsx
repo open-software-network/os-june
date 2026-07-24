@@ -1722,12 +1722,30 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!selectedTask || !POLLED_STATUSES.has(selectedTask.status)) return;
     const taskId = selectedTask.id;
-    const interval = window.setInterval(() => {
-      getAgentTask(taskId)
-        .then(upsertTask)
-        .catch((err: unknown) => setError(messageFromError(err)));
-    }, 1000);
-    return () => window.clearInterval(interval);
+    let cancelled = false;
+    let timeout: number | undefined;
+    // This is reconciliation rather than a native-owned status heartbeat:
+    // getAgentTask imports assistant messages and completion state written by
+    // Hermes in its separate SQLite database. That external writer has no
+    // Tauri event source yet, so keep the compatibility poll but serialize it
+    // to prevent a slow hydration from overlapping the next full-task read.
+    const poll = async () => {
+      try {
+        const task = await getAgentTask(taskId);
+        if (cancelled) return;
+        upsertTask(task);
+      } catch (err) {
+        if (!cancelled) setError(messageFromError(err));
+      }
+      if (!cancelled) {
+        timeout = window.setTimeout(() => void poll(), 1000);
+      }
+    };
+    timeout = window.setTimeout(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    };
   }, [selectedTask?.id, selectedTask?.status, upsertTask]);
 
   // One process-wide active-list poll per mode is shared with run settlement.

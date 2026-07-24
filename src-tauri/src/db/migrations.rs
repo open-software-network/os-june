@@ -765,6 +765,18 @@ const MIGRATIONS: &[Migration] = &[
             "../../migrations/023_connector_trigger_uniqueness.sql"
         ))],
     },
+    Migration {
+        version: 31,
+        name: "note_hydration_indexes",
+        requirements: &[
+            SchemaRequirement::Index("idx_audio_artifacts_note_status_created_at"),
+            SchemaRequirement::Index("idx_transcripts_note_created_at"),
+            SchemaRequirement::Index("idx_recording_checkpoints_session_kind_created_at"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/024_note_hydration_indexes.sql"
+        ))],
+    },
 ];
 
 struct AppliedMigration {

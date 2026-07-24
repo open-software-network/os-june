@@ -62,6 +62,14 @@ flushes the WAV before the recovery row advances. A dead writer releases the
 flush wait so recovery state and diagnostics continue advancing instead of
 waiting for the full timeout.
 
+After finalization, `process_saved_source_audio` emits additive
+`note-processing-progress` events when a Note enters `transcribing` and
+`generating`, then emits `done` with the terminal status and the Note row's
+`updated_at` revision. The renderer updates stage-only state from intermediate
+events and hydrates the full Note once on `done`; it drains any debounced
+editor save for that Note before the hydration. `get_note` remains available
+for navigation and compatibility, but is no longer polled during processing.
+
 ## Key files
 
 - `src-tauri/src/audio/capture.rs` — mic capture lifecycle and the single
@@ -80,7 +88,7 @@ waiting for the full timeout.
 Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 `get_recording_status`, `finish_recording`, `check_recording_source_readiness`,
 `recover_recording`, `get_microphone_permission_state`. Event:
-`recording-telemetry`.
+`recording-telemetry`, `note-processing-progress`.
 
 ## System-audio helper IPC contract
 

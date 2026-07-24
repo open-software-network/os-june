@@ -97,6 +97,7 @@ vi.mock("../lib/tauri", () => ({
   computerUseStop: vi.fn().mockResolvedValue(undefined),
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   RECORDING_TELEMETRY_EVENT: "recording-telemetry",
+  NOTE_PROCESSING_PROGRESS_EVENT: "note-processing-progress",
   NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "note-calendar-context-updated-event",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,

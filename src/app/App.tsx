@@ -168,7 +168,7 @@ import { useRecordingTelemetry } from "./use-recording-telemetry";
 
 import { useSessionMetadata } from "./use-session-metadata";
 
-import { useProcessingStatusPoll } from "./use-processing-status-poll";
+import { useNoteProcessingEvents } from "./use-note-processing-events";
 
 import { useAppState } from "./use-app-state";
 import { renderAppAccountGate } from "./app-account-gates";
@@ -1439,9 +1439,10 @@ export function App() {
     };
   }, []);
 
-  useProcessingStatusPoll({
+  useNoteProcessingEvents({
     dispatch,
-    selectedNote,
+    noteSaveController,
+    notes: state.notes,
     setError,
   });
 

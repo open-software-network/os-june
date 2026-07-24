@@ -114,6 +114,7 @@ export type TranscriptDto = {
 
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
 export const RECORDING_TELEMETRY_EVENT = "recording-telemetry";
+export const NOTE_PROCESSING_PROGRESS_EVENT = "note-processing-progress";
 export const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT = "june://note-calendar-context-updated";
 
 export type LiveTranscriptEventDto = {
@@ -472,6 +473,14 @@ export type NoteDto = NoteListItemDto & {
   retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
   queuedRecordings?: number;
+};
+
+export type NoteProcessingProgressDto = {
+  noteId: string;
+  recordingSessionId: string;
+  stage: "transcribing" | "generating" | "done";
+  processingStatus: ProcessingStatus;
+  revision: string;
 };
 
 export type NotePatchDto = Pick<
