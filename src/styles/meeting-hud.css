@@ -5,7 +5,8 @@
  * dictation HUD, hud.css). When June is backgrounded, minimized, or hidden
  * mid-meeting this floats as the June mark + live waveform: a calm "still
  * recording" signal. Click it to bring June back to the meeting; drag to move.
- * No controls — all recording controls live in-app, one click away.
+ * When meeting ownership clears, it temporarily becomes a countdown card with
+ * Keep recording and Stop now actions.
  *
  * The window is a fixed square that fits the pill in both orientations: the
  * frosted surface is a native NSVisualEffectView framed to the pill behind the
@@ -15,7 +16,7 @@
  * path is macOS-only by design (the app ships macOS-only); other platforms
  * would need a backdrop-filter fallback reintroduced.
  *
- * Orientation triad: parked in the left/right screen thirds the pill stands
+ * Orientation triad: while compact, parked in the left/right screen thirds the pill stands
  * upright; the middle third lies flat. The quarter turn happens in Rust
  * (meeting_hud.rs) as ONE Core Animation transform on the native contentView,
  * carrying frost, tint, dot, and waveform together — so this stylesheet lays
@@ -110,12 +111,88 @@ body:active {
   width: 62px;
 }
 
+.mhud[data-mode="meeting-end"] {
+  width: 320px;
+  height: 76px;
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+}
+
 /* Wrapper keeps the mark + waveform together as one considered group. */
 .mhud-content {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
+}
+
+.mhud-end {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: var(--sp-5);
+}
+
+.mhud[data-mode="meeting-end"] .mhud-content {
+  display: none;
+}
+
+.mhud[data-mode="meeting-end"] .mhud-end {
+  display: flex;
+}
+
+.mhud-end-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--sp-1);
+}
+
+.mhud-end-title {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.mhud-end-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.mhud-end-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--sp-2);
+}
+
+.mhud-end-actions button {
+  height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+
+.mhud-end-actions button:hover {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+#mhud-end-stop {
+  border-color: var(--foreground);
+  background: var(--foreground);
+  color: var(--background);
+}
+
+#mhud-end-stop:hover {
+  background: color-mix(in oklch, var(--foreground) 85%, black);
 }
 
 .mhud:focus-visible {

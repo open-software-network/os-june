@@ -419,6 +419,38 @@ pub struct StartMeetingRecordingRequest {
     pub source_mode: Option<RecordingSourceMode>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingOrigin {
+    Other,
+    MeetingPrompt,
+}
+
+impl RecordingOrigin {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Other => "other",
+            Self::MeetingPrompt => "meeting_prompt",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingOriginMetadata {
+    pub origin: RecordingOrigin,
+    pub meeting_app_bundle_families: Vec<String>,
+    pub auto_finish_eligible: bool,
+}
+
+impl Default for RecordingOriginMetadata {
+    fn default() -> Self {
+        Self {
+            origin: RecordingOrigin::Other,
+            meeting_app_bundle_families: Vec::new(),
+            auto_finish_eligible: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRequest {

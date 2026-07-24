@@ -62,6 +62,31 @@ flushes the WAV before the recovery row advances. A dead writer releases the
 flush wait so recovery state and diagnostics continue advancing instead of
 waiting for the full timeout.
 
+## Automatic meeting completion
+
+Only a recording started from the native meeting prompt is eligible for
+automatic completion. At start, June snapshots the allowlisted external app
+families that own the microphone and persists the recording origin, app-family
+set, and eligibility on `recording_sessions`. Manual, agent-started, and
+recovered recordings remain ineligible.
+
+The CoreAudio meeting detector keeps polling during capture. Meeting completion
+does not inspect audio levels or speech activity: silence during a meeting is
+not end evidence. Instead, every originating app family must be absent from 15
+consecutive successful one-second microphone-ownership probes. That transition
+opens a visible 15-second countdown in both the recording HUD and the main
+recording surface. Microphone ownership returning cancels the countdown; Keep
+recording suppresses it for the rest of that recording; Stop now skips the
+remaining grace period. Probe failures, unknown external microphone processes,
+sign-out, and polling gaps such as sleep reset the absence evidence and fail
+open.
+
+When the countdown expires, native code retains one idempotent finish request
+until the main renderer receives and acknowledges it. The renderer uses the
+ordinary `finish_recording` command, so writer drain, atomic WAV finalization,
+validation, processing, and saved-audio recovery remain the same as a manual
+stop.
+
 ## Key files
 
 - `src-tauri/src/audio/capture.rs` — mic capture lifecycle and the single
@@ -76,11 +101,15 @@ waiting for the full timeout.
   `WavTailReader` that tails the helper's growing WAV.
 - `src-tauri/src/audio/{validation,recovery}.rs` — artifact validation and
   crash recovery.
+- `src-tauri/src/meeting_detection.rs` — external microphone ownership,
+  meeting-start app-family snapshots, end debounce, grace period, and the
+  retained finish mailbox.
 
 Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 `get_recording_status`, `finish_recording`, `check_recording_source_readiness`,
 `recover_recording`, `get_microphone_permission_state`. Event:
-`recording-telemetry`.
+`recording-telemetry`. Meeting-end state and retained finish delivery use
+`meeting-end-state-event` and `june://meeting-end-finish`.
 
 ## System-audio helper IPC contract
 

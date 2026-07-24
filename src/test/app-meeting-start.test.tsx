@@ -2,7 +2,12 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
-import { AGENT_RECORDER_REQUEST_EVENT, MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import {
+  AGENT_RECORDER_REQUEST_EVENT,
+  MEETING_END_FINISH_REQUEST_EVENT,
+  MEETING_END_STATE_EVENT,
+  MEETING_START_TRANSCRIPTION_EVENT,
+} from "../lib/events";
 import type { AccountStatus, BootstrapResponse, NoteDto, RecordingSessionDto } from "../lib/tauri";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
@@ -22,6 +27,24 @@ const mocks = vi.hoisted(() => ({
     mocks.pendingMeetingStartRequest = undefined;
     return true;
   }),
+  pendingMeetingEndStatus: null as {
+    sessionId: string;
+    phase: "tracking" | "countdown" | "suppressed" | "finishQueued";
+    expiresAtMs?: number;
+  } | null,
+  pendingMeetingEndFinishRequest: null as {
+    requestId: string;
+    sessionId: string;
+  } | null,
+  readPendingMeetingEndStatus: vi.fn(async () => mocks.pendingMeetingEndStatus),
+  readPendingMeetingEndFinishRequest: vi.fn(async () => mocks.pendingMeetingEndFinishRequest),
+  acknowledgeMeetingEndFinishRequest: vi.fn(async (requestId: string) => {
+    if (mocks.pendingMeetingEndFinishRequest?.requestId !== requestId) return false;
+    mocks.pendingMeetingEndFinishRequest = null;
+    return true;
+  }),
+  queueMeetingEndFinishRequest: vi.fn(async () => undefined),
+  keepMeetingRecording: vi.fn(async () => undefined),
   getCurrentWindow: vi.fn(),
   bootstrapApp: vi.fn(),
   createNote: vi.fn(),
@@ -143,6 +166,11 @@ vi.mock("../lib/tauri", () => ({
   pendingMeetingStartRequest: mocks.readPendingMeetingStartRequest,
   acknowledgeMeetingStartRequest: mocks.acknowledgeMeetingStartRequest,
   startMeetingRecording: mocks.startMeetingRecording,
+  pendingMeetingEndStatus: mocks.readPendingMeetingEndStatus,
+  pendingMeetingEndFinishRequest: mocks.readPendingMeetingEndFinishRequest,
+  acknowledgeMeetingEndFinishRequest: mocks.acknowledgeMeetingEndFinishRequest,
+  queueMeetingEndFinishRequest: mocks.queueMeetingEndFinishRequest,
+  keepMeetingRecording: mocks.keepMeetingRecording,
   // The agent workspace mounts at launch; a quiet, not-running bridge keeps
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
@@ -221,6 +249,8 @@ describe("meeting start transcription event", () => {
     vi.clearAllMocks();
     mocks.listeners.clear();
     mocks.pendingMeetingStartRequest = undefined;
+    mocks.pendingMeetingEndStatus = null;
+    mocks.pendingMeetingEndFinishRequest = null;
     installDefaultListenMock();
     mocks.readPendingMeetingStartRequest.mockImplementation(
       async () => mocks.pendingMeetingStartRequest ?? null,
@@ -230,6 +260,17 @@ describe("meeting start transcription event", () => {
       mocks.pendingMeetingStartRequest = undefined;
       return true;
     });
+    mocks.readPendingMeetingEndStatus.mockImplementation(async () => mocks.pendingMeetingEndStatus);
+    mocks.readPendingMeetingEndFinishRequest.mockImplementation(
+      async () => mocks.pendingMeetingEndFinishRequest,
+    );
+    mocks.acknowledgeMeetingEndFinishRequest.mockImplementation(async (requestId: string) => {
+      if (mocks.pendingMeetingEndFinishRequest?.requestId !== requestId) return false;
+      mocks.pendingMeetingEndFinishRequest = null;
+      return true;
+    });
+    mocks.queueMeetingEndFinishRequest.mockResolvedValue(undefined);
+    mocks.keepMeetingRecording.mockResolvedValue(undefined);
 
     const first = note();
     const payload: BootstrapResponse = {
@@ -680,6 +721,37 @@ describe("meeting start transcription event", () => {
     warn.mockRestore();
   });
 
+  it("retries meeting-end listener registration without leaking a partial registration", async () => {
+    let finishRegistrationAttempts = 0;
+    const firstStateCleanup = vi.fn();
+    mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
+      if (event === MEETING_END_STATE_EVENT) {
+        mocks.listeners.set(event, listener);
+        return Promise.resolve(finishRegistrationAttempts === 0 ? firstStateCleanup : vi.fn());
+      }
+      if (event === MEETING_END_FINISH_REQUEST_EVENT) {
+        finishRegistrationAttempts += 1;
+        if (finishRegistrationAttempts === 1) {
+          return Promise.reject(new Error("event plugin not ready"));
+        }
+      }
+      mocks.listeners.set(event, listener);
+      return Promise.resolve(vi.fn());
+    });
+
+    render(<App />);
+
+    await waitFor(
+      () => {
+        expect(finishRegistrationAttempts).toBe(2);
+        expect(mocks.listeners.has(MEETING_END_STATE_EVENT)).toBe(true);
+        expect(mocks.listeners.has(MEETING_END_FINISH_REQUEST_EVENT)).toBe(true);
+      },
+      { timeout: 1_000 },
+    );
+    expect(firstStateCleanup).toHaveBeenCalledOnce();
+  });
+
   it("retains a request when the webview unmounts before the native read resolves", async () => {
     const fresh = note({
       id: "note-2",
@@ -843,6 +915,93 @@ describe("meeting start transcription event", () => {
     expect(mocks.startMeetingRecording).toHaveBeenCalledOnce();
   });
 
+  it("shows the grace-period controls and lets the user keep recording", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ id: "meeting-rec-1", noteId: fresh.id }),
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await fireMeetingStart();
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.listeners.has(MEETING_END_STATE_EVENT)).toBe(true));
+
+    await act(async () => {
+      await mocks.listeners.get(MEETING_END_STATE_EVENT)?.({
+        payload: {
+          sessionId: "meeting-rec-1",
+          phase: "countdown",
+          expiresAtMs: Date.now() + 15_000,
+        },
+      });
+    });
+
+    expect(await screen.findByText(/Meeting ended\. Stopping in 15 seconds\./)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Keep recording" }));
+    expect(mocks.keepMeetingRecording).toHaveBeenCalledWith("meeting-rec-1");
+    expect(mocks.finishRecording).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await mocks.listeners.get(MEETING_END_STATE_EVENT)?.({
+        payload: { sessionId: "meeting-rec-1", phase: "suppressed" },
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Meeting ended")).not.toBeInTheDocument();
+    });
+  });
+
+  it("drains one retained auto-finish request through the normal finish path", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ id: "meeting-rec-1", noteId: fresh.id }),
+    });
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...fresh, processingStatus: "transcribing" },
+      recording: recording({ id: "meeting-rec-1", noteId: fresh.id, state: "ready" }),
+      validation: {},
+      validations: [],
+      processingStarted: true,
+      warnings: [],
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await fireMeetingStart();
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.listeners.has(MEETING_END_FINISH_REQUEST_EVENT)).toBe(true));
+
+    mocks.pendingMeetingEndFinishRequest = {
+      requestId: "meeting-rec-1:1",
+      sessionId: "meeting-rec-1",
+    };
+    await act(async () => {
+      await mocks.listeners.get(MEETING_END_FINISH_REQUEST_EVENT)?.({ payload: undefined });
+    });
+
+    await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("meeting-rec-1"));
+    await waitFor(() =>
+      expect(mocks.acknowledgeMeetingEndFinishRequest).toHaveBeenCalledWith("meeting-rec-1:1"),
+    );
+    expect(mocks.finishRecording).toHaveBeenCalledOnce();
+    expect(mocks.pendingMeetingEndFinishRequest).toBeNull();
+  });
+
   it("retains a meeting request while a competing start is provisional and retries after failure", async () => {
     const pendingReadiness = deferred<{
       sourceMode: "microphonePlusSystem";
@@ -943,7 +1102,12 @@ describe("agent recorder request event", () => {
     vi.clearAllMocks();
     mocks.listeners.clear();
     mocks.pendingMeetingStartRequest = undefined;
+    mocks.pendingMeetingEndStatus = null;
+    mocks.pendingMeetingEndFinishRequest = null;
     installDefaultListenMock();
+    mocks.readPendingMeetingEndStatus.mockResolvedValue(null);
+    mocks.readPendingMeetingEndFinishRequest.mockResolvedValue(null);
+    mocks.acknowledgeMeetingEndFinishRequest.mockResolvedValue(true);
 
     const first = note();
     const payload: BootstrapResponse = {
