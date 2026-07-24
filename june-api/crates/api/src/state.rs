@@ -1,4 +1,5 @@
 use crate::error::ApiError;
+use crate::share_rate_limit::ShareRateLimiter;
 use june_config::BrowserTransportsConfig;
 use june_domain::{TokenVerifier, UserId};
 use june_services::{
@@ -191,46 +192,6 @@ pub struct ShareViewerInfo {
     pub client_id: String,
 }
 
-/// Minimal fixed-window limiter for share endpoints (JUN-308: rate-limit
-/// invite and access attempts). Single-instance CVM makes in-memory state
-/// sufficient; callers consume both a per-user and a per-address budget.
-pub(crate) struct ShareRateLimiter {
-    hits: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
-}
-
-impl Default for ShareRateLimiter {
-    fn default() -> Self {
-        Self {
-            hits: std::sync::Mutex::new(std::collections::HashMap::new()),
-        }
-    }
-}
-
-impl ShareRateLimiter {
-    const WINDOW: std::time::Duration = std::time::Duration::from_mins(1);
-    const MAX_PER_WINDOW: u32 = 60;
-
-    /// Returns false when the caller is over budget for the current window.
-    pub(crate) fn allow(&self, key: &str) -> bool {
-        // A poisoned lock must not fail OPEN on a security gate: recover the
-        // inner map (the state is a counter table; a panicking writer cannot
-        // corrupt it in a way that matters more than losing the gate).
-        let mut hits = self
-            .hits
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now = std::time::Instant::now();
-        // Opportunistic cleanup keeps the map bounded by active users.
-        hits.retain(|_, (start, _)| now.duration_since(*start) < Self::WINDOW);
-        let entry = hits.entry(key.to_string()).or_insert((now, 0));
-        if now.duration_since(entry.0) >= Self::WINDOW {
-            *entry = (now, 0);
-        }
-        entry.1 += 1;
-        entry.1 <= Self::MAX_PER_WINDOW
-    }
-}
-
 pub struct ApiStateParams {
     pub pricing: Arc<PricingTable>,
     pub computer_use: june_config::ComputerUseConfig,
@@ -254,6 +215,8 @@ pub struct ApiStateParams {
 
 impl ApiState {
     pub fn new(params: ApiStateParams) -> Self {
+        let share_rate = ShareRateLimiter::default();
+        share_rate.start_cleanup();
         Self {
             inner: Arc::new(ApiStateInner {
                 pricing: params.pricing,
@@ -271,7 +234,7 @@ impl ApiState {
                 issue_report_permits: Arc::new(Semaphore::new(ISSUE_REPORT_MAX_CONCURRENCY)),
                 share: params.share,
                 share_viewer: params.share_viewer,
-                share_rate: ShareRateLimiter::default(),
+                share_rate,
                 share_http: reqwest::Client::new(),
                 agent_admission: AgentAdmissionControl::new(
                     params.limits.max_agent_inflight_body_bytes,

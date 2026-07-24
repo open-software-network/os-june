@@ -10,6 +10,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+benchmark = []
+
 [dependencies]
 axum.workspace = true
 base64.workspace = true
@@ -30,5 +33,11 @@ url.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+criterion.workspace = true
 pretty_assertions.workspace = true
 tower = { workspace = true, features = ["util"] }
+
+[[bench]]
+name = "share_rate_limiter"
+harness = false
+required-features = ["benchmark"]
