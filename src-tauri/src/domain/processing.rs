@@ -191,7 +191,7 @@ async fn apply_microphone_noise_suppression(
                     "noise_suppression",
                     Some(
                         serde_json::json!({
-                            "algorithm": SPECTRAL_DENOISER_ID,
+                            "algorithm": output.denoiser_id,
                             "cacheHit": output.cache_hit,
                             "durationMs": elapsed_ms(suppression_started),
                             "noiseFloorDbfs": output.noise_floor_dbfs,
@@ -270,7 +270,7 @@ async fn persist_noise_suppression_fallback(
             "noise_suppression_warning",
             Some(
                 serde_json::json!({
-                    "algorithm": SPECTRAL_DENOISER_ID,
+                    "algorithm": crate::audio::noise_suppression::RNNOISE_DENOISER_ID,
                     "durationMs": duration_ms,
                     "errorCode": error_code,
                     "message": message,

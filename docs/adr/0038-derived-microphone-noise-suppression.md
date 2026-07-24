@@ -84,6 +84,29 @@ receives the same audio bytes. This prevents a setting toggle from causing a
 billed re-transcription of byte-identical clean audio while still invalidating
 cached text whenever suppression was applied.
 
+## 2026-07-24 dependency approval addendum
+
+The user approved `nnnoiseless` 0.5.2. June now uses an `RnnoiseDenoiser` as
+the primary implementation behind the existing seam and keeps spectral
+subtraction only as an initialization fallback.
+
+RNNoise declares 48 kHz, 480-sample, non-overlapping frames. The existing
+streaming resampler therefore converts the mono Source input to 48 kHz, and
+the exact-length writer pads only the final processing frame while writing
+exactly the resampled Source duration. The surrounding pipeline continues to
+use normalized `f32` PCM. Only the RNNoise adapter scales those samples to the
+16-bit magnitude range expected by `nnnoiseless`, then scales its output back.
+Ordinary Turn normalization still produces the 16 kHz provider input.
+
+The selected denoiser id is included in the deterministic cache path,
+fingerprint, and Source checkpoint. A failed RNNoise construction logs a
+warning and selects the existing 16 kHz spectral implementation without
+changing archive, retry, cleanup, or orchestration behavior.
+
+Dependency approval does not resolve the held product-quality decision.
+Representative real-voice transcription, listening, and long-recording checks
+remain required before promotion.
+
 ## Rejected alternatives
 
 - **Rewrite the finalized Microphone WAV.** This destroys the recovery

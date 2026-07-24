@@ -128,27 +128,29 @@ Energy-based, per-source, **no diarization**:
 ## Normalization and chunking
 
 When **Microphone noise suppression** is enabled, June first derives a mono
-16 kHz Microphone WAV through a bounded-memory two-pass process. This happens
-after Turn detection and speaker-bleed trimming, so source attribution,
-timestamps, and System audio are unchanged. The finalized Microphone WAV is
-never modified. A content-and-version fingerprint can reuse a completed
-derivative after an interrupted attempt. The derived WAV shares the transient
-Turn-audio lifetime guard and is removed after transcription and coverage
-consumers drain. Derivation failure records a Source warning checkpoint and
-falls back to the finalized WAV.
+Microphone WAV through a bounded-memory two-pass process. This happens after
+Turn detection and speaker-bleed trimming, so source attribution, timestamps,
+and System audio are unchanged. The finalized Microphone WAV is never
+modified. A content-and-version fingerprint can reuse a completed derivative
+after an interrupted attempt. The derived WAV shares the transient Turn-audio
+lifetime guard and is removed after transcription and coverage consumers
+drain. Derivation failure records a Source warning checkpoint and falls back
+to the finalized WAV.
 
 Only an actually applied derivative changes the durable transcription
 configuration fingerprint. A clean bypass or raw fallback keeps the
 suppression-off identity because transcription receives the same audio bytes,
 so toggling the setting cannot bill for a byte-identical clean recording.
 
-The interim implementation estimates a stationary noise spectrum from the same
-low-percentile noise-floor principle used by Turn detection, then applies
-smoothed spectral subtraction with a gain floor. It is deliberately
-conservative and bypasses clean inputs. It is more effective for steady room
-noise than short keyboard-like transients. The `Denoiser` frame interface lets
-a stronger offline implementation replace it without changing archive,
-pipeline, or persistence contracts.
+The first pass estimates a low-percentile noise floor and bypasses inputs that
+are already clean. Noisy inputs use `nnnoiseless` 0.5.2 through the `Denoiser`
+frame interface. The existing streaming resampler supplies 48 kHz,
+480-sample, non-overlapping frames; the adapter alone converts normalized
+`f32` samples to RNNoise's 16-bit magnitude range and back. The writer pads
+the final processing frame but emits exactly the resampled Source length. If
+RNNoise construction fails, June logs a warning and uses the conservative
+16 kHz spectral-subtraction implementation. The following ordinary
+normalization step still emits mono 16 kHz provider input.
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a

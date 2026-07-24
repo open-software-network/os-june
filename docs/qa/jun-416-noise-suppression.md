@@ -1,23 +1,27 @@
 # JUN-416 Microphone noise suppression evidence
 
-Status: interim fallback evaluated on 2026-07-24
+Status: spectral fallback baseline evaluated on 2026-07-24; RNNoise adapter
+unit-verified on 2026-07-24
 
-This document records the reproducible evaluation for the interim
-no-new-dependency spectral suppressor. It must not be read as product
-acceptance: JUN-416 remains held for the user's product and quality decision.
+This document records the evaluation baseline for the spectral fallback and
+the deterministic regressions for the approved RNNoise adapter. It must not be
+read as product acceptance: JUN-416 remains held for the user's product and
+quality decision.
 
 ## Method
 
-The evidence set uses a fixed, non-private macOS synthetic speech reference
-mixed separately with deterministic fan-like stationary noise, rain-like
-broadband noise, and keyboard-like transients. The 16-second reference has
-three seconds of leading silence and about three seconds of trailing silence,
+The spectral evidence set uses a fixed, non-private macOS synthetic speech
+reference mixed separately with deterministic fan-like stationary noise,
+rain-like broadband noise, and keyboard-like transients. The 16-second
+reference has three seconds of leading silence and about three seconds of
+trailing silence,
 so the noise estimator sees quiet regions as it would in natural speech. Each
 noisy WAV passes through
 `suppress_microphone_wav_for_transcription`, the same transient derivation
 called by saved-audio processing. The original SHA-256 is checked before and
-after.
-The reproducible invocation is:
+after. The results below were produced from commit
+`b50f1dbb9249c729ca0590ef774a9ae1dbd0d745`, where the spectral implementation
+was the default. On the current branch, the same invocation evaluates RNNoise:
 
 ```sh
 cargo run --manifest-path src-tauri/Cargo.toml \
@@ -67,18 +71,25 @@ product-quality checks for the held feature.
 
 Automated coverage also checks the non-quality boundaries found during review:
 
+- RNNoise declares 48 kHz, 480-sample, non-overlapping frames and rejects an
+  incorrectly sized frame;
+- deterministic noise-only input loses energy while a speech-band harmonic
+  fixture retains energy and produces finite samples;
+- an injected RNNoise construction failure selects the spectral fallback;
 - a clean bypass and a raw fallback produce the same durable transcription
   configuration fingerprint as suppression off, while an applied derivative
   changes it;
 - the derived WAV and its empty `.june-transcription-input` directory are
   removed after the retained transcription consumer drains, while the
   finalized input remains byte-identical; and
-- a 2.25-second 48 kHz noisy input runs through the production streaming
-  resampler and suppressor without error, producing exactly 36,000 mono 16 kHz
-  samples while preserving the input bytes.
+- a 1.003-second 44.1 kHz noisy input runs through the production streaming
+  resampler and RNNoise with a partial final frame, producing the exact
+  expected mono 48 kHz length while preserving the input bytes.
 
 ## Expected limitation
 
-The spectral fallback estimates a stationary profile. The results confirm that
-it helps steady noise more than isolated keyboard impacts. This limitation is
-evidence for the dependency decision, not a reason to overstate the fallback.
+The spectral fallback still estimates a stationary profile and is now used
+only if RNNoise construction fails. The existing results confirm that fallback
+helps steady noise more than isolated keyboard impacts. The RNNoise adapter
+tests prove framing and deterministic signal boundaries, not perceptual quality
+or transcription accuracy.

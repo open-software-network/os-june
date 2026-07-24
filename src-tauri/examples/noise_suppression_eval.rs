@@ -54,6 +54,10 @@ fn run() -> Result<(), String> {
         result.as_ref().is_some_and(|result| result.applied)
     );
     println!(
+        "algorithm={}",
+        result.as_ref().map_or("none", |result| result.denoiser_id)
+    );
+    println!(
         "cacheHit={}",
         result.as_ref().is_some_and(|result| result.cache_hit)
     );

@@ -2,12 +2,12 @@
 //!
 //! The finalized source WAV is never modified. This module downmixes and
 //! resamples it into a fingerprinted, atomically-written derived WAV that Turn
-//! extraction can use instead. The frame-level [`Denoiser`] seam deliberately
-//! keeps the interim dependency-free spectral implementation replaceable by a
-//! stronger RNNoise implementation after its dependency is approved.
+//! extraction can use instead. The frame-level [`Denoiser`] seam keeps RNNoise
+//! framing separate from the spectral fallback and the surrounding pipeline.
 
 use crate::domain::types::AppError;
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
+use nnnoiseless::DenoiseState;
 use rustfft::{num_complex::Complex, Fft, FftPlanner};
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,9 +17,13 @@ use std::{
     sync::Arc,
 };
 
+pub const RNNOISE_DENOISER_ID: &str = "nnnoiseless-0.5.2-v1";
 pub const SPECTRAL_DENOISER_ID: &str = "spectral-subtraction-v1";
 
 const TARGET_SAMPLE_RATE: u32 = 16_000;
+const RNNOISE_SAMPLE_RATE: u32 = 48_000;
+const RNNOISE_FRAME_SAMPLES: usize = DenoiseState::FRAME_SIZE;
+const RNNOISE_PCM_SCALE: f32 = i16::MAX as f32;
 const SPECTRAL_FRAME_SAMPLES: usize = 512;
 const SPECTRAL_HOP_SAMPLES: usize = SPECTRAL_FRAME_SAMPLES / 2;
 const SPECTRAL_BINS: usize = (SPECTRAL_FRAME_SAMPLES / 2) + 1;
@@ -42,8 +46,8 @@ const CACHE_FINGERPRINT_DOMAIN: &[u8] = b"june-microphone-noise-suppression-v1\0
 ///
 /// When `hop_samples() < frame_samples()`, the implementation must apply the
 /// shared sine analysis and synthesis window. The streaming seam overlap-adds
-/// and normalizes those frames. A future RNNoise implementation can instead
-/// declare 48 kHz, 480-sample, non-overlapping frames and process them directly.
+/// and normalizes those frames. RNNoise instead declares 48 kHz, 480-sample,
+/// non-overlapping frames and processes them directly.
 pub trait Denoiser: Send {
     fn sample_rate(&self) -> u32;
     fn frame_samples(&self) -> usize;
@@ -56,6 +60,7 @@ pub struct NoiseSuppressionOutput {
     pub path: PathBuf,
     pub cache_hit: bool,
     pub applied: bool,
+    pub denoiser_id: &'static str,
     pub fingerprint: String,
     pub noise_floor_dbfs: Option<f32>,
     pub cleanup: Option<DerivedTranscriptionInputCleanup>,
@@ -120,17 +125,25 @@ pub fn suppress_microphone_wav_for_transcription(
     input_path: &Path,
 ) -> Result<NoiseSuppressionOutput, AppError> {
     let input_sha256 = sha256_file(input_path)?;
-    let fingerprint = derived_fingerprint(&input_sha256);
-    let cache_path = derived_cache_path(input_path, &fingerprint)?;
-    let expected_samples = expected_resampled_samples(input_path, TARGET_SAMPLE_RATE)?;
+    let primary_fingerprint = derived_fingerprint(RNNOISE_DENOISER_ID, &input_sha256);
+    let primary_cache_path =
+        derived_cache_path(input_path, RNNOISE_DENOISER_ID, &primary_fingerprint)?;
+    let primary_expected_samples = expected_resampled_samples(input_path, RNNOISE_SAMPLE_RATE)?;
 
-    if valid_cached_wav(&cache_path, expected_samples) {
+    if valid_cached_wav(
+        &primary_cache_path,
+        RNNOISE_SAMPLE_RATE,
+        primary_expected_samples,
+    ) {
         return Ok(NoiseSuppressionOutput {
-            cleanup: Some(DerivedTranscriptionInputCleanup::new(cache_path.clone())),
-            path: cache_path,
+            cleanup: Some(DerivedTranscriptionInputCleanup::new(
+                primary_cache_path.clone(),
+            )),
+            path: primary_cache_path,
             cache_hit: true,
             applied: true,
-            fingerprint,
+            denoiser_id: RNNOISE_DENOISER_ID,
+            fingerprint: primary_fingerprint,
             noise_floor_dbfs: None,
         });
     }
@@ -141,9 +154,30 @@ pub fn suppress_microphone_wav_for_transcription(
             path: input_path.to_path_buf(),
             cache_hit: false,
             applied: false,
-            fingerprint,
+            denoiser_id: RNNOISE_DENOISER_ID,
+            fingerprint: primary_fingerprint,
             noise_floor_dbfs: Some(profile.noise_floor_dbfs),
             cleanup: None,
+        });
+    }
+
+    let SelectedDenoiser {
+        id: denoiser_id,
+        denoiser,
+    } = select_denoiser(profile.clone());
+    let fingerprint = derived_fingerprint(denoiser_id, &input_sha256);
+    let cache_path = derived_cache_path(input_path, denoiser_id, &fingerprint)?;
+    let denoiser_sample_rate = denoiser.sample_rate();
+    let expected_samples = expected_resampled_samples(input_path, denoiser_sample_rate)?;
+    if valid_cached_wav(&cache_path, denoiser_sample_rate, expected_samples) {
+        return Ok(NoiseSuppressionOutput {
+            cleanup: Some(DerivedTranscriptionInputCleanup::new(cache_path.clone())),
+            path: cache_path,
+            cache_hit: true,
+            applied: true,
+            denoiser_id,
+            fingerprint,
+            noise_floor_dbfs: Some(profile.noise_floor_dbfs),
         });
     }
 
@@ -155,8 +189,7 @@ pub fn suppress_microphone_wav_for_transcription(
         ".noise-suppression-{}.tmp.wav",
         uuid::Uuid::new_v4()
     ));
-    let denoiser = SpectralSubtractionDenoiser::new(profile.clone());
-    let write_result = write_denoised_wav(input_path, &temporary_path, Box::new(denoiser));
+    let write_result = write_denoised_wav(input_path, &temporary_path, denoiser);
     if let Err(error) = write_result {
         let _ = std::fs::remove_file(&temporary_path);
         return Err(error);
@@ -171,9 +204,92 @@ pub fn suppress_microphone_wav_for_transcription(
         path: cache_path,
         cache_hit: false,
         applied: true,
+        denoiser_id,
         fingerprint,
         noise_floor_dbfs: Some(profile.noise_floor_dbfs),
     })
+}
+
+struct SelectedDenoiser {
+    id: &'static str,
+    denoiser: Box<dyn Denoiser>,
+}
+
+fn select_denoiser(profile: NoiseProfile) -> SelectedDenoiser {
+    select_denoiser_from_result(profile, RnnoiseDenoiser::new())
+}
+
+fn select_denoiser_from_result(
+    profile: NoiseProfile,
+    rnnoise: Result<RnnoiseDenoiser, AppError>,
+) -> SelectedDenoiser {
+    match rnnoise {
+        Ok(denoiser) => SelectedDenoiser {
+            id: RNNOISE_DENOISER_ID,
+            denoiser: Box::new(denoiser),
+        },
+        Err(error) => {
+            tracing::warn!(
+                error_code = %error.code,
+                error = %error.message,
+                fallback = SPECTRAL_DENOISER_ID,
+                "failed to initialize RNNoise denoiser; using spectral fallback"
+            );
+            SelectedDenoiser {
+                id: SPECTRAL_DENOISER_ID,
+                denoiser: Box::new(SpectralSubtractionDenoiser::new(profile)),
+            }
+        }
+    }
+}
+
+struct RnnoiseDenoiser {
+    state: Box<DenoiseState<'static>>,
+    output: [f32; RNNOISE_FRAME_SAMPLES],
+}
+
+impl RnnoiseDenoiser {
+    fn new() -> Result<Self, AppError> {
+        let state = std::panic::catch_unwind(DenoiseState::new)
+            .map_err(|_| noise_error("RNNoise model initialization panicked."))?;
+        Ok(Self {
+            state,
+            output: [0.0; RNNOISE_FRAME_SAMPLES],
+        })
+    }
+}
+
+impl Denoiser for RnnoiseDenoiser {
+    fn sample_rate(&self) -> u32 {
+        RNNOISE_SAMPLE_RATE
+    }
+
+    fn frame_samples(&self) -> usize {
+        RNNOISE_FRAME_SAMPLES
+    }
+
+    fn hop_samples(&self) -> usize {
+        RNNOISE_FRAME_SAMPLES
+    }
+
+    fn process(&mut self, frame: &mut [f32]) -> Result<(), AppError> {
+        if frame.len() != RNNOISE_FRAME_SAMPLES {
+            return Err(noise_error(format!(
+                "Expected {} RNNoise samples, received {}.",
+                RNNOISE_FRAME_SAMPLES,
+                frame.len()
+            )));
+        }
+
+        for sample in frame.iter_mut() {
+            *sample *= RNNOISE_PCM_SCALE;
+        }
+        self.state.process_frame(&mut self.output, frame);
+        for (sample, denoised) in frame.iter_mut().zip(self.output.iter().copied()) {
+            *sample = denoised / RNNOISE_PCM_SCALE;
+        }
+        Ok(())
+    }
 }
 
 struct SpectralSubtractionDenoiser {
@@ -640,7 +756,7 @@ fn ensure_supported_pcm(spec: WavSpec) -> Result<(), AppError> {
     ))
 }
 
-fn valid_cached_wav(path: &Path, expected_samples: usize) -> bool {
+fn valid_cached_wav(path: &Path, sample_rate: u32, expected_samples: usize) -> bool {
     let Ok(reader) = WavReader::open(path) else {
         return false;
     };
@@ -648,7 +764,7 @@ fn valid_cached_wav(path: &Path, expected_samples: usize) -> bool {
     spec.sample_format == SampleFormat::Int
         && spec.bits_per_sample == 16
         && spec.channels == 1
-        && spec.sample_rate == TARGET_SAMPLE_RATE
+        && spec.sample_rate == sample_rate
         && reader.duration() as usize == expected_samples
 }
 
@@ -669,17 +785,21 @@ fn sha256_file(path: &Path) -> Result<String, AppError> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-fn derived_fingerprint(input_sha256: &str) -> String {
+fn derived_fingerprint(denoiser_id: &str, input_sha256: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(CACHE_FINGERPRINT_DOMAIN);
-    digest.update((SPECTRAL_DENOISER_ID.len() as u64).to_be_bytes());
-    digest.update(SPECTRAL_DENOISER_ID.as_bytes());
+    digest.update((denoiser_id.len() as u64).to_be_bytes());
+    digest.update(denoiser_id.as_bytes());
     digest.update((input_sha256.len() as u64).to_be_bytes());
     digest.update(input_sha256.as_bytes());
     format!("{:x}", digest.finalize())
 }
 
-fn derived_cache_path(input_path: &Path, fingerprint: &str) -> Result<PathBuf, AppError> {
+fn derived_cache_path(
+    input_path: &Path,
+    denoiser_id: &str,
+    fingerprint: &str,
+) -> Result<PathBuf, AppError> {
     let parent = input_path
         .parent()
         .ok_or_else(|| noise_error("Could not determine the Microphone source directory."))?;
@@ -687,10 +807,9 @@ fn derived_cache_path(input_path: &Path, fingerprint: &str) -> Result<PathBuf, A
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("microphone");
-    Ok(parent.join(CACHE_DIRECTORY).join(format!(
-        "{stem}-{SPECTRAL_DENOISER_ID}-{}.wav",
-        &fingerprint[..16]
-    )))
+    Ok(parent
+        .join(CACHE_DIRECTORY)
+        .join(format!("{stem}-{denoiser_id}-{}.wav", &fingerprint[..16])))
 }
 
 fn sine_window(len: usize) -> Vec<f32> {
@@ -735,7 +854,7 @@ mod tests {
     };
 
     #[test]
-    fn spectral_suppression_preserves_archive_and_reuses_cached_derivative() {
+    fn rnnoise_suppression_preserves_archive_and_reuses_cached_derivative() {
         let dir = test_dir("cache");
         let input = dir.join("microphone.wav");
         write_stationary_noise_fixture(&input, 4.0, true);
@@ -744,12 +863,18 @@ mod tests {
         let first = suppress_microphone_wav_for_transcription(&input).unwrap();
         assert!(first.applied);
         assert!(!first.cache_hit);
+        assert_eq!(first.denoiser_id, RNNOISE_DENOISER_ID);
         assert_ne!(first.path, input);
+        assert_eq!(
+            WavReader::open(&first.path).unwrap().spec().sample_rate,
+            RNNOISE_SAMPLE_RATE
+        );
         assert_eq!(std::fs::read(&input).unwrap(), original);
 
         let second = suppress_microphone_wav_for_transcription(&input).unwrap();
         assert!(second.applied);
         assert!(second.cache_hit);
+        assert_eq!(second.denoiser_id, RNNOISE_DENOISER_ID);
         assert_eq!(second.path, first.path);
         assert_eq!(
             std::fs::read(&second.path).unwrap(),
@@ -765,7 +890,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_digital_speech_bypasses_spectral_processing() {
+    fn clean_digital_speech_bypasses_noise_suppression() {
         let dir = test_dir("clean");
         let input = dir.join("microphone.wav");
         write_clean_speech_fixture(&input, 3.0);
@@ -774,10 +899,114 @@ mod tests {
 
         assert!(!output.applied);
         assert!(!output.cache_hit);
+        assert_eq!(output.denoiser_id, RNNOISE_DENOISER_ID);
         assert_eq!(output.path, input);
         assert!(output
             .noise_floor_dbfs
             .is_some_and(|floor| floor <= CLEAN_NOISE_FLOOR_DBFS));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rnnoise_declares_48khz_non_overlapping_frames() {
+        let denoiser = RnnoiseDenoiser::new().unwrap();
+
+        assert_eq!(denoiser.sample_rate(), RNNOISE_SAMPLE_RATE);
+        assert_eq!(denoiser.frame_samples(), 480);
+        assert_eq!(denoiser.hop_samples(), 480);
+    }
+
+    #[test]
+    fn rnnoise_rejects_an_invalid_frame_size() {
+        let mut denoiser = RnnoiseDenoiser::new().unwrap();
+        let mut frame = vec![0.0; RNNOISE_FRAME_SAMPLES - 1];
+
+        let error = denoiser.process(&mut frame).unwrap_err();
+
+        assert_eq!(error.code, "microphone_noise_suppression_failed");
+        assert!(error.message.contains("Expected 480 RNNoise samples"));
+    }
+
+    #[test]
+    fn rnnoise_reduces_noise_only_energy() {
+        let mut denoiser = RnnoiseDenoiser::new().unwrap();
+        let mut random_state = 0x1234_5678_u32;
+        let mut input_energy = 0.0_f64;
+        let mut output_energy = 0.0_f64;
+
+        for frame_index in 0..80 {
+            let mut frame = [0.0_f32; RNNOISE_FRAME_SAMPLES];
+            for (sample_index, sample) in frame.iter_mut().enumerate() {
+                let absolute_index = (frame_index * RNNOISE_FRAME_SAMPLES) + sample_index;
+                let time = absolute_index as f32 / RNNOISE_SAMPLE_RATE as f32;
+                random_state = random_state
+                    .wrapping_mul(1_664_525)
+                    .wrapping_add(1_013_904_223);
+                let white = ((random_state >> 8) as f32 / 0x00ff_ffff as f32) * 2.0 - 1.0;
+                *sample = (2.0 * std::f32::consts::PI * 95.0 * time).sin() * 0.035 + white * 0.025;
+            }
+            let input = frame;
+            denoiser.process(&mut frame).unwrap();
+            if frame_index >= 10 {
+                input_energy += frame_energy(&input);
+                output_energy += frame_energy(&frame);
+            }
+        }
+
+        assert!(
+            output_energy < input_energy * 0.5,
+            "expected RNNoise to reduce steady noise energy; input={input_energy:.3} output={output_energy:.3}"
+        );
+    }
+
+    #[test]
+    fn rnnoise_preserves_speech_band_tone_energy() {
+        let mut denoiser = RnnoiseDenoiser::new().unwrap();
+        let mut input_energy = 0.0_f64;
+        let mut output_energy = 0.0_f64;
+
+        for frame_index in 0..80 {
+            let mut frame = [0.0_f32; RNNOISE_FRAME_SAMPLES];
+            for (sample_index, sample) in frame.iter_mut().enumerate() {
+                let absolute_index = (frame_index * RNNOISE_FRAME_SAMPLES) + sample_index;
+                let time = absolute_index as f32 / RNNOISE_SAMPLE_RATE as f32;
+                let envelope = 0.65 + (2.0 * std::f32::consts::PI * 3.0 * time).sin().abs() * 0.35;
+                *sample = envelope
+                    * ((2.0 * std::f32::consts::PI * 180.0 * time).sin() * 0.18
+                        + (2.0 * std::f32::consts::PI * 360.0 * time).sin() * 0.09
+                        + (2.0 * std::f32::consts::PI * 720.0 * time).sin() * 0.04);
+            }
+            let input = frame;
+            denoiser.process(&mut frame).unwrap();
+            assert!(frame.iter().all(|sample| sample.is_finite()));
+            if frame_index >= 10 {
+                input_energy += frame_energy(&input);
+                output_energy += frame_energy(&frame);
+            }
+        }
+
+        assert!(
+            output_energy > input_energy * 0.25,
+            "expected RNNoise to retain speech-band tone energy; input={input_energy:.3} output={output_energy:.3}"
+        );
+    }
+
+    #[test]
+    fn rnnoise_construction_failure_selects_spectral_fallback() {
+        let dir = test_dir("selection-fallback");
+        let input = dir.join("microphone.wav");
+        write_stationary_noise_fixture(&input, 1.0, true);
+        let profile = analyze_noise_profile(&input).unwrap();
+
+        let selected = select_denoiser_from_result(
+            profile,
+            Err(noise_error("injected RNNoise initialization failure")),
+        );
+
+        assert_eq!(selected.id, SPECTRAL_DENOISER_ID);
+        assert_eq!(selected.denoiser.sample_rate(), TARGET_SAMPLE_RATE);
+        assert_eq!(selected.denoiser.frame_samples(), SPECTRAL_FRAME_SAMPLES);
+        assert_eq!(selected.denoiser.hop_samples(), SPECTRAL_HOP_SAMPLES);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -832,14 +1061,20 @@ mod tests {
         let dir = test_dir("snr");
         let clean_path = dir.join("clean.wav");
         let noisy_path = dir.join("noisy.wav");
+        let denoised_path = dir.join("denoised.wav");
         write_clean_speech_fixture(&clean_path, 4.0);
         write_stationary_noise_fixture(&noisy_path, 4.0, true);
 
-        let output = suppress_microphone_wav_for_transcription(&noisy_path).unwrap();
-        assert!(output.applied);
+        let profile = analyze_noise_profile(&noisy_path).unwrap();
+        write_denoised_wav(
+            &noisy_path,
+            &denoised_path,
+            Box::new(SpectralSubtractionDenoiser::new(profile)),
+        )
+        .unwrap();
         let clean = read_samples(&clean_path);
         let noisy = read_samples(&noisy_path);
-        let denoised = read_samples(&output.path);
+        let denoised = read_samples(&denoised_path);
         let before = reference_snr_db(&clean, &noisy);
         let after = reference_snr_db(&clean, &denoised);
 
@@ -851,22 +1086,23 @@ mod tests {
     }
 
     #[test]
-    fn spectral_suppression_resamples_48khz_input_to_expected_length() {
-        let dir = test_dir("resample-48khz");
+    fn rnnoise_resamples_and_writes_an_exact_partial_frame_length() {
+        let dir = test_dir("resample-exact-length");
         let input = dir.join("microphone.wav");
-        let seconds = 2.25;
-        write_fixture_at_sample_rate(&input, seconds, true, 48_000);
+        let seconds = 1.003;
+        let input_sample_rate = 44_100;
+        write_fixture_at_sample_rate(&input, seconds, true, input_sample_rate);
         let original = std::fs::read(&input).unwrap();
+        let expected_samples = expected_resampled_samples(&input, RNNOISE_SAMPLE_RATE).unwrap();
+        assert_ne!(expected_samples % RNNOISE_FRAME_SAMPLES, 0);
 
         let output = suppress_microphone_wav_for_transcription(&input).unwrap();
 
         assert!(output.applied);
+        assert_eq!(output.denoiser_id, RNNOISE_DENOISER_ID);
         let reader = WavReader::open(&output.path).unwrap();
-        assert_eq!(reader.spec().sample_rate, TARGET_SAMPLE_RATE);
-        assert_eq!(
-            reader.duration() as usize,
-            (seconds * TARGET_SAMPLE_RATE as f32) as usize
-        );
+        assert_eq!(reader.spec().sample_rate, RNNOISE_SAMPLE_RATE);
+        assert_eq!(reader.duration() as usize, expected_samples);
         assert_eq!(std::fs::read(&input).unwrap(), original);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -957,5 +1193,9 @@ mod tests {
             .sum::<f64>()
             .max(f64::EPSILON);
         (10.0 * (signal / error).log10()) as f32
+    }
+
+    fn frame_energy(frame: &[f32]) -> f64 {
+        frame.iter().map(|sample| (*sample as f64).powi(2)).sum()
     }
 }
