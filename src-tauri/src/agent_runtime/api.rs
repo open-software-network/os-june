@@ -85,6 +85,7 @@ pub async fn create_agent_session(
     request: CreateSessionRequest,
 ) -> Result<Value, AppError> {
     let repository = repository(&app).await?;
+    let model = normalize_agent_model(&request.model);
     let workspace = session_workspace(&app, None)?;
     tokio::fs::create_dir_all(&workspace)
         .await
@@ -92,7 +93,7 @@ pub async fn create_agent_session(
     let session = repository
         .create_session(
             request.title.as_deref().unwrap_or("New session"),
-            &request.model,
+            &model,
             request.safety_mode,
             workspace.to_str(),
         )
@@ -147,6 +148,7 @@ pub async fn start_agent_run(
 ) -> Result<Value, AppError> {
     let repository = repository(&app).await?;
     let session = repository.get_session(&request.session_id).await?;
+    let model = normalize_agent_model(&request.model);
     if session.status == "running" || session.status == "waiting_for_user" {
         return Err(AppError::new(
             "agent_run_active",
@@ -168,7 +170,7 @@ pub async fn start_agent_run(
     sqlx::query::query(
         "UPDATE agent_sessions SET model = ?, safety_mode = ?, workspace_path = ? WHERE id = ?",
     )
-    .bind(&request.model)
+    .bind(&model)
     .bind(request.safety_mode.as_db())
     .bind(&workspace)
     .bind(&session.id)
@@ -176,11 +178,11 @@ pub async fn start_agent_run(
     .await?;
     let prepared_attachments =
         prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
-    let run = repository.create_run(&session.id, &request.model).await?;
+    let run = repository.create_run(&session.id, &model).await?;
     let params = run_params(
         &repository,
         &session.id,
-        &request.model,
+        &model,
         request.safety_mode,
         &workspace,
         &request.prompt,
@@ -268,11 +270,19 @@ pub async fn retry_agent_run(
             "Session workspace is unavailable.",
         )
     })?;
-    let run = repository.create_run(&session.id, &session.model).await?;
+    let model = normalize_agent_model(&session.model);
+    if model != session.model {
+        sqlx::query::query("UPDATE agent_sessions SET model = ? WHERE id = ?")
+            .bind(&model)
+            .bind(&session.id)
+            .execute(&repository.pool)
+            .await?;
+    }
+    let run = repository.create_run(&session.id, &model).await?;
     let params = run_params(
         &repository,
         &session.id,
-        &session.model,
+        &model,
         session.safety_mode,
         &workspace,
         &prompt,
@@ -353,11 +363,12 @@ pub async fn resolve_agent_interruption(
             "Session workspace is unavailable.",
         )
     })?;
+    let model = normalize_agent_model(&session.model);
     host.ensure_started(&app, repository.clone()).await?;
     let mut params = run_params(
         &repository,
         &session.id,
-        &session.model,
+        &model,
         session.safety_mode,
         &workspace,
         "",
@@ -539,6 +550,15 @@ fn skill_roots(app: &AppHandle) -> Vec<(PathBuf, bool)> {
         roots.push((PathBuf::from(home).join(".agents").join("skills"), false));
     }
     roots
+}
+
+fn normalize_agent_model(model: &str) -> String {
+    let model = model.trim();
+    if model.is_empty() || model == "auto" {
+        crate::providers::AUTO_GENERATION_MODEL.to_string()
+    } else {
+        model.to_string()
+    }
 }
 
 async fn run_params(
@@ -826,6 +846,19 @@ mod tests {
             message_with_attachment_context("Hello", &[]),
             "Hello".to_string()
         );
+    }
+
+    #[test]
+    fn legacy_auto_alias_uses_the_priced_june_model_id() {
+        assert_eq!(
+            normalize_agent_model("auto"),
+            crate::providers::AUTO_GENERATION_MODEL
+        );
+        assert_eq!(
+            normalize_agent_model(" open-software/auto "),
+            crate::providers::AUTO_GENERATION_MODEL
+        );
+        assert_eq!(normalize_agent_model("kimi-k2-6"), "kimi-k2-6");
     }
 
     #[test]

@@ -65,7 +65,7 @@ import {
   type ComposerModelFlyout,
 } from "./composer/ModelPicker";
 import { modelPrivacyBadge } from "../../lib/model-privacy";
-import { modelOptions, selectedModel } from "../settings/ModelPickerDialog";
+import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { Dialog } from "../ui/Dialog";
 import { Spinner } from "../ui/Spinner";
 import {
@@ -91,7 +91,7 @@ export {
 } from "./agent-workspace-config";
 
 export const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
-const DEFAULT_MODEL = "auto";
+const DEFAULT_MODEL = AUTO_MODEL_ID;
 
 export function composerInSteerStateFor(input: {
   selectedSessionId?: string;

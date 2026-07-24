@@ -74,7 +74,7 @@ describe("AgentWorkspace runtime wiring", () => {
       if (command === "list_venice_models") {
         return Promise.resolve({
           mode: "generation",
-          selectedModel: "auto",
+          selectedModel: "open-software/auto",
           modelType: "text",
           models: [
             {
@@ -233,5 +233,24 @@ describe("AgentWorkspace runtime wiring", () => {
       }),
     );
     expect(onSessionSelected).toHaveBeenLastCalledWith(newSession);
+  });
+
+  it("uses the priced June Auto model id for a fresh workspace", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.click(composer);
+    await user.type(composer, "Fresh request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
+        request: expect.objectContaining({
+          model: "open-software/auto",
+          title: "Fresh request",
+        }),
+      }),
+    );
   });
 });
