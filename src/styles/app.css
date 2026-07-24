@@ -755,6 +755,17 @@ input:focus-visible,
     calc(var(--agent-turn-actions-h) + var(--sp-2));
 }
 
+/* Dev-only per-turn diagnostics line (JUN-436). A quiet monospace summary
+ * shown after the last completed turn when the experimental flag is on. */
+.agent-turn-diagnostics {
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 1.35;
+  color: var(--muted-foreground);
+  padding-inline: var(--sp-1);
+  user-select: text;
+}
+
 /* Dev-tools response gallery (window.__agentGallery): a labeled catalog of every
  * agent response part type, rendered through the real turn components. */
 .agent-gallery {

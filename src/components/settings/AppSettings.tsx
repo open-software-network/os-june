@@ -1652,6 +1652,7 @@ export function AppSettings({
     void setExperimentalFlags({
       unlocked: true,
       browser_use: experimentalFlags.browser_use,
+      turn_diagnostics: experimentalFlags.turn_diagnostics,
     })
       .then(() => toast("Experiments are unlocked"))
       .catch((error) => setExperimentalError(messageFromError(error)))
@@ -1660,13 +1661,18 @@ export function AppSettings({
       });
   }
 
-  async function updateExperimentalFlags(update: { unlocked?: boolean; browser_use?: boolean }) {
+  async function updateExperimentalFlags(update: {
+    unlocked?: boolean;
+    browser_use?: boolean;
+    turn_diagnostics?: boolean;
+  }) {
     setExperimentalOperation("flags");
     setExperimentalError(undefined);
     try {
       await setExperimentalFlags({
         unlocked: update.unlocked ?? experimentalFlags.unlocked,
         browser_use: update.browser_use ?? experimentalFlags.browser_use,
+        turn_diagnostics: update.turn_diagnostics ?? experimentalFlags.turn_diagnostics,
       });
     } catch (error) {
       setExperimentalError(messageFromError(error));
@@ -2904,6 +2910,27 @@ export function AppSettings({
                         aria-label="Enable experimental Browser use"
                         onCheckedChange={(browser_use) =>
                           void updateExperimentalFlags({ browser_use })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Turn diagnostics</h3>
+                      <p className="settings-row-description">
+                        Show timing spans and available token usage for the latest completed agent
+                        turn. Timing spans are end to end and do not isolate upstream provider
+                        latency.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={experimentalFlags.turn_diagnostics}
+                        disabled={experimentalOperation !== undefined}
+                        aria-label="Enable per-turn diagnostics"
+                        onCheckedChange={(turn_diagnostics) =>
+                          void updateExperimentalFlags({ turn_diagnostics })
                         }
                       />
                     </div>

@@ -10,6 +10,7 @@ import { type AgentApprovalChoice } from "../../lib/agent-chat-runtime";
 import type { SubmitHermesSession } from "./session-submission-types";
 import { type AgentWorkspaceErrorOptions } from "./agent-workspace-errors";
 import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
+import type { TurnDiagnosticsContext } from "../../lib/turn-diagnostics";
 import type * as React from "react";
 
 export type createGatewayRecoveryActionsDependencies = {
@@ -21,12 +22,14 @@ export type createGatewayRecoveryActionsDependencies = {
     sessionDisplayTitle,
     storedSessionId,
     computerUseRunLeaseId,
+    turnDiagnostics,
   }: {
     gateway: HermesGatewayClient;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
     computerUseRunLeaseId?: string;
+    turnDiagnostics?: TurnDiagnosticsContext;
   }) => () => void;
   captureSessionModelTarget: (explicitSession?: HermesSessionInfo) => CapturedSessionModelTarget;
   ensureHermesGateway: (fullMode?: boolean) => Promise<HermesGatewayClient>;
