@@ -2,6 +2,9 @@
 host = "0.0.0.0"
 port = 8080
 request_timeout_secs = 600
+# Refresh Venice pricing and model metadata in-process so newly released
+# models appear without restarting the production CVM.
+model_catalog_refresh_secs = 300
 max_audio_bytes = 26214400
 max_json_bytes = 524288
 # os-platform accepts 300 MiB attachments. The extra 1 MiB covers multipart

@@ -435,6 +435,7 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub request_timeout_secs: u64,
+    pub model_catalog_refresh_secs: u64,
     pub max_audio_bytes: usize,
     pub max_json_bytes: usize,
     /// Total multipart body cap for `/v1/issue-reports`.
@@ -1086,6 +1087,7 @@ impl Default for AppConfig {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
                 request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
+                model_catalog_refresh_secs: 300,
                 max_audio_bytes: 26_214_400,
                 max_json_bytes: 524_288,
                 max_issue_report_bytes: DEFAULT_MAX_ISSUE_REPORT_BYTES,
@@ -1198,6 +1200,7 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
         return validate_viewer_only(config);
     }
 
+    validate_server_config(config)?;
     if config.local_dev.enabled {
         validate_local_dev_bearer_token(config)?;
         validate_required_text("local_dev.user_id", &config.local_dev.user_id)?;
@@ -1297,6 +1300,13 @@ fn validate(config: &AppConfig) -> Result<(), ConfigError> {
     validate_image_pricing(config)?;
     validate_video_pricing(config)?;
     Ok(())
+}
+
+fn validate_server_config(config: &AppConfig) -> Result<(), ConfigError> {
+    validate_positive_config(
+        "server.model_catalog_refresh_secs",
+        config.server.model_catalog_refresh_secs,
+    )
 }
 
 /// The isolated short-link process does not expose product routes and must not
@@ -2544,6 +2554,16 @@ mod tests {
         let result = validate(&config);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_zero_model_catalog_refresh_interval() {
+        let mut config = valid_config();
+        config.server.model_catalog_refresh_secs = 0;
+
+        let result = validate(&config);
+
+        assert!(result.is_err());
     }
 
     #[test]

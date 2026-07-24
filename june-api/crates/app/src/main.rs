@@ -62,7 +62,15 @@ async fn serve() -> anyhow::Result<()> {
     // file and Issue creation POSTs are not idempotent.
     let issue_report_http =
         issue_report_client(Duration::from_secs(config.server.request_timeout_secs))?;
-    let pricing = load_pricing(&config, upstream_http.clone()).await;
+    let initial_pricing = try_load_pricing(&config, upstream_http.clone())
+        .await
+        .unwrap_or_else(|| configured_pricing(&config));
+    tracing::info!(
+        count = initial_pricing.len(),
+        "loaded initial model catalog"
+    );
+    let pricing = Arc::new(PricingTable::new(initial_pricing));
+    spawn_model_catalog_refresh(&config, upstream_http.clone(), pricing.clone());
     let clients = HttpClients {
         default: &http,
         upstream: &upstream_http,
@@ -110,30 +118,72 @@ async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn load_pricing(
+async fn try_load_pricing(
     config: &AppConfig,
     http: reqwest::Client,
-) -> BTreeMap<String, ModelPriceConfig> {
-    let mut pricing = config.pricing.clone();
+) -> Option<BTreeMap<String, ModelPriceConfig>> {
     if !provider_is_configured(config, ModelProvider::Venice) {
         tracing::info!("Venice API key is not configured; skipping Venice model catalog");
-        return pricing;
+        return Some(configured_pricing(config));
     }
     match VeniceModelCatalog::from_config(http, &config.upstreams.venice)
         .priced_models()
         .await
     {
         Ok(models) => {
-            let count = models.len();
+            let mut pricing = config.pricing.clone();
             pricing.extend(models);
             apply_private_route_price_floors(&mut pricing);
-            tracing::info!(count, "loaded Venice model catalog");
+            Some(filter_pricing_for_environment(config, pricing))
         }
         Err(error) => {
-            tracing::warn!(%error, "failed to load Venice model catalog; using configured model pricing only");
+            tracing::warn!(%error, "failed to refresh Venice model catalog; keeping the last known catalog");
+            None
         }
     }
-    pricing
+}
+
+fn configured_pricing(config: &AppConfig) -> BTreeMap<String, ModelPriceConfig> {
+    filter_pricing_for_environment(config, config.pricing.clone())
+}
+
+fn filter_pricing_for_environment(
+    config: &AppConfig,
+    pricing: BTreeMap<String, ModelPriceConfig>,
+) -> BTreeMap<String, ModelPriceConfig> {
+    if config.local_dev.enabled {
+        filter_unconfigured_provider_models(config, pricing)
+    } else {
+        pricing
+    }
+}
+
+fn spawn_model_catalog_refresh(
+    config: &AppConfig,
+    http: reqwest::Client,
+    pricing: Arc<PricingTable>,
+) {
+    if !provider_is_configured(config, ModelProvider::Venice) {
+        return;
+    }
+    let config = config.clone();
+    let refresh_every = Duration::from_secs(config.server.model_catalog_refresh_secs);
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(refresh_every).await;
+            if let Some(models) = try_load_pricing(&config, http.clone()).await {
+                let count = models.len();
+                pricing.replace(models);
+                tracing::info!(
+                    count,
+                    refresh_secs = refresh_every.as_secs(),
+                    "refreshed model catalog"
+                );
+            }
+        }
+    });
+    // Dropping a Tokio join handle detaches the long-lived refresh task.
+    drop(task);
 }
 
 /// The routed catalog currently reports the cheapest eligible endpoint, while
@@ -174,20 +224,16 @@ fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceCon
 fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
-    mut pricing_config: BTreeMap<String, ModelPriceConfig>,
+    pricing: Arc<PricingTable>,
     share_store: Option<Arc<dyn june_domain::ShareStore>>,
 ) -> axum::Router {
-    if config.local_dev.enabled {
-        pricing_config = filter_unconfigured_provider_models(config, pricing_config);
-    }
-
-    let openai_model_ids = pricing_config
-        .iter()
+    let openai_model_ids = pricing
+        .priced_models(None)
+        .into_iter()
         .filter(|(_, model)| model.provider == ModelProvider::Openai)
-        .map(|(model_id, _)| model_id.clone())
+        .map(|(model_id, _)| model_id)
         .collect::<Vec<_>>();
 
-    let pricing = Arc::new(PricingTable::new(pricing_config));
     let os_accounts = build_os_accounts_client(config, clients.default);
     let transcriber: Arc<dyn june_domain::Transcriber> = Arc::new(RoutingTranscriber::from_config(
         clients.upstream.clone(),

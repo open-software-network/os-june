@@ -190,7 +190,6 @@ fn resolve_priced_agent_text_model(
                         .is_ok()
                         && model_supports_requirements(state.pricing(), model_id, requirements)
                 })
-                .cloned()
         });
 
     if compatible_model.is_none() {
@@ -223,15 +222,12 @@ fn model_supports_requirements(
     model_id: &str,
     requirements: AgentModelRequirements,
 ) -> bool {
-    pricing
-        .iter()
-        .find(|(candidate_id, _)| candidate_id.as_str() == model_id)
-        .is_some_and(|(_, model)| {
-            (!requirements.vision || has_capability(&model.capabilities, "supportsvision"))
-                && (!requirements.tools
-                    || has_capability(&model.capabilities, "functioncalling")
-                    || has_capability(&model.capabilities, "toolcalling"))
-        })
+    pricing.model(model_id).is_some_and(|model| {
+        (!requirements.vision || has_capability(&model.capabilities, "supportsvision"))
+            && (!requirements.tools
+                || has_capability(&model.capabilities, "functioncalling")
+                || has_capability(&model.capabilities, "toolcalling"))
+    })
 }
 
 fn has_capability(capabilities: &[String], expected: &str) -> bool {
