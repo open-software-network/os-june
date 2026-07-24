@@ -3,7 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { NOTE_PROCESSING_RECONCILE_INTERVAL_MS } from "../app/use-note-processing-events";
-import { resetCurrentDataPartitionForTests, setCurrentDataPartitionName } from "../lib/data-partition";
+import {
+  resetCurrentDataPartitionForTests,
+  setCurrentDataPartitionName,
+} from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   beginMaxGrantWait,

@@ -1,7 +1,7 @@
 //! Connector trigger daemon.
 //!
 //! A background tokio task that polls Google for the events routines subscribe
-//! to and wakes the matching routine through the bridge cron `trigger` action.
+//! to and wakes the matching routine through the June-owned scheduler.
 //! The event is a wake-up only: the routine re-reads state through its tools.
 //!
 //! - `email_received`: Gmail `history.list` from a stored cursor (seeded from
@@ -173,19 +173,19 @@ async fn poll_email_account(
         Err(error) => return Err(error),
     };
     // Only INBOX messages count; history_list already filters to INBOX adds.
-    let mut all_fired = true;
+    let mut all_acknowledged = true;
     if !delta.added.is_empty() {
         for job_id in job_ids {
-            if !fire(app, job_id).await {
-                all_fired = false;
+            if !email_outcome_acknowledged(fire(app, job_id).await) {
+                all_acknowledged = false;
             }
         }
     }
-    // Advance the cursor only when every subscribed job was actually queued. A
-    // failed fire (bridge/gateway down) leaves the cursor so the next poll
-    // retries the mail rather than marking it handled; re-queuing a job that did
-    // fire is harmless since the routine re-reads state.
-    if all_fired {
+    // Paused, missing, and already-active subscriptions acknowledge this
+    // mailbox delta without queuing. Retaining the shared cursor for one such
+    // subscriber would replay the same mail into every successful routine.
+    // Only an actual dispatch error leaves the cursor pending for retry.
+    if all_acknowledged {
         if let Some(history_id) = delta.history_id {
             repos
                 .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
@@ -468,9 +468,9 @@ async fn apply_calendar_events_to_trigger(
     let mut changed = fired.len() != before;
 
     // Wake the routine once for the batch, and record the events as fired only
-    // when the wake actually succeeded. A failed fire (bridge/gateway down)
-    // leaves them unrecorded so the next poll retries instead of skipping.
-    if !to_fire.is_empty() && fire(app, job_id).await {
+    // when the wake actually queued. A failed or temporarily ineligible wake
+    // leaves them unrecorded so this routine can retry independently.
+    if !to_fire.is_empty() && fire(app, job_id).await == FireOutcome::Queued {
         for (event_id, start_ts) in to_fire {
             fired.insert(event_id, start_ts);
         }
@@ -595,18 +595,31 @@ fn parse_event_start(start: &str) -> Option<DateTime<Utc>> {
 
 // --- Firing & battery ---------------------------------------------------------
 
-/// Wake a routine, returning whether it was actually queued. A false result
-/// must leave the trigger's cursor unadvanced so the event is retried.
-async fn fire(app: &AppHandle, job_id: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FireOutcome {
+    Queued,
+    NotQueued,
+    Failed,
+}
+
+fn email_outcome_acknowledged(outcome: FireOutcome) -> bool {
+    outcome != FireOutcome::Failed
+}
+
+/// Wake a routine and distinguish an ineligible subscription from a dispatch
+/// failure. Email delivery acknowledges ineligible subscriptions, while
+/// calendar delivery keeps its per-routine event pending.
+async fn fire(app: &AppHandle, job_id: &str) -> FireOutcome {
     match crate::routines::trigger_from_connector(app, job_id).await {
-        Ok(queued) => queued,
+        Ok(true) => FireOutcome::Queued,
+        Ok(false) => FireOutcome::NotQueued,
         Err(error) => {
             tracing::warn!(
                 error_code = %error.code,
                 routine_id = %job_id,
                 "connector routine trigger failed"
             );
-            false
+            FireOutcome::Failed
         }
     }
 }
@@ -658,6 +671,13 @@ mod tests {
     #[test]
     fn missing_percent_is_none() {
         assert_eq!(parse_battery_percent("no battery here"), None);
+    }
+
+    #[test]
+    fn email_cursor_acknowledges_ineligible_routines_but_retries_dispatch_failures() {
+        assert!(email_outcome_acknowledged(FireOutcome::Queued));
+        assert!(email_outcome_acknowledged(FireOutcome::NotQueued));
+        assert!(!email_outcome_acknowledged(FireOutcome::Failed));
     }
 
     #[test]

@@ -541,7 +541,18 @@ pub async fn start_claim(
         repository.append_item(&session_id, Some(&run.id), 0, &AgentItemPayload::UserMessage(MessagePayload { role: "user".into(), content: claim.prompt.clone(), attachments: vec![] }), Some(&format!("routine:{}", claim.routine_run_id))).await.map_err(app_error)?;
         attach_run_mapping(pool, &claim.routine_run_id, &claim.token, &session_id, &run.id, &timestamp).await?;
         host.ensure_started(app, repository.clone()).await?;
-        host.request("run.start", &session_id, &run.id, unattended_run_params(app, &repository, &session_id, &run.id, &claim.routine_id, &claim.model, claim.safety_mode, workspace.to_string_lossy().as_ref(), &claim.prompt, &claim.enabled_toolsets).await?).await?;
+        let workspace = workspace.to_string_lossy();
+        let request = UnattendedRunRequest {
+            session_id: &session_id,
+            run_id: &run.id,
+            routine_id: &claim.routine_id,
+            model: &claim.model,
+            safety_mode: claim.safety_mode,
+            workspace: workspace.as_ref(),
+            prompt: &claim.prompt,
+            enabled_toolsets: &claim.enabled_toolsets,
+        };
+        host.request("run.start", &session_id, &run.id, unattended_run_params(app, &repository, &request).await?).await?;
         Ok::<_, AppError>(run.id)
     }.await;
     if let Err(error) = started {
@@ -571,9 +582,9 @@ pub async fn trigger_and_start(
     }
 }
 
-/// Shared entry point for connector event triggers. `false` means the
-/// routine was paused, missing, or already active, so the caller can retain
-/// its event cursor and retry without creating a duplicate run.
+/// Shared entry point for connector event triggers. `false` means the routine
+/// was paused, missing, or already active. Callers decide whether that is an
+/// acknowledged wake or one that should remain pending for their event type.
 pub async fn trigger_from_connector(app: &AppHandle, routine_id: &str) -> Result<bool, AppError> {
     let pool = repositories(app).await?.pool;
     let host = app.state::<AgentRuntimeHost>();
@@ -869,26 +880,30 @@ fn routine_workspace(app: &AppHandle, session_id: &str) -> Result<PathBuf, AppEr
         .join(session_id))
 }
 
+struct UnattendedRunRequest<'a> {
+    session_id: &'a str,
+    run_id: &'a str,
+    routine_id: &'a str,
+    model: &'a str,
+    safety_mode: AgentSafetyMode,
+    workspace: &'a str,
+    prompt: &'a str,
+    enabled_toolsets: &'a [String],
+}
+
 async fn unattended_run_params(
     app: &AppHandle,
     repository: &AgentRepository,
-    session_id: &str,
-    run_id: &str,
-    routine_id: &str,
-    model: &str,
-    safety_mode: AgentSafetyMode,
-    workspace: &str,
-    prompt: &str,
-    enabled_toolsets: &[String],
+    request: &UnattendedRunRequest<'_>,
 ) -> Result<Value, AppError> {
-    let history = repository.items(session_id).await.map_err(app_error)?.into_iter().filter_map(|item| match item.payload { AgentItemPayload::UserMessage(message) | AgentItemPayload::AssistantMessage(message) | AgentItemPayload::SystemMessage(message) => Some(json!({ "id": item.id, "kind": "message", "role": message.role, "text": message.content })), AgentItemPayload::ContextSummary(summary) => Some(json!({ "id": item.id, "kind": "context_summary", "role": "system", "text": summary.text })), _ => None }).collect::<Vec<_>>();
+    let history = repository.items(request.session_id).await.map_err(app_error)?.into_iter().filter_map(|item| match item.payload { AgentItemPayload::UserMessage(message) | AgentItemPayload::AssistantMessage(message) | AgentItemPayload::SystemMessage(message) => Some(json!({ "id": item.id, "kind": "message", "role": message.role, "text": message.content })), AgentItemPayload::ContextSummary(summary) => Some(json!({ "id": item.id, "kind": "context_summary", "role": "system", "text": summary.text })), _ => None }).collect::<Vec<_>>();
     let tools = unattended_tools(
         app,
         repository,
-        safety_mode,
-        std::path::Path::new(workspace),
-        routine_id,
-        enabled_toolsets,
+        request.safety_mode,
+        std::path::Path::new(request.workspace),
+        request.routine_id,
+        request.enabled_toolsets,
     )
     .await;
     let mcp_descriptors = tools
@@ -903,11 +918,11 @@ async fn unattended_run_params(
         })
         .filter_map(|descriptor| serde_json::from_value(descriptor.clone()).ok())
         .collect::<Vec<crate::agent_mcp::RuntimeToolDescriptorJson>>();
-    crate::agent_mcp::snapshot_run_policies(&repository.pool, run_id, &mcp_descriptors)
+    crate::agent_mcp::snapshot_run_policies(&repository.pool, request.run_id, &mcp_descriptors)
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
-        json!({ "model": model, "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.", "workspace": workspace, "safetyMode": safety_mode.as_db(), "input": prompt, "history": history, "tools": tools, "skills": [], "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.", "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": history, "tools": tools, "skills": [], "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
 }
 async fn unattended_tools(
@@ -993,14 +1008,20 @@ async fn unattended_tools(
 }
 
 fn enabled_toolsets_from_metadata(metadata: &Value) -> Vec<String> {
-    metadata
-        .get("enabledToolsets")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect()
+    match metadata.get("enabledToolsets") {
+        Some(Value::Array(toolsets)) => toolsets
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        // Pre-tool-catalog routines historically received June context, web,
+        // and read-only access to their own workspace. Preserve that behavior
+        // without treating an explicitly empty catalog as a request for tools.
+        _ => ["context_engine", "session_search", "web", "file"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    }
 }
 
 async fn routine_autonomous_tools(pool: &SqlitePool, routine_id: &str) -> Vec<String> {
@@ -1399,6 +1420,21 @@ mod tests {
             .expect("active event routine should be claimable");
         assert_eq!(claim.enabled_toolsets, vec!["web", "june_gmail"]);
         assert_eq!(claim.routine_id, "routine-1");
+    }
+
+    #[tokio::test]
+    async fn routines_without_a_catalog_keep_the_legacy_safe_toolset() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+
+        let claim = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            claim.enabled_toolsets,
+            vec!["context_engine", "session_search", "web", "file"]
+        );
     }
 
     #[tokio::test]
