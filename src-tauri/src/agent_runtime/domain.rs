@@ -105,6 +105,20 @@ impl AgentItemPayload {
 pub struct MessagePayload {
     pub role: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MessageAttachmentPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageAttachmentPayload {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
+    pub available: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

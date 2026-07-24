@@ -33,7 +33,7 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
         "DROP TABLE agent_skill_settings",
         "DROP TABLE agent_migration_manifests",
         "DROP TABLE agent_sessions",
-        "DELETE FROM schema_migrations WHERE version = 30",
+        "DELETE FROM schema_migrations WHERE version = 31",
     ] {
         query(statement)
             .execute(&pool)

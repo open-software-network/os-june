@@ -880,9 +880,14 @@ async fn run_migration_catalog(
     validate_catalog(migrations)?;
 
     if let Some(applied) = read_applied_migrations_from_pool(pool).await? {
-        let current = validate_applied_migrations(&applied, migrations)?;
-        if current == migrations.len() {
-            return Ok(());
+        if is_prerelease_agent_runtime_stamp(&applied, migrations) {
+            // Repair needs the same write lock and transaction as a normal
+            // migration, so continue into migrate_locked.
+        } else {
+            let current = validate_applied_migrations(&applied, migrations)?;
+            if current == migrations.len() {
+                return Ok(());
+            }
         }
     }
 
@@ -905,7 +910,12 @@ async fn migrate_locked(
     transaction: &mut SqliteTransaction<'_>,
     migrations: &[Migration],
 ) -> Result<(), sqlx::Error> {
-    let applied = read_applied_migrations_from_transaction(transaction).await?;
+    let mut applied = read_applied_migrations_from_transaction(transaction).await?;
+    if let Some(ref stamped) = applied {
+        if repair_prerelease_agent_runtime_stamp(transaction, stamped, migrations).await? {
+            applied = read_applied_migrations_from_transaction(transaction).await?;
+        }
+    }
     let current = match applied {
         Some(ref applied) if !applied.is_empty() => {
             validate_applied_migrations(applied, migrations)?
@@ -937,6 +947,78 @@ async fn migrate_locked(
     }
 
     Ok(())
+}
+
+async fn repair_prerelease_agent_runtime_stamp(
+    transaction: &mut SqliteTransaction<'_>,
+    applied: &[AppliedMigration],
+    migrations: &[Migration],
+) -> Result<bool, sqlx::Error> {
+    if !is_prerelease_agent_runtime_stamp(applied, migrations) {
+        return Ok(false);
+    }
+    let Some(runtime_index) = migrations
+        .iter()
+        .position(|migration| migration.name == "agent_runtime")
+    else {
+        return Ok(false);
+    };
+    let runtime = &migrations[runtime_index];
+    let displaced = &migrations[runtime_index - 1];
+
+    validate_applied_migrations(&applied[..applied.len() - 1], migrations)?;
+    let snapshot = SchemaSnapshot::load(transaction).await?;
+    if !runtime
+        .requirements
+        .iter()
+        .copied()
+        .all(|requirement| snapshot.satisfies(requirement))
+    {
+        return Ok(false);
+    }
+
+    apply_migration(transaction, displaced).await?;
+    query(
+        "UPDATE schema_migrations
+         SET name = ?
+         WHERE version = ? AND name = ?",
+    )
+    .bind(displaced.name)
+    .bind(displaced.version)
+    .bind(runtime.name)
+    .execute(&mut **transaction)
+    .await?;
+    query(
+        "INSERT INTO schema_migrations (version, name)
+         VALUES (?, ?)",
+    )
+    .bind(runtime.version)
+    .bind(runtime.name)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(true)
+}
+
+fn is_prerelease_agent_runtime_stamp(
+    applied: &[AppliedMigration],
+    migrations: &[Migration],
+) -> bool {
+    let Some(runtime_index) = migrations
+        .iter()
+        .position(|migration| migration.name == "agent_runtime")
+    else {
+        return false;
+    };
+    if runtime_index == 0 || applied.len() != runtime_index {
+        return false;
+    }
+    let runtime = &migrations[runtime_index];
+    let displaced = &migrations[runtime_index - 1];
+    applied.last().is_some_and(|last| {
+        displaced.name == "connector_trigger_uniqueness"
+            && last.version == displaced.version
+            && last.name == runtime.name
+    })
 }
 
 fn validate_catalog(migrations: &[Migration]) -> Result<(), sqlx::Error> {
@@ -1410,6 +1492,62 @@ mod tests {
         .execute(&pool)
         .await;
         assert!(duplicate.is_err(), "job_id uniqueness must be enforced");
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn prerelease_agent_runtime_stamp_repairs_without_replaying_runtime_migration() {
+        let pool = test_pool().await;
+        run_migrations(&pool).await.expect("current schema");
+        install_runtime_non_replay_guard(&pool).await;
+        query("DROP INDEX idx_connector_triggers_job_id_unique")
+            .execute(&pool)
+            .await
+            .expect("restore pre-uniqueness index state");
+        for (id, created_at) in [
+            ("trigger-old", "2026-07-24T08:00:00Z"),
+            ("trigger-new", "2026-07-24T09:00:00Z"),
+        ] {
+            query(
+                "INSERT INTO connector_triggers
+                 (id, job_id, kind, account_id, config, created_at)
+                 VALUES (?, 'job-1', 'email_received', 'user@example.com', '{}', ?)",
+            )
+            .bind(id)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .expect("legacy duplicate trigger");
+        }
+        query("DELETE FROM schema_migrations WHERE version = 31")
+            .execute(&pool)
+            .await
+            .expect("remove corrected runtime stamp");
+        query(
+            "UPDATE schema_migrations
+             SET name = 'agent_runtime'
+             WHERE version = 30",
+        )
+        .execute(&pool)
+        .await
+        .expect("restore prerelease runtime stamp");
+
+        run_migrations(&pool)
+            .await
+            .expect("repair prerelease migration stamps");
+
+        let item_count: i64 = query("SELECT COUNT(*) AS count FROM agent_items")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved runtime messages")
+            .get("count");
+        assert_eq!(item_count, 2);
+        let trigger_id: String = query("SELECT id FROM connector_triggers WHERE job_id = 'job-1'")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved newest trigger")
+            .get("id");
+        assert_eq!(trigger_id, "trigger-new");
         assert_latest_stamp(&pool).await;
     }
 

@@ -1,4 +1,7 @@
-use super::{AgentItemDto, AgentItemPayload, AgentRepository, AgentRuntimeHost, AgentSafetyMode};
+use super::{
+    AgentItemDto, AgentItemPayload, AgentRepository, AgentRuntimeHost, AgentSafetyMode,
+    MessageAttachmentPayload,
+};
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Deserialize;
@@ -171,6 +174,8 @@ pub async fn start_agent_run(
     .bind(&session.id)
     .execute(&repository.pool)
     .await?;
+    let prepared_attachments =
+        prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
     let run = repository.create_run(&session.id, &request.model).await?;
     let params = run_params(
         &repository,
@@ -180,9 +185,10 @@ pub async fn start_agent_run(
         &workspace,
         &request.prompt,
         &request.enabled_skill_ids,
+        &prepared_attachments,
     )
     .await?;
-    let _ = repository
+    let user_item = repository
         .append_item(
             &session.id,
             Some(&run.id),
@@ -190,10 +196,26 @@ pub async fn start_agent_run(
             &AgentItemPayload::UserMessage(super::MessagePayload {
                 role: "user".into(),
                 content: request.prompt.clone(),
+                attachments: prepared_attachments.clone(),
             }),
             Some(&format!("user:{}", run.id)),
         )
-        .await?;
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                "agent_message_persist_failed",
+                "The user message could not be persisted.",
+            )
+        })?;
+    persist_attachments(
+        &repository,
+        &session.id,
+        &run.id,
+        &user_item.id,
+        &prepared_attachments,
+        &request.attachments,
+    )
+    .await?;
     host.ensure_started(&app, repository.clone()).await?;
     host.request("run.start", &session.id, &run.id, params)
         .await?;
@@ -223,13 +245,13 @@ pub async fn retry_agent_run(
     let repository = repository(&app).await?;
     let previous = repository.get_run(&run_id).await?;
     let session = repository.get_session(&previous.session_id).await?;
-    let prompt = repository
+    let message = repository
         .items(&session.id)
         .await?
         .into_iter()
         .rev()
         .find_map(|item| match item.payload {
-            AgentItemPayload::UserMessage(message) => Some(message.content),
+            AgentItemPayload::UserMessage(message) => Some(message),
             _ => None,
         })
         .ok_or_else(|| {
@@ -238,6 +260,8 @@ pub async fn retry_agent_run(
                 "No user message is available to retry.",
             )
         })?;
+    let prompt = message.content;
+    let attachments = message.attachments;
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
             "agent_workspace_missing",
@@ -253,6 +277,7 @@ pub async fn retry_agent_run(
         &workspace,
         &prompt,
         &[],
+        &attachments,
     )
     .await?;
     let _ = repository
@@ -263,6 +288,7 @@ pub async fn retry_agent_run(
             &AgentItemPayload::UserMessage(super::MessagePayload {
                 role: "user".into(),
                 content: prompt.clone(),
+                attachments,
             }),
             Some(&format!("user:{}", run.id)),
         )
@@ -335,6 +361,7 @@ pub async fn resolve_agent_interruption(
         session.safety_mode,
         &workspace,
         "",
+        &[],
         &[],
     )
     .await?;
@@ -522,6 +549,7 @@ async fn run_params(
     workspace: &str,
     input: &str,
     skills: &[String],
+    attachments: &[MessageAttachmentPayload],
 ) -> Result<Value, AppError> {
     let history: Vec<Value> = repository
         .items(session_id)
@@ -530,7 +558,7 @@ async fn run_params(
         .filter_map(history_item)
         .collect();
     Ok(
-        json!({ "model": model, "instructions": INSTRUCTIONS, "workspace": workspace, "safetyMode": safety_mode.as_db(), "input": input, "history": history, "tools": tool_descriptors(), "skills": skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": model, "instructions": INSTRUCTIONS, "workspace": workspace, "safetyMode": safety_mode.as_db(), "input": message_with_attachment_context(input, attachments), "history": history, "tools": tool_descriptors(), "skills": skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
 }
 
@@ -561,7 +589,7 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
         AgentItemPayload::UserMessage(message)
         | AgentItemPayload::AssistantMessage(message)
         | AgentItemPayload::SystemMessage(message) => Some(
-            json!({ "id": item.id, "kind": "message", "role": message.role, "text": message.content }),
+            json!({ "id": item.id, "kind": "message", "role": message.role, "text": message_with_attachment_context(&message.content, &message.attachments) }),
         ),
         AgentItemPayload::ContextSummary(text) => Some(
             json!({ "id": item.id, "kind": "context_summary", "role": "system", "text": text.text }),
@@ -584,7 +612,26 @@ fn item_json(item: AgentItemDto) -> Result<Value, AppError> {
         AgentItemPayload::UserMessage(v)
         | AgentItemPayload::AssistantMessage(v)
         | AgentItemPayload::SystemMessage(v) => {
-            json!({ "kind": "message", "role": v.role, "text": v.content, "status": "complete" })
+            let attachments = v
+                .attachments
+                .into_iter()
+                .map(|attachment| {
+                    json!({
+                        "id": attachment.id,
+                        "sessionId": &item.session_id,
+                        "runId": &item.run_id,
+                        "itemId": &item.id,
+                        "name": attachment.name,
+                        "path": attachment.path,
+                        "mimeType": attachment.mime_type,
+                        "sizeBytes": attachment.size_bytes,
+                        "action": "imported",
+                        "available": attachment.available,
+                        "createdAt": attachment.created_at
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({ "kind": "message", "role": v.role, "text": v.content, "status": "complete", "attachments": attachments })
         }
         AgentItemPayload::Reasoning(v) => {
             json!({ "kind": "reasoning", "text": v.text, "status": "complete" })
@@ -616,4 +663,199 @@ fn session_workspace(app: &AppHandle, session_id: Option<&str>) -> Result<PathBu
 }
 fn io_error(error: std::io::Error) -> AppError {
     AppError::new("agent_workspace_failed", error.to_string())
+}
+
+async fn prepare_attachments(
+    source_paths: &[String],
+    workspace: &std::path::Path,
+) -> Result<Vec<MessageAttachmentPayload>, AppError> {
+    if source_paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let destination_root = workspace.join("attachments");
+    tokio::fs::create_dir_all(&destination_root)
+        .await
+        .map_err(io_error)?;
+    let canonical_workspace = workspace.canonicalize().map_err(io_error)?;
+    let mut attachments = Vec::with_capacity(source_paths.len());
+    for source_path in source_paths {
+        let source = PathBuf::from(source_path)
+            .canonicalize()
+            .map_err(io_error)?;
+        if !source.is_file() {
+            return Err(AppError::new(
+                "agent_attachment_invalid",
+                "Attachment source is not a file.",
+            ));
+        }
+        let name = source
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                AppError::new(
+                    "agent_attachment_invalid",
+                    "Attachment source has no valid file name.",
+                )
+            })?
+            .to_string();
+        let destination = if source.starts_with(&canonical_workspace) {
+            source
+        } else {
+            let destination = destination_root.join(format!("{}-{name}", uuid::Uuid::new_v4()));
+            tokio::fs::copy(&source, &destination)
+                .await
+                .map_err(io_error)?;
+            destination
+        };
+        let metadata = tokio::fs::metadata(&destination).await.map_err(io_error)?;
+        attachments.push(MessageAttachmentPayload {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            path: destination.to_string_lossy().into_owned(),
+            mime_type: attachment_mime_type(&destination).map(str::to_string),
+            size_bytes: metadata.len() as i64,
+            available: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        });
+    }
+    Ok(attachments)
+}
+
+async fn persist_attachments(
+    repository: &AgentRepository,
+    session_id: &str,
+    run_id: &str,
+    item_id: &str,
+    attachments: &[MessageAttachmentPayload],
+    original_paths: &[String],
+) -> Result<(), AppError> {
+    for (index, attachment) in attachments.iter().enumerate() {
+        sqlx::query::query(
+            "INSERT INTO agent_artifacts (
+                id, session_id, run_id, item_id, provenance, action, path,
+                original_path, mime_type, size_bytes, available, created_at
+             ) VALUES (?, ?, ?, ?, 'attachment', 'imported', ?, ?, ?, ?, 1, ?)",
+        )
+        .bind(&attachment.id)
+        .bind(session_id)
+        .bind(run_id)
+        .bind(item_id)
+        .bind(&attachment.path)
+        .bind(original_paths.get(index))
+        .bind(&attachment.mime_type)
+        .bind(attachment.size_bytes)
+        .bind(&attachment.created_at)
+        .execute(&repository.pool)
+        .await?;
+    }
+    Ok(())
+}
+
+fn message_with_attachment_context(
+    message: &str,
+    attachments: &[MessageAttachmentPayload],
+) -> String {
+    if attachments.is_empty() {
+        return message.to_string();
+    }
+    let manifest = attachments
+        .iter()
+        .map(|attachment| format!("- {} ({})", attachment.name, attachment.path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "[June attachment manifest v1]\nThe following files are available locally. Use June's file tools to inspect them when needed:\n{manifest}\n\n{message}"
+    )
+}
+
+fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "tif" | "tiff" => Some("image/tiff"),
+        "pdf" => Some("application/pdf"),
+        "json" => Some("application/json"),
+        "csv" => Some("text/csv"),
+        "md" => Some("text/markdown"),
+        "txt" => Some("text/plain"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn attachments_are_copied_into_the_session_workspace_and_added_to_context() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let source = source_directory.path().join("brief.md");
+        tokio::fs::write(&source, "# Brief")
+            .await
+            .expect("source attachment");
+
+        let attachments =
+            prepare_attachments(&[source.to_string_lossy().into_owned()], workspace.path())
+                .await
+                .expect("prepared attachments");
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].name, "brief.md");
+        assert_eq!(attachments[0].mime_type.as_deref(), Some("text/markdown"));
+        assert!(PathBuf::from(&attachments[0].path).starts_with(workspace.path()));
+        assert_eq!(
+            tokio::fs::read_to_string(&attachments[0].path)
+                .await
+                .expect("copied attachment"),
+            "# Brief"
+        );
+        let input = message_with_attachment_context("Summarize this.", &attachments);
+        assert!(input.starts_with("[June attachment manifest v1]"));
+        assert!(input.contains("brief.md"));
+        assert!(input.contains(&attachments[0].path));
+        assert!(input.ends_with("Summarize this."));
+    }
+
+    #[test]
+    fn messages_without_attachments_keep_their_original_model_input() {
+        assert_eq!(
+            message_with_attachment_context("Hello", &[]),
+            "Hello".to_string()
+        );
+    }
+
+    #[test]
+    fn persisted_attachment_items_expose_complete_artifact_identity() {
+        let item = AgentItemDto {
+            id: "message-1".into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 1,
+            payload: AgentItemPayload::UserMessage(super::super::MessagePayload {
+                role: "user".into(),
+                content: "Read this.".into(),
+                attachments: vec![MessageAttachmentPayload {
+                    id: "attachment-1".into(),
+                    name: "brief.md".into(),
+                    path: "/workspace/attachments/brief.md".into(),
+                    mime_type: Some("text/markdown".into()),
+                    size_bytes: 42,
+                    available: true,
+                    created_at: "2026-07-24T12:00:00Z".into(),
+                }],
+            }),
+            external_id: Some("user:run-1".into()),
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+
+        let value = item_json(item).expect("public item");
+        assert_eq!(value["attachments"][0]["sessionId"], "session-1");
+        assert_eq!(value["attachments"][0]["runId"], "run-1");
+        assert_eq!(value["attachments"][0]["itemId"], "message-1");
+        assert_eq!(value["attachments"][0]["action"], "imported");
+    }
 }

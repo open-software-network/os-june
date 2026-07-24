@@ -188,6 +188,54 @@ describe("agent runtime adapter", () => {
     ]);
   });
 
+  it("restores persisted message attachments into the transcript", () => {
+    const projection = createAgentRuntimeProjection({
+      items: [
+        {
+          id: "message-with-attachment",
+          sessionId: "session-1",
+          runId: "run-1",
+          sequence: 1,
+          createdAt: "2026-07-22T12:00:01Z",
+          kind: "message",
+          role: "user",
+          text: "Summarize this.",
+          status: "complete",
+          attachments: [
+            {
+              id: "attachment-1",
+              sessionId: "session-1",
+              runId: "run-1",
+              itemId: "message-with-attachment",
+              name: "brief.md",
+              path: "/session/attachments/brief.md",
+              mimeType: "text/markdown",
+              sizeBytes: 42,
+              action: "imported",
+              available: true,
+              createdAt: "2026-07-22T12:00:01Z",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(agentItemsToChatTurns(projection.items)).toMatchObject([
+      {
+        role: "user",
+        parts: [
+          {
+            type: "attachment",
+            name: "brief.md",
+            path: "/session/attachments/brief.md",
+            kind: "file",
+          },
+          { type: "text", text: "Summarize this." },
+        ],
+      },
+    ]);
+  });
+
   it("rejects an incompatible protocol version", () => {
     const event = {
       ...frame,

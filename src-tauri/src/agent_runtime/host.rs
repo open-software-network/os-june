@@ -469,6 +469,7 @@ async fn persist_and_emit_event(
             Some(AgentItemPayload::AssistantMessage(MessagePayload {
                 role: "assistant".into(),
                 content: text.into(),
+                attachments: Vec::new(),
             }))
         }
         "reasoning.delta" => {
