@@ -205,7 +205,9 @@ const FOLDER_LOCAL_PATH_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
 // transcripts.source_mode is cid 14 on fresh databases but cid 17 on upgraded
 // databases; folders.profile precedes local_path when fresh but follows it when
 // upgraded. All access must name columns explicitly; never rely on cid order,
-// positional decoding, or SELECT *.
+// positional decoding, or SELECT *. The integration guard in
+// tests/sql_query_guards.rs enforces the projection star-select rule for both
+// affected tables, including qualified stars.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,
