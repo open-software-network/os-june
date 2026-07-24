@@ -2,8 +2,8 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
-import type { RoutineJob } from "../lib/hermes-routines";
-import type { HermesSessionInfo } from "../lib/tauri";
+import type { RoutineJob } from "../lib/agent-routines";
+import type { RoutineRunSession } from "../lib/agent-routine-history";
 import appCss from "../styles/app.css?raw";
 import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
@@ -25,8 +25,8 @@ vi.mock("../lib/feature-flags", async (importOriginal) => ({
   BROWSER_USE_ENABLED: true,
 }));
 
-vi.mock("../lib/hermes-routines", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-routines")>()),
+vi.mock("../lib/agent-routines", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/agent-routines")>()),
   ...mocks,
 }));
 
@@ -42,12 +42,12 @@ vi.mock("../components/routines/RoutineDetail", async (importOriginal) => {
 
 const adapterMocks = vi.hoisted(() => ({
   listScheduledRunSessions:
-    vi.fn<(options?: { includeActive?: boolean }) => Promise<HermesSessionInfo[]>>(),
+    vi.fn<(options?: { includeActive?: boolean }) => Promise<RoutineRunSession[]>>(),
 }));
 
-vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
-  listScheduledRunSessions: adapterMocks.listScheduledRunSessions,
+vi.mock("../lib/agent-routine-history", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/agent-routine-history")>()),
+  listRoutineRunSessions: adapterMocks.listScheduledRunSessions,
 }));
 
 // Connector commands the create/detail pages call. Defaults mimic a build
@@ -105,13 +105,20 @@ function job(overrides: Partial<RoutineJob> = {}): RoutineJob {
   };
 }
 
-function run(overrides: Partial<HermesSessionInfo> = {}): HermesSessionInfo {
+function run(overrides: Partial<RoutineRunSession> = {}): RoutineRunSession {
   return {
     id: "cron_abc123_20260610_090000",
-    source: "cron",
+    source: "legacy_routine",
     title: "Morning Summary Digest",
     preview: "Here is today's summary of your unread notes.",
-    last_active: "2026-06-10T09:00:30Z",
+    status: "completed",
+    model: "open-software/auto",
+    safetyMode: "sandboxed",
+    workspacePath: "",
+    createdAt: "2026-06-10T09:00:00Z",
+    updatedAt: "2026-06-10T09:00:30Z",
+    completedAt: "2026-06-10T09:00:30Z",
+    endedAt: "2026-06-10T09:00:30Z",
     ...overrides,
   };
 }
@@ -119,7 +126,7 @@ function run(overrides: Partial<HermesSessionInfo> = {}): HermesSessionInfo {
 function renderView(
   props: Partial<{
     onCreateRoutine: (prompt: string) => void;
-    onOpenRun: (session: HermesSessionInfo) => void;
+    onOpenRun: (session: RoutineRunSession) => void;
     creditActionsDisabledReason: string;
   }> = {},
 ) {
@@ -349,8 +356,8 @@ describe("RoutinesView list", () => {
     expect(await screen.findByText("gateway down")).toBeInTheDocument();
   });
 
-  it("wraps a Hermes server load error and retries the list", async () => {
-    const rawError = "Hermes API returned 500: Internal Server Error";
+  it("wraps an agent server load error and retries the list", async () => {
+    const rawError = "Agent API returned 500: Internal Server Error";
     mocks.listRoutines.mockRejectedValueOnce(new Error(rawError)).mockResolvedValueOnce([job()]);
     renderView();
 
@@ -365,7 +372,7 @@ describe("RoutinesView list", () => {
     expect(await screen.findByText("Morning summary")).toBeInTheDocument();
   });
 
-  it("keeps non-Hermes load errors unchanged", async () => {
+  it("keeps ordinary load errors unchanged", async () => {
     mocks.listRoutines.mockRejectedValue(new Error("gateway down"));
     renderView();
 
@@ -418,6 +425,7 @@ describe("RoutinesView templates and creation", () => {
         schedule: "0 9 * * *",
         name: undefined,
         unrestricted: false,
+        enabledToolsets: ["web", "vision", "todo", "memory", "session_search", "context_engine"],
       }),
     );
     // Creation lands on the new routine's detail page.
@@ -444,9 +452,9 @@ describe("RoutinesView templates and creation", () => {
 
     const prompt = onCreateRoutine.mock.calls[0][0] as string;
     expect(prompt).toContain("watch the weather and message me");
-    expect(prompt).toContain("cronjob tool");
-    expect(prompt).toContain("Do not set enabled_toolsets");
-    expect(prompt).not.toContain("Create the job with enabled_toolsets");
+    expect(prompt).toContain("Create a new June routine");
+    expect(prompt).toContain("Sandboxed default");
+    expect(prompt).not.toContain("Unrestricted mode");
   });
 
   it("expands the describe composer for overflowing text", async () => {
@@ -513,9 +521,7 @@ describe("RoutinesView templates and creation", () => {
     await userEvent.click(within(composer).getByRole("button", { name: "Ask June to set it up" }));
 
     const prompt = onCreateRoutine.mock.calls[0][0] as string;
-    expect(prompt).toContain(
-      "Create the job with enabled_toolsets set to exactly: terminal, file, code_execution",
-    );
+    expect(prompt).toContain("Unrestricted mode");
   });
 
   it("dismisses the describe mode menu with Escape", async () => {
@@ -634,7 +640,7 @@ describe("RoutinesView connector templates", () => {
     await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
   });
 
-  it("creates an event-triggered routine paused with the trigger subscription", async () => {
+  it("creates an active event-triggered routine with the trigger subscription", async () => {
     tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
     mocks.listRoutines.mockResolvedValueOnce([]);
     renderView();
@@ -658,7 +664,7 @@ describe("RoutinesView connector templates", () => {
     // Approval trust: the actions servers ride along.
     expect(createArgs.enabledToolsets).toContain("june_gmail_actions");
 
-    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    expect(mocks.pauseRoutine).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(tauriMocks.connectorTriggerSet).toHaveBeenCalledWith({
         jobId: "abc123",
@@ -669,7 +675,7 @@ describe("RoutinesView connector templates", () => {
     );
     // Event template installs still fire an immediate first run (approval-gated),
     // so value shows in the first session per the install contract; the one-off
-    // trigger leaves the routine paused for its event trigger to own later runs.
+    // trigger leaves the routine active for its event trigger to own later runs.
     await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
   });
 
@@ -688,7 +694,7 @@ describe("RoutinesView connector templates", () => {
     expect(mocks.triggerRoutine).not.toHaveBeenCalled();
   });
 
-  it("removes a paused placeholder when event trigger setup fails", async () => {
+  it("removes an event routine when trigger setup fails", async () => {
     tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
     mocks.listRoutines.mockResolvedValue([]);
     tauriMocks.connectorTriggerSet.mockRejectedValueOnce(new Error("trigger store unavailable"));
@@ -699,7 +705,7 @@ describe("RoutinesView connector templates", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByText("trigger store unavailable")).toBeInTheDocument();
-    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    expect(mocks.pauseRoutine).not.toHaveBeenCalled();
     expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123");
     expect(mocks.triggerRoutine).not.toHaveBeenCalled();
   });
@@ -709,12 +715,12 @@ describe("RoutinesView connector templates", () => {
     // the view just reports every finished run once, id and end time included.
     mocks.listRoutines.mockResolvedValue([job()]);
     adapterMocks.listScheduledRunSessions.mockResolvedValue([
-      {
+      run({
         id: "cron_abc123_20260709_100000",
         status: "completed",
         ended_at: "2026-07-09T10:05:00Z",
         active: false,
-      },
+      }),
     ]);
     renderView();
     await waitFor(() =>
@@ -729,8 +735,12 @@ describe("RoutinesView connector templates", () => {
   it("does not report a still-running or failed run", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     adapterMocks.listScheduledRunSessions.mockResolvedValue([
-      { id: "cron_abc123_20260709_090000", status: "running", active: true },
-      { id: "cron_abc123_20260709_100000", status: "failed", ended_at: "2026-07-09T10:05:00Z" },
+      run({ id: "cron_abc123_20260709_090000", status: "running", active: true }),
+      run({
+        id: "cron_abc123_20260709_100000",
+        status: "failed",
+        ended_at: "2026-07-09T10:05:00Z",
+      }),
     ]);
     renderView();
     await waitFor(() => expect(adapterMocks.listScheduledRunSessions).toHaveBeenCalled());
@@ -789,21 +799,15 @@ describe("RoutinesView detail", () => {
     expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled();
   });
 
-  it("explains and disables routine Browser use when managed transport is remotely disabled", async () => {
-    tauriMocks.browserTransportPolicy.mockResolvedValue({
-      attendedEnabled: true,
-      managedEnabled: false,
-    });
+  it("explains the bounded browser access available to routines", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     renderView();
     await openDetail("Morning summary");
 
-    expect(
-      await screen.findByText("Browser use for routines is temporarily unavailable."),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/browse public pages anonymously/i)).toBeInTheDocument();
     expect(
       screen.getByRole("switch", { name: "Allow browser use for this routine" }),
-    ).toBeDisabled();
+    ).toBeEnabled();
   });
 
   it("opens a routine with its full instructions", async () => {
@@ -845,7 +849,7 @@ describe("RoutinesView detail", () => {
     renderView();
     await openDetail("Morning summary");
 
-    // Downgrade to read only, then the Hermes cron update fails.
+    // Downgrade to read only, then the schedule update fails.
     await userEvent.click(screen.getByRole("button", { name: /Read only/ }));
     mocks.updateRoutine.mockRejectedValueOnce(new Error("gateway down"));
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -1068,7 +1072,7 @@ describe("RoutinesView detail", () => {
     expect(detailRunNow).toHaveAttribute("title", "Add credits before running a routine.");
 
     // Invoke the captured child callback directly to prove the handler itself
-    // enforces the funding guard before reaching Hermes.
+    // enforces the funding guard before reaching the runtime.
     await act(async () => {
       if (!mocks.routineDetailOnRunNow) {
         throw new Error("Routine detail did not expose its Run now handler.");
@@ -1148,8 +1152,8 @@ describe("RoutinesView detail", () => {
     expect(screen.getByText(/Model quota exhausted/)).toBeInTheDocument();
   });
 
-  it("wraps a detail reload Hermes server error and retries the detail", async () => {
-    const rawError = "Hermes API returned 500: Internal Server Error";
+  it("wraps a detail reload agent server error and retries the detail", async () => {
+    const rawError = "Agent API returned 500: Internal Server Error";
     mocks.listRoutines.mockResolvedValueOnce([job()]);
     renderView();
     await openDetail("Morning summary");
@@ -1231,7 +1235,7 @@ describe("RoutinesView run history", () => {
       run({
         active: true,
         preview: "",
-        last_active: "2026-06-10T09:00:05Z",
+        updatedAt: "2026-06-10T09:00:05Z",
       }),
     ]);
     renderView();
@@ -1266,7 +1270,7 @@ describe("RoutinesView run history", () => {
   it("ignores stale run history responses after a newer refresh", async () => {
     vi.useFakeTimers();
     mocks.listRoutines.mockResolvedValue([job()]);
-    let resolveFirstLoad: (runs: HermesSessionInfo[]) => void = () => {};
+    let resolveFirstLoad: (runs: RoutineRunSession[]) => void = () => {};
     adapterMocks.listScheduledRunSessions
       .mockReturnValueOnce(
         new Promise((resolve) => {
@@ -1331,7 +1335,7 @@ describe("RoutinesView run history", () => {
       run({
         id: "cron_def456_20260609_080000",
         preview: "Compiled the weekly digest.",
-        last_active: "2026-06-09T08:00:30Z",
+        updatedAt: "2026-06-09T08:00:30Z",
       }),
     ]);
     renderView();

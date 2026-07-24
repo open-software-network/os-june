@@ -415,7 +415,7 @@ fn normalize_wav_for_transcription_with_chunk_sample_budget(
         return Err(error);
     }
     if temporary_output.is_some() {
-        if let Err(error) = crate::hermes_bridge::replace_file(write_path, output_path) {
+        if let Err(error) = crate::filesystem::replace_file(write_path, output_path) {
             let _ = std::fs::remove_file(write_path);
             return Err(AppError::new("audio_normalize_failed", error.to_string()));
         }

@@ -13,7 +13,7 @@ import {
   type CategorySuggestionListProps,
 } from "./CategorySuggestionList";
 import { reportCategoryDef, type ReportCategory } from "./reportCategory";
-import type { HermesSkillInfo } from "../../../lib/tauri";
+import type { AgentSkillInfo } from "../../../lib/tauri";
 import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
 import {
   matchBuiltinComposerSlashCommands,
@@ -143,7 +143,7 @@ const CategoryChipBase = Mention.extend({
 });
 
 export type CategoryChipOptions = {
-  skills?: () => HermesSkillInfo[] | null | undefined;
+  skills?: () => AgentSkillInfo[] | null | undefined;
   onBuiltinCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
 };
 
@@ -337,7 +337,7 @@ export const CategoryChip = createCategoryChip();
 
 function composerSlashCommandItems(
   query: string,
-  skills: HermesSkillInfo[] | null | undefined,
+  skills: AgentSkillInfo[] | null | undefined,
 ): ComposerSlashCommandItem[] {
   const builtins = matchBuiltinComposerSlashCommands(query).map((command) => ({
     kind: "builtin" as const,

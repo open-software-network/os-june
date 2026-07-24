@@ -38,6 +38,19 @@ fn legacy_note_preview(
     source.chars().take(140).collect()
 }
 
+async fn create_agent_session(repos: &Repositories, id: &str) {
+    query(
+        "INSERT INTO agent_sessions
+         (id, title, status, model, safety_mode, source, created_at, updated_at)
+         VALUES (?, 'Test session', 'idle', 'auto', 'sandboxed', 'user',
+                 '2026-05-19T10:00:00Z', '2026-05-19T10:00:00Z')",
+    )
+    .bind(id)
+    .execute(&repos.pool)
+    .await
+    .expect("agent session fixture");
+}
+
 #[tokio::test]
 async fn migrations_create_empty_store() {
     let repos = test_repositories().await;
@@ -655,6 +668,8 @@ async fn move_profile_data_to_default_retags_owned_rows_only() {
 async fn delete_profile_data_removes_owned_rows_and_cascades_satellites() {
     let repos = test_repositories().await;
     let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+    create_agent_session(&repos, "session-x").await;
+    create_agent_session(&repos, "session-default").await;
 
     let folder_x = repos
         .create_folder("x", "Profile X folder", None)

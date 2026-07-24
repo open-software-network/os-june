@@ -1,6 +1,5 @@
 import { IconCheckmark2Medium } from "central-icons-filled/IconCheckmark2Medium";
 import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
-import { IconArrowsRepeat } from "central-icons/IconArrowsRepeat";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
@@ -21,22 +20,18 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  deleteHermesSession,
-  isScheduledRunSession,
-  sessionTimestamp,
-} from "../../lib/hermes-adapter";
 import { AGENT_DELETE_SESSION_EVENT } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { primaryShortcutLabel } from "../../lib/platform";
-import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
+import { deleteAgentSession, type FolderDto } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
 import { RenameSessionDialog } from "./RenameSessionDialog";
 
 type AgentSessionsListProps = {
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   folders: FolderDto[];
   /** sessionId -> project (folder) ids the session is filed under. */
   sessionFolderIds: Record<string, string[]>;
@@ -46,7 +41,7 @@ type AgentSessionsListProps = {
    * collapsible Completed group instead of the active list. */
   completedSessionIds?: Record<string, string>;
   onToggleCompleted?: (sessionId: string, completed: boolean) => void;
-  onSelectSession: (session: HermesSessionInfo) => void;
+  onSelectSession: (session: AgentSessionDto) => void;
   onNewSession: () => void;
   /** stored session id (not the runtime session id). */
   onRenameSession: (sessionId: string, title: string) => void;
@@ -60,7 +55,7 @@ export type AgentSessionsListHandle = {
 };
 
 const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set();
-const NO_SESSIONS: HermesSessionInfo[] = [];
+const NO_SESSIONS: AgentSessionDto[] = [];
 const EMPTY_COMPLETED: Record<string, string> = {};
 
 export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessionsListProps>(
@@ -101,7 +96,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
             sessionStatusPriority(b.id, workingSessionIds, waitingSessionIds) -
             sessionStatusPriority(a.id, workingSessionIds, waitingSessionIds);
           if (statusDelta !== 0) return statusDelta;
-          return sessionTimestamp(b).localeCompare(sessionTimestamp(a));
+          return b.updatedAt.localeCompare(a.updatedAt);
         }),
       [sessions, waitingSessionIds, workingSessionIds],
     );
@@ -109,7 +104,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
       const normalized = query.trim().toLowerCase();
       if (!normalized) return sortedSessions;
       return sortedSessions.filter((session) =>
-        `${session.title ?? ""} ${session.preview ?? ""} ${sessionStatusLabel(
+        `${session.title} ${sessionStatusLabel(
           sessionStatus(session.id, workingSessionIds, waitingSessionIds),
         )}`
           .toLowerCase()
@@ -239,7 +234,7 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
     async function handleBulkDelete() {
       try {
         for (const sessionId of selectedSessionIds) {
-          await deleteHermesSession(sessionId);
+          await deleteAgentSession(sessionId);
           window.setTimeout(() => {
             window.dispatchEvent(
               new CustomEvent(AGENT_DELETE_SESSION_EVENT, {
@@ -513,7 +508,7 @@ function AgentSessionListRow({
   onOpenMove,
   onRemoveFromProject,
 }: {
-  session: HermesSessionInfo;
+  session: AgentSessionDto;
   projectName?: string;
   currentFolderId?: string;
   status?: AgentSessionListStatus;
@@ -526,8 +521,8 @@ function AgentSessionListRow({
   onOpenMove: () => void;
   onRemoveFromProject: (folderId: string) => void;
 }) {
-  const title = session.title?.trim() || session.preview?.trim() || "Untitled session";
-  const preview = session.preview?.trim() || "No messages yet";
+  const title = session.title.trim() || "Untitled session";
+  const preview = session.source === "legacy_routine" ? "Imported routine history" : "Conversation";
   const statusLabel = sessionStatusLabel(status);
   const [menu, setMenu] = useState<{ right: number; top: number } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -554,7 +549,7 @@ function AgentSessionListRow({
   async function handleDelete() {
     setDeleting(true);
     try {
-      await deleteHermesSession(session.id);
+      await deleteAgentSession(session.id);
       setDeleteError(null);
       // Lets the sidebar, menu bar, and App session state drop the row.
       window.setTimeout(() => {
@@ -575,11 +570,7 @@ function AgentSessionListRow({
   const rowMain = (
     <>
       <span className="folder-note-icon" aria-hidden>
-        {isScheduledRunSession(session) ? (
-          <IconArrowsRepeat size={15} />
-        ) : (
-          <IconBubble3 size={15} />
-        )}
+        <IconBubble3 size={15} />
       </span>
       <span className="folder-note-body">
         <span className="folder-note-title">{title}</span>
@@ -631,7 +622,7 @@ function AgentSessionListRow({
             {statusLabel}
           </span>
         ) : (
-          <span className="folder-note-time">{formatSessionTime(sessionTimestamp(session))}</span>
+          <span className="folder-note-time">{formatSessionTime(session.updatedAt)}</span>
         )}
         <span className="folder-note-actions">
           <button

@@ -63,8 +63,8 @@ export type GenerateChatVideoResult =
     };
 
 const DEFAULT_POLL_INTERVAL_MS = 2_500;
-// 360 polls x 2.5s = 900s, matching the `june_video` MCP tool timeout in
-// hermes_bridge.rs. Video jobs routinely quote 300-400s+ (queue + render), so
+// 360 polls x 2.5s = 900s, matching June's video job timeout. Video jobs
+// routinely quote 300-400s+ (queue + render), so
 // the earlier 450s budget abandoned jobs the server would have delivered.
 const DEFAULT_MAX_POLLS = 360;
 

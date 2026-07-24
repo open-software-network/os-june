@@ -12,17 +12,16 @@ use tauri::Manager;
 ///
 /// Pending renderer note saves get a bounded first step (10 s), long enough for
 /// an in-flight SQLite patch to return before the renderer acknowledges.
-/// Dictation (1.25 s) and Computer use (2.5 s) then run concurrently with
-/// Hermes, so neither can consume Hermes' ordered budget: start quiescence
-/// (2 s) + Gateway unload (6 s) + process/browser/proxy finalization (2 s).
+/// Dictation, Computer use, and the agent runtime then stop concurrently under
+/// the same bounded deadline.
 const SHUTDOWN_AGGREGATE_DEADLINE_MS: u64 = 20_000;
 const SHUTDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_millis(SHUTDOWN_AGGREGATE_DEADLINE_MS);
-const HERMES_FINALIZATION_BUDGET_MS: u64 = 2_000;
+const AGENT_RUNTIME_SHUTDOWN_BUDGET_MS: u64 = 2_000;
 const EXIT_FALLBACK_DEADLINE: Duration = SHUTDOWN_AGGREGATE_DEADLINE;
 #[cfg(windows)]
 const UPDATER_AGGREGATE_DEADLINE_MS: u64 = SHUTDOWN_AGGREGATE_DEADLINE_MS
     + crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS
-    + HERMES_FINALIZATION_BUDGET_MS;
+    + AGENT_RUNTIME_SHUTDOWN_BUDGET_MS;
 #[cfg(windows)]
 const UPDATER_AGGREGATE_DEADLINE: Duration = Duration::from_millis(UPDATER_AGGREGATE_DEADLINE_MS);
 const MUTEX_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -30,10 +29,7 @@ const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 const _: () = assert!(
     SHUTDOWN_AGGREGATE_DEADLINE_MS
-        >= crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS
-            + crate::hermes_bridge::SHUTDOWN_START_QUIESCE_TIMEOUT_MS
-            + crate::hermes_bridge::GATEWAY_SHUTDOWN_TOTAL_TIMEOUT_MS
-            + HERMES_FINALIZATION_BUDGET_MS
+        >= crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS + AGENT_RUNTIME_SHUTDOWN_BUDGET_MS
 );
 
 /// One absolute deadline shared by every leaf in a supervised cleanup run.
@@ -378,7 +374,7 @@ where
         .map(|_| ())
 }
 
-async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) -> CleanupOutcome {
+async fn run_cleanup(app: &tauri::AppHandle, _deadline: ShutdownDeadline) -> CleanupOutcome {
     // Renderer autosaves must drain while the webview and command runtime are
     // still alive. Keep this ordered before native child-process teardown.
     if !crate::note_save_flush::request(app).await {
@@ -389,11 +385,9 @@ async fn run_cleanup(app: &tauri::AppHandle, deadline: ShutdownDeadline) -> Clea
     let dictation =
         tauri::async_runtime::spawn_blocking(move || crate::dictation::stop_helper(&dictation_app));
     let computer_use = crate::computer_use::shutdown(app);
-    // This call preserves the load-bearing order inside the Hermes subsystem:
-    // quiesce starts -> unload the Gateway -> reap runtimes -> stop the
-    // provider proxy.
-    let hermes = crate::hermes_bridge::shutdown(app, deadline);
-    let (dictation_result, (), ()) = tokio::join!(dictation, computer_use, hermes);
+    let agent_runtime = app.state::<crate::agent_runtime::AgentRuntimeHost>();
+    let (dictation_result, (), ()) =
+        tokio::join!(dictation, computer_use, agent_runtime.shutdown());
     if let Err(error) = dictation_result {
         tracing::warn!(%error, "dictation shutdown worker could not be joined");
     }
@@ -533,27 +527,6 @@ pub(crate) fn terminate_child_with(
     }
 }
 
-/// Compatibility helper for pre-registration error paths that still need to
-/// retain the `Child` on success. App-shutdown ownership paths use
-/// [`terminate_child`] so a timed-out child is handed to a detached reaper.
-pub(crate) fn terminate_child_in_place(
-    child: &mut Child,
-    graceful_timeout: Duration,
-    kill_timeout: Duration,
-) -> ChildTermination {
-    match poll_child_exit(child, graceful_timeout) {
-        Ok(true) => return ChildTermination::Exited,
-        Err(()) => return ChildTermination::WaitFailed,
-        Ok(false) => {}
-    }
-    let _ = child.kill();
-    match poll_child_exit(child, kill_timeout) {
-        Ok(true) => ChildTermination::Killed,
-        Ok(false) => ChildTermination::TimedOut,
-        Err(()) => ChildTermination::WaitFailed,
-    }
-}
-
 fn spawn_detached_child_reaper(mut child: Child) {
     if let Err(error) = thread::Builder::new()
         .name("june-child-reaper".to_string())
@@ -633,14 +606,12 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_deadline_covers_note_flush_and_ordered_hermes_leaf_budgets() {
+    fn aggregate_deadline_covers_note_flush_and_agent_runtime_shutdown() {
         assert!(deadline_covers_ordered_leaves(
             SHUTDOWN_AGGREGATE_DEADLINE_MS,
             &[
                 crate::note_save_flush::NOTE_SAVE_FLUSH_TIMEOUT_MS,
-                crate::hermes_bridge::SHUTDOWN_START_QUIESCE_TIMEOUT_MS,
-                crate::hermes_bridge::GATEWAY_SHUTDOWN_TOTAL_TIMEOUT_MS,
-                HERMES_FINALIZATION_BUDGET_MS,
+                AGENT_RUNTIME_SHUTDOWN_BUDGET_MS,
             ],
         ));
         assert!(

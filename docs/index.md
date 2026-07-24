@@ -47,6 +47,8 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
 - [adr/0036](adr/0036-github-connector-app-user-tokens.md) - GitHub connector uses GitHub App user access tokens only (no app private key on device or backend), local-mode custody per ADR-0016, June-side read/write gating, approval-only writes
 - [adr/0037](adr/0037-versioned-local-sqlite-migrations.md) - June's local SQLite schema uses an append-only release-ordered catalog, introspection-based legacy stamping, and one transaction for all pending migrations
+- [adr/0038](adr/0038-june-owned-openai-agents-runtime.md) - June owns the local agent harness, persistence, tools, approvals, and stdio protocol on top of the OpenAI Agents SDK
+- [adr/0039](adr/0039-june-owned-routines-and-mcp.md) - June owns routine scheduling and user-configured MCP transport, persistence, safety, and migration
 
 ## Enforceable rules (spec/)
 
@@ -81,8 +83,6 @@ Per-repo config the engineering skills read before acting (see the
 
 ## Subsystems
 
-- [hermes-architecture.md](hermes-architecture.md) — the agent runtime: bridge, gateway, control plane, sessions, models
-- [hermes-gateway-gotchas.md](hermes-gateway-gotchas.md) — integration gotchas: restart discipline, config contract, MCP OAuth, event types, upstream tool-schema quirks
 - [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
 - [release-extension.md](release-extension.md) - Chrome Web Store publisher setup, RC review gate, stable promotion, and recovery runbook
 - [computer-use-cua-driver-spike.md](computer-use-cua-driver-spike.md) — spike (JUN-288): run the bundled cua-driver outside the write jail as a broker-owned, separately-signed daemon (recommended on identity/lifecycle grounds; a fully relocated daemon does start in-jail, up to the TCC gate); pinning + installer-never-runs confirmed
@@ -123,13 +123,6 @@ Per-repo config the engineering skills read before acting (see the
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
 - [onboarding-design.md](onboarding-design.md) — onboarding flow design (verify against what shipped)
 - ~~os-accounts-backend.md~~ — historical; superseded by `june-api-prd.md`
-
-## Hermes runtime (pin management)
-
-- [hermes-upgrade-checklist.md](hermes-upgrade-checklist.md) — the gate for bumping the pinned runtime
-- [hermes-upstream-template.md](hermes-upstream-template.md) — per-bump pin-note template
-- [hermes-upstream-v2026.6.19.md](hermes-upstream-v2026.6.19.md) — current pin and local compatibility patch note (v2026.6.19, `june-approval-memory-v13`)
-- [hermes-tui-debug.md](hermes-tui-debug.md) — dev-only raw-TUI debug fallback
 
 ## Release & ops runbooks
 

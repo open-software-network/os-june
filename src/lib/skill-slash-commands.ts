@@ -1,4 +1,4 @@
-import type { HermesSkillDocument, HermesSkillInfo } from "./tauri";
+import type { AgentSkillDocument, AgentSkillInfo } from "./tauri";
 
 const EXPLICIT_SKILLS_START = "---EXPLICIT SKILLS---";
 const EXPLICIT_SKILLS_END = "---END EXPLICIT SKILLS---";
@@ -17,21 +17,21 @@ export type ParsedSkillSlashCommandToken = {
 };
 
 export type SkillSlashResolution =
-  | { status: "resolved"; token: string; skill: HermesSkillInfo }
+  | { status: "resolved"; token: string; skill: AgentSkillInfo }
   | {
       status: "missing";
       token: string;
-      suggestions: HermesSkillInfo[];
+      suggestions: AgentSkillInfo[];
     }
   | {
       status: "ambiguous";
       token: string;
-      matches: HermesSkillInfo[];
+      matches: AgentSkillInfo[];
     }
   | {
       status: "disabled";
       token: string;
-      matches: HermesSkillInfo[];
+      matches: AgentSkillInfo[];
     };
 
 export function parseSkillSlashCommands(input: string): ParsedSkillSlashCommands {
@@ -74,7 +74,7 @@ export function parseSkillSlashCommandTokens(input: string): ParsedSkillSlashCom
 
 export function matchSkillSlashSuggestions(
   query: string,
-  skills: HermesSkillInfo[] | null | undefined,
+  skills: AgentSkillInfo[] | null | undefined,
   limit = 8,
 ) {
   const normalized = normalizeSkillName(query);
@@ -91,7 +91,7 @@ export function matchSkillSlashSuggestions(
 
 export function resolveSkillSlashCommands(
   commandNames: string[],
-  skills: HermesSkillInfo[],
+  skills: AgentSkillInfo[],
 ): SkillSlashResolution[] {
   const enabledSkills = skills.filter(isSkillEnabled);
   const disabledSkills = skills.filter((skill) => !isSkillEnabled(skill));
@@ -142,7 +142,7 @@ export function skillSlashResolutionError(resolution: SkillSlashResolution) {
     : `Could not find skill /${resolution.token}.`;
 }
 
-export function explicitSkillInvocationPrompt(documents: HermesSkillDocument[], request: string) {
+export function explicitSkillInvocationPrompt(documents: AgentSkillDocument[], request: string) {
   const skillBlocks = documents.map((document) =>
     [
       `Skill: ${document.name}`,
@@ -192,14 +192,14 @@ export function isPathLikeSlashToken(token: string) {
   return token.includes("/") || token.includes("\\");
 }
 
-function matchingSkills(token: string, skills: HermesSkillInfo[]) {
+function matchingSkills(token: string, skills: AgentSkillInfo[]) {
   const normalized = normalizeSkillName(token);
   const exact = skills.filter((skill) => normalizeSkillName(skill.name) === normalized);
   if (exact.length) return exact;
   return skills.filter((skill) => skillAliases(skill.name).some((alias) => alias === normalized));
 }
 
-function skillMatchScore(skill: HermesSkillInfo, query: string) {
+function skillMatchScore(skill: AgentSkillInfo, query: string) {
   if (!query) return 1;
   const name = normalizeSkillName(skill.name);
   if (name === query) return 100;
@@ -227,6 +227,6 @@ function safeText(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
-function isSkillEnabled(skill: HermesSkillInfo) {
+function isSkillEnabled(skill: AgentSkillInfo) {
   return skill.enabled !== false;
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Preserved signed extension transport; agent requests return later.
+
 //! App side of Browser use extension pairing (JUN-287, ADR 0017).
 //!
 //! The June extension talks Chrome native messaging to a small shim binary
@@ -797,7 +799,7 @@ async fn handle_connection(
             && host.is_paired_connection(connection_id)
         {
             if let Some(tab_id) = frame.get("tabId").and_then(Value::as_i64) {
-                crate::hermes_bridge::release_shared_browser_tab(&app, tab_id);
+                crate::browser_broker::release_shared_tab(&app, tab_id);
             }
             continue;
         }

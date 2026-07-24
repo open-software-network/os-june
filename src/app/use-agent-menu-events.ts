@@ -1,11 +1,11 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import {
+  AGENT_NEW_SESSION_EVENT,
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
-} from "../components/agent/session-persistence";
-import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
-import { listHermesSessions } from "../lib/hermes-adapter";
+} from "../components/agent/AgentWorkspace";
+import { listAgentSessions } from "../lib/tauri";
 import {
   AGENT_MENU_BAR_NEW_SESSION_EVENT,
   AGENT_MENU_BAR_OPEN_SESSION_EVENT,
@@ -18,9 +18,9 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
     agentMenuBarSessionsRef,
     handleAgentHudVisibilityRequest,
     pendingSessionProjectRef,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -70,9 +70,9 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
         setActiveView("agent");
         return;
       }
-      void Promise.all([listHermesSessions({ limit: 100 }), refreshSessionProfiles()])
-        .then(([sessions, profiles]) => {
-          const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+      void Promise.all([listAgentSessions(), refreshSessionPartitions()])
+        .then(([sessions, partitions]) => {
+          const scopedSessions = dataPartitionScopedAgentSessions(sessions, partitions);
           agentMenuBarSessionsRef.current = scopedSessions;
           const session = scopedSessions.find((item) => item.id === sessionId);
           if (session) setActiveAgentSession(session);
@@ -95,8 +95,8 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
     };
   }, [
     handleAgentHudVisibilityRequest,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
   ]);
 }

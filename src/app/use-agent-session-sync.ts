@@ -6,7 +6,7 @@ import {
 } from "../lib/agent-events";
 import { assignSessionToFolder } from "../lib/tauri";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import { updateMenuBarSessionStatus } from "./app-effects/update-ui";
 import type { UseAgentSessionSyncDependencies } from "./use-agent-session-sync-types";
 
@@ -20,7 +20,7 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
     commitAgentSessions,
     pendingSessionProjectRef,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -37,10 +37,10 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      void refreshSessionProfiles()
-        .then((profiles) => {
+      void refreshSessionPartitions()
+        .then((partitions) => {
           if (cancelled) return;
-          commitAgentSessions(detail.sessions, profiles);
+          commitAgentSessions(detail.sessions, partitions);
         })
         .catch(() => {
           if (cancelled) return;
@@ -64,7 +64,7 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
       if (pendingProject && detail.selectedSessionId) {
         pendingSessionProjectRef.current = null;
         const sessionId = detail.selectedSessionId;
-        if (pendingProject.profile !== getActiveHermesProfileName()) {
+        if (pendingProject.partition !== getCurrentDataPartitionName()) {
           setAgentOrigin(undefined);
         } else if (!pendingProject.knownSessionIds.has(sessionId)) {
           void assignSessionToFolder(sessionId, pendingProject.folderId)
@@ -129,5 +129,5 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
       window.removeEventListener(AGENT_SESSION_STATUS_EVENT, handleAgentStatusForMenuBar);
       window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleAgentSessionDeleted);
     };
-  }, [commitAgentSessions, publishAgentMenuBarState, refreshSessionProfiles]);
+  }, [commitAgentSessions, publishAgentMenuBarState, refreshSessionPartitions]);
 }

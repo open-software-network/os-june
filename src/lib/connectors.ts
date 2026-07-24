@@ -13,7 +13,6 @@ import { IconBolt } from "central-icons/IconBolt";
 import { IconChecklist } from "central-icons/IconChecklist";
 import { IconEyeOpen } from "central-icons/IconEyeOpen";
 import { errorCode } from "./errors";
-import { UNRESTRICTED_ROUTINE_TOOLSETS } from "./hermes-routines";
 import type {
   ConnectorAccountStatus,
   ConnectorPolicyCatalog,
@@ -22,6 +21,21 @@ import type {
   ConnectorTriggerKind,
   RoutineTrustMode,
 } from "./tauri";
+
+export const UNRESTRICTED_AGENT_TOOLSETS = [
+  "terminal",
+  "file",
+  "code_execution",
+  "web",
+  "vision",
+  "tts",
+  "skills",
+  "todo",
+  "memory",
+  "context_engine",
+  "session_search",
+  "delegation",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Scope bundles
@@ -437,7 +451,7 @@ export function routineToolsetsFor(
   },
 ): string[] {
   const base = options.unrestricted
-    ? UNRESTRICTED_ROUTINE_TOOLSETS
+    ? UNRESTRICTED_AGENT_TOOLSETS
     : policy.routine.sandboxedBaseToolsets;
   const toolsets = [...base, ...policy.routine.readToolsets];
   if (trust === "approval") toolsets.push(...policy.routine.actionToolsets);
@@ -497,8 +511,8 @@ export const TRIGGER_META: Readonly<Record<ConnectorTriggerKind, TriggerMeta>> =
 });
 
 /** The routine editor's "When" model: a plain schedule, or a connector event
- * trigger. Kept out of ScheduleDraft on purpose — events never encode into
- * the cron string; the daemon fires the (paused) job directly. */
+ * trigger. Kept out of ScheduleDraft on purpose: events never encode into
+ * the cron string; the daemon fires the active routine directly. */
 export type TriggerDraft =
   | { source: "schedule" }
   | { source: "email_received" }
@@ -558,13 +572,12 @@ export function missingConnectorPresentationIds(policy: ConnectorPolicyCatalog):
 
 /**
  * The schedule an event-triggered routine is created with. Event routines
- * still need a Hermes cron record underneath (the trigger daemon fires them
- * via the cron trigger action), so they get a far-future one-time schedule
- * and are paused right after creation — the daemon re-pauses after each
- * fire, and the distant date guarantees the scheduler itself never runs it.
+ * still need a persisted schedule, so they get a far-future one-time value.
+ * They remain active for connector wakes, while the distant date guarantees
+ * the timer scheduler itself never runs them.
  */
-export function eventTriggerScheduleDraft(): { schedule: string; paused: true } {
-  return { schedule: "2099-01-01T09:00:00Z", paused: true };
+export function eventTriggerScheduleDraft(): { schedule: string } {
+  return { schedule: "2099-01-01T09:00:00Z" };
 }
 
 /** Builds the config payload connector_trigger_set expects for a draft. */

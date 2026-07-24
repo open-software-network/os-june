@@ -7,8 +7,8 @@ import {
   type EditChatImageDeps,
   type GenerateChatImageDeps,
 } from "../lib/chat-image-generation";
-import { parseImageDataUrl } from "../lib/hermes-image-attach";
-import type { GeneratedImageDto, ImportedHermesFile } from "../lib/tauri";
+import { parseImageDataUrl } from "../lib/agent-image-attachments";
+import type { GeneratedImageDto, ImportedAgentFile } from "../lib/tauri";
 
 // "aGVsbG8=" is base64 for "hello".
 const HELLO_BASE64 = "aGVsbG8=";
@@ -23,7 +23,7 @@ function pngImage(): GeneratedImageDto {
   };
 }
 
-function importedFile(): ImportedHermesFile {
+function importedFile(): ImportedAgentFile {
   return {
     name: "generated-image-1.png",
     path: "/workspace/uploads/generated-image-1.png",

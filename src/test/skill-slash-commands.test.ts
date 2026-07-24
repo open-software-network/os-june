@@ -11,9 +11,9 @@ import {
   skillDocumentLookupName,
   skillSlashResolutionError,
 } from "../lib/skill-slash-commands";
-import type { HermesSkillDocument, HermesSkillInfo } from "../lib/tauri";
+import type { AgentSkillDocument, AgentSkillInfo } from "../lib/tauri";
 
-const skills: HermesSkillInfo[] = [
+const skills: AgentSkillInfo[] = [
   {
     name: "repo-build-pr",
     description: "Build a branch and open a PR",
@@ -88,7 +88,7 @@ describe("skill slash commands", () => {
   });
 
   it("rejects disabled skills and omits them from suggestions", () => {
-    const disabledSkills: HermesSkillInfo[] = [
+    const disabledSkills: AgentSkillInfo[] = [
       ...skills,
       {
         name: "disabled-review",
@@ -128,7 +128,7 @@ describe("skill slash commands", () => {
   });
 
   it("wraps skill documents and strips them back to the visible request", () => {
-    const documents: HermesSkillDocument[] = [
+    const documents: AgentSkillDocument[] = [
       {
         name: "repo-build-pr",
         relativePath: "repo-build-pr/SKILL.md",

@@ -45,8 +45,7 @@ pub const EARNED_AUTONOMY_MIN_APPROVAL_RUNS: i64 = 3;
 pub const TRUST_MODES: &[&str] = &["read_only", "approval", "autonomous"];
 
 /// The native toolsets a sandboxed routine receives before connector servers
-/// are added. The Hermes bridge uses this same slice when it renders cron
-/// policy, and the renderer receives it in the catalog for explicit per-job
+/// are added. The renderer receives this catalog for explicit per-routine
 /// overrides.
 pub const SANDBOXED_ROUTINE_BASE_TOOLSETS: &[&str] = &[
     "web",

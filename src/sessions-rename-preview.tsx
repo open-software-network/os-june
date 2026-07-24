@@ -2,38 +2,51 @@
 // Tauri bridge in sessions-rename-preview.html so the sidebar rename flow can
 // be driven and recorded in a plain browser (no native build). The rename
 // handler mirrors App.tsx's handleRenameAgentSession: local state update plus
-// a best-effort ensure_hermes_bridge_session persistence call (logged by the
+// a best-effort June-owned session rename persistence call (logged by the
 // fake bridge). Nothing here ships: vite builds only the configured entries.
 import { useState } from "react";
 import ReactDOM from "react-dom/client";
 import { AgentSessionsList } from "./components/agent/AgentSessionsList";
-import { ensureHermesBridgeSession, type HermesSessionInfo } from "./lib/tauri";
+import { renameAgentSession } from "./lib/tauri";
+import type { AgentSessionDto } from "./lib/agent-runtime-contract";
 import { initTheme } from "./lib/theme";
 import "./styles/app.css";
 
 initTheme();
 
-const initialSessions: HermesSessionInfo[] = [
+const initialSessions: AgentSessionDto[] = [
   {
     id: "session-1",
     title: "Untitled session",
-    preview: "Can you look at the flaky checkout test?",
-    last_active: "2026-07-07T09:12:00Z",
-    message_count: 6,
+    status: "idle",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: "",
+    source: "user",
+    createdAt: "2026-07-07T09:12:00Z",
+    updatedAt: "2026-07-07T09:12:00Z",
   },
   {
     id: "session-2",
     title: "Fix payment retries",
-    preview: "Retries now back off exponentially",
-    last_active: "2026-07-06T16:40:00Z",
-    message_count: 12,
+    status: "completed",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: "",
+    source: "user",
+    createdAt: "2026-07-06T16:40:00Z",
+    updatedAt: "2026-07-06T16:40:00Z",
   },
   {
     id: "session-3",
     title: "Summarize sprint notes",
-    preview: "Drafted the sprint summary",
-    last_active: "2026-07-05T11:05:00Z",
-    message_count: 4,
+    status: "completed",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: "",
+    source: "user",
+    createdAt: "2026-07-05T11:05:00Z",
+    updatedAt: "2026-07-05T11:05:00Z",
   },
 ];
 
@@ -51,7 +64,7 @@ function Preview() {
           setSessions((current) =>
             current.map((session) => (session.id === sessionId ? { ...session, title } : session)),
           );
-          void ensureHermesBridgeSession({ sessionId, title }).catch(() => {});
+          void renameAgentSession(sessionId, title).catch(() => {});
         }}
         onOpenMoveDialog={() => {}}
         onOpenMoveSessions={() => {}}

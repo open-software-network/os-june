@@ -34,8 +34,8 @@ A skill can make the routing decision at runtime:
 - Browser for web preview, DOM assertions, console errors, and screenshots.
 - Background Playwright for web-reachable agent flows that should record video
   without bringing June or Chrome to the foreground. The bundled helper can
-  shim the Tauri shell while routing prompts through a real isolated Hermes
-  dashboard.
+   shim the Tauri shell while routing prompts through the isolated June agent
+   runtime.
 - Chrome for flows that intentionally hand off to the user's browser session.
 - Computer Use for native Tauri windows, overlays, hotkeys, menu bar, tray,
   file pickers, permission panes, and audio UI.

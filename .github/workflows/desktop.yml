@@ -237,7 +237,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install frontend dependencies
@@ -268,11 +268,32 @@ jobs:
           restore-keys: |
             tauri-cargo-target-${{ runner.os }}-
 
-      - name: Bundle Hermes runtime
+      - name: Build and smoke test agent runtime
         shell: pwsh
-        run: ./scripts/bundle-hermes-runtime-windows.ps1
+        run: |
+          pnpm agent-runtime:build
+          node scripts/build-agent-runtime.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent runtime SEA build failed."
+          }
+          $runtime = Get-Item ".tauri-agent-runtime/june-agent-runtime.exe" -ErrorAction Stop
+          $digest = (Get-FileHash -Algorithm SHA256 $runtime.FullName).Hash.ToLowerInvariant()
+          $expected = (Get-Content -Raw "$($runtime.FullName).sha256").Trim()
+          if ($digest -ne $expected) {
+            throw "Agent runtime checksum does not match."
+          }
+          $smokeDir = Join-Path $env:RUNNER_TEMP "June agent runtime smoke"
+          New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+          $smokeRuntime = Join-Path $smokeDir "june-agent-runtime.exe"
+          Copy-Item -LiteralPath $runtime.FullName -Destination $smokeRuntime -Force
+          node scripts/build-agent-runtime.mjs --smoke $smokeRuntime
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent runtime path-with-spaces smoke test failed."
+          }
 
       - name: Tauri Windows bundle
+        env:
+          JUNE_AGENT_RUNTIME_PREBUILT: "1"
         run: node scripts/tauri-build.mjs --debug --no-sign
 
       - name: Verify Windows bundle
@@ -303,9 +324,14 @@ jobs:
             throw "NSIS installer payload listing is empty."
           }
           $listingText = ($listing -join "`n").Replace("\", "/")
-          foreach ($expected in @("native/hermes/bin/hermes.exe", "native/hermes/python/current/python.exe", "native/hermes/hermes-agent/pyproject.toml")) {
+          foreach ($expected in @("native/bin/june-agent-runtime.exe", "native/bin/june-agent-runtime.exe.sha256")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
-              throw "NSIS installer payload does not include bundled Hermes file $expected."
+              throw "NSIS installer payload does not include agent runtime file $expected."
+            }
+          }
+          foreach ($forbidden in @("native/hermes", "python.exe", ".pyd", "hermes-agent")) {
+            if ($listingText -match [regex]::Escape($forbidden)) {
+              throw "NSIS installer payload still includes forbidden Hermes or Python content: $forbidden."
             }
           }
 

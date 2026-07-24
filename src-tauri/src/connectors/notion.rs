@@ -623,11 +623,11 @@ pub async fn list_tools(app: &AppHandle) -> Result<NotionToolInventory, AppError
 }
 
 pub async fn mcp_tool_list(app: &AppHandle) -> Result<NotionMcpToolList, AppError> {
-    filtered_mcp_tool_list(app, tool_allowed_for_hermes).await
+    filtered_mcp_tool_list(app, tool_allowed_for_agent).await
 }
 
 pub async fn mcp_action_tool_list(app: &AppHandle) -> Result<NotionMcpToolList, AppError> {
-    let mut list = filtered_mcp_tool_list(app, action_tool_allowed_for_hermes).await?;
+    let mut list = filtered_mcp_tool_list(app, action_tool_allowed_for_agent).await?;
     for tool in &mut list.tools {
         apply_action_tool_contract(tool);
     }
@@ -652,7 +652,7 @@ pub async fn call_hosted_tool(
     app: &AppHandle,
     request: NotionHostedToolCallRequest,
 ) -> Result<NotionHostedToolCallResult, AppError> {
-    let Some(tool_name) = tool_allowed_for_hermes(&request.tool_name) else {
+    let Some(tool_name) = tool_allowed_for_agent(&request.tool_name) else {
         return Err(AppError::new(
             "notion_tool_not_allowed",
             "That Notion hosted MCP tool is not enabled in June yet.",
@@ -666,7 +666,7 @@ pub async fn call_hosted_action_tool(
     app: &AppHandle,
     request: NotionHostedToolCallRequest,
 ) -> Result<NotionHostedToolCallResult, AppError> {
-    let Some(tool_name) = action_tool_allowed_for_hermes(&request.tool_name) else {
+    let Some(tool_name) = action_tool_allowed_for_agent(&request.tool_name) else {
         return Err(AppError::new(
             "notion_tool_not_allowed",
             "That Notion hosted MCP action is not enabled in June yet.",
@@ -689,6 +689,40 @@ pub async fn call_hosted_action_tool(
     {
         return Err(AppError::new("connector_action_denied", reason));
     }
+    let timeout = action_request_timeout(request.deadline_unix_ms)?;
+    tokio::time::timeout(
+        timeout,
+        call_hosted_action_for_revision(
+            app,
+            expected_revision,
+            tool_name,
+            request.arguments,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "notion_mcp_action_timeout",
+            "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
+        )
+    })?
+}
+
+/// Executes a Notion action after the caller has already completed a trusted
+/// host approval interruption. Agent SDK tools use this entry point so one
+/// action never produces two independent approval prompts.
+pub async fn call_hosted_action_tool_approved(
+    app: &AppHandle,
+    request: NotionHostedToolCallRequest,
+) -> Result<NotionHostedToolCallResult, AppError> {
+    let Some(tool_name) = action_tool_allowed_for_agent(&request.tool_name) else {
+        return Err(AppError::new(
+            "notion_tool_not_allowed",
+            "That Notion hosted MCP action is not enabled in June yet.",
+        ));
+    };
+    preflight_action_arguments(tool_name, &request.arguments)?;
+    let expected_revision = capture_connected_revision(app).await?;
     let timeout = action_request_timeout(request.deadline_unix_ms)?;
     tokio::time::timeout(
         timeout,
@@ -1781,11 +1815,11 @@ fn canonical_allowed_tool_name(name: &str, allowlist: &[&'static str]) -> Option
         .find(|allowed| *allowed == trimmed)
 }
 
-fn tool_allowed_for_hermes(name: &str) -> Option<&'static str> {
+fn tool_allowed_for_agent(name: &str) -> Option<&'static str> {
     canonical_allowed_tool_name(name, NOTION_READ_TOOL_ALLOWLIST)
 }
 
-fn action_tool_allowed_for_hermes(name: &str) -> Option<&'static str> {
+fn action_tool_allowed_for_agent(name: &str) -> Option<&'static str> {
     canonical_allowed_tool_name(name, NOTION_ACTION_TOOL_ALLOWLIST)
 }
 
@@ -2874,22 +2908,22 @@ mod tests {
     #[test]
     fn notion_allowlists_are_exact_and_canonical() {
         assert_eq!(
-            tool_allowed_for_hermes("notion-search"),
+            tool_allowed_for_agent("notion-search"),
             Some("notion-search")
         );
         assert_eq!(
-            action_tool_allowed_for_hermes("notion-create-pages"),
+            action_tool_allowed_for_agent("notion-create-pages"),
             Some("notion-create-pages")
         );
         assert_eq!(
-            action_tool_allowed_for_hermes("notion-update-page"),
+            action_tool_allowed_for_agent("notion-update-page"),
             Some("notion-update-page")
         );
-        assert_eq!(action_tool_allowed_for_hermes("Notion-update-page"), None);
-        assert_eq!(action_tool_allowed_for_hermes("notion-move-pages"), None);
-        assert_eq!(tool_allowed_for_hermes("notion-update-page"), None);
-        assert_eq!(tool_allowed_for_hermes("notion-get-users"), None);
-        assert_eq!(tool_allowed_for_hermes("notion-get-teams"), None);
+        assert_eq!(action_tool_allowed_for_agent("Notion-update-page"), None);
+        assert_eq!(action_tool_allowed_for_agent("notion-move-pages"), None);
+        assert_eq!(tool_allowed_for_agent("notion-update-page"), None);
+        assert_eq!(tool_allowed_for_agent("notion-get-users"), None);
+        assert_eq!(tool_allowed_for_agent("notion-get-teams"), None);
     }
 
     #[test]
@@ -3830,7 +3864,7 @@ mod tests {
             },
         ];
 
-        let filtered = filter_allowed_tools(tools, action_tool_allowed_for_hermes);
+        let filtered = filter_allowed_tools(tools, action_tool_allowed_for_agent);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "notion-update-page");
     }

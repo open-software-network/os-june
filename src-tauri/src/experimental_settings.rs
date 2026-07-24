@@ -113,7 +113,7 @@ fn save_settings(path: &Path, settings: &ExperimentalSettings) -> Result<(), App
     let temporary_path = path.with_extension("json.tmp");
     fs::write(&temporary_path, serialized)
         .map_err(|error| AppError::new("experimental_settings_save_failed", error.to_string()))?;
-    crate::hermes_bridge::replace_file(&temporary_path, path).map_err(|error| {
+    crate::filesystem::replace_file(&temporary_path, path).map_err(|error| {
         let _ = fs::remove_file(&temporary_path);
         AppError::new("experimental_settings_save_failed", error.to_string())
     })

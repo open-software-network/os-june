@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { ComposerEditor } from "../components/agent/composer/ComposerEditor";
-import type { HermesSkillInfo } from "../lib/tauri";
+import type { AgentSkillInfo } from "../lib/tauri";
 
-const skills: HermesSkillInfo[] = [
+const skills: AgentSkillInfo[] = [
   {
     name: "skill-creator",
     description: "Create or update a skill.",
@@ -34,7 +34,7 @@ describe("composer slash menu", () => {
       });
 
     try {
-      const composer = (availableSkills: HermesSkillInfo[] | null) => (
+      const composer = (availableSkills: AgentSkillInfo[] | null) => (
         <div className="agent-composer-box">
           <ComposerEditor
             placeholder="Message June"

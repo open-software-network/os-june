@@ -2,8 +2,8 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { agentOpenReady } from "../lib/tauri";
 import { AGENT_OPEN_EVENT } from "../lib/agent-events";
-import { listHermesSessions } from "../lib/hermes-adapter";
-import type { HermesSessionInfo } from "../lib/tauri";
+import { listAgentSessions } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { UseAppExternalEventsDependencies } from "./use-app-external-events-types";
 
 export function useAppExternalEvents(dependencies: UseAppExternalEventsDependencies) {
@@ -13,7 +13,7 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
   useEffect(() => {
     let aborted = false;
 
-    function openAgentWorkspace(session?: HermesSessionInfo) {
+    function openAgentWorkspace(session?: AgentSessionDto) {
       setAgentOrigin(undefined);
       setActiveAgentSession(session);
       setActiveView("agent");
@@ -26,9 +26,9 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
     // the lookup lands; a session that no longer exists stays on the agent
     // view rather than dropping the click on an unrelated one. The sequence
     // counter keeps a slow lookup for an older click from overriding a newer
-    // one. A cold start can reach this before the Hermes bridge is up, so a
+    // one. A cold start can reach this before local session storage is ready, so a
     // failed listing (as opposed to a successful listing that lacks the id)
-    // retries while the bridge boots instead of eating the click.
+    // retries during bootstrap instead of eating the click.
     const sessionLookupAttempts = 20;
     const sessionLookupRetryMs = 1_000;
     let openSequence = 0;
@@ -42,9 +42,9 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
       }
       openAgentWorkspace(undefined);
       for (let attempt = 0; attempt < sessionLookupAttempts; attempt += 1) {
-        let sessions: HermesSessionInfo[];
+        let sessions: AgentSessionDto[];
         try {
-          sessions = await listHermesSessions({});
+          sessions = await listAgentSessions();
         } catch {
           await new Promise((resolve) => window.setTimeout(resolve, sessionLookupRetryMs));
           if (aborted || sequence !== openSequence) return;
@@ -57,7 +57,7 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
       }
     }
 
-    function handleOpenPayload(payload?: { session?: HermesSessionInfo; sessionId?: string }) {
+    function handleOpenPayload(payload?: { session?: AgentSessionDto; sessionId?: string }) {
       if (payload?.session) {
         openAgentWorkspace(payload.session);
         return;
@@ -74,13 +74,13 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
 
     function handleOpenEvent(event: Event) {
       handleOpenPayload(
-        (event as CustomEvent<{ session?: HermesSessionInfo; sessionId?: string }>).detail,
+        (event as CustomEvent<{ session?: AgentSessionDto; sessionId?: string }>).detail,
       );
     }
 
     let unlisten: (() => void) | undefined;
     window.addEventListener(AGENT_OPEN_EVENT, handleOpenEvent);
-    void listen<{ session?: HermesSessionInfo; sessionId?: string }>(AGENT_OPEN_EVENT, (event) => {
+    void listen<{ session?: AgentSessionDto; sessionId?: string }>(AGENT_OPEN_EVENT, (event) => {
       handleOpenPayload(event.payload);
     }).then((cleanup) => {
       if (aborted) cleanup();

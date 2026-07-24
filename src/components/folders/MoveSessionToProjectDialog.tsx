@@ -4,13 +4,14 @@ import { IconProjects } from "central-icons/IconProjects";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FolderDto, HermesSessionInfo } from "../../lib/tauri";
+import type { FolderDto } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import { Dialog } from "../ui/Dialog";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   /** sessionId -> project ids the session is currently filed under. */
   sessionFolderIds: Record<string, string[]>;
   folders: FolderDto[];

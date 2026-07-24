@@ -28,7 +28,7 @@ describe("upstream-provider recovery", () => {
     expect(displayedUpstreamProviderRecoveryPreview(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT)).toBe(
       "Try again",
     );
-    // Hermes may cut the preview at any point inside the prompt.
+    // The previous runtime could cut the preview at any point inside the prompt.
     expect(
       displayedUpstreamProviderRecoveryPreview(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT.slice(0, 48)),
     ).toBe("Try again");

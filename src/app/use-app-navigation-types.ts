@@ -1,31 +1,31 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import { type Tab, type TabNav } from "./tabs/tabs";
-import type { HermesSessionInfo } from "../lib/tauri";
+import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { Tab, TabNav } from "./tabs/tabs";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { NotesAction, NotesState } from "./state/app-state";
 import type * as React from "react";
 
 export type UseAppNavigationDependencies = {
   activeAgentSessionId: string | undefined;
-  activeAgentSessionSeed: HermesSessionInfo | undefined;
+  activeAgentSessionSeed: AgentSessionDto | undefined;
   activeTabId: string;
   activeTabIdRef: React.MutableRefObject<string>;
   activeView: SidebarView;
   activeViewRef: React.MutableRefObject<SidebarView>;
   agentOrigin: { kind: "project"; folderId: string } | { kind: "routines" } | undefined;
-  agentSessions: HermesSessionInfo[];
+  agentSessions: AgentSessionDto[];
   dispatch: React.Dispatch<NotesAction>;
   originAllNotes: boolean;
   originFolderId: string | undefined;
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
   restoreTargetRef: React.MutableRefObject<TabNav | null>;
   selectedNoteId: string | undefined;
-  setActiveAgentSession: (session: HermesSessionInfo | undefined) => void;
+  setActiveAgentSession: (session: AgentSessionDto | undefined) => void;
   setActiveAgentSessionId: React.Dispatch<React.SetStateAction<string | undefined>>;
-  setActiveAgentSessionSeed: React.Dispatch<React.SetStateAction<HermesSessionInfo | undefined>>;
+  setActiveAgentSessionSeed: React.Dispatch<React.SetStateAction<AgentSessionDto | undefined>>;
   setActiveTabId: React.Dispatch<React.SetStateAction<string>>;
   setActiveView: React.Dispatch<React.SetStateAction<SidebarView>>;
   setAgentOrigin: React.Dispatch<

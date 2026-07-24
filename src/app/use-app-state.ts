@@ -2,21 +2,22 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { NotesListHandle } from "../components/notes-list/NotesList";
-import type { SettingsTab } from "../components/settings/settings-config";
+import type { SettingsTab } from "../components/settings/AppSettings";
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import { defaultNav, makeTabId, type Tab, type TabNav } from "./tabs/tabs";
 import type { LiveTranscriptEventDto } from "../lib/tauri";
 import { isMacLikePlatform, isWindowsPlatform } from "../lib/platform";
 import type { AgentSessionStatusDetail } from "../lib/agent-events";
-import { useActiveHermesProfileName } from "../lib/active-hermes-profile";
-import type { SessionProfileMap } from "../lib/session-profile-filter";
+import { useCurrentDataPartitionName } from "../lib/data-partition";
+import type { SessionPartitionMap } from "../lib/session-partition-filter";
 import type { RecordingInactivityTracker } from "../lib/recording-inactivity";
 import {
   createRecordingTelemetryStore,
   type RecordingTelemetryStore,
 } from "../lib/recording-telemetry-store";
 import { getAgentHudEnabled } from "../lib/agent-hud-settings";
-import type { NoteDto, HermesSessionInfo } from "../lib/tauri";
+import type { NoteDto } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { shouldReplayOnboarding } from "../lib/onboarding";
@@ -32,9 +33,9 @@ import { SIDEBAR_DEFAULT_WIDTH, type RecordingInactivityPrompt } from "./app-she
 
 export function useAppState() {
   const replayOnboarding = shouldReplayOnboarding();
-  const activeHermesProfileName = useActiveHermesProfileName();
+  const currentDataPartitionName = useCurrentDataPartitionName();
   const startsOnAgent = isMacLikePlatform() || isWindowsPlatform();
-  const [profileDataRefreshRevision, setProfileDataRefreshRevision] = useState(0);
+  const [dataPartitionRefreshRevision, setDataPartitionRefreshRevision] = useState(0);
   const [state, dispatch] = useReducer(notesReducer, undefined, createInitialState);
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -68,12 +69,12 @@ export function useAppState() {
   // Reactive copy of the known agent sessions for the "view all" list and
   // project (folder) surfaces; the menu-bar refs below stay the source for
   // native menu state.
-  const [agentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
+  const [agentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
   const [activeAgentSessionId, setActiveAgentSessionId] = useState<string>();
   const activeAgentSessionIdRef = useRef(activeAgentSessionId);
   activeAgentSessionIdRef.current = activeAgentSessionId;
-  const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<HermesSessionInfo>();
-  const setActiveAgentSession = useCallback((session: HermesSessionInfo | undefined) => {
+  const [activeAgentSessionSeed, setActiveAgentSessionSeed] = useState<AgentSessionDto>();
+  const setActiveAgentSession = useCallback((session: AgentSessionDto | undefined) => {
     setActiveAgentSessionId(session?.id);
     setActiveAgentSessionSeed(session);
   }, []);
@@ -83,10 +84,10 @@ export function useAppState() {
   const [agentWaitingSessionIds, setAgentWaitingSessionIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // sessionId -> project (folder) ids. Sessions live in Hermes, so their
-  // project assignments are tracked separately from the notes state.
+  // Stored session id -> project (folder) ids. Project assignments are tracked
+  // separately from note state.
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
-  // stored Hermes session id -> completed_at ISO. June-owned; see JUN-203.
+  // Stored session id -> completed_at ISO. June-owned. See JUN-203.
   const [completedSessions, setCompletedSessions] = useState<Record<string, string>>({});
   // In-flight completion writes per stored session id, so rapid toggles for one
   // session persist in the order the user made them (see
@@ -100,10 +101,10 @@ export function useAppState() {
   // callback and so cannot close over the state directly.
   const completedSessionsRef = useRef<Record<string, string>>({});
   // `null` means the mapping has never loaded. An empty object is meaningful:
-  // it confirms every unmapped Hermes session belongs to Default. Keeping
+  // it confirms every unmapped stored session belongs to Default. Keeping
   // those states distinct lets failed reads retain a known-good map while the
   // first failure exposes no sessions at all.
-  const sessionProfilesRef = useRef<SessionProfileMap | null>(null);
+  const sessionPartitionsRef = useRef<SessionPartitionMap | null>(null);
   const [moveDialogSessionIds, setMoveDialogSessionIds] = useState<string[] | null>(null);
   // Where an open agent session was drilled into from — a project or the
   // Routines run history — drives the breadcrumb above the agent workspace,
@@ -116,9 +117,9 @@ export function useAppState() {
   const pendingSessionProjectRef = useRef<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>(null);
-  const agentMenuBarSessionsRef = useRef<HermesSessionInfo[]>([]);
+  const agentMenuBarSessionsRef = useRef<AgentSessionDto[]>([]);
   const agentMenuBarWorkingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarWaitingSessionIdsRef = useRef<Set<string>>(new Set());
   const agentMenuBarLastStatusRef = useRef<AgentSessionStatusDetail>();
@@ -222,13 +223,13 @@ export function useAppState() {
   // recording.
   const recordingNoteIdRef = useRef<string | undefined>(undefined);
   // A recording may deliberately keep its owning note visible after the user
-  // switches profiles. Remember that exception so stopping the take can remove
-  // the old-profile note and its tab snapshots immediately.
-  const crossProfileRecordingNoteIdRef = useRef<string | undefined>(undefined);
+  // switches data partitions. Remember that exception so stopping the take can
+  // remove the previous partition's note and tab snapshots immediately.
+  const crossPartitionRecordingNoteIdRef = useRef<string | undefined>(undefined);
   // Calendar matching finishes in the background and emits a global event.
-  // Remember which profile started each lookup so a late result cannot upsert
-  // an old-profile note into whichever profile is visible when it arrives.
-  const calendarContextNoteProfilesRef = useRef(new Map<string, string>());
+  // Remember which partition started each lookup so a late result cannot
+  // upsert an old note into whichever partition is visible when it arrives.
+  const calendarContextNotePartitionsRef = useRef(new Map<string, string>());
   const calendarContextNoteUpdatesRef = useRef(new Map<string, NoteDto>());
   const pendingCalendarContextAdoptionsRef = useRef(new Set<string>());
   // Reactive mirror of recordingNoteIdRef. The ref serves the async finish/HUD
@@ -261,9 +262,9 @@ export function useAppState() {
   }, []);
 
   return {
-    activeHermesProfileName,
-    profileDataRefreshRevision,
-    setProfileDataRefreshRevision,
+    currentDataPartitionName,
+    dataPartitionRefreshRevision,
+    setDataPartitionRefreshRevision,
     state,
     dispatch,
     error,
@@ -307,7 +308,7 @@ export function useAppState() {
     sessionCompletionWritesRef,
     sessionCompletionTouchedRef,
     completedSessionsRef,
-    sessionProfilesRef,
+    sessionPartitionsRef,
     moveDialogSessionIds,
     setMoveDialogSessionIds,
     agentOrigin,
@@ -375,8 +376,8 @@ export function useAppState() {
     refreshAccount,
     setAccount,
     recordingNoteIdRef,
-    crossProfileRecordingNoteIdRef,
-    calendarContextNoteProfilesRef,
+    crossPartitionRecordingNoteIdRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,

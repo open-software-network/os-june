@@ -11,9 +11,10 @@ June supports macOS 14.0 and later on Apple Silicon and Intel Macs, including
 macOS 15. Production and staging builds ship as universal macOS apps. System
 audio capture uses Core Audio process taps and is available only on macOS 14.2
 and later. On macOS 14.0 or 14.1, recording falls back to microphone-only mode.
-The embedded Hermes resource carries separate complete `arm64` and `x86_64`
-Python and site-packages trees behind one relocatable launcher. Release builds
-execute both trees before the universal app is assembled.
+The signed Node 24 agent sidecar carries separate `arm64` and `x86_64`
+executables that are combined into one universal binary. Release builds verify
+both architectures, the sidecar checksum, and startup from a path with spaces
+before the universal app is assembled.
 
 The first updater-capable build must be installed manually once — earlier builds
 ship without the updater, so they can't pull it in — and every release after that
@@ -77,7 +78,7 @@ GitHub Actions -> rc-desktop-release -> Run workflow
 ```
 
 `rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
-version `X.Y.Z-rc.N` (bundling both Hermes runtime architectures), and publishes it to a fixed
+version `X.Y.Z-rc.N` (bundling both agent sidecar architectures), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
 The fixed `June_universal.dmg` asset follows the current RC for the updater, while
 an immutable versioned DMG remains available for each Slack announcement. The
@@ -211,14 +212,16 @@ plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 lipo -archs "$APP/Contents/MacOS/os-june"
 lipo -archs "$APP/Contents/Resources/native/bin/June Dictation Helper.app/Contents/MacOS/june-dictation-helper"
 lipo -archs "$APP/Contents/Resources/native/bin/June.app/Contents/MacOS/june-system-audio-recorder"
-./scripts/audit-hermes-runtime.sh "$APP/Contents/Resources/native/hermes" --require-signed
-/usr/bin/arch -arm64 "$APP/Contents/Resources/native/hermes/bin/hermes" --version
-/usr/bin/arch -x86_64 "$APP/Contents/Resources/native/hermes/bin/hermes" --version
+RUNTIME="$APP/Contents/Resources/native/bin/june-agent-runtime"
+test "$(shasum -a 256 "$RUNTIME" | awk '{print $1}')" = "$(cat "$RUNTIME.sha256")"
+codesign --verify --strict --verbose=2 "$RUNTIME"
+/usr/bin/arch -arm64 "$RUNTIME"
+/usr/bin/arch -x86_64 "$RUNTIME"
 ```
 
 Confirm `osjune` appears in `CFBundleURLSchemes` and each `lipo` command
-prints both `x86_64` and `arm64`. The Hermes audit must report native files for
-both runtime trees, and both launcher commands must execute successfully. On an
+prints both `x86_64` and `arm64`. The runtime checksum and signature must pass,
+and both architecture commands must execute successfully. On an
 Apple Silicon validation host, the x86_64 command is a real Rosetta execution,
 not an architecture inferred from file metadata.
 

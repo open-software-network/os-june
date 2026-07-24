@@ -5,13 +5,12 @@ import {
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
 } from "../components/agent/session-persistence";
-import { recordManualAgentSessionTitle } from "../components/agent/agent-session-continuity";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
 import { noteReadyToShare } from "../lib/share-payload";
-import { SETTINGS_TABS } from "../components/settings/settings-config";
+import { SETTINGS_TABS } from "../components/settings/AppSettings";
 import type { TabItem } from "../components/tabs/TabBar";
 import { reorderTabs } from "./tabs/tabs";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
@@ -21,15 +20,16 @@ import {
   createNote,
   dictationHelperCommand,
   downloadNoteAudio,
-  ensureHermesBridgeSession,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
-  listSessionProfiles,
+  listSessionPartitions,
+  listAgentSessions,
   openPrivacySettings,
   osAccountsLogout,
   recoverRecording,
   revealPath,
   renameFolder,
+  renameAgentSession,
   agentHudHide,
   agentHudShow,
   completeNoteSaveFlush,
@@ -50,13 +50,16 @@ import {
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { messageFromError } from "../lib/errors";
-import { listHermesSessions } from "../lib/hermes-adapter";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
-  getActiveHermesProfileName,
-  PROFILE_DATA_CHANGED_EVENT,
-  type ProfileDataChangedDetail,
-} from "../lib/active-hermes-profile";
-import { filterAgentSessionsForProfile, sessionProfileMap } from "../lib/session-profile-filter";
+  getCurrentDataPartitionName,
+  DATA_PARTITION_CHANGED_EVENT,
+  type DataPartitionChangedDetail,
+} from "../lib/data-partition";
+import {
+  filterAgentSessionsForDataPartition,
+  sessionPartitionMap,
+} from "../lib/session-partition-filter";
 import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
@@ -83,7 +86,7 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../lib/agent-hud-settings";
-import type { FolderDto, AccountStatus, HermesSessionInfo } from "../lib/tauri";
+import type { FolderDto, AccountStatus } from "../lib/tauri";
 import type { RecordingSourceMode } from "../lib/tauri";
 import { retryPendingAutostartDefault } from "../lib/autostart";
 import { applyOnboardingReplayFlag, isOnboardingComplete } from "../lib/onboarding";
@@ -110,7 +113,6 @@ import {
 export { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "./app-helpers";
 import {
   ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
-  AGENT_MENU_BAR_SESSION_FETCH_LIMIT,
   AGENT_MENU_BAR_SESSION_LIMIT,
   AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS,
   CHECK_FOR_UPDATES_EVENT,
@@ -127,13 +129,11 @@ import { useAppExternalEvents } from "./use-app-external-events";
 
 import { useAgentAttentionNotifications } from "./use-agent-attention-notifications";
 
-import { useAgentMenuSessions } from "./use-agent-menu-sessions";
-
 import { useAgentSessionSync } from "./use-agent-session-sync";
 
 import { useAgentMenuEvents } from "./use-agent-menu-events";
 
-import { useActiveProfileData } from "./use-active-profile-data";
+import { useDataPartitionRefresh } from "./use-data-partition-refresh";
 
 import { useRecordingStartActions } from "./use-recording-start-actions";
 
@@ -175,9 +175,9 @@ import { renderAppAccountGate } from "./app-account-gates";
 
 export function App() {
   const {
-    activeHermesProfileName,
-    profileDataRefreshRevision,
-    setProfileDataRefreshRevision,
+    currentDataPartitionName,
+    dataPartitionRefreshRevision,
+    setDataPartitionRefreshRevision,
     state,
     dispatch,
     error,
@@ -221,7 +221,7 @@ export function App() {
     sessionCompletionWritesRef,
     sessionCompletionTouchedRef,
     completedSessionsRef,
-    sessionProfilesRef,
+    sessionPartitionsRef,
     moveDialogSessionIds,
     setMoveDialogSessionIds,
     agentOrigin,
@@ -289,8 +289,8 @@ export function App() {
     refreshAccount,
     setAccount,
     recordingNoteIdRef,
-    crossProfileRecordingNoteIdRef,
-    calendarContextNoteProfilesRef,
+    crossPartitionRecordingNoteIdRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,
@@ -503,27 +503,27 @@ export function App() {
     completedSessionsRef.current = completedSessions;
     publishAgentMenuBarState();
   }, [completedSessions, publishAgentMenuBarState]);
-  const profileScopedAgentSessions = useCallback(
-    (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
-      if (profiles === null) return [];
-      const activeProfile = getActiveHermesProfileName().trim() || activeHermesProfileName;
-      return filterAgentSessionsForProfile(sessions, profiles, activeProfile);
+  const dataPartitionScopedAgentSessions = useCallback(
+    (sessions: readonly AgentSessionDto[], partitions = sessionPartitionsRef.current) => {
+      if (partitions === null) return [];
+      const currentDataPartition = getCurrentDataPartitionName().trim() || currentDataPartitionName;
+      return filterAgentSessionsForDataPartition(sessions, partitions, currentDataPartition);
     },
-    [activeHermesProfileName],
+    [currentDataPartitionName],
   );
-  const refreshSessionProfiles = useCallback(async () => {
-    const profiles = sessionProfileMap(await listSessionProfiles());
-    sessionProfilesRef.current = profiles;
-    return profiles;
+  const refreshSessionPartitions = useCallback(async () => {
+    const partitions = sessionPartitionMap(await listSessionPartitions());
+    sessionPartitionsRef.current = partitions;
+    return partitions;
   }, []);
   const commitAgentSessions = useCallback(
-    (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
-      const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+    (sessions: readonly AgentSessionDto[], partitions = sessionPartitionsRef.current) => {
+      const scopedSessions = dataPartitionScopedAgentSessions(sessions, partitions);
       agentMenuBarSessionsRef.current = scopedSessions;
       setAgentSessions(scopedSessions);
       publishAgentMenuBarState();
     },
-    [profileScopedAgentSessions, publishAgentMenuBarState],
+    [dataPartitionScopedAgentSessions, publishAgentMenuBarState],
   );
   const applyAgentHudVisibility = useCallback(
     (enabled: boolean) => {
@@ -739,7 +739,7 @@ export function App() {
     activateTab,
     activeTabId,
     activeTabIdRef,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     closeTab,
     cycleTab,
@@ -1001,13 +1001,13 @@ export function App() {
     let retryTimeout: number | undefined;
 
     function loadAgentMenuBarSessions(attempt: number) {
-      Promise.all([
-        listHermesSessions({ limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT }),
-        refreshSessionProfiles(),
-      ])
-        .then(([sessions, profiles]) => {
+      // Defer host access so partial test hosts and transient startup failures
+      // enter the normal retry path instead of escaping the effect synchronously.
+      Promise.resolve()
+        .then(() => Promise.all([listAgentSessions(), refreshSessionPartitions()]))
+        .then(([sessions, partitions]) => {
           if (cancelled) return;
-          commitAgentSessions(sessions, profiles);
+          commitAgentSessions(sessions, partitions);
         })
         .catch(() => {
           if (cancelled) return;
@@ -1025,18 +1025,7 @@ export function App() {
         window.clearTimeout(retryTimeout);
       }
     };
-  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionProfiles]);
-
-  // Routine runs finish on the launchd-managed gateway with no webview
-  // involvement, so nothing event-driven announces them. Poll the session
-  // store (the same feed the Routines view reads) and post one native,
-  // click-through notification per newly finished run. State persists so
-  // reloads and restarts never renotify, and the first poll of an install
-  // baselines silently instead of backfilling history.
-  useAgentMenuSessions({
-    appBlocked,
-    bootstrapped,
-  });
+  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionPartitions]);
 
   // Project assignments for agent sessions, loaded once storage is up.
   useSessionMetadata({
@@ -1067,7 +1056,7 @@ export function App() {
     commitAgentSessions,
     pendingSessionProjectRef,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -1110,9 +1099,9 @@ export function App() {
     agentMenuBarSessionsRef,
     handleAgentHudVisibilityRequest,
     pendingSessionProjectRef,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -1185,7 +1174,7 @@ export function App() {
 
   useAppBootstrap({
     appBlocked,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     pendingCalendarContextAdoptionsRef,
@@ -1197,40 +1186,39 @@ export function App() {
   });
 
   useEffect(() => {
-    function handleProfileDataChanged(event: Event) {
-      const detail = (event as CustomEvent<ProfileDataChangedDetail>).detail;
-      if (!detail || detail.profile !== getActiveHermesProfileName()) return;
-      setProfileDataRefreshRevision((revision) => revision + 1);
+    function handleDataPartitionChanged(event: Event) {
+      const detail = (event as CustomEvent<DataPartitionChangedDetail>).detail;
+      if (!detail || detail.partition !== getCurrentDataPartitionName()) return;
+      setDataPartitionRefreshRevision((revision) => revision + 1);
     }
 
-    window.addEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+    window.addEventListener(DATA_PARTITION_CHANGED_EVENT, handleDataPartitionChanged);
     return () => {
-      window.removeEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+      window.removeEventListener(DATA_PARTITION_CHANGED_EVENT, handleDataPartitionChanged);
     };
   }, []);
 
-  // A profile switch swaps the visible data, not just the agent runtime
-  // (ADR 0031): re-read profile-scoped notes, projects, chat mappings, and
-  // sessions together. The same refresh runs when profile data moves into the
-  // already-active profile, where the active profile name itself does not
+  // A data partition switch swaps all visible data (ADR 0031): re-read scoped
+  // notes, projects, chat mappings, and sessions together. The same refresh
+  // runs when data moves into the current partition, where its name does not
   // change. If a recording is running its note keeps the selection (get_note
   // is unscoped) so the recording view is never yanked mid-take.
-  const lastDataProfileRef = useRef<string | undefined>(undefined);
-  const lastProfileDataRefreshRevisionRef = useRef(0);
-  useActiveProfileData({
-    activeHermesProfileName,
+  const lastDataPartitionRef = useRef<string | undefined>(undefined);
+  const lastDataPartitionRefreshRevisionRef = useRef(0);
+  useDataPartitionRefresh({
+    currentDataPartitionName,
     activeViewRef,
     appBlocked,
     bootstrapped,
     commitAgentSessions,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
-    lastDataProfileRef,
-    lastProfileDataRefreshRevisionRef,
+    lastDataPartitionRef,
+    lastDataPartitionRefreshRevisionRef,
     pendingSessionProjectRef,
-    profileDataRefreshRevision,
+    dataPartitionRefreshRevision,
     recordingNoteIdRef,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveView,
     setAgentOrigin,
@@ -1482,21 +1470,18 @@ export function App() {
       const next = title.trim();
       const currentSession = agentSessions.find((session) => session.id === sessionId);
       const currentTitle =
-        currentSession?.title?.trim() ||
-        currentSession?.preview?.trim() ||
-        (currentSession ? "Untitled session" : "");
+        currentSession?.title.trim() || (currentSession ? "Untitled session" : "");
       if (!next || next === currentTitle) return;
 
-      const renameSession = (session: HermesSessionInfo) =>
+      const renameSession = (session: AgentSessionDto) =>
         session.id === sessionId ? { ...session, title: next } : session;
       setAgentSessions((current) => current.map(renameSession));
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.map(renameSession);
       publishAgentMenuBarState();
-      void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {
+      void renameAgentSession(sessionId, next).catch(() => {
         setError("Could not save the session name. It may revert after a restart.");
       });
       rememberSessionManuallyTitled(sessionId);
-      recordManualAgentSessionTitle(sessionId, next);
       window.dispatchEvent(
         new CustomEvent<AgentSessionRenamedDetail>(AGENT_SESSION_RENAMED_EVENT, {
           detail: { sessionId, title: next },
@@ -1716,7 +1701,7 @@ export function App() {
     activeViewRef,
     appBlocked,
     bootstrapped,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     fundingRequired,
@@ -1772,7 +1757,7 @@ export function App() {
     activeViewRef,
     appBlocked,
     bootstrapped,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
     finishingSessionsRef,
     handleStartAgentRecording,

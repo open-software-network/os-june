@@ -12,21 +12,16 @@ import { NotesList, type NotesListHandle } from "../components/notes-list/NotesL
 import { Sidebar } from "../components/sidebar/Sidebar";
 import type { FolderDto, NoteListItemDto } from "../lib/tauri";
 
-const hermesMocks = vi.hoisted(() => ({
-  deleteHermesSession: vi.fn(),
-  listHermesSessions: vi.fn(),
-}));
-
-vi.mock("../lib/hermes-adapter", () => ({
-  deleteHermesSession: hermesMocks.deleteHermesSession,
-  listHermesSessions: hermesMocks.listHermesSessions,
-  sessionTimestamp: (session: { last_active?: string; started_at?: string }) =>
-    session.last_active ?? session.started_at ?? "",
+const agentMocks = vi.hoisted(() => ({
+  deleteAgentSession: vi.fn(),
+  listAgentSessions: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
-  listSessionProfiles: vi.fn(async () => []),
+  deleteAgentSession: agentMocks.deleteAgentSession,
+  listAgentSessions: agentMocks.listAgentSessions,
+  listSessionPartitions: vi.fn(async () => []),
 }));
 
 const now = "2026-05-19T10:00:00Z";
@@ -59,8 +54,8 @@ describe("folders UI", () => {
       false,
     );
     window.localStorage.removeItem("june:pinned-agent-session-ids");
-    hermesMocks.listHermesSessions.mockResolvedValue([]);
-    hermesMocks.deleteHermesSession.mockResolvedValue(undefined);
+    agentMocks.listAgentSessions.mockResolvedValue([]);
+    agentMocks.deleteAgentSession.mockResolvedValue(undefined);
   });
 
   it("renders the primary entries and starts agent sessions from the sidebar", async () => {
@@ -272,13 +267,13 @@ describe("folders UI", () => {
     expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe("[]");
   });
 
-  it("retries initial agent session hydration when the bridge is still starting", async () => {
+  it("retries initial agent session hydration when the runtime is still starting", async () => {
     vi.useFakeTimers();
     try {
-      hermesMocks.listHermesSessions
+      agentMocks.listAgentSessions
         .mockRejectedValueOnce({
-          code: "hermes_bridge_not_running",
-          message: "Hermes bridge is not running.",
+          code: "agent_runtime_not_running",
+          message: "Agent runtime is not running.",
         })
         .mockResolvedValueOnce([
           {
@@ -304,7 +299,10 @@ describe("folders UI", () => {
         />,
       );
 
-      expect(hermesMocks.listHermesSessions).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(agentMocks.listAgentSessions).toHaveBeenCalledTimes(1);
       expect(screen.getByText("No sessions yet")).toBeInTheDocument();
 
       await act(async () => {
@@ -316,7 +314,7 @@ describe("folders UI", () => {
         await Promise.resolve();
       });
 
-      expect(hermesMocks.listHermesSessions).toHaveBeenCalledTimes(2);
+      expect(agentMocks.listAgentSessions).toHaveBeenCalledTimes(2);
       expect(screen.getByText("Existing session")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
@@ -362,54 +360,6 @@ describe("folders UI", () => {
     expect(await screen.findByText("Update website")).toBeInTheDocument();
     expect(screen.getByLabelText("Needs you")).toBeInTheDocument();
     expect(screen.queryByLabelText("Working")).toBeNull();
-  });
-
-  it("seeds the sidebar state preview from the dev console hook", async () => {
-    const onChangeView = vi.fn();
-    render(
-      <Sidebar
-        notes={notes}
-        activeView="notes"
-        onChangeView={onChangeView}
-        onSelectNote={vi.fn()}
-        onDeleteNote={vi.fn()}
-        onOpenMoveDialog={vi.fn()}
-        onRemoveNoteFromFolder={vi.fn()}
-        onNewAgentSession={vi.fn()}
-        onRenameAgentSession={vi.fn()}
-        onSelectAgentSession={vi.fn()}
-      />,
-    );
-
-    const sidebarStates = (window as unknown as { __sidebarStates?: (show?: boolean) => string })
-      .__sidebarStates;
-    expect(sidebarStates).toBeTypeOf("function");
-
-    act(() => {
-      sidebarStates?.();
-    });
-
-    expect(await screen.findByText("Selected session")).toBeInTheDocument();
-    expect(screen.getByText("Working spinner")).toBeInTheDocument();
-    expect(screen.getByLabelText("Working")).toBeInTheDocument();
-    expect(screen.getByText("Needs you")).toBeInTheDocument();
-    expect(screen.getByLabelText("Needs you")).toBeInTheDocument();
-    expect(screen.getByText("New reply")).toBeInTheDocument();
-    expect(screen.getByLabelText("New reply")).toBeInTheDocument();
-    expect(screen.getByText("Recent timestamp")).toBeInTheDocument();
-    expect(screen.getByText("Older timestamp")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Very long session title that should truncate cleanly before the right edge state slot",
-      ),
-    ).toBeInTheDocument();
-    expect(onChangeView).toHaveBeenCalledWith("agent");
-
-    act(() => {
-      sidebarStates?.(false);
-    });
-
-    await waitFor(() => expect(screen.getByText("No sessions yet")).toBeInTheDocument());
   });
 
   it("keeps the sidebar agent session list capped after workspace refreshes", async () => {
@@ -500,7 +450,7 @@ describe("folders UI", () => {
     expect(within(dialog).getByText("This agent session cannot be restored.")).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Delete session" }));
 
-    await waitFor(() => expect(hermesMocks.deleteHermesSession).toHaveBeenCalledWith("session-1"));
+    await waitFor(() => expect(agentMocks.deleteAgentSession).toHaveBeenCalledWith("session-1"));
     await waitFor(() => expect(screen.queryByText("Researching Google")).toBeNull());
     await waitFor(() => expect(onDeleteAgentSession).toHaveBeenCalled());
     const detail = (onDeleteAgentSession.mock.calls[0][0] as CustomEvent).detail;

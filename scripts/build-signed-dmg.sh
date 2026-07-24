@@ -137,11 +137,43 @@ elif [[ -n "${APPLE_API_KEY_P8:-}" ]]; then
 fi
 
 cd "$ROOT_DIR"
-# Build the bundled Hermes runtime before the app so first launch needs no
-# network install. Runs after the keychain import above so its Mach-O files
-# (python, extension .so) get the Developer ID + hardened runtime signature
-# notarization requires.
-./scripts/bundle-hermes-runtime.sh
+# Build a universal Node 24 SEA after the Developer ID certificate is imported.
+# The official architecture-specific Node executables are checksummed before
+# injection; the resulting universal runtime is signed before Tauri signs the
+# outer application bundle.
+node_version="$(node -p 'process.versions.node')"
+if [[ "$node_version" != 24.* ]]; then
+  echo "Node 24 is required to build the agent runtime, got $node_version." >&2
+  exit 1
+fi
+ensure_temp_dir
+node_download_dir="$TEMP_DIR/node-24-sea"
+mkdir -p "$node_download_dir"
+curl --fail --silent --show-error --location \
+  "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt" \
+  --output "$node_download_dir/SHASUMS256.txt"
+for architecture in arm64 x64; do
+  archive="node-v${node_version}-darwin-${architecture}.tar.gz"
+  curl --fail --silent --show-error --location \
+    "https://nodejs.org/dist/v${node_version}/${archive}" \
+    --output "$node_download_dir/$archive"
+  (
+    cd "$node_download_dir"
+    grep "  ${archive}$" SHASUMS256.txt | shasum -a 256 -c -
+    tar -xzf "$archive"
+  )
+done
+export JUNE_AGENT_RUNTIME_TARGET="universal-apple-darwin"
+export JUNE_AGENT_RUNTIME_NODE_ARM64="$node_download_dir/node-v${node_version}-darwin-arm64/bin/node"
+export JUNE_AGENT_RUNTIME_NODE_X64="$node_download_dir/node-v${node_version}-darwin-x64/bin/node"
+pnpm agent-runtime:build
+node scripts/build-agent-runtime.mjs
+runtime_smoke_dir="$TEMP_DIR/June agent runtime smoke"
+mkdir -p "$runtime_smoke_dir"
+cp .tauri-agent-runtime/june-agent-runtime "$runtime_smoke_dir/june-agent-runtime"
+node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/june-agent-runtime" --smoke-arch arm64
+node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/june-agent-runtime" --smoke-arch x86_64
+export JUNE_AGENT_RUNTIME_PREBUILT=1
 # Build the nested helper for the same universal target as the Tauri app before
 # the generic before-build hook runs. The preparation stamp lets that hook reuse
 # the universal release helper instead of replacing it with the runner's slice.
@@ -202,8 +234,22 @@ if [[ "${#apps[@]}" -ne 1 ]]; then
   exit 1
 fi
 app="${apps[0]}"
-"$ROOT_DIR/scripts/audit-hermes-runtime.sh" \
-  "$app/Contents/Resources/native/hermes" --require-signed
+runtime="$app/Contents/Resources/native/bin/june-agent-runtime"
+runtime_checksum="$runtime.sha256"
+[[ -x "$runtime" ]]
+[[ -s "$runtime_checksum" ]]
+[[ "$(shasum -a 256 "$runtime" | awk '{print $1}')" == "$(tr -d '[:space:]' < "$runtime_checksum")" ]]
+[[ "$(lipo -archs "$runtime" | tr ' ' '\n' | sort | tr '\n' ' ')" == "arm64 x86_64 " ]]
+codesign --verify --strict --verbose=2 "$runtime"
+if find "$app/Contents/Resources" \( -iname '*hermes*' -o -iname 'python.exe' -o -iname 'python3' \) -print -quit | grep -q .; then
+  echo "The signed app still contains a Hermes or Python payload." >&2
+  exit 1
+fi
+packaged_runtime_smoke_dir="$TEMP_DIR/June packaged runtime smoke"
+mkdir -p "$packaged_runtime_smoke_dir"
+cp "$runtime" "$packaged_runtime_smoke_dir/june-agent-runtime"
+node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/june-agent-runtime" --smoke-arch arm64
+node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/june-agent-runtime" --smoke-arch x86_64
 codesign --verify --deep --strict --verbose=2 "$app"
 
 dmgs=(

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { hasLiveSubscription, isOnMaxPlan } from "../../lib/account-gate";
 import type { TextFundingModelContext } from "../../lib/account-gate";
 import { errorCode } from "../../lib/errors";
-import { AUTO_MODEL_ID } from "../../lib/hermes-session-model-selection";
+import { AUTO_MODEL_ID } from "../../lib/agent-model-selection";
 import {
   MAX_GRANT_HOSTED_POLL_TIMEOUT_MS,
   MAX_UPGRADE_BROWSER_STATUS,

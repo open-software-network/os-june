@@ -1,8 +1,6 @@
 /** Persistence for the note → chat session pairing. The note chat panel keeps
- * one Hermes session per note so reopening the panel continues the same
- * conversation; the session itself lives in Hermes (and shows up in the agent
- * view's history like any other), June only remembers which stored session id
- * belongs to which note. */
+ * one agent session per note so reopening the panel continues the same
+ * conversation; June only remembers which session belongs to which note. */
 
 const STORAGE_KEY = "june.noteChat.sessionsByNote.v1";
 
@@ -42,7 +40,7 @@ export function rememberNoteChatSession(noteId: string, sessionId: string) {
   writeMap(map);
 }
 
-/** Drops the pairing (e.g. the stored session no longer exists in Hermes). */
+/** Drops the pairing when the stored session no longer exists. */
 export function forgetNoteChatSession(noteId: string) {
   const map = readMap();
   if (!(noteId in map)) return;

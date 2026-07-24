@@ -7,7 +7,7 @@ import {
 import { recordDictationFinished } from "../lib/referral-nudge";
 import { AGENT_NEW_SESSION_EVENT, dispatchAgentSessionStatus } from "../lib/agent-events";
 import { nextDictationWorkflowActive, parseDictationHelperEvent } from "../lib/dictation-events";
-import { titleFromPrompt } from "../lib/hermes-adapter";
+import { titleFromPrompt } from "../lib/session-title";
 import { stringPayloadValue } from "./app-helpers";
 import type { UseDictationEventsDependencies } from "./use-dictation-events-types";
 

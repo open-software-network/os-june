@@ -1,16 +1,11 @@
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconArrowBoxRight } from "central-icons/IconArrowBoxRight";
-import { IconZap } from "central-icons/IconZap";
 import { IconBubble3 } from "central-icons/IconBubble3";
 import { IconRobot2 } from "central-icons/IconRobot2";
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { IconAudio } from "central-icons/IconAudio";
-import { IconBox2 } from "central-icons/IconBox2";
 import { IconBrain2 } from "central-icons/IconBrain2";
 import { IconBrainSideview } from "central-icons/IconBrainSideview";
-import { IconBuildingBlocks } from "central-icons/IconBuildingBlocks";
-import { IconElements } from "central-icons/IconElements";
-import { IconModelcontextprotocol } from "central-icons/IconModelcontextprotocol";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconColorPalette } from "central-icons/IconColorPalette";
 import { IconCreditCard1 } from "central-icons/IconCreditCard1";
@@ -18,8 +13,6 @@ import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
 import { IconFolderDelete } from "central-icons/IconFolderDelete";
 import { IconGift1 } from "central-icons/IconGift1";
-import { IconLayersThree } from "central-icons/IconLayersThree";
-import { IconMagicWand } from "central-icons/IconMagicWand";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
@@ -30,20 +23,13 @@ import { IconPin } from "central-icons/IconPin";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
-import { IconGithub } from "central-icons/IconGithub";
-import { IconArrowInbox } from "central-icons/IconArrowInbox";
-import { IconToolbox } from "central-icons/IconToolbox";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
-import { IconHeartBeat } from "central-icons/IconHeartBeat";
-import { IconGauge } from "central-icons/IconGauge";
-import { IconShield } from "central-icons/IconShield";
-import { IconShieldCheck } from "central-icons/IconShieldCheck";
-import { IconStore1 } from "central-icons/IconStore1";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconUnpin } from "central-icons/IconUnpin";
+import { IconZap } from "central-icons/IconZap";
 import {
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -69,11 +55,6 @@ import {
   type AgentSessionRenamedDetail,
   type AgentSessionsChangedDetail,
 } from "../../lib/agent-events";
-import {
-  deleteHermesSession,
-  listHermesSessions,
-  sessionTimestamp,
-} from "../../lib/hermes-adapter";
 import { errorCode, messageFromError } from "../../lib/errors";
 import { NOTE_DND_MIME } from "../../lib/dnd";
 import { useDismiss } from "../../lib/use-dismiss";
@@ -84,18 +65,23 @@ import { useRecordingPresenceBounds } from "../../lib/recording-presence-bounds"
 import { isPrimaryShortcut, primaryShortcutLabel } from "../../lib/platform";
 import type {
   AccountStatus,
-  HermesSessionInfo,
   NoteListItemDto,
   RecordingStatusDto,
   ReferralSummary,
 } from "../../lib/tauri";
-import { listSessionProfiles, osAccountsReferralSummary } from "../../lib/tauri";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
 import {
-  sessionMatchesProfile,
-  sessionProfileMap,
-  type SessionProfileMap,
-} from "../../lib/session-profile-filter";
+  deleteAgentSession,
+  listAgentSessions,
+  listSessionPartitions,
+  osAccountsReferralSummary,
+} from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
+import { useCurrentDataPartitionName } from "../../lib/data-partition";
+import {
+  sessionMatchesDataPartition,
+  sessionPartitionMap,
+  type SessionPartitionMap,
+} from "../../lib/session-partition-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/settings-config";
@@ -115,14 +101,14 @@ import {
 } from "../../lib/date-format";
 import { buildSidebarSessionLists } from "./sidebar-session-lists";
 
-const NO_AGENT_SESSIONS: HermesSessionInfo[] = [];
+const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
 
-/** Full session→profile map from the local store; null when unavailable
+/** Full session-to-data-partition map from the local store. Null when unavailable
  * (outside the Tauri shell, or a transient read failure) so callers keep the
  * last-known map instead of clearing it. */
-async function fetchSessionProfileMap(): Promise<SessionProfileMap | null> {
+async function fetchSessionPartitionMap(): Promise<SessionPartitionMap | null> {
   try {
-    return sessionProfileMap(await listSessionProfiles());
+    return sessionPartitionMap(await listSessionPartitions());
   } catch {
     return null;
   }
@@ -160,7 +146,7 @@ type SidebarProps = {
   onNewAgentSession: () => void;
   /** stored session id (not the runtime session id). */
   onRenameAgentSession: (sessionId: string, title: string) => void;
-  onSelectAgentSession: (session: HermesSessionInfo) => void;
+  onSelectAgentSession: (session: AgentSessionDto) => void;
   /** Project membership per stored session id; drives the session menu's
    * project items (optional so tests can skip the plumbing). */
   sessionFolderIds?: Record<string, string[]>;
@@ -230,7 +216,7 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
 }
 
 type SidebarDevStateSnapshot = {
-  sessions: HermesSessionInfo[];
+  sessions: AgentSessionDto[];
   selectedSessionId?: string;
   workingSessionIds: Set<string>;
   waitingSessionIds: Set<string>;
@@ -283,11 +269,6 @@ const SETTINGS_SIDEBAR_GROUPS: {
   {
     title: "AI",
     items: [
-      {
-        id: "integrations-health",
-        label: "Integrations health",
-        icon: <IconGauge size={16} />,
-      },
       { id: "models", label: "Models", icon: <IconBrain2 size={16} /> },
       { id: "agent", label: "Agent", icon: <IconRobot2 size={16} /> },
       {
@@ -299,71 +280,6 @@ const SETTINGS_SIDEBAR_GROUPS: {
         id: "connectors",
         label: "Plugins",
         icon: <IconPlugin1 size={16} />,
-      },
-      {
-        id: "skills",
-        label: "Installed skills",
-        icon: <IconElements size={16} />,
-      },
-      {
-        id: "external-dirs",
-        label: "External skill directories",
-        icon: <IconBuildingBlocks size={16} />,
-      },
-      {
-        id: "skill-review",
-        label: "Pending skill changes",
-        icon: <IconShieldCheck size={16} />,
-      },
-      {
-        id: "mcp",
-        label: "MCP servers",
-        icon: <IconModelcontextprotocol size={16} />,
-      },
-      {
-        id: "mcp-catalog",
-        label: "MCP catalog",
-        icon: <IconStore1 size={16} />,
-      },
-      {
-        id: "mcp-diagnostics",
-        label: "MCP diagnostics",
-        icon: <IconHeartBeat size={16} />,
-      },
-      {
-        id: "mcp-security",
-        label: "MCP security",
-        icon: <IconShield size={16} />,
-      },
-      {
-        id: "skills-hub",
-        label: "Skills hub",
-        icon: <IconArrowInbox size={16} />,
-      },
-      {
-        id: "taps",
-        label: "Team skill taps",
-        icon: <IconGithub size={16} />,
-      },
-      {
-        id: "toolsets",
-        label: "Toolsets",
-        icon: <IconToolbox size={16} />,
-      },
-      {
-        id: "bundles",
-        label: "Bundles",
-        icon: <IconLayersThree size={16} />,
-      },
-      {
-        id: "profile-builder",
-        label: "Profiles",
-        icon: <IconMagicWand size={16} />,
-      },
-      {
-        id: "import-export",
-        label: "Import / export",
-        icon: <IconBox2 size={16} />,
       },
     ],
   },
@@ -382,18 +298,7 @@ const SETTINGS_SIDEBAR_GROUPS: {
  * id here; restore the full nav by deleting this set and the `.filter` in
  * SettingsSidebar that uses it. See docs/settings-focus-runbook.md.
  */
-export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<SettingsTab>([
-  "skill-review",
-  "mcp-catalog",
-  "mcp-diagnostics",
-  "mcp-security",
-  "skills-hub",
-  "taps",
-  "toolsets",
-  "bundles",
-  "integrations-health",
-  "import-export",
-]);
+export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set();
 
 export function Sidebar({
   notes,
@@ -446,30 +351,30 @@ export function Sidebar({
   const searchShortcut = primaryShortcutLabel("K");
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
-  const [allAgentSessions, setAgentSessions] = useState<HermesSessionInfo[]>([]);
-  // Chats belong to the profile they were created under (ADR 0031): the
-  // sidebar filters its list through the session→profile map and re-filters
-  // live when the active profile switches, without waiting for a re-fetch.
-  const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap | null>(null);
-  const activeHermesProfileName = useActiveHermesProfileName();
-  const profileAgentSessions = useMemo(
+  const [allAgentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
+  // Chats belong to the data partition they were created under (ADR 0031).
+  // The sidebar filters its list through the session-to-partition map and re-filters
+  // live when the data partition switches, without waiting for a re-fetch.
+  const [sessionPartitions, setSessionPartitions] = useState<SessionPartitionMap | null>(null);
+  const currentDataPartitionName = useCurrentDataPartitionName();
+  const dataPartitionAgentSessions = useMemo(
     () =>
-      sessionProfiles === null
+      sessionPartitions === null
         ? []
         : allAgentSessions.filter((session) =>
-            sessionMatchesProfile(session, sessionProfiles, activeHermesProfileName),
+            sessionMatchesDataPartition(session, sessionPartitions, currentDataPartitionName),
           ),
-    [allAgentSessions, sessionProfiles, activeHermesProfileName],
+    [allAgentSessions, sessionPartitions, currentDataPartitionName],
   );
   // __emptyStates() preview (dev console): the agent section renders its
   // "No sessions yet" line as a fresh install would, real data untouched.
-  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : profileAgentSessions;
+  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : dataPartitionAgentSessions;
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
   const [completedCollapsed, setCompletedCollapsed] = useState(true);
   const [selectedAgentSessionId, setSelectedAgentSessionId] = useState<string>();
-  const [agentSessionToDelete, setAgentSessionToDelete] = useState<HermesSessionInfo | null>(null);
+  const [agentSessionToDelete, setAgentSessionToDelete] = useState<AgentSessionDto | null>(null);
   const [agentSessionDeleteError, setAgentSessionDeleteError] = useState<string | null>(null);
   const [renamingAgentSessionId, setRenamingAgentSessionId] = useState<string | null>(null);
   const [dateFormat, setDateFormat] = useState<DateFormatPreference>(() => getStoredDateFormat());
@@ -537,9 +442,7 @@ export function Sidebar({
   const filteredAgentSessions = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return agentSessions;
-    return agentSessions.filter((session) =>
-      `${session.title ?? ""} ${session.preview ?? ""}`.toLowerCase().includes(normalized),
-    );
+    return agentSessions.filter((session) => session.title.toLowerCase().includes(normalized));
   }, [agentSessions, query]);
   const sidebarSessionLists = useMemo(
     () =>
@@ -648,13 +551,13 @@ export function Sidebar({
         };
       }),
       ...agentSessions.slice(0, 5).map((session) => {
-        const title = session.title?.trim() || session.preview?.trim() || "Untitled";
+        const title = session.title.trim() || "Untitled";
         return {
           id: `agent:${session.id}`,
           label: title,
           meta: "Session",
           icon: <IconBubble3 size={15} />,
-          searchText: normalizeCommandQuery(`${title} ${session.preview ?? ""} agent session`),
+          searchText: normalizeCommandQuery(`${title} agent session`),
           action: () => {
             setSelectedAgentSessionId(session.id);
             onSelectAgentSession(session);
@@ -706,13 +609,6 @@ export function Sidebar({
         icon: <IconMicrophone size={15} />,
         searchText: normalizeCommandQuery("dictation go to"),
         action: () => onChangeView("dictation"),
-      },
-      {
-        id: "quick:routines",
-        label: "Go to Routines",
-        icon: <IconZap size={15} />,
-        searchText: normalizeCommandQuery("routines go to"),
-        action: () => onChangeView("routines"),
       },
       {
         id: "quick:connectors",
@@ -974,13 +870,11 @@ export function Sidebar({
     let retryTimeout: number | undefined;
 
     function loadAgentSessions(attempt: number) {
-      Promise.all([
-        listHermesSessions({ limit: AGENT_SIDEBAR_SESSION_FETCH_LIMIT }),
-        fetchSessionProfileMap(),
-      ])
-        .then(([sessions, profiles]) => {
+      Promise.resolve()
+        .then(() => Promise.all([listAgentSessions(), fetchSessionPartitionMap()]))
+        .then(([sessions, partitions]) => {
           if (!cancelled) {
-            if (profiles) setSessionProfiles(profiles);
+            if (partitions) setSessionPartitions(partitions);
             setAgentSessions((current) => (current.length > 0 ? current : sessions));
             if (sessions.length > 0) {
               emitAgentSessionsChanged({
@@ -1016,11 +910,11 @@ export function Sidebar({
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      // Refresh the session→profile map before applying the list so a session
-      // just stamped to a named profile doesn't flash out of the filtered
+      // Refresh the session-to-partition map before applying the list so a session
+      // just stamped to a named partition does not flash out of the filtered
       // list; a failed refresh keeps the last-known map.
-      void fetchSessionProfileMap().then((profiles) => {
-        if (profiles) setSessionProfiles(profiles);
+      void fetchSessionPartitionMap().then((partitions) => {
+        if (partitions) setSessionPartitions(partitions);
         setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT));
       });
       setSelectedAgentSessionId(detail.selectedSessionId);
@@ -1107,14 +1001,14 @@ export function Sidebar({
     });
   }
 
-  async function handleDeleteAgentSession(session: HermesSessionInfo) {
+  async function handleDeleteAgentSession(session: AgentSessionDto) {
     setDeletingAgentSessionIds((current) => {
       const next = new Set(current);
       next.add(session.id);
       return next;
     });
     try {
-      await deleteHermesSession(session.id);
+      await deleteAgentSession(session.id);
       setAgentSessions((current) => current.filter((item) => item.id !== session.id));
       setSelectedAgentSessionId((current) => (current === session.id ? undefined : current));
       setWorkingAgentSessionIds((current) => {
@@ -1562,9 +1456,7 @@ export function Sidebar({
         onConfirm={() =>
           agentSessionToDelete ? handleDeleteAgentSession(agentSessionToDelete) : undefined
         }
-        title={`Delete "${
-          agentSessionToDelete?.title || agentSessionToDelete?.preview || "Untitled session"
-        }"?`}
+        title={`Delete "${agentSessionToDelete?.title || "Untitled session"}"?`}
         description={agentSessionDeleteError || "This agent session cannot be restored."}
         confirmLabel="Delete session"
         destructive
@@ -1700,24 +1592,25 @@ function NoteRow({
   );
 }
 
-function buildSidebarDevStateSessions(): HermesSessionInfo[] {
+function buildSidebarDevStateSessions(): AgentSessionDto[] {
   const now = Date.now();
   const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
   const daysAgo = (days: number) => new Date(now - days * 24 * 60 * 60_000).toISOString();
   const session = (
     id: string,
     title: string,
-    preview: string,
+    _preview: string,
     lastActive: string,
-  ): HermesSessionInfo => ({
+  ): AgentSessionDto => ({
     id,
     title,
-    preview,
-    source: "sidebar-dev",
+    source: "user",
+    status: "idle",
+    safetyMode: "sandboxed",
+    workspacePath: "",
     model: "dev-preview",
-    started_at: lastActive,
-    last_active: lastActive,
-    message_count: 12,
+    createdAt: lastActive,
+    updatedAt: lastActive,
   });
 
   return [
@@ -2233,7 +2126,7 @@ function AgentSessionRow({
   onRenameEnd,
   onOpenMenu,
 }: {
-  session: HermesSessionInfo;
+  session: AgentSessionDto;
   selected: boolean;
   working: boolean;
   waiting: boolean;
@@ -2247,9 +2140,9 @@ function AgentSessionRow({
   onRenameEnd: () => void;
   onOpenMenu: (anchor: HTMLElement) => void;
 }) {
-  const title = session.title || session.preview || "Untitled session";
+  const title = session.title || "Untitled session";
   const status = waiting ? "waitingForUser" : working ? "running" : undefined;
-  const time = formatSessionTime(sessionTimestamp(session), dateFormat);
+  const time = formatSessionTime(session.updatedAt, dateFormat);
   const menuRef = useRef<HTMLButtonElement>(null);
   const [menuFocused, setMenuFocused] = useState(false);
 

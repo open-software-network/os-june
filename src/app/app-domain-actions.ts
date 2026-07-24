@@ -13,7 +13,7 @@ import {
   setSessionCompleted,
 } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import type { CreateAppDomainActionsDependencies } from "./app-domain-actions-types";
 
 export function createAppDomainActions(dependencies: CreateAppDomainActionsDependencies) {
@@ -215,9 +215,9 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     }, 0);
   }
 
-  // Escalates a note chat into the full agent view: an existing session opens
-  // in place (it's a normal Hermes session, so history already knows it); a
-  // chat that never started falls back to the seeded new-session flow.
+  // Escalates a note chat into the full agent view. An existing stored session
+  // opens in place, while a chat that never started falls back to the seeded
+  // new-session flow.
   function handleOpenNoteChatInAgent(noteRef: { id: string; title: string }, sessionId?: string) {
     if (!sessionId) {
       handleAskJuneAboutNote(noteRef);
@@ -225,7 +225,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     }
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
-    setActiveAgentSession({ id: sessionId, title: noteRef.title.trim() || undefined });
+    setActiveAgentSession(agentSessions.find((session) => session.id === sessionId));
     setActiveView("agent");
   }
 
@@ -246,7 +246,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
 
   // "Start chat with this bundle" from the Bundles settings tab: the same
   // fresh-chat handshake the dictation prompt path uses, auto-submitting the
-  // bundle's slash command so Hermes resolves the bundle and loads its skills.
+  // bundle's slash command so June loads its skills.
   function handleStartBundleChat(prompt: string) {
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -264,13 +264,13 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     }, 0);
   }
 
-  // "New session" from inside a project: same fresh-chat handshake, but the
-  // session gets filed into the project once Hermes hands back its id.
+  // "New session" from inside a project uses the same fresh-chat handshake.
+  // The session is filed into the project once June persists its id.
   function handleNewAgentSessionInProject(folderId: string) {
     pendingSessionProjectRef.current = {
       folderId,
       knownSessionIds: new Set(agentSessions.map((session) => session.id)),
-      profile: getActiveHermesProfileName(),
+      partition: getCurrentDataPartitionName(),
     };
     setAgentOrigin({ kind: "project", folderId });
     markAgentNewSessionPending();

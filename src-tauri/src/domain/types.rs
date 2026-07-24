@@ -312,8 +312,7 @@ pub struct RemoveNoteFromFolderRequest {
     pub folder_id: String,
 }
 
-// Agent sessions are owned by Hermes; this only records which project
-// (folder) a session was filed under, keyed by the Hermes session id.
+// Records which project (folder) a June-owned agent session is filed under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionFolderDto {
@@ -321,8 +320,7 @@ pub struct SessionFolderDto {
     pub folder_id: String,
 }
 
-// Agent sessions are owned by Hermes; this records which Hermes profile a
-// session was created under, keyed by the Hermes stored session id.
+// Records which June profile a session was created under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionProfileDto {
@@ -347,8 +345,7 @@ pub struct AssignSessionToFolderRequest {
     pub folder_id: String,
 }
 
-// Agent sessions are owned by Hermes; June records completion locally, keyed by
-// the stored Hermes session id. Distinct from Hermes' own archive state.
+// June records completion locally, keyed by the stored session id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletedSessionDto {
@@ -843,98 +840,6 @@ pub struct RecoverableSourceDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentTaskListResponse {
-    pub items: Vec<AgentTaskDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentTaskDto {
-    pub id: String,
-    pub title: String,
-    pub prompt: String,
-    pub status: AgentTaskStatus,
-    pub safety_profile: AgentSafetyProfile,
-    pub hermes_session_id: Option<String>,
-    pub progress_summary: Option<String>,
-    pub last_error: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-    pub completed_at: Option<String>,
-    #[serde(default)]
-    pub messages: Vec<AgentMessageDto>,
-    #[serde(default)]
-    pub tool_events: Vec<AgentToolEventDto>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentMessageDto {
-    pub id: String,
-    pub task_id: String,
-    pub role: AgentMessageRole,
-    pub content: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentToolEventDto {
-    pub id: String,
-    pub task_id: String,
-    pub tool_name: String,
-    pub status: AgentToolEventStatus,
-    pub summary: String,
-    pub arguments_json: Option<String>,
-    pub result_json: Option<String>,
-    pub redacted: bool,
-    pub created_at: String,
-    pub completed_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateAgentTaskRequest {
-    pub prompt: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub safety_profile: Option<AgentSafetyProfile>,
-    #[serde(default)]
-    pub run_placeholder: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GetAgentTaskRequest {
-    pub task_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SendAgentMessageRequest {
-    pub task_id: String,
-    pub content: String,
-    #[serde(default)]
-    pub run_placeholder: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveAgentAssistantMessageRequest {
-    pub task_id: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveAgentHermesSessionRequest {
-    pub task_id: String,
-    pub hermes_session_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SuggestAgentSessionTitleRequest {
     pub prompt: String,
     #[serde(default)]
@@ -990,144 +895,6 @@ pub struct ExplainAgentApprovalRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ExplainAgentApprovalResponse {
     pub explanation: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentTaskRequest {
-    pub task_id: String,
-}
-
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentSafetyProfile {
-    #[default]
-    AutonomousPrivate,
-}
-
-impl AgentSafetyProfile {
-    pub fn as_db(self) -> &'static str {
-        match self {
-            Self::AutonomousPrivate => "autonomous_private",
-        }
-    }
-}
-
-impl From<&str> for AgentSafetyProfile {
-    fn from(value: &str) -> Self {
-        match value {
-            "autonomous_private" | "autonomousPrivate" => Self::AutonomousPrivate,
-            _ => Self::AutonomousPrivate,
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentTaskStatus {
-    Draft,
-    Queued,
-    Running,
-    WaitingForUser,
-    #[default]
-    Paused,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl AgentTaskStatus {
-    pub fn as_db(self) -> &'static str {
-        match self {
-            Self::Draft => "draft",
-            Self::Queued => "queued",
-            Self::Running => "running",
-            Self::WaitingForUser => "waiting_for_user",
-            Self::Paused => "paused",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-        }
-    }
-}
-
-impl From<&str> for AgentTaskStatus {
-    fn from(value: &str) -> Self {
-        match value {
-            "draft" => Self::Draft,
-            "queued" => Self::Queued,
-            "running" => Self::Running,
-            "waiting_for_user" | "waitingForUser" => Self::WaitingForUser,
-            "completed" => Self::Completed,
-            "failed" => Self::Failed,
-            "cancelled" => Self::Cancelled,
-            _ => Self::Paused,
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentMessageRole {
-    System,
-    Assistant,
-    #[default]
-    User,
-}
-
-impl AgentMessageRole {
-    pub fn as_db(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::Assistant => "assistant",
-            Self::User => "user",
-        }
-    }
-}
-
-impl From<&str> for AgentMessageRole {
-    fn from(value: &str) -> Self {
-        match value {
-            "system" => Self::System,
-            "assistant" => Self::Assistant,
-            _ => Self::User,
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AgentToolEventStatus {
-    Proposed,
-    Running,
-    Completed,
-    Failed,
-    #[default]
-    Blocked,
-}
-
-impl AgentToolEventStatus {
-    pub fn as_db(self) -> &'static str {
-        match self {
-            Self::Proposed => "proposed",
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Blocked => "blocked",
-        }
-    }
-}
-
-impl From<&str> for AgentToolEventStatus {
-    fn from(value: &str) -> Self {
-        match value {
-            "proposed" => Self::Proposed,
-            "running" => Self::Running,
-            "completed" => Self::Completed,
-            "failed" => Self::Failed,
-            _ => Self::Blocked,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

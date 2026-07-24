@@ -58,8 +58,8 @@ uv --version
 ```
 
 The final command must print `x86_64`. Rosetta is a release capability: the
-Hermes bundle gate executes the Intel launcher and native dependencies under
-Rosetta and fails closed when that path is unavailable.
+agent runtime gate executes the Intel sidecar under Rosetta and fails closed
+when that path is unavailable.
 
 ## Release use
 
@@ -71,10 +71,7 @@ The macOS release workflows expose `macos-runner`:
 Use `mac-studio` for normal RC and promote runs. Use `github-hosted` only if the
 Mac Studio runner is offline or being maintained.
 
-The workflows cache `.tauri-hermes/hermes` under the versioned universal-v2
-key by runner OS, Hermes pin, bundling script, architecture audit, native-import
-smoke, patcher, and sitecustomize source. The bundle itself must carry the exact
-`arm64 x86_64` architecture stamp, so a prior host-only cache is rejected. On a
-cache hit, `scripts/bundle-hermes-runtime.sh` re-signs every Mach-O file with the
-current Developer ID identity, audits both trees, and runs both relocated
-launchers before the app build.
+The workflows build the Node 24 agent runtime for arm64 and x86_64, combine the
+executables into one universal binary, sign it with the current Developer ID,
+write its SHA-256 checksum, and execute relocated copies for both architectures
+before the app build.

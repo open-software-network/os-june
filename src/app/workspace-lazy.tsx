@@ -140,9 +140,9 @@ export const AppSettingsRoute = appSettings.Component;
 const deferredWorkspacePreloads = [
   // Meeting-start navigation lands here, so queue the note editor first.
   noteEditor.preload,
+  routinesView.preload,
   appSettings.preload,
   foldersWorkspace.preload,
-  routinesView.preload,
 ];
 
 type IdleCallbackWindow = Window & {

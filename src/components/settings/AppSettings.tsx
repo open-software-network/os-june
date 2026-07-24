@@ -21,7 +21,6 @@ import {
   juneOpenCommunityPage,
   juneOpenVerifyPage,
   clearVeniceApiKey,
-  hermesBridgeStatus,
   saveLocalGenerationSettings,
   setLocalGenerationEnabled,
   probeLocalGenerationEndpoint,
@@ -130,39 +129,14 @@ import {
 } from "../../lib/experimental-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { AgentMcpServersSection } from "./AgentMcpServersSection";
 import { ConnectorsSection } from "./ConnectorsSection";
-import { ExternalDirsSection } from "./ExternalDirsSection";
-import { InstalledSkillsSection } from "./InstalledSkillsSection";
-import { SkillDetailSection } from "./SkillDetailSection";
-import { SkillReviewSection } from "./SkillReviewSection";
-import { McpCatalogSection } from "./McpCatalogSection";
-import { McpDiagnosticsSection } from "./McpDiagnosticsSection";
-import { McpSecuritySection } from "./McpSecuritySection";
-import { McpServersSection } from "./McpServersSection";
-import {
-  IntegrationsHealthSection,
-  type IntegrationsHealthTarget,
-} from "./IntegrationsHealthSection";
-import { ProfileBuilderSection } from "./ProfileBuilderSection";
-import { SetupSnapshotSection } from "./SetupSnapshotSection";
-import { SkillBundlesSection } from "./SkillBundlesSection";
-import { SkillsHubSection } from "./SkillsHubSection";
-import { TeamTapsSection } from "./TeamTapsSection";
-import { SETTINGS_TABS, type SettingsTab } from "./settings-config";
-export { SETTINGS_TABS, type SettingsTab } from "./settings-config";
-import { ToolsetsSection } from "./ToolsetsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MemorySettingsSection } from "./MemorySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 import { PrivacySettingsSection } from "./PrivacySettingsSection";
-import { useActiveHermesProfileName } from "../../lib/active-hermes-profile";
-import {
-  DEFAULT_HERMES_PROFILE,
-  adminTargetForMode,
-  createHermesAdminClient,
-  createRustAdminFetch,
-} from "../../lib/hermes-admin";
+import { DEFAULT_DATA_PARTITION, useCurrentDataPartitionName } from "../../lib/data-partition";
 import {
   getStoredDateFormat,
   setStoredDateFormat,
@@ -332,23 +306,34 @@ function providerModelSettingsSnapshot(response: ProviderModelSettingsSnapshot) 
   };
 }
 
-async function activeProfileTextModel(profileName: string): Promise<string | undefined> {
-  const status = await hermesBridgeStatus();
-  const target =
-    adminTargetForMode(status, "sandboxed", profileName) ??
-    adminTargetForMode(status, "unrestricted", profileName);
-  if (!target) return undefined;
-  const client = createHermesAdminClient(target, {
-    fetch: createRustAdminFetch(target.mode),
-  });
-  const profiles = await client.profiles.list();
-  const normalized = profileName.trim().toLowerCase();
-  return profiles
-    .find((profile) => profile.name.trim().toLowerCase() === normalized)
-    ?.model?.trim();
-}
-
 const MIC_TEST_DURATION_SECONDS = 5;
+
+export type SettingsTab =
+  | "general"
+  | "appearance"
+  | "billing"
+  | "shortcuts"
+  | "dictation"
+  | "audio"
+  | "models"
+  | "agent"
+  | "memory"
+  | "connectors"
+  | "about";
+
+export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
+  { id: "billing", label: "Billing" },
+  { id: "shortcuts", label: "Shortcuts" },
+  { id: "dictation", label: "Dictation" },
+  { id: "audio", label: "Audio" },
+  { id: "models", label: "Models" },
+  { id: "agent", label: "Agent" },
+  { id: "memory", label: "Memory" },
+  { id: "connectors", label: "Plugins" },
+  { id: "about", label: "About" },
+];
 
 /**
  * The shared settings page header (Codex-app style): a large serif page title
@@ -462,9 +447,9 @@ export function AppSettings({
   const [localGenerationDraft, setLocalGenerationDraft] = useState<LocalGenerationSettingsDto>(
     DEFAULT_PROVIDER_MODELS.localGeneration,
   );
-  const activeProfileName = useActiveHermesProfileName();
-  const showingActiveProfileModels = activeProfileName !== DEFAULT_HERMES_PROFILE;
-  const [activeProfileGenerationModel, setActiveProfileGenerationModel] = useState<string>();
+  const currentDataPartitionLabel = useCurrentDataPartitionName();
+  const showingPartitionModels = currentDataPartitionLabel !== DEFAULT_DATA_PARTITION;
+  const [partitionGenerationModel, setPartitionGenerationModel] = useState<string>();
   // Model ids returned by the last successful "Test connection" probe, used to
   // populate the Model ID field's datalist (free text is still allowed).
   const [localProbeModels, setLocalProbeModels] = useState<string[]>([]);
@@ -556,17 +541,7 @@ export function AppSettings({
   // The skill opened from Installed skills. While set (and the skills tab is
   // active) the whole settings page swaps for the notes-style detail shell:
   // pinned breadcrumb bar on top, its own scroll region beneath.
-  const [openSkill, setOpenSkill] = useState<string | null>(null);
-  const skillDetailOpen = activeTab === "skills" && openSkill !== null;
-  // The agent tab's messaging platform drill-in pins the SAME notes-style detail
-  // shell as skill detail, and lifts its selection here (mirroring `openSkill`)
-  // so the detail can replace the whole settings page at the top level rather
-  // than render nested — that top-level placement is what pins the breadcrumb
-  // bar. Placement is decided synchronously from this id, so there's no effect
-  // lag. Both signals feed the same host hook so only one reaches App.tsx.
-  const [agentPlatformId, setAgentPlatformId] = useState<string>();
-  const agentDetailOpen = activeTab === "agent" && agentPlatformId != null;
-  const detailPinned = skillDetailOpen || agentDetailOpen;
+  const detailPinned = false;
   useEffect(() => {
     onDetailPinnedChange?.(detailPinned);
   }, [detailPinned, onDetailPinnedChange]);
@@ -595,11 +570,11 @@ export function AppSettings({
     runtimeFlagBaselineCandidateRef.current ??= experimentalFlags.browserUseEnabled;
     let cancelled = false;
     const baseline = runtimeFlagBaselineCandidateRef.current;
-    void hermesBridgeStatus()
-      .then((bridge) => {
+    Promise.resolve()
+      .then(() => {
         if (cancelled) return;
         runtimeFlagStatusLoadedRef.current = true;
-        setAgentRuntimeRunning(bridge.running);
+        setAgentRuntimeRunning(true);
         setRuntimeBrowserUseBaseline(baseline);
       })
       .catch(() => {
@@ -742,7 +717,7 @@ export function AppSettings({
         confirmedCostQualityRef.current = modelSnapshot.settings.costQuality;
         setProviderSettings(modelSnapshot.settings);
         setEffectiveProviderSettings(modelSnapshot.effectiveSettings);
-        providerSettingsProfileRef.current = activeProfileName;
+        providerSettingsProfileRef.current = currentDataPartitionLabel;
         await requestMicrophones();
         await Promise.all([
           requestVeniceModels("transcription"),
@@ -773,7 +748,7 @@ export function AppSettings({
   useEffect(() => {
     if (
       providerSettingsProfileRef.current === null ||
-      providerSettingsProfileRef.current === activeProfileName
+      providerSettingsProfileRef.current === currentDataPartitionLabel
     ) {
       return;
     }
@@ -786,7 +761,7 @@ export function AppSettings({
         const modelSnapshot = providerModelSettingsSnapshot(modelResponse);
         setProviderSettings(modelSnapshot.settings);
         setEffectiveProviderSettings(modelSnapshot.effectiveSettings);
-        providerSettingsProfileRef.current = activeProfileName;
+        providerSettingsProfileRef.current = currentDataPartitionLabel;
       } catch (error) {
         if (!cancelled) setStatus(messageFromError(error));
       }
@@ -796,22 +771,21 @@ export function AppSettings({
     return () => {
       cancelled = true;
     };
-  }, [activeProfileName]);
+  }, [currentDataPartitionLabel]);
 
   useEffect(() => {
-    if (!showingActiveProfileModels) {
-      setActiveProfileGenerationModel(undefined);
+    if (!showingPartitionModels) {
+      setPartitionGenerationModel(undefined);
       return;
     }
     let cancelled = false;
-    setActiveProfileGenerationModel(undefined);
+    setPartitionGenerationModel(undefined);
 
     async function loadActiveProfileTextModel() {
       try {
-        const model = await activeProfileTextModel(activeProfileName);
-        if (!cancelled) setActiveProfileGenerationModel(model);
+        if (!cancelled) setPartitionGenerationModel(effectiveProviderSettings.generationModel);
       } catch {
-        if (!cancelled) setActiveProfileGenerationModel(undefined);
+        if (!cancelled) setPartitionGenerationModel(undefined);
       }
     }
 
@@ -819,7 +793,7 @@ export function AppSettings({
     return () => {
       cancelled = true;
     };
-  }, [activeProfileName, showingActiveProfileModels]);
+  }, [effectiveProviderSettings.generationModel, showingPartitionModels]);
 
   useEffect(() => {
     if (!micOpen) return;
@@ -1136,7 +1110,7 @@ export function AppSettings({
   // Returns whether the switch persisted, so confirmation flows (the Venice
   // key billing choice) can stay open instead of closing over a failed save.
   async function selectVeniceModel(mode: ProviderModelMode, modelId: string): Promise<boolean> {
-    if (showingActiveProfileModels) return false;
+    if (showingPartitionModels) return false;
     try {
       const next = await setVeniceModel(mode, modelId);
       setProviderSettings(next);
@@ -1206,7 +1180,7 @@ export function AppSettings({
     options?: { keepOpen?: boolean },
   ) {
     // Named profiles show their own models read-only; a pick is a no-op.
-    if (showingActiveProfileModels) {
+    if (showingPartitionModels) {
       closeModelPicker();
       return;
     }
@@ -1455,7 +1429,7 @@ export function AppSettings({
     0,
     LANGUAGE_OPTIONS.findIndex((option) => option.value === (settings.language ?? "")),
   );
-  const displayProviderSettings = showingActiveProfileModels
+  const displayProviderSettings = showingPartitionModels
     ? effectiveProviderSettings
     : providerSettings;
   const transcriptionOptions = modelOptions(
@@ -1522,8 +1496,8 @@ export function AppSettings({
   }, [localModelEnabled]);
 
   useEffect(() => {
-    if (showingActiveProfileModels) closeModelPicker();
-  }, [showingActiveProfileModels]);
+    if (showingPartitionModels) closeModelPicker();
+  }, [showingPartitionModels]);
 
   useEffect(() => {
     if (!pickerMode) return;
@@ -1603,8 +1577,8 @@ export function AppSettings({
     if (mode === "transcription") return displayProviderSettings.transcriptionModel;
     if (mode === "image") return displayProviderSettings.imageModel;
     if (mode === "video") return displayProviderSettings.videoModel;
-    if (showingActiveProfileModels) {
-      return activeProfileGenerationModel ?? globalGenerationModelValue();
+    if (showingPartitionModels) {
+      return partitionGenerationModel ?? globalGenerationModelValue();
     }
     return globalGenerationModelValue();
   }
@@ -1617,7 +1591,7 @@ export function AppSettings({
   }
 
   function openModelPicker(mode: ProviderModelMode) {
-    if (showingActiveProfileModels) return;
+    if (showingPartitionModels) return;
     if (mode === "image" && !IMAGE_GENERATION_ENABLED) return;
     if (mode === "video" && !VIDEO_GENERATION_ENABLED) return;
     setPickerMode(mode);
@@ -1681,7 +1655,7 @@ export function AppSettings({
     try {
       await connectorsApplyRuntime();
       setRuntimeBrowserUseBaseline(experimentalFlags.browserUseEnabled);
-      setAgentRuntimeRunning((await hermesBridgeStatus()).running);
+      setAgentRuntimeRunning(true);
     } catch (error) {
       setExperimentalError(messageFromError(error));
     } finally {
@@ -1706,23 +1680,7 @@ export function AppSettings({
     runtimeBrowserUseBaseline !== null &&
     runtimeBrowserUseBaseline !== experimentalFlags.browserUseEnabled;
 
-  return skillDetailOpen && openSkill ? (
-    // Notes-parity drill-in: the detail shell replaces the settings page
-    // entirely (pinned breadcrumb bar + its own scroll container), the same
-    // way opening a meeting note swaps in note-shell.
-    <SkillDetailSection skill={openSkill} onBack={() => setOpenSkill(null)} />
-  ) : agentDetailOpen ? (
-    // The agent messaging drill-in sits exactly where SkillDetailSection sits
-    // (top level, replacing the settings page) so its BreadcrumbBar pins the
-    // same way. It renders the SAME AgentSettingsSection with the SAME
-    // controlled props as the nested placement below — only the position in the
-    // tree differs, chosen synchronously from agentPlatformId.
-    <AgentSettingsSection
-      selectedPlatformId={agentPlatformId}
-      onSelectPlatform={setAgentPlatformId}
-      onBackFromPlatform={() => setAgentPlatformId(undefined)}
-    />
-  ) : (
+  return (
     <div className="settings-page" data-controlled={controlled || undefined}>
       {controlled ? null : (
         <>
@@ -2175,10 +2133,10 @@ export function AppSettings({
               <p className="settings-group-description">
                 Choose the model June uses for note transcription and dictation.
               </p>
-              {showingActiveProfileModels ? (
+              {showingPartitionModels ? (
                 <p className="settings-models-profile-note">
-                  Showing models for the active profile: {activeProfileName}. Switch to the default
-                  profile to edit global models.
+                  Showing models for the current data set: {currentDataPartitionLabel}. Switch to
+                  the default data set to edit global models.
                 </p>
               ) : null}
               <div className="settings-card settings-models-card">
@@ -2205,7 +2163,7 @@ export function AppSettings({
                     onFlyoutChange={setModelPickerFlyout}
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
-                    readOnly={showingActiveProfileModels}
+                    readOnly={showingPartitionModels}
                   />
                   <div className="settings-row-divider" aria-hidden />
                   <button
@@ -2261,10 +2219,10 @@ export function AppSettings({
               <p className="settings-group-description">
                 Choose the model June uses for generated notes and agent responses.
               </p>
-              {showingActiveProfileModels ? (
+              {showingPartitionModels ? (
                 <p className="settings-models-profile-note">
-                  Showing models for the active profile: {activeProfileName}. Switch to the default
-                  profile to edit global models.
+                  Showing models for the current data set: {currentDataPartitionLabel}. Switch to
+                  the default data set to edit global models.
                 </p>
               ) : null}
               <div className="settings-card settings-models-card">
@@ -2296,7 +2254,7 @@ export function AppSettings({
                       selectModelFromPicker("generation", modelId, costQuality, options)
                     }
                     onCostQualityChange={applyCostQuality}
-                    readOnly={showingActiveProfileModels}
+                    readOnly={showingPartitionModels}
                   />
                   {providerSettings.generationModel === "open-software/auto" ? (
                     <div className="settings-row settings-row-before-divider">
@@ -2521,10 +2479,10 @@ export function AppSettings({
                 <p className="settings-group-description">
                   Choose the models June uses when you ask it to generate an image or video.
                 </p>
-                {showingActiveProfileModels ? (
+                {showingPartitionModels ? (
                   <p className="settings-models-profile-note">
-                    Showing models for the active profile: {activeProfileName}. Switch to the
-                    default profile to edit global models.
+                    Showing models for the current data set: {currentDataPartitionLabel}. Switch to
+                    the default data set to edit global models.
                   </p>
                 ) : null}
                 <div className="settings-card settings-models-card">
@@ -2550,7 +2508,7 @@ export function AppSettings({
                         onFlyoutChange={setModelPickerFlyout}
                         onSearchChange={setModelSearch}
                         onSelect={(modelId) => selectModelFromPicker("image", modelId)}
-                        readOnly={showingActiveProfileModels}
+                        readOnly={showingPartitionModels}
                       />
                     ) : null}
                     {VIDEO_GENERATION_ENABLED ? (
@@ -2574,7 +2532,7 @@ export function AppSettings({
                         onFlyoutChange={setModelPickerFlyout}
                         onSearchChange={setModelSearch}
                         onSelect={(modelId) => selectModelFromPicker("video", modelId)}
-                        readOnly={showingActiveProfileModels}
+                        readOnly={showingPartitionModels}
                       />
                     ) : null}
                     <div className="settings-row-divider" aria-hidden />
@@ -2633,13 +2591,7 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "agent" ? (
-          <AgentSettingsSection
-            selectedPlatformId={agentPlatformId}
-            onSelectPlatform={setAgentPlatformId}
-            onBackFromPlatform={() => setAgentPlatformId(undefined)}
-            folders={folders}
-            onFoldersImported={onFoldersImported}
-          />
+          <AgentSettingsSection folders={folders} onFoldersImported={onFoldersImported} />
         ) : null}
 
         {activeTab === "memory" ? (
@@ -2651,33 +2603,14 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "connectors" ? (
-          <ConnectorsSection
-            onOpenModels={() => setActiveTab("models")}
-            onOpenBilling={() => setActiveTab("billing")}
-          />
+          <>
+            <ConnectorsSection
+              onOpenModels={() => setActiveTab("models")}
+              onOpenBilling={() => setActiveTab("billing")}
+            />
+            <AgentMcpServersSection />
+          </>
         ) : null}
-
-        {activeTab === "skills" ? <InstalledSkillsSection onOpenSkill={setOpenSkill} /> : null}
-        {activeTab === "external-dirs" ? <ExternalDirsSection /> : null}
-        {activeTab === "skill-review" ? <SkillReviewSection /> : null}
-
-        {activeTab === "mcp" ? <McpServersSection /> : null}
-        {activeTab === "mcp-catalog" ? <McpCatalogSection /> : null}
-        {activeTab === "mcp-diagnostics" ? <McpDiagnosticsSection /> : null}
-        {activeTab === "mcp-security" ? <McpSecuritySection /> : null}
-        {activeTab === "skills-hub" ? <SkillsHubSection /> : null}
-        {activeTab === "taps" ? (
-          <TeamTapsSection onConfigureGithubToken={() => setActiveTab("skills")} />
-        ) : null}
-        {activeTab === "toolsets" ? <ToolsetsSection /> : null}
-        {activeTab === "bundles" ? <SkillBundlesSection onStartChat={onStartBundleChat} /> : null}
-        {activeTab === "profile-builder" ? <ProfileBuilderSection /> : null}
-        {activeTab === "integrations-health" ? (
-          <IntegrationsHealthSection
-            onNavigate={(target: IntegrationsHealthTarget) => setActiveTab(target)}
-          />
-        ) : null}
-        {activeTab === "import-export" ? <SetupSnapshotSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">
@@ -3018,8 +2951,7 @@ function StartupSettingsSection() {
         Startup
       </h2>
       <p className="settings-group-description">
-        Dictation shortcuts, meeting detection, and scheduled routines only work while June is
-        running.
+        Dictation shortcuts and meeting detection only work while June is running.
       </p>
       <div className="settings-card">
         <div className="settings-rows">

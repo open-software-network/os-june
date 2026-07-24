@@ -10,58 +10,27 @@ import { IconFlag1 } from "central-icons/IconFlag1";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconStop } from "central-icons/IconStop";
-import { IconExclamationTriangle } from "central-icons/IconExclamationTriangle";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 
 import {
   displayedComposerUserMessageText,
   type AgentChatPart,
   type AgentChatTurn,
-  UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
 } from "../../lib/agent-chat-runtime";
 import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
 import { messageFromError } from "../../lib/errors";
-import {
-  upstreamProviderRecoveryIds,
-  upstreamProviderRecoveryStore,
-} from "../../lib/upstream-provider-recovery";
-import { attachmentStateFrom } from "../../lib/hermes-image-attach";
-import {
-  decodeHermesModelSelection,
-  type SessionModelSelection,
-} from "../../lib/hermes-session-model-selection";
-import {
-  isLoopbackUrl,
-  LOCAL_GENERATION_OPTION_ID_PREFIX,
-  localGenerationOptionId,
-  unavailableLocalGenerationOption,
-  withLocalGenerationOption,
-} from "../../lib/local-generation";
 import { useScrollFade } from "../../lib/use-scroll-fade";
-import { dispatchProviderModelSettingsChanged } from "../../lib/model-privacy";
-import {
-  dictationHelperCommand,
-  importHermesBridgeFile,
-  listVeniceModels,
-  providerModelSettings,
-  setCostQuality,
-  setLocalGenerationEnabled,
-  setVeniceModel,
-  type LocalGenerationSettingsDto,
-  type VeniceModelDto,
-} from "../../lib/tauri";
+import { dictationHelperCommand, listVeniceModels, type VeniceModelDto } from "../../lib/tauri";
 import { FileTypeIcon } from "../agent/FileTypeIcon";
 import { MarkdownContent } from "../agent/MarkdownContent";
-import { InlineNotice } from "../ui/InlineNotice";
 import { ComposerEditor, type ComposerEditorHandle } from "../agent/composer/ComposerEditor";
 import {
   ComposerModelPicker,
   ComposerModelPopover,
   type ComposerModelFlyout,
 } from "../agent/composer/ModelPicker";
-import { autoPillDesignation } from "../../lib/suggested-models";
-import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
+import { modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import type { TextFundingNoticeContext } from "../account/FundingNotice";
 import type { NoteChat, NoteChatAttachment } from "./useNoteChat";
 
@@ -110,25 +79,8 @@ function clampNoteChatWidth(width: number) {
   return Math.min(Math.max(Math.round(width), NOTE_CHAT_MIN_W), max);
 }
 
-function selectionForAppliedHermesModel(
-  appliedHermesModelId: string | undefined,
-  localGeneration: LocalGenerationSettingsDto,
-): SessionModelSelection | undefined {
-  const modelId = appliedHermesModelId?.trim();
-  if (!modelId) return undefined;
-  const configuredLocalModelId = localGeneration.modelId.trim();
-  if (
-    !modelId.startsWith("__june_") &&
-    configuredLocalModelId &&
-    modelId === configuredLocalModelId
-  ) {
-    return { modelId: localGenerationOptionId(configuredLocalModelId) };
-  }
-  return decodeHermesModelSelection(modelId);
-}
-
 /** The first message of a note chat carries the note reference token so
- * Hermes resolves the note; the panel already says which note it's about, so
+ * June resolves the note; the panel already says which note it's about, so
  * the token is chrome, not content, in the panel's own transcript. */
 function stripLeadingNoteToken(text: string) {
   return text.replace(/^@note:[\w-]+(?: \("[^"]*"\))?\s*/, "");
@@ -145,42 +97,11 @@ function userTurnText(turn: AgentChatTurn) {
     .join("\n");
 }
 
-function assistantPartNode(
-  part: AgentChatPart,
-  index: number,
-  upstreamFailureRetry?: {
-    attempted: boolean;
-    disabled: boolean;
-    onRetry: () => void;
-  },
-) {
+function assistantPartNode(part: AgentChatPart, index: number) {
   switch (part.type) {
     case "text":
       return <MarkdownContent key={index} markdown={part.text} repairProse />;
     case "notice":
-      if (part.kind === "upstream-provider") {
-        return (
-          <InlineNotice
-            key={index}
-            tone="warning"
-            role="alert"
-            icon={<IconExclamationTriangle size={14} aria-hidden />}
-            body={UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY}
-            actions={
-              upstreamFailureRetry ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={upstreamFailureRetry.disabled || upstreamFailureRetry.attempted}
-                  onClick={upstreamFailureRetry.onRetry}
-                >
-                  Try again
-                </button>
-              ) : undefined
-            }
-          />
-        );
-      }
       return <MarkdownContent key={index} markdown={part.text} />;
     case "tool":
       return (
@@ -202,8 +123,8 @@ function assistantPartNode(
 
 /** The contextual Ask June chat: a fixed side panel next to the meeting note,
  * mirroring the agent artifact panel's attach mechanics (sibling card on the
- * window background; the main card slides left via the shell state class in
- * app.css). The conversation itself is a real Hermes session scoped to the
+ * window background; the main card slides left via the :has() margin in
+ * app.css). The conversation is a real agent session scoped to the
  * note — see useNoteChat. */
 export function NoteChatPanel({
   note,
@@ -235,12 +156,10 @@ export function NoteChatPanel({
     loading,
     error,
     storedSessionId,
-    modelSelection,
-    appliedHermesModelId,
+    model: activeModelId,
+    setModel,
     submit,
-    retryUpstreamFailure,
     stop,
-    setSessionModel,
   } = chat;
   // Block escalation only during the pure first-send race — the session is
   // being created and there's no id to hand off yet. Once an id exists the
@@ -249,43 +168,15 @@ export function NoteChatPanel({
   const [entered, setEntered] = useState(false);
   const [draftEmpty, setDraftEmpty] = useState(true);
   const [attachments, setAttachments] = useState<NoteChatAttachment[]>([]);
-  const [importing, setImporting] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
-  useSyncExternalStore(
-    upstreamProviderRecoveryStore.subscribe,
-    upstreamProviderRecoveryStore.getVersion,
-    upstreamProviderRecoveryStore.getVersion,
-  );
-  const upstreamFailureRecoveryIds = useMemo(() => upstreamProviderRecoveryIds(turns), [turns]);
   const composerRef = useRef<ComposerEditorHandle | null>(null);
   const draftRef = useRef("");
   const panelRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  async function handleUpstreamFailureRetry(turnId: string) {
-    const recoveryId = upstreamFailureRecoveryIds.get(turnId);
-    if (
-      !storedSessionId ||
-      !recoveryId ||
-      !upstreamProviderRecoveryStore.reserve(storedSessionId, recoveryId)
-    ) {
-      return;
-    }
-    // Keep the one-shot key spent once Hermes accepted the continuation, even
-    // if this panel unmounted or switched notes before the submit resolved.
-    // Only a rejected/failed submit may re-arm "Try again".
-    const result = await retryUpstreamFailure().catch(() => ({
-      accepted: false,
-      current: false,
-    }));
-    if (result.accepted) return;
-    upstreamProviderRecoveryStore.release(storedSessionId, recoveryId);
-  }
-
-  // The "+" picker routes through the same bridge import as the workspace so
-  // the agent always gets a real, readable workspace path. One file at a
-  // time, interleaving read and upload, mirroring the workspace's batching.
+  // The runtime receives the selected local paths and imports them into the
+  // session workspace before the run begins.
   async function pickAttachments() {
     try {
       const selected = await openFileDialog({ multiple: true, title: "Attach files" });
@@ -295,23 +186,15 @@ export function NoteChatPanel({
         .filter(Boolean)
         .slice(0, 8);
       if (!paths.length) return;
-      setImporting(true);
       setComposerError(null);
-      try {
-        for (const path of paths) {
-          const file = await importHermesBridgeFile(path);
-          setAttachments((current) => [
-            ...current,
-            {
-              ...file,
-              id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
-              attach: attachmentStateFrom(file),
-            },
-          ]);
-        }
-      } finally {
-        setImporting(false);
-      }
+      setAttachments((current) => [
+        ...current,
+        ...paths.map((path) => ({
+          id: `${path}:${Date.now()}:${Math.random().toString(36)}`,
+          name: path.split(/[\\/]/).at(-1) || path,
+          path,
+        })),
+      ]);
     } catch (err) {
       setComposerError(messageFromError(err));
     }
@@ -333,102 +216,34 @@ export function NoteChatPanel({
     }
   }
 
-  // Model picking: the exact trigger + popover the agent composer uses,
-  // loaded from the same catalog. Selection routes through the hook (applied
-  // at session.create or as a session-scoped switch before the next message).
+  // Model picking shares the regular agent catalog. The runtime receives the
+  // selected model with each run, so the panel can change it without a legacy
+  // transport-side configuration step.
   const [models, setModels] = useState<VeniceModelDto[]>([]);
-  const [localGeneration, setLocalGeneration] = useState<LocalGenerationSettingsDto>({
-    baseUrl: "",
-    modelId: "",
-    apiKey: "",
-  });
-  const [modelId, setModelId] = useState("");
-  const [costQuality, setCostQualityState] = useState<number | undefined>();
-  // Mirrors the saved Venice API key's presence so the model popover can show
-  // its Auto billing note (Auto meters June credits, never the key).
-  const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [modelFlyout, setModelFlyout] = useState<ComposerModelFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
-  const modelSelectionRef = useRef(modelSelection);
-  const appliedHermesModelIdRef = useRef(appliedHermesModelId);
-  const storedSessionIdRef = useRef(storedSessionId);
-  const generationSelectionSaveChainRef = useRef<Promise<void>>(Promise.resolve());
-  const generationSelectionIntentRevisionRef = useRef(0);
-  const localEnableConfirmArmedForRef = useRef<string | null>(null);
-  modelSelectionRef.current = modelSelection;
-  appliedHermesModelIdRef.current = appliedHermesModelId;
-  storedSessionIdRef.current = storedSessionId;
   useEffect(() => {
     let stale = false;
-    void (async () => {
-      const [settings, catalog] = await Promise.all([
-        providerModelSettings(),
-        listVeniceModels("generation"),
-      ]);
-      if (stale) return;
-      const local = settings.settings.localGeneration ?? {
-        baseUrl: "",
-        modelId: "",
-        apiKey: "",
-      };
-      setLocalGeneration(local);
-      setVeniceApiKeyConfigured(settings.settings.veniceApiKeyConfigured);
-      setModels(withLocalGenerationOption(catalog.models, local));
-      const fallbackModelId =
-        settings.settings.generationProvider === "local" && local.modelId.trim()
-          ? localGenerationOptionId(local.modelId)
-          : settings.settings.generationModel || catalog.selectedModel;
-      const initialSelection = modelSelectionRef.current ??
-        selectionForAppliedHermesModel(appliedHermesModelIdRef.current, local) ?? {
-          modelId: fallbackModelId,
-          ...(fallbackModelId === AUTO_MODEL_ID && settings.settings.costQuality !== undefined
-            ? { costQuality: settings.settings.costQuality }
-            : {}),
-        };
-      setModelId(initialSelection.modelId);
-      setCostQualityState(
-        initialSelection.modelId === AUTO_MODEL_ID
-          ? (initialSelection.costQuality ?? settings.settings.costQuality)
-          : settings.settings.costQuality,
-      );
-      if (!modelSelectionRef.current && !storedSessionId) setSessionModel(initialSelection);
-    })().catch(() => {
-      // No catalog (bridge down, browser preview): the picker simply hides.
-    });
+    void listVeniceModels("generation")
+      .then((catalog) => {
+        if (stale) return;
+        setModels(catalog.models);
+        if (activeModelId === "auto" && catalog.selectedModel) setModel(catalog.selectedModel);
+      })
+      .catch(() => undefined);
     return () => {
       stale = true;
     };
-  }, [setSessionModel, storedSessionId]);
-
-  // The hook owns the durable queued/applied choice. Reflect note switches and
-  // changes made while an agent run is active without consulting the mutable
-  // app-wide default.
-  useEffect(() => {
-    const displayedSelection =
-      modelSelection ?? selectionForAppliedHermesModel(appliedHermesModelId, localGeneration);
-    if (!displayedSelection) return;
-    setModelId(displayedSelection.modelId);
-    if (
-      displayedSelection.modelId === AUTO_MODEL_ID &&
-      displayedSelection.costQuality !== undefined
-    ) {
-      setCostQualityState(displayedSelection.costQuality);
-    }
-  }, [appliedHermesModelId, localGeneration, modelSelection]);
-  const model = modelId
-    ? models.some((candidate) => candidate.id === modelId)
-      ? selectedModel(models, modelId)
-      : (unavailableLocalGenerationOption(modelId) ?? selectedModel(models, modelId))
-    : undefined;
-  const resolvedTextModel = models.find((candidate) => candidate.id === modelId);
+  }, [activeModelId, setModel]);
+  const model = selectedModel(models, activeModelId);
   const textFundingContext: TextFundingModelContext = {
-    activeModelId: modelId || undefined,
-    activeModel: resolvedTextModel,
-    veniceApiKeyConfigured,
+    activeModelId: activeModelId || undefined,
+    activeModel: model,
+    veniceApiKeyConfigured: false,
   };
   const textActionsDisabledReason = shouldBlockTextOnFunding(
     Boolean(creditActionsDisabledReason),
@@ -437,82 +252,10 @@ export function NoteChatPanel({
     ? creditActionsDisabledReason
     : undefined;
 
-  function saveGenerationSelection(write: () => Promise<unknown>): Promise<void> {
-    const save = generationSelectionSaveChainRef.current.then(async () => {
-      await write();
-    });
-    generationSelectionSaveChainRef.current = save.catch(() => undefined);
-    return save;
-  }
-
-  async function selectModel(nextModelId: string, nextCostQuality?: number) {
-    try {
-      if (nextModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
-        const baseUrl = localGeneration.baseUrl.trim();
-        if (!isLoopbackUrl(baseUrl)) {
-          if (localEnableConfirmArmedForRef.current !== baseUrl) {
-            localEnableConfirmArmedForRef.current = baseUrl;
-            setComposerError(
-              "This endpoint is not on this machine. Requests will leave your device. Select the local model again to confirm.",
-            );
-            setModelOpen(false);
-            return;
-          }
-        }
-      }
-      localEnableConfirmArmedForRef.current = null;
-      const selectedCostQuality =
-        nextModelId === AUTO_MODEL_ID ? (nextCostQuality ?? costQuality) : undefined;
-      const selection: SessionModelSelection = {
-        modelId: nextModelId,
-        ...(selectedCostQuality !== undefined ? { costQuality: selectedCostQuality } : {}),
-      };
-      const previousSelection: SessionModelSelection = {
-        modelId,
-        ...(modelId === AUTO_MODEL_ID && costQuality !== undefined ? { costQuality } : {}),
-      };
-      const previousCostQuality = costQuality;
-      setModelId(nextModelId);
-      if (selectedCostQuality !== undefined) setCostQualityState(selectedCostQuality);
-      setSessionModel(selection);
-      setModelOpen(false);
-      setComposerError(null);
-      // Before the first session.create returns there is no stored id yet, but
-      // a picker change already belongs to this chat's following agent run.
-      // Keep it session-local instead of mutating unrelated future sessions.
-      if (storedSessionId || chat.submissionPending) return;
-
-      const intentRevision = ++generationSelectionIntentRevisionRef.current;
-      try {
-        await saveGenerationSelection(async () => {
-          if (nextModelId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) {
-            await setLocalGenerationEnabled(true);
-            return;
-          }
-          if (selectedCostQuality !== undefined) {
-            await setCostQuality(selectedCostQuality);
-          }
-          await setVeniceModel("generation", nextModelId);
-        });
-        if (generationSelectionIntentRevisionRef.current === intentRevision) {
-          dispatchProviderModelSettingsChanged({
-            mode: "generation",
-            modelId: nextModelId,
-          });
-        }
-      } catch (err) {
-        if (generationSelectionIntentRevisionRef.current === intentRevision) {
-          if (!storedSessionIdRef.current) {
-            setModelId(previousSelection.modelId);
-            setCostQualityState(previousCostQuality);
-            setSessionModel(previousSelection);
-          }
-          setComposerError(messageFromError(err));
-        }
-      }
-    } catch (err) {
-      setComposerError(messageFromError(err));
-    }
+  function selectModel(nextModelId: string) {
+    setModel(nextModelId);
+    setModelOpen(false);
+    setComposerError(null);
   }
 
   useEffect(() => {
@@ -602,7 +345,7 @@ export function NoteChatPanel({
   }, [turns.length, lastTurnSize, working, fade.update]);
 
   async function handleSend() {
-    if (working || importing || textActionsDisabledReason) return;
+    if (working || textActionsDisabledReason) return;
     if (!composerRef.current?.flushPendingChange()) return;
     const serializedText = draftRef.current;
     const text = serializedText.trim();
@@ -713,18 +456,7 @@ export function NoteChatPanel({
                   </div>
                 ) : (
                   <div key={turn.id} className="note-chat-turn-assistant">
-                    {turn.parts.map((part, index) =>
-                      assistantPartNode(part, index, {
-                        attempted: storedSessionId
-                          ? upstreamProviderRecoveryStore.attempted(
-                              storedSessionId,
-                              upstreamFailureRecoveryIds.get(turn.id) ?? "",
-                            )
-                          : false,
-                        disabled: working || chat.submissionPending,
-                        onRetry: () => void handleUpstreamFailureRetry(turn.id),
-                      }),
-                    )}
+                    {turn.parts.map((part, index) => assistantPartNode(part, index))}
                   </div>
                 ),
               )}
@@ -765,14 +497,9 @@ export function NoteChatPanel({
                   <span
                     key={attachment.id}
                     className="agent-attachment-chip"
-                    data-attach-status={attachment.attach.status}
-                    title={attachment.attach.error ?? attachment.name}
+                    title={attachment.name}
                   >
-                    {attachment.previewDataUrl ? (
-                      <img src={attachment.previewDataUrl} alt="" aria-hidden="true" />
-                    ) : (
-                      <FileTypeIcon name={attachment.name} size={14} />
-                    )}
+                    <FileTypeIcon name={attachment.name} size={14} />
                     <span className="agent-attachment-name">{attachment.name}</span>
                     <button
                       type="button"
@@ -791,7 +518,7 @@ export function NoteChatPanel({
             ) : null}
             <ComposerEditor
               ref={composerRef}
-              placeholder={importing ? "Attaching file…" : "Ask about this note"}
+              placeholder="Ask about this note"
               onChange={(text) => {
                 draftRef.current = text;
                 setDraftEmpty(!text.trim());
@@ -813,9 +540,6 @@ export function NoteChatPanel({
                 <ComposerModelPicker
                   open={modelOpen}
                   model={model}
-                  detail={
-                    model?.id === AUTO_MODEL_ID ? autoPillDesignation(costQuality) : undefined
-                  }
                   triggerRef={modelTriggerRef}
                   onToggleOpen={() => {
                     setModelFlyout(null);
@@ -854,9 +578,7 @@ export function NoteChatPanel({
                     className="agent-composer-send"
                     aria-label="Send message"
                     disabled={
-                      Boolean(textActionsDisabledReason) ||
-                      importing ||
-                      (draftEmpty && !attachments.length)
+                      Boolean(textActionsDisabledReason) || (draftEmpty && !attachments.length)
                     }
                     onClick={() => void handleSend()}
                   >
@@ -871,16 +593,12 @@ export function NoteChatPanel({
               flyout={modelFlyout}
               model={model}
               options={modelOptions(models, model?.id ?? "")}
-              costQuality={costQuality}
               search={modelSearch}
               popoverRef={modelPopoverRef}
               searchRef={modelSearchRef}
-              veniceApiKeyConfigured={veniceApiKeyConfigured}
               onFlyoutChange={setModelFlyout}
               onSearchChange={setModelSearch}
-              onSelect={(nextModelId, nextCostQuality) =>
-                void selectModel(nextModelId, nextCostQuality)
-              }
+              onSelect={selectModel}
             />
           ) : null}
         </footer>

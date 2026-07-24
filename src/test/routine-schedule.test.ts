@@ -104,7 +104,7 @@ describe("scheduleFromDraft", () => {
     expect(scheduleFromDraft({ kind: "weekly", day: 5, time: "16:00" })).toBe("0 16 * * 5");
   });
 
-  it("renders intervals in Hermes's grammar, preferring hours", () => {
+  it("renders intervals in the persisted grammar, preferring hours", () => {
     expect(scheduleFromDraft({ kind: "interval", minutes: 30 })).toBe("every 30m");
     expect(scheduleFromDraft({ kind: "interval", minutes: 120 })).toBe("every 2h");
   });
@@ -129,7 +129,7 @@ describe("draftFromSchedule", () => {
       day: 5,
       time: "16:00",
     });
-    // Hermes normalizes intervals to minutes; an hour's worth still maps.
+    // Imported intervals may be normalized to minutes; an hour's worth still maps.
     expect(draftFromSchedule("every 90m")).toEqual({
       kind: "interval",
       minutes: 90,

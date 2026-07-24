@@ -1,4 +1,6 @@
 pub mod agent_hud;
+pub mod agent_mcp;
+pub mod agent_runtime;
 pub mod app_paths;
 pub mod audio;
 pub mod browser;
@@ -15,7 +17,7 @@ pub mod domain;
 pub mod experimental_settings;
 pub mod extension_host;
 pub mod feature_flags;
-pub mod hermes_bridge;
+mod filesystem;
 pub mod image_safety;
 pub mod june_api;
 pub mod macos_menu_icons;
@@ -30,15 +32,16 @@ pub mod obsidian;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
+pub mod routines;
 mod shutdown;
 pub mod theme_icon;
 pub mod updates;
 pub mod video_download_url;
 
 use serde::Deserialize;
-use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
@@ -165,6 +168,36 @@ pub fn run() {
             theme_icon::set_dock_icon,
             print_current_webview,
             commands::bootstrap_app,
+            agent_runtime::api::list_agent_sessions,
+            agent_runtime::api::get_agent_session,
+            agent_runtime::api::create_agent_session,
+            agent_runtime::api::rename_agent_session,
+            agent_runtime::api::delete_agent_session,
+            agent_runtime::api::list_agent_items,
+            agent_runtime::api::start_agent_run,
+            agent_runtime::api::cancel_agent_run,
+            agent_runtime::api::retry_agent_run,
+            agent_runtime::api::resolve_agent_interruption,
+            agent_runtime::api::list_agent_artifacts,
+            agent_runtime::api::read_agent_artifact_preview,
+            agent_runtime::api::read_agent_artifact_text,
+            agent_runtime::api::list_agent_skills,
+            agent_runtime::api::set_agent_skill_enabled,
+            agent_mcp::list_agent_mcp_servers,
+            agent_mcp::create_agent_mcp_server,
+            agent_mcp::update_agent_mcp_server,
+            agent_mcp::delete_agent_mcp_server,
+            agent_mcp::test_agent_mcp_server,
+            routines::list_agent_routines,
+            routines::create_agent_routine,
+            routines::update_agent_routine,
+            routines::pause_agent_routine,
+            routines::resume_agent_routine,
+            routines::trigger_agent_routine,
+            routines::delete_agent_routine,
+            routines::list_agent_routine_runs,
+            routines::routine_browser_access_get,
+            routines::routine_browser_access_set,
             commands::experimental_flags_get,
             commands::experimental_flags_set,
             commands::create_note,
@@ -206,19 +239,7 @@ pub fn run() {
             commands::set_folder_memory_disabled,
             commands::memory_settings,
             commands::set_memory_enabled,
-            commands::list_agent_tasks,
-            commands::create_agent_task,
-            commands::get_agent_task,
-            commands::send_agent_message,
-            commands::save_agent_assistant_message,
-            commands::save_agent_hermes_session,
-            commands::suggest_agent_session_title,
             commands::submit_issue_report,
-            commands::finalize_hermes_bridge_branch,
-            commands::explain_agent_approval,
-            commands::cancel_agent_task,
-            commands::retry_agent_task,
-            commands::list_agent_tool_events,
             commands::share_create,
             commands::share_list,
             commands::share_get,
@@ -230,58 +251,6 @@ pub fn run() {
             commands::share_invite_key_save,
             commands::share_invite_keys_get,
             commands::get_share_base_url,
-            hermes_bridge::hermes_bridge_status,
-            hermes_bridge::ensure_hermes_bridge_gateway,
-            hermes_bridge::resolve_agent_recorder_request,
-            hermes_bridge::hermes_admin_request,
-            hermes_bridge::hermes_mcp_oauth_login,
-            hermes_bridge::hermes_reset_bundled_skill,
-            hermes_bridge::hermes_skill_tap_list,
-            hermes_bridge::hermes_skill_tap_add,
-            hermes_bridge::hermes_skill_tap_remove,
-            hermes_bridge::hermes_inspect_external_dirs,
-            hermes_bridge::hermes_list_skill_bundles,
-            hermes_bridge::hermes_save_skill_bundle,
-            hermes_bridge::hermes_delete_skill_bundle,
-            hermes_bridge::hermes_bridge_skills,
-            hermes_bridge::hermes_pending_skill_writes,
-            hermes_bridge::hermes_resolve_pending_skill_write,
-            hermes_bridge::hermes_bridge_toolsets,
-            hermes_bridge::hermes_bridge_messaging_platforms,
-            hermes_bridge::hermes_bridge_filesystem_snapshot,
-            hermes_bridge::download_hermes_bridge_file,
-            hermes_bridge::hermes_bridge_file_preview,
-            hermes_bridge::hermes_bridge_image_data_url,
-            hermes_bridge::prepare_hermes_bridge_image_attachment,
-            hermes_bridge::hermes_bridge_file_text,
-            hermes_bridge::import_hermes_bridge_file,
-            hermes_bridge::import_hermes_bridge_file_bytes,
-            hermes_bridge::hermes_bridge_sessions,
-            hermes_bridge::ensure_hermes_bridge_session,
-            hermes_bridge::hermes_bridge_session_messages,
-            hermes_bridge::delete_hermes_bridge_session,
-            hermes_bridge::hermes_bridge_cron_jobs,
-            hermes_bridge::create_hermes_bridge_cron_job,
-            hermes_bridge::update_hermes_bridge_cron_job,
-            hermes_bridge::hermes_bridge_cron_job_action,
-            hermes_bridge::delete_hermes_bridge_cron_job,
-            hermes_bridge::start_hermes_bridge,
-            hermes_bridge::stop_hermes_bridge,
-            hermes_bridge::toggle_hermes_bridge_skill,
-            hermes_bridge::get_hermes_bridge_skill,
-            hermes_bridge::update_hermes_bridge_skill,
-            hermes_bridge::toggle_hermes_bridge_toolset,
-            hermes_bridge::update_hermes_bridge_messaging_platform,
-            hermes_bridge::hermes_agent_cli_access,
-            hermes_bridge::set_hermes_agent_cli_access,
-            hermes_bridge::hermes_browser_access,
-            hermes_bridge::browser_transport_policy,
-            hermes_bridge::set_hermes_browser_access,
-            hermes_bridge::routine_browser_access_get,
-            hermes_bridge::routine_browser_access_set,
-            hermes_bridge::june_character,
-            hermes_bridge::set_june_character,
-            hermes_bridge::open_hermes_tui_debug,
             commands::get_microphone_permission_state,
             commands::check_recording_source_readiness,
             commands::open_privacy_settings,
@@ -393,9 +362,6 @@ pub fn run() {
             connectors::approvals::connector_approvals_pending,
             connectors::approvals::connector_approval_respond,
             connectors::approvals::connector_approvals_respond_all,
-            hermes_bridge::browser_approvals_pending,
-            hermes_bridge::browser_approval_respond,
-            hermes_bridge::connectors_apply_runtime,
             computer_use::computer_use_status,
             computer_use::set_computer_use_grant,
             computer_use::computer_use_request_permissions,
@@ -412,8 +378,8 @@ pub fn run() {
             updates::relaunch_for_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
-        .manage(note_save_flush::NoteSaveFlushState::default())
-        .manage(hermes_bridge::HermesBridge::default())
+        .manage(agent_runtime::AgentRuntimeHost::default())
+        .manage(Arc::new(browser_broker::BrowserBroker::default()))
         .manage(computer_use::ComputerUseState::default())
         .manage(shutdown::ShutdownCoordinator::default())
         .manage(os_accounts::LoginFlow::default())
@@ -434,12 +400,10 @@ pub fn run() {
             agent_hud::setup(app);
             notifications::setup(app);
             meeting_detection::setup(app);
-            repair_agent_task_statuses_on_app_start(app);
-            hermes_bridge::start_on_app_start(app);
             extension_host::setup(app);
-            // Poll Google for the events routines subscribe to (email arrivals,
-            // upcoming meetings) and wake the matching routine. Runs after the
-            // bridge init so cron triggers have a runtime to fire into.
+            routines::start_scheduler(app.handle());
+            // Poll Google for the events routines subscribe to (email arrivals
+            // and upcoming meetings) and wake the matching durable routine.
             connectors::triggers::start(app.handle());
             meeting_hud::setup(app);
             os_accounts::setup_deep_link(app);
@@ -464,15 +428,14 @@ pub fn run() {
 }
 
 /// Registers the generated-video directory in the asset-protocol scope so the
-/// inline `<video>` player can load it. `app_data_dir` appends a `-dev` suffix
-/// in debug builds (dev/prod data isolation), but the static assetProtocol
-/// scope (`$APPDATA/hermes/videos`) resolves the config identifier *without*
-/// that suffix, so inline playback of a generated file is denied in dev even
-/// though download (an fs read, unscoped) works. Registering the resolved
-/// directory here matches the real write path in both dev and prod.
+/// inline `<video>` player can load it. Registering the resolved directory
+/// matches the real write path in both development and production.
 fn setup_video_asset_scope(app: &mut tauri::App) {
     let videos_dir = match crate::app_paths::app_data_dir(app.handle()) {
-        Ok(data_dir) => data_dir.join("hermes").join("videos"),
+        Ok(data_dir) => data_dir
+            .join("agent-workspaces")
+            .join("generated-media")
+            .join("videos"),
         Err(error) => {
             tracing::warn!(%error, "video asset scope: could not resolve app data dir");
             return;
@@ -489,7 +452,7 @@ fn setup_video_asset_scope(app: &mut tauri::App) {
 fn setup_computer_use_asset_scope(app: &mut tauri::App) {
     let captures_dir = match crate::app_paths::app_data_dir(app.handle()) {
         Ok(data_dir) => data_dir
-            .join("hermes")
+            .join("agent-workspaces")
             .join("computer-use")
             .join("captures"),
         Err(error) => {
@@ -665,23 +628,6 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
     app.set_menu(menu)?;
     macos_menu_icons::install_settings_symbol_on_app_menu();
     Ok(())
-}
-
-fn repair_agent_task_statuses_on_app_start(app: &tauri::App) {
-    let app = app.handle().clone();
-    tauri::async_runtime::spawn(async move {
-        match commands::repositories(&app).await {
-            Ok(repos) => {
-                if let Err(error) = repos.complete_agent_tasks_with_assistant_messages().await {
-                    eprintln!("failed to repair agent task statuses on app startup: {error}");
-                }
-            }
-            Err(error) => eprintln!(
-                "failed to open repositories for agent task status repair: {}",
-                error.message
-            ),
-        }
-    });
 }
 
 fn close_main_window(app: &tauri::AppHandle) {

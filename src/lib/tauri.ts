@@ -1,10 +1,67 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import type {
+  AgentArtifactDto,
+  AgentInterruptionDto,
+  AgentItemDto,
+  AgentRunDto,
+  AgentRuntimeBindings,
+  AgentSafetyMode,
+  AgentSessionDto,
+  AgentSkillDto,
+  ResolveAgentInterruptionRequest,
+  StartAgentRunRequest,
+} from "./agent-runtime-contract";
 import { parseDictationHelperEvent } from "./dictation-events";
 
-// Re-exported so modules that build their own command calls (e.g. the Hermes
-// admin Rust transport) route through the same `invoke` the rest of the app's
-// bindings use, rather than reaching into `@tauri-apps/api/core` directly.
+// Re-exported so modules that build their own command calls route through the
+// same `invoke` as the rest of the app's bindings.
 export { invoke };
+
+/** June-owned agent runtime command surface. Keep command spelling here so UI
+ * code never depends on native transport details. */
+export const agentRuntimeBindings: AgentRuntimeBindings = {
+  listSessions: () => invoke<AgentSessionDto[]>("list_agent_sessions"),
+  getSession: (sessionId) => invoke<AgentSessionDto>("get_agent_session", { sessionId }),
+  createSession: (input) => invoke<AgentSessionDto>("create_agent_session", { request: input }),
+  renameSession: (sessionId, title) =>
+    invoke<AgentSessionDto>("rename_agent_session", { request: { sessionId, title } }),
+  deleteSession: (sessionId) => invoke<void>("delete_agent_session", { sessionId }),
+  listItems: (sessionId) => invoke<AgentItemDto[]>("list_agent_items", { sessionId }),
+  startRun: (request) => invoke<AgentRunDto>("start_agent_run", { request }),
+  cancelRun: (runId) => invoke<void>("cancel_agent_run", { runId }),
+  retryRun: (runId) => invoke<AgentRunDto>("retry_agent_run", { runId }),
+  resolveInterruption: (request) => invoke<AgentRunDto>("resolve_agent_interruption", { request }),
+  listArtifacts: (sessionId) => invoke<AgentArtifactDto[]>("list_agent_artifacts", { sessionId }),
+  listSkills: () => invoke<AgentSkillDto[]>("list_agent_skills"),
+  setSkillEnabled: (skillId, enabled) =>
+    invoke<AgentSkillDto>("set_agent_skill_enabled", { request: { skillId, enabled } }),
+};
+
+export const listAgentSessions = agentRuntimeBindings.listSessions;
+export const getAgentSession = agentRuntimeBindings.getSession;
+export const createAgentSession = agentRuntimeBindings.createSession;
+export const renameAgentSession = agentRuntimeBindings.renameSession;
+export const deleteAgentSession = agentRuntimeBindings.deleteSession;
+export const listAgentItems = agentRuntimeBindings.listItems;
+export const startAgentRun = (request: StartAgentRunRequest) =>
+  agentRuntimeBindings.startRun(request);
+export const cancelAgentRun = agentRuntimeBindings.cancelRun;
+export const retryAgentRun = agentRuntimeBindings.retryRun;
+export const resolveAgentInterruption = (request: ResolveAgentInterruptionRequest) =>
+  agentRuntimeBindings.resolveInterruption(request);
+export const listAgentArtifacts = agentRuntimeBindings.listArtifacts;
+export const listAgentSkills = agentRuntimeBindings.listSkills;
+export const setAgentSkillEnabled = agentRuntimeBindings.setSkillEnabled;
+
+export type {
+  AgentArtifactDto,
+  AgentInterruptionDto,
+  AgentItemDto,
+  AgentRunDto,
+  AgentSafetyMode,
+  AgentSessionDto,
+  AgentSkillDto,
+};
 
 export async function printCurrentWebview() {
   return invoke<void>("print_current_webview");
@@ -51,8 +108,7 @@ export type MemorySettingsDto = {
   enabled: boolean;
 };
 
-/** Which project (folder) an agent session is filed under. Sessions live in
- * Hermes, so only the assignment is stored locally. */
+/** Which project (folder) an agent session is filed under. */
 export type SessionFolderDto = {
   sessionId: string;
   folderId: string;
@@ -63,8 +119,7 @@ export type CompletedSessionDto = {
   completedAt: string;
 };
 
-/** Which Hermes profile an agent session was created under. Sessions live in
- * Hermes, so only the assignment is stored locally. */
+/** Which June profile an agent session was created under. */
 export type SessionProfileDto = {
   sessionId: string;
   profile: string;
@@ -523,120 +578,11 @@ export type RecoverableSourceDto = {
   lastError?: string;
 };
 
-export type AgentSafetyProfile = "autonomousPrivate";
-
-export type AgentTaskStatus =
-  | "draft"
-  | "queued"
-  | "running"
-  | "waitingForUser"
-  | "paused"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-export type AgentMessageRole = "system" | "assistant" | "user";
-
-export type AgentToolEventStatus = "proposed" | "running" | "completed" | "failed" | "blocked";
-
-export type AgentMessageDto = {
-  id: string;
-  taskId: string;
-  role: AgentMessageRole;
-  content: string;
-  createdAt: string;
-};
-
-export type AgentToolEventDto = {
-  id: string;
-  taskId: string;
-  toolName: string;
-  status: AgentToolEventStatus;
-  summary: string;
-  argumentsJson?: string;
-  resultJson?: string;
-  redacted: boolean;
-  createdAt: string;
-  completedAt?: string;
-};
-
-export type AgentTaskDto = {
-  id: string;
-  title: string;
-  prompt: string;
-  status: AgentTaskStatus;
-  safetyProfile: AgentSafetyProfile;
-  hermesSessionId?: string;
-  progressSummary?: string;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  messages: AgentMessageDto[];
-  toolEvents: AgentToolEventDto[];
-};
-
-export type AgentTaskListResponse = {
-  items: AgentTaskDto[];
-};
-
 export type SuggestAgentSessionTitleResponse = {
   title: string;
 };
 
-export type HermesBridgeConnection = {
-  baseUrl: string;
-  wsUrl: string;
-  token: string;
-  port: number;
-  command: string;
-  hermesHome: string;
-  cwd?: string | null;
-  providerProxyPort: number;
-  pid: number;
-  /** True when the runtime is wrapped in the macOS Seatbelt write-jail (false
-   * on non-macOS, when sandbox-exec is missing, or when disabled via the
-   * escape-hatch env var). Mirrors the Rust connection field. */
-  sandboxed: boolean;
-  /** True when the user opted this runtime into Full mode (sandbox
-   * deliberately off). Distinct from `sandboxed`, which can also be false for
-   * environmental reasons. Mirrors the Rust connection field. */
-  fullMode: boolean;
-};
-
-export type HermesBridgeStatus = {
-  /** True when any runtime process is up. */
-  running: boolean;
-  /** Primary connection (the requested mode for a start call, otherwise
-   * sandboxed-first). Mode-aware callers should use `connections`. */
-  connection?: HermesBridgeConnection;
-  /** Every live runtime process — at most one per write-access mode. */
-  connections?: HermesBridgeConnection[];
-  message?: string;
-};
-
-export type HermesFilesystemEntry = {
-  name: string;
-  path: string;
-  kind: "directory" | "file" | string;
-  size?: number | null;
-  modifiedAt?: string | null;
-  children?: HermesFilesystemEntry[] | null;
-};
-
-export type HermesFilesystemRoot = {
-  id: string;
-  label: string;
-  path: string;
-  description: string;
-  entries: HermesFilesystemEntry[];
-};
-
-export type HermesFilesystemSnapshot = {
-  roots: HermesFilesystemRoot[];
-};
-
-export type ImportedHermesFile = {
+export type ImportedAgentFile = {
   name: string;
   path: string;
   rootLabel: string;
@@ -644,141 +590,20 @@ export type ImportedHermesFile = {
   previewDataUrl?: string | null;
 };
 
-export type PreparedHermesImageAttachment = {
-  path: string;
-  mimeType: string;
-  size: number;
-};
-
-export type HermesSkillInfo = {
+export type AgentSkillInfo = {
   name: string;
   description?: string;
   category?: string;
   enabled?: boolean;
 };
 
-export type HermesSkillDocument = {
+export type AgentSkillDocument = {
   name: string;
   relativePath: string;
   content: string;
   /** True for skills loaded from an external dir (e.g. ~/.agents/skills).
    *  June can read but not write them, so the editor is read-only. */
   readOnly?: boolean;
-};
-
-export type HermesToolsetInfo = {
-  name: string;
-  label?: string;
-  description?: string;
-  enabled?: boolean;
-  available?: boolean;
-  tools?: string[];
-  provider?: string;
-};
-
-export type HermesMessagingEnvVarInfo = {
-  key: string;
-  prompt?: string;
-  description?: string;
-  required?: boolean;
-  advanced?: boolean;
-  isSet?: boolean;
-  is_set?: boolean;
-  isPassword?: boolean;
-  is_password?: boolean;
-  redactedValue?: string | null;
-  redacted_value?: string | null;
-  url?: string | null;
-};
-
-export type HermesMessagingPlatformInfo = {
-  id: string;
-  name: string;
-  description?: string;
-  docsUrl?: string;
-  docs_url?: string;
-  enabled?: boolean;
-  configured?: boolean;
-  gatewayRunning?: boolean;
-  gateway_running?: boolean;
-  state?: string | null;
-  errorCode?: string | null;
-  error_code?: string | null;
-  errorMessage?: string | null;
-  error_message?: string | null;
-  envVars?: HermesMessagingEnvVarInfo[];
-  env_vars?: HermesMessagingEnvVarInfo[];
-};
-
-export type HermesMessagingPlatformsResponse = {
-  platforms: HermesMessagingPlatformInfo[];
-};
-
-export type HermesSessionInfo = {
-  id: string;
-  active?: boolean;
-  is_active?: boolean;
-  status?: string;
-  source?: string;
-  kind?: string | null;
-  session_type?: string | null;
-  sessionType?: string | null;
-  subagent_id?: string | null;
-  subagentId?: string | null;
-  user_id?: string;
-  model?: string;
-  title?: string;
-  started_at?: string;
-  startedAt?: string;
-  ended_at?: string | null;
-  endedAt?: string | null;
-  end_reason?: string | null;
-  message_count?: number;
-  tool_call_count?: number;
-  parent_session_id?: string | null;
-  parentSessionId?: string | null;
-  last_active?: string;
-  lastActive?: string;
-  preview?: string;
-  has_system_prompt?: boolean;
-  has_model_config?: boolean;
-};
-
-export type HermesSessionsResponse = {
-  sessions?: HermesSessionInfo[];
-  items?: HermesSessionInfo[];
-  data?: HermesSessionInfo[];
-  total?: number;
-  limit?: number;
-  offset?: number;
-};
-
-export type HermesSessionMessage = {
-  id: string;
-  session_id?: string;
-  role: "system" | "user" | "assistant" | "tool";
-  content?: unknown;
-  text?: unknown;
-  context?: unknown;
-  name?: string | null;
-  tool_call_id?: string | null;
-  tool_calls?: unknown;
-  tool_name?: string | null;
-  timestamp?: string | number;
-  created_at?: string | number;
-  token_count?: number | null;
-  finish_reason?: string | null;
-  reasoning?: string | null;
-  reasoning_content?: string | null;
-  reasoning_details?: unknown;
-  codex_reasoning_items?: unknown;
-  codex_message_items?: unknown;
-};
-
-export type HermesSessionMessagesResponse = {
-  messages?: HermesSessionMessage[];
-  items?: HermesSessionMessage[];
-  data?: HermesSessionMessage[];
 };
 
 export type BootstrapResponse = {
@@ -930,7 +755,7 @@ export async function assignSessionToFolder(sessionId: string, folderId: string)
   });
 }
 
-export async function listSessionProfiles() {
+export async function listSessionPartitions() {
   return invoke<SessionProfileDto[]>("list_session_profiles");
 }
 
@@ -938,12 +763,6 @@ export async function assignSessionToProfile(sessionId: string, profile: string)
   return invoke<void>("assign_session_to_profile", {
     request: { sessionId, profile },
   });
-}
-
-/** The sticky active profile read straight from the Hermes home file —
- * resolvable before the Hermes web server is up (cold start). */
-export async function stickyActiveProfile() {
-  return invoke<string>("sticky_active_profile");
 }
 
 export async function profileDataSummary(profile: string) {
@@ -1041,10 +860,6 @@ export async function setMemoryEnabled(enabled: boolean) {
   return invoke<MemorySettingsDto>("set_memory_enabled", { enabled });
 }
 
-export async function listAgentTasks() {
-  return invoke<AgentTaskListResponse>("list_agent_tasks");
-}
-
 export async function agentHudShow() {
   return invoke<void>("agent_hud_show");
 }
@@ -1063,7 +878,7 @@ export async function agentHudSetLayout(input: {
   return invoke<void>("agent_hud_set_layout", { request: input });
 }
 
-export async function agentHudOpenAgent(session?: HermesSessionInfo) {
+export async function agentHudOpenAgent(session?: AgentSessionDto) {
   return invoke<void>("agent_hud_open_agent", { session });
 }
 
@@ -1101,49 +916,6 @@ export async function acknowledgeMeetingStartRequest(requestId: string) {
   return invoke<boolean>("acknowledge_meeting_start_request", { requestId });
 }
 
-export async function createAgentTask(input: {
-  prompt: string;
-  title?: string;
-  safetyProfile?: AgentSafetyProfile;
-  runPlaceholder?: boolean;
-}) {
-  return invoke<AgentTaskDto>("create_agent_task", { request: input });
-}
-
-export async function getAgentTask(taskId: string) {
-  return invoke<AgentTaskDto>("get_agent_task", { request: { taskId } });
-}
-
-export async function sendAgentMessage(input: {
-  taskId: string;
-  content: string;
-  runPlaceholder?: boolean;
-}) {
-  return invoke<AgentTaskDto>("send_agent_message", { request: input });
-}
-
-export async function saveAgentAssistantMessage(input: { taskId: string; content: string }) {
-  return invoke<AgentTaskDto>("save_agent_assistant_message", {
-    request: input,
-  });
-}
-
-export async function saveAgentHermesSession(input: { taskId: string; hermesSessionId: string }) {
-  return invoke<AgentTaskDto>("save_agent_hermes_session", {
-    request: input,
-  });
-}
-
-export async function suggestAgentSessionTitle(prompt: string, response?: string) {
-  const trimmedResponse = response?.trim();
-  return invoke<SuggestAgentSessionTitleResponse>("suggest_agent_session_title", {
-    request: {
-      prompt,
-      ...(trimmedResponse ? { response: trimmedResponse } : {}),
-    },
-  });
-}
-
 export type SubmitIssueReportRequest = {
   /** Which kind of report this is: "bug" | "feedback" | "feature". Drives the
    * team's triage. Direct dialog reports run no model turn, so there is
@@ -1171,23 +943,6 @@ export async function submitIssueReport(request: SubmitIssueReportRequest) {
   return invoke<SubmitIssueReportResponse>("submit_issue_report", { request });
 }
 
-export type FinalizeHermesBranchResponse = {
-  branchSessionId: string;
-  keptMessageCount: number;
-  removedMessageCount: number;
-};
-
-export async function finalizeHermesBridgeBranch(input: {
-  branchSessionId: string;
-  sourceSessionId: string;
-  throughMessageId?: string;
-  keepMessageCount?: number;
-}) {
-  return invoke<FinalizeHermesBranchResponse>("finalize_hermes_bridge_branch", {
-    request: input,
-  });
-}
-
 export type ExplainAgentApprovalResponse = {
   explanation: string;
 };
@@ -1200,577 +955,24 @@ export async function explainAgentApproval(input: { description: string; command
   });
 }
 
-export async function cancelAgentTask(taskId: string) {
-  return invoke<AgentTaskDto>("cancel_agent_task", { request: { taskId } });
+export async function agentFilePreview(path: string) {
+  return invoke<string | null>("read_agent_artifact_preview", { request: { path } });
 }
 
-export async function retryAgentTask(taskId: string) {
-  return invoke<AgentTaskDto>("retry_agent_task", { request: { taskId } });
+export async function agentFileText(path: string) {
+  return invoke<string | null>("read_agent_artifact_text", { request: { path } });
 }
 
-export async function listAgentToolEvents(taskId: string) {
-  return invoke<AgentToolEventDto[]>("list_agent_tool_events", {
-    request: { taskId },
-  });
-}
-
-export async function hermesBridgeStatus() {
-  return invoke<HermesBridgeStatus>("hermes_bridge_status");
-}
-
-export async function ensureHermesBridgeGateway() {
-  return invoke<void>("ensure_hermes_bridge_gateway");
-}
-
-export async function hermesBridgeSkills() {
-  return invoke<HermesSkillInfo[]>("hermes_bridge_skills");
-}
-
-export async function getHermesBridgeSkill(name: string) {
-  return invoke<HermesSkillDocument>("get_hermes_bridge_skill", {
-    request: { name },
-  });
-}
-
-export async function updateHermesBridgeSkill(input: { name: string; content: string }) {
-  return invoke<HermesSkillDocument>("update_hermes_bridge_skill", {
-    request: input,
-  });
-}
-
-export async function toggleHermesBridgeSkill(input: { name: string; enabled: boolean }) {
-  return invoke<{ ok: boolean; name: string; enabled: boolean }>("toggle_hermes_bridge_skill", {
-    request: input,
-  });
-}
-
-export async function hermesBridgeToolsets() {
-  return invoke<HermesToolsetInfo[]>("hermes_bridge_toolsets");
-}
-
-export async function toggleHermesBridgeToolset(input: { name: string; enabled: boolean }) {
-  return invoke<{ ok: boolean; name: string; enabled: boolean }>("toggle_hermes_bridge_toolset", {
-    request: input,
-  });
-}
-
-export type AgentCliAccessStatus = {
-  enabled: boolean;
-};
-
-/** Whether sandboxed sessions may write the state folders of installed
- * agent CLIs (Claude Code, Codex, Gemini, opencode). */
-export async function hermesAgentCliAccess() {
-  return invoke<AgentCliAccessStatus>("hermes_agent_cli_access");
-}
-
-/** Persists the Agent CLI access opt-in and retires the sandboxed runtime so
- * the next session spawns with matching sandbox grants. */
-export async function setHermesAgentCliAccess(enabled: boolean) {
-  return invoke<AgentCliAccessStatus>("set_hermes_agent_cli_access", {
-    request: { enabled },
-  });
-}
-
-export type BrowserAccessStatus = {
-  enabled: boolean;
-};
-
-export type BrowserTransportPolicy = {
-  attendedEnabled: boolean;
-  managedEnabled: boolean;
-};
-
-export const BROWSER_TRANSPORT_POLICY_CHANGED_EVENT = "june://browser-transport-policy-changed";
-
-/** Last successfully fetched remote policy for the two Browser use transports. */
-export async function browserTransportPolicy() {
-  return invoke<BrowserTransportPolicy>("browser_transport_policy");
-}
-
-/** Whether the stored Browser access grant is enabled. */
-export async function hermesBrowserAccess() {
-  return invoke<BrowserAccessStatus>("hermes_browser_access");
-}
-
-/** Persists the Browser access grant and retires both runtime modes so the
- * next sessions receive matching june_browser config. */
-export async function setHermesBrowserAccess(enabled: boolean) {
-  return invoke<BrowserAccessStatus>("set_hermes_browser_access", {
-    request: { enabled },
-  });
-}
-
-export type JuneCharacterStatus = {
-  /** The effective character text (the default when no custom one is set). */
-  character: string;
-  /** Whether the stored text differs from the app default. */
-  isCustom: boolean;
-  /** The app default, for "reset to default" affordances. */
-  defaultCharacter: string;
-  /** Absolute path of CHARACTER.md, for direct file editing. */
-  path: string;
-};
-
-/** June's editable character (personality) text, backed by CHARACTER.md in
- * the June-managed agent home. */
-export async function juneCharacter() {
-  return invoke<JuneCharacterStatus>("june_character");
-}
-
-/** Persists the character text (blank resets to the default) and retires the
- * agent runtimes so new sessions pick it up. */
-export async function setJuneCharacter(character: string) {
-  return invoke<JuneCharacterStatus>("set_june_character", {
-    request: { character },
-  });
-}
-
-export async function hermesBridgeMessagingPlatforms() {
-  return invoke<HermesMessagingPlatformsResponse>("hermes_bridge_messaging_platforms");
-}
-
-export async function hermesBridgeFilesystemSnapshot() {
-  return invoke<HermesFilesystemSnapshot>("hermes_bridge_filesystem_snapshot");
-}
-
-export async function downloadHermesBridgeFile(path: string) {
-  return invoke<string>("download_hermes_bridge_file", {
-    request: { path },
-  });
-}
-
-export async function hermesBridgeFilePreview(path: string) {
-  return invoke<string | null>("hermes_bridge_file_preview", {
-    request: { path },
-  });
-}
-
-export async function hermesBridgeImageDataUrl(path: string) {
-  return invoke<string | null>("hermes_bridge_image_data_url", {
-    request: { path },
-  });
-}
-
-export async function prepareHermesBridgeImageAttachment(sessionId: string, path: string) {
-  return invoke<PreparedHermesImageAttachment>("prepare_hermes_bridge_image_attachment", {
-    request: { sessionId, path },
-  });
-}
-
-/** Reveals an absolute path in the OS file manager (Finder on macOS). */
 export async function revealPath(path: string) {
   return invoke<void>("reveal_path", { path });
 }
 
-/** Refreshes the bundled load-unpacked Browser use extension in app data and
- * reveals the destination in the platform file manager. */
 export async function unpackBundledExtension() {
   return invoke<string>("unpack_bundled_extension");
 }
 
-// Null when the file can't be shown as text (too large or binary) — the
-// caller falls back to a download affordance instead of erroring.
-export async function hermesBridgeFileText(path: string) {
-  return invoke<string | null>("hermes_bridge_file_text", {
-    request: { path },
-  });
-}
-
-export async function importHermesBridgeFile(path: string) {
-  return invoke<ImportedHermesFile>("import_hermes_bridge_file", {
-    request: { path },
-  });
-}
-
-// DOM drops in WKWebView carry no filesystem path, so the file's contents go
-// over as the raw invoke payload with the name in a header (URI-encoded:
-// header values must be ASCII).
-export async function importHermesBridgeFileBytes(name: string, bytes: Uint8Array) {
-  return invoke<ImportedHermesFile>("import_hermes_bridge_file_bytes", bytes, {
-    headers: { "x-file-name": encodeURIComponent(name) },
-  });
-}
-
-export async function hermesBridgeSessions(
-  input: {
-    limit?: number;
-    offset?: number;
-    archived?: "exclude" | "include" | "only";
-    minMessages?: number;
-    order?: string;
-    query?: string;
-  } = {},
-) {
-  return invoke<HermesSessionsResponse>("hermes_bridge_sessions", {
-    request: input,
-  });
-}
-
-export async function hermesBridgeSessionMessages(sessionId: string) {
-  return invoke<HermesSessionMessagesResponse>("hermes_bridge_session_messages", {
-    request: { sessionId },
-  });
-}
-
-export async function deleteHermesBridgeSession(sessionId: string) {
-  return invoke<unknown>("delete_hermes_bridge_session", {
-    request: { sessionId },
-  });
-}
-
-export async function ensureHermesBridgeSession(input: {
-  sessionId: string;
-  title?: string;
-  model?: string;
-}) {
-  return invoke<unknown>("ensure_hermes_bridge_session", {
-    request: input,
-  });
-}
-
-/** A raw cron job record from the bridge's dashboard API, as stored in
- * Hermes's jobs file — unlike the gateway's formatted view, `prompt` is the
- * full text and `schedule` is the parsed structure next to its display
- * string. Only the fields the app reads are typed. */
-export type HermesCronJobRecord = {
-  id: string;
-  name: string;
-  prompt: string;
-  schedule?: { kind?: string } | null;
-  schedule_display?: string | null;
-  repeat?: { times?: number | null; completed?: number } | null;
-  deliver?: string | null;
-  enabled?: boolean;
-  state?: string | null;
-  paused_reason?: string | null;
-  created_at?: string | null;
-  next_run_at?: string | null;
-  last_run_at?: string | null;
-  last_status?: "ok" | "error" | null;
-  last_error?: string | null;
-  last_delivery_error?: string | null;
-  enabled_toolsets?: string[] | null;
-  script?: string | null;
-  no_agent?: boolean;
-};
-
-export async function hermesBridgeCronJobs() {
-  return invoke<HermesCronJobRecord[]>("hermes_bridge_cron_jobs");
-}
-
-export async function createHermesBridgeCronJob(input: {
-  prompt: string;
-  schedule: string;
-  name?: string;
-  deliver?: string;
-}) {
-  return invoke<HermesCronJobRecord>("create_hermes_bridge_cron_job", {
-    request: input,
-  });
-}
-
-export async function updateHermesBridgeCronJob(jobId: string, updates: Record<string, unknown>) {
-  return invoke<HermesCronJobRecord>("update_hermes_bridge_cron_job", {
-    request: { jobId, updates },
-  });
-}
-
-export async function hermesBridgeCronJobAction(
-  jobId: string,
-  action: "pause" | "resume" | "trigger",
-) {
-  return invoke<HermesCronJobRecord>("hermes_bridge_cron_job_action", {
-    request: { jobId, action },
-  });
-}
-
-export async function deleteHermesBridgeCronJob(jobId: string) {
-  return invoke<unknown>("delete_hermes_bridge_cron_job", {
-    request: { jobId },
-  });
-}
-
-export async function updateHermesBridgeMessagingPlatform(input: {
-  platformId: string;
-  enabled?: boolean;
-  env?: Record<string, string>;
-}) {
-  return invoke<{ ok: boolean; platform: string }>("update_hermes_bridge_messaging_platform", {
-    request: input,
-  });
-}
-
-/** `fullMode` is an explicit mode choice: passing it restarts a running
- * runtime whose mode differs (the sandbox is applied at spawn). Omit it to
- * reuse whatever is running — fresh starts are always sandboxed. */
-export async function startHermesBridge(cwd?: string, fullMode?: boolean) {
-  return invoke<HermesBridgeStatus>("start_hermes_bridge", {
-    request: { cwd, fullMode },
-  });
-}
-
-/** Stops the Hermes runtime. With `mode`, stops ONLY that runtime (the MCP
- * page's restart flow targets one mode and must not take down a live session
- * in the other); without it, stops everything (historical behavior). */
-export async function stopHermesBridge(mode?: "sandboxed" | "unrestricted") {
-  return invoke<HermesBridgeStatus>("stop_hermes_bridge", { mode });
-}
-
-/** The redacted result of an MCP OAuth login attempt. The Rust bridge runs
- * `hermes mcp login <server>`, opens the authorization URL in the OS browser,
- * and waits for the CLI to finish. It NEVER returns a token: only whether the
- * login succeeded, an already-redacted status message, and the (token-free)
- * authorization URL so June can offer a manual "open in browser" fallback.
- * `timedOut` is true when the wait elapsed before the CLI completed (the browser
- * sign-in is still the user's to finish; June never blocks on it). */
-export type HermesMcpOauthLoginResult = {
-  ok: boolean;
-  /** A safe, already-redacted status message, or null when the CLI said nothing
-   * quotable. Never carries a token, bearer value, or auth code. */
-  message: string | null;
-  /** The authorization URL the CLI emitted (token-free), or null. */
-  authUrl: string | null;
-  /** True when the wait elapsed before the CLI reported a terminal state. */
-  timedOut: boolean;
-};
-
-/**
- * Runs the MCP OAuth sign-in for one server through the Rust bridge:
- * `hermes mcp login <server>` against the chosen runtime's profile, opening the
- * authorization URL in the OS browser. `mode` selects the runtime explicitly
- * (sandboxed vs unrestricted) — Rust never falls back to the first connection.
- * The result is redacted in Rust and re-checked in the view layer; no token is
- * ever returned to the webview.
- */
-export async function hermesMcpOauthLogin(input: {
-  mode: "sandboxed" | "unrestricted";
-  server: string;
-  profile?: string;
-}) {
-  return invoke<HermesMcpOauthLoginResult>("hermes_mcp_oauth_login", {
-    request: input,
-  });
-}
-
-/** The redacted result of a bundled-skill reset. Carries no skill content and no
- * secret-shaped CLI output: only whether the CLI reported success, an already
- * redacted status message, and whether the bounded wait elapsed. */
-export type HermesResetSkillResult = {
-  ok: boolean;
-  /** A safe, already-redacted status message, or null when the CLI said nothing
-   * quotable. */
-  message: string | null;
-  /** True when the wait elapsed before the CLI reported a terminal state. */
-  timedOut: boolean;
-};
-
-/**
- * Resets (or restores) a bundled skill to its shipped baseline through the Rust
- * bridge: `hermes skills reset <name> [--restore]` against the chosen runtime's
- * profile. The dashboard exposes no reset endpoint, so this is the narrow CLI
- * fallback. `mode` selects the runtime explicitly (sandboxed vs unrestricted) —
- * Rust never falls back to the first connection. The skill name is validated
- * argument-safe on both sides and passed as a discrete CLI argument (no shell).
- * The result is redacted in Rust; no skill content is returned to the webview.
- */
-export async function hermesResetBundledSkill(input: {
-  mode: "sandboxed" | "unrestricted";
-  name: string;
-  profile?: string;
-  restore?: boolean;
-}) {
-  return invoke<HermesResetSkillResult>("hermes_reset_bundled_skill", {
-    request: input,
-  });
-}
-
-/** One configured custom GitHub skill tap, as parsed from `hermes skills tap
- * list` by the Rust bridge. Carries only a validated `owner/repo`, an optional
- * safe path, and a trust marker. Never a token. Mirrors the Rust `HermesSkillTap`
- * (camelCase). */
-export type HermesSkillTapDto = {
-  /** The tap repository as `owner/repo` (validated argument-safe). */
-  repo: string;
-  /** The path override inside the repo, when the tap declares one. */
-  path?: string;
-  /** True only when Hermes explicitly marks the tap trusted/verified. The UI
-   * treats every other tap as community. */
-  trusted: boolean;
-};
-
-/** The result of listing taps. `taps` is the parsed list; `message` is an
- * already-redacted status line when the CLI failed. */
-export type HermesSkillTapListResult = {
-  ok: boolean;
-  taps: HermesSkillTapDto[];
-  /** A safe, already-redacted status message, or null. Never carries a token. */
-  message: string | null;
-  /** True when the bounded wait elapsed before the CLI reported a result. */
-  timedOut: boolean;
-};
-
-/** The redacted result of a tap add/remove. Carries no token: only whether the
- * CLI reported success, an already-redacted status message, and whether the
- * bounded wait elapsed. */
-export type HermesSkillTapWriteResult = {
-  ok: boolean;
-  message: string | null;
-  timedOut: boolean;
-};
-
-/**
- * Lists the configured custom GitHub skill taps for the chosen runtime/profile.
- * The dashboard (v2026.6.19) exposes no tap endpoints, so this runs the pinned
- * `hermes skills tap list` CLI through the Rust bridge. `mode` selects the
- * runtime explicitly (sandboxed vs unrestricted) with no first-connection
- * fallback. The output is parsed and redacted in Rust; no token is returned.
- */
-export async function hermesSkillTapList(input: {
-  mode: "sandboxed" | "unrestricted";
-  profile?: string;
-}) {
-  return invoke<HermesSkillTapListResult>("hermes_skill_tap_list", {
-    request: input,
-  });
-}
-
-/**
- * Adds a custom GitHub skill tap (`owner/repo`, optional path override) through
- * the Rust bridge: `hermes skills tap add <owner/repo> [--path <path>]`. The repo
- * and path are validated argument-safe on both sides and passed as discrete CLI
- * arguments (no shell). `mode` selects the runtime explicitly. The result is
- * redacted in Rust; no token is returned.
- */
-export async function hermesSkillTapAdd(input: {
-  mode: "sandboxed" | "unrestricted";
-  profile?: string;
-  repo: string;
-  path?: string;
-}) {
-  return invoke<HermesSkillTapWriteResult>("hermes_skill_tap_add", {
-    request: input,
-  });
-}
-
-/**
- * Removes a custom GitHub skill tap by `owner/repo` through the Rust bridge:
- * `hermes skills tap remove <owner/repo>`. The repo is validated argument-safe on
- * both sides and passed as a discrete CLI argument (no shell).
- */
-export async function hermesSkillTapRemove(input: {
-  mode: "sandboxed" | "unrestricted";
-  profile?: string;
-  repo: string;
-}) {
-  return invoke<HermesSkillTapWriteResult>("hermes_skill_tap_remove", {
-    request: input,
-  });
-}
-
-/** The read-only filesystem status of one configured external skill directory,
- * as reported by the June-side `hermes_inspect_external_dirs` command. Carries
- * both the raw configured path and the resolved one. Mirrors the Rust
- * `ExternalDirStatus` (camelCase). */
-export type ExternalDirStatus = {
-  /** The path exactly as configured (with `~`/`${VAR}` unexpanded). */
-  rawPath: string;
-  /** The expanded absolute path, or null when a variable could not be resolved. */
-  resolvedPath: string | null;
-  /** The name of an unresolved environment variable referenced in the path, or
-   * null. Never the variable's value. */
-  unresolvedVar: string | null;
-  /** True when the resolved path exists. */
-  exists: boolean;
-  /** True when the resolved path exists and is a directory. */
-  isDir: boolean;
-  /** True when June could list the directory. */
-  readable: boolean;
-  /** True/false when writability was safely detected, null when ambiguous. */
-  writable: boolean | null;
-  /** Count of discovered skills, or null when missing/unreadable. */
-  skillCount: number | null;
-  /** Discovered skill names (for shadowing explanation). */
-  skillNames: string[];
-};
-
-/**
- * Inspects the configured external skill directories read-only through June's
- * own (non-jailed) Rust process: expands `~`/`${VAR}`, stats each path, probes
- * readability/writability, and counts discovered skills. No mutation, no
- * file-content reads, no secrets returned. The CONFIG itself is written through
- * Hermes' `PUT /api/config` (so the jailed dashboard owns the config.yaml
- * write); this command only reports filesystem status the dashboard can't.
- */
-export async function hermesInspectExternalDirs(dirs: string[]) {
-  return invoke<ExternalDirStatus[]>("hermes_inspect_external_dirs", {
-    request: { dirs },
-  });
-}
-
-/** A Hermes skill bundle as June reads/writes it. `slug` is the file stem and
- * the slash command; `skills` is the ordered member list; `instructions` is the
- * optional prompt text Hermes prepends at invocation. Mirrors the Rust
- * `HermesSkillBundle`. */
-export type HermesSkillBundleDto = {
-  slug: string;
-  name?: string;
-  description?: string;
-  skills: string[];
-  instructions?: string;
-};
-
-/**
- * Lists the skill bundles for the chosen runtime/profile. The dashboard exposes
- * no bundle endpoints, so this reads the per-profile `skill-bundles` directory
- * through the Rust bridge. `mode` selects the runtime explicitly (sandboxed vs
- * unrestricted) with no first-connection fallback. Returns an empty list when no
- * bundles exist yet.
- */
-export async function hermesListSkillBundles(input: {
-  mode: "sandboxed" | "unrestricted";
-  profile?: string;
-}) {
-  return invoke<HermesSkillBundleDto[]>("hermes_list_skill_bundles", {
-    request: input,
-  });
-}
-
-/**
- * Creates or updates a bundle by writing its YAML file. `previousSlug`, when it
- * differs from `bundle.slug`, removes the old file after the new one is written
- * (a rename). The slug is validated argument/path safe on both sides; the write
- * is confined to the bundles directory. Returns the saved bundle.
- */
-export async function hermesSaveSkillBundle(input: {
-  mode: "sandboxed" | "unrestricted";
-  profile?: string;
-  bundle: HermesSkillBundleDto;
-  previousSlug?: string;
-}) {
-  return invoke<HermesSkillBundleDto>("hermes_save_skill_bundle", {
-    request: input,
-  });
-}
-
-/** Deletes a bundle's YAML file. The slug is validated and the path confined to
- * the bundles directory; a missing file is treated as success. */
-export async function hermesDeleteSkillBundle(input: {
-  mode: "sandboxed" | "unrestricted";
-  profile?: string;
-  slug: string;
-}) {
-  return invoke<void>("hermes_delete_skill_bundle", { request: input });
-}
-/** Developer-only: resume a June session in Hermes' own raw TUI in a Terminal
- * window. `unrestricted` mirrors the session's mode so the debug session runs
- * under the same Seatbelt jail June used. macOS only; rejects elsewhere. */
-export async function openHermesTuiDebug(input: { sessionId: string; unrestricted: boolean }) {
-  return invoke<void>("open_hermes_tui_debug", { request: input });
-}
-
-export async function listNotes(folderId?: string, limit?: number, cursor?: string) {
-  return invoke<ListNotesResponse>("list_notes", { request: { folderId, limit, cursor } });
+export async function listNotes(folderId?: string, limit?: number) {
+  return invoke<ListNotesResponse>("list_notes", { request: { folderId, limit } });
 }
 
 export async function getNote(noteId: string) {
@@ -2683,11 +1885,6 @@ export async function connectorsSetSelectedTeams(input: {
   });
 }
 
-/** Restarts the Hermes runtimes so a connect/disconnect/grant change lands in
- * the rendered MCP config. Call after connectorsConnect resolves for BOTH
- * providers: Google registers its four servers, and Linear registers
- * june_linear plus june_linear_actions once the workspace has selected
- * teams. */
 export type ObsidianStatus = {
   connected: boolean;
   /** False when a saved vault is currently missing or cannot be validated.

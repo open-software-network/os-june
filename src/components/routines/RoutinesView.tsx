@@ -14,7 +14,7 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconZap } from "central-icons/IconZap";
 import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { describeHermesError } from "../../lib/errors";
+import { messageFromError } from "../../lib/errors";
 import {
   TRUST_MODE_META,
   eventTriggerScheduleDraft,
@@ -25,10 +25,11 @@ import {
 } from "../../lib/connectors";
 import { useConnectorPolicy } from "../../lib/connector-policy";
 import {
-  isReplaceableScheduledRunTitle,
-  listScheduledRunSessions,
-  scheduledRunJobId,
-} from "../../lib/hermes-adapter";
+  isReplaceableRoutineRunTitle,
+  listRoutineRunSessions,
+  routineIdFromSession,
+  type RoutineRunSession,
+} from "../../lib/agent-routine-history";
 import {
   createRoutine,
   listRoutines,
@@ -38,10 +39,11 @@ import {
   routineCreationPrompt,
   routineUnrestricted,
   triggerRoutine,
+  UNRESTRICTED_ROUTINE_TOOLSETS,
   updateRoutine,
   type RoutineJob,
   type RoutineUpdates,
-} from "../../lib/hermes-routines";
+} from "../../lib/agent-routines";
 import { compactScheduleLabel, humanizeSchedule } from "../../lib/routine-schedule";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import {
@@ -49,7 +51,6 @@ import {
   routineTrustRecordRun,
   routineTrustSet,
   type ConnectorPolicyCatalog,
-  type HermesSessionInfo,
 } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { HoverTip } from "../ui/HoverTip";
@@ -60,25 +61,25 @@ import { GrowingTextarea } from "./GrowingTextarea";
 import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 
 const NO_ROUTINES: RoutineJob[] = [];
-const NO_RUNS: HermesSessionInfo[] = [];
+const NO_RUNS: RoutineRunSession[] = [];
 const RUN_HISTORY_REFRESH_MS = 10000;
 
 /**
  * Advances the earned-autonomy counter by reporting each finished run to the
- * backend, which credits it exactly once and only when the routine is in
+ * local store, which credits it exactly once and only when the routine is in
  * approval mode with the run finishing after approval was enabled. Reporting
  * every finished run (rather than seeding a client-side baseline) is what lets
  * background runs that completed while this view was closed still count on the
  * next visit. Best-effort: a failure just retries on the next refresh.
  *
  * `reported` is a per-mount chatter guard so the 10s refresh does not re-report
- * the same run repeatedly; the backend is the durable, idempotent ledger, so a
+ * the same run repeatedly; the local store is the durable, idempotent ledger, so a
  * fresh mount re-reporting a run is harmless.
  */
-async function creditApprovalRuns(runs: HermesSessionInfo[], reported: Set<string>): Promise<void> {
+async function creditApprovalRuns(runs: RoutineRunSession[], reported: Set<string>): Promise<void> {
   for (const run of runs.filter(isCreditableRun)) {
     if (reported.has(run.id)) continue;
-    const jobId = scheduledRunJobId(run.id);
+    const jobId = routineIdFromSession(run);
     const runEndedAt = run.ended_at ?? run.endedAt ?? null;
     if (!jobId || !runEndedAt) continue;
     reported.add(run.id);
@@ -96,8 +97,8 @@ type RoutinesViewProps = {
    * app opens a new June session with it, so the agent does the cron-job
    * setup (naming, scheduling) from a plain description. */
   onCreateRoutine: (prompt: string) => void;
-  /** Opens a past run (a cron-sourced Hermes session) in the agent view. */
-  onOpenRun: (session: HermesSessionInfo) => void;
+  /** Opens a past scheduled run in the agent view. */
+  onOpenRun: (session: RoutineRunSession) => void;
   creditActionsDisabledReason?: string;
 };
 
@@ -132,10 +133,10 @@ export function RoutinesView({
   // sandboxed on every open: like the chat picker, Unrestricted is a
   // deliberate per-creation opt-in, never a sticky preference.
   const [describeUnrestricted, setDescribeUnrestricted] = useState(false);
-  const [allRuns, setRuns] = useState<HermesSessionInfo[]>([]);
+  const [allRuns, setRuns] = useState<RoutineRunSession[]>([]);
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
   const runLoadSequenceRef = useRef(0);
-  // Run ids already reported for crediting this mount; the backend is the
+  // Run ids already reported for crediting this mount; the local store is the
   // durable idempotent ledger, this just avoids re-reporting on every refresh.
   const reportedRunsRef = useRef<Set<string>>(new Set());
 
@@ -169,14 +170,14 @@ export function RoutinesView({
     }
   }, []);
 
-  // Run history comes from a different backend (the session store, not the
+  // Run history comes from a different local store (the session store, not the
   // cron manager), so its failure must not take the routines list down with
   // it — it degrades to a quiet notice inside the section instead.
   const loadRuns = useCallback(async () => {
     const sequence = runLoadSequenceRef.current + 1;
     runLoadSequenceRef.current = sequence;
     try {
-      const nextRuns = await listScheduledRunSessions({ includeActive: true });
+      const nextRuns = await listRoutineRunSessions({ includeActive: true });
       if (runLoadSequenceRef.current !== sequence) return;
       setRuns(nextRuns);
       setRunsUnavailable(false);
@@ -222,10 +223,10 @@ export function RoutinesView({
   // A run is labeled with its routine's current name; once the routine is
   // deleted, the session's own derived title is the best label left.
   const runLabel = useCallback(
-    (run: HermesSessionInfo) => {
-      const jobId = scheduledRunJobId(run.id);
+    (run: RoutineRunSession) => {
+      const jobId = routineIdFromSession(run);
       const routine = jobId ? routinesById.get(jobId) : undefined;
-      const sessionTitle = isReplaceableScheduledRunTitle(run.title) ? "" : run.title?.trim();
+      const sessionTitle = isReplaceableRoutineRunTitle(run.title) ? "" : run.title?.trim();
       return routine?.name || sessionTitle || "Routine run";
     },
     [routinesById],
@@ -311,8 +312,8 @@ export function RoutinesView({
       const eventTrigger = input.trigger.source !== "schedule" ? input.trigger : null;
       // A routine is connector-aware when anything about it touches Google:
       // a non-default trust mode, an event trigger, or a connector template's
-      // scope requirements. Plain routines keep the legacy create path
-      // untouched (no toolset override, no trust record).
+      // scope requirements. Plain routines do not need a trust record, but
+      // they still persist the native base catalog as an explicit grant.
       const connectorAware =
         input.trustMode !== "read_only" ||
         eventTrigger !== null ||
@@ -325,9 +326,8 @@ export function RoutinesView({
         }
         created = await createRoutine({
           prompt: input.prompt,
-          // Event routines still need a cron record underneath; a
-          // far-future one-time schedule plus the pause below hands the
-          // firing over to the trigger daemon.
+          // Event routines still need a schedule record underneath. A
+          // far-future one-time schedule hands firing to the trigger daemon.
           schedule: eventTrigger ? eventTriggerScheduleDraft().schedule : input.schedule,
           name: input.name,
           enabledToolsets: routineToolsetsFor(policy, input.trustMode, {
@@ -340,6 +340,9 @@ export function RoutinesView({
           schedule: input.schedule,
           name: input.name,
           unrestricted: input.unrestricted,
+          enabledToolsets: input.unrestricted
+            ? UNRESTRICTED_ROUTINE_TOOLSETS
+            : (policy?.routine.sandboxedBaseToolsets ?? []),
         });
       }
       if (connectorAware) {
@@ -350,11 +353,10 @@ export function RoutinesView({
             autonomousTools: input.trustMode === "autonomous" ? input.autonomousTools : undefined,
           });
           if (eventTrigger && input.triggerAccountId) {
-            // Pausing and subscribing are required setup, not best-effort. If
-            // either fails, removeRoutine below deletes the Hermes job and all
+            // Subscribing is required setup, not best-effort. If it fails,
+            // removeRoutine below deletes the June routine and all
             // connector rows so retrying cannot create a duplicate or leave a
             // dormant 2099 placeholder behind.
-            await pauseRoutine(created.job_id);
             await connectorTriggerSet({
               jobId: created.job_id,
               kind: eventTrigger.source,
@@ -375,9 +377,9 @@ export function RoutinesView({
         // The first run fires right away (still under the chosen trust mode, so
         // any actions wait for approval), so an install shows value in the first
         // session instead of waiting for a future email or calendar event. This
-        // one-off trigger does not change the paused state, so an event routine
-        // keeps firing on its trigger for every later run; the schedule owns
-        // later runs for non-event routines. Best-effort.
+        // one-off trigger leaves the routine active, so its event trigger can
+        // keep firing later. The far-future schedule prevents timer dispatch.
+        // Best-effort.
         await triggerRoutine(created.job_id).catch(() => {});
       }
       await loadRoutines();
@@ -415,7 +417,7 @@ export function RoutinesView({
   }
 
   function submitDescribe() {
-    // Describing a routine runs a Hermes session, so it's metered like every
+    // Describing a routine runs an agent session, so it is metered like every
     // other composer; the guard backs the disabled send button (Enter still
     // submits the form).
     if (creditActionsDisabledReason) return;
@@ -424,7 +426,7 @@ export function RoutinesView({
     setDescribeDraft("");
     // routineCreationPrompt is async: for an unrestricted routine it strips the
     // native memory toolset from the list it embeds when Memory is off, so the
-    // describe path can't grant Hermes' unscoped store behind the off switch.
+    // describe path cannot grant unscoped memory access behind the off switch.
     void routineCreationPrompt(description, {
       unrestricted: describeUnrestricted,
     }).then(onCreateRoutine);
@@ -514,7 +516,7 @@ export function RoutinesView({
   }
 
   if (page.kind === "detail" && detailRoutine) {
-    const routineRuns = runs.filter((run) => scheduledRunJobId(run.id) === detailRoutine.job_id);
+    const routineRuns = runs.filter((run) => routineIdFromSession(run) === detailRoutine.job_id);
     return (
       <>
         <RoutineDetail
@@ -605,7 +607,7 @@ export function RoutinesView({
           <p>No routines match “{query.trim()}”.</p>
         </div>
       ) : (
-        <ul className="routines-list" role="list" aria-label="Routines">
+        <ul className="routines-list" aria-label="Routines">
           {filtered.map((routine) => (
             <RoutineRow
               key={routine.job_id}
@@ -671,7 +673,7 @@ export function RoutinesView({
 
 function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void }) {
   return (
-    <ul className="routines-template-grid" role="list">
+    <ul className="routines-template-grid">
       {ROUTINE_TEMPLATES.map((template) => (
         <li key={template.id} className="routines-template-card">
           <span className="routines-template-icon" aria-hidden>
@@ -804,7 +806,7 @@ function RoutineRow({
             ) : null}
           </span>
         </span>
-        <span className="routines-item-meta" aria-label="Routine metadata">
+        <span className="routines-item-meta">
           <span className="routine-meta-pill">
             <IconCalendarRepeat size={12} aria-hidden />
             {compactScheduleLabel(routine.schedule)}
@@ -856,7 +858,7 @@ function RoutineRow({
                 <IconPlay size={14} />
                 Run now
               </button>
-              <span className="context-menu-separator" role="separator" />
+              <hr className="context-menu-separator" />
               <button
                 type="button"
                 role="menuitem"
@@ -895,11 +897,11 @@ function timeValue(iso: string | null | undefined) {
 }
 
 function describeRoutineError(err: unknown) {
-  if (err && typeof err === "object" && "message" in err) {
-    const message = (err as { message?: unknown }).message;
-    if (typeof message === "string" && message) return describeHermesError(err);
+  const message = messageFromError(err);
+  if (/\bAPI returned 5\d\d\b/i.test(message)) {
+    return "June ran into a problem with that request.";
   }
-  return "Routines are unavailable. Is June's agent running?";
+  return message || "Routines are unavailable. Try again.";
 }
 
 function RoutineErrorBanner({

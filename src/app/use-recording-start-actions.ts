@@ -11,7 +11,7 @@ import {
 import { playRecordingSound } from "../lib/recording-sounds";
 import { mergeSourceReadiness } from "../lib/source-readiness";
 import { errorCode, messageFromError } from "../lib/errors";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import type { RecordingSourceMode } from "../lib/tauri";
 import {
   recordingToStatus,
@@ -29,7 +29,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
     activeViewRef,
     appBlocked,
     bootstrapped,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     fundingRequired,
@@ -74,7 +74,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
       if (!startAlreadyClaimed) {
         recordingStartInFlightRef.current = true;
       }
-      const recordingProfile = getActiveHermesProfileName();
+      const recordingPartition = getCurrentDataPartitionName();
       setRecordingNote(noteId);
       const startingStatus = startingRecordingStatus(noteId, requestedSourceMode);
       recordingStatusRef.current = startingStatus;
@@ -106,7 +106,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
             ? "microphoneOnly"
             : requestedSourceMode;
 
-        calendarContextNoteProfilesRef.current.set(noteId, recordingProfile);
+        calendarContextNotePartitionsRef.current.set(noteId, recordingPartition);
         const recording = await startRecording(noteId, effectiveMode);
         setRecordingNote(noteId);
         const status = recordingToStatus(recording);
@@ -118,7 +118,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
         playRecordingSound("start");
         return true;
       } catch (err) {
-        calendarContextNoteProfilesRef.current.delete(noteId);
+        calendarContextNotePartitionsRef.current.delete(noteId);
         // The ref was set optimistically above; a failed start must not leave
         // the meeting HUD's reopen path pointing at a note with no recording.
         setRecordingNote(undefined);
@@ -167,7 +167,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
         return false;
       }
       if (competingRecording) return true;
-      calendarContextNoteProfilesRef.current.set(noteId, getActiveHermesProfileName());
+      calendarContextNotePartitionsRef.current.set(noteId, getCurrentDataPartitionName());
       pendingCalendarContextAdoptionsRef.current.add(noteId);
       recordingStartInFlightRef.current = true;
       setCheckingSourceReadiness(true);
@@ -177,7 +177,7 @@ export function useRecordingStartActions(dependencies: UseRecordingStartActionsD
           return false;
         }
         if (outcome.status === "failed") {
-          calendarContextNoteProfilesRef.current.delete(noteId);
+          calendarContextNotePartitionsRef.current.delete(noteId);
           pendingCalendarContextAdoptionsRef.current.delete(noteId);
           calendarContextNoteUpdatesRef.current.delete(noteId);
           revealMainWindowForMeetingStartError();

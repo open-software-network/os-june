@@ -71,8 +71,8 @@ describe("pending action card styles", () => {
   it("drops the shadow on the approval and clarify cards but keeps it on the other surfaces", () => {
     // The approval/clarify cards go shadowless in the quieter redesign.
     expect(cssRuleFor(".agent-approval-card,\n.agent-clarify-card")).not.toContain("box-shadow");
-    // The other three system surfaces keep their soft elevation.
-    expect(cssRuleFor(".agent-safety-panel,\n.agent-tool-event,\n.agent-hermes-event")).toContain(
+    // The remaining system surfaces keep their soft elevation.
+    expect(cssRuleFor(".agent-safety-panel,\n.agent-tool-event")).toContain(
       "box-shadow: var(--shadow-sm);",
     );
   });

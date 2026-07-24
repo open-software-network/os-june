@@ -67,7 +67,6 @@ async function main() {
     }
     const toolsResult = await driver.request("tools/list", {});
     validateDriverContract(toolsResult.tools);
-    await validateJuneMcpContract();
     if (options.permissionsOnly) {
       const result = await callTool(
         driver,
@@ -322,60 +321,6 @@ function validateDriverContract(tools) {
     throw new Error(
       "Pinned driver capture modes changed; review the Computer use broker contract.",
     );
-  }
-}
-
-async function validateJuneMcpContract() {
-  const script = path.join(
-    rootDir,
-    "src-tauri",
-    "resources",
-    "hermes-mcp",
-    "june_computer_use_mcp.py",
-  );
-  const python = process.env.PYTHON || "python3";
-  const client = new JsonRpcClient(python, [script], {
-    ...process.env,
-    JUNE_COMPUTER_USE_PROXY_URL: "",
-    JUNE_COMPUTER_USE_PROXY_TOKEN: "",
-    PYTHONDONTWRITEBYTECODE: "1",
-  });
-  try {
-    await client.request("initialize", {
-      protocolVersion: contract.protocolVersion,
-      capabilities: {},
-      clientInfo: { name: "June contract self-test", version: "1" },
-    });
-    client.notify("notifications/initialized", {});
-    const result = await client.request("tools/list", {});
-    const tool = result.tools?.find((candidate) => candidate.name === "computer_use");
-    const actions = tool?.inputSchema?.properties?.action?.enum;
-    if (!sameMembers(actions, contract.juneActions)) {
-      throw new Error("June's Computer use MCP actions drifted from the pinned broker contract.");
-    }
-    if (tool?.inputSchema?.additionalProperties !== false) {
-      throw new Error("June's Computer use MCP input schema must remain closed.");
-    }
-    const description = tool?.description?.toLowerCase() || "";
-    for (const instruction of [
-      "refer to this capability as computer use",
-      "never ask for approval in chat",
-      "call the requested action immediately",
-      "allow for this task",
-      "open_app",
-      "raise_window",
-      "stage manager",
-      "do not retry",
-    ]) {
-      if (!description.includes(instruction)) {
-        throw new Error(`June's Computer use instructions must include: ${instruction}.`);
-      }
-    }
-    if (description.includes("mcp")) {
-      throw new Error("June's Computer use instructions must hide the transport implementation.");
-    }
-  } finally {
-    await client.close();
   }
 }
 
@@ -744,8 +689,8 @@ function driverEnvironment() {
   for (const name of Object.keys(env)) {
     if (
       name.startsWith("CUA_DRIVER_RS_") ||
-      name.startsWith("HERMES_CUA_DRIVER") ||
-      name === "HERMES_COMPUTER_USE_BACKEND" ||
+      name.startsWith("JUNE_CUA_DRIVER") ||
+      name === "JUNE_COMPUTER_USE_BACKEND" ||
       ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].includes(
         name,
       )

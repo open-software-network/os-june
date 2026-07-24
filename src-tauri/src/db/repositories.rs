@@ -1,11 +1,9 @@
 use crate::domain::types::{
-    AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
-    AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
-    AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto, DictionaryEntryDto,
-    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteCalendarEventDto,
-    NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
-    NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
-    ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
+    AppError, AudioArtifactDto, AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto,
+    DictionaryEntryDto, FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto,
+    NoteCalendarEventDto, NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind,
+    NoteTranscriptionJobPlan, NoteTranscriptionJobRecord, NoteTranscriptionJobStatus,
+    ProcessingStatus, ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
     SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -901,6 +899,18 @@ impl Repositories {
     ) -> Result<ConnectorTriggerRecord, sqlx::error::Error> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let replace_result = async {
+            let previous = query(
+                "SELECT kind, account_id
+                 FROM connector_triggers
+                 WHERE job_id = ?",
+            )
+            .bind(job_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let previous_email_account = previous.as_ref().and_then(|row| {
+                (row.get::<String, _>("kind") == "email_received")
+                    .then(|| row.get::<String, _>("account_id"))
+            });
             // Check before deleting this job's old trigger. Editing an existing
             // email subscription for the same account must retain its cursor;
             // only the account's first active email subscription re-baselines.
@@ -920,6 +930,20 @@ impl Repositories {
                 .bind(job_id)
                 .execute(&mut *transaction)
                 .await?;
+            if let Some(previous_account_id) =
+                previous_email_account.filter(|previous_account_id| {
+                    kind != "email_received" || previous_account_id != account_id
+                })
+            {
+                query(
+                    "DELETE FROM trigger_cursors
+                     WHERE account_id = ? AND kind = ?",
+                )
+                .bind(previous_account_id)
+                .bind(format!("email_received:{job_id}"))
+                .execute(&mut *transaction)
+                .await?;
+            }
 
             let id = Uuid::new_v4().to_string();
             let now = timestamp();
@@ -939,7 +963,8 @@ impl Repositories {
             if reset_email_cursor {
                 query(
                     "DELETE FROM trigger_cursors
-                     WHERE account_id = ? AND kind = 'email_received'",
+                     WHERE account_id = ?
+                       AND (kind = 'email_received' OR kind LIKE 'email_received:%')",
                 )
                 .bind(account_id)
                 .execute(&mut *transaction)
@@ -973,10 +998,33 @@ impl Repositories {
     }
 
     pub async fn delete_connector_trigger(&self, id: &str) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let trigger = query(
+            "SELECT job_id, kind, account_id
+             FROM connector_triggers
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
         let result = query("DELETE FROM connector_triggers WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        if let Some(trigger) =
+            trigger.filter(|row| row.get::<String, _>("kind") == "email_received")
+        {
+            let job_id: String = trigger.get("job_id");
+            query(
+                "DELETE FROM trigger_cursors
+                 WHERE account_id = ? AND kind = ?",
+            )
+            .bind(trigger.get::<String, _>("account_id"))
+            .bind(format!("email_received:{job_id}"))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1014,6 +1062,41 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Advance a Gmail acknowledgement only while the exact subscription that
+    /// produced the poll snapshot still exists. The INSERT and trigger check
+    /// are one SQLite statement, so removal cannot race a stale cursor write.
+    pub async fn set_email_trigger_cursor_if_active(
+        &self,
+        trigger_id: &str,
+        job_id: &str,
+        account_id: &str,
+        cursor: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let now = timestamp();
+        let result = query(
+            "INSERT INTO trigger_cursors (account_id, kind, cursor, updated_at)
+             SELECT ?, ?, ?, ?
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM connector_triggers
+                 WHERE id = ? AND job_id = ? AND kind = 'email_received' AND account_id = ?
+             )
+             ON CONFLICT(account_id, kind) DO UPDATE SET
+               cursor = excluded.cursor,
+               updated_at = excluded.updated_at",
+        )
+        .bind(account_id)
+        .bind(format!("email_received:{job_id}"))
+        .bind(cursor)
+        .bind(&now)
+        .bind(trigger_id)
+        .bind(job_id)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Remove the polling cursor for one account+kind so the next daemon poll
@@ -1989,7 +2072,7 @@ impl Repositories {
         if !matches_active_profile {
             return Err(AppError::new(
                 "note_folder_profile_mismatch",
-                "The note and project must belong to the active profile.",
+                "The note and project must belong to the current data partition.",
             ));
         }
 
@@ -2063,7 +2146,7 @@ impl Repositories {
         if !matches_active_profile {
             return Err(AppError::new(
                 "session_folder_profile_mismatch",
-                "The session and project must belong to the active profile.",
+                "The session and project must belong to the current data partition.",
             ));
         }
 
@@ -2392,398 +2475,6 @@ impl Repositories {
             .execute(&self.pool)
             .await?;
         Ok(())
-    }
-
-    pub async fn pause_running_agent_tasks_on_launch(&self) -> Result<(), sqlx::error::Error> {
-        let now = timestamp();
-        query(
-            "UPDATE agent_tasks
-             SET status = 'paused',
-                 progress_summary = 'Paused when June restarted.',
-                 updated_at = ?
-             WHERE status IN ('queued', 'running')",
-        )
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Repairs genuinely stale `queued`/`running` tasks whose latest message
-    /// is already an assistant reply. `paused` and `waiting_for_user` are
-    /// deliberate resting states (placeholder pauses, clarify exchanges) and
-    /// must never be force-completed by this repair.
-    pub async fn complete_agent_tasks_with_assistant_messages(
-        &self,
-    ) -> Result<(), sqlx::error::Error> {
-        query(
-            "UPDATE agent_tasks
-             SET status = 'completed',
-                 progress_summary = 'Completed.',
-                 updated_at = COALESCE(
-                     (SELECT MAX(created_at)
-                      FROM agent_messages
-                      WHERE task_id = agent_tasks.id AND role = 'assistant'),
-                     updated_at
-                 ),
-                 completed_at = COALESCE(
-                     completed_at,
-                     (SELECT MAX(created_at)
-                      FROM agent_messages
-                      WHERE task_id = agent_tasks.id AND role = 'assistant'),
-                     updated_at
-                 )
-             WHERE status IN ('queued', 'running')
-               AND (SELECT role
-                    FROM agent_messages
-                    WHERE task_id = agent_tasks.id
-                    ORDER BY created_at DESC, rowid DESC
-                    LIMIT 1) = 'assistant'",
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn list_agent_tasks(&self) -> Result<AgentTaskListResponse, sqlx::error::Error> {
-        let rows = query(
-            "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
-                    hermes_session_id, created_at, updated_at, completed_at
-             FROM agent_tasks
-             ORDER BY updated_at DESC, rowid DESC
-             LIMIT 200",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(AgentTaskListResponse {
-            items: rows.into_iter().map(agent_task_from_row).collect(),
-        })
-    }
-
-    pub async fn create_agent_task(
-        &self,
-        prompt: &str,
-        title: Option<&str>,
-        safety_profile: AgentSafetyProfile,
-    ) -> Result<AgentTaskDto, sqlx::error::Error> {
-        let now = timestamp();
-        let task_id = Uuid::new_v4().to_string();
-        let trimmed_prompt = prompt.trim();
-        let title = title
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| title_from_prompt(trimmed_prompt));
-
-        let mut tx = self.pool.begin().await?;
-        query(
-            "INSERT INTO agent_tasks
-             (id, title, prompt, status, safety_profile, progress_summary, created_at, updated_at)
-             VALUES (?, ?, ?, 'queued', ?, 'Queued for the agent runtime.', ?, ?)",
-        )
-        .bind(&task_id)
-        .bind(title)
-        .bind(trimmed_prompt)
-        .bind(safety_profile.as_db())
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        query(
-            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
-             VALUES (?, ?, 'user', ?, ?)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(&task_id)
-        .bind(trimmed_prompt)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        self.get_agent_task(&task_id).await
-    }
-
-    pub async fn get_agent_task(&self, task_id: &str) -> Result<AgentTaskDto, sqlx::error::Error> {
-        let row = query(
-            "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
-                    hermes_session_id, created_at, updated_at, completed_at
-             FROM agent_tasks
-             WHERE id = ?",
-        )
-        .bind(task_id)
-        .fetch_one(&self.pool)
-        .await?;
-        let mut task = agent_task_from_row(row);
-        task.messages = self.agent_messages(task_id).await?;
-        task.tool_events = self.agent_tool_events(task_id).await?;
-        Ok(task)
-    }
-
-    pub async fn set_agent_task_hermes_session(
-        &self,
-        task_id: &str,
-        hermes_session_id: &str,
-    ) -> Result<(), sqlx::error::Error> {
-        query("UPDATE agent_tasks SET hermes_session_id = ? WHERE id = ?")
-            .bind(hermes_session_id)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn add_agent_message(
-        &self,
-        task_id: &str,
-        role: AgentMessageRole,
-        content: &str,
-    ) -> Result<AgentMessageDto, sqlx::error::Error> {
-        let now = timestamp();
-        let id = Uuid::new_v4().to_string();
-        query(
-            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(task_id)
-        .bind(role.as_db())
-        .bind(content)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        query("UPDATE agent_tasks SET updated_at = ? WHERE id = ?")
-            .bind(&now)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        let row = query(
-            "SELECT id, task_id, role, content, created_at
-             FROM agent_messages
-             WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(agent_message_from_row(row))
-    }
-
-    /// Inserts a hydrated message exactly once. `external_id` carries the
-    /// source-side identity (e.g. a Hermes message id); the unique index on
-    /// `(task_id, external_id)` plus `INSERT OR IGNORE` makes concurrent
-    /// hydrations race-safe. Rows hydrated before external ids existed are
-    /// matched by content so they are not duplicated either.
-    pub async fn add_agent_message_if_absent(
-        &self,
-        task_id: &str,
-        role: AgentMessageRole,
-        content: &str,
-        created_at: &str,
-        external_id: &str,
-    ) -> Result<bool, sqlx::error::Error> {
-        let existing = query(
-            "SELECT 1 FROM agent_messages
-             WHERE task_id = ?
-               AND role = ?
-               AND (external_id = ? OR (external_id IS NULL AND content = ?))
-             LIMIT 1",
-        )
-        .bind(task_id)
-        .bind(role.as_db())
-        .bind(external_id)
-        .bind(content)
-        .fetch_optional(&self.pool)
-        .await?;
-        if existing.is_some() {
-            return Ok(false);
-        }
-        let result = query(
-            "INSERT OR IGNORE INTO agent_messages
-             (id, task_id, role, content, created_at, external_id)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(task_id)
-        .bind(role.as_db())
-        .bind(content)
-        .bind(created_at)
-        .bind(external_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn update_agent_task_status(
-        &self,
-        task_id: &str,
-        status: AgentTaskStatus,
-        progress_summary: Option<&str>,
-        last_error: Option<&str>,
-    ) -> Result<AgentTaskDto, sqlx::error::Error> {
-        let now = timestamp();
-        let completed_at = match status {
-            AgentTaskStatus::Completed | AgentTaskStatus::Cancelled => Some(now.clone()),
-            _ => None,
-        };
-        query(
-            "UPDATE agent_tasks
-             SET status = ?, progress_summary = ?, last_error = ?, updated_at = ?,
-                 completed_at = COALESCE(?, completed_at)
-             WHERE id = ?",
-        )
-        .bind(status.as_db())
-        .bind(progress_summary)
-        .bind(last_error)
-        .bind(&now)
-        .bind(completed_at)
-        .bind(task_id)
-        .execute(&self.pool)
-        .await?;
-        self.get_agent_task(task_id).await
-    }
-
-    /// Updates a task's status only when its current status is in
-    /// `allowed_current`. Returns whether the transition was applied. This
-    /// lets background work (e.g. the runtime placeholder) avoid clobbering
-    /// states the user reached concurrently, such as resurrecting a
-    /// cancelled task.
-    pub async fn update_agent_task_status_if_in(
-        &self,
-        task_id: &str,
-        status: AgentTaskStatus,
-        progress_summary: Option<&str>,
-        last_error: Option<&str>,
-        allowed_current: &[AgentTaskStatus],
-    ) -> Result<bool, sqlx::error::Error> {
-        if allowed_current.is_empty() {
-            return Ok(false);
-        }
-        let now = timestamp();
-        let completed_at = match status {
-            AgentTaskStatus::Completed | AgentTaskStatus::Cancelled => Some(now.clone()),
-            _ => None,
-        };
-        let placeholders = vec!["?"; allowed_current.len()].join(", ");
-        let sql = format!(
-            "UPDATE agent_tasks
-             SET status = ?, progress_summary = ?, last_error = ?, updated_at = ?,
-                 completed_at = COALESCE(?, completed_at)
-             WHERE id = ? AND status IN ({placeholders})"
-        );
-        let mut query = query(&sql)
-            .bind(status.as_db())
-            .bind(progress_summary)
-            .bind(last_error)
-            .bind(&now)
-            .bind(completed_at)
-            .bind(task_id);
-        for current in allowed_current {
-            query = query.bind(current.as_db());
-        }
-        let result = query.execute(&self.pool).await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Returns whether a Hermes session is already bound to a different
-    /// task, so heuristic session matching never steals another task's
-    /// conversation.
-    pub async fn hermes_session_bound_to_other_task(
-        &self,
-        task_id: &str,
-        hermes_session_id: &str,
-    ) -> Result<bool, sqlx::error::Error> {
-        let row =
-            query("SELECT 1 FROM agent_tasks WHERE hermes_session_id = ? AND id != ? LIMIT 1")
-                .bind(hermes_session_id)
-                .bind(task_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.is_some())
-    }
-
-    pub async fn add_agent_tool_event(
-        &self,
-        task_id: &str,
-        tool_name: &str,
-        status: AgentToolEventStatus,
-        summary: &str,
-        arguments_json: Option<&str>,
-        result_json: Option<&str>,
-        redacted: bool,
-    ) -> Result<AgentToolEventDto, sqlx::error::Error> {
-        let now = timestamp();
-        let completed_at = match status {
-            AgentToolEventStatus::Completed
-            | AgentToolEventStatus::Failed
-            | AgentToolEventStatus::Blocked => Some(now.clone()),
-            _ => None,
-        };
-        let id = Uuid::new_v4().to_string();
-        query(
-            "INSERT INTO agent_tool_events
-             (id, task_id, tool_name, status, summary, arguments_json, result_json,
-              redacted, created_at, completed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(task_id)
-        .bind(tool_name)
-        .bind(status.as_db())
-        .bind(summary)
-        .bind(arguments_json)
-        .bind(result_json)
-        .bind(if redacted { 1 } else { 0 })
-        .bind(&now)
-        .bind(completed_at)
-        .execute(&self.pool)
-        .await?;
-        query("UPDATE agent_tasks SET updated_at = ? WHERE id = ?")
-            .bind(&now)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        let row = query(
-            "SELECT id, task_id, tool_name, status, summary, arguments_json, result_json,
-                    redacted, created_at, completed_at
-             FROM agent_tool_events
-             WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(agent_tool_event_from_row(row))
-    }
-
-    pub async fn agent_tool_events(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<AgentToolEventDto>, sqlx::error::Error> {
-        let rows = query(
-            "SELECT id, task_id, tool_name, status, summary, arguments_json, result_json,
-                    redacted, created_at, completed_at
-             FROM agent_tool_events
-             WHERE task_id = ?
-             ORDER BY created_at ASC, rowid ASC",
-        )
-        .bind(task_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(agent_tool_event_from_row).collect())
-    }
-
-    async fn agent_messages(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<AgentMessageDto>, sqlx::error::Error> {
-        let rows = query(
-            "SELECT id, task_id, role, content, created_at
-             FROM agent_messages
-             WHERE task_id = ?
-             ORDER BY created_at ASC, rowid ASC",
-        )
-        .bind(task_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(agent_message_from_row).collect())
     }
 
     pub async fn delete_dictation_history_item(&self, id: &str) -> Result<(), sqlx::error::Error> {
@@ -6172,62 +5863,9 @@ fn dictation_history_item_from_row(row: sqlx_sqlite::SqliteRow) -> DictationHist
     }
 }
 
-fn agent_task_from_row(row: sqlx_sqlite::SqliteRow) -> AgentTaskDto {
-    AgentTaskDto {
-        id: row.get("id"),
-        title: row.get("title"),
-        prompt: row.get("prompt"),
-        status: AgentTaskStatus::from(row.get::<String, _>("status").as_str()),
-        safety_profile: AgentSafetyProfile::from(row.get::<String, _>("safety_profile").as_str()),
-        hermes_session_id: row.get("hermes_session_id"),
-        progress_summary: row.get("progress_summary"),
-        last_error: row.get("last_error"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-        completed_at: row.get("completed_at"),
-        messages: Vec::new(),
-        tool_events: Vec::new(),
-    }
-}
-
-fn agent_message_from_row(row: sqlx_sqlite::SqliteRow) -> AgentMessageDto {
-    AgentMessageDto {
-        id: row.get("id"),
-        task_id: row.get("task_id"),
-        role: AgentMessageRole::from(row.get::<String, _>("role").as_str()),
-        content: row.get("content"),
-        created_at: row.get("created_at"),
-    }
-}
-
-fn agent_tool_event_from_row(row: sqlx_sqlite::SqliteRow) -> AgentToolEventDto {
-    AgentToolEventDto {
-        id: row.get("id"),
-        task_id: row.get("task_id"),
-        tool_name: row.get("tool_name"),
-        status: AgentToolEventStatus::from(row.get::<String, _>("status").as_str()),
-        summary: row.get("summary"),
-        arguments_json: row.get("arguments_json"),
-        result_json: row.get("result_json"),
-        redacted: row.get::<i64, _>("redacted") != 0,
-        created_at: row.get("created_at"),
-        completed_at: row.get("completed_at"),
-    }
-}
-
 fn dictation_history_cutoff_timestamp() -> String {
     (Utc::now() - Duration::days(DICTATION_HISTORY_RETENTION_DAYS))
         .to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-fn title_from_prompt(prompt: &str) -> String {
-    let compact = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-    let title: String = compact.chars().take(64).collect();
-    if title.trim().is_empty() {
-        "New task".to_string()
-    } else {
-        title
-    }
 }
 
 fn preview_for(title: &str, content: &str) -> String {
@@ -8836,6 +8474,10 @@ mod tests {
             .set_trigger_cursor("user@example.com", "email_received", "50")
             .await
             .expect("stale cursor");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "50")
+            .await
+            .expect("stale per-routine cursor");
 
         repos
             .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
@@ -8845,6 +8487,11 @@ mod tests {
             .trigger_cursor("user@example.com", "email_received")
             .await
             .expect("cursor reset")
+            .is_none());
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .expect("per-routine cursor reset")
             .is_none());
 
         let mut fire_count = simulate_email_poll(&repos, 100, &[]).await;
@@ -8872,6 +8519,77 @@ mod tests {
         );
         fire_count += simulate_email_poll(&repos, 101, &[101]).await;
         assert_eq!(fire_count, 1);
+    }
+
+    #[tokio::test]
+    async fn removed_email_subscription_does_not_reuse_its_old_cursor() {
+        let repos = test_repositories().await;
+        let removed = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("first email trigger");
+        repos
+            .replace_connector_trigger("job-2", "email_received", "user@example.com", "{}")
+            .await
+            .expect("peer email trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "100")
+            .await
+            .unwrap();
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "80")
+            .await
+            .unwrap();
+
+        assert!(repos
+            .delete_connector_trigger(&removed.id)
+            .await
+            .expect("remove subscription"));
+        assert!(!repos
+            .set_email_trigger_cursor_if_active(&removed.id, "job-1", "user@example.com", "100",)
+            .await
+            .expect("stale snapshot rejected"));
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
+
+        let reenabled = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("re-enable subscription");
+        assert!(repos
+            .set_email_trigger_cursor_if_active(&reenabled.id, "job-1", "user@example.com", "100",)
+            .await
+            .expect("active snapshot accepted"));
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("100")
+        );
+
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "100")
+            .await
+            .unwrap();
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("switch trigger kind");
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

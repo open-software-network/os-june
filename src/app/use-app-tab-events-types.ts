@@ -7,7 +7,7 @@ export type UseAppTabEventsDependencies = {
   activateTab: (id: string) => void;
   activeTabId: string;
   activeTabIdRef: React.MutableRefObject<string>;
-  calendarContextNoteProfilesRef: React.MutableRefObject<Map<string, string>>;
+  calendarContextNotePartitionsRef: React.MutableRefObject<Map<string, string>>;
   calendarContextNoteUpdatesRef: React.MutableRefObject<Map<string, NoteDto>>;
   closeTab: (id: string) => void;
   cycleTab: (delta: number) => void;

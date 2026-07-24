@@ -10,7 +10,7 @@ export type UseRecordingControlsDependencies = {
   activeViewRef: React.MutableRefObject<SidebarView>;
   appBlocked: boolean;
   bootstrapped: boolean;
-  crossProfileRecordingNoteIdRef: React.MutableRefObject<string | undefined>;
+  crossPartitionRecordingNoteIdRef: React.MutableRefObject<string | undefined>;
   dispatch: React.Dispatch<NotesAction>;
   finishingSessionsRef: React.MutableRefObject<Set<string>>;
   handleStartAgentRecording: (requestedSourceMode: RecordingSourceMode) => Promise<NoteDto>;

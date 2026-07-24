@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Preserved June browser policy broker; only cleanup is wired initially.
+
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -422,18 +424,7 @@ impl BrowserBroker {
             return Ok(self.lock().routine_entitlement_override.unwrap_or(true));
         }
         #[cfg(not(test))]
-        {
-            crate::os_accounts::require_routine_browser_entitlement()
-                .await
-                .map(|()| true)
-                .or_else(|error| {
-                    if error.code == "browser_routine_pro_required" {
-                        Ok(false)
-                    } else {
-                        Err(error)
-                    }
-                })
-        }
+        Ok(false)
     }
 
     /// Re-check the current account tier at the broker boundary for every
@@ -1913,6 +1904,19 @@ impl BrowserBroker {
             },
         );
     }
+}
+
+pub(crate) fn release_shared_tab(app: &tauri::AppHandle, tab_id: i64) {
+    use tauri::Manager;
+    let Some(broker) = app.try_state::<Arc<BrowserBroker>>() else {
+        return;
+    };
+    let broker = Arc::clone(broker.inner());
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = broker.release_tab(tab_id).await {
+            tracing::error!(code = %error.code, "shared browser tab release was not recorded");
+        }
+    });
 }
 
 fn context_access_enabled(

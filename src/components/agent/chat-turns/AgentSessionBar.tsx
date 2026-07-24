@@ -1,9 +1,6 @@
-import { IconConcise } from "central-icons/IconConcise";
-import { IconConsole } from "central-icons/IconConsole";
 import { IconDotGrid1x3Horizontal } from "central-icons/IconDotGrid1x3Horizontal";
 import { IconFiles } from "central-icons/IconFiles";
 import { IconFolderAddRight } from "central-icons/IconFolderAddRight";
-import { IconGauge } from "central-icons/IconGauge";
 import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconShareOs } from "central-icons/IconShareOs";
@@ -13,7 +10,6 @@ import { ShareLinkCopyAction } from "../../share/ShareLinkCopyAction";
 import { BackButton } from "../../ui/BackButton";
 import { Dialog } from "../../ui/Dialog";
 import type { AgentProjectContext } from "../../../lib/agent-project-context";
-import { HERMES_TUI_DEBUG_WARNING } from "../../../lib/hermes-tui-debug";
 import type { ModelPrivacyBadge } from "../../../lib/model-privacy";
 import type { AgentWorkspaceOrigin } from "../agent-workspace-types";
 import { PrivacyModeBadge, UnrestrictedBadge } from "../composer/ModelPicker";
@@ -38,9 +34,6 @@ export function AgentSessionBar({
   onShare,
   onMoveToProject,
   onDelete,
-  onShowUsage,
-  onCompactContext,
-  onOpenTuiDebug,
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
@@ -58,11 +51,6 @@ export function AgentSessionBar({
   /** Opens the change-project dialog (which also owns removal). */
   onMoveToProject?: () => void;
   onDelete?: () => void;
-  onShowUsage?: () => void;
-  onCompactContext?: () => void;
-  /** Developer-only: open this session in Hermes' raw TUI. Undefined (and the
-   * menu item absent) in production builds. */
-  onOpenTuiDebug?: () => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title ?? "");
@@ -93,15 +81,7 @@ export function AgentSessionBar({
     onRename?.(draft);
   }
 
-  const hasMenu = Boolean(
-    onRename ||
-      onShare ||
-      onMoveToProject ||
-      onDelete ||
-      onShowUsage ||
-      onCompactContext ||
-      onOpenTuiDebug,
-  );
+  const hasMenu = Boolean(onRename || onShare || onMoveToProject || onDelete);
 
   return (
     <div className="detail-bar agent-session-bar" data-tauri-drag-region>
@@ -251,36 +231,7 @@ export function AgentSessionBar({
                     {inProject ? "Change project" : "Add to project"}
                   </button>
                 ) : null}
-                {(onRename || onShare || onMoveToProject) && (onShowUsage || onCompactContext) ? (
-                  <div className="context-menu-separator" role="separator" />
-                ) : null}
-                {onShowUsage ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onShowUsage();
-                    }}
-                  >
-                    <IconGauge size={14} />
-                    Usage
-                  </button>
-                ) : null}
-                {onCompactContext ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setMenuOpen(false);
-                      onCompactContext();
-                    }}
-                  >
-                    <IconConcise size={14} />
-                    Compact context
-                  </button>
-                ) : null}
-                {onDelete && (onRename || onMoveToProject || onShowUsage || onCompactContext) ? (
+                {onDelete && (onRename || onShare || onMoveToProject) ? (
                   <div className="context-menu-separator" role="separator" />
                 ) : null}
                 {onDelete ? (
@@ -296,25 +247,6 @@ export function AgentSessionBar({
                     <IconTrashCan size={14} />
                     Delete session
                   </button>
-                ) : null}
-                {onOpenTuiDebug ? (
-                  <>
-                    <div className="context-menu-separator" role="separator" />
-                    <button
-                      type="button"
-                      role="menuitem"
-                      // Debug-only fallback: resume this session in Hermes' raw
-                      // TUI to tell a June adapter/UI bug from a Hermes one.
-                      title={HERMES_TUI_DEBUG_WARNING}
-                      onClick={() => {
-                        setMenuOpen(false);
-                        onOpenTuiDebug();
-                      }}
-                    >
-                      <IconConsole size={14} />
-                      Debug with Hermes TUI
-                    </button>
-                  </>
                 ) : null}
               </div>
             ) : null}

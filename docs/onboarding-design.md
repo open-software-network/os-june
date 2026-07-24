@@ -128,7 +128,7 @@ Right panel: a simple animated diagram — your Mac (files/memory/agent inside a
 > **Private by architecture, not by promise.**
 > Every layer of June defaults to private. The ones that matter most, you can verify.
 >
-> **Local by default.** The agent runs on your Mac, built on open-source Hermes. Your files, sessions, and memory stay on your disk.
+> **Local by default.** June owns the agent runtime on your Mac. Your files, sessions, and memory stay on your disk.
 > **Private inference.** Prompts leave your Mac only for model inference, routed by default to zero-retention models — nothing stored, nothing trained on. Third-party models are opt-in, with your identity stripped.
 > **Verifiable.** Open-source code, TEE-attested backend. Check it yourself — don't take our word for it.
 

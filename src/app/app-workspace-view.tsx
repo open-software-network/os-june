@@ -183,9 +183,6 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     <RoutinesViewRoute
       creditActionsDisabledReason={fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined}
       onCreateRoutine={(prompt) => {
-        // The agent workspace is unmounted while Routines is shown,
-        // so the pending marker alone is consumed on mount — no
-        // window event needed (it could double-submit the session).
         markAgentNewSessionPending(prompt);
         setActiveAgentSession(undefined);
         setActiveView("agent");

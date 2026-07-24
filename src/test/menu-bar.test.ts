@@ -1,21 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { buildAgentMenuBarState } from "../lib/menu-bar";
-import type { HermesSessionInfo } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 
-const sessions: HermesSessionInfo[] = [
+const sessions: AgentSessionDto[] = [
   {
     id: "session-old",
     title: "Older work",
-    preview: "First pass",
-    last_active: "2026-06-04T12:00:00Z",
-    message_count: 2,
+    status: "idle",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: "",
+    source: "user",
+    createdAt: "2026-06-04T11:00:00Z",
+    updatedAt: "2026-06-04T12:00:00Z",
   },
   {
     id: "session-new",
     title: "Newer work",
-    preview: "Reviewing changes",
-    last_active: "2026-06-04T13:00:00Z",
-    message_count: 4,
+    status: "idle",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: "",
+    source: "user",
+    createdAt: "2026-06-04T11:00:00Z",
+    updatedAt: "2026-06-04T13:00:00Z",
   },
 ];
 
@@ -43,10 +51,16 @@ describe("buildAgentMenuBarState", () => {
   });
 
   it("keeps waiting sessions visible before recent idle sessions", () => {
-    const recentIdleSessions: HermesSessionInfo[] = Array.from({ length: 6 }, (_, index) => ({
+    const recentIdleSessions: AgentSessionDto[] = Array.from({ length: 6 }, (_, index) => ({
       id: `idle-${index}`,
       title: `Idle ${index}`,
-      last_active: `2026-06-04T13:0${index}:00Z`,
+      status: "idle",
+      model: "auto",
+      safetyMode: "sandboxed",
+      workspacePath: "",
+      source: "user",
+      createdAt: "2026-06-04T12:00:00Z",
+      updatedAt: `2026-06-04T13:0${index}:00Z`,
     }));
     const state = buildAgentMenuBarState({
       sessions: [
@@ -54,7 +68,13 @@ describe("buildAgentMenuBarState", () => {
         {
           id: "waiting-old",
           title: "Waiting on approval",
-          last_active: "2026-06-04T12:00:00Z",
+          status: "waiting_for_user",
+          model: "auto",
+          safetyMode: "sandboxed",
+          workspacePath: "",
+          source: "user",
+          createdAt: "2026-06-04T11:00:00Z",
+          updatedAt: "2026-06-04T12:00:00Z",
         },
       ],
       workingSessionIds: new Set(),

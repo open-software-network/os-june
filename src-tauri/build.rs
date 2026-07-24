@@ -1,6 +1,5 @@
 const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-version.txt";
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
-const EXPECTED_MACOS_ARCHITECTURES: &str = "arm64 x86_64";
 
 fn main() {
     println!("cargo:rerun-if-changed=tauri.conf.json");
@@ -25,7 +24,7 @@ fn main() {
     build_dictation_helper();
     prepare_computer_use_driver();
     build_windows_dictation_helper();
-    ensure_bundled_hermes_dir();
+    ensure_agent_runtime_placeholder();
     ensure_bundled_extension_dir();
     ensure_nm_shim_placeholder();
     tauri_build::build();
@@ -335,118 +334,52 @@ fn ensure_nm_shim_placeholder() {
     }
 }
 
-/// `tauri_build::build()` validates every `bundle.resources` source path at
-/// compile time, so the `../.tauri-hermes/hermes` mapping must exist for ANY
-/// cargo invocation (`cargo test`, rust-analyzer, dev builds) — not just for
-/// `tauri build`. Release CI populates the real runtime via
-/// scripts/bundle-hermes-runtime.sh or scripts/bundle-hermes-runtime-windows.ps1
-/// before compiling; everywhere else this
-/// placeholder keeps the build green and the app falls back to the managed
-/// on-device install (`bundled_hermes_command` finds no launcher in it).
-///
-/// A populated bundle carries PIN and PATCHSET stamps (the hermes-agent commit
-/// and June compatibility patch it was built from). The macOS bundle also
-/// carries an ARCHITECTURES stamp. When a required stamp no longer matches,
-/// the stale bundle is evicted and replaced with the placeholder rather than
-/// silently shipping outdated or host-only runtime code.
-fn ensure_bundled_hermes_dir() {
-    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
-    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PATCHSET");
-    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/ARCHITECTURES");
+/// Tauri validates resource paths during ordinary Cargo invocations, before
+/// the SEA packaging step has run. Keep target-correct placeholders available
+/// for tests and rust-analyzer. `beforeBuildCommand` replaces them with the
+/// Node 24 SEA and its checksum before any application bundle is assembled.
+fn ensure_agent_runtime_placeholder() {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
-    let Some(hermes_dir) = manifest_dir
+    let Some(runtime_dir) = manifest_dir
         .parent()
-        .map(|repo_dir| repo_dir.join(".tauri-hermes").join("hermes"))
+        .map(|repo_dir| repo_dir.join(".tauri-agent-runtime"))
     else {
         return;
     };
-    if hermes_dir.exists() {
-        let mac_launcher = hermes_dir.join("bin").join("hermes");
-        let windows_launcher = hermes_dir.join("bin").join("hermes.exe");
-        if !mac_launcher.exists() && !windows_launcher.exists() {
-            // Placeholder (or partial) dir: nothing to validate.
-            return;
-        }
-        let stamped = std::fs::read_to_string(hermes_dir.join("PIN"))
-            .map(|raw| raw.trim().to_string())
-            .unwrap_or_default();
-        let pinned = hermes_agent_pinned_commit(&manifest_dir);
-        let stamped_patch_set = std::fs::read_to_string(hermes_dir.join("PATCHSET"))
-            .map(|raw| raw.trim().to_string())
-            .unwrap_or_default();
-        let pinned_patch_set = hermes_runtime_patch_set(&manifest_dir);
-        let stamped_architectures = std::fs::read_to_string(hermes_dir.join("ARCHITECTURES"))
-            .map(|raw| raw.split_whitespace().collect::<Vec<_>>().join(" "))
-            .unwrap_or_default();
-        // Windows keeps its existing single-platform bundle. A populated
-        // macOS bundle is reusable only when the architecture stamp proves it
-        // uses the universal dual-runtime layout; this evicts old host-only
-        // bundles even when their source and patch pins still match.
-        let architecture_layout_current =
-            !mac_launcher.exists() || stamped_architectures == EXPECTED_MACOS_ARCHITECTURES;
-        if !stamped.is_empty()
-            && stamped == pinned
-            && !stamped_patch_set.is_empty()
-            && stamped_patch_set == pinned_patch_set
-            && architecture_layout_current
-        {
-            return;
-        }
-        println!(
-            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?} with patch \
-             {stamped_patch_set:?} for architectures {stamped_architectures:?}, expected \
-             {pinned:?} with patch {pinned_patch_set:?} and macOS architectures \
-             \"arm64 x86_64\"); evicting \
-             it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
-        );
-        if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {
-            println!(
-                "cargo:warning=could not remove stale hermes bundle {}: {error}",
-                hermes_dir.display()
-            );
-            return;
-        }
-    }
-    if let Err(error) = std::fs::create_dir_all(&hermes_dir) {
+    if let Err(error) = std::fs::create_dir_all(&runtime_dir) {
         println!(
             "cargo:warning=could not create {}: {error}",
-            hermes_dir.display()
+            runtime_dir.display()
         );
         return;
     }
-    let note = "No bundled Hermes runtime in this build. The app installs the managed \
-runtime on first launch instead. Release CI runs the platform Hermes bundler to \
-ship the runtime inside the app.\n";
-    if let Err(error) = std::fs::write(hermes_dir.join("PLACEHOLDER.md"), note) {
-        println!("cargo:warning=could not write hermes placeholder: {error}");
+    let executable = if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("windows") {
+        runtime_dir.join("june-agent-runtime.exe")
+    } else {
+        runtime_dir.join("june-agent-runtime")
+    };
+    if !executable.exists() {
+        if let Err(error) = std::fs::write(
+            &executable,
+            b"placeholder: replaced by scripts/build-agent-runtime.mjs\n",
+        ) {
+            println!("cargo:warning=could not write agent runtime placeholder: {error}");
+            return;
+        }
     }
-}
-
-/// Reads HERMES_AGENT_INSTALL_COMMIT out of src/hermes_bridge.rs. A build
-/// script cannot import crate constants, so this parses the declaration the
-/// same way scripts/bundle-hermes-runtime.sh does — one source of truth.
-fn hermes_agent_pinned_commit(manifest_dir: &std::path::Path) -> String {
-    hermes_bridge_constant(manifest_dir, "HERMES_AGENT_INSTALL_COMMIT")
-}
-
-fn hermes_runtime_patch_set(manifest_dir: &std::path::Path) -> String {
-    hermes_bridge_constant(manifest_dir, "HERMES_RUNTIME_PATCH_SET")
-}
-
-fn hermes_bridge_constant(manifest_dir: &std::path::Path, name: &str) -> String {
-    let source = std::fs::read_to_string(manifest_dir.join("src").join("hermes_bridge.rs"))
-        .unwrap_or_default();
-    source
-        .lines()
-        .find(|line| line.contains(&format!("const {name}")))
-        .and_then(|line| {
-            let start = line.find('"')? + 1;
-            let end = line[start..].find('"')? + start;
-            Some(line[start..end].to_string())
-        })
-        .unwrap_or_default()
+    let checksum = executable.with_extension(
+        executable
+            .extension()
+            .map(|extension| format!("{}.sha256", extension.to_string_lossy()))
+            .unwrap_or_else(|| "sha256".to_string()),
+    );
+    if !checksum.exists() {
+        if let Err(error) = std::fs::write(&checksum, b"placeholder\n") {
+            println!("cargo:warning=could not write agent runtime checksum placeholder: {error}");
+        }
+    }
 }
 
 /// Remove pre-rename ("June") helper bundles from `.tauri-helper` so

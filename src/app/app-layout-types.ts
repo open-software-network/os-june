@@ -1,18 +1,13 @@
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import type { NotesListHandle } from "../components/notes-list/NotesList";
-import type { SettingsTab } from "../components/settings/settings-config";
+import type { SettingsTab } from "../components/settings/AppSettings";
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { TabItem } from "../components/tabs/TabBar";
 import type { TabNav } from "./tabs/tabs";
 import type { ReferralNudgeMoment } from "../components/referral/ReferralNudge";
-import type {
-  FolderDto,
-  NoteDto,
-  RecordingStatusDto,
-  AccountStatus,
-  HermesSessionInfo,
-} from "../lib/tauri";
+import type { FolderDto, NoteDto, RecordingStatusDto, AccountStatus } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { MaxUpgradeTransport } from "../lib/billing-actions";
 import type { MaxGrantWait } from "../lib/max-upgrade";
 import type { NoteChat } from "../components/note-chat/useNoteChat";
@@ -33,7 +28,7 @@ export type RenderAppLayoutDependencies = {
   activateTab: (id: string) => void;
   activeTabId: string;
   activeView: SidebarView;
-  agentSessions: HermesSessionInfo[];
+  agentSessions: AgentSessionDto[];
   agentSessionsListRef: React.MutableRefObject<AgentSessionsListHandle | null>;
   appMaxGrantWaitRef: React.MutableRefObject<MaxGrantWait | undefined>;
   billingNotice: string | null;
@@ -103,7 +98,7 @@ export type RenderAppLayoutDependencies = {
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
   pillIsDemo: boolean;
   pillStatus: RecordingStatusDto | null;
@@ -120,7 +115,7 @@ export type RenderAppLayoutDependencies = {
   selectedNote: NoteDto | undefined;
   sessionFolders: Record<string, string[]>;
   setAccessibilityBannerDismissed: React.Dispatch<React.SetStateAction<boolean>>;
-  setActiveAgentSession: (session: HermesSessionInfo | undefined) => void;
+  setActiveAgentSession: (session: AgentSessionDto | undefined) => void;
   setActiveView: React.Dispatch<React.SetStateAction<SidebarView>>;
   setAgentOrigin: React.Dispatch<
     React.SetStateAction<{ kind: "project"; folderId: string } | { kind: "routines" } | undefined>

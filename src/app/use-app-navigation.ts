@@ -62,7 +62,6 @@ export function useAppNavigation(dependencies: UseAppNavigationDependencies) {
       originAllNotes,
       state.selectedFolderId,
       activeAgentSessionId,
-      activeAgentSessionSeed?.preview,
       activeAgentSessionSeed?.title,
       agentOrigin,
     ],
@@ -130,10 +129,7 @@ export function useAppNavigation(dependencies: UseAppNavigationDependencies) {
       }
       if (nav.view === "agent") {
         const session = nav.agentSessionId
-          ? (agentSessions.find((s) => s.id === nav.agentSessionId) ?? {
-              id: nav.agentSessionId,
-              title: nav.agentSessionTitle,
-            })
+          ? agentSessions.find((s) => s.id === nav.agentSessionId)
           : undefined;
         setActiveAgentSessionId(nav.agentSessionId);
         setActiveAgentSessionSeed(session);

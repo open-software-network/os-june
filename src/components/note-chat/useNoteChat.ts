@@ -1,264 +1,32 @@
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  buildHermesSessionChatTurns,
-  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
-  USER_ATTACHMENT_PROMPT_MARKER,
-  type AgentChatTurn,
-} from "../../lib/agent-chat-runtime";
-import {
-  getActiveHermesProfileName,
-  refreshActiveHermesProfile,
-} from "../../lib/active-hermes-profile";
-import { messageFromError } from "../../lib/errors";
-import { listHermesSessions } from "../../lib/hermes-adapter";
-import { hasHermesActiveSessionSnapshotSubscribers } from "../../lib/hermes-active-session-snapshots";
-import { hermesConnectionForMode } from "../../lib/hermes-connection";
-import { classifyHermesEvent } from "../../lib/hermes-control-plane/event-classifier";
-import { createHermesMethods } from "../../lib/hermes-control-plane/methods";
-import { isTerminalHermesEvent, type JuneHermesEvent } from "../../lib/hermes-control-plane/events";
-import { isHermesFeatureSupported } from "../../lib/hermes-control-plane/compatibility/support";
-import { HermesGatewayClient, isSessionBusyError } from "../../lib/hermes-gateway";
-import {
-  canAttributeUntaggedAgentRun,
-  cancelAgentRunMonitoring,
-  markAgentRunSucceeded,
-  startAgentRunMonitoring,
-} from "../../lib/agent-run-monitor";
+  agentItemsToChatTurns,
+  applyAgentRuntimeEvent,
+  createAgentRuntimeProjection,
+  type AgentRuntimeProjection,
+} from "../../lib/agent-runtime-adapter";
+import type { AgentItemDto, AgentRuntimeEvent } from "../../lib/agent-runtime-contract";
 import { dispatchAgentSessionStatus } from "../../lib/agent-events";
-import { submitHermesRun } from "../../lib/hermes-run-submission";
-import {
-  reserveHermesSessionDispatch,
-  type HermesSessionDispatchReservation,
-} from "../../lib/hermes-session-dispatch-mutex";
-import {
-  AUTO_MODEL_ID,
-  decodeHermesModelSelection,
-  hasPendingSessionModelSelection,
-  hermesModelIdForSelection,
-  markSessionModelSelectionApplied,
-  readSessionModelSelections,
-  rememberAppliedSessionModelSelection,
-  stageSessionModelSelection,
-  subscribeSessionModelSelections,
-  type SessionModelSelection,
-} from "../../lib/hermes-session-model-selection";
-import { localGenerationOptionId } from "../../lib/local-generation";
-import {
-  attachImageToSession,
-  pendingImageAttachments,
-  type HermesAttachmentState,
-} from "../../lib/hermes-image-attach";
-import {
-  assignSessionToProfile,
-  hermesBridgeImageDataUrl,
-  hermesBridgeSessionMessages,
-  hermesBridgeStatus,
-  prepareHermesBridgeImageAttachment,
-  providerModelSettings,
-  startHermesBridge,
-  type HermesSessionMessage,
-  type ImportedHermesFile,
-} from "../../lib/tauri";
+import { messageFromError } from "../../lib/errors";
+import { agentRuntimeBindings } from "../../lib/tauri";
 import { noteReferenceToken, type NoteReferenceInput } from "../agent/composer/noteReference";
-import { noteChatSessionIdFor, rememberNoteChatSession } from "./noteChatSessions";
+import {
+  forgetNoteChatSession,
+  noteChatSessionIdFor,
+  rememberNoteChatSession,
+} from "./noteChatSessions";
 
-/** A file imported into the June workspace for this chat, plus its structured
- * attach state — the panel-side shape of the workspace's AgentAttachment. */
-export type NoteChatAttachment = ImportedHermesFile & {
+const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
+const DEFAULT_MODEL = "auto";
+
+export type NoteChatAttachment = {
   id: string;
-  attach: HermesAttachmentState;
+  name: string;
+  path: string;
 };
 
-/** The same path block the workspace appends, so the agent gets real,
- * readable workspace paths and the transcript strippers recognize it. */
-function withAttachmentPaths(message: string, attachments: NoteChatAttachment[]): string {
-  if (!attachments.length) return message;
-  return [
-    message || "Use the attached file(s).",
-    "",
-    USER_ATTACHMENT_PROMPT_MARKER,
-    "Attached files copied into the June workspace:",
-    ...attachments.map(
-      (attachment) =>
-        `- ${attachment.name} (${attachment.rootLabel}): ${attachmentPromptPath(attachment.path)}`,
-    ),
-    "",
-    "Use these file paths when inspecting or operating on the files.",
-  ].join("\n");
-}
-
-function attachmentPromptPath(path: string) {
-  const workspaceMatch = path.match(/(?:^|[/\\])workspace[/\\](.+)$/);
-  if (workspaceMatch?.[1]) return workspaceMatch[1];
-  return path;
-}
-
-/** Live classified events kept per open panel; matches the workspace's cap so
- * a long tool-heavy turn can't grow the array unbounded. */
-const LIVE_EVENT_CAP = 200;
-
-/* One gateway client for every note chat, module-scoped so panels across
- * note switches share the socket instead of re-handshaking. Note chats are
- * always sandboxed — the panel is a reading/asking surface; escalation to
- * the full agent view is where mode choices live. The client is a SEPARATE
- * connection from AgentWorkspace's on purpose: the gateway serves multiple
- * sockets, and sharing the workspace's client would couple the panel to the
- * monolith's ref-managed lifecycle. */
-let sharedGateway: HermesGatewayClient | null = null;
-let sharedGatewayConnecting: Promise<HermesGatewayClient> | null = null;
-const eventSubscribers = new Set<(event: JuneHermesEvent) => void>();
-
-function terminalAgentStatus(
-  event: JuneHermesEvent,
-): "completed" | "failed" | "cancelled" | undefined {
-  if (!isTerminalHermesEvent(event)) return undefined;
-  if (event.kind === "error") return "failed";
-  if (event.kind === "transcript") return event.failed ? "failed" : "completed";
-  if (event.kind !== "lifecycle") return undefined;
-  if (/(?:cancel|stop|interrupt|abort)/i.test(event.status)) return "cancelled";
-  if (/(?:fail|error|timeout)/i.test(event.status)) return "failed";
-  return "completed";
-}
-
-async function connectGateway(startIfNeeded: boolean): Promise<HermesGatewayClient | null> {
-  if (sharedGatewayConnecting) return sharedGatewayConnecting;
-  const attempt = (async () => {
-    let status = await hermesBridgeStatus();
-    let connection = hermesConnectionForMode(status.running ? status : undefined, false);
-    if (!connection) {
-      if (!startIfNeeded) return null;
-      status = await startHermesBridge(undefined, false);
-      connection = hermesConnectionForMode(status, false);
-    }
-    await refreshActiveHermesProfile({ status, mode: "sandboxed" });
-    const wsUrl = connection?.wsUrl;
-    if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
-    if (!sharedGateway) {
-      const gateway = new HermesGatewayClient(false);
-      gateway.onEvent((raw) => {
-        const event = classifyHermesEvent(raw);
-        for (const subscriber of [...eventSubscribers]) subscriber(event);
-      });
-      // Unexpected drop: forget the client so the next submit reconnects
-      // fresh. Subscribers persist — they are keyed to the module set, not
-      // the socket.
-      gateway.onClose(() => {
-        if (sharedGateway === gateway) sharedGateway = null;
-      });
-      sharedGateway = gateway;
-    }
-    await sharedGateway.connect(wsUrl);
-    return sharedGateway;
-  })().finally(() => {
-    sharedGatewayConnecting = null;
-  });
-  // Only coalesce concurrent callers onto attempts that resolve to a live
-  // gateway; a "bridge not running" null must not stick for a later caller
-  // that wants to start it.
-  if (startIfNeeded) {
-    sharedGatewayConnecting = attempt.then((gateway) => {
-      if (!gateway) throw new Error("Hermes gateway is not connected.");
-      return gateway;
-    });
-    return sharedGatewayConnecting;
-  }
-  return attempt;
-}
-
-function subscribeToGatewayEvents(subscriber: (event: JuneHermesEvent) => void) {
-  eventSubscribers.add(subscriber);
-  return () => {
-    eventSubscribers.delete(subscriber);
-  };
-}
-
-function sessionMessagesFrom(response: {
-  messages?: HermesSessionMessage[];
-  items?: HermesSessionMessage[];
-  data?: HermesSessionMessage[];
-}): HermesSessionMessage[] {
-  return response.messages ?? response.items ?? response.data ?? [];
-}
-
-function sameSessionModelSelection(
-  left: SessionModelSelection,
-  right: SessionModelSelection,
-): boolean {
-  return left.modelId === right.modelId && left.costQuality === right.costQuality;
-}
-
-function selectionFromStoredHermesModel(
-  hermesModelId: string,
-  settings: Awaited<ReturnType<typeof providerModelSettings>>["settings"] | undefined,
-): SessionModelSelection {
-  const configuredLocalModelId = settings?.localGeneration.modelId.trim();
-  if (
-    !hermesModelId.startsWith("__june_") &&
-    configuredLocalModelId &&
-    hermesModelId === configuredLocalModelId
-  ) {
-    return { modelId: localGenerationOptionId(configuredLocalModelId) };
-  }
-  const selection = decodeHermesModelSelection(hermesModelId);
-  return selection.modelId === AUTO_MODEL_ID &&
-    selection.costQuality === undefined &&
-    settings?.costQuality !== undefined
-    ? { ...selection, costQuality: settings.costQuality }
-    : selection;
-}
-
-function defaultSessionModelSelection(
-  settings: Awaited<ReturnType<typeof providerModelSettings>>["settings"],
-): SessionModelSelection {
-  const localModelId = settings.localGeneration.modelId.trim();
-  const modelId =
-    settings.generationProvider === "local" && localModelId
-      ? localGenerationOptionId(localModelId)
-      : settings.generationModel;
-  return {
-    modelId,
-    ...(modelId === AUTO_MODEL_ID && settings.costQuality !== undefined
-      ? { costQuality: settings.costQuality }
-      : {}),
-  };
-}
-
-async function reconcileStoredSessionModelMetadata(storedSessionId: string): Promise<
-  | {
-      appliedHermesModelId: string;
-      selection: SessionModelSelection;
-    }
-  | undefined
-> {
-  const [sessions, settingsResponse] = await Promise.all([
-    listHermesSessions({ archived: "include", minMessages: 0 }).catch(() => []),
-    providerModelSettings().catch(() => undefined),
-  ]);
-  const appliedHermesModelId =
-    sessions.find((session) => session.id === storedSessionId)?.model?.trim() || undefined;
-  if (!appliedHermesModelId) return undefined;
-
-  const selection = selectionFromStoredHermesModel(
-    appliedHermesModelId,
-    settingsResponse?.settings,
-  );
-  let store = rememberAppliedSessionModelSelection(storedSessionId, selection);
-  // Raw ids from older June builds do not carry provider provenance. Retain
-  // the metadata model as the live baseline, but force one session-scoped
-  // config.set before the next prompt to upgrade Hermes to the tagged alias.
-  if (
-    hermesModelIdForSelection(selection) !== appliedHermesModelId &&
-    !hasPendingSessionModelSelection(store[storedSessionId])
-  ) {
-    store = stageSessionModelSelection(storedSessionId, store[storedSessionId].selection);
-  }
-  return { appliedHermesModelId, selection };
-}
-
-/** Result of a note-chat prompt attempt.
- * `accepted` is true once Hermes accepted `prompt.submit`.
- * `current` is true only while this panel still owns that attempt. */
 export type NoteChatSubmitResult = {
   accepted: boolean;
   current: boolean;
@@ -270,608 +38,222 @@ export const NOTE_CHAT_SUBMIT_REJECTED: NoteChatSubmitResult = {
 };
 
 export type NoteChat = {
-  /** The rendered conversation: persisted turns + the live streaming tail. */
-  turns: AgentChatTurn[];
-  /** True from an accepted submit until the turn's terminal event. */
+  turns: ReturnType<typeof agentItemsToChatTurns>;
   working: boolean;
-  /** A Send is still resolving creation/resume/dispatch, even if Stop hid the busy state. */
   submissionPending: boolean;
-  /** True while the persisted transcript for an existing session loads. */
   loading: boolean;
   error: string | null;
-  /** The stored Hermes session id backing this note's chat, once one exists.
-   * This is the id the agent view resolves the conversation by. */
   storedSessionId: string | undefined;
-  /** Sends a question about the note, with any imported attachments (images
-   * ride the structured attach flow before the prompt; every file's workspace
-   * path rides in the prompt block). Resolves `accepted: true` once Hermes
-   * took the prompt. `current` is only true while this panel still owns the
-   * attempt, so a stale unmount can keep drafts/recovery keys correct. */
+  model: string;
+  setModel: (model: string) => void;
   submit: (text: string, attachments?: NoteChatAttachment[]) => Promise<NoteChatSubmitResult>;
-  /** Starts one continuation in this chat's existing session without reading
-   * or clearing the composer. */
-  retryUpstreamFailure: () => Promise<NoteChatSubmitResult>;
-  /** Interrupts the running agent run. The UI reads stopped immediately; the
-   * interrupt RPC follows best-effort, like the workspace's stop. */
   stop: () => void;
-  /** Chooses the model for this chat: applied at session.create for a fresh
-   * chat, or as a session-scoped switch ahead of the next message on a live
-   * one. A change made while working remains queued for the following run. */
-  modelSelection: SessionModelSelection | undefined;
-  /** The model Hermes last acknowledged for this session. Legacy chats load
-   * this from Hermes session metadata until they have a durable selection
-   * entry of their own. */
-  appliedHermesModelId: string | undefined;
-  setSessionModel: (selection: SessionModelSelection) => void;
 };
 
-/** A note-scoped chat with June, powered by the same Hermes runtime as the
- * agent view but owned by the panel: its own gateway socket, its own live
- * event tail, one session per note (see noteChatSessions). The first message
- * of a session carries the note reference token, so Hermes resolves the note
- * through June's note context tool exactly like a composer note chip. */
+function titleFromNote(note: NoteReferenceInput) {
+  return note.title.trim() || "Note chat";
+}
+
+function runIsActive(projection: AgentRuntimeProjection) {
+  return projection.run?.status === "queued" || projection.run?.status === "running";
+}
+
+/** A note-scoped conversation backed by the June-owned runtime. The pairing
+ * is retained locally so reopening the panel resumes the same session. */
 export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const noteId = note?.id;
-  const noteTitle = note?.title ?? "";
   const [storedSessionId, setStoredSessionId] = useState<string>();
-  const [messages, setMessages] = useState<HermesSessionMessage[]>([]);
-  const [liveEvents, setLiveEvents] = useState<JuneHermesEvent[]>([]);
-  const [pendingUserTurns, setPendingUserTurns] = useState<AgentChatTurn[]>([]);
-  const [working, setWorking] = useState(false);
-  const workingRef = useRef(false);
-  const [submissionPending, setSubmissionPending] = useState(false);
+  const [projection, setProjection] = useState<AgentRuntimeProjection>(() =>
+    createAgentRuntimeProjection(),
+  );
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [loading, setLoading] = useState(false);
+  const [submissionPending, setSubmissionPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [modelSelection, setModelSelection] = useState<SessionModelSelection | undefined>(() => {
-    const noteStoredSessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
-    return noteStoredSessionId
-      ? readSessionModelSelections()[noteStoredSessionId]?.selection
-      : undefined;
-  });
-  const [appliedHermesModelId, setAppliedHermesModelId] = useState<string | undefined>(() => {
-    const noteStoredSessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
-    const appliedSelection = noteStoredSessionId
-      ? readSessionModelSelections()[noteStoredSessionId]?.appliedSelection
-      : undefined;
-    return appliedSelection ? hermesModelIdForSelection(appliedSelection) : undefined;
-  });
+  const generationRef = useRef(0);
+  const sessionIdRef = useRef<string>();
+  const activeSubmitRef = useRef<symbol>();
 
-  const storedSessionIdRef = useRef<string>();
-  const runtimeSessionIdRef = useRef<string>();
-  // The model the user picked in the panel vs the one the live session runs.
-  // They converge at session.create (fresh chat) or via a session-scoped
-  // config update right before the next prompt (existing chat) — never
-  // during an agent run.
-  const pendingModelSelectionRef = useRef<SessionModelSelection>();
-  const appliedHermesModelIdRef = useRef<string>();
-  const storedSessionMetadataHydratedRef = useRef(false);
-  const noteGenerationRef = useRef(0);
-  // Synchronous in-flight guard: React batches setWorking(true), so a rapid
-  // double send (double-click, or Enter racing the send button) could both
-  // pass the state-based check and each create a session / append a turn.
-  const activeSubmissionRef = useRef<symbol>();
-  const stoppedRuntimeSessionIdRef = useRef<string>();
-  const stoppedRunRef = useRef(false);
-  const liveEventsRef = useRef<JuneHermesEvent[]>([]);
-  const pendingUserTurnsRef = useRef<AgentChatTurn[]>([]);
-  liveEventsRef.current = liveEvents;
-  pendingUserTurnsRef.current = pendingUserTurns;
+  const working = runIsActive(projection);
+  const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
 
-  // Rebind to the note's session whenever the panel switches notes.
+  const hydrate = useCallback(async (sessionId: string) => {
+    const [session, items] = await Promise.all([
+      agentRuntimeBindings.getSession(sessionId),
+      agentRuntimeBindings.listItems(sessionId),
+    ]);
+    if (sessionIdRef.current !== sessionId) return;
+    setProjection(createAgentRuntimeProjection({ session, items }));
+    setModel(session.model || DEFAULT_MODEL);
+  }, []);
+
   useEffect(() => {
-    const noteGeneration = ++noteGenerationRef.current;
-    const noteStoredSessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
-    storedSessionIdRef.current = noteStoredSessionId;
-    runtimeSessionIdRef.current = undefined;
-    const rememberedEntry = noteStoredSessionId
-      ? readSessionModelSelections()[noteStoredSessionId]
-      : undefined;
-    const rememberedSelection = rememberedEntry?.selection;
-    const rememberedAppliedHermesModelId = rememberedEntry?.appliedSelection
-      ? hermesModelIdForSelection(rememberedEntry.appliedSelection)
-      : undefined;
-    pendingModelSelectionRef.current = rememberedSelection;
-    // A crash can leave appliedSelection newer than Hermes' persisted session
-    // metadata. Until that metadata loads, keep the dispatch baseline unknown
-    // so an early Send performs one safe repairing config.set.
-    appliedHermesModelIdRef.current = undefined;
-    storedSessionMetadataHydratedRef.current = !noteStoredSessionId;
-    activeSubmissionRef.current = undefined;
-    setSubmissionPending(false);
-    setStoredSessionId(noteStoredSessionId);
-    setMessages([]);
-    setLiveEvents([]);
-    setPendingUserTurns([]);
-    workingRef.current = false;
-    setWorking(false);
+    const generation = ++generationRef.current;
+    const rememberedSessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
+    sessionIdRef.current = rememberedSessionId;
+    activeSubmitRef.current = undefined;
+    setStoredSessionId(rememberedSessionId);
+    setProjection(createAgentRuntimeProjection());
     setError(null);
-    setModelSelection(rememberedSelection);
-    setAppliedHermesModelId(rememberedAppliedHermesModelId);
-    if (!noteStoredSessionId) {
+    setSubmissionPending(false);
+    if (!rememberedSessionId) {
       setLoading(false);
       return;
     }
-    let stale = false;
+
     setLoading(true);
-    (async () => {
-      // History lives behind the bridge; when it isn't running, skip the load
-      // instead of spawning a runtime just to render an empty panel — the
-      // first submit starts it and the post-turn refresh backfills history.
-      const status = await hermesBridgeStatus();
-      if (stale) return;
-      if (!status.running) {
-        setLoading(false);
-        return;
-      }
-      const [response, metadata] = await Promise.all([
-        hermesBridgeSessionMessages(noteStoredSessionId).catch(() => undefined),
-        reconcileStoredSessionModelMetadata(noteStoredSessionId),
-      ]);
-      if (stale || noteGenerationRef.current !== noteGeneration) return;
-      if (response) setMessages(sessionMessagesFrom(response));
-      const currentEntry = readSessionModelSelections()[noteStoredSessionId];
-      // Hermes session metadata is the conservative live baseline even when
-      // an entry exists: config.set can succeed just before June crashes while
-      // persisting its acknowledgement. Reapplying the desired model once is
-      // safe; trusting a stale appliedSelection as newer than Hermes is not.
-      const currentAppliedHermesModelId =
-        metadata?.appliedHermesModelId ??
-        (currentEntry?.appliedSelection
-          ? hermesModelIdForSelection(currentEntry.appliedSelection)
-          : undefined);
-      storedSessionMetadataHydratedRef.current = true;
-      appliedHermesModelIdRef.current = currentAppliedHermesModelId;
-      setAppliedHermesModelId(currentAppliedHermesModelId);
-      setLoading(false);
-    })().catch(() => {
-      // A missing/unreadable transcript degrades to an empty panel; the
-      // pairing is kept so a submit still continues the same session.
-      if (!stale) setLoading(false);
+    void hydrate(rememberedSessionId)
+      .catch(() => {
+        if (generation !== generationRef.current) return;
+        forgetNoteChatSession(noteId!);
+        sessionIdRef.current = undefined;
+        setStoredSessionId(undefined);
+      })
+      .finally(() => {
+        if (generation === generationRef.current) setLoading(false);
+      });
+  }, [hydrate, noteId]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
+      if (payload.sessionId !== sessionIdRef.current) return;
+      setProjection((current) => applyAgentRuntimeEvent(current, payload));
+      const terminal =
+        payload.method === "run.completed" ||
+        payload.method === "run.cancelled" ||
+        payload.method === "run.failed";
+      dispatchAgentSessionStatus({
+        sessionId: payload.sessionId,
+        title: projection.session?.title ?? "Note chat",
+        status:
+          payload.method === "run.completed"
+            ? "completed"
+            : payload.method === "run.cancelled"
+              ? "cancelled"
+              : payload.method === "run.failed"
+                ? "failed"
+                : "running",
+        ...(payload.method === "run.failed" ? { summary: payload.data.message } : {}),
+      });
+      if (terminal) void hydrate(payload.sessionId).catch(() => undefined);
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
     });
     return () => {
-      stale = true;
+      disposed = true;
+      unlisten?.();
     };
-  }, [noteId]);
+  }, [hydrate, projection.session?.title]);
 
-  useEffect(
-    () =>
-      subscribeSessionModelSelections((store) => {
-        const currentStoredSessionId = storedSessionIdRef.current;
-        if (!currentStoredSessionId) return;
-        const nextEntry = store[currentStoredSessionId];
-        const nextSelection = nextEntry?.selection;
-        pendingModelSelectionRef.current = nextSelection;
-        setModelSelection(nextSelection);
-        if (nextEntry && storedSessionMetadataHydratedRef.current) {
-          const nextAppliedHermesModelId = nextEntry.appliedSelection
-            ? hermesModelIdForSelection(nextEntry.appliedSelection)
-            : undefined;
-          appliedHermesModelIdRef.current = nextAppliedHermesModelId;
-          setAppliedHermesModelId(nextAppliedHermesModelId);
-        }
-      }),
-    [],
-  );
-
-  const refreshTranscript = useCallback(async () => {
-    const currentStoredSessionId = storedSessionIdRef.current;
-    if (!currentStoredSessionId) return;
-    // Snapshot how much live state this refresh supersedes: events that land
-    // while the fetch is in flight belong to a newer beat and must survive it.
-    const supersededEvents = liveEventsRef.current.length;
-    const supersededPending = pendingUserTurnsRef.current.length;
-    try {
-      const response = await hermesBridgeSessionMessages(currentStoredSessionId);
-      setMessages(sessionMessagesFrom(response));
-      setLiveEvents((current) => current.slice(supersededEvents));
-      setPendingUserTurns((current) => current.slice(supersededPending));
-    } catch {
-      // Keep rendering from the live tail; the next terminal event retries.
-    }
-  }, []);
-
-  // The live tail: classified gateway events for THIS note's session only.
-  useEffect(() => {
-    return subscribeToGatewayEvents((event) => {
-      const eventRuntimeOrStoredSessionId = "sessionId" in event ? event.sessionId : undefined;
-      const matchesSession =
-        eventRuntimeOrStoredSessionId === runtimeSessionIdRef.current ||
-        eventRuntimeOrStoredSessionId === storedSessionIdRef.current;
-      const terminal = isTerminalHermesEvent(event);
-      // A tagged event for a different session isn't ours. A terminal frame
-      // can arrive WITHOUT a session id (error / lifecycle), though — and this
-      // gateway only ever serves the one active note chat, so an untagged
-      // terminal event can only mean our in-flight turn ended: clear `working`
-      // so the toolbar dot can't stick busy. Untagged non-terminal events stay
-      // dropped (they can't be attributed to our transcript).
-      if (eventRuntimeOrStoredSessionId && !matchesSession) return;
-      if (!eventRuntimeOrStoredSessionId && !terminal) return;
-      if (
-        !eventRuntimeOrStoredSessionId &&
-        terminal &&
-        (!workingRef.current ||
-          !storedSessionIdRef.current ||
-          !canAttributeUntaggedAgentRun(storedSessionIdRef.current, false))
-      ) {
-        return;
-      }
-      if (matchesSession) {
-        setLiveEvents((current) => [...current, event].slice(-LIVE_EVENT_CAP));
-      }
-      if (terminal) {
-        workingRef.current = false;
-        setWorking(false);
-        const currentStoredSessionId = storedSessionIdRef.current;
-        const stoppedByUser =
-          stoppedRunRef.current &&
-          (!eventRuntimeOrStoredSessionId ||
-            eventRuntimeOrStoredSessionId === stoppedRuntimeSessionIdRef.current);
-        if (event.kind === "error") {
-          setError(event.message);
-        } else if (matchesSession) {
-          void refreshTranscript();
-        }
-        if (!currentStoredSessionId || stoppedByUser) return;
-        const terminalStatus = terminalAgentStatus(event);
-        if (terminalStatus === "completed") {
-          markAgentRunSucceeded(currentStoredSessionId);
-        } else if (terminalStatus) {
-          cancelAgentRunMonitoring(currentStoredSessionId);
-          dispatchAgentSessionStatus({
-            sessionId: currentStoredSessionId,
-            title: noteTitle.trim() || "Note chat",
-            status: terminalStatus,
-            summary:
-              terminalStatus === "cancelled"
-                ? "Stopped."
-                : event.kind === "error"
-                  ? event.message
-                  : "June stopped before replying.",
-          });
-        }
-      }
-    });
-  }, [noteTitle, refreshTranscript]);
-
-  const submitPrompt = useCallback(
+  const submit = useCallback(
     async (
       rawText: string,
       attachments: NoteChatAttachment[] = [],
-      displayText?: string,
     ): Promise<NoteChatSubmitResult> => {
       const question = rawText.trim();
-      if ((!question && !attachments.length) || !noteId) return NOTE_CHAT_SUBMIT_REJECTED;
-      // Reject a second send that races the first before setWorking(true)
-      // commits — otherwise both could create a session and submit the prompt.
-      if (activeSubmissionRef.current) return NOTE_CHAT_SUBMIT_REJECTED;
-      const submissionToken = Symbol("note-chat-submit");
-      activeSubmissionRef.current = submissionToken;
+      if (
+        (!question && !attachments.length) ||
+        !note ||
+        loading ||
+        activeSubmitRef.current ||
+        working
+      ) {
+        return NOTE_CHAT_SUBMIT_REJECTED;
+      }
+      const token = Symbol("note-chat-submit");
+      const generation = generationRef.current;
+      const current = () =>
+        generation === generationRef.current && activeSubmitRef.current === token;
+      activeSubmitRef.current = token;
       setSubmissionPending(true);
-      const noteGeneration = noteGenerationRef.current;
-      const submissionIsCurrent = () =>
-        noteGenerationRef.current === noteGeneration &&
-        activeSubmissionRef.current === submissionToken;
       setError(null);
-      const startingStoredSessionId = storedSessionIdRef.current;
-      const startingRuntimeSessionId = runtimeSessionIdRef.current;
-      const isFirstMessage = !startingStoredSessionId;
-      // Capture before the first await. A picker change after this point is for
-      // the following run, even if session creation/resume is still pending.
-      let capturedModelSelection = pendingModelSelectionRef.current;
-      const defaultModelSelectionSnapshot =
-        !capturedModelSelection && !startingStoredSessionId
-          ? providerModelSettings().then(({ settings }) => defaultSessionModelSelection(settings))
-          : undefined;
-      const capturedModelEntry = startingStoredSessionId
-        ? readSessionModelSelections()[startingStoredSessionId]
-        : undefined;
-      let capturedHermesModelId = capturedModelSelection
-        ? hermesModelIdForSelection(capturedModelSelection)
-        : undefined;
-      let capturedAppliedHermesModelId = appliedHermesModelIdRef.current;
-      let dispatchReservation: HermesSessionDispatchReservation | undefined =
-        startingStoredSessionId ? reserveHermesSessionDispatch(startingStoredSessionId) : undefined;
-      const base = isFirstMessage
-        ? `${noteReferenceToken({ id: noteId, title: noteTitle })} ${question}`
-        : question;
-      const content = withAttachmentPaths(base, attachments);
-      const optimistic: AgentChatTurn = {
-        id: `note-chat-pending:${Date.now()}`,
-        role: "user",
-        createdAt: new Date().toISOString(),
-        status: "complete",
-        parts: [
-          {
-            type: "text",
-            text: displayText?.trim() || question || "Use the attached file(s).",
-            status: "complete",
-          },
-        ],
-      };
-      setPendingUserTurns((current) => [...current, optimistic]);
-      workingRef.current = true;
-      setWorking(true);
-      let promptAccepted = false;
+      let accepted = false;
       try {
-        const gateway = await connectGateway(true);
-        if (!gateway) throw new Error("Hermes gateway is not connected.");
-        // Read after connectGateway so its refreshActiveHermesProfile has
-        // reconciled the sticky pointer.
-        const activeProfile = getActiveHermesProfileName();
-        // The global default is June's model selection, not a per-chat pick.
-        // Under a named profile it must not ride session.create as a
-        // per-session override - that would silently bypass the profile's own
-        // text model. An explicit note-chat pick still applies: the user chose
-        // it for this chat.
-        if (
-          !capturedModelSelection &&
-          defaultModelSelectionSnapshot &&
-          activeProfile === "default"
-        ) {
-          capturedModelSelection = await defaultModelSelectionSnapshot;
-          capturedHermesModelId = hermesModelIdForSelection(capturedModelSelection);
-        }
-        if (startingStoredSessionId && !capturedModelSelection) {
-          const metadata = await reconcileStoredSessionModelMetadata(startingStoredSessionId);
-          if (metadata) {
-            capturedModelSelection = metadata.selection;
-            capturedHermesModelId = hermesModelIdForSelection(metadata.selection);
-            capturedAppliedHermesModelId = metadata.appliedHermesModelId;
-            if (submissionIsCurrent()) {
-              appliedHermesModelIdRef.current = metadata.appliedHermesModelId;
-              storedSessionMetadataHydratedRef.current = true;
-              setAppliedHermesModelId(metadata.appliedHermesModelId);
-            }
+        let session = projection.session;
+        const existingSession = Boolean(session);
+        if (!session) {
+          session = await agentRuntimeBindings.createSession({
+            title: titleFromNote(note),
+            model,
+            safetyMode: "sandboxed",
+          });
+          rememberNoteChatSession(note.id, session.id);
+          if (current()) {
+            sessionIdRef.current = session.id;
+            setStoredSessionId(session.id);
+            setProjection(createAgentRuntimeProjection({ session }));
           }
         }
-        const runResult = await submitHermesRun({
-          fullMode: false,
-          gateway,
-          reconnectGateway: async () => {
-            const reconnected = await connectGateway(true);
-            if (!reconnected) throw new Error("Hermes gateway is not connected.");
-            return reconnected;
-          },
-          shouldProbeFirstRequest: () => !hasHermesActiveSessionSnapshotSubscribers(false),
-          storedSessionId: startingStoredSessionId,
-          runtimeSessionId: startingRuntimeSessionId,
-          dispatchReservation,
-          ...(!startingStoredSessionId
-            ? {
-                createSession: () => ({
-                  params: {
-                    title: noteTitle.trim() || "Note chat",
-                    cols: 96,
-                    ...(capturedHermesModelId ? { model: capturedHermesModelId } : {}),
-                    ...(activeProfile !== "default" ? { profile: activeProfile } : {}),
-                  },
-                  ...(activeProfile !== "default"
-                    ? {
-                        profileAssignment: {
-                          profile: activeProfile,
-                          // The chat list scopes by the session→profile map
-                          // (ADR 0031). onSessionCreated pairs the note locally
-                          // before this profile stamp, preserving Note Chat's
-                          // existing ordering.
-                          assign: assignSessionToProfile,
-                        },
-                      }
-                    : {}),
-                }),
-              }
-            : {}),
-          onSessionCreated: ({ dispatchReservation: activeReservation, storedSessionId }) => {
-            dispatchReservation = activeReservation;
-            capturedAppliedHermesModelId = capturedHermesModelId;
-            if (submissionIsCurrent()) {
-              appliedHermesModelIdRef.current = capturedHermesModelId;
-              storedSessionMetadataHydratedRef.current = true;
-              setAppliedHermesModelId(capturedHermesModelId);
-              storedSessionIdRef.current = storedSessionId;
-              setStoredSessionId(storedSessionId);
-            }
-            rememberNoteChatSession(noteId, storedSessionId);
-          },
-          onSessionResolved: ({ created, storedSessionId }) => {
-            if (!created) return;
-            const latestSelection = submissionIsCurrent()
-              ? pendingModelSelectionRef.current
-              : capturedModelSelection;
-            if (capturedModelSelection) {
-              rememberAppliedSessionModelSelection(storedSessionId, capturedModelSelection);
-            }
-            if (
-              latestSelection &&
-              (!capturedModelSelection ||
-                !sameSessionModelSelection(latestSelection, capturedModelSelection))
-            ) {
-              stageSessionModelSelection(storedSessionId, latestSelection);
-            }
-          },
-          onRuntimeSessionResolved: ({ runtimeSessionId }) => {
-            if (submissionIsCurrent()) runtimeSessionIdRef.current = runtimeSessionId;
-          },
-          ...(capturedHermesModelId
-            ? {
-                model: {
-                  mode: "sandboxed" as const,
-                  modelId: capturedHermesModelId,
-                  shouldApply: ({ dispatchReservation: activeReservation, storedSessionId }) => {
-                    // Re-read under the shared lock. AgentWorkspace can dispatch
-                    // the same stored session from its still-mounted surface.
-                    const currentModelEntry = readSessionModelSelections()[storedSessionId];
-                    const currentStoredModelId = currentModelEntry?.appliedSelection
-                      ? hermesModelIdForSelection(currentModelEntry.appliedSelection)
-                      : currentModelEntry
-                        ? undefined
-                        : capturedAppliedHermesModelId;
-                    return (
-                      hasPendingSessionModelSelection(capturedModelEntry) ||
-                      activeReservation.queuedBehindPrior ||
-                      capturedHermesModelId !== capturedAppliedHermesModelId ||
-                      (currentStoredModelId !== undefined &&
-                        currentStoredModelId !== capturedHermesModelId)
-                    );
-                  },
-                  onApplied: ({ storedSessionId }) => {
-                    capturedAppliedHermesModelId = capturedHermesModelId;
-                    if (submissionIsCurrent()) {
-                      appliedHermesModelIdRef.current = capturedHermesModelId;
-                      storedSessionMetadataHydratedRef.current = true;
-                      setAppliedHermesModelId(capturedHermesModelId);
-                    }
-                    if (capturedModelEntry && capturedModelSelection) {
-                      markSessionModelSelectionApplied(
-                        storedSessionId,
-                        capturedModelEntry.revision,
-                        capturedModelSelection,
-                      );
-                    } else if (capturedModelSelection) {
-                      rememberAppliedSessionModelSelection(storedSessionId, capturedModelSelection);
-                    }
-                  },
-                },
-              }
-            : {}),
-          attach: async ({ runtimeSessionId, submitGateway }) => {
-            // Images remain first-class inputs ahead of the prompt. A failed
-            // attach rejects the run before prompt.submit.
-            const pendingImages = pendingImageAttachments(
-              attachments.map((attachment) => attachment.attach),
-            );
-            if (!pendingImages.length) return;
-            const methods = createHermesMethods(submitGateway);
-            const deps = {
-              prepareImagePath: prepareHermesBridgeImageAttachment,
-              attachImagePath: methods.attachImagePath,
-              isPathSupported: () => isHermesFeatureSupported("image.attach"),
-              attachImage: methods.attachImage,
-              readImageData: (path: string) => hermesBridgeImageDataUrl(path),
-              isSupported: () => isHermesFeatureSupported("image.attach_bytes"),
-            };
-            for (const image of pendingImages) {
-              const result = await attachImageToSession(image, runtimeSessionId, deps);
-              if (result.state.status === "failed") {
-                throw new Error(result.error ?? `Could not attach ${image.displayName}.`);
-              }
-            }
-          },
-          preparePrompt: () => ({ text: content }),
-          afterPromptAcknowledged: ({ runtimeSessionId, storedSessionId }) => {
-            startAgentRunMonitoring({
-              storedSessionId,
-              runtimeSessionId,
-              title: noteTitle.trim() || "Note chat",
-              fullMode: false,
-              settlementHeld: false,
-            });
-            stoppedRuntimeSessionIdRef.current = undefined;
-            stoppedRunRef.current = false;
-          },
+        const prompt = existingSession
+          ? question || "Use the attached file(s)."
+          : `${noteReferenceToken(note)} ${question || "Use the attached file(s)."}`;
+        const optimistic: AgentItemDto = {
+          id: `optimistic:${crypto.randomUUID()}`,
+          sessionId: session.id,
+          sequence: Math.max(0, ...projection.items.map((item) => item.sequence)) + 1,
+          createdAt: new Date().toISOString(),
+          kind: "message",
+          role: "user",
+          text: prompt,
+          status: "complete",
+          attachments: attachments.map((attachment) => ({
+            id: `attachment:${attachment.id}`,
+            sessionId: session.id,
+            name: attachment.name,
+            path: attachment.path,
+            action: "imported",
+            available: true,
+            createdAt: new Date().toISOString(),
+          })),
+        };
+        if (current()) {
+          setProjection((existing) => ({
+            ...existing,
+            session,
+            items: [...existing.items, optimistic],
+          }));
+        }
+        const run = await agentRuntimeBindings.startRun({
+          sessionId: session.id,
+          prompt,
+          model,
+          safetyMode: "sandboxed",
+          workspacePath: session.workspacePath,
+          enabledSkillIds: [],
+          attachments: attachments.map((attachment) => attachment.path),
         });
-        promptAccepted = runResult.promptAccepted;
-        if (runResult.postAcknowledgementError !== undefined && submissionIsCurrent()) {
-          setError(messageFromError(runResult.postAcknowledgementError));
+        accepted = true;
+        if (current()) {
+          setProjection((existing) => ({ ...existing, session, run }));
+          dispatchAgentSessionStatus({
+            sessionId: session.id,
+            title: session.title,
+            status: "starting",
+          });
         }
-        // Hermes accepted the prompt even if this panel later unmounted or
-        // switched notes. Callers that only care about UI ownership should
-        // check `current`; recovery keys must key off `accepted`.
-        return { accepted: true, current: submissionIsCurrent() };
-      } catch (err) {
-        if (!promptAccepted) {
-          dispatchReservation?.cancel();
-        }
-        if (submissionIsCurrent()) {
-          if (!promptAccepted) {
-            setPendingUserTurns((current) => current.filter((turn) => turn !== optimistic));
-            workingRef.current = false;
-            setWorking(false);
-          }
-          // Surface a late bookkeeping failure without undoing Hermes acceptance.
-          setError(
-            isSessionBusyError(err)
-              ? "June is still working on the previous message."
-              : messageFromError(err),
-          );
-          if (!promptAccepted && !isSessionBusyError(err)) {
-            const currentStoredSessionId = storedSessionIdRef.current;
-            if (currentStoredSessionId) {
-              cancelAgentRunMonitoring(currentStoredSessionId);
-              dispatchAgentSessionStatus({
-                sessionId: currentStoredSessionId,
-                title: noteTitle.trim() || "Note chat",
-                status: "failed",
-                summary: messageFromError(err),
-              });
-            }
-          }
-        }
-        return { accepted: promptAccepted, current: submissionIsCurrent() };
+        return { accepted: true, current: current() };
+      } catch (cause) {
+        if (current()) setError(messageFromError(cause));
+        return { accepted, current: current() };
       } finally {
-        if (activeSubmissionRef.current === submissionToken) {
-          activeSubmissionRef.current = undefined;
+        if (activeSubmitRef.current === token) {
+          activeSubmitRef.current = undefined;
           setSubmissionPending(false);
         }
       }
     },
-    [noteId, noteTitle],
+    [loading, model, note, projection.items, projection.session, working],
   );
-
-  const submit = useCallback(
-    (text: string, attachments: NoteChatAttachment[] = []) => submitPrompt(text, attachments),
-    [submitPrompt],
-  );
-
-  const retryUpstreamFailure = useCallback(() => {
-    if (!storedSessionIdRef.current) return Promise.resolve(NOTE_CHAT_SUBMIT_REJECTED);
-    return submitPrompt(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT, [], "Try again");
-  }, [submitPrompt]);
 
   const stop = useCallback(() => {
-    // Stopped is a UI-first state, mirroring the workspace: the moment the
-    // user clicks, the turn reads as over; the interrupt follows best-effort.
-    workingRef.current = false;
-    setWorking(false);
-    stoppedRunRef.current = true;
-    const storedSessionId = storedSessionIdRef.current;
-    if (storedSessionId) {
-      cancelAgentRunMonitoring(storedSessionId);
-      dispatchAgentSessionStatus({
-        sessionId: storedSessionId,
-        title: noteTitle.trim() || "Note chat",
-        status: "cancelled",
-        summary: "Stopped.",
-      });
-    }
-    const runtimeSessionId = runtimeSessionIdRef.current;
-    if (!runtimeSessionId) return;
-    stoppedRuntimeSessionIdRef.current = runtimeSessionId;
-    void (async () => {
-      try {
-        const gateway = await connectGateway(false);
-        await gateway?.request("session.interrupt", { session_id: runtimeSessionId });
-      } catch {
-        // The UI already reflects stopped; a failed interrupt (gateway down)
-        // must not resurrect the working state.
-      } finally {
-        // Pull whatever the agent persisted before the interrupt landed.
-        void refreshTranscript();
-      }
-    })();
-  }, [noteTitle, refreshTranscript]);
-
-  const setSessionModel = useCallback((selection: SessionModelSelection) => {
-    pendingModelSelectionRef.current = selection;
-    setModelSelection(selection);
-    const currentStoredSessionId = storedSessionIdRef.current;
-    if (currentStoredSessionId) {
-      stageSessionModelSelection(currentStoredSessionId, selection);
-    }
-  }, []);
-
-  const turns = useMemo(() => {
-    return buildHermesSessionChatTurns(messages, liveEvents, pendingUserTurns);
-  }, [messages, liveEvents, pendingUserTurns]);
+    if (!projection.run) return;
+    void agentRuntimeBindings
+      .cancelRun(projection.run.id)
+      .catch((cause) => setError(messageFromError(cause)));
+  }, [projection.run]);
 
   return {
     turns,
@@ -880,11 +262,9 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     loading,
     error,
     storedSessionId,
-    modelSelection,
-    appliedHermesModelId,
+    model,
+    setModel,
     submit,
-    retryUpstreamFailure,
     stop,
-    setSessionModel,
   };
 }

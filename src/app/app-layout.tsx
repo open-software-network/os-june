@@ -18,7 +18,7 @@ import { Dialog } from "../components/ui/Dialog";
 import { osAccountsOpenPortal } from "../lib/tauri";
 import { isWindowsPlatform } from "../lib/platform";
 import { messageFromError } from "../lib/errors";
-import type { HermesSessionInfo } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { NoteListItemDto } from "../lib/tauri";
 import {
   MAX_UPGRADE_BUSY_LABEL,
@@ -519,7 +519,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
           moveDialogSessionIds
             ? moveDialogSessionIds
                 .map((id) => agentSessions.find((s) => s.id === id))
-                .filter((session): session is HermesSessionInfo => session !== undefined)
+                .filter((session): session is AgentSessionDto => session !== undefined)
             : []
         }
         sessionFolderIds={sessionFolders}

@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildFolderItemIndex } from "../components/folders/folder-item-index";
 import { filterNotesByQuery } from "../components/notes-list/notes-list-helpers";
 import { buildSidebarSessionLists } from "../components/sidebar/sidebar-session-lists";
-import type { HermesSessionInfo, NoteListItemDto } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
+import type { NoteListItemDto } from "../lib/tauri";
 
 const NOW = "2026-07-22T12:00:00Z";
 
@@ -23,8 +24,18 @@ function note(
   };
 }
 
-function session(id: string): HermesSessionInfo {
-  return { id, title: id };
+function session(id: string): AgentSessionDto {
+  return {
+    id,
+    title: id,
+    status: "idle",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: `/tmp/${id}`,
+    source: "user",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
 }
 
 describe("list render hygiene helpers", () => {

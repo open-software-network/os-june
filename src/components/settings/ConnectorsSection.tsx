@@ -44,8 +44,6 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { HoverTip } from "../ui/HoverTip";
 import { toast } from "../ui/Toaster";
 import { SettingsPageHeader } from "./AppSettings";
-import { useExperimentalFlags } from "../../lib/experimental-flags";
-import { BrowserUseCapabilityRow } from "./BrowserExtensionSettings";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 
@@ -384,7 +382,6 @@ export function ConnectorsSection({
   onOpenModels?: () => void;
   onOpenBilling?: () => void;
 }) {
-  const { browserUseEnabled } = useExperimentalFlags();
   const { policy, error: policyError } = useConnectorPolicy();
   const oauthProviders =
     policy?.providers.flatMap((definition) =>
@@ -950,7 +947,6 @@ export function ConnectorsSection({
 
       <div className="settings-card connectors-card">
         <ul className="connectors-list">
-          {browserUseEnabled ? <BrowserUseCapabilityRow /> : null}
           <li className="connector-row">
             <span className="connector-logo" aria-hidden>
               <ConnectorProviderIcon provider="obsidian" />
