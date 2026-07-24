@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   interrupted_state_json TEXT,
   last_sequence INTEGER NOT NULL DEFAULT -1,
   error_code TEXT,
-  error_message TEXT
+  error_message TEXT,
+  mcp_policy_snapshotted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_session_started

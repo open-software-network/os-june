@@ -152,6 +152,10 @@ const ROUTINE_TOOL_CATALOG_VERSION_COLUMN: &[ColumnDefinition] = &[ColumnDefinit
     name: "tool_catalog_version",
     definition: "INTEGER NOT NULL DEFAULT 0",
 }];
+const AGENT_RUN_MCP_SNAPSHOT_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "mcp_policy_snapshotted",
+    definition: "INTEGER NOT NULL DEFAULT 0",
+}];
 const FOLDER_MEMORY_COLUMNS: &[ColumnDefinition] = &[
     ColumnDefinition {
         name: "instructions",
@@ -1092,6 +1096,23 @@ const MIGRATIONS: &[Migration] = &[
             table: "routines",
             columns: ROUTINE_TOOL_CATALOG_VERSION_COLUMN,
         }],
+    },
+    Migration {
+        version: 37,
+        name: "agent_run_mcp_snapshot",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_runs",
+            column: "mcp_policy_snapshotted",
+        }],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "agent_runs",
+                columns: AGENT_RUN_MCP_SNAPSHOT_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/029_agent_run_mcp_snapshot.sql"
+            )),
+        ],
     },
 ];
 
@@ -2070,6 +2091,59 @@ mod tests {
         .expect("preserved routine");
         assert_eq!(row.get::<String, _>("name"), "Daily recap");
         assert_eq!(row.get::<i64, _>("tool_catalog_version"), 0);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn prerelease_agent_runs_get_an_immutable_mcp_snapshot_marker() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..36])
+            .await
+            .expect("prerelease MCP policy schema");
+        query(
+            "INSERT INTO agent_sessions (
+                id, title, status, model, safety_mode, source, created_at, updated_at
+             ) VALUES (
+                'session-prerelease', 'Existing session', 'idle', 'auto',
+                'sandboxed', 'user', 'now', 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease session");
+        query(
+            "INSERT INTO agent_runs (
+                id, session_id, status, model, started_at, updated_at
+             ) VALUES (
+                'run-prerelease', 'session-prerelease', 'interrupted', 'auto',
+                'now', 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease run");
+        query("ALTER TABLE agent_runs DROP COLUMN mcp_policy_snapshotted")
+            .execute(&pool)
+            .await
+            .expect("recreate prerelease run shape");
+
+        run_migrations(&pool)
+            .await
+            .expect("upgrade prerelease MCP snapshot schema");
+        run_migrations(&pool)
+            .await
+            .expect("idempotent MCP snapshot upgrade");
+
+        let snapshotted: i64 = query(
+            "SELECT mcp_policy_snapshotted
+             FROM agent_runs
+             WHERE id = 'run-prerelease'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("preserved run")
+        .get("mcp_policy_snapshotted");
+        assert_eq!(snapshotted, 1);
         assert_latest_stamp(&pool).await;
     }
 

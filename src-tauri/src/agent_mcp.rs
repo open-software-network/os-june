@@ -743,14 +743,22 @@ pub async fn snapshot_run_policies(
     run_id: &str,
     descriptors: &[RuntimeToolDescriptorJson],
 ) -> Result<(), AgentMcpError> {
-    let mut transaction = pool.begin().await.map_err(|_| AgentMcpError::Storage)?;
-    let already_snapshotted =
-        query("SELECT 1 FROM agent_run_mcp_policies WHERE run_id = ? LIMIT 1")
-            .bind(run_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| AgentMcpError::Storage)?
-            .is_some();
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|_| AgentMcpError::Storage)?;
+    let already_snapshotted = query(
+        "SELECT mcp_policy_snapshotted
+         FROM agent_runs
+         WHERE id = ?",
+    )
+    .bind(run_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| AgentMcpError::Storage)?
+    .ok_or(AgentMcpError::NotFound)?
+    .get::<i64, _>("mcp_policy_snapshotted")
+        != 0;
     if already_snapshotted {
         return transaction
             .commit()
@@ -786,6 +794,15 @@ pub async fn snapshot_run_policies(
         .await
         .map_err(|_| AgentMcpError::Storage)?;
     }
+    query(
+        "UPDATE agent_runs
+         SET mcp_policy_snapshotted = 1
+         WHERE id = ? AND mcp_policy_snapshotted = 0",
+    )
+    .bind(run_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AgentMcpError::Storage)?;
     transaction
         .commit()
         .await
@@ -1684,10 +1701,15 @@ mod tests {
     #[tokio::test]
     async fn active_run_rejects_a_server_definition_changed_after_snapshot() {
         let repo = repository().await;
-        query("CREATE TABLE agent_runs (id TEXT PRIMARY KEY)")
-            .execute(&repo.pool)
-            .await
-            .unwrap();
+        query(
+            "CREATE TABLE agent_runs (
+                id TEXT PRIMARY KEY,
+                mcp_policy_snapshotted INTEGER NOT NULL DEFAULT 0
+             )",
+        )
+        .execute(&repo.pool)
+        .await
+        .unwrap();
         for statement in include_str!("../migrations/028_agent_run_mcp_policy.sql")
             .split(';')
             .filter(|statement| !statement.trim().is_empty())
@@ -1733,6 +1755,58 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn empty_run_policy_snapshot_cannot_gain_a_server_on_resume() {
+        let repo = repository().await;
+        query(
+            "CREATE TABLE agent_runs (
+                id TEXT PRIMARY KEY,
+                mcp_policy_snapshotted INTEGER NOT NULL DEFAULT 0
+             )",
+        )
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+        for statement in include_str!("../migrations/028_agent_run_mcp_policy.sql")
+            .split(';')
+            .filter(|statement| !statement.trim().is_empty())
+        {
+            query(statement).execute(&repo.pool).await.unwrap();
+        }
+        query("INSERT INTO agent_runs (id) VALUES ('run-empty')")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        snapshot_run_policies(&repo.pool, "run-empty", &[])
+            .await
+            .unwrap();
+
+        let mut server = McpServerDefinition::new("later", McpTransport::StreamableHttp);
+        server.url = Some("https://example.test/mcp".into());
+        repo.create(&server).await.unwrap();
+        let descriptor = RuntimeToolDescriptorJson {
+            id: format!("mcp:{}/search", server.id),
+            name: "mcp_later_search".into(),
+            description: "Search later".into(),
+            parameters: json!({"type":"object","properties":{}}),
+            requires_approval: None,
+        };
+        snapshot_run_policies(&repo.pool, "run-empty", &[descriptor])
+            .await
+            .unwrap();
+
+        let policy_count: i64 = query(
+            "SELECT COUNT(*) AS count
+             FROM agent_run_mcp_policies
+             WHERE run_id = 'run-empty'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .unwrap()
+        .get("count");
+        assert_eq!(policy_count, 0);
     }
     #[test]
     fn transport_validation_rejects_ambiguous_and_unsafe_shapes() {

@@ -325,9 +325,8 @@ export function RoutinesView({
         }
         created = await createRoutine({
           prompt: input.prompt,
-          // Event routines still need a cron record underneath; a
-          // far-future one-time schedule plus the pause below hands the
-          // firing over to the trigger daemon.
+          // Event routines still need a schedule record underneath. A
+          // far-future one-time schedule hands firing to the trigger daemon.
           schedule: eventTrigger ? eventTriggerScheduleDraft().schedule : input.schedule,
           name: input.name,
           enabledToolsets: routineToolsetsFor(policy, input.trustMode, {
