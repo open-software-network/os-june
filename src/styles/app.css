@@ -2889,6 +2889,10 @@ input:focus-visible,
   background: var(--brand-tint);
 }
 
+[data-theme="dark"] .agent-home-task-message > button {
+  color: var(--brand-bright);
+}
+
 .agent-home-task-pending {
   display: inline-flex;
   align-items: center;

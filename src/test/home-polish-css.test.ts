@@ -35,6 +35,12 @@ describe("Home polish styles", () => {
     expect(pending).toContain("justify-self: start;");
   });
 
+  it("uses the brighter themed action color on the dark Home canvas", () => {
+    const action = cssRuleFor('[data-theme="dark"] .agent-home-task-message > button');
+
+    expect(action).toContain("color: var(--brand-bright);");
+  });
+
   it("keeps the editor width stable when a draft wraps", () => {
     const editor = cssRuleFor('.agent-workspace[data-home="true"] .agent-composer-editor-root');
     const multiline = cssRuleFor(
