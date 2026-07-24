@@ -109,7 +109,7 @@ export function createAgentArtifactIndex(): AgentArtifactIndex {
 
   function refresh(scan: () => Promise<HermesFilesystemSnapshot>) {
     if (refreshInFlight) {
-      if (activeRefreshRevision !== null && revision > activeRefreshRevision) {
+      if (activeRefreshRevision === null || revision > activeRefreshRevision) {
         refreshQueued = true;
         queuedScan = scan;
       }
@@ -134,10 +134,15 @@ export function createAgentArtifactIndex(): AgentArtifactIndex {
     })();
     const wrapped = pending.finally(() => {
       if (refreshInFlight === wrapped) {
+        const trailingScan = refreshQueued ? (queuedScan ?? scan) : null;
         activeRefreshRevision = null;
         refreshInFlight = null;
         refreshQueued = false;
         queuedScan = null;
+        // A caller can arrive after the scan loop exits but before this
+        // cleanup microtask runs. Start its queued scan after releasing the
+        // shared slot, and keep existing waiters pending through it.
+        if (trailingScan) return refresh(trailingScan);
       }
     });
     refreshInFlight = wrapped;

@@ -95,6 +95,91 @@ describe("agent artifact index", () => {
     expect(index.getArtifacts().map((item) => item.name)).toEqual(["existing.md"]);
   });
 
+  it("queues a refresh requested after the scan loop exits but before cleanup", async () => {
+    const index = createAgentArtifactIndex();
+    const firstScan = vi.fn(async () => snapshot(["first.md"]));
+    const trailingScan = vi.fn(async () => snapshot(["trailing.md"]));
+    let trailingRefresh: Promise<void> | undefined;
+    const unsubscribe = index.subscribe(() => {
+      unsubscribe();
+      queueMicrotask(() => {
+        trailingRefresh = index.refresh(trailingScan);
+      });
+    });
+
+    await index.refresh(firstScan);
+    await trailingRefresh;
+
+    expect(firstScan).toHaveBeenCalledOnce();
+    expect(trailingScan).toHaveBeenCalledOnce();
+    expect(index.getArtifacts()).toEqual(
+      artifactsFromFilesystemSnapshot(snapshot(["trailing.md"])),
+    );
+  });
+
+  it("matches a full scan after 1,500 seeded mutation sequences and a durable reconcile", async () => {
+    const operationCounts = [0, 0, 0, 0];
+    for (let seed = 1; seed <= 1_500; seed += 1) {
+      const random = seededRandom(seed);
+      const index = createAgentArtifactIndex();
+      const files = new Map<string, number>([
+        ["alpha.md", 10],
+        ["beta.md", 20],
+        ["gamma.md", 30],
+      ]);
+      index.reconcile(snapshotFromFileMap(files));
+
+      for (let step = 0; step < 48; step += 1) {
+        if (files.size === 0) {
+          const fallbackName = `file-${random() % 24}.md`;
+          const fallbackSize = (random() % 4_096) + 1;
+          files.set(fallbackName, fallbackSize);
+          index.upsert(artifactWithSize(fallbackName, fallbackSize));
+        }
+        const operation = random() % 4;
+        operationCounts[operation] += 1;
+        const names = Array.from(files.keys());
+        if (operation === 0) {
+          const name = `file-${random() % 24}.md`;
+          const size = (random() % 4_096) + 1;
+          files.set(name, size);
+          index.upsert(artifactWithSize(name, size));
+        } else if (operation === 1) {
+          const name = names[random() % names.length];
+          files.delete(name);
+          index.remove(`${WORKSPACE_ROOT}/${name}`);
+        } else if (operation === 2) {
+          const previousName = names[random() % names.length];
+          const previousSize = files.get(previousName) ?? 0;
+          let nextIndex = random() % 24;
+          if (`file-${nextIndex}.md` === previousName) nextIndex = (nextIndex + 1) % 24;
+          const nextName = `file-${nextIndex}.md`;
+          files.delete(previousName);
+          files.delete(nextName);
+          files.set(nextName, previousSize);
+          index.rename(
+            `${WORKSPACE_ROOT}/${previousName}`,
+            artifactWithSize(nextName, previousSize),
+          );
+        } else {
+          const name = names[random() % names.length];
+          files.set(name, (random() % 4_096) + 1);
+        }
+
+        if (random() % 13 === 0) {
+          await index.refresh(async () => snapshotFromFileMap(files));
+        }
+      }
+
+      const durableSnapshot = snapshotFromFileMap(files);
+      await index.refresh(async () => durableSnapshot);
+      expect(index.getArtifacts(), `seed ${seed}`).toEqual(
+        artifactsFromFilesystemSnapshot(durableSnapshot),
+      );
+    }
+    expect(operationCounts.every((count) => count > 0)).toBe(true);
+  }, 30_000);
+
   it("preserves the previous artifact-to-turn assignment semantics", () => {
     const artifacts = [
       artifact("report.md"),
@@ -254,11 +339,27 @@ function snapshotFromArtifacts(artifacts: AgentArtifact[]): HermesFilesystemSnap
 }
 
 function artifact(name: string): AgentArtifact {
+  return artifactWithSize(name, name.length);
+}
+
+function artifactWithSize(name: string, size: number): AgentArtifact {
   return {
     name,
     path: `${WORKSPACE_ROOT}/${name}`,
     rootLabel: "Workspace",
-    size: name.length,
+    size,
+  };
+}
+
+function snapshotFromFileMap(files: Map<string, number>) {
+  return snapshot(Array.from(files.keys()), Object.fromEntries(files));
+}
+
+function seededRandom(seed: number) {
+  let state = seed >>> 0;
+  return () => {
+    state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+    return state;
   };
 }
 
