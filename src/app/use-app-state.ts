@@ -245,6 +245,11 @@ export function useAppState() {
   }
   const recordingTelemetryStore = recordingTelemetryStoreRef.current;
   const dictationWorkflowActiveRef = useRef(false);
+  // Reactive mirror of dictationWorkflowActiveRef. The ref serves the
+  // synchronous keydown gate (stop-dictation shortcut); this state drives
+  // render decisions — the Dictate button's stop hint. Updated together in
+  // useDictationEvents so they can't drift.
+  const [dictationActive, setDictationActive] = useState(false);
   const recordingInactivityTrackerRef = useRef<RecordingInactivityTracker>({});
   const [recordingInactivityPrompt, setRecordingInactivityPrompt] =
     useState<RecordingInactivityPrompt | null>(null);
@@ -383,6 +388,8 @@ export function useAppState() {
     recordingTelemetryStore,
     recordingStatusRef,
     dictationWorkflowActiveRef,
+    dictationActive,
+    setDictationActive,
     recordingInactivityTrackerRef,
     recordingInactivityPrompt,
     setRecordingInactivityPrompt,

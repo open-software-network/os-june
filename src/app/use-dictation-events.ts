@@ -12,8 +12,13 @@ import { stringPayloadValue } from "./app-helpers";
 import type { UseDictationEventsDependencies } from "./use-dictation-events-types";
 
 export function useDictationEvents(dependencies: UseDictationEventsDependencies) {
-  const { dictationWorkflowActiveRef, setAccessibilityStatus, setActiveView, setMicrophoneStatus } =
-    dependencies;
+  const {
+    dictationWorkflowActiveRef,
+    setDictationActive,
+    setAccessibilityStatus,
+    setActiveView,
+    setMicrophoneStatus,
+  } = dependencies;
 
   useEffect(() => {
     let aborted = false;
@@ -21,10 +26,14 @@ export function useDictationEvents(dependencies: UseDictationEventsDependencies)
     void listen<string>("dictation-event", (event) => {
       const helperEvent = parseDictationHelperEvent(event.payload);
       if (!helperEvent) return;
-      dictationWorkflowActiveRef.current = nextDictationWorkflowActive(
+      const nextActive = nextDictationWorkflowActive(
         dictationWorkflowActiveRef.current,
         helperEvent.type,
       );
+      // Keep the synchronous ref (keydown gate) and the reactive state (Dictate
+      // button stop hint) in lockstep from the single source of truth.
+      dictationWorkflowActiveRef.current = nextActive;
+      setDictationActive(nextActive);
       if (helperEvent.type === "final_transcript") {
         // T3 of the referral delight nudge: a dictation landed (often while
         // June is backgrounded; the card waits to be found).

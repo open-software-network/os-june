@@ -786,6 +786,73 @@ describe("App shortcuts", () => {
     }
   });
 
+  // The stop-dictation shortcut is gated on the meetings view, which is only
+  // active once a note is open (the sidebar "Meeting notes" button lands on the
+  // notes list). Open the note first, then flip dictation state.
+  async function openNoteInMeetingsView(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await user.click(await screen.findByText("First note"));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+  }
+
+  function flipDictationActive() {
+    // listening_started is in DICTATION_ACTIVE_EVENTS, so this sets the ref +
+    // reactive mirror true through useDictationEvents.
+    return act(async () => {
+      mocks.listeners.get("dictation-event")?.({
+        payload: JSON.stringify({ type: "listening_started" }),
+      });
+    });
+  }
+
+  it("stops an active dictation from the meeting notes view with Escape, keeping the text", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await openNoteInMeetingsView(user);
+    await flipDictationActive();
+
+    mocks.dictationHelperCommand.mockClear();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    // stop_and_paste keeps the captured text (AC #2); never discard_recording.
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({ type: "stop_and_paste" });
+    expect(mocks.dictationHelperCommand).not.toHaveBeenCalledWith({ type: "discard_recording" });
+  });
+
+  it("leaves Escape alone in the meeting notes view when no dictation is active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await openNoteInMeetingsView(user);
+
+    mocks.dictationHelperCommand.mockClear();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(mocks.dictationHelperCommand).not.toHaveBeenCalledWith({ type: "stop_and_paste" });
+  });
+
+  it("ignores the Escape stop shortcut while a dialog is open", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
+    await openNoteInMeetingsView(user);
+    await flipDictationActive();
+
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+
+    mocks.dictationHelperCommand.mockClear();
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(mocks.dictationHelperCommand).not.toHaveBeenCalledWith({ type: "stop_and_paste" });
+    dialog.remove();
+  });
+
   it("opens a report draft from the account menu while a session is active", async () => {
     const user = userEvent.setup();
     const activeSession = {

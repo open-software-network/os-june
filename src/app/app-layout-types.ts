@@ -38,6 +38,7 @@ export type RenderAppLayoutDependencies = {
   appMaxGrantWaitRef: React.MutableRefObject<MaxGrantWait | undefined>;
   billingNotice: string | null;
   captureActive: boolean;
+  dictationActive: boolean;
   changeSettingsTab: (tab: SettingsTab) => void;
   checkingUpdate: boolean;
   closeOtherTabs: (id: string) => void;

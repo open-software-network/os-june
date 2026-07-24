@@ -102,6 +102,16 @@ export function isCreateNoteShortcut(event: KeyboardEvent) {
   );
 }
 
+export function isStopDictationShortcut(event: KeyboardEvent) {
+  // Bare Escape, no modifiers. Callers gate this on active dictation so Escape
+  // keeps its other meanings (e.g. closing a dropdown) when nothing is
+  // listening. A modifier would collide with nothing today, but Escape is the
+  // universal "stop the transient thing" affordance and needs no chord.
+  return (
+    event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+  );
+}
+
 export function stringPayloadValue(value: unknown) {
   return typeof value === "string" ? value : undefined;
 }
