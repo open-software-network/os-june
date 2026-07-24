@@ -436,6 +436,7 @@ import {
   juneHomeDailyCheckIn,
   juneHomeDayKey,
   juneHomeDayLabel,
+  juneHomeGreetingParts,
   juneHomeTaskRequestFromPayload,
   readJuneHomeSessionId,
   withJuneHomeContext,
@@ -6995,8 +6996,8 @@ export function AgentWorkspace({
             const tokens = fullText.split(/(\s+)/);
             const startedAt = new Date().toISOString();
             let visible = "";
-            for (let index = 0; index < tokens.length; index += 4) {
-              visible += tokens.slice(index, index + 4).join("");
+            for (let index = 0; index < tokens.length; index += 2) {
+              visible += tokens.slice(index, index + 2).join("");
               setHomeStreamingReply({
                 // Distinct id from the persisted turn: the reveal instance
                 // keeps its fade spans through settling, so the final turn
@@ -7007,8 +7008,8 @@ export function AgentWorkspace({
                 status: "running",
                 parts: [{ type: "text", text: visible, status: "running" }],
               });
-              if (index + 4 < tokens.length) {
-                await new Promise((resolve) => window.setTimeout(resolve, 70));
+              if (index + 2 < tokens.length) {
+                await new Promise((resolve) => window.setTimeout(resolve, 55));
               }
             }
             insertHomeDirectReply(homeStoredSessionId, userTurn.id, {
@@ -12132,7 +12133,7 @@ export function AgentWorkspace({
                       : heroMode
                         ? "Ask June anything, run / commands"
                         : homeMode
-                          ? "Message June"
+                          ? "What's on your mind?"
                           : "Send a message"
             }
             onChange={(text, nextCategory) => {
@@ -12592,6 +12593,12 @@ export function AgentWorkspace({
     left.createdAt.localeCompare(right.createdAt),
   );
   const homeGreetingVisible = homeMergedTurns.at(-1) === homeCheckInTurn;
+  const homeGreeting = juneHomeGreetingParts();
+  const homeGreetingPrevTurn = homeMergedTurns.at(-2);
+  const homeGreetingDayMarker =
+    homeGreetingVisible &&
+    homeGreetingPrevTurn !== undefined &&
+    juneHomeDayKey(homeCheckIn.createdAt) !== juneHomeDayKey(homeGreetingPrevTurn.createdAt);
   const visibleHermesTurns = homeMode
     ? homeGreetingVisible
       ? homeMergedTurns
@@ -12747,27 +12754,10 @@ export function AgentWorkspace({
           turnDayKey !== juneHomeDayKey(previousTurn.createdAt) ? (
             <div className="agent-home-day">{juneHomeDayLabel(turn.createdAt)}</div>
           ) : null;
-        // The daily check-in is client-authored ambiance, not a model reply, so
-        // it renders as a serif display greeting — June opening the day — rather
-        // than impersonating a chat message.
-        if (homeMode && turn.id.startsWith("home-check-in:")) {
-          // Salutation becomes the serif display line; the question stays quiet
-          // prose beneath it.
-          const greetingText = homeCheckIn.text;
-          const sentenceSplit = greetingText.match(/^(.+?[.!?])\s+(.+)$/);
-          return (
-            <Fragment key={turn.id}>
-              {dayMarker}
-              <div className="agent-home-greeting">
-                <span className="agent-home-greeting-mark" aria-hidden>
-                  <JuneBloom size={30} animated />
-                </span>
-                <h2>{sentenceSplit ? sentenceSplit[1] : greetingText}</h2>
-                {sentenceSplit ? <p>{sentenceSplit[2]}</p> : null}
-              </div>
-            </Fragment>
-          );
-        }
+        // The daily check-in never renders as a chat row: the greeting is a
+        // standalone display block after the transcript (see below), so it can
+        // fade out the moment the conversation moves past it.
+        if (homeMode && turn.id.startsWith("home-check-in:")) return null;
         return (
           <Fragment key={turn.id}>
             {dayMarker}
@@ -12871,6 +12861,31 @@ export function AgentWorkspace({
           </Fragment>
         );
       })}
+      <AnimatePresence>
+        {homeMode && homeGreetingVisible ? (
+          // The daily greeting: client-authored ambiance, live to the clock
+          // (not the stored check-in's creation time). It appears each new
+          // local day while nothing newer exists, and fades away the moment a
+          // message lands - returning with the next day's first visit.
+          <motion.div
+            key="home-greeting"
+            initial={false}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {homeGreetingDayMarker ? (
+              <div className="agent-home-day">{juneHomeDayLabel(homeCheckIn.createdAt)}</div>
+            ) : null}
+            <div className="agent-home-greeting">
+              <span className="agent-home-greeting-mark" aria-hidden>
+                <JuneBloom size={30} animated />
+              </span>
+              <h2>{homeGreeting.salutation}</h2>
+              <p>{homeGreeting.question}</p>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
       {homeMode &&
       hermesTurns.length === 0 &&
       homeDirectTurns.length === 0 &&

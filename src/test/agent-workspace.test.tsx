@@ -52,6 +52,11 @@ const HERO_GREETING = new RegExp(
   `^(?:${HERO_GREETINGS.map((greeting) => greeting.replace("?", "\\?")).join("|")})$`,
 );
 
+// Streaming prose renders each word in its own fade-in span, so exact-text
+// queries against a live turn must match on the paragraph's full textContent.
+const streamedText = (text: string) => (_: string, element: Element | null) =>
+  element?.tagName === "P" && element.textContent === text;
+
 const mocks = vi.hoisted(() => ({
   assignSessionToProfile: vi.fn(),
   invoke: vi.fn(),
@@ -726,7 +731,7 @@ describe("AgentWorkspace", () => {
     // June's presence lives in the daily greeting and the composer, not a
     // support-widget header (avatar, subtitle, presence dot).
     expect(
-      home.getByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
+      home.getByRole("heading", { name: /Good (morning|afternoon|evening)/ }),
     ).toBeInTheDocument();
     expect(home.queryByText("Your personal assistant")).not.toBeInTheDocument();
     expect(home.queryByText("Online")).not.toBeInTheDocument();
@@ -739,7 +744,7 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace homeMode initialSession={existingSession} />);
     expect(
-      await screen.findByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
+      await screen.findByRole("heading", { name: /Good (morning|afternoon|evening)/ }),
     ).toBeInTheDocument();
 
     const composer = await screen.findByRole("textbox", { name: "Message June" });
@@ -750,7 +755,7 @@ describe("AgentWorkspace", () => {
     // turn, it steps aside instead of sitting mid-transcript.
     await waitFor(() =>
       expect(
-        screen.queryByRole("heading", { name: /Good (morning|afternoon|evening)\./ }),
+        screen.queryByRole("heading", { name: /Good (morning|afternoon|evening)/ }),
       ).not.toBeInTheDocument(),
     );
     expect(await screen.findByText("Right here.")).toBeInTheDocument();
@@ -7855,7 +7860,7 @@ describe("AgentWorkspace", () => {
         });
       }
     });
-    expect(await screen.findByText("Same live answer")).toBeInTheDocument();
+    expect(await screen.findByText(streamedText("Same live answer"))).toBeInTheDocument();
 
     const pendingPromptTurn = screen.getByText("What is the weather in SF?").closest("article");
     expect(pendingPromptTurn).not.toBeNull();
@@ -7874,7 +7879,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
     expect(screen.getByText("Hi")).toBeInTheDocument();
     expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
-    expect(screen.queryByText("Same live answer")).not.toBeInTheDocument();
+    expect(screen.queryByText(streamedText("Same live answer"))).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("textbox").textContent ?? "").toContain("What is the weather in SF?"),
     );
@@ -7939,9 +7944,9 @@ describe("AgentWorkspace", () => {
         });
       }
     });
-    expect(await screen.findByText("Same live answer")).toBeInTheDocument();
+    expect(await screen.findByText(streamedText("Same live answer"))).toBeInTheDocument();
 
-    const liveAnswerTurn = screen.getByText("Same live answer").closest("article");
+    const liveAnswerTurn = screen.getByText(streamedText("Same live answer")).closest("article");
     expect(liveAnswerTurn).not.toBeNull();
     await user.click(
       within(liveAnswerTurn as HTMLElement).getByRole("button", {
@@ -7958,7 +7963,7 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText(/Branched from/)).toBeInTheDocument();
     expect(screen.getByText("Hi")).toBeInTheDocument();
     expect(screen.getByText("Hello! I'm June.")).toBeInTheDocument();
-    expect(screen.queryByText("Same live answer")).not.toBeInTheDocument();
+    expect(screen.queryByText(streamedText("Same live answer"))).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("textbox")).toHaveFocus());
     expect(screen.getByRole("textbox").textContent?.trim()).toBe("");
     expect(screen.queryByText("session not found")).not.toBeInTheDocument();
@@ -8556,7 +8561,7 @@ describe("AgentWorkspace", () => {
       }
     });
 
-    expect(screen.getByText("Here is the summary.")).toBeInTheDocument();
+    expect(screen.getByText(streamedText("Here is the summary."))).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("Thinking…")).toBeNull());
   });
 

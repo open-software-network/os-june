@@ -9,8 +9,19 @@ import "./styles/app.css";
 
 initTheme();
 
+// The wrapper mirrors the app shell's structural classes so scroll-driven
+// CSS (the named --main-panel-scroll timeline and its scope) activates in
+// the preview exactly as in the app.
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <div style={{ height: "100vh", display: "flex" }}>
-    <AgentWorkspace homeMode initialSessionId="home-session" />
+  <div className="main-panel" style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <div
+      className="main-panel-body"
+      data-active-view="home"
+      style={{ display: "flex", flex: 1, minHeight: 0 }}
+    >
+      <div className="workspace" style={{ display: "flex", flex: 1, minWidth: 0 }}>
+        <AgentWorkspace homeMode initialSessionId="home-session" />
+      </div>
+    </div>
   </div>,
 );

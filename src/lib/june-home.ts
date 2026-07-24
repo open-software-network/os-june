@@ -204,6 +204,26 @@ export function juneHomeDayLabel(iso: string, now = new Date()): string {
   return `${day} at ${time}`;
 }
 
+/** The live greeting for the Home surface, derived from the CURRENT clock
+ * (unlike the stored check-in, whose text is pinned to its creation time).
+ * Early hours read as evening: "Good morning" at 00:37 feels wrong. */
+export function juneHomeGreetingParts(now = new Date()): {
+  salutation: string;
+  question: string;
+} {
+  const hour = now.getHours();
+  if (hour >= 5 && hour < 12) {
+    return { salutation: "Good morning", question: "What would make today feel lighter?" };
+  }
+  if (hour >= 12 && hour < 18) {
+    return {
+      salutation: "Good afternoon",
+      question: "Is there anything you want me to take off your plate?",
+    };
+  }
+  return { salutation: "Good evening", question: "Want to wrap anything up before the day ends?" };
+}
+
 function checkInText(now: Date): string {
   const hour = now.getHours();
   if (hour < 12) return "Good morning. What would make today feel lighter?";

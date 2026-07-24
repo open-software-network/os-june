@@ -324,7 +324,19 @@ input:focus-visible,
   -webkit-mask-image: none;
   mask-image: none;
   background: linear-gradient(to bottom, var(--card), transparent);
-  opacity: 1;
+  /* Hidden at rest: a static veil hides the first message at scroll-top, and
+   * an inactive timeline must fail to NO veil, not a stuck one (the agent
+   * view's documented trap). The scroll animation below reveals it. */
+  opacity: 0;
+}
+
+/* Scroll-driven like the card fades: invisible at the very top of the
+ * thread, fading in as content scrolls beneath. */
+@supports (animation-timeline: scroll()) {
+  .agent-workspace[data-home="true"]::after {
+    animation: main-panel-fade-start linear both;
+    animation-timeline: --main-panel-scroll;
+  }
 }
 
 .agent-workspace[data-home="true"]::before {
@@ -338,6 +350,19 @@ input:focus-visible,
     color-mix(in oklch, var(--brand) 1.5%, transparent) 55%,
     color-mix(in oklch, var(--brand) 6%, transparent) 78%,
     color-mix(in oklch, var(--brand) 14%, transparent) 100%
+  );
+}
+
+/* Dark canvas: full-chroma brand alpha over near-black greys into mud, so the
+ * dark wash leans on --brand-wash (the chroma-capped surface-tint companion)
+ * at lower strength - a quiet glow instead of a milky veil. */
+[data-theme="dark"] .agent-workspace[data-home="true"]::before {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 35%,
+    color-mix(in oklch, var(--brand-wash) 3%, transparent) 62%,
+    color-mix(in oklch, var(--brand-wash) 8%, transparent) 100%
   );
 }
 
@@ -2315,7 +2340,7 @@ input:focus-visible,
  * not as one even-spaced list. (Day markers carry their own margins at day
  * boundaries, where this adjacency breaks anyway.) */
 .agent-timeline[data-home="true"] .agent-assistant-turn + .agent-user-turn {
-  margin-top: var(--sp-6);
+  margin-top: var(--sp-8);
 }
 
 /* The bubble's shadow lives on the UNMASKED parent: masking applies after
@@ -2671,6 +2696,14 @@ input:focus-visible,
   /* The standard light accent tint: over the chip's opaque card base it
    * reads as a very light themed press. */
   background: var(--brand-tint);
+}
+
+/* Dark chips lose their hairline at 60% alpha; a firmer ring keeps the edge
+ * legible without reading as a drawn border. */
+[data-theme="dark"] .agent-home-nudges button {
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px var(--border-subtle);
 }
 
 .agent-home-task-list {
@@ -5622,6 +5655,18 @@ button.agent-user-attachment:hover {
       to bottom,
       transparent,
       color-mix(in oklch, var(--brand) 13.5%, transparent) 72%
+    ),
+    linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
+[data-theme="dark"]
+  .agent-workspace[data-home="true"]
+  .agent-composer:not([data-hero="true"])::before {
+  background:
+    linear-gradient(
+      to bottom,
+      transparent,
+      color-mix(in oklch, var(--brand-wash) 7.5%, transparent) 72%
     ),
     linear-gradient(to bottom, transparent, var(--card) 72%);
 }
@@ -19623,7 +19668,11 @@ button.memory-project:hover {
 .agent-workspace[data-home="true"] .agent-composer-editor {
   /* One line sits at exactly --control-md (line box ~20px + 2x --sp-1), so
    * the 28px circular controls are perfectly inset in the 38px pill: the
-   * same --sp-1 breathes on every side. */
+   * same --sp-1 breathes on every side. Flex-centering the content removes
+   * the sub-pixel drift line metrics leave inside min-height. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   min-height: var(--control-md);
   max-height: calc(var(--control-xl) * 4);
   padding-block: var(--sp-1);
