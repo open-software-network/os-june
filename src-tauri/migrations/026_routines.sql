@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS routines (
     last_error TEXT,
     last_delivery_error TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
+    tool_catalog_version INTEGER NOT NULL DEFAULT 0,
     claim_token TEXT,
     claimed_at TEXT
 );

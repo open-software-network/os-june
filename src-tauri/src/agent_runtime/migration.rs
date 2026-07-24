@@ -466,8 +466,8 @@ async fn insert_legacy_routine(
         "INSERT INTO routines
          (id, legacy_job_id, name, prompt, schedule, timezone, repeat, deliver, model,
           safety_mode, state, enabled, created_at, updated_at, next_run_at, last_run_at,
-          last_status, last_error, last_delivery_error, metadata_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          last_status, last_error, last_delivery_error, metadata_json, tool_catalog_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT DO NOTHING",
     )
     .bind(id)

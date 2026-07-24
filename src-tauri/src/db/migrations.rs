@@ -148,6 +148,10 @@ const ROUTINE_APPROVAL_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "approval_since",
     definition: "TEXT",
 }];
+const ROUTINE_TOOL_CATALOG_VERSION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "tool_catalog_version",
+    definition: "INTEGER NOT NULL DEFAULT 0",
+}];
 const FOLDER_MEMORY_COLUMNS: &[ColumnDefinition] = &[
     ColumnDefinition {
         name: "instructions",
@@ -1076,6 +1080,18 @@ const MIGRATIONS: &[Migration] = &[
         steps: &[MigrationStep::Sql(include_str!(
             "../../migrations/028_agent_run_mcp_policy.sql"
         ))],
+    },
+    Migration {
+        version: 36,
+        name: "routine_tool_catalog_version",
+        requirements: &[SchemaRequirement::Column {
+            table: "routines",
+            column: "tool_catalog_version",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "routines",
+            columns: ROUTINE_TOOL_CATALOG_VERSION_COLUMN,
+        }],
     },
 ];
 
@@ -2010,6 +2026,50 @@ mod tests {
             .expect("runtime messages")
             .get("count");
         assert_eq!(count, 2);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn prerelease_routine_catalog_rows_are_preserved_and_marked_legacy() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..35])
+            .await
+            .expect("prerelease routine schema");
+        query("ALTER TABLE routines DROP COLUMN tool_catalog_version")
+            .execute(&pool)
+            .await
+            .expect("recreate prerelease catalog shape");
+        query(
+            "INSERT INTO routines (
+                id, name, prompt, schedule, timezone, repeat, deliver, model,
+                safety_mode, state, enabled, created_at, updated_at, metadata_json
+             ) VALUES (
+                'routine-prerelease', 'Daily recap', 'Recap my day', '@daily',
+                'UTC', 'forever', 'local', 'auto', 'sandboxed', 'scheduled', 1,
+                'now', 'now', '{}'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease routine");
+
+        run_migrations(&pool)
+            .await
+            .expect("upgrade prerelease routine schema");
+        run_migrations(&pool)
+            .await
+            .expect("idempotent routine catalog upgrade");
+
+        let row = query(
+            "SELECT name, tool_catalog_version
+             FROM routines
+             WHERE id = 'routine-prerelease'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("preserved routine");
+        assert_eq!(row.get::<String, _>("name"), "Daily recap");
+        assert_eq!(row.get::<i64, _>("tool_catalog_version"), 0);
         assert_latest_stamp(&pool).await;
     }
 

@@ -210,8 +210,11 @@ pub async fn create(
     };
     let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let mut metadata = request.metadata;
-    set_enabled_toolsets(&mut metadata, request.enabled_toolsets);
-    query("INSERT INTO routines (id, legacy_job_id, name, prompt, schedule, timezone, repeat, deliver, model, safety_mode, state, enabled, created_at, updated_at, next_run_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    set_enabled_toolsets(
+        &mut metadata,
+        Some(request.enabled_toolsets.unwrap_or_default()),
+    );
+    query("INSERT INTO routines (id, legacy_job_id, name, prompt, schedule, timezone, repeat, deliver, model, safety_mode, state, enabled, created_at, updated_at, next_run_at, metadata_json, tool_catalog_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)")
         .bind(&id).bind(request.legacy_job_id).bind(name).bind(prompt).bind(schedule)
         .bind(timezone).bind(request.repeat.unwrap_or_else(|| "forever".into()))
         .bind(request.deliver.unwrap_or_else(|| "local".into())).bind(nonempty(request.model, "auto"))
@@ -258,13 +261,14 @@ pub async fn update(
         None
     };
     let mut metadata = request.metadata.unwrap_or(current.metadata);
+    let tool_catalog_updated = request.enabled_toolsets.is_some();
     set_enabled_toolsets(&mut metadata, request.enabled_toolsets);
-    query("UPDATE routines SET name = ?, prompt = ?, schedule = ?, timezone = ?, repeat = ?, deliver = ?, model = ?, safety_mode = ?, state = ?, enabled = ?, updated_at = ?, next_run_at = ?, metadata_json = ?, claim_token = CASE WHEN ? THEN NULL ELSE claim_token END, claimed_at = CASE WHEN ? THEN NULL ELSE claimed_at END WHERE id = ?")
+    query("UPDATE routines SET name = ?, prompt = ?, schedule = ?, timezone = ?, repeat = ?, deliver = ?, model = ?, safety_mode = ?, state = ?, enabled = ?, updated_at = ?, next_run_at = ?, metadata_json = ?, tool_catalog_version = CASE WHEN ? THEN 1 ELSE tool_catalog_version END, claim_token = CASE WHEN ? THEN NULL ELSE claim_token END, claimed_at = CASE WHEN ? THEN NULL ELSE claimed_at END WHERE id = ?")
         .bind(request.name.unwrap_or(current.name).trim()).bind(request.prompt.unwrap_or(current.prompt).trim())
         .bind(&schedule).bind(timezone).bind(request.repeat.unwrap_or(current.repeat))
         .bind(request.deliver.unwrap_or(current.deliver)).bind(request.model.unwrap_or(current.model))
         .bind(request.safety_mode.unwrap_or(current.safety_mode).as_db()).bind(&state).bind(enabled).bind(now())
-        .bind(next_run_at).bind(metadata_json(metadata))
+        .bind(next_run_at).bind(metadata_json(metadata)).bind(tool_catalog_updated)
         .bind(state != "scheduled" || !enabled).bind(state != "scheduled" || !enabled).bind(&request.routine_id)
         .execute(pool).await.map_err(app_error)?;
     get(pool, &request.routine_id).await
@@ -337,7 +341,7 @@ pub async fn claim(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(app_error)?;
-    let routine = query("SELECT id, name, prompt, schedule, model, safety_mode, next_run_at, metadata_json FROM routines WHERE id = ? AND state = 'scheduled' AND enabled = 1 AND claim_token IS NULL AND NOT EXISTS (SELECT 1 FROM routine_runs active WHERE active.routine_id = routines.id AND active.status IN ('queued', 'running', 'waiting_for_user'))")
+    let routine = query("SELECT id, name, prompt, schedule, model, safety_mode, next_run_at, metadata_json, tool_catalog_version FROM routines WHERE id = ? AND state = 'scheduled' AND enabled = 1 AND claim_token IS NULL AND NOT EXISTS (SELECT 1 FROM routine_runs active WHERE active.routine_id = routines.id AND active.status IN ('queued', 'running', 'waiting_for_user'))")
         .bind(routine_id).fetch_optional(&mut *transaction).await.map_err(app_error)?;
     let Some(routine) = routine else {
         transaction.commit().await.map_err(app_error)?;
@@ -360,7 +364,10 @@ pub async fn claim(
     let safety_mode = AgentSafetyMode::from(routine.get::<String, _>("safety_mode").as_str());
     let metadata = serde_json::from_str::<Value>(&routine.get::<String, _>("metadata_json"))
         .unwrap_or_else(|_| json!({}));
-    let enabled_toolsets = enabled_toolsets_from_metadata(&metadata);
+    let enabled_toolsets = enabled_toolsets_from_metadata(
+        &metadata,
+        routine.get::<i64, _>("tool_catalog_version") == 0,
+    );
     let claimed = query("UPDATE routines SET claim_token = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND claim_token IS NULL AND state = 'scheduled' AND enabled = 1")
         .bind(&token).bind(&timestamp).bind(&timestamp).bind(routine_id).execute(&mut *transaction).await.map_err(app_error)?;
     if claimed.rows_affected() != 1 {
@@ -1007,20 +1014,21 @@ async fn unattended_tools(
     tools
 }
 
-fn enabled_toolsets_from_metadata(metadata: &Value) -> Vec<String> {
+fn enabled_toolsets_from_metadata(metadata: &Value, legacy_catalog: bool) -> Vec<String> {
     match metadata.get("enabledToolsets") {
         Some(Value::Array(toolsets)) => toolsets
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect(),
-        // Pre-tool-catalog routines historically received June context, web,
-        // and read-only access to their own workspace. Preserve that behavior
-        // without treating an explicitly empty catalog as a request for tools.
-        _ => ["context_engine", "session_search", "web", "file"]
+        // Only rows durably marked as pre-catalog retain the historical June
+        // context, web, and read-only workspace contract. New routines persist
+        // an explicit empty catalog until the user selects tools.
+        _ if legacy_catalog => ["context_engine", "session_search", "web", "file"]
             .into_iter()
             .map(str::to_owned)
             .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1051,7 +1059,7 @@ pub async fn routine_tool_allowed_for_session(
     name: &str,
 ) -> Result<Option<bool>, AppError> {
     let row = query(
-        "SELECT routines.id, routines.metadata_json
+        "SELECT routines.id, routines.metadata_json, routines.tool_catalog_version
          FROM routine_runs
          JOIN routines ON routines.id = routine_runs.routine_id
          WHERE routine_runs.agent_session_id = ?",
@@ -1066,7 +1074,8 @@ pub async fn routine_tool_allowed_for_session(
     let routine_id: String = row.get("id");
     let metadata = serde_json::from_str::<Value>(&row.get::<String, _>("metadata_json"))
         .unwrap_or_else(|_| json!({}));
-    let enabled_toolsets = enabled_toolsets_from_metadata(&metadata);
+    let enabled_toolsets =
+        enabled_toolsets_from_metadata(&metadata, row.get::<i64, _>("tool_catalog_version") == 0);
     let autonomous_tools = routine_autonomous_tools(pool, &routine_id).await;
     Ok(Some(
         routine_base_tool_allowed(name, &enabled_toolsets)
@@ -1085,7 +1094,7 @@ pub async fn routine_mcp_server_allowed_for_session(
     server_name: &str,
 ) -> Result<Option<bool>, AppError> {
     let row = query(
-        "SELECT routines.metadata_json
+        "SELECT routines.metadata_json, routines.tool_catalog_version
          FROM routine_runs
          JOIN routines ON routines.id = routine_runs.routine_id
          WHERE routine_runs.agent_session_id = ?",
@@ -1100,7 +1109,7 @@ pub async fn routine_mcp_server_allowed_for_session(
     let metadata = serde_json::from_str::<Value>(&row.get::<String, _>("metadata_json"))
         .unwrap_or_else(|_| json!({}));
     Ok(Some(
-        enabled_toolsets_from_metadata(&metadata)
+        enabled_toolsets_from_metadata(&metadata, row.get::<i64, _>("tool_catalog_version") == 0)
             .iter()
             .any(|toolset| toolset == server_name),
     ))
@@ -1423,9 +1432,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn routines_without_a_catalog_keep_the_legacy_safe_toolset() {
+    async fn new_routines_without_a_catalog_have_no_tools() {
         let pool = pool().await;
         create(&pool, create_request("every 1h")).await.unwrap();
+
+        let claim = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(claim.enabled_toolsets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pre_catalog_routines_keep_the_legacy_safe_toolset() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        query(
+            "UPDATE routines
+             SET metadata_json = json_remove(metadata_json, '$.enabledToolsets'),
+                 tool_catalog_version = 0
+             WHERE id = 'routine-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let claim = claim(&pool, "routine-1", "manual", false)
             .await
