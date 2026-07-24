@@ -71,7 +71,7 @@ Rules that fail review if violated (full list in [spec/index.md](spec/index.md))
 PR conventions, in brief (details in [AGENTS.md](AGENTS.md)):
 
 - Fill in the PR template: what changed, validation, root cause for bug
-  fixes, out of scope, followups.
+  fixes, out of scope, follow-ups.
 - Attach a screenshot or recording for UI changes.
 - Describe behavior generically; avoid naming or comparing other products in
   PR titles, descriptions, and release notes.
