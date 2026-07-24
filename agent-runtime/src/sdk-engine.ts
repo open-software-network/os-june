@@ -208,10 +208,21 @@ export class OpenAIAgentsEngine implements AgentEngine {
 
 function historyToSdkInput(history: RuntimeHistoryItem[]): unknown[] {
   return history.flatMap((item) => {
+    if (item.kind === "context_summary" || item.role === "system") {
+      return [{ role: "system", content: item.text ?? "" }];
+    }
+    if (item.kind === "message" && item.role === "assistant") {
+      return [{
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: item.text ?? "" }],
+      }];
+    }
+    if (item.kind === "message") {
+      return [{ role: "user", content: item.text ?? "" }];
+    }
     if (item.payload !== undefined) return [item.payload];
-    if (item.kind !== "message" && item.kind !== "context_summary") return [];
-    const role = item.role === "assistant" ? "assistant" : item.role === "system" ? "system" : "user";
-    return [{ role, content: item.text ?? "" }];
+    return [];
   });
 }
 

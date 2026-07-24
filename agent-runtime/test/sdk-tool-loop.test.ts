@@ -107,6 +107,215 @@ test("continues model inference after a host tool result", async () => {
   assert.ok(events.some((event) => event.type === "tool.completed"));
 });
 
+test("serializes an approval interruption after assistant history", async () => {
+  const modelRequests: JsonObject[] = [];
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error(`Approval tool should not execute before resume: ${input.name}`);
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test stream completes in one page");
+    }
+    modelRequests.push(input.arguments.request);
+    return streamPage("approval-stream", {
+      id: "completion-approval",
+      object: "chat.completion.chunk",
+      created: 3,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "tool_calls",
+          delta: {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call-write-file",
+                type: "function",
+                function: {
+                  name: "write_file",
+                  arguments: "{\"path\":\"qa-proof.txt\",\"content\":\"OK\"}",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  const result = await engine.start({
+    sessionId: "session-history",
+    runId: "run-approval",
+    signal: new AbortController().signal,
+    emit: () => {},
+    params: {
+      model: "private-auto",
+      instructions: "Use the requested file tool.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "Create the file.",
+      history: [
+        { id: "user-1", kind: "message", role: "user", text: "Say hello." },
+        { id: "assistant-1", kind: "message", role: "assistant", text: "Hello." },
+      ],
+      tools: [
+        {
+          name: "write_file",
+          description: "Write a file.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string" },
+              content: { type: "string" },
+            },
+            required: ["path", "content"],
+            additionalProperties: false,
+          },
+          requiresApproval: true,
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(result.interruptions.length, 1);
+  assert.ok(result.serializedState);
+  const messages = modelRequests[0]?.messages;
+  assert.ok(Array.isArray(messages));
+  assert.ok(
+    messages.some(
+      (message) =>
+        isRecord(message) &&
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some(
+          (part) => isRecord(part) && part.type === "text" && part.text === "Hello.",
+        ),
+    ),
+  );
+});
+
+test("resumes a serialized approval and continues after the host tool result", async () => {
+  let modelRequestCount = 0;
+  let toolInvocationCount = 0;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      toolInvocationCount += 1;
+      assert.equal(input.name, "write_file");
+      return { path: "qa-proof.txt", written: true };
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test streams complete in one page");
+    }
+    modelRequestCount += 1;
+    if (modelRequestCount === 1) {
+      return streamPage("approval-start", {
+        id: "completion-approval-start",
+        object: "chat.completion.chunk",
+        created: 4,
+        model: "private-auto",
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-write-file-resume",
+                  type: "function",
+                  function: {
+                    name: "write_file",
+                    arguments: "{\"path\":\"qa-proof.txt\",\"content\":\"OK\"}",
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+    }
+    return streamPage("approval-finish", {
+      id: "completion-approval-finish",
+      object: "chat.completion.chunk",
+      created: 5,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "The file contains OK." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  const commonParams = {
+    model: "private-auto",
+    instructions: "Use the requested file tool.",
+    workspace: "/tmp/june-workspace",
+    safetyMode: "sandboxed" as const,
+    tools: [
+      {
+        name: "write_file",
+        description: "Write a file.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            content: { type: "string" },
+          },
+          required: ["path", "content"],
+          additionalProperties: false,
+        },
+        requiresApproval: true,
+      },
+    ],
+    skills: [],
+    contextWindow: 16_000,
+  };
+  const paused = await engine.start({
+    sessionId: "session-resume",
+    runId: "run-resume",
+    signal: new AbortController().signal,
+    emit: () => {},
+    params: {
+      ...commonParams,
+      input: "Create the file.",
+      history: [],
+    },
+  });
+  assert.equal(paused.interruptions.length, 1);
+  assert.ok(paused.serializedState);
+
+  const resumed = await engine.resume({
+    sessionId: "session-resume",
+    runId: "run-resume",
+    signal: new AbortController().signal,
+    emit: () => {},
+    params: {
+      ...commonParams,
+      serializedState: paused.serializedState,
+      resolutions: [
+        {
+          interruptionId: paused.interruptions[0]!.id,
+          decision: "approve",
+        },
+      ],
+    },
+  });
+
+  assert.equal(toolInvocationCount, 1);
+  assert.equal(modelRequestCount, 2);
+  assert.equal(resumed.finalOutput, "The file contains OK.");
+  assert.equal(resumed.interruptions.length, 0);
+});
+
 function streamPage(streamId: string, chunk: JsonObject) {
   return { streamId, chunks: [chunk], done: true };
 }
