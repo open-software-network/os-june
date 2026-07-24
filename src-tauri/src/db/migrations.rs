@@ -755,6 +755,16 @@ const MIGRATIONS: &[Migration] = &[
             ),
         ],
     },
+    Migration {
+        version: 30,
+        name: "connector_trigger_uniqueness",
+        requirements: &[SchemaRequirement::Index(
+            "idx_connector_triggers_job_id_unique",
+        )],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/023_connector_trigger_uniqueness.sql"
+        ))],
+    },
 ];
 
 struct AppliedMigration {
@@ -1253,6 +1263,66 @@ mod tests {
 
         assert!(table_exists(&pool, "browser_action_outcomes").await);
         assert!(table_exists(&pool, "connector_actions").await);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn connector_trigger_uniqueness_migration_keeps_latest_configuration() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..29])
+            .await
+            .expect("pre-uniqueness schema");
+        for (id, kind, config, created_at) in [
+            (
+                "trigger-old",
+                "email_received",
+                r#"{"query":"is:unread"}"#,
+                "2026-07-24T08:00:00Z",
+            ),
+            (
+                "trigger-new",
+                "event_upcoming",
+                r#"{"leadMinutes":30}"#,
+                "2026-07-24T09:00:00Z",
+            ),
+        ] {
+            query(
+                "INSERT INTO connector_triggers
+                 (id, job_id, kind, account_id, config, created_at)
+                 VALUES (?, 'job-1', ?, 'user@example.com', ?, ?)",
+            )
+            .bind(id)
+            .bind(kind)
+            .bind(config)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .expect("legacy duplicate trigger");
+        }
+
+        run_migrations(&pool).await.expect("uniqueness migration");
+
+        let row = query(
+            "SELECT id, kind, config
+             FROM connector_triggers
+             WHERE job_id = 'job-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("preserved trigger");
+        assert_eq!(row.get::<String, _>("id"), "trigger-new");
+        assert_eq!(row.get::<String, _>("kind"), "event_upcoming");
+        assert_eq!(row.get::<String, _>("config"), r#"{"leadMinutes":30}"#);
+
+        let duplicate = query(
+            "INSERT INTO connector_triggers
+             (id, job_id, kind, account_id, config, created_at)
+             VALUES ('trigger-duplicate', 'job-1', 'email_received',
+                     'user@example.com', '{}', '2026-07-24T10:00:00Z')",
+        )
+        .execute(&pool)
+        .await;
+        assert!(duplicate.is_err(), "job_id uniqueness must be enforced");
         assert_latest_stamp(&pool).await;
     }
 
