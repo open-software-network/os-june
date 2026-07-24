@@ -180,14 +180,17 @@ pub async fn start_agent_run(
         prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
     let run = repository.create_run(&session.id, &model).await?;
     let params = run_params(
+        &app,
         &repository,
-        &session.id,
-        &model,
-        request.safety_mode,
-        &workspace,
-        &request.prompt,
-        &request.enabled_skill_ids,
-        &prepared_attachments,
+        RunParamsInput {
+            session_id: &session.id,
+            model: &model,
+            safety_mode: request.safety_mode,
+            workspace: &workspace,
+            input: &request.prompt,
+            skills: &request.enabled_skill_ids,
+            attachments: &prepared_attachments,
+        },
     )
     .await?;
     let user_item = repository
@@ -280,14 +283,17 @@ pub async fn retry_agent_run(
     }
     let run = repository.create_run(&session.id, &model).await?;
     let params = run_params(
+        &app,
         &repository,
-        &session.id,
-        &model,
-        session.safety_mode,
-        &workspace,
-        &prompt,
-        &[],
-        &attachments,
+        RunParamsInput {
+            session_id: &session.id,
+            model: &model,
+            safety_mode: session.safety_mode,
+            workspace: &workspace,
+            input: &prompt,
+            skills: &[],
+            attachments: &attachments,
+        },
     )
     .await?;
     let _ = repository
@@ -366,14 +372,17 @@ pub async fn resolve_agent_interruption(
     let model = normalize_agent_model(&session.model);
     host.ensure_started(&app, repository.clone()).await?;
     let mut params = run_params(
+        &app,
         &repository,
-        &session.id,
-        &model,
-        session.safety_mode,
-        &workspace,
-        "",
-        &[],
-        &[],
+        RunParamsInput {
+            session_id: &session.id,
+            model: &model,
+            safety_mode: session.safety_mode,
+            workspace: &workspace,
+            input: "",
+            skills: &[],
+            attachments: &[],
+        },
     )
     .await?;
     params
@@ -561,29 +570,40 @@ fn normalize_agent_model(model: &str) -> String {
     }
 }
 
-async fn run_params(
-    repository: &AgentRepository,
-    session_id: &str,
-    model: &str,
+struct RunParamsInput<'a> {
+    session_id: &'a str,
+    model: &'a str,
     safety_mode: AgentSafetyMode,
-    workspace: &str,
-    input: &str,
-    skills: &[String],
-    attachments: &[MessageAttachmentPayload],
+    workspace: &'a str,
+    input: &'a str,
+    skills: &'a [String],
+    attachments: &'a [MessageAttachmentPayload],
+}
+
+async fn run_params(
+    app: &AppHandle,
+    repository: &AgentRepository,
+    request: RunParamsInput<'_>,
 ) -> Result<Value, AppError> {
     let history: Vec<Value> = repository
-        .items(session_id)
+        .items(request.session_id)
         .await?
         .into_iter()
         .filter_map(history_item)
         .collect();
+    let tools = tool_descriptors(app, repository, request.safety_mode, request.workspace).await?;
     Ok(
-        json!({ "model": model, "instructions": INSTRUCTIONS, "workspace": workspace, "safetyMode": safety_mode.as_db(), "input": message_with_attachment_context(input, attachments), "history": history, "tools": tool_descriptors(), "skills": skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
 }
 
-fn tool_descriptors() -> Value {
-    json!([
+async fn tool_descriptors(
+    app: &AppHandle,
+    repository: &AgentRepository,
+    safety_mode: AgentSafetyMode,
+    workspace: &str,
+) -> Result<Value, AppError> {
+    let mut tools = json!([
         { "name": "search_june", "description": "Search June notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_search", "description": "Search the public web.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_fetch", "description": "Fetch a public web page.", "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"], "additionalProperties": false } },
@@ -597,11 +617,57 @@ fn tool_descriptors() -> Value {
         { "name": "run_shell", "description": "Run a shell command in the session workspace.", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"], "additionalProperties": false }, "requiresApproval": true },
         { "name": "list_skills", "description": "List available June skills.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
         { "name": "load_skill", "description": "Load instructions for one June skill.", "parameters": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"], "additionalProperties": false } }
+        ,{ "name": "list_routines", "description": "List June routines and their schedules.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } }
+        ,{ "name": "create_routine", "description": "Create a June routine after the user has confirmed its instructions and timing.", "parameters": { "type": "object", "properties": { "name": { "type": "string" }, "prompt": { "type": "string" }, "schedule": { "type": "string", "description": "RFC 3339, every <n>m/h/d, or a five-field cron expression." }, "safetyMode": { "type": "string", "enum": ["sandboxed", "unrestricted"] } }, "required": ["prompt", "schedule", "safetyMode"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "update_routine", "description": "Update an existing June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" }, "name": { "type": "string" }, "prompt": { "type": "string" }, "schedule": { "type": "string" }, "safetyMode": { "type": "string", "enum": ["sandboxed", "unrestricted"] } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "pause_routine", "description": "Pause a June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "resume_routine", "description": "Resume a paused June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "delete_routine", "description": "Delete a June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "request_clarification", "description": "Pause and ask the user a question when their answer is required to continue.", "parameters": { "type": "object", "properties": { "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["question", "choices"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "computer_use", "description": "Operate the attended computer-use session through June's permission and approval broker.", "parameters": { "type": "object", "properties": { "action": { "type": "string" }, "arguments": {} }, "required": ["action"], "additionalProperties": true }, "requiresApproval": true }
         ,{ "name": "notion_call", "description": "Call an enabled read-only Notion tool through June's connected account.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false } }
         ,{ "name": "notion_action", "description": "Call an enabled Notion action through June's approval broker.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false }, "requiresApproval": true }
-    ])
+    ]);
+    let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
+        crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone()),
+        crate::agent_mcp::KeychainMcpSecretStore,
+    );
+    match subsystem
+        .refresh_registry_for_workspace(
+            safety_mode == AgentSafetyMode::Sandboxed,
+            Some(std::path::Path::new(workspace)),
+        )
+        .await
+    {
+        Ok(descriptors) => {
+            tools
+                .as_array_mut()
+                .expect("tool descriptor catalog is an array")
+                .extend(
+                    descriptors
+                        .into_iter()
+                        .filter_map(|descriptor| serde_json::to_value(descriptor).ok()),
+                );
+        }
+        Err(error) => {
+            tracing::warn!(
+                error_code = "agent_mcp_discovery_failed",
+                error = %error,
+                "MCP tool discovery was unavailable for this run"
+            );
+        }
+    }
+    match crate::agent_runtime::native_connectors::descriptors(app).await {
+        Ok(descriptors) => tools
+            .as_array_mut()
+            .expect("tool descriptor catalog is an array")
+            .extend(descriptors),
+        Err(error) => tracing::warn!(
+            error_code = %error.code,
+            "native connector tool discovery was unavailable for this run"
+        ),
+    }
+    Ok(tools)
 }
 
 fn history_item(item: AgentItemDto) -> Option<Value> {
@@ -619,7 +685,7 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
 }
 
 fn session_json(session: super::AgentSessionDto) -> Value {
-    json!({ "id": session.id, "title": session.title, "status": session.status, "model": session.model, "safetyMode": session.safety_mode, "workspacePath": session.workspace_path.unwrap_or_default(), "source": match session.source.as_str() { "legacy_routine" => "legacy_routine", "user" => "user", _ => "legacy_task" }, "createdAt": session.created_at, "updatedAt": session.updated_at, "error": session.last_error })
+    json!({ "id": session.id, "title": session.title, "status": session.status, "model": session.model, "safetyMode": session.safety_mode, "workspacePath": session.workspace_path.unwrap_or_default(), "source": match session.source.as_str() { "legacy_routine" => "legacy_routine", "routine" => "routine", "user" => "user", _ => "legacy_task" }, "createdAt": session.created_at, "updatedAt": session.updated_at, "error": session.last_error })
 }
 fn run_json(run: super::AgentRunDto) -> Value {
     json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "error": run.error_message })

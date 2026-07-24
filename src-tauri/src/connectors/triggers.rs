@@ -596,12 +596,19 @@ fn parse_event_start(start: &str) -> Option<DateTime<Utc>> {
 // --- Firing & battery ---------------------------------------------------------
 
 /// Wake a routine, returning whether it was actually queued. A false result
-/// (bridge or gateway unavailable) must leave the trigger's cursor unadvanced so
-/// the event is retried, not skipped.
+/// must leave the trigger's cursor unadvanced so the event is retried.
 async fn fire(app: &AppHandle, job_id: &str) -> bool {
-    let _ = (app, job_id);
-    tracing::debug!("connector routine trigger ignored because routines are not supported");
-    false
+    match crate::routines::trigger_from_connector(app, job_id).await {
+        Ok(queued) => queued,
+        Err(error) => {
+            tracing::warn!(
+                error_code = %error.code,
+                routine_id = %job_id,
+                "connector routine trigger failed"
+            );
+            false
+        }
+    }
 }
 
 /// True when the machine is on battery below the low threshold and

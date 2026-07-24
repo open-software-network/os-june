@@ -1,4 +1,5 @@
 import { FundingNotice, fundingTierOf } from "../components/account/FundingNotice";
+import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import { AgentSessionsList } from "../components/agent/AgentSessionsList";
 import { DictationHistoryView } from "../components/dictation/DictationHistoryView";
 import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
@@ -13,6 +14,7 @@ import {
   NOTE_RETRY_FUNDING_DISABLED_REASON,
   RECOVERY_FUNDING_DISABLED_REASON,
   RECORDING_FUNDING_DISABLED_REASON,
+  ROUTINE_FUNDING_DISABLED_REASON,
 } from "./app-shell";
 import type { RenderAppWorkspaceDependencies } from "./app-workspace-view-types";
 import {
@@ -20,6 +22,7 @@ import {
   AppSettingsRoute,
   FoldersWorkspaceRoute,
   NoteEditorRoute,
+  RoutinesViewRoute,
 } from "./workspace-lazy";
 
 export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies) {
@@ -174,6 +177,28 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
             block: "start",
           });
         }, 80);
+      }}
+    />
+  ) : activeView === "routines" ? (
+    <RoutinesViewRoute
+      creditActionsDisabledReason={fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined}
+      onCreateRoutine={(prompt) => {
+        markAgentNewSessionPending(prompt);
+        setActiveAgentSession(undefined);
+        setActiveView("agent");
+      }}
+      onOpenRun={(session) => {
+        if (takeNewTabIntent()) {
+          openTab({
+            view: "agent",
+            agentSessionId: session.id,
+            agentOrigin: { kind: "routines" },
+          });
+          return;
+        }
+        setAgentOrigin({ kind: "routines" });
+        setActiveAgentSession(session);
+        setActiveView("agent");
       }}
     />
   ) : activeView === "agent" ? (

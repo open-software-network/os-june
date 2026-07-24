@@ -9,7 +9,7 @@ export type AgentSessionStatus =
   | "interrupted"
   | "failed";
 
-export type AgentSessionSource = "user" | "legacy_routine" | "legacy_task";
+export type AgentSessionSource = "user" | "routine" | "legacy_routine" | "legacy_task";
 
 export type AgentSessionDto = {
   id: string;
@@ -21,6 +21,7 @@ export type AgentSessionDto = {
   source: AgentSessionSource;
   createdAt: string;
   updatedAt: string;
+  completedAt?: string;
   error?: string;
 };
 

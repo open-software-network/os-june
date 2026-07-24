@@ -787,14 +787,283 @@ const MIGRATIONS: &[Migration] = &[
             SchemaRequirement::Table("agent_artifacts"),
             SchemaRequirement::Table("agent_skill_settings"),
             SchemaRequirement::Table("agent_migration_manifests"),
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "title",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "status",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "model",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "safety_mode",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "workspace_path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "source",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "created_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "updated_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "completed_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "last_error",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "status",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "model",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "started_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "updated_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "completed_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "usage_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "interrupted_state_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "last_sequence",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "error_code",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "error_message",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "run_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "sequence",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "kind",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "payload_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "external_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "created_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "run_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "item_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "provenance",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "action",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "original_path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "mime_type",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "size_bytes",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "available",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "created_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "skill_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "enabled",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "managed",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "updated_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "migration_key",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "source_path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "source_fingerprint",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "status",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "source_counts_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "imported_counts_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "skipped_count",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "errors_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "started_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "completed_at",
+            },
+            SchemaRequirement::Column {
+                table: "session_folders",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "session_folders",
+                column: "folder_id",
+            },
+            SchemaRequirement::Column {
+                table: "session_folders",
+                column: "assigned_at",
+            },
             SchemaRequirement::Index("idx_agent_sessions_updated_at"),
+            SchemaRequirement::Index("idx_agent_sessions_status"),
             SchemaRequirement::Index("idx_agent_runs_session_started"),
+            SchemaRequirement::Index("idx_agent_runs_status"),
             SchemaRequirement::Index("idx_agent_items_session_sequence"),
+            SchemaRequirement::Index("idx_agent_items_external_id"),
             SchemaRequirement::Index("idx_agent_artifacts_session_created"),
             SchemaRequirement::Index("idx_session_folders_folder"),
         ],
         steps: &[MigrationStep::Sql(include_str!(
             "../../migrations/025_agent_runtime.sql"
+        ))],
+    },
+    Migration {
+        version: 33,
+        name: "agent_routines",
+        requirements: &[
+            SchemaRequirement::Table("routines"),
+            SchemaRequirement::Table("routine_runs"),
+            SchemaRequirement::Index("idx_routines_due"),
+            SchemaRequirement::Index("idx_routines_claim"),
+            SchemaRequirement::Index("idx_routine_runs_routine_started"),
+            SchemaRequirement::Index("idx_routine_runs_active"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/026_routines.sql"
+        ))],
+    },
+    Migration {
+        version: 34,
+        name: "agent_mcp",
+        requirements: &[
+            SchemaRequirement::Table("agent_mcp_servers"),
+            SchemaRequirement::Index("idx_agent_mcp_servers_enabled"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/027_agent_mcp.sql"
         ))],
     },
 ];
@@ -922,10 +1191,22 @@ async fn migrate_locked(
         }
         _ => {
             let snapshot = SchemaSnapshot::load(transaction).await?;
-            let detected = detect_legacy_version(&snapshot, migrations)?;
-            create_schema_migrations_table(transaction).await?;
-            stamp_legacy_migrations(transaction, &migrations[..detected]).await?;
-            detected
+            if adopt_prerelease_agent_runtime_schema(transaction, &snapshot, migrations).await? {
+                migrations
+                    .iter()
+                    .position(|migration| migration.name == "agent_runtime")
+                    .map(|index| index + 1)
+                    .ok_or_else(|| {
+                        sqlx::Error::Protocol(
+                            "adopted agent runtime is missing from migration catalog".into(),
+                        )
+                    })?
+            } else {
+                let detected = detect_legacy_version(&snapshot, migrations)?;
+                create_schema_migrations_table(transaction).await?;
+                stamp_legacy_migrations(transaction, &migrations[..detected]).await?;
+                detected
+            }
         }
     };
 
@@ -964,9 +1245,17 @@ async fn repair_prerelease_agent_runtime_stamp(
         return Ok(false);
     };
     let runtime = &migrations[runtime_index];
-    let displaced = &migrations[runtime_index - 1];
+    // PR #920 originally stamped its runtime as version 30, displacing the
+    // connector uniqueness migration. Main later appended the hydration
+    // indexes at version 31, so the released runtime belongs at version 32.
+    // Preserve that release order rather than renumbering main's migration.
+    let displaced_index = runtime_index.checked_sub(2).ok_or_else(|| {
+        sqlx::Error::Protocol("agent runtime prerelease repair has no displaced migration".into())
+    })?;
+    let displaced = &migrations[displaced_index];
+    let intervening = &migrations[displaced_index + 1..runtime_index];
 
-    validate_applied_migrations(&applied[..applied.len() - 1], migrations)?;
+    validate_applied_migrations(&applied[..displaced_index], migrations)?;
     let snapshot = SchemaSnapshot::load(transaction).await?;
     if !runtime
         .requirements
@@ -988,14 +1277,14 @@ async fn repair_prerelease_agent_runtime_stamp(
     .bind(runtime.name)
     .execute(&mut **transaction)
     .await?;
-    query(
-        "INSERT INTO schema_migrations (version, name)
-         VALUES (?, ?)",
-    )
-    .bind(runtime.version)
-    .bind(runtime.name)
-    .execute(&mut **transaction)
-    .await?;
+    for migration in intervening {
+        apply_migration(transaction, migration).await?;
+        stamp_legacy_migrations(transaction, std::slice::from_ref(migration)).await?;
+    }
+    // The prerelease schema already has the complete runtime. Replaying this
+    // SQL would attempt to import tables it retired, so only stamp it after
+    // the requirement check above.
+    stamp_legacy_migrations(transaction, std::slice::from_ref(runtime)).await?;
     Ok(true)
 }
 
@@ -1009,16 +1298,87 @@ fn is_prerelease_agent_runtime_stamp(
     else {
         return false;
     };
-    if runtime_index == 0 || applied.len() != runtime_index {
+    let Some(displaced_index) = runtime_index.checked_sub(2) else {
+        return false;
+    };
+    if applied.len() != displaced_index + 1 {
         return false;
     }
     let runtime = &migrations[runtime_index];
-    let displaced = &migrations[runtime_index - 1];
+    let displaced = &migrations[displaced_index];
     applied.last().is_some_and(|last| {
         displaced.name == "connector_trigger_uniqueness"
             && last.version == displaced.version
             && last.name == runtime.name
     })
+}
+
+/// The runtime branch was exercised before the version catalog reached those
+/// installs. Its runtime schema is complete, but it has no ledger and can be
+/// missing the two mainline migrations that landed between its old version-30
+/// stamp and the released version-32 runtime. Adopt that exact known shape in
+/// one transaction: prove the historical prefix, apply or stamp the intervening
+/// mainline migrations, then stamp the already-present runtime without replay.
+async fn adopt_prerelease_agent_runtime_schema(
+    transaction: &mut SqliteTransaction<'_>,
+    snapshot: &SchemaSnapshot,
+    migrations: &[Migration],
+) -> Result<bool, sqlx::Error> {
+    let Some(runtime_index) = migrations
+        .iter()
+        .position(|migration| migration.name == "agent_runtime")
+    else {
+        return Ok(false);
+    };
+    let Some(first_intervening_index) = runtime_index.checked_sub(2) else {
+        return Ok(false);
+    };
+    let runtime = &migrations[runtime_index];
+    if !migration_requirements_satisfied(snapshot, runtime) {
+        return Ok(false);
+    }
+
+    // Versions 9 through 11 were retired by the runtime SQL, so their original
+    // landmarks are absent on this one known replacement schema. Every other
+    // earlier migration must still be directly observable.
+    if !migrations[..first_intervening_index]
+        .iter()
+        .all(|migration| legacy_requirement_satisfied(snapshot, migration, true))
+    {
+        return Ok(false);
+    }
+
+    create_schema_migrations_table(transaction).await?;
+    stamp_legacy_migrations(transaction, &migrations[..first_intervening_index]).await?;
+    for migration in &migrations[first_intervening_index..runtime_index] {
+        if !migration_requirements_satisfied(snapshot, migration) {
+            apply_migration(transaction, migration).await?;
+        }
+        stamp_legacy_migrations(transaction, std::slice::from_ref(migration)).await?;
+    }
+    stamp_legacy_migrations(transaction, std::slice::from_ref(runtime)).await?;
+    Ok(true)
+}
+
+fn migration_requirements_satisfied(snapshot: &SchemaSnapshot, migration: &Migration) -> bool {
+    migration
+        .requirements
+        .iter()
+        .copied()
+        .all(|requirement| snapshot.satisfies(requirement))
+}
+
+fn legacy_requirement_satisfied(
+    snapshot: &SchemaSnapshot,
+    migration: &Migration,
+    agent_runtime_installed: bool,
+) -> bool {
+    migration_requirements_satisfied(snapshot, migration)
+        || (agent_runtime_installed
+            && matches!(
+                migration.name,
+                "agent_workspace" | "agent_task_session_identity" | "agent_message_identity"
+            ))
 }
 
 fn validate_catalog(migrations: &[Migration]) -> Result<(), sqlx::Error> {
@@ -1092,6 +1452,19 @@ fn detect_legacy_version(
                 .copied()
                 .all(|requirement| snapshot.satisfies(requirement))
         });
+    let agent_runtime_tables_present = migrations
+        .iter()
+        .find(|migration| migration.name == "agent_runtime")
+        .is_some_and(|migration| {
+            migration.requirements.iter().any(|requirement| {
+                matches!(*requirement, SchemaRequirement::Table(table) if snapshot.tables.contains(table))
+            })
+        });
+    if agent_runtime_tables_present && !agent_runtime_installed {
+        return Err(sqlx::Error::Protocol(
+            "unversioned database contains an incomplete June agent runtime schema".to_string(),
+        ));
+    }
     for migration in migrations {
         let applied = migration
             .requirements
@@ -1504,6 +1877,16 @@ mod tests {
             .execute(&pool)
             .await
             .expect("restore pre-uniqueness index state");
+        for index in [
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_transcripts_note_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+        ] {
+            query(&format!("DROP INDEX {index}"))
+                .execute(&pool)
+                .await
+                .expect("restore pre-hydration index state");
+        }
         for (id, created_at) in [
             ("trigger-old", "2026-07-24T08:00:00Z"),
             ("trigger-new", "2026-07-24T09:00:00Z"),
@@ -1519,7 +1902,7 @@ mod tests {
             .await
             .expect("legacy duplicate trigger");
         }
-        query("DELETE FROM schema_migrations WHERE version = 31")
+        query("DELETE FROM schema_migrations WHERE version >= 31")
             .execute(&pool)
             .await
             .expect("remove corrected runtime stamp");
@@ -1548,6 +1931,43 @@ mod tests {
             .expect("preserved newest trigger")
             .get("id");
         assert_eq!(trigger_id, "trigger-new");
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn unversioned_prerelease_runtime_adopts_intervening_migrations_without_replay() {
+        let pool = test_pool().await;
+        run_migrations(&pool).await.expect("current schema");
+        install_runtime_non_replay_guard(&pool).await;
+        query("DROP INDEX idx_connector_triggers_job_id_unique")
+            .execute(&pool)
+            .await
+            .expect("restore pre-uniqueness index state");
+        for index in [
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_transcripts_note_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+        ] {
+            query(&format!("DROP INDEX {index}"))
+                .execute(&pool)
+                .await
+                .expect("restore pre-hydration index state");
+        }
+        query("DROP TABLE schema_migrations")
+            .execute(&pool)
+            .await
+            .expect("remove version table");
+
+        run_migrations(&pool)
+            .await
+            .expect("adopt prerelease runtime schema");
+
+        let item_count: i64 = query("SELECT COUNT(*) AS count FROM agent_items")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved runtime messages")
+            .get("count");
+        assert_eq!(item_count, 2);
         assert_latest_stamp(&pool).await;
     }
 

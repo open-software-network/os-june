@@ -192,6 +192,10 @@ pub struct MigrationCounts {
     pub messages: u64,
     pub reasoning_items: u64,
     pub artifacts: u64,
+    #[serde(default)]
+    pub routines: u64,
+    #[serde(default)]
+    pub mcp_servers: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

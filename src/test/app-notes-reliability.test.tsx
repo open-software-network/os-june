@@ -3,10 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { NOTE_PROCESSING_RECONCILE_INTERVAL_MS } from "../app/use-note-processing-events";
-import {
-  resetActiveAgentProfileForTests,
-  setActiveAgentProfileName,
-} from "../lib/agent-profile";
+import { resetActiveAgentProfileForTests, setActiveAgentProfileName } from "../lib/agent-profile";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   beginMaxGrantWait,
@@ -49,7 +46,7 @@ const mocks = vi.hoisted(() => ({
   removeNoteFromFolder: vi.fn(),
   listNotes: vi.fn(),
   listFolders: vi.fn(),
-  listHermesSessions: vi.fn(),
+  listAgentSessions: vi.fn(),
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   deleteNotes: vi.fn(),
@@ -114,11 +111,6 @@ vi.mock("../lib/agent-sounds", () => ({
   preloadAgentSounds: mocks.preloadAgentSounds,
 }));
 
-vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
-  listHermesSessions: mocks.listHermesSessions,
-}));
-
 vi.mock("../components/ui/Toaster", () => ({
   toast: mocks.toast,
 }));
@@ -160,6 +152,7 @@ vi.mock("../lib/tauri", () => ({
   removeNoteFromFolder: mocks.removeNoteFromFolder,
   listNotes: mocks.listNotes,
   listFolders: mocks.listFolders,
+  listAgentSessions: mocks.listAgentSessions,
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   deleteNotes: mocks.deleteNotes,
@@ -333,7 +326,7 @@ describe("notes recording reliability", () => {
     });
     resetActiveAgentProfileForTests();
     mocks.listFolders.mockResolvedValue([]);
-    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listAgentSessions.mockResolvedValue([]);
 
     const payload: BootstrapResponse = {
       folders: [],

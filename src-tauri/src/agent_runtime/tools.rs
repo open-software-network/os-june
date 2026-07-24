@@ -57,6 +57,12 @@ pub async fn dispatch_tool(
     name: &str,
     arguments: Value,
 ) -> Result<Value, AppError> {
+    if let Some(result) =
+        crate::agent_runtime::native_connectors::dispatch(&context.app, name, arguments.clone())
+            .await?
+    {
+        return Ok(result);
+    }
     match name {
         "search_june" => search_june(context, &arguments).await,
         "web_search" => web(context, "/v1/web/search", &arguments).await,
@@ -71,11 +77,25 @@ pub async fn dispatch_tool(
         "run_shell" => run_shell(context, &arguments).await,
         "list_skills" => list_skills(context).await,
         "load_skill" => load_skill(context, &arguments).await,
+        "list_routines" => {
+            serde_json::to_value(crate::routines::list(&context.repository.pool).await?)
+                .map_err(|error| AppError::new("agent_tool_response_invalid", error.to_string()))
+        }
+        "create_routine" => create_routine(context, arguments).await,
+        "update_routine" => update_routine(context, arguments).await,
+        "pause_routine" => pause_routine(context, &arguments).await,
+        "resume_routine" => resume_routine(context, &arguments).await,
+        "delete_routine" => {
+            let routine_id = required_string(&arguments, "routineId")?;
+            crate::routines::delete(&context.repository.pool, routine_id).await?;
+            Ok(json!({ "deleted": true, "routineId": routine_id }))
+        }
         "request_clarification" => consume_clarification_answer(context).await,
         "computer_use" => {
             Ok(crate::computer_use::handle_proxy_action(&context.app, arguments).await)
         }
         "notion_call" | "notion_action" => notion_tool(context, name, &arguments).await,
+        name if name.starts_with("mcp_") => mcp_tool(context, name, arguments).await,
         // These capabilities stay behind Rust-owned seams. Their existing brokers
         // can be connected without granting the runtime direct credentials or UI access.
         name if name.starts_with("browser_")
@@ -92,6 +112,59 @@ pub async fn dispatch_tool(
             format!("Unsupported agent tool: {name}"),
         )),
     }
+}
+
+async fn create_routine(context: &ToolContext, arguments: Value) -> Result<Value, AppError> {
+    let request: crate::routines::CreateAgentRoutineRequest = serde_json::from_value(arguments)
+        .map_err(|error| AppError::new("invalid_arguments", error.to_string()))?;
+    serde_json::to_value(crate::routines::create(&context.repository.pool, request).await?)
+        .map_err(|error| AppError::new("agent_tool_response_invalid", error.to_string()))
+}
+
+async fn update_routine(context: &ToolContext, arguments: Value) -> Result<Value, AppError> {
+    let request: crate::routines::UpdateAgentRoutineRequest = serde_json::from_value(arguments)
+        .map_err(|error| AppError::new("invalid_arguments", error.to_string()))?;
+    serde_json::to_value(crate::routines::update(&context.repository.pool, request).await?)
+        .map_err(|error| AppError::new("agent_tool_response_invalid", error.to_string()))
+}
+
+async fn pause_routine(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
+    let routine_id = required_string(arguments, "routineId")?;
+    serde_json::to_value(crate::routines::pause(&context.repository.pool, routine_id).await?)
+        .map_err(|error| AppError::new("agent_tool_response_invalid", error.to_string()))
+}
+
+async fn resume_routine(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
+    let routine_id = required_string(arguments, "routineId")?;
+    serde_json::to_value(crate::routines::resume(&context.repository.pool, routine_id).await?)
+        .map_err(|error| AppError::new("agent_tool_response_invalid", error.to_string()))
+}
+
+async fn mcp_tool(context: &ToolContext, name: &str, arguments: Value) -> Result<Value, AppError> {
+    let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
+        crate::agent_mcp::AgentMcpRepository::new(context.repository.pool.clone()),
+        crate::agent_mcp::KeychainMcpSecretStore,
+    );
+    subsystem
+        .refresh_registry_for_workspace(
+            context.safety_mode == AgentSafetyMode::Sandboxed,
+            Some(&context.workspace),
+        )
+        .await
+        .map_err(agent_mcp_error)?;
+    subsystem
+        .invoke_in_workspace(
+            name,
+            arguments,
+            context.safety_mode == AgentSafetyMode::Sandboxed,
+            Some(&context.workspace),
+        )
+        .await
+        .map_err(agent_mcp_error)
+}
+
+fn agent_mcp_error(error: crate::agent_mcp::AgentMcpError) -> AppError {
+    AppError::new("agent_mcp_tool_failed", error.to_string())
 }
 
 async fn search_june(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -357,7 +430,7 @@ async fn notion_tool(
         deadline_unix_ms: None,
     };
     let result = if kind == "notion_action" {
-        crate::connectors::notion::call_hosted_action_tool(&context.app, request).await?
+        crate::connectors::notion::call_hosted_action_tool_approved(&context.app, request).await?
     } else {
         crate::connectors::notion::call_hosted_tool(&context.app, request).await?
     };
@@ -477,7 +550,7 @@ fn skill_roots(app: &AppHandle) -> Vec<PathBuf> {
     roots
 }
 
-fn sandbox_profile(workspace: &Path) -> String {
+pub(crate) fn sandbox_profile(workspace: &Path) -> String {
     let escaped = workspace.to_string_lossy().replace('"', "\\\"");
     format!("(version 1) (allow default) (deny file-write*) (allow file-write* (subpath \"{escaped}\")) (allow file-write* (subpath \"/private/tmp\"))")
 }

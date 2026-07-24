@@ -1,4 +1,5 @@
 pub mod agent_hud;
+pub mod agent_mcp;
 pub mod agent_runtime;
 pub mod app_paths;
 pub mod audio;
@@ -31,6 +32,7 @@ pub mod obsidian;
 pub mod os_accounts;
 pub mod p3a;
 pub mod providers;
+pub mod routines;
 mod shutdown;
 pub mod theme_icon;
 pub mod updates;
@@ -181,6 +183,21 @@ pub fn run() {
             agent_runtime::api::read_agent_artifact_text,
             agent_runtime::api::list_agent_skills,
             agent_runtime::api::set_agent_skill_enabled,
+            agent_mcp::list_agent_mcp_servers,
+            agent_mcp::create_agent_mcp_server,
+            agent_mcp::update_agent_mcp_server,
+            agent_mcp::delete_agent_mcp_server,
+            agent_mcp::test_agent_mcp_server,
+            routines::list_agent_routines,
+            routines::create_agent_routine,
+            routines::update_agent_routine,
+            routines::pause_agent_routine,
+            routines::resume_agent_routine,
+            routines::trigger_agent_routine,
+            routines::delete_agent_routine,
+            routines::list_agent_routine_runs,
+            routines::routine_browser_access_get,
+            routines::routine_browser_access_set,
             commands::experimental_flags_get,
             commands::experimental_flags_set,
             commands::create_note,
@@ -384,9 +401,9 @@ pub fn run() {
             notifications::setup(app);
             meeting_detection::setup(app);
             extension_host::setup(app);
-            // Poll Google for the events routines subscribe to (email arrivals,
-            // upcoming meetings) and wake the matching routine. Runs after the
-            // bridge init so cron triggers have a runtime to fire into.
+            routines::start_scheduler(app.handle());
+            // Poll Google for the events routines subscribe to (email arrivals
+            // and upcoming meetings) and wake the matching durable routine.
             connectors::triggers::start(app.handle());
             meeting_hud::setup(app);
             os_accounts::setup_deep_link(app);

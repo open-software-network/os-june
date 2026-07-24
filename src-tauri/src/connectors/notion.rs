@@ -708,6 +708,40 @@ pub async fn call_hosted_action_tool(
     })?
 }
 
+/// Executes a Notion action after the caller has already completed a trusted
+/// host approval interruption. Agent SDK tools use this entry point so one
+/// action never produces two independent approval prompts.
+pub async fn call_hosted_action_tool_approved(
+    app: &AppHandle,
+    request: NotionHostedToolCallRequest,
+) -> Result<NotionHostedToolCallResult, AppError> {
+    let Some(tool_name) = action_tool_allowed_for_agent(&request.tool_name) else {
+        return Err(AppError::new(
+            "notion_tool_not_allowed",
+            "That Notion hosted MCP action is not enabled in June yet.",
+        ));
+    };
+    preflight_action_arguments(tool_name, &request.arguments)?;
+    let expected_revision = capture_connected_revision(app).await?;
+    let timeout = action_request_timeout(request.deadline_unix_ms)?;
+    tokio::time::timeout(
+        timeout,
+        call_hosted_action_for_revision(
+            app,
+            expected_revision,
+            tool_name,
+            request.arguments,
+        ),
+    )
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "notion_mcp_action_timeout",
+            "Notion did not finish the approved action before June's safety timeout. Check Notion before retrying.",
+        )
+    })?
+}
+
 async fn capture_connected_revision(app: &AppHandle) -> Result<u64, AppError> {
     load_connected_with_fresh_token(app).await?;
     let _guard = credential_lifecycle_lock().lock().await;

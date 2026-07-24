@@ -129,6 +129,7 @@ import {
 } from "../../lib/experimental-flags";
 import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
+import { AgentMcpServersSection } from "./AgentMcpServersSection";
 import { ConnectorsSection } from "./ConnectorsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MemorySettingsSection } from "./MemorySettingsSection";
@@ -2602,10 +2603,13 @@ export function AppSettings({
         ) : null}
 
         {activeTab === "connectors" ? (
-          <ConnectorsSection
-            onOpenModels={() => setActiveTab("models")}
-            onOpenBilling={() => setActiveTab("billing")}
-          />
+          <>
+            <ConnectorsSection
+              onOpenModels={() => setActiveTab("models")}
+              onOpenBilling={() => setActiveTab("billing")}
+            />
+            <AgentMcpServersSection />
+          </>
         ) : null}
 
         {activeTab === "about" ? (

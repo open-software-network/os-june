@@ -1,6 +1,6 @@
 use os_june_lib::agent_runtime::{
-    import_legacy_agent_state, AgentItemPayload, AgentRepository, LegacyImportOptions,
-    MessagePayload,
+    import_legacy_agent_state, legacy_import_completed, AgentItemPayload, AgentRepository,
+    LegacyImportOptions, MessagePayload,
 };
 use os_june_lib::db::migrations::run_migrations;
 use sqlx::{query::query, row::Row};
@@ -26,6 +26,9 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
         .expect("memory database");
     run_migrations(&pool).await.expect("current schema");
     for statement in [
+        "DROP TABLE routine_runs",
+        "DROP TABLE routines",
+        "DROP TABLE agent_mcp_servers",
         "DROP TABLE session_folders",
         "DROP TABLE agent_artifacts",
         "DROP TABLE agent_items",
@@ -33,7 +36,7 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
         "DROP TABLE agent_skill_settings",
         "DROP TABLE agent_migration_manifests",
         "DROP TABLE agent_sessions",
-        "DELETE FROM schema_migrations WHERE version = 31",
+        "DELETE FROM schema_migrations WHERE version IN (32, 33, 34)",
     ] {
         query(statement)
             .execute(&pool)
@@ -157,22 +160,62 @@ async fn legacy_import_is_read_only_idempotent_and_filters_delegated_sessions() 
     .expect("messages");
     for statement in [
         "INSERT INTO sessions VALUES ('user-1', 'cli', 'model-a', 'User session', NULL, 1000, 1002, NULL)",
-        "INSERT INTO sessions VALUES ('routine-1', 'cron', 'model-b', 'Daily run', NULL, 2000, 2002, NULL)",
+        "INSERT INTO sessions VALUES ('daily-brief', 'cron', 'model-b', 'Daily run', NULL, 2000, 2002, NULL)",
         "INSERT INTO sessions VALUES ('child-1', 'subagent', 'model-a', 'Delegate', NULL, 3000, 3002, NULL)",
         "INSERT INTO sessions VALUES ('split-1', 'cli', 'model-a', 'Compressed child', 'user-1', 4000, 4002, NULL)",
         "INSERT INTO messages VALUES (1, 'user-1', 'user', 'Question', NULL, NULL, NULL, 1000, NULL, NULL, 1)",
         "INSERT INTO messages VALUES (2, 'user-1', 'assistant', 'Answer', NULL, NULL, NULL, 1001, 'Thought', NULL, 1)",
-        "INSERT INTO messages VALUES (3, 'routine-1', 'assistant', 'Routine result', NULL, NULL, NULL, 2001, NULL, NULL, 1)",
+        "INSERT INTO messages VALUES (3, 'daily-brief', 'assistant', 'Routine result', NULL, NULL, NULL, 2001, NULL, NULL, 1)",
         "INSERT INTO messages VALUES (4, 'child-1', 'assistant', 'Child result', NULL, NULL, NULL, 3001, NULL, NULL, 1)",
         "INSERT INTO messages VALUES (5, 'split-1', 'assistant', 'Split result', NULL, NULL, NULL, 4001, NULL, NULL, 1)",
     ] {
         query(statement).execute(&source).await.expect("fixture row");
     }
     source.close().await;
+    std::fs::create_dir_all(directory.path().join("cron")).expect("cron directory");
+    std::fs::write(
+        directory.path().join("cron/jobs.json"),
+        r#"{
+          "jobs": [{
+            "id": "daily-brief",
+            "name": "Daily brief",
+            "prompt": "Summarize my recent notes.",
+            "schedule": {"kind":"cron","expr":"0 9 * * *","display":"0 9 * * *"},
+            "repeat": {"times":null,"completed":4},
+            "enabled": true,
+            "state": "scheduled",
+            "created_at": "2026-01-01T00:00:00Z",
+            "next_run_at": "2026-07-25T13:00:00Z",
+            "last_run_at": "2026-07-24T13:00:00Z",
+            "last_status": "ok",
+            "deliver": "local",
+            "enabled_toolsets": ["web"],
+            "script": "echo preserved-routine-output",
+            "no_agent": true
+          }]
+        }"#,
+    )
+    .expect("legacy routines");
+    std::fs::write(
+        directory.path().join("config.yaml"),
+        r#"mcp_servers:
+  june_context:
+    command: python
+    args: [managed.py]
+  todo:
+    enabled: true
+    command: node
+    args: [server.js]
+    tools:
+      include: [list_tasks]
+"#,
+    )
+    .expect("legacy MCP config");
     let source_bytes_before = std::fs::read(&source_path).expect("source bytes");
 
     let options = LegacyImportOptions {
         hermes_state_db: source_path.clone(),
+        hermes_home: Some(directory.path().to_path_buf()),
         artifact_root: Some(directory.path().join("artifacts")),
     };
     let first = import_legacy_agent_state(&destination, &options)
@@ -183,6 +226,8 @@ async fn legacy_import_is_read_only_idempotent_and_filters_delegated_sessions() 
         .expect("idempotent import");
 
     assert_eq!(first.imported_counts.sessions, 2);
+    assert_eq!(first.imported_counts.routines, 1);
+    assert_eq!(first.imported_counts.mcp_servers, 1);
     assert_eq!(second, first);
     let sessions = AgentRepository::new(destination.clone())
         .list_sessions()
@@ -191,10 +236,10 @@ async fn legacy_import_is_read_only_idempotent_and_filters_delegated_sessions() 
     assert!(sessions.iter().any(|session| session.id == "user-1"));
     assert!(sessions
         .iter()
-        .any(|session| session.id == "routine-1" && session.source == "legacy_routine"));
+        .any(|session| session.id == "daily-brief" && session.source == "legacy_routine"));
     assert!(!sessions.iter().any(|session| session.id == "child-1"));
     assert!(!sessions.iter().any(|session| session.id == "split-1"));
-    let items = AgentRepository::new(destination)
+    let items = AgentRepository::new(destination.clone())
         .items("user-1")
         .await
         .expect("items");
@@ -206,8 +251,178 @@ async fn legacy_import_is_read_only_idempotent_and_filters_delegated_sessions() 
     assert!(items
         .iter()
         .any(|item| matches!(&item.payload, AgentItemPayload::Reasoning(_))));
+    let routine_items = AgentRepository::new(destination.clone())
+        .items("daily-brief")
+        .await
+        .expect("routine history");
+    assert!(routine_items.iter().any(|item| matches!(
+        &item.payload,
+        AgentItemPayload::AssistantMessage(MessagePayload { content, .. }) if content == "Routine result"
+    )));
+    let routine = query(
+        "SELECT state, enabled, next_run_at, metadata_json FROM routines WHERE id = 'daily-brief'",
+    )
+    .fetch_one(&destination)
+    .await
+    .expect("imported routine");
+    assert_eq!(routine.get::<String, _>("state"), "needs_review");
+    assert_eq!(routine.get::<i64, _>("enabled"), 0);
+    assert!(routine.get::<Option<String>, _>("next_run_at").is_none());
+    let routine_metadata: serde_json::Value =
+        serde_json::from_str(&routine.get::<String, _>("metadata_json")).expect("routine metadata");
+    assert_eq!(
+        routine_metadata["legacyScript"],
+        "echo preserved-routine-output"
+    );
+    assert_eq!(routine_metadata["legacyScriptExecution"], "needs_review");
+    let mcp_count: i64 =
+        query("SELECT COUNT(*) AS count FROM agent_mcp_servers WHERE name = 'todo'")
+            .fetch_one(&destination)
+            .await
+            .expect("imported MCP server")
+            .get("count");
+    assert_eq!(mcp_count, 1);
+    let managed_mcp_count: i64 =
+        query("SELECT COUNT(*) AS count FROM agent_mcp_servers WHERE name = 'june_context'")
+            .fetch_one(&destination)
+            .await
+            .expect("managed MCP server")
+            .get("count");
+    assert_eq!(managed_mcp_count, 0);
     assert_eq!(
         std::fs::read(&source_path).expect("source bytes after"),
         source_bytes_before
     );
+}
+
+#[tokio::test]
+async fn legacy_import_recovers_routines_and_mcp_when_state_database_is_missing() {
+    let destination = memory_database().await;
+    let directory = tempfile::tempdir().expect("temp directory");
+    std::fs::create_dir_all(directory.path().join("cron")).expect("cron directory");
+    std::fs::write(
+        directory.path().join("cron/jobs.json"),
+        r#"[{
+          "id": "companion-routine",
+          "name": "Companion routine",
+          "prompt": "Summarize notes.",
+          "schedule": {"kind":"cron","expr":"0 9 * * *","timezone":"America/New_York"},
+          "enabled": false,
+          "state": "paused"
+        }]"#,
+    )
+    .expect("routine companion");
+    std::fs::write(
+        directory.path().join("config.yaml"),
+        "mcp_servers:\n  docs:\n    command: node\n    args: [server.js]\n",
+    )
+    .expect("MCP companion");
+    let source_path = directory.path().join("missing-state.db");
+    let options = LegacyImportOptions {
+        hermes_state_db: source_path.clone(),
+        hermes_home: Some(directory.path().to_path_buf()),
+        artifact_root: None,
+    };
+
+    let first = import_legacy_agent_state(&destination, &options)
+        .await
+        .expect("companion import");
+    let second = import_legacy_agent_state(&destination, &options)
+        .await
+        .expect("idempotent companion import");
+
+    assert_eq!(first.status, "completed");
+    assert_eq!(first.imported_counts.sessions, 0);
+    assert_eq!(first.imported_counts.routines, 1);
+    assert_eq!(first.imported_counts.mcp_servers, 1);
+    assert_eq!(second, first);
+    let timezone: String = query("SELECT timezone FROM routines WHERE id = 'companion-routine'")
+        .fetch_one(&destination)
+        .await
+        .expect("imported routine")
+        .get("timezone");
+    assert_eq!(timezone, "America/New_York");
+    assert!(!source_path.exists());
+}
+
+#[tokio::test]
+async fn legacy_script_routine_is_copied_and_disabled_until_review() {
+    let destination = memory_database().await;
+    let directory = tempfile::tempdir().expect("temporary migration directory");
+    let legacy_home = directory.path().join("legacy-home");
+    let script_path = legacy_home.join("scripts").join("nightly.sh");
+    std::fs::create_dir_all(script_path.parent().expect("script parent"))
+        .expect("legacy script directory");
+    std::fs::write(&script_path, "#!/bin/sh\necho preserved-output\n").expect("legacy script");
+    std::fs::create_dir_all(legacy_home.join("cron")).expect("legacy cron directory");
+    let jobs = serde_json::json!([{
+        "id": "scripted-routine",
+        "name": "Nightly cleanup",
+        "prompt": "Run cleanup.",
+        "schedule": {"kind": "cron", "expr": "0 2 * * *", "timezone": "America/New_York"},
+        "enabled": true,
+        "state": "scheduled",
+        "script": script_path.to_string_lossy(),
+        "no_agent": true,
+        "last_error": "legacy failure detail"
+    }]);
+    std::fs::write(legacy_home.join("cron").join("jobs.json"), jobs.to_string())
+        .expect("legacy routine");
+    let storage_root = directory.path().join("june-owned-storage");
+    let options = LegacyImportOptions {
+        hermes_state_db: legacy_home.join("state.db"),
+        hermes_home: Some(legacy_home.clone()),
+        artifact_root: Some(storage_root.clone()),
+    };
+
+    let first = import_legacy_agent_state(&destination, &options)
+        .await
+        .expect("script routine import");
+    assert_eq!(first.imported_counts.routines, 1);
+    assert!(legacy_import_completed(&destination)
+        .await
+        .expect("completed manifest"));
+    let row = query(
+        "SELECT state, enabled, next_run_at, safety_mode, timezone, last_error, metadata_json
+         FROM routines WHERE id = 'scripted-routine'",
+    )
+    .fetch_one(&destination)
+    .await
+    .expect("imported script routine");
+    assert_eq!(row.get::<String, _>("state"), "needs_review");
+    assert_eq!(row.get::<i64, _>("enabled"), 0);
+    assert!(row.get::<Option<String>, _>("next_run_at").is_none());
+    assert_eq!(row.get::<String, _>("safety_mode"), "sandboxed");
+    assert_eq!(row.get::<String, _>("timezone"), "America/New_York");
+    assert!(row
+        .get::<String, _>("last_error")
+        .contains("require review"));
+    let metadata: serde_json::Value =
+        serde_json::from_str(&row.get::<String, _>("metadata_json")).expect("routine metadata");
+    assert_eq!(
+        metadata["legacyScript"],
+        serde_json::Value::String(script_path.to_string_lossy().into_owned())
+    );
+    assert_eq!(metadata["legacyScriptExecution"], "needs_review");
+    assert_eq!(metadata["legacyNoAgent"], true);
+    assert_eq!(metadata["legacyLastError"], "legacy failure detail");
+    let copied_path = metadata["legacyScriptStoredPath"]
+        .as_str()
+        .map(std::path::PathBuf::from)
+        .expect("June-owned script copy");
+    assert!(copied_path.starts_with(&storage_root));
+    assert_eq!(
+        std::fs::read_to_string(&copied_path).expect("copied script contents"),
+        "#!/bin/sh\necho preserved-output\n"
+    );
+
+    // A completed manifest is checked before any legacy-home filesystem work.
+    // Removing the old home therefore cannot erase the imported source or make
+    // a later app launch depend on the retired runtime.
+    std::fs::remove_dir_all(&legacy_home).expect("remove retired home");
+    let second = import_legacy_agent_state(&destination, &options)
+        .await
+        .expect("completed import uses June manifest only");
+    assert_eq!(second, first);
+    assert!(copied_path.is_file());
 }

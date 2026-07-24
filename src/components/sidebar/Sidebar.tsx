@@ -29,6 +29,7 @@ import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconShortcut } from "central-icons/IconShortcut";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconUnpin } from "central-icons/IconUnpin";
+import { IconZap } from "central-icons/IconZap";
 import {
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1159,6 +1160,18 @@ export function Sidebar({
                 <IconMicrophone size={16} />
               </span>
               <span className="sidebar-nav-label">Dictation</span>
+            </button>
+            <button
+              type="button"
+              className="sidebar-nav-item"
+              data-active={activeView === "routines"}
+              aria-current={activeView === "routines" ? "page" : undefined}
+              onClick={() => onChangeView("routines")}
+            >
+              <span className="sidebar-nav-icon">
+                <IconZap size={16} />
+              </span>
+              <span className="sidebar-nav-label">Routines</span>
             </button>
           </nav>
 

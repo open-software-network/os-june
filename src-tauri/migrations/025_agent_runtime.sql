@@ -161,8 +161,16 @@ FROM (
            'toolName', e.tool_name,
            'status', e.status,
            'summary', e.summary,
-           'arguments', CASE WHEN json_valid(e.arguments_json) THEN json(e.arguments_json) ELSE e.arguments_json END,
-           'result', CASE WHEN json_valid(e.result_json) THEN json(e.result_json) ELSE e.result_json END,
+           'arguments', CASE
+             WHEN e.redacted = 1 THEN NULL
+             WHEN json_valid(e.arguments_json) THEN json(e.arguments_json)
+             ELSE e.arguments_json
+           END,
+           'result', CASE
+             WHEN e.redacted = 1 THEN NULL
+             WHEN json_valid(e.result_json) THEN json(e.result_json)
+             ELSE e.result_json
+           END,
            'redacted', CASE WHEN e.redacted = 1 THEN json('true') ELSE json('false') END,
            'completedAt', e.completed_at
          ) AS payload_json,
