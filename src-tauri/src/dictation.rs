@@ -79,6 +79,13 @@ const DICTATION_EVENT_LOG: &str = "dictation-events.log";
 
 static SETTINGS_CACHE: OnceLock<Mutex<DictationSettings>> = OnceLock::new();
 
+/// True from the moment a dictation take starts until it ends, HOWEVER it ends.
+/// Mirrors the frontend's `nextDictationWorkflowActive` (see
+/// `indicator_action_for_event`) so the native menu-bar indicator stays correct
+/// with no webview attached. Read only via the compare-and-swap in
+/// `sync_dictation_indicator`.
+static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 pub struct HelperProcess {
     child: Child,
     stdin: ChildStdin,
@@ -5319,6 +5326,7 @@ fn emit_dictation_event_value(app: &AppHandle, mut event: serde_json::Value) {
     annotate_silent_error(&mut event);
     let event_type = event.get("type").and_then(serde_json::Value::as_str);
     sync_capture_mic_duck(event_type);
+    sync_dictation_indicator(app, event_type);
     append_dictation_event_log(app, event_type, &event);
     let line = event.to_string();
     update_latest_event(app, event_type, Some(line.clone()));
@@ -5356,6 +5364,55 @@ fn mic_duck_action_for_event(event_type: Option<&str>) -> Option<bool> {
             | "finalizing_transcript"
             | "final_transcript"
             | "paste_completed"
+            | "error"
+            | "helper_unavailable"
+            | "shutdown_ack",
+        ) => Some(false),
+        _ => None,
+    }
+}
+
+/// Pushes the menu-bar dictation indicator to match the current take, but only
+/// on an actual edge. `audio_level` fires continuously while listening and is in
+/// the "active" set, so without the compare-and-swap every audio frame would
+/// marshal a blocking tray update to the main thread (the same reason
+/// `mic_duck_action_for_event` returns `None` for `audio_level`).
+fn sync_dictation_indicator(app: &AppHandle, event_type: Option<&str>) {
+    let Some(active) = indicator_action_for_event(event_type) else {
+        return;
+    };
+    if DICTATION_ACTIVE.swap(active, Ordering::SeqCst) == active {
+        return;
+    }
+    crate::menu_bar::set_dictation_active(app, active);
+}
+
+/// Maps a helper event to "a dictation take is in flight": `Some(true)` while a
+/// take is running, `Some(false)` the moment it ends (however it ends),
+/// `None` to leave the indicator untouched.
+///
+/// This MUST stay in step with `DICTATION_ACTIVE_EVENTS` /
+/// `DICTATION_FINISHED_EVENTS` in `src/lib/dictation-events.ts` — the menu bar
+/// (this fn) and the in-app state (that file) read the same event stream, so if
+/// they classify differently the native indicator and the webview disagree.
+/// Deliberately does NOT reuse `dictation_event_visibility`: that classifier
+/// tracks HUD visibility and would miss the start (`recording_ready`), miss the
+/// abort (`recording_discarded`), and leave the indicator on after
+/// `final_transcript`.
+fn indicator_action_for_event(event_type: Option<&str>) -> Option<bool> {
+    match event_type {
+        Some(
+            "recording_ready"
+            | "listening_started"
+            | "audio_level"
+            | "finalizing_transcript"
+            | "paste_target",
+        ) => Some(true),
+        Some(
+            "recording_discarded"
+            | "final_transcript"
+            | "paste_completed"
+            | "agent_session_prompt"
             | "error"
             | "helper_unavailable"
             | "shutdown_ack",
@@ -6198,6 +6255,52 @@ mod tests {
     fn mic_duck_ignores_unrelated_events() {
         assert_eq!(mic_duck_action_for_event(Some("permission_status")), None);
         assert_eq!(mic_duck_action_for_event(None), None);
+    }
+
+    #[test]
+    fn indicator_turns_on_for_every_active_phase() {
+        // Must match DICTATION_ACTIVE_EVENTS in src/lib/dictation-events.ts.
+        for event in [
+            "recording_ready",
+            "listening_started",
+            "audio_level",
+            "finalizing_transcript",
+            "paste_target",
+        ] {
+            assert_eq!(
+                indicator_action_for_event(Some(event)),
+                Some(true),
+                "{event} should light the menu-bar indicator"
+            );
+        }
+    }
+
+    #[test]
+    fn indicator_clears_on_every_way_a_take_can_end() {
+        // Must match DICTATION_FINISHED_EVENTS in src/lib/dictation-events.ts.
+        // Success, discard, and each failure/terminal path all clear the menu
+        // bar — a stuck indicator claims June is listening when it is not.
+        for event in [
+            "recording_discarded",
+            "final_transcript",
+            "paste_completed",
+            "agent_session_prompt",
+            "error",
+            "helper_unavailable",
+            "shutdown_ack",
+        ] {
+            assert_eq!(
+                indicator_action_for_event(Some(event)),
+                Some(false),
+                "{event} should clear the menu-bar indicator"
+            );
+        }
+    }
+
+    #[test]
+    fn indicator_ignores_unrelated_events() {
+        assert_eq!(indicator_action_for_event(Some("permission_status")), None);
+        assert_eq!(indicator_action_for_event(None), None);
     }
 
     fn test_policy() -> RespawnPolicy {
