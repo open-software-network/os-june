@@ -2830,22 +2830,26 @@ impl Repositories {
         edited_content: Option<String>,
         active_tab: Option<String>,
     ) -> Result<NotePatchDto, sqlx::error::Error> {
-        let row = query(
-            "UPDATE notes
-             SET title = COALESCE(?, title),
-                 edited_content = COALESCE(?, edited_content),
-                 active_tab = COALESCE(?, active_tab, 'notes'),
-                 updated_at = ?
-             WHERE id = ?
-             RETURNING id, title, generated_content, edited_content, active_tab, updated_at",
-        )
-        .bind(title)
-        .bind(edited_content)
-        .bind(active_tab)
-        .bind(timestamp())
-        .bind(note_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let mut update = QueryBuilder::<Sqlite>::new("UPDATE notes SET ");
+        // An omitted title is a patch omission, not a request to rewrite the
+        // caller's snapshot. Leave the column out so a delayed content
+        // autosave cannot clobber a title committed by note generation.
+        if let Some(title) = title {
+            update.push("title = ").push_bind(title).push(", ");
+        }
+        update
+            .push("edited_content = COALESCE(")
+            .push_bind(edited_content)
+            .push(", edited_content), active_tab = COALESCE(")
+            .push_bind(active_tab)
+            .push(", active_tab, 'notes'), updated_at = ")
+            .push_bind(timestamp())
+            .push(" WHERE id = ")
+            .push_bind(note_id)
+            .push(
+                " RETURNING id, title, generated_content, edited_content, active_tab, updated_at",
+            );
+        let row = update.build().fetch_one(&self.pool).await?;
         let title: String = row.get("title");
         let edited_content = row.try_get::<Option<String>, _>("edited_content")?;
         let generated_content = row.try_get::<Option<String>, _>("generated_content")?;

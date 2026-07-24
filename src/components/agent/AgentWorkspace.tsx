@@ -34,6 +34,7 @@ import {
   createHermesMethods,
   hermesModeFor,
   type JuneHermesEvent,
+  type HermesRequestLike,
 } from "../../lib/hermes-control-plane";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -53,11 +54,11 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { type ComposerEditorHandle, stripPlaceholder } from "./composer/ComposerEditor";
-import { type NoteReferenceInput } from "./composer/noteReference";
+import type { NoteReferenceInput } from "./composer/noteReference";
 import { sessionUnrestricted } from "../../lib/agent-session-modes";
-import { type AgentChatPart, type AgentChatTurn } from "../../lib/agent-chat-runtime";
+import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { ProjectContextSignatureStore } from "../../lib/agent-project-context";
-import { type AgentChatGallerySection } from "../../lib/agent-chat-gallery";
+import type { AgentChatGallerySection } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
 import { useAgentGalleryEvents } from "./use-agent-gallery-events";
@@ -111,6 +112,7 @@ import { createImageSlashActions } from "./image-slash-actions";
 import { createSubmitHermesSession } from "./session-submission";
 import type { SubmitHermesSession } from "./session-submission-types";
 import { createSubmitComposer } from "./composer/submit-composer";
+import { ARTIFACT_INDEX_RECONCILE_INTERVAL_MS, createAgentArtifactIndex } from "./artifact-index";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 export { SkillsToolsPanel } from "./management/SkillsToolsPanel";
 export {
@@ -184,7 +186,7 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-import { type AgentWorkspaceError } from "./agent-workspace-errors";
+import type { AgentWorkspaceError } from "./agent-workspace-errors";
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 import {
@@ -194,7 +196,7 @@ import {
   storedVideoSlashTurns,
   videoSlashTurnsBySessionFromStored,
 } from "./composer/media-slash-persistence";
-import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
+import type { CapturedSessionModelTarget } from "./composer/follow-up-queue";
 
 import {
   persistedReviewableIssueReports,
@@ -418,8 +420,9 @@ export function AgentWorkspace({
   // the model's session history, so a follow-up ("do you think it's nice?")
   // reaches an empty context. Hold each generated image here, keyed by session,
   // and lazily attach it to the user's NEXT prompt via the same
-  // `image.attach_bytes` path composer attachments use — so the image lands in
-  // context exactly when the model first needs it. A ref (not state) on purpose:
+  // native path snapshot composer attachments use, with `image.attach_bytes`
+  // retained for callers that do not have a gateway-local path. The image lands
+  // in context exactly when the model first needs it. A ref (not state) on purpose:
   // it must NOT render a composer chip (the image already shows in-thread; ADR
   // 0003 decision 2). Cleared once attached.
   const {
@@ -528,9 +531,6 @@ export function AgentWorkspace({
     setSelectedMessagingPlatformId,
     messagingEnvEdits,
     setMessagingEnvEdits,
-    filesystemSnapshot,
-    setFilesystemSnapshot,
-    setFilesystemLoading,
     artifactPanel,
     setArtifactPanel,
     usagePanelSessionId,
@@ -565,6 +565,7 @@ export function AgentWorkspace({
     continuity,
     selectedHermesSessionId,
   });
+  const artifactIndex = useMemo(() => createAgentArtifactIndex(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -877,12 +878,12 @@ export function AgentWorkspace({
     chatArtifacts,
   } = useAgentSelection({
     attachments,
+    artifactIndex,
     category,
     composerSizeWarning,
     creditActionsDisabledReason,
     defaultGenerationModelId,
     draft,
-    filesystemSnapshot,
     generationCostQuality,
     generationModels,
     hermesSessionItems,
@@ -1095,7 +1096,9 @@ export function AgentWorkspace({
       void (async () => {
         const imported: AgentArtifact[] = [];
         for (const sample of buildSampleArtifactFiles()) {
-          imported.push(await importHermesBridgeFileBytes(sample.name, sample.bytes));
+          const file = await importHermesBridgeFileBytes(sample.name, sample.bytes);
+          artifactIndex.upsertImportedFile(file);
+          imported.push(file);
         }
         setDevArtifacts(imported);
         setArtifactPanel({ view: "list" });
@@ -1103,7 +1106,7 @@ export function AgentWorkspace({
     };
     window.addEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
     return () => window.removeEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
-  }, []);
+  }, [artifactIndex]);
 
   let stopHermesSessionImplementation: ReturnType<
     typeof createTaskControlActions
@@ -1679,12 +1682,11 @@ export function AgentWorkspace({
     if (!bridge.running || !hermesSessionsHydrated || !selectedHermesSessionId) return;
     if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     void loadFilesystemSnapshot();
-  }, [
-    bridge.running,
-    hermesSessionsHydrated,
-    selectedHermesSessionId,
-    selectedHermesMessages.length,
-  ]);
+    const reconcileInterval = window.setInterval(() => {
+      void loadFilesystemSnapshot();
+    }, ARTIFACT_INDEX_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(reconcileInterval);
+  }, [bridge.running, hermesSessionsHydrated, selectedHermesSessionId]);
 
   useTaskHydration({
     hydratedTaskIdsRef,
@@ -1793,12 +1795,11 @@ export function AgentWorkspace({
 
   const { loadSkillCommands, loadCapabilities, loadMessagingPlatforms, loadFilesystemSnapshot } =
     createManagementLoaders({
+      artifactIndex,
       ensureHermesGateway,
       selectedHermesSessionIdRef,
       setCapabilityLoading,
       setError,
-      setFilesystemLoading,
-      setFilesystemSnapshot,
       setMessagingPlatforms,
       setSelectedMessagingPlatformId,
       setSkillCommandLoading,
@@ -1822,7 +1823,7 @@ export function AgentWorkspace({
     creditActionsDisabledReason,
     imageSafeModeConsentRequestRef,
     imageSlashBaseTurnId,
-    loadFilesystemSnapshot,
+    recordImportedArtifact: artifactIndex.upsertImportedFile,
     newSessionModeRef,
     pendingFastPathImagesRef,
     setError,
@@ -1930,6 +1931,7 @@ export function AgentWorkspace({
     sessionId: string,
     level: ThinkingLevel,
     explicitRuntimeSessionId?: string,
+    requestClient?: HermesRequestLike,
   ) {
     const effort = thinkingEffortForLevel(level);
     const runtimeSessionId = explicitRuntimeSessionId ?? runtimeSessionIdsRef.current[sessionId];
@@ -1939,7 +1941,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      const gateway = requestClient ?? (await ensureHermesGateway(sessionUnrestricted(sessionId)));
       await createHermesMethods(gateway).setSessionReasoningEffort({
         sessionId: runtimeSessionId,
         effort,
@@ -1994,7 +1996,7 @@ export function AgentWorkspace({
     clearComposerCommandDraft,
     composerDispatchWasInvalidated,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordFilesystemArtifact: artifactIndex.upsert,
     newSessionModeRef,
     requestImageSafeModeConsent,
     setError,
@@ -2169,7 +2171,7 @@ export function AgentWorkspace({
     agentAttachmentFromImportedFile,
     composerEditorRef,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordImportedArtifact: artifactIndex.upsertImportedFile,
     setComposerAttachments,
     setError,
     setImportingFiles,
@@ -2224,12 +2226,13 @@ export function AgentWorkspace({
     });
 
   /**
-   * Attach this turn's pending images to the live session via image.attach_bytes
-   * (feature 19), updating each chip's status and feeding the artifact timeline.
-   * The base64 is read on demand from the workspace file, passed straight to
-   * the typed attachImage, and discarded; it never lands on composer state and
-   * the trace entry is redacted to a byte count. Throws a single blocking error
-   * if any image failed so the prompt is not sent with a missing image.
+   * Attach this turn's pending images to the live session via a Rust-validated
+   * workspace snapshot and `image.attach` (feature 19), updating each chip's
+   * status and feeding the artifact timeline. Image bytes do not cross the JS
+   * bridge or Hermes WebSocket on this path; `image.attach_bytes` remains the
+   * additive fallback for callers without a local path. Throws a single
+   * blocking error if any image failed so the prompt is not sent with a missing
+   * image.
    */
   const { attachPendingImages, clearHeldFastPathImages } = createPendingImageActions({
     pendingFastPathImagesRef,
@@ -2293,6 +2296,9 @@ export function AgentWorkspace({
     clearSubmittedSteers,
     continueAfterCompletedAgentRun,
     liveEventsRef,
+    onArtifactFilesystemChange: (event) => {
+      if (artifactIndex.recordToolEvent(event)) void loadFilesystemSnapshot();
+    },
     pendingSteerBySessionIdRef,
     promotePendingIssueReportToReview,
     recordHermesActivityAndDeriveStatus,
@@ -2373,6 +2379,7 @@ export function AgentWorkspace({
     recordHermesActivityAndDeriveStatus,
     refreshHermesSession,
     selectedHermesSessionIdRef,
+    sessionGatewayUnlistenRef,
     setBridge,
     setBridgeStarting,
     setError,
@@ -2698,6 +2705,7 @@ export function AgentWorkspace({
     openTimelineArtifact,
   } = useAgentChatPresentation({
     DOWNLOAD_TOAST_ID,
+    artifactIndex,
     chatArtifacts,
     devArtifacts,
     imageTurnsBySession,
@@ -3194,7 +3202,7 @@ export {
   branchSourceSessionIdForTurn,
   turnIsConcreteResponse,
 } from "./chat-turns/BranchAndSensitiveActions";
-import { type AgentArtifact } from "./chat-turns/AgentArtifactPanel";
+import type { AgentArtifact } from "./chat-turns/AgentArtifactPanel";
 export { generatedImagePathAliases } from "./composer/composer-input-helpers";
 import {
   agentActivityCountsFromStore,

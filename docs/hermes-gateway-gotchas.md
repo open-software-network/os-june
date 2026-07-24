@@ -28,6 +28,19 @@ to "reconnect" existing clients.
 with `launchctl bootout gui/$UID/ai.hermes.gateway`. June re-registers it on
 next launch.
 
+**The pinned chat gateway has no application ping.** Its JSON-RPC registry
+does not expose ping, pong, or tick, and WKWebView's browser `WebSocket` cannot
+send protocol-level ping frames. June therefore treats the existing
+`session.active_list` cycle as its liveness signal. Three consecutive request
+timeouts force-disconnect all clients for that runtime mode so the ordinary
+close/reconnect recovery path runs. Do not add a second always-on heartbeat
+request. When no working session owns that cycle, a new submit sends one
+read-only `session.active_list` preflight with a three-second liveness
+deadline. Its timeout force-disconnects the mode and retries only the safe
+preflight once. The real submit requests keep their normal deadlines and are
+never transport-retried; this is submit-scoped recovery, not a second composer
+submission or a change to the heartbeat counters.
+
 **App teardown is ordered and bounded.** Ordinary quit enters the idempotent
 shutdown coordinator from `RunEvent::ExitRequested`; update relaunch enters the
 same coordinator from its command. Cleanup runs off the main event loop and

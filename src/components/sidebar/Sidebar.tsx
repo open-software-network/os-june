@@ -1601,7 +1601,7 @@ function SidebarRecordingIndicator({
       title="Open recording"
     >
       <span className="sidebar-recording-dot" aria-hidden />
-      <Waveform level={meterLevel} active={recording} />
+      <Waveform level={meterLevel} sessionId={status.sessionId} active={recording} />
     </button>
   );
 }

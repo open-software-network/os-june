@@ -44,6 +44,12 @@ import { unsupportedEventStore } from "../lib/hermes-unsupported-events";
 import { readSessionModelSelections } from "../lib/hermes-session-model-selection";
 import { reserveHermesSessionDispatch } from "../lib/hermes-session-dispatch-mutex";
 import { resetHermesActiveSessionSnapshotsForTests } from "../lib/hermes-active-session-snapshots";
+import {
+  HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+  resetHermesIdleSubmitRecoveryForTests,
+} from "../lib/hermes-idle-submit-recovery";
+import { writeAgentSessionContinuity } from "../components/agent/agent-session-continuity";
+import { ARTIFACT_INDEX_RECONCILE_INTERVAL_MS } from "../components/agent/artifact-index";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
 const HERO_GREETING = new RegExp(
@@ -97,6 +103,7 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
   hermesBridgeImageDataUrl: vi.fn(),
+  prepareHermesBridgeImageAttachment: vi.fn(),
   hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
   hermesBridgeSkills: vi.fn(),
@@ -140,6 +147,8 @@ const mocks = vi.hoisted(() => ({
   listHermesSessions: vi.fn(),
   listSessionProfiles: vi.fn(),
   gatewayRequest: vi.fn(),
+  gatewayRequestTimeouts: [] as Array<{ method: string; timeoutMs: number | undefined }>,
+  forceDisconnectGatewayClients: vi.fn(),
   markAgentRunSucceeded: vi.fn(),
   releaseAgentRunSettlement: vi.fn(),
   startAgentRunMonitoring: vi.fn(),
@@ -198,6 +207,7 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
   hermesBridgeImageDataUrl: mocks.hermesBridgeImageDataUrl,
+  prepareHermesBridgeImageAttachment: mocks.prepareHermesBridgeImageAttachment,
   hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesAgentCliAccess: mocks.hermesAgentCliAccess,
@@ -266,45 +276,50 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
   titleFromPrompt: mocks.titleFromPrompt,
 }));
 
-vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
-  // Real HermesGatewayError / isSessionBusyError — only the client is faked.
-  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
-  HermesGatewayClient: class {
-    constructor() {
-      mocks.gatewayInstances.push(this as unknown as (typeof mocks.gatewayInstances)[number]);
-    }
-    connect = vi.fn();
-    close = vi.fn();
-    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
-      mocks.gatewayEventHandlers.add(handler);
-      return () => mocks.gatewayEventHandlers.delete(handler);
-    });
-    onClose = vi.fn((handler: () => void) => {
-      mocks.gatewayCloseHandlers.add(handler);
-      return () => mocks.gatewayCloseHandlers.delete(handler);
-    });
-    request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
-      const response = mocks.gatewayRequest(method, params) as Promise<T>;
-      if (timeoutMs === undefined) return response;
-      return new Promise<T>((resolve, reject) => {
-        const timer = window.setTimeout(
-          () => reject(new Error(`Hermes request timed out: ${method}`)),
-          timeoutMs,
-        );
-        void Promise.resolve(response).then(
-          (value) => {
-            window.clearTimeout(timer);
-            resolve(value);
-          },
-          (error) => {
-            window.clearTimeout(timer);
-            reject(error);
-          },
-        );
+vi.mock("../lib/hermes-gateway", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/hermes-gateway")>();
+  return {
+    // Real error types and helpers — only the client and mode invalidation are faked.
+    ...original,
+    forceDisconnectHermesGatewayClients: mocks.forceDisconnectGatewayClients,
+    HermesGatewayClient: class {
+      constructor() {
+        mocks.gatewayInstances.push(this as unknown as (typeof mocks.gatewayInstances)[number]);
+      }
+      connect = vi.fn();
+      close = vi.fn();
+      onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+        mocks.gatewayEventHandlers.add(handler);
+        return () => mocks.gatewayEventHandlers.delete(handler);
       });
-    }
-  },
-}));
+      onClose = vi.fn((handler: () => void) => {
+        mocks.gatewayCloseHandlers.add(handler);
+        return () => mocks.gatewayCloseHandlers.delete(handler);
+      });
+      request<T>(method: string, params: Record<string, unknown>, timeoutMs?: number) {
+        mocks.gatewayRequestTimeouts.push({ method, timeoutMs });
+        const response = mocks.gatewayRequest(method, params) as Promise<T>;
+        if (timeoutMs === undefined) return response;
+        return new Promise<T>((resolve, reject) => {
+          const timer = window.setTimeout(
+            () => reject(new original.HermesGatewayRequestTimeoutError(method)),
+            timeoutMs,
+          );
+          void Promise.resolve(response).then(
+            (value) => {
+              window.clearTimeout(timer);
+              resolve(value);
+            },
+            (error) => {
+              window.clearTimeout(timer);
+              reject(error);
+            },
+          );
+        });
+      }
+    },
+  };
+});
 
 const existingTask = {
   id: "task-1",
@@ -595,7 +610,12 @@ describe("AgentWorkspace", () => {
     mocks.gatewayEventHandlers.clear();
     mocks.gatewayCloseHandlers.clear();
     mocks.gatewayInstances.length = 0;
+    mocks.gatewayRequestTimeouts.length = 0;
+    mocks.forceDisconnectGatewayClients.mockImplementation(() => {
+      for (const handler of [...mocks.gatewayCloseHandlers]) handler();
+    });
     resetHermesActiveSessionSnapshotsForTests();
+    resetHermesIdleSubmitRecoveryForTests();
     // Auto-cleanup unmounts the workspace after each test, which snapshots
     // any still-working session for the next mount — across tests that would
     // leak one test's mid-run session into the next.
@@ -722,10 +742,16 @@ describe("AgentWorkspace", () => {
     mocks.hermesBridgeFilePreview.mockImplementation(async (path: string) =>
       /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
     );
-    // Feature 19's structured image attach reads full image bytes through the
-    // image-source capped command at attach time.
+    // Additive byte fallback for callers without a gateway-local path.
     mocks.hermesBridgeImageDataUrl.mockImplementation(async (path: string) =>
       /\.(png|jpe?g|gif|webp|tiff?)$/i.test(path) ? "data:image/png;base64,cHJldmlldw==" : null,
+    );
+    mocks.prepareHermesBridgeImageAttachment.mockImplementation(
+      async (_sessionId: string, path: string) => ({
+        path: path.replace("/workspace/uploads/", "/workspace/session-attachments/test/"),
+        mimeType: "image/png",
+        size: 1234,
+      }),
     );
     mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
@@ -2471,9 +2497,9 @@ describe("AgentWorkspace", () => {
     await user.type(composer, "use this reference next");
     await user.click(screen.getByRole("button", { name: "Queue next message" }));
 
-    expect(
-      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+      false,
+    );
     act(() => {
       for (const handler of mocks.gatewayEventHandlers) {
         handler({
@@ -2485,9 +2511,9 @@ describe("AgentWorkspace", () => {
     });
 
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+        true,
+      ),
     );
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -2496,9 +2522,7 @@ describe("AgentWorkspace", () => {
       }),
     );
     const methods = mocks.gatewayRequest.mock.calls.map(([method]) => method);
-    expect(methods.indexOf("image.attach_bytes")).toBeLessThan(
-      methods.lastIndexOf("prompt.submit"),
-    );
+    expect(methods.indexOf("image.attach")).toBeLessThan(methods.lastIndexOf("prompt.submit"));
   });
 
   it("retains a failed queued attachment delivery for retry", async () => {
@@ -2671,7 +2695,7 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
-      if (method === "image.attach_bytes") {
+      if (method === "image.attach") {
         return Promise.resolve({ attachment_id: "attached-image-1" });
       }
       if (method === "prompt.submit" && params?.text?.includes("use this reference next")) {
@@ -8286,6 +8310,147 @@ describe("AgentWorkspace", () => {
     expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
   });
 
+  it("recovers an idle preflight stall without duplicating a new session or prompt", async () => {
+    let activeListCalls = 0;
+    let preflightCallsAtCreate = 0;
+    let preflightCallsAtSubmit = 0;
+    let createCalls = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        if (activeListCalls === 1) return new Promise(() => undefined);
+        return Promise.resolve({ sessions: [] });
+      }
+      if (method === "session.create") {
+        preflightCallsAtCreate = mocks.gatewayRequestTimeouts.filter(
+          (request) =>
+            request.method === "session.active_list" &&
+            request.timeoutMs === HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+        ).length;
+        createCalls += 1;
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
+      if (method === "prompt.submit") {
+        preflightCallsAtSubmit = mocks.gatewayRequestTimeouts.filter(
+          (request) =>
+            request.method === "session.active_list" &&
+            request.timeoutMs === HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+        ).length;
+      }
+      return Promise.resolve({});
+    });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "recover the idle submit" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const startedAt = Date.now();
+      render(<AgentWorkspace />);
+      await settleUnderFakeTimers(() => expect(activeListCalls).toBe(1), { maxMs: 1_000 });
+
+      // The read-only preflight hangs without a WebSocket close. Its
+      // submit-scoped deadline forces the existing mode disconnect and retries
+      // only that safe request.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      });
+      await settleUnderFakeTimers(
+        () =>
+          expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+            session_id: "runtime-session-2",
+            text: "recover the idle submit",
+          }),
+        { maxMs: 2_000 },
+      );
+
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
+      expect(preflightCallsAtCreate).toBe(2);
+      expect(preflightCallsAtSubmit).toBe(2);
+      expect(createCalls).toBe(1);
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toHaveLength(1);
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledTimes(1);
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledWith(false);
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1);
+      expect(window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("submits exactly once after recovering an idle stall with a cached runtime id", async () => {
+    let activeListCalls = 0;
+    let preflightCallsAtSubmit = 0;
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.active_list") {
+        activeListCalls += 1;
+        if (activeListCalls === 1) return new Promise(() => undefined);
+        return Promise.resolve({ sessions: [] });
+      }
+      if (method === "prompt.submit") {
+        preflightCallsAtSubmit = mocks.gatewayRequestTimeouts.filter(
+          (request) =>
+            request.method === "session.active_list" &&
+            request.timeoutMs === HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+        ).length;
+      }
+      return Promise.resolve({});
+    });
+    writeAgentSessionContinuity({
+      sessionItems: [existingSession],
+      pendingMessages: {},
+      runtimeSessionIds: { "session-1": "runtime-session-1" },
+      liveEvents: {},
+      titleOverrides: {},
+      titleSources: {},
+      pendingIssueReports: {},
+      reviewableIssueReports: {},
+      diagnosisRefreshIssueReportSessionIds: [],
+      submittingIssueReportSessionIds: [],
+      queuedAttachmentFollowUps: {},
+    });
+
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+    await user.type(
+      await screen.findByRole("textbox", { name: "Message June" }),
+      "recover the cached runtime",
+    );
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+      await settleUnderFakeTimers(() => expect(activeListCalls).toBe(1), { maxMs: 1_000 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      });
+      await settleUnderFakeTimers(
+        () =>
+          expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+            session_id: "runtime-session-1",
+            text: "recover the cached runtime",
+          }),
+        { maxMs: 2_000 },
+      );
+
+      expect(preflightCallsAtSubmit).toBe(2);
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledTimes(1);
+      expect(
+        mocks.gatewayRequest.mock.calls.filter(([method]) => method === "prompt.submit"),
+      ).toHaveLength(1);
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
+      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.resume", expect.anything());
+      expect(mocks.startAgentRunMonitoring).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("narrows an explicit Computer use agent run to the app-owned toolset", async () => {
     window.sessionStorage.setItem(
       AGENT_NEW_SESSION_PENDING_KEY,
@@ -9785,20 +9950,46 @@ describe("AgentWorkspace", () => {
       timestamp: new Date().toISOString(),
     };
     let replyPersisted = false;
+    let activeListStalled = false;
     mocks.listHermesSessionMessages.mockImplementation(async () =>
       replyPersisted ? [...userOnly, reply] : userOnly,
     );
     mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.create") {
+        return Promise.resolve({
+          session_id: "runtime-session-2",
+          stored_session_id: "session-2",
+        });
+      }
       if (method === "session.active_list") {
+        if (!activeListStalled) return Promise.resolve({ sessions: [] });
         return new Promise(() => undefined);
+      }
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-recovered" });
+      }
+      if (method === "prompt.submit") {
+        activeListStalled = true;
       }
       return Promise.resolve({});
     });
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "finish after wake" }),
+    );
 
     vi.useFakeTimers();
     try {
       render(<AgentWorkspace />);
-      await settleUnderFakeTimers(() => expect(screen.getByText("Thinking…")).toBeInTheDocument());
+      await settleUnderFakeTimers(
+        () => {
+          expect(mocks.computerUseBeginRun).toHaveBeenCalled();
+          expect(screen.getByText("Thinking…")).toBeInTheDocument();
+        },
+        { maxMs: 2_000 },
+      );
+      const computerUseRunLeaseId = mocks.computerUseBeginRun.mock.calls.at(-1)?.[0];
+      expect(computerUseRunLeaseId).toMatch(/^session-2:/);
       const historyCallsBeforeStallRecovery = mocks.listHermesSessionMessages.mock.calls.length;
 
       // No gateway close is emitted. The socket stays logically OPEN while
@@ -9808,6 +9999,12 @@ describe("AgentWorkspace", () => {
         await vi.advanceTimersByTimeAsync(3_000);
       });
 
+      expect(mocks.forceDisconnectGatewayClients).toHaveBeenCalledWith(false);
+      expect(mocks.computerUseEndRun).toHaveBeenCalledWith(computerUseRunLeaseId);
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.resume", {
+        session_id: "session-2",
+        cols: 96,
+      });
       expect(mocks.listHermesSessionMessages.mock.calls.length).toBeGreaterThan(
         historyCallsBeforeStallRecovery,
       );
@@ -9825,7 +10022,7 @@ describe("AgentWorkspace", () => {
       );
       expect(screen.getByText("Recovered from native history.")).toBeInTheDocument();
       expect(screen.queryByText("Thinking…")).toBeNull();
-      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-1");
+      expect(mocks.markAgentRunSucceeded).toHaveBeenCalledWith("session-2");
     } finally {
       vi.useRealTimers();
     }
@@ -11253,6 +11450,98 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("keeps ordinary message growth on the artifact index and refreshes after a file write", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace";
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await waitFor(() => expect(mocks.hermesBridgeFilesystemSnapshot).toHaveBeenCalledTimes(1));
+    mocks.hermesBridgeFilesystemSnapshot.mockClear();
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Create a report");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Create a report",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-1",
+          payload: { delta: "Working on it." },
+        });
+      }
+    });
+    await act(async () => Promise.resolve());
+    expect(mocks.hermesBridgeFilesystemSnapshot).not.toHaveBeenCalled();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.complete",
+          session_id: "runtime-session-1",
+          payload: {
+            tool_id: "tool-1",
+            tool_name: "write_file",
+            path: `${workspaceRoot}/report.md`,
+          },
+        });
+      }
+    });
+    await waitFor(() => expect(mocks.hermesBridgeFilesystemSnapshot).toHaveBeenCalledTimes(1));
+  });
+
+  it("reconciles the artifact index every 15 seconds and clears the interval on unmount", async () => {
+    vi.useFakeTimers();
+    const setInterval = vi.spyOn(window, "setInterval");
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    let view: ReturnType<typeof render> | undefined;
+    try {
+      view = render(<AgentWorkspace initialSession={existingSession} />);
+      await settleUnderFakeTimers(() =>
+        expect(mocks.hermesBridgeFilesystemSnapshot).toHaveBeenCalledTimes(1),
+      );
+      const artifactIntervalIndex = setInterval.mock.calls.findIndex(
+        ([, delay]) => delay === ARTIFACT_INDEX_RECONCILE_INTERVAL_MS,
+      );
+      expect(artifactIntervalIndex).toBeGreaterThanOrEqual(0);
+      const artifactInterval = setInterval.mock.results[artifactIntervalIndex]?.value;
+      mocks.hermesBridgeFilesystemSnapshot.mockClear();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ARTIFACT_INDEX_RECONCILE_INTERVAL_MS - 1);
+      });
+      expect(mocks.hermesBridgeFilesystemSnapshot).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      await settleUnderFakeTimers(() =>
+        expect(mocks.hermesBridgeFilesystemSnapshot).toHaveBeenCalledTimes(1),
+      );
+
+      view.unmount();
+      view = undefined;
+      expect(clearInterval).toHaveBeenCalledWith(artifactInterval);
+      mocks.hermesBridgeFilesystemSnapshot.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(ARTIFACT_INDEX_RECONCILE_INTERVAL_MS);
+      });
+      expect(mocks.hermesBridgeFilesystemSnapshot).not.toHaveBeenCalled();
+    } finally {
+      view?.unmount();
+      setInterval.mockRestore();
+      clearInterval.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("renders a workspace file's download card only on the first response that mentions it", async () => {
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [
@@ -12532,9 +12821,9 @@ describe("AgentWorkspace", () => {
         true,
       ),
     );
-    expect(
-      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+      false,
+    );
 
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
@@ -12968,7 +13257,7 @@ describe("AgentWorkspace", () => {
 
   it("attaches the image when the active model id is unresolved", async () => {
     // Regression: a stale or not-yet-loaded model id must not be assumed
-    // non-vision. The image still attaches via image.attach_bytes rather than
+    // non-vision. The image still attaches via image.attach rather than
     // silently downgrading to the text-only fallback.
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
@@ -13006,9 +13295,9 @@ describe("AgentWorkspace", () => {
     await user.click(sendButton);
 
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+        true,
+      ),
     );
     const submitted = mocks.gatewayRequest.mock.calls.find(
       ([method]) => method === "prompt.submit",
@@ -13034,9 +13323,9 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByRole("button", { name: /^Switch to / })).not.toBeInTheDocument();
   });
 
-  it("attaches a dropped image to the session via image.attach_bytes and marks it attached", async () => {
+  it("attaches a dropped image to the session via image.attach and marks it attached", async () => {
     // Feature 19: on submit, an imported image is sent to the session through
-    // the structured image.attach_bytes RPC, the chip flips to "Attached", and the
+    // the structured image.attach RPC, the chip flips to "Attached", and the
     // attachment lands in the artifact timeline — without the base64 ever
     // reaching the sanitized trace export.
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
@@ -13060,16 +13349,14 @@ describe("AgentWorkspace", () => {
     await user.click(sendButton);
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "cHJldmlldw==",
-        filename: "screenshot.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/session-attachments/test/screenshot.png",
       }),
     );
-    // image.attach_bytes precedes prompt.submit for the same turn.
+    // image.attach precedes prompt.submit for the same turn.
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -13087,13 +13374,13 @@ describe("AgentWorkspace", () => {
 
     // The sanitized trace export records the attach but NEVER the base64.
     const trace = JSON.stringify(hermesTraceBuffer.exportSanitizedTrace("session-1"));
-    expect(trace).toContain("image.attach_bytes");
+    expect(trace).toContain("image.attach");
     expect(trace).not.toContain("cHJldmlldw==");
     expect(trace).not.toContain("content_base64");
   });
 
   it("blocks the prompt and warns when an image attach fails", async () => {
-    // A failed image.attach_bytes must not silently send the prompt with a missing
+    // A failed image.attach must not silently send the prompt with a missing
     // image: the send is blocked, the chip surfaces the failure, and the
     // composer text is restored for a retry.
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
@@ -13108,7 +13395,7 @@ describe("AgentWorkspace", () => {
       if (method === "session.resume") {
         return Promise.resolve({ session_id: "runtime-session-1" });
       }
-      if (method === "image.attach_bytes") {
+      if (method === "image.attach") {
         return Promise.reject(new Error("attach exploded"));
       }
       return Promise.resolve({});
@@ -13133,9 +13420,9 @@ describe("AgentWorkspace", () => {
 
     // The attach was attempted and rejected; prompt.submit must NOT have run.
     await waitFor(() =>
-      expect(
-        mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-      ).toBe(true),
+      expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+        true,
+      ),
     );
     expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "prompt.submit")).toBe(
       false,
@@ -14011,7 +14298,6 @@ describe("AgentWorkspace", () => {
     resetAgentSessionContinuity();
     mocks.gatewayRequest.mockClear();
     mocks.hermesBridgeFilePreview.mockResolvedValue(null);
-    mocks.hermesBridgeImageDataUrl.mockResolvedValue("data:image/png;base64,ZnVsbC1zaXpl");
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("a red bicycle")).toBeInTheDocument();
@@ -14020,18 +14306,18 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "ZnVsbC1zaXpl",
-        filename: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/session-attachments/test/generated-image.png",
       }),
     );
-    expect(mocks.hermesBridgeImageDataUrl).toHaveBeenCalledWith(
+    expect(mocks.prepareHermesBridgeImageAttachment).toHaveBeenCalledWith(
+      "runtime-session-1",
       "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/uploads/generated-image.png",
     );
+    expect(mocks.hermesBridgeImageDataUrl).not.toHaveBeenCalled();
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -14178,11 +14464,9 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
-        filename: "generated-image.png",
+        path: "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace/session-attachments/test/generated-image.png",
       }),
     );
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
@@ -14190,7 +14474,7 @@ describe("AgentWorkspace", () => {
       text: "make it feel calmer\n\n--- Attached Context ---\nPrevious /image request: june the assistant",
     });
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -14289,7 +14573,7 @@ describe("AgentWorkspace", () => {
     // JUN-171: the /image image renders in-thread but must also enter the
     // model's session history, so a follow-up ("what do you think?") reaches the
     // model WITH the image. On a vision model the held image is sent via
-    // image.attach_bytes before that follow-up's prompt.submit — and with NO
+    // image.attach before that follow-up's prompt.submit — and with NO
     // composer chip in between (it already renders in-thread).
     mockGlmCapabilities(["functionCalling", "supportsVision"]);
     const user = userEvent.setup();
@@ -14310,27 +14594,27 @@ describe("AgentWorkspace", () => {
     await screen.findByRole("img", { name: "a red bicycle" });
     expect(document.querySelector(".agent-attachment-chip")).toBeNull();
     // The /image itself never attaches (no prompt to carry it yet).
-    expect(
-      mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach_bytes"),
-    ).toBe(false);
+    expect(mocks.gatewayRequest.mock.calls.some(([method]) => method === "image.attach")).toBe(
+      false,
+    );
 
     await user.type(await screen.findByRole("textbox"), "what do you think");
     const sendButton = screen.getByRole("button", { name: "Send message" });
     await waitFor(() => expect(sendButton).not.toBeDisabled());
     await user.click(sendButton);
 
-    // The generated image lands in the session via image.attach_bytes, keyed to
+    // The generated image lands in the session via image.attach, keyed to
     // the same session, before the follow-up prompt.submit.
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
-        filename: expect.stringMatching(/^generated-image-\d+\.png$/),
+        path: expect.stringMatching(
+          /\/workspace\/session-attachments\/test\/generated-image-\d+\.png$/,
+        ),
       }),
     );
     const attachIndex = mocks.gatewayRequest.mock.calls.findIndex(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     const submitIndex = mocks.gatewayRequest.mock.calls.findIndex(
       ([method]) => method === "prompt.submit",
@@ -14340,7 +14624,7 @@ describe("AgentWorkspace", () => {
     // Attached exactly once — the held image is cleared after it goes through,
     // not re-sent.
     expect(
-      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "image.attach_bytes"),
+      mocks.gatewayRequest.mock.calls.filter(([method]) => method === "image.attach"),
     ).toHaveLength(1);
     expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
       session_id: "runtime-session-1",
@@ -14370,11 +14654,11 @@ describe("AgentWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() =>
-      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach_bytes", {
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("image.attach", {
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
-        filename: expect.stringMatching(/^generated-image-\d+\.png$/),
+        path: expect.stringMatching(
+          /\/workspace\/session-attachments\/test\/generated-image-\d+\.png$/,
+        ),
       }),
     );
   });
@@ -14423,14 +14707,15 @@ describe("AgentWorkspace", () => {
     await waitFor(() => expect(promptSubmitAttempts).toBe(2));
 
     const attachCalls = mocks.gatewayRequest.mock.calls.filter(
-      ([method]) => method === "image.attach_bytes",
+      ([method]) => method === "image.attach",
     );
     expect(attachCalls).toHaveLength(2);
     for (const [, payload] of attachCalls) {
       expect(payload).toMatchObject({
         session_id: "runtime-session-1",
-        mime_type: "image/png",
-        content_base64: "aGVsbG8=",
+        path: expect.stringMatching(
+          /\/workspace\/session-attachments\/test\/generated-image-\d+\.png$/,
+        ),
       });
     }
   });

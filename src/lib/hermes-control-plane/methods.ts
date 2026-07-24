@@ -98,6 +98,10 @@ export type AttachImageParams = {
   dataBase64: string;
   fileName?: string;
 };
+export type AttachImagePathParams = {
+  sessionId: string;
+  path: string;
+};
 
 /** The typed command surface. Each call resolves to whatever the gateway
  * returns (typed by the caller via the generic on `request`). */
@@ -123,6 +127,11 @@ export type HermesMethods = {
    * immediately, persists it into the session's stored runtime config (so
    * resume keeps it), and emits a fresh session.info. */
   setSessionReasoningEffort(params: SetSessionReasoningEffortParams): Promise<unknown>;
+  /** Preferred desktop attach path. Rust first snapshots the image into the
+   * live session's June workspace directory, then this passes only that native
+   * path to the co-located Hermes gateway. */
+  attachImagePath(params: AttachImagePathParams): Promise<unknown>;
+  /** Additive remote-client fallback for callers without a gateway-local path. */
   attachImage(params: AttachImageParams): Promise<unknown>;
 };
 
@@ -221,6 +230,12 @@ export function createHermesMethods(client: HermesRequestLike): HermesMethods {
         session_id: sessionId,
         key: "reasoning",
         value: effort,
+      });
+    },
+    attachImagePath({ sessionId, path }) {
+      return request("image.attach", {
+        session_id: sessionId,
+        path,
       });
     },
     attachImage({ sessionId, mimeType, dataBase64, fileName }) {

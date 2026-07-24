@@ -20,10 +20,13 @@ import {
 import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
+import { createHudLifecycle } from "./lib/hud-lifecycle";
 import "./styles/hud.css";
 
+const lifecycle = createHudLifecycle();
+
 // Recolor this HUD window to the selected accent and keep it live-synced.
-subscribeBrand();
+lifecycle.trackUnlisten(subscribeBrand());
 
 type DictationHudEvent = {
   type: string;
@@ -46,7 +49,7 @@ const appWindow = (() => {
   }
 })();
 
-installNativeContextMenuGuard();
+lifecycle.addCleanup(installNativeContextMenuGuard());
 
 const hud = document.querySelector<HTMLDivElement>("#hud");
 const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
@@ -102,6 +105,13 @@ let hideRequestId = 0;
 let showRequestId = 0;
 let showQueue: Promise<void> = Promise.resolve();
 
+lifecycle.addCleanup(() => {
+  window.clearTimeout(hideTimer);
+  window.clearTimeout(meetingPromptTimer);
+  window.clearTimeout(longDictationNoticeTimer);
+  window.clearInterval(brailleTimer);
+});
+
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
 const brailleWave = spinners.waverows;
@@ -152,6 +162,10 @@ const meter = createBarMeter(
 
 let rafHandle: number | undefined;
 let shimmerTimer: number | undefined;
+
+lifecycle.addCleanup(() => {
+  window.clearTimeout(shimmerTimer);
+});
 let lastAudioLevelAt = 0;
 const IDLE_RAF_TIMEOUT_MS = 260;
 // Once the bars have settled and no fresh audio is arriving, the only thing
@@ -295,16 +309,16 @@ function startBarLoop() {
     const keepShimmering = IDLE_PULSE_AMP > 0 && hud?.dataset.state === "listening";
     if (reactive) {
       // Bars moving or audio recent → paint every frame for responsiveness.
-      rafHandle = window.requestAnimationFrame(tick);
+      rafHandle = lifecycle.requestAnimationFrame(tick);
     } else if (keepShimmering) {
       // Idle but listening → throttle the carrier so the CPU can idle between ticks.
       shimmerTimer = window.setTimeout(() => {
         shimmerTimer = undefined;
-        rafHandle = window.requestAnimationFrame(tick);
+        rafHandle = lifecycle.requestAnimationFrame(tick);
       }, SHIMMER_FRAME_MS);
     }
   };
-  rafHandle = window.requestAnimationFrame(tick);
+  rafHandle = lifecycle.requestAnimationFrame(tick);
 }
 
 function resetBars() {
@@ -363,7 +377,7 @@ let levelFlushHandle: number | undefined;
 function queueAudioLevel(rawLevel: number) {
   pendingRawLevel = pendingRawLevel === null ? rawLevel : Math.max(pendingRawLevel, rawLevel);
   if (levelFlushHandle !== undefined) return;
-  levelFlushHandle = window.requestAnimationFrame(() => {
+  levelFlushHandle = lifecycle.requestAnimationFrame(() => {
     levelFlushHandle = undefined;
     const next = pendingRawLevel;
     pendingRawLevel = null;
@@ -373,7 +387,7 @@ function queueAudioLevel(rawLevel: number) {
 
 function cancelPendingAudioLevel() {
   if (levelFlushHandle !== undefined) {
-    window.cancelAnimationFrame(levelFlushHandle);
+    lifecycle.cancelAnimationFrame(levelFlushHandle);
     levelFlushHandle = undefined;
   }
   pendingRawLevel = null;
@@ -537,8 +551,8 @@ async function syncWindowToPill(options?: { animate?: boolean; morph?: boolean }
     height,
     animate: options?.animate ?? !prefersReducedMotion(),
   });
-  window.requestAnimationFrame(() => {
-    window.requestAnimationFrame(() => {
+  lifecycle.requestAnimationFrame(() => {
+    lifecycle.requestAnimationFrame(() => {
       hud?.classList.remove("is-morphing");
       pushStopBoundsToNative();
       pushDismissBoundsToNative();
@@ -563,12 +577,12 @@ function fadeWindowAlpha(requestId: number) {
       const t = Math.min((now - start) / EXIT_TRANSITION_MS, 1);
       setWindowAlpha(1 - t);
       if (t < 1) {
-        window.requestAnimationFrame(step);
+        lifecycle.requestAnimationFrame(step);
       } else {
         resolve();
       }
     };
-    window.requestAnimationFrame(step);
+    lifecycle.requestAnimationFrame(step);
   });
 }
 
@@ -789,6 +803,10 @@ async function showHudNow(requestId: number, options?: { fresh?: boolean; morph?
 const FRAME_SETTLE_DELAY_MS = 120;
 let frameSettleTimer: number | undefined;
 
+lifecycle.addCleanup(() => {
+  window.clearTimeout(frameSettleTimer);
+});
+
 function clearFrameSettleTimer() {
   if (frameSettleTimer !== undefined) {
     window.clearTimeout(frameSettleTimer);
@@ -963,8 +981,8 @@ function playErrorReveal() {
     hud.classList.remove("hud-reveal-collapsed");
     return;
   }
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => hud?.classList.remove("hud-reveal-collapsed")),
+  lifecycle.requestAnimationFrame(() =>
+    lifecycle.requestAnimationFrame(() => hud?.classList.remove("hud-reveal-collapsed")),
   );
 }
 
@@ -1125,25 +1143,35 @@ meetingDismissButton?.addEventListener("click", (event) => {
   void hideHud();
 });
 
-void listen("dictation-event", async (event) => {
-  await handleDictationEventPayload(event.payload);
-}).catch(() => {});
+lifecycle.trackUnlisten(
+  listen("dictation-event", async (event) => {
+    await handleDictationEventPayload(event.payload);
+  }),
+);
 
-void listen("meeting-detection-event", async (event) => {
-  await handleMeetingDetectionEventPayload(event.payload);
-}).catch(() => {});
+lifecycle.trackUnlisten(
+  listen("meeting-detection-event", async (event) => {
+    await handleMeetingDetectionEventPayload(event.payload);
+  }),
+);
 
-void listen<boolean>("hud-stop-hover", (event) => {
-  setStopHover(Boolean(event.payload));
-}).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<boolean>("hud-stop-hover", (event) => {
+    setStopHover(Boolean(event.payload));
+  }),
+);
 
-void listen<boolean>("hud-dismiss-hover", (event) => {
-  setDismissHover(Boolean(event.payload));
-}).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<boolean>("hud-dismiss-hover", (event) => {
+    setDismissHover(Boolean(event.payload));
+  }),
+);
 
-void listen<boolean>("hud-record-hover", (event) => {
-  setRecordHover(Boolean(event.payload));
-}).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<boolean>("hud-record-hover", (event) => {
+    setRecordHover(Boolean(event.payload));
+  }),
+);
 
 // Cold-start companion to the await in syncWindowToPill: the Diatype load
 // may only BEGIN once the prompt first paints text, after the measurement.
@@ -1161,16 +1189,24 @@ if (typeof document.fonts?.ready?.then === "function") {
 // only the dev-only demo drivers dispatch these window events (standalone
 // page, no bridge), so production builds skip the dead listeners.
 if (import.meta.env.DEV) {
-  window.addEventListener("dictation-event", (event) => {
-    void handleDictationEventPayload((event as CustomEvent).detail);
-  });
+  window.addEventListener(
+    "dictation-event",
+    (event) => {
+      void handleDictationEventPayload((event as CustomEvent).detail);
+    },
+    { signal: lifecycle.signal },
+  );
 
-  window.addEventListener("meeting-detection-event", (event) => {
-    void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
-  });
+  window.addEventListener(
+    "meeting-detection-event",
+    (event) => {
+      void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
+    },
+    { signal: lifecycle.signal },
+  );
 }
 
-subscribeToOnboardingComplete(showPendingMeetingPromptAfterOnboarding);
+lifecycle.addCleanup(subscribeToOnboardingComplete(showPendingMeetingPromptAfterOnboarding));
 
 // Console drivers for this page when served standalone in a browser:
 // __dictationHud("listening") drives the dictation pill, __meetingHud(

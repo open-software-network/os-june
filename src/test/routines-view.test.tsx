@@ -5,6 +5,7 @@ import { RoutinesView } from "../components/routines/RoutinesView";
 import type { RoutineJob } from "../lib/hermes-routines";
 import type { HermesSessionInfo } from "../lib/tauri";
 import appCss from "../styles/app.css?raw";
+import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 const mocks = vi.hoisted(() => ({
   listRoutines: vi.fn<() => Promise<RoutineJob[]>>(),
@@ -52,6 +53,7 @@ vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
 // Connector commands the create/detail pages call. Defaults mimic a build
 // with the connectors module present but nothing connected.
 const tauriMocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
   connectorsList: vi.fn(),
   connectorsConnect: vi.fn(),
   connectorsApplyRuntime: vi.fn(),
@@ -64,6 +66,11 @@ const tauriMocks = vi.hoisted(() => ({
   connectorTriggerSet: vi.fn(),
   connectorTriggerDelete: vi.fn(),
   browserTransportPolicy: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  invoke: tauriMocks.invoke,
 }));
 
 const eventMocks = vi.hoisted(() => ({
@@ -159,6 +166,9 @@ beforeEach(() => {
   mocks.updateRoutine.mockResolvedValue(job());
   adapterMocks.listScheduledRunSessions.mockResolvedValue([]);
   tauriMocks.connectorsList.mockResolvedValue([]);
+  tauriMocks.invoke.mockImplementation(async (command: string) =>
+    command === "connectors_policy" ? representativeConnectorPolicy() : undefined,
+  );
   tauriMocks.connectorsConnect.mockResolvedValue(googleAccount());
   tauriMocks.connectorsApplyRuntime.mockResolvedValue(undefined);
   tauriMocks.routineTrustGet.mockResolvedValue(null);

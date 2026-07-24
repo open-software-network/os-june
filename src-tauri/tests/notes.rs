@@ -102,6 +102,55 @@ async fn update_note_returns_null_content_and_normalizes_a_null_active_tab() {
 }
 
 #[tokio::test]
+async fn autosave_omits_title_after_generation_commits_a_newer_title() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    let autosave_snapshot = repos.get_note(&note.id).await.expect("autosave snapshot");
+    assert_eq!(autosave_snapshot.title, "");
+
+    let generated = repos
+        .set_generated_note(
+            &note.id,
+            Some("Freshly generated title".to_string()),
+            "Generated content".to_string(),
+        )
+        .await
+        .expect("generated note");
+    assert_eq!(generated.title, "Freshly generated title");
+
+    // The debounced autosave is still based on the pre-generation editor
+    // snapshot. Fail deterministically if its content-only patch touches the
+    // title column at all; doing so can rewrite the stale snapshot over the
+    // title that generation committed in the meantime.
+    query(
+        "CREATE TRIGGER reject_stale_autosave_title_write
+         BEFORE UPDATE OF title ON notes
+         BEGIN
+             SELECT RAISE(ABORT, 'content autosave must not write title');
+         END",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("install title-write guard");
+
+    let updated = repos
+        .update_note(
+            &note.id,
+            None,
+            Some("Content saved from the older editor snapshot".to_string()),
+            None,
+        )
+        .await
+        .expect("content autosave");
+
+    assert_eq!(updated.title, "Freshly generated title");
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("Content saved from the older editor snapshot")
+    );
+}
+
+#[tokio::test]
 async fn deleting_note_removes_it_from_all_note_lists() {
     let repos = repos().await;
     let folder = repos

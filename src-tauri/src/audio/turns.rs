@@ -10,6 +10,8 @@ const NORMALIZE_MIN_GAIN: f32 = 1.25;
 const NORMALIZE_MAX_GAIN: f32 = 32.0;
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16_000;
 const TRANSCRIPTION_CHANNELS: u16 = 1;
+/// Raw interleaved input held per normalization pass: 32 KiB of PCM16.
+const NORMALIZATION_CHUNK_SAMPLE_BUDGET: usize = 16 * 1024;
 pub const MAX_TRANSCRIPTION_CHUNK_MS: i64 = 30 * 1000;
 /// Pre-roll backfilled ahead of a detected turn onset when extracting its WAV,
 /// so the first phonemes that fall below the VAD activity threshold (or before
@@ -356,19 +358,20 @@ pub fn normalize_wav_for_transcription(
     input_path: &Path,
     output_path: &Path,
 ) -> Result<PathBuf, AppError> {
-    let mut reader = WavReader::open(input_path)
-        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    let spec = reader.spec();
-    ensure_normalizable_spec(spec)?;
-    let input_samples = reader
-        .samples::<i16>()
-        .map(|sample| sample.unwrap_or(0))
-        .collect::<Vec<_>>();
-    let mono_samples = downmix_to_mono(&input_samples, spec.channels.max(1));
-    let peak = mono_samples
-        .iter()
-        .map(|sample| sample.unsigned_abs() as f32 / i16::MAX as f32)
-        .fold(0.0_f32, f32::max);
+    normalize_wav_for_transcription_with_chunk_sample_budget(
+        input_path,
+        output_path,
+        NORMALIZATION_CHUNK_SAMPLE_BUDGET,
+    )
+}
+
+fn normalize_wav_for_transcription_with_chunk_sample_budget(
+    input_path: &Path,
+    output_path: &Path,
+    chunk_sample_budget: usize,
+) -> Result<PathBuf, AppError> {
+    let analysis = analyze_wav_for_normalization(input_path, chunk_sample_budget)?;
+    let spec = analysis.spec;
     let output_spec = WavSpec {
         channels: TRANSCRIPTION_CHANNELS,
         sample_rate: TRANSCRIPTION_SAMPLE_RATE,
@@ -377,13 +380,13 @@ pub fn normalize_wav_for_transcription(
     };
     let already_transcription_ready =
         spec.channels == TRANSCRIPTION_CHANNELS && spec.sample_rate == TRANSCRIPTION_SAMPLE_RATE;
-    if peak <= f32::EPSILON && already_transcription_ready {
+    if analysis.peak <= f32::EPSILON && already_transcription_ready {
         return Ok(input_path.to_path_buf());
     }
-    let gain = if peak <= f32::EPSILON {
+    let gain = if analysis.peak <= f32::EPSILON {
         1.0
     } else {
-        (NORMALIZE_TARGET_PEAK / peak).min(NORMALIZE_MAX_GAIN)
+        (NORMALIZE_TARGET_PEAK / analysis.peak).min(NORMALIZE_MAX_GAIN)
     };
     if gain < NORMALIZE_MIN_GAIN && already_transcription_ready {
         return Ok(input_path.to_path_buf());
@@ -392,20 +395,226 @@ pub fn normalize_wav_for_transcription(
         std::fs::create_dir_all(parent)
             .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
     }
-    let prepared_samples =
-        resample_linear(&mono_samples, spec.sample_rate, TRANSCRIPTION_SAMPLE_RATE);
+    let temporary_output = (input_path == output_path).then(|| {
+        output_path.with_file_name(format!(".normalize-{}.tmp.wav", uuid::Uuid::new_v4()))
+    });
+    let write_path = temporary_output.as_deref().unwrap_or(output_path);
+    let write_result = write_streaming_normalized_wav(
+        input_path,
+        write_path,
+        output_spec,
+        analysis.mono_sample_count,
+        spec.sample_rate,
+        gain,
+        chunk_sample_budget,
+    );
+    if let Err(error) = write_result {
+        if temporary_output.is_some() {
+            let _ = std::fs::remove_file(write_path);
+        }
+        return Err(error);
+    }
+    if temporary_output.is_some() {
+        if let Err(error) = crate::hermes_bridge::replace_file(write_path, output_path) {
+            let _ = std::fs::remove_file(write_path);
+            return Err(AppError::new("audio_normalize_failed", error.to_string()));
+        }
+    }
+    Ok(output_path.to_path_buf())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizationAnalysis {
+    spec: WavSpec,
+    mono_sample_count: usize,
+    peak: f32,
+}
+
+fn analyze_wav_for_normalization(
+    input_path: &Path,
+    chunk_sample_budget: usize,
+) -> Result<NormalizationAnalysis, AppError> {
+    let mut mono_sample_count = 0_usize;
+    let mut peak = 0.0_f32;
+    let spec = for_each_downmixed_sample(input_path, chunk_sample_budget, |sample| {
+        mono_sample_count += 1;
+        peak = peak.max(sample.unsigned_abs() as f32 / i16::MAX as f32);
+        Ok(())
+    })?;
+    Ok(NormalizationAnalysis {
+        spec,
+        mono_sample_count,
+        peak,
+    })
+}
+
+fn write_streaming_normalized_wav(
+    input_path: &Path,
+    output_path: &Path,
+    output_spec: WavSpec,
+    mono_sample_count: usize,
+    input_rate: u32,
+    gain: f32,
+    chunk_sample_budget: usize,
+) -> Result<(), AppError> {
     let mut writer = WavWriter::create(output_path, output_spec)
         .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    for sample in prepared_samples {
-        let amplified = (sample as f32 * gain).round();
-        writer
-            .write_sample(amplified.clamp(i16::MIN as f32, i16::MAX as f32) as i16)
-            .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    }
+    let mut resampler =
+        StreamingLinearResampler::new(mono_sample_count, input_rate, TRANSCRIPTION_SAMPLE_RATE);
+    for_each_downmixed_sample(input_path, chunk_sample_budget, |sample| {
+        resampler.push(sample, &mut writer, gain)
+    })?;
+    resampler.ensure_complete()?;
     writer
         .finalize()
         .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
-    Ok(output_path.to_path_buf())
+    Ok(())
+}
+
+struct StreamingLinearResampler {
+    // Global indexes deliberately reproduce the former whole-buffer linear
+    // interpolation. Resetting either index at a chunk seam changes bytes and
+    // can introduce an audible click.
+    ratio: f64,
+    total_input_samples: usize,
+    output_len: usize,
+    next_output_index: usize,
+    next_input_index: usize,
+    previous_sample: Option<i16>,
+}
+
+impl StreamingLinearResampler {
+    fn new(total_input_samples: usize, input_rate: u32, output_rate: u32) -> Self {
+        let ratio = input_rate as f64 / output_rate as f64;
+        let output_len = if total_input_samples == 0 {
+            0
+        } else if input_rate == output_rate {
+            total_input_samples
+        } else {
+            ((total_input_samples as f64) / ratio).ceil().max(1.0) as usize
+        };
+        Self {
+            ratio,
+            total_input_samples,
+            output_len,
+            next_output_index: 0,
+            next_input_index: 0,
+            previous_sample: None,
+        }
+    }
+
+    fn push(
+        &mut self,
+        sample: i16,
+        writer: &mut WavWriter<std::io::BufWriter<std::fs::File>>,
+        gain: f32,
+    ) -> Result<(), AppError> {
+        let current_input_index = self.next_input_index;
+        while self.next_output_index < self.output_len {
+            let source_pos = self.next_output_index as f64 * self.ratio;
+            let left_index = source_pos.floor() as usize;
+            let right_index = (left_index + 1).min(self.total_input_samples - 1);
+            if right_index > current_input_index {
+                break;
+            }
+            let left = self.sample_at(left_index, current_input_index, sample)? as f64;
+            let right = self.sample_at(right_index, current_input_index, sample)? as f64;
+            let fraction = source_pos - left_index as f64;
+            let resampled = (left + ((right - left) * fraction))
+                .round()
+                .clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+            let amplified = (resampled as f32 * gain).round();
+            writer
+                .write_sample(amplified.clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+            self.next_output_index += 1;
+        }
+        self.previous_sample = Some(sample);
+        self.next_input_index += 1;
+        Ok(())
+    }
+
+    fn sample_at(
+        &self,
+        requested_index: usize,
+        current_input_index: usize,
+        current_sample: i16,
+    ) -> Result<i16, AppError> {
+        if requested_index == current_input_index {
+            return Ok(current_sample);
+        }
+        if requested_index + 1 == current_input_index {
+            return self.previous_sample.ok_or_else(|| {
+                AppError::new(
+                    "audio_normalize_failed",
+                    "Streaming resampler lost its previous sample.",
+                )
+            });
+        }
+        Err(AppError::new(
+            "audio_normalize_failed",
+            "Streaming resampler advanced past a required sample.",
+        ))
+    }
+
+    fn ensure_complete(&self) -> Result<(), AppError> {
+        if self.next_input_index == self.total_input_samples
+            && self.next_output_index == self.output_len
+        {
+            return Ok(());
+        }
+        Err(AppError::new(
+            "audio_normalize_failed",
+            "Streaming resampler did not consume the expected sample counts.",
+        ))
+    }
+}
+
+fn for_each_downmixed_sample(
+    input_path: &Path,
+    chunk_sample_budget: usize,
+    mut on_sample: impl FnMut(i16) -> Result<(), AppError>,
+) -> Result<WavSpec, AppError> {
+    let mut reader = WavReader::open(input_path)
+        .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+    let spec = reader.spec();
+    ensure_normalizable_spec(spec)?;
+    let channel_count = spec.channels.max(1) as usize;
+    let chunk_sample_budget = chunk_sample_budget.max(1);
+    let mut chunk = Vec::with_capacity(chunk_sample_budget);
+    let mut frame_sum = 0_i32;
+    let mut samples_in_frame = 0_usize;
+    let mut samples = reader.samples::<i16>();
+    loop {
+        chunk.clear();
+        for _ in 0..chunk_sample_budget {
+            let Some(sample) = samples.next() else {
+                break;
+            };
+            chunk.push(sample.unwrap_or(0));
+        }
+        if chunk.is_empty() {
+            break;
+        }
+        for sample in chunk.iter().copied() {
+            frame_sum += sample as i32;
+            samples_in_frame += 1;
+            if samples_in_frame == channel_count {
+                on_sample(
+                    (frame_sum / samples_in_frame as i32).clamp(i16::MIN as i32, i16::MAX as i32)
+                        as i16,
+                )?;
+                frame_sum = 0;
+                samples_in_frame = 0;
+            }
+        }
+    }
+    if samples_in_frame > 0 {
+        on_sample(
+            (frame_sum / samples_in_frame as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+        )?;
+    }
+    Ok(spec)
 }
 
 pub fn split_wav_for_transcription(
@@ -501,6 +710,7 @@ fn ensure_normalizable_spec(spec: WavSpec) -> Result<(), AppError> {
     ))
 }
 
+#[cfg(test)]
 fn downmix_to_mono(samples: &[i16], channels: u16) -> Vec<i16> {
     let channel_count = channels.max(1) as usize;
     if channel_count == 1 {
@@ -515,6 +725,7 @@ fn downmix_to_mono(samples: &[i16], channels: u16) -> Vec<i16> {
         .collect()
 }
 
+#[cfg(test)]
 fn resample_linear(samples: &[i16], input_rate: u32, output_rate: u32) -> Vec<i16> {
     if samples.is_empty() || input_rate == output_rate {
         return samples.to_vec();
@@ -1346,6 +1557,149 @@ mod tests {
         let spec = reader.spec();
         assert_eq!(spec.channels, 1);
         assert_eq!(spec.sample_rate, 16_000);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn streaming_normalization_is_byte_identical_to_buffered_reference() {
+        struct Case {
+            name: &'static str,
+            spec: WavSpec,
+            samples: Vec<i16>,
+            chunk_sample_budget: usize,
+        }
+
+        let mono_16k = WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let stereo_16k = WavSpec {
+            channels: 2,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let stereo_48k = WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mono_8k = WavSpec {
+            channels: 1,
+            sample_rate: 8_000,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let stereo_44k = WavSpec {
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let cases = [
+            Case {
+                name: "mono-passthrough",
+                spec: mono_16k,
+                samples: vec![20_000, -18_000, 15_000],
+                chunk_sample_budget: 3,
+            },
+            Case {
+                name: "mono-gain-without-resampling",
+                spec: mono_16k,
+                samples: vec![100, -120, 90, -80, 60],
+                chunk_sample_budget: 2,
+            },
+            Case {
+                name: "empty-mono-passthrough",
+                spec: mono_16k,
+                samples: Vec::new(),
+                chunk_sample_budget: 1,
+            },
+            Case {
+                name: "empty-stereo-resample",
+                spec: stereo_48k,
+                samples: Vec::new(),
+                chunk_sample_budget: 3,
+            },
+            Case {
+                name: "stereo-without-resampling-across-odd-chunk-boundary",
+                spec: stereo_16k,
+                samples: vec![300, -100, 500, -300, 700, -500],
+                chunk_sample_budget: 3,
+            },
+            Case {
+                name: "downsample-across-odd-chunk-boundaries",
+                spec: stereo_48k,
+                samples: vec![
+                    8_000, 4_000, -6_000, -2_000, 12_000, 8_000, -10_000, -4_000, 2_000, 1_000,
+                    -3_000, -1_000, 5_000, -5_000,
+                ],
+                chunk_sample_budget: 5,
+            },
+            Case {
+                name: "upsample-across-chunk-boundaries",
+                spec: mono_8k,
+                samples: vec![1_000, -2_000, 3_000, -4_000, 5_000],
+                chunk_sample_budget: 3,
+            },
+            Case {
+                name: "extreme-peaks",
+                spec: stereo_44k,
+                samples: vec![
+                    i16::MIN,
+                    i16::MIN,
+                    i16::MAX,
+                    i16::MAX,
+                    i16::MIN,
+                    i16::MAX,
+                    1,
+                    -1,
+                ],
+                chunk_sample_budget: 4,
+            },
+        ];
+
+        let dir = std::env::temp_dir().join(format!(
+            "os-june-normalize-equivalence-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for case in cases {
+            let reference_input = dir.join(format!("{}-reference-input.wav", case.name));
+            let streaming_input = dir.join(format!("{}-streaming-input.wav", case.name));
+            let reference_output = dir.join(format!("{}-reference-output.wav", case.name));
+            let streaming_output = dir.join(format!("{}-streaming-output.wav", case.name));
+            write_wav_samples(&reference_input, case.spec, &case.samples);
+            write_wav_samples(&streaming_input, case.spec, &case.samples);
+
+            let reference_path = normalize_wav_for_transcription_buffered_reference(
+                &reference_input,
+                &reference_output,
+            )
+            .unwrap();
+            let streaming_path = normalize_wav_for_transcription_with_chunk_sample_budget(
+                &streaming_input,
+                &streaming_output,
+                case.chunk_sample_budget,
+            )
+            .unwrap();
+
+            assert_eq!(
+                std::fs::read(reference_path).unwrap(),
+                std::fs::read(streaming_path).unwrap(),
+                "normalization bytes differed for {}",
+                case.name
+            );
+            assert_eq!(
+                reference_output.exists(),
+                streaming_output.exists(),
+                "reuse decision differed for {}",
+                case.name
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -2235,11 +2589,7 @@ mod tests {
             bits_per_sample: 16,
             sample_format: SampleFormat::Int,
         };
-        let mut writer = WavWriter::create(path, spec).unwrap();
-        for sample in samples {
-            writer.write_sample(*sample).unwrap();
-        }
-        writer.finalize().unwrap();
+        write_wav_samples(path, spec, samples);
     }
 
     fn write_stereo_48k_samples(path: &Path, samples: &[i16]) {
@@ -2249,6 +2599,10 @@ mod tests {
             bits_per_sample: 16,
             sample_format: SampleFormat::Int,
         };
+        write_wav_samples(path, spec, samples);
+    }
+
+    fn write_wav_samples(path: &Path, spec: WavSpec, samples: &[i16]) {
         let mut writer = WavWriter::create(path, spec).unwrap();
         for sample in samples {
             writer.write_sample(*sample).unwrap();
@@ -2262,5 +2616,61 @@ mod tests {
             .samples::<i16>()
             .map(|sample| sample.unwrap())
             .collect()
+    }
+
+    fn normalize_wav_for_transcription_buffered_reference(
+        input_path: &Path,
+        output_path: &Path,
+    ) -> Result<PathBuf, AppError> {
+        let mut reader = WavReader::open(input_path)
+            .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+        let spec = reader.spec();
+        ensure_normalizable_spec(spec)?;
+        let input_samples = reader
+            .samples::<i16>()
+            .map(|sample| sample.unwrap_or(0))
+            .collect::<Vec<_>>();
+        let mono_samples = downmix_to_mono(&input_samples, spec.channels.max(1));
+        let peak = mono_samples
+            .iter()
+            .map(|sample| sample.unsigned_abs() as f32 / i16::MAX as f32)
+            .fold(0.0_f32, f32::max);
+        let output_spec = WavSpec {
+            channels: TRANSCRIPTION_CHANNELS,
+            sample_rate: TRANSCRIPTION_SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let already_transcription_ready = spec.channels == TRANSCRIPTION_CHANNELS
+            && spec.sample_rate == TRANSCRIPTION_SAMPLE_RATE;
+        if peak <= f32::EPSILON && already_transcription_ready {
+            return Ok(input_path.to_path_buf());
+        }
+        let gain = if peak <= f32::EPSILON {
+            1.0
+        } else {
+            (NORMALIZE_TARGET_PEAK / peak).min(NORMALIZE_MAX_GAIN)
+        };
+        if gain < NORMALIZE_MIN_GAIN && already_transcription_ready {
+            return Ok(input_path.to_path_buf());
+        }
+        if let Some(parent) = output_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+        }
+        let prepared_samples =
+            resample_linear(&mono_samples, spec.sample_rate, TRANSCRIPTION_SAMPLE_RATE);
+        let mut writer = WavWriter::create(output_path, output_spec)
+            .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+        for sample in prepared_samples {
+            let amplified = (sample as f32 * gain).round();
+            writer
+                .write_sample(amplified.clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+        }
+        writer
+            .finalize()
+            .map_err(|error| AppError::new("audio_normalize_failed", error.to_string()))?;
+        Ok(output_path.to_path_buf())
     }
 }

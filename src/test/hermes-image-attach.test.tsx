@@ -102,7 +102,37 @@ describe("attachImageToSession", () => {
     };
   }
 
-  it("reads bytes, calls image.attach_bytes, and flips status to attached", async () => {
+  it("prefers the native path round trip and never reads or sends base64", async () => {
+    const deps = {
+      ...baseDeps(),
+      prepareImagePath: vi.fn().mockResolvedValue({
+        path: "/ws/session-attachments/abc/diagram.png",
+        mimeType: "image/png",
+        size: 1234,
+      }),
+      attachImagePath: vi.fn().mockResolvedValue({ attachment_id: "att-path" }),
+      isPathSupported: () => true,
+    };
+    const result = await attachImageToSession(
+      attachmentStateFrom(PNG, "runtime-1"),
+      "runtime-1",
+      deps,
+    );
+
+    expect(deps.prepareImagePath).toHaveBeenCalledWith("runtime-1", "/ws/uploads/diagram.png");
+    expect(deps.attachImagePath).toHaveBeenCalledWith({
+      sessionId: "runtime-1",
+      path: "/ws/session-attachments/abc/diagram.png",
+    });
+    expect(deps.readImageData).not.toHaveBeenCalled();
+    expect(deps.attachImage).not.toHaveBeenCalled();
+    expect(result.state.status).toBe("attached");
+    expect(result.state.hermesAttachmentId).toBe("att-path");
+    expect(result.trace?.method).toBe("image.attach");
+    expect(JSON.stringify(result)).not.toContain("aGVsbG8=");
+  });
+
+  it("keeps image.attach_bytes as an additive fallback", async () => {
     const deps = baseDeps();
     const result = await attachImageToSession(attachmentStateFrom(PNG, "ws-1"), "ws-1", deps);
 
@@ -117,6 +147,25 @@ describe("attachImageToSession", () => {
     expect(result.state.hermesAttachmentId).toBe("att-9");
     expect(result.state.sessionId).toBe("ws-1");
     expect(result.error).toBeUndefined();
+  });
+
+  it("does not bypass a native path rejection through the byte fallback", async () => {
+    const deps = {
+      ...baseDeps(),
+      prepareImagePath: vi.fn().mockRejectedValue(new Error("outside allowed roots")),
+      attachImagePath: vi.fn(),
+      isPathSupported: () => true,
+    };
+    const result = await attachImageToSession(
+      attachmentStateFrom(PNG, "runtime-1"),
+      "runtime-1",
+      deps,
+    );
+
+    expect(deps.attachImagePath).not.toHaveBeenCalled();
+    expect(deps.readImageData).not.toHaveBeenCalled();
+    expect(deps.attachImage).not.toHaveBeenCalled();
+    expect(result.state.status).toBe("failed");
   });
 
   it("uses the preview mime when the filename has no useful extension", async () => {

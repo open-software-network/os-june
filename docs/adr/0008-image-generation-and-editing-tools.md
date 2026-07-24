@@ -282,3 +282,23 @@ and user-uploaded attachments are NOT tool-path edit sources - Hermes provides
 no per-call session identity to MCP servers, so a conversation-scoped
 allow-list is impossible on this transport. Restoring attachment editing needs
 a session-identity mechanism first (recorded as a PR followup).
+
+## Addendum - 2026-07-23 (native path attachment snapshots)
+
+Supersedes the Phase A transport detail above. June's desktop composer no
+longer reads an image into a base64 data URL and sends it through both the
+Tauri IPC bridge and Hermes WebSocket. Before `image.attach`, Rust now
+canonicalizes the source, rejects symbolic links and hidden or sensitive
+paths, requires the file to be under the Hermes workspace or a generated-image
+directory, enforces the existing 50 MB cap, and retains an open source handle.
+It then hardlinks the image when the filesystem permits, otherwise copies from
+that validated handle, into a session-scoped directory under the Hermes
+workspace. The runtime session id is hashed before it contributes to the
+directory name.
+
+The frontend passes only the prepared path to Hermes through `image.attach`.
+`image.attach_bytes` remains an additive wire-compatible fallback for callers
+that cannot provide a gateway-local path. Preview thumbnail generation stays a
+separate bounded operation and is not reused as model input. A rejected native
+path does not silently downgrade to the byte fallback because doing so would
+bypass Rust's path-validation boundary.

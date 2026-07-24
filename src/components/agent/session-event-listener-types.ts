@@ -14,6 +14,7 @@ export type createSessionEventListenerDependencies = {
   clearSubmittedSteers: (sessionId: string, options?: { preserveReservations?: boolean }) => void;
   continueAfterCompletedAgentRun: (storedSessionId: string, source?: symbol) => void;
   liveEventsRef: React.MutableRefObject<Record<string, JuneHermesEvent[]>>;
+  onArtifactFilesystemChange: (event: JuneHermesEvent) => void;
   pendingSteerBySessionIdRef: React.MutableRefObject<Record<string, PendingSteer[]>>;
   promotePendingIssueReportToReview: (
     sessionId: string,

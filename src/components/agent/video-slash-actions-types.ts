@@ -5,6 +5,7 @@ import type { SubmitHermesSession } from "./session-submission-types";
 import type { ImageSafeModeConsentChoice } from "./agent-workspace-models";
 import { type AgentWorkspaceErrorOptions } from "./agent-workspace-errors";
 import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
+import type { AgentArtifact } from "./chat-turns/AgentArtifactPanel";
 import type * as React from "react";
 
 export type createVideoSlashActionsDependencies = {
@@ -14,7 +15,7 @@ export type createVideoSlashActionsDependencies = {
     reservation: HermesSessionDispatchReservation | undefined,
   ) => boolean;
   creditActionsDisabledReason: string | undefined;
-  loadFilesystemSnapshot: () => Promise<void>;
+  recordFilesystemArtifact: (artifact: AgentArtifact) => void;
   newSessionModeRef: React.MutableRefObject<boolean>;
   requestImageSafeModeConsent: (
     variant: "slash" | "agent" | "video-slash",

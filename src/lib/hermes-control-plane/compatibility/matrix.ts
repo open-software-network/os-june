@@ -77,10 +77,10 @@ const CURRENT_PIN = PINNED_HERMES_VERSION;
  * Control-plane methods. Feature 01 (`methods.ts`) provides typed STUBS for the
  * steer/branch/compress/usage/dispatch/sudo/secret/subagent/image surfaces; each
  * flips to `supported` as its owning feature ships UI + tests (see OWNERSHIP).
- * subagent.interrupt is `supported` (feature 13's drawer stop button) and
- * image.attach_bytes is `supported` (feature 19's composer image-attach flow). The
- * four baseline methods June already calls live (grep-confirmed in
- * `AgentWorkspace.tsx`) are `supported`.
+ * subagent.interrupt is `supported` (feature 13's drawer stop button), and both
+ * image.attach and image.attach_bytes are `supported` (feature 19's native path
+ * flow plus its additive byte fallback). The four baseline methods June already
+ * calls live (grep-confirmed in `AgentWorkspace.tsx`) are `supported`.
  */
 const methods: HermesCompatibilitySection = {
   // --- Baseline: June already calls these in the live session flow today. ---
@@ -165,15 +165,15 @@ const methods: HermesCompatibilitySection = {
     since: PIN,
   },
   "image.attach": {
-    status: "unsupported",
+    status: "supported",
     rationale:
-      "The pinned Hermes runtime exposes path-based image.attach, but June's desktop composer uploads client-side image bytes instead so it does not depend on gateway-local file paths.",
-    since: PIN,
+      "The desktop bridge validates and snapshots a June-owned workspace image into a runtime-session directory, then the composer passes only that native path through attachImagePath; image bytes never cross Tauri IPC or the gateway WebSocket. Covered by native path-boundary, hermes-image-attach, control-plane-methods, and agent-workspace tests.",
+    since: CURRENT_PIN,
   },
   "image.attach_bytes": {
     status: "supported",
     rationale:
-      "Feature 19 wires the composer's imported images into image.attach_bytes (attachImage): on submit each pending image is read from the workspace and attached, the chip shows imported/attached/failed, a failed attach blocks the send, and the attachment lands in feature 14's artifact timeline; covered by hermes-image-attach and agent-workspace tests. The base64 is read on demand and never stored in React state or the trace.",
+      "The additive attachImage byte-upload method remains available for remote/legacy callers that cannot use a gateway-local path. The desktop composer now prefers image.attach and does not read base64 on its normal attach path.",
     since: PIN,
   },
   "sudo.respond": {
@@ -313,7 +313,7 @@ const features: HermesCompatibilitySection = {
   imageEditing: {
     status: "partial",
     rationale:
-      "Feature 19 ships explicit source-image selection: imported images attach to the session via image.attach_bytes (so an edit prompt names a concrete image instead of relying on a path in prose), with imported/attached/failed status and the attachment in the artifact timeline. June does not yet render the edited image_generate OUTPUT back inline, so this stays partial rather than supported; covered by hermes-image-attach and agent-workspace tests.",
+      "Feature 19 ships explicit source-image selection: imported images attach to the session through a Rust-validated native path (with image.attach_bytes retained as an additive fallback), with imported/attached/failed status and the attachment in the artifact timeline. June does not yet render the edited image_generate OUTPUT back inline, so this stays partial rather than supported; covered by hermes-image-attach and agent-workspace tests.",
     since: PIN,
   },
   automationBlueprints: {
@@ -394,6 +394,6 @@ export const OWNERSHIP: Readonly<Record<string, readonly string[]>> = Object.fre
   "11": ["events.subagent"],
   "12": ["events.subagent", "features.backgroundSubagentWatch"],
   "13": ["methods.subagent.interrupt"],
-  "19": ["methods.image.attach_bytes", "features.imageEditing"],
+  "19": ["methods.image.attach", "methods.image.attach_bytes", "features.imageEditing"],
   "JUN-210": ["methods.session.create", "features.profile-switching"],
 });

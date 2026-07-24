@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HermesGatewayClient, HermesGatewayError, isSessionBusyError } from "../lib/hermes-gateway";
+import {
+  forceDisconnectHermesGatewayClients,
+  HermesGatewayClient,
+  HermesGatewayError,
+  HermesGatewayRequestTimeoutError,
+  HermesGatewaySendQueueOverflowError,
+  isSessionBusyError,
+} from "../lib/hermes-gateway";
+import {
+  createHermesIdleSubmitGateway,
+  HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS,
+} from "../lib/hermes-idle-submit-recovery";
 
 type Listener = (event: unknown) => void;
 
@@ -11,6 +22,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
   readyState = FakeWebSocket.CONNECTING;
+  bufferedAmount = 0;
   sent: string[] = [];
   private listeners = new Map<string, Listener[]>();
 
@@ -71,6 +83,8 @@ describe("HermesGatewayClient", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -97,6 +111,30 @@ describe("HermesGatewayClient", () => {
 
     await client.connect("ws://gateway");
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("unregisters a mode client when its initial connection times out", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const onClose = vi.fn();
+      client.onClose(onClose);
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.close = vi.fn();
+      const timedOut = expect(connecting).rejects.toThrow("Hermes gateway connection timed out.");
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await timedOut;
+
+      // A delayed open event from the failed socket must not resurrect the
+      // client in the mode registry or participate in future disconnects.
+      socket.open();
+      forceDisconnectHermesGatewayClients(false);
+      expect(onClose).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores a stale socket's close event for requests pending on the new socket", async () => {
@@ -160,6 +198,152 @@ describe("HermesGatewayClient", () => {
     expect(isSessionBusyError(new Error("session busy"))).toBe(false);
   });
 
+  it("queues sends behind socket backpressure and flushes them in request order", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient();
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+
+      socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+      const first = client.request<{ ok: string }>("first");
+      const second = client.request<{ ok: string }>("second");
+      expect(socket.sent).toEqual([]);
+
+      socket.bufferedAmount = 0;
+      await vi.advanceTimersByTimeAsync(16);
+
+      const frames = socket.sent.map((raw) => JSON.parse(raw) as { id: number; method: string });
+      expect(frames.map((frame) => frame.method)).toEqual(["first", "second"]);
+
+      socket.message({ id: frames[0].id, result: { ok: "first" } });
+      socket.message({ id: frames[1].id, result: { ok: "second" } });
+      await expect(first).resolves.toEqual({ ok: "first" });
+      await expect(second).resolves.toEqual({ ok: "second" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a request that would overflow the bounded send queue", async () => {
+    const client = new HermesGatewayClient();
+    const connecting = client.connect("ws://gateway");
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await connecting;
+
+    socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+    const queued = Array.from({ length: 128 }, (_, index) =>
+      client.request(`queued.${index}`).catch((error: unknown) => error),
+    );
+
+    const overflow = client.request("overflow");
+    await expect(overflow).rejects.toBeInstanceOf(HermesGatewaySendQueueOverflowError);
+    await expect(overflow).rejects.toMatchObject({ method: "overflow" });
+    expect(socket.sent).toEqual([]);
+
+    client.close();
+    const errors = await Promise.all(queued);
+    expect(errors).toHaveLength(128);
+    expect(errors.every((error) => error instanceof Error)).toBe(true);
+  });
+
+  it("keeps request timeout accounting active while a send waits for drain", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient();
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+
+      socket.bufferedAmount = Number.MAX_SAFE_INTEGER;
+      const pending = client.request("session.active_list", {}, 25);
+      const timedOut = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(timedOut).resolves.toBeInstanceOf(HermesGatewayRequestTimeoutError);
+
+      socket.bufferedAmount = 0;
+      await vi.advanceTimersByTimeAsync(16);
+      expect(socket.sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dispatches a 500-frame burst in ordered, yielding time-budgeted batches", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient();
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+
+      let simulatedNow = 0;
+      let batch = 0;
+      const batchSizes: number[] = [];
+      const received: number[] = [];
+      vi.spyOn(performance, "now").mockImplementation(() => simulatedNow);
+      const setTimeout = window.setTimeout.bind(window);
+      vi.spyOn(window, "setTimeout").mockImplementation(((
+        handler: TimerHandler,
+        timeout?: number,
+        ...args: unknown[]
+      ) => {
+        if (timeout === 0) batch += 1;
+        return setTimeout(handler, timeout, ...args);
+      }) as typeof window.setTimeout);
+      client.onEvent((event) => {
+        const index = (event.payload as { index: number }).index;
+        received.push(index);
+        batchSizes[batch] = (batchSizes[batch] ?? 0) + 1;
+        simulatedNow += 1;
+      });
+
+      for (let index = 0; index < 500; index += 1) {
+        socket.message({
+          method: "event",
+          params: { type: "message.delta", session_id: "session-1", payload: { index } },
+        });
+      }
+
+      expect(received).toEqual([]);
+      await Promise.resolve();
+      expect(received.length).toBeGreaterThan(0);
+      expect(received.length).toBeLessThan(500);
+
+      await vi.runAllTimersAsync();
+
+      expect(received).toEqual(Array.from({ length: 500 }, (_, index) => index));
+      expect(batchSizes.length).toBeGreaterThan(1);
+      expect(Math.max(...batchSizes)).toBeLessThanOrEqual(8);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replay a queued frame to a listener attached after ingress", async () => {
+    const client = new HermesGatewayClient();
+    const connecting = client.connect("ws://gateway");
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    await connecting;
+
+    socket.message({
+      method: "event",
+      params: { type: "message.delta", session_id: "session-1" },
+    });
+    const lateListener = vi.fn();
+    client.onEvent(lateListener);
+
+    await Promise.resolve();
+    expect(lateListener).not.toHaveBeenCalled();
+  });
+
   it("notifies close listeners on unexpected drops but not on explicit close", async () => {
     const client = new HermesGatewayClient();
     const onClose = vi.fn();
@@ -180,5 +364,325 @@ describe("HermesGatewayClient", () => {
     // Intentional teardown → listeners stay quiet.
     client.close();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("force-disconnects a stalled mode and allows its existing client to reconnect", async () => {
+    const client = new HermesGatewayClient(false);
+    const onClose = vi.fn();
+    client.onClose(onClose);
+
+    const first = client.connect("ws://gateway");
+    const stalled = FakeWebSocket.instances[0];
+    stalled.open();
+    await first;
+
+    forceDisconnectHermesGatewayClients(false);
+
+    expect(stalled.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    const recovering = client.connect("ws://gateway");
+    const recovered = FakeWebSocket.instances[1];
+    recovered.open();
+    await recovering;
+
+    expect(recovered.readyState).toBe(FakeWebSocket.OPEN);
+    expect(onClose).toHaveBeenCalledOnce();
+    client.close();
+  });
+
+  it("bounds an idle submit stall by retrying only a read-only preflight", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const connecting = client.connect("ws://gateway");
+      FakeWebSocket.instances[0].open();
+      await connecting;
+      const reconnect = vi.fn(async () => {
+        const reconnecting = client.connect("ws://gateway");
+        FakeWebSocket.instances.at(-1)?.open();
+        await reconnecting;
+        return client;
+      });
+      const submitGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => true,
+        reconnect,
+      });
+      const startedAt = Date.now();
+      const pending = submitGateway.request<{ accepted: boolean }>("prompt.submit", {
+        session_id: "runtime-cached",
+        text: "Recovered submit",
+      });
+
+      // The first socket remains OPEN but never answers the safe preflight.
+      const stalled = FakeWebSocket.instances[0];
+      const stalledFrame = JSON.parse(stalled.sent[0]) as { method: string };
+      expect(stalledFrame.method).toBe("session.active_list");
+      await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      expect(reconnect).toHaveBeenCalledOnce();
+      expect(FakeWebSocket.instances).toHaveLength(2);
+
+      const recovered = FakeWebSocket.instances[1];
+      const retriedProbe = JSON.parse(recovered.sent[0]) as { id: number; method: string };
+      expect(retriedProbe.method).toBe("session.active_list");
+      recovered.message({ id: retriedProbe.id, result: { sessions: [] } });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const submitFrame = JSON.parse(recovered.sent[1]) as { id: number; method: string };
+      expect(submitFrame.method).toBe("prompt.submit");
+      const allMethods = FakeWebSocket.instances.flatMap((socket) =>
+        socket.sent.map((raw) => (JSON.parse(raw) as { method: string }).method),
+      );
+      expect(allMethods.filter((method) => method === "prompt.submit")).toHaveLength(1);
+      recovered.message({ id: submitFrame.id, result: { accepted: true } });
+
+      await expect(pending).resolves.toEqual({ accepted: true });
+      expect(Date.now() - startedAt).toBeLessThan(10_000);
+      expect(stalled.sent).toHaveLength(1);
+      expect(recovered.sent).toHaveLength(2);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a healthy idle submit on one connection and sends mutating requests once", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+      const reconnect = vi.fn(async () => client);
+      const submitGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => true,
+        reconnect,
+      });
+      const creating = submitGateway.request<{ session_id: string }>("session.create", {
+        title: "Healthy submit",
+      });
+      const probeFrame = JSON.parse(socket.sent[0]) as { id: number; method: string };
+      expect(probeFrame.method).toBe("session.active_list");
+      socket.message({ id: probeFrame.id, result: { sessions: [] } });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const createFrame = JSON.parse(socket.sent[1]) as { id: number; method: string };
+      expect(createFrame.method).toBe("session.create");
+      socket.message({ id: createFrame.id, result: { session_id: "runtime-healthy" } });
+      await expect(creating).resolves.toEqual({ session_id: "runtime-healthy" });
+
+      const submitting = submitGateway.request<{ accepted: boolean }>("prompt.submit", {
+        session_id: "runtime-healthy",
+        text: "Continue normally",
+      });
+      await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS + 1);
+      expect(reconnect).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+
+      const submitFrame = JSON.parse(socket.sent[2]) as { id: number; method: string };
+      expect(submitFrame.method).toBe("prompt.submit");
+      socket.message({ id: submitFrame.id, result: { accepted: true } });
+      await expect(submitting).resolves.toEqual({ accepted: true });
+      expect(socket.sent.map((raw) => (JSON.parse(raw) as { method: string }).method)).toEqual([
+        "session.active_list",
+        "session.create",
+        "prompt.submit",
+      ]);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a live prompt.submit whose acknowledgement takes four seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+      const reconnect = vi.fn(async () => client);
+      const submitGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => true,
+        reconnect,
+      });
+      const pending = submitGateway.request<{ accepted: boolean }>("prompt.submit", {
+        session_id: "runtime-cached",
+        text: "Wait for the live runtime",
+      });
+      const probeFrame = JSON.parse(socket.sent[0]) as { id: number; method: string };
+      expect(probeFrame.method).toBe("session.active_list");
+      socket.message({ id: probeFrame.id, result: { sessions: [] } });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const submitFrame = JSON.parse(socket.sent[1]) as { id: number; method: string };
+      expect(submitFrame.method).toBe("prompt.submit");
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      expect(reconnect).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+      expect(
+        socket.sent.filter(
+          (raw) => (JSON.parse(raw) as { method: string }).method === "prompt.submit",
+        ),
+      ).toHaveLength(1);
+      socket.message({ id: submitFrame.id, result: { accepted: true } });
+      await expect(pending).resolves.toEqual({ accepted: true });
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the healthy active-submit request deadline unchanged", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const connecting = client.connect("ws://gateway");
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      await connecting;
+      const reconnect = vi.fn(async () => client);
+      let workingSessionExists = false;
+      const submitGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => !workingSessionExists,
+        reconnect,
+      });
+      // A run can start after submit preparation begins but before its first
+      // Gateway request. Read the shared lifecycle signal at request time so
+      // that race cannot force-disconnect active work.
+      workingSessionExists = true;
+      const pending = submitGateway.request<{ accepted: boolean }>("prompt.submit", {
+        session_id: "runtime-active",
+        text: "Keep going",
+      });
+
+      await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS + 1);
+      expect(reconnect).not.toHaveBeenCalled();
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+
+      const frame = JSON.parse(socket.sent[0]) as { id: number };
+      socket.message({ id: frame.id, result: { accepted: true } });
+      await expect(pending).resolves.toEqual({ accepted: true });
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces a preflight retry failure without sending the caller request", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const connecting = client.connect("ws://gateway");
+      FakeWebSocket.instances[0].open();
+      await connecting;
+      const reconnect = vi.fn(async () => {
+        const reconnecting = client.connect("ws://gateway");
+        FakeWebSocket.instances.at(-1)?.open();
+        await reconnecting;
+        return client;
+      });
+      const submitGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => true,
+        reconnect,
+      });
+      const pending = submitGateway.request("session.resume", {
+        session_id: "stored-session",
+      });
+
+      await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      const recovered = FakeWebSocket.instances[1];
+      const retriedFrame = JSON.parse(recovered.sent[0]) as { id: number };
+      recovered.message({
+        id: retriedFrame.id,
+        error: { code: 5001, message: "Gateway still unavailable." },
+      });
+
+      await expect(pending).rejects.toMatchObject({
+        code: 5001,
+        message: "Gateway still unavailable.",
+      });
+      expect(reconnect).toHaveBeenCalledOnce();
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      const methods = FakeWebSocket.instances.flatMap((socket) =>
+        socket.sent.map((raw) => (JSON.parse(raw) as { method: string }).method),
+      );
+      expect(methods).toEqual(["session.active_list", "session.active_list"]);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shares a same-mode preflight so recovery cannot interrupt a concurrent submit", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new HermesGatewayClient(false);
+      const connecting = client.connect("ws://gateway");
+      FakeWebSocket.instances[0].open();
+      await connecting;
+      const reconnect = vi.fn(async () => {
+        const reconnecting = client.connect("ws://gateway");
+        FakeWebSocket.instances.at(-1)?.open();
+        await reconnecting;
+        return client;
+      });
+      const firstGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => true,
+        reconnect,
+      });
+      const secondGateway = createHermesIdleSubmitGateway({
+        fullMode: false,
+        gateway: client,
+        shouldProbeFirstRequest: () => true,
+        reconnect,
+      });
+      const first = firstGateway.request<{ accepted: boolean }>("prompt.submit", {
+        session_id: "runtime-one",
+        text: "First",
+      });
+      const second = secondGateway.request<{ accepted: boolean }>("prompt.submit", {
+        session_id: "runtime-two",
+        text: "Second",
+      });
+
+      expect(FakeWebSocket.instances[0].sent).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(HERMES_IDLE_SUBMIT_PROBE_TIMEOUT_MS);
+      const recovered = FakeWebSocket.instances[1];
+      expect(recovered.sent).toHaveLength(1);
+      const probe = JSON.parse(recovered.sent[0]) as { id: number; method: string };
+      expect(probe.method).toBe("session.active_list");
+      recovered.message({ id: probe.id, result: { sessions: [] } });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const submitFrames = recovered.sent
+        .map((raw) => JSON.parse(raw) as { id: number; method: string })
+        .filter((frame) => frame.method === "prompt.submit");
+      expect(submitFrames).toHaveLength(2);
+      recovered.message({ id: submitFrames[0].id, result: { accepted: true } });
+      recovered.message({ id: submitFrames[1].id, result: { accepted: true } });
+      await expect(first).resolves.toEqual({ accepted: true });
+      await expect(second).resolves.toEqual({ accepted: true });
+      expect(reconnect).toHaveBeenCalledOnce();
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

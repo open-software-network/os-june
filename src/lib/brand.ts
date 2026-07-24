@@ -19,6 +19,7 @@
 
 import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export type BrandId = "rose" | "clay" | "sage" | "ocean" | "plum";
 
@@ -159,10 +160,10 @@ export function initBrand() {
 
 // Secondary windows (HUDs): apply the stored accent on load and keep it in
 // sync when the main window changes it.
-export function subscribeBrand() {
+export function subscribeBrand(): Promise<UnlistenFn> {
   applyBrandVar(getStoredBrand());
-  if (!inTauri()) return;
-  void import("@tauri-apps/api/event").then(({ listen }) =>
+  if (!inTauri()) return Promise.resolve(() => {});
+  return import("@tauri-apps/api/event").then(({ listen }) =>
     listen<BrandId>(ACCENT_EVENT, (event) => applyBrandVar(event.payload, { animate: true })),
   );
 }

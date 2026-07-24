@@ -3350,6 +3350,7 @@ dependencies = [
  "cua-driver-core",
  "dotenvy",
  "dunce",
+ "futures-core",
  "hound",
  "keyring",
  "libc",

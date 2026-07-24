@@ -257,6 +257,14 @@ export type JuneHermesEvent =
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
 
+/** True when an event carries an incremental transcript or reasoning chunk. */
+export function isHermesStreamDelta(event: JuneHermesEvent): boolean {
+  return (
+    (event.kind === "transcript" && !event.complete && event.delta !== undefined) ||
+    (event.kind === "reasoning" && !event.full)
+  );
+}
+
 /** True for classified events that end the current agent run.
  *
  * A successful `message.complete` seals one assistant transcript segment. It

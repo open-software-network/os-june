@@ -49,7 +49,11 @@ While capture is active, the native meeting-HUD supervisor samples capture at
 10 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
 payload carries the recording session id, state, elapsed time, audio levels,
 and live warnings; both the main renderer and meeting HUD subscribe to that
-single stream. Stable metadata still comes from the recording commands, and
+single stream. In the main renderer, the latest sample stays in a narrow
+external store: waveform subscribers receive level samples at 10 Hz, elapsed
+time subscribers publish only on whole-second boundaries, and the root App
+reducer receives only lifecycle, Source-health, and actionable-warning changes.
+Stable metadata still comes from the recording commands, and
 `get_recording_status` remains available as a read-only compatibility command.
 Recovery durability is independent of telemetry: a recording-scoped worker
 requests a ring watermark flush and checkpoints elapsed time every 500 ms after
@@ -130,8 +134,14 @@ Energy-based, per-source, **no diarization**:
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a
-reuse-original shortcut when already loud enough), then split into
-**≤30-second** chunks with rolling context.
+reuse-original shortcut when already loud enough). Normalization uses two
+streaming passes over bounded raw-sample chunks: the first computes the
+downmixed peak and sample count, and the second carries one global linear
+resampler position across chunks while applying gain and writing incrementally.
+Its working memory is fixed regardless of recording duration, and its global
+resampler position preserves the historical whole-buffer output byte for byte.
+The normalized WAV is then split into **≤30-second** chunks with rolling
+context.
 
 ## Recovery
 

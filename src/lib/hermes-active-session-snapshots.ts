@@ -1,5 +1,9 @@
 import { hermesConnectionForMode } from "./hermes-connection";
-import { HermesGatewayClient } from "./hermes-gateway";
+import {
+  forceDisconnectHermesGatewayClients,
+  HermesGatewayClient,
+  HermesGatewayRequestTimeoutError,
+} from "./hermes-gateway";
 import { hermesBridgeStatus } from "./tauri";
 
 export type HermesActiveSessionRow = {
@@ -25,20 +29,29 @@ type ModeObserver = {
 
 const SNAPSHOT_INTERVAL_MS = 500;
 const SNAPSHOT_REQUEST_TIMEOUT_MS = SNAPSHOT_INTERVAL_MS;
+export const HERMES_GATEWAY_HEARTBEAT_MISS_THRESHOLD = 3;
 const listenersByMode = new Map<boolean, Set<SnapshotListener>>();
 const observersByMode = new Map<boolean, ModeObserver>();
 const cycleInFlightByMode = new Set<boolean>();
 const cycleTimersByMode = new Map<boolean, ReturnType<typeof setTimeout>>();
 const immediateCyclesByMode = new Set<boolean>();
+const heartbeatMissesByMode = new Map<boolean, number>();
 
 function modeHasListeners(fullMode: boolean) {
   return Boolean(listenersByMode.get(fullMode)?.size);
+}
+
+/** Whether working-session consumers currently keep this mode's shared
+ * lifecycle and heartbeat polling active. */
+export function hasHermesActiveSessionSnapshotSubscribers(fullMode: boolean) {
+  return modeHasListeners(fullMode);
 }
 
 function closeObserver(fullMode: boolean) {
   const observer = observersByMode.get(fullMode);
   if (!observer) return;
   observersByMode.delete(fullMode);
+  heartbeatMissesByMode.delete(fullMode);
   observer.gateway.close();
 }
 
@@ -63,7 +76,7 @@ function scheduleCycle(fullMode: boolean, delayMs: number) {
 }
 
 function createObserver(fullMode: boolean) {
-  const gateway = new HermesGatewayClient();
+  const gateway = new HermesGatewayClient(fullMode);
   const observer: ModeObserver = { connected: false, gateway };
   gateway.onClose(() => {
     if (observersByMode.get(fullMode) === observer) {
@@ -135,8 +148,20 @@ async function pollMode(fullMode: boolean) {
     const response = await observer.gateway.request<{
       sessions?: HermesActiveSessionRow[];
     }>("session.active_list", {}, SNAPSHOT_REQUEST_TIMEOUT_MS);
+    heartbeatMissesByMode.delete(fullMode);
     publishSnapshot(fullMode, true, Array.isArray(response?.sessions) ? response.sessions : []);
-  } catch {
+  } catch (error) {
+    if (error instanceof HermesGatewayRequestTimeoutError) {
+      const misses = (heartbeatMissesByMode.get(fullMode) ?? 0) + 1;
+      if (misses >= HERMES_GATEWAY_HEARTBEAT_MISS_THRESHOLD) {
+        heartbeatMissesByMode.delete(fullMode);
+        forceDisconnectHermesGatewayClients(fullMode);
+      } else {
+        heartbeatMissesByMode.set(fullMode, misses);
+      }
+    } else {
+      heartbeatMissesByMode.delete(fullMode);
+    }
     // Unreachable is an observation, not an empty active-session list. It
     // engages bounded native-persistence fallbacks while preserving
     // locally-known activity.
@@ -182,6 +207,7 @@ export function subscribeHermesActiveSessionSnapshots(
     current?.delete(listener);
     if (current?.size) return;
     listenersByMode.delete(fullMode);
+    heartbeatMissesByMode.delete(fullMode);
     const timer = cycleTimersByMode.get(fullMode);
     if (timer !== undefined) clearTimeout(timer);
     cycleTimersByMode.delete(fullMode);
@@ -197,6 +223,7 @@ export function resetHermesActiveSessionSnapshotsForTests() {
   cycleTimersByMode.clear();
   cycleInFlightByMode.clear();
   immediateCyclesByMode.clear();
+  heartbeatMissesByMode.clear();
   listenersByMode.clear();
   for (const fullMode of [...observersByMode.keys()]) closeObserver(fullMode);
 }

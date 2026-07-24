@@ -133,7 +133,7 @@ and **every skill is symlinked into `.claude/skills/`**. A skill must never exis
 only under `.claude/`, and a `.claude/skills/<name>` entry must always be a
 symlink to `../../.agents/skills/<name>` — never a real directory. Add a new
 skill under `.agents/skills/<name>/` and create the `.claude/skills/<name>`
-symlink in the same change. Current project skills: `os-platform`,
+symlink in the same change. Current project skills: `os-design`, `os-platform`,
 `os-accounts-integration`, `os-rust-backend`, `os-rust-backend-ci`,
 `os-task-prep`, `repo-build-pr`, `repo-review`, `repo-delegate`,
 `repo-orchestrate`, `repo-retrospect`, `browser-test-tauri-fe`, `agent-e2e-qa`, plus the Spec

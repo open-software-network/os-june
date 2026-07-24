@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { pendingImageAttachments } from "../../lib/hermes-image-attach";
 import { shouldBlockTextOnFunding, type TextFundingModelContext } from "../../lib/account-gate";
 import { modelPrivacyBadge, modelSupportsImageInput } from "../../lib/model-privacy";
@@ -15,21 +15,18 @@ import { parseBuiltinComposerSlashCommand } from "../../lib/agent-composer-slash
 import { IMAGE_GENERATION_ENABLED } from "../../lib/feature-flags";
 import { isProvisionalHermesSessionId } from "./agent-workspace-config";
 import { sessionComposerDraftKey, NEW_SESSION_DRAFT_KEY } from "./agent-session-continuity";
-import {
-  artifactsFromFilesystemSnapshot,
-  composerInputSignatureFor,
-} from "./composer/composer-input-helpers";
+import { composerInputSignatureFor } from "./composer/composer-input-helpers";
 import type { UseAgentSelectionDependencies } from "./use-agent-selection-types";
 
 export function useAgentSelection(dependencies: UseAgentSelectionDependencies) {
   const {
     attachments,
+    artifactIndex,
     category,
     composerSizeWarning,
     creditActionsDisabledReason,
     defaultGenerationModelId,
     draft,
-    filesystemSnapshot,
     generationCostQuality,
     generationModels,
     hermesSessionItems,
@@ -203,9 +200,14 @@ export function useAgentSelection(dependencies: UseAgentSelectionDependencies) {
   const composerDraftKeyRef = useRef<string | null>(composerDraftKey);
   composerDraftKeyRef.current = composerDraftKey;
   const restoredComposerDraftKeyRef = useRef<string | null>();
+  const artifactIndexVersion = useSyncExternalStore(
+    artifactIndex.subscribe,
+    artifactIndex.getVersion,
+    artifactIndex.getVersion,
+  );
   const chatArtifacts = useMemo(
-    () => artifactsFromFilesystemSnapshot(filesystemSnapshot),
-    [filesystemSnapshot],
+    () => artifactIndex.getArtifacts(),
+    [artifactIndex, artifactIndexVersion],
   );
 
   return {

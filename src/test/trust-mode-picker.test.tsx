@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TrustModePicker } from "../components/routines/TrustModePicker";
 import type { RoutineTrustMode } from "../lib/tauri";
+import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 function renderPicker(
   props: Partial<{
@@ -15,6 +16,7 @@ function renderPicker(
 ) {
   return render(
     <TrustModePicker
+      policy={representativeConnectorPolicy()}
       value={props.value ?? "read_only"}
       runCount={props.runCount ?? 0}
       autonomousTools={props.autonomousTools ?? []}

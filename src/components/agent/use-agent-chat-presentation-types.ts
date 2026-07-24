@@ -2,11 +2,13 @@ import { type AgentTaskDto, type HermesSessionMessage } from "../../lib/tauri";
 import { type JuneHermesEvent } from "../../lib/hermes-control-plane";
 import { type AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { type AgentArtifact, type AgentArtifactPanelState } from "./chat-turns/AgentArtifactPanel";
+import type { AgentArtifactIndex } from "./artifact-index";
 import type { AgentWorkspaceErrorOptions } from "./agent-workspace-errors";
 import type * as React from "react";
 
 export type UseAgentChatPresentationDependencies = {
   DOWNLOAD_TOAST_ID: "agent-download";
+  artifactIndex: AgentArtifactIndex;
   chatArtifacts: AgentArtifact[];
   devArtifacts: AgentArtifact[];
   imageTurnsBySession: Record<string, AgentChatTurn[]>;

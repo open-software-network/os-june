@@ -42,6 +42,7 @@ describe("meeting detection HUD", () => {
   });
 
   afterEach(() => {
+    window.dispatchEvent(new Event("pagehide"));
     vi.useRealTimers();
   });
 

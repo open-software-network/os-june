@@ -40,8 +40,9 @@ import type {
   HermesMode,
   JuneHermesEvent,
 } from "./hermes-control-plane";
-import { nonEmpty } from "./hermes-control-plane";
+import { isHermesStreamDelta, nonEmpty } from "./hermes-control-plane";
 import { pendingActionStore } from "./hermes-pending-actions";
+import { createLeadingTrailingMicrobatch } from "./trailing-microbatch";
 
 /**
  * Cap on the number of sessions tracked at once. Live activity is inherently
@@ -49,6 +50,13 @@ import { pendingActionStore } from "./hermes-pending-actions";
  * rows the user hasn't dismissed; eviction drops the oldest by last activity.
  */
 export const ACTIVITY_SESSIONS_CAP = 50;
+
+/**
+ * Subscriber publications are capped at one leading/trailing update per 50 ms
+ * while transcript or reasoning deltas stream. Store mutation remains
+ * synchronous; only observers trail the authoritative projection.
+ */
+export const ACTIVITY_NOTIFICATION_INTERVAL_MS = 50;
 
 /** The phase a session's agent is in, derived from the latest event kind. */
 export type AgentActivityPhase = "running" | "waiting" | "background" | "error" | "complete";
@@ -115,7 +123,7 @@ export type HermesActivityStore = {
   activeCount(): number;
   /** Subscribe to changes (for `useSyncExternalStore`). Returns an unsubscribe. */
   subscribe(listener: () => void): () => void;
-  /** Monotonic version, bumped on every mutation (the snapshot getter). */
+  /** Monotonic version, bumped on every subscriber publication. */
   getVersion(): number;
 };
 
@@ -155,13 +163,24 @@ export function createHermesActivityStore(
   // on mutation so the most-recently-touched row sits last (eviction drops from
   // the front, i.e. the least recently active).
   const bySession = new Map<string, InternalRecord>();
+  // Last authoritative projection observed after each record call. Keep this
+  // separately from `bySession`: pendingActionCount comes from the companion
+  // pending-action store, which the ingress listener updates before calling
+  // record(). Re-reading the mutable row as "previous" would therefore miss a
+  // real count-only change such as two blockers becoming one.
+  const projectedBySession = new Map<string, AgentActivityRecord>();
   const listeners = new Set<() => void>();
   let version = 0;
 
-  function emit(): void {
+  function publish(): void {
     version += 1;
     for (const listener of listeners) listener();
   }
+
+  const notificationBatch = createLeadingTrailingMicrobatch(
+    publish,
+    ACTIVITY_NOTIFICATION_INTERVAL_MS,
+  );
 
   function record(event: JuneHermesEvent, mode: HermesMode): void {
     const sessionId = sessionIdOf(event);
@@ -169,6 +188,7 @@ export function createHermesActivityStore(
 
     const existing = bySession.get(sessionId);
     if (!existing && event.kind === "lifecycle" && event.flavor === "info") return;
+    const previous = projectedBySession.get(sessionId);
     const row: InternalRecord = existing ?? {
       sessionId,
       mode,
@@ -195,15 +215,29 @@ export function createHermesActivityStore(
       row.phase = "waiting";
     }
 
+    const next = toRecord(row);
+    if (sameRecord(previous, next)) return;
+
     // Re-key so this becomes the most-recently-touched entry for eviction.
     bySession.delete(sessionId);
     bySession.set(sessionId, row);
+    projectedBySession.set(sessionId, next);
     evict();
-    emit();
+
+    if (isHermesStreamDelta(event)) {
+      notificationBatch.schedule();
+    } else {
+      // Tool, approval, subagent, completion, and failure changes stay prompt.
+      // Flushing also publishes the latest projection from any queued deltas.
+      notificationBatch.flush();
+    }
   }
 
   function clearSession(sessionId: string): void {
-    if (bySession.delete(sessionId)) emit();
+    if (bySession.delete(sessionId)) {
+      projectedBySession.delete(sessionId);
+      notificationBatch.flush();
+    }
   }
 
   function getRecords(): AgentActivityRecord[] {
@@ -241,6 +275,7 @@ export function createHermesActivityStore(
       for (const [sessionId, row] of bySession) {
         if (!ACTIVE_PHASES.has(row.phase)) {
           bySession.delete(sessionId);
+          projectedBySession.delete(sessionId);
           evicted = true;
           break;
         }
@@ -249,6 +284,7 @@ export function createHermesActivityStore(
       const oldestActive = bySession.keys().next().value;
       if (oldestActive === undefined) break;
       bySession.delete(oldestActive);
+      projectedBySession.delete(oldestActive);
     }
   }
 
@@ -467,6 +503,50 @@ function countActiveSubagents(subagents: Map<string, BackgroundHermesActivity>):
     if (!isTerminalSubagentPhase(subagent.phase)) count += 1;
   }
   return count;
+}
+
+/**
+ * Projection equality for one activity row. `lastEventAt` is included: a
+ * burst still publishes its final observed time, but identical replays do not
+ * invalidate subscribers.
+ */
+function sameRecord(previous: AgentActivityRecord | undefined, next: AgentActivityRecord): boolean {
+  if (!previous) return false;
+  if (
+    previous.id !== next.id ||
+    previous.mode !== next.mode ||
+    previous.sessionId !== next.sessionId ||
+    previous.title !== next.title ||
+    previous.phase !== next.phase ||
+    previous.currentTool !== next.currentTool ||
+    previous.pendingActionCount !== next.pendingActionCount ||
+    previous.subagentCount !== next.subagentCount ||
+    previous.lastEventAt !== next.lastEventAt ||
+    previous.subagents.length !== next.subagents.length
+  ) {
+    return false;
+  }
+  return previous.subagents.every((subagent, index) =>
+    sameBackgroundActivity(subagent, next.subagents[index]),
+  );
+}
+
+function sameBackgroundActivity(
+  previous: BackgroundHermesActivity,
+  next: BackgroundHermesActivity,
+): boolean {
+  return (
+    previous.subagentId === next.subagentId &&
+    previous.handle === next.handle &&
+    previous.parentSessionId === next.parentSessionId &&
+    previous.phase === next.phase &&
+    previous.goal === next.goal &&
+    previous.currentTool === next.currentTool &&
+    previous.resultPreview === next.resultPreview &&
+    previous.taskIndex === next.taskIndex &&
+    previous.taskCount === next.taskCount &&
+    previous.lastEventAt === next.lastEventAt
+  );
 }
 
 /**

@@ -644,6 +644,12 @@ export type ImportedHermesFile = {
   previewDataUrl?: string | null;
 };
 
+export type PreparedHermesImageAttachment = {
+  path: string;
+  mimeType: string;
+  size: number;
+};
+
 export type HermesSkillInfo = {
   name: string;
   description?: string;
@@ -1343,6 +1349,12 @@ export async function hermesBridgeFilePreview(path: string) {
 export async function hermesBridgeImageDataUrl(path: string) {
   return invoke<string | null>("hermes_bridge_image_data_url", {
     request: { path },
+  });
+}
+
+export async function prepareHermesBridgeImageAttachment(sessionId: string, path: string) {
+  return invoke<PreparedHermesImageAttachment>("prepare_hermes_bridge_image_attachment", {
+    request: { sessionId, path },
   });
 }
 
@@ -2346,23 +2358,58 @@ export async function routineBrowserAccessSet(input: { jobId: string; enabled: b
 // Private connectors (local mode): Google and Linear
 // ---------------------------------------------------------------------------
 
-/** Feature bundle wire names the connect flow requests. Mirrors the Rust
- * `ScopeBundle::name()` registry in src-tauri/src/connectors/scopes.rs. */
-export type ConnectorScopeBundle =
-  | "gmail_read"
-  | "gmail_draft"
-  | "gmail_modify"
-  | "gmail_send"
-  | "calendar_read"
-  | "calendar_events"
-  | "linear_read"
-  | "linear_write"
-  | "github_read"
-  | "github_write";
+/** Stable feature-bundle id supplied by the native connector policy. */
+export type ConnectorScopeBundle = string;
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required" | "unavailable";
 
 export type ConnectorProvider = "google" | "linear" | "notion" | "github";
+
+export type ConnectorPolicyCatalog = {
+  version: number;
+  providers: Array<{
+    id: ConnectorProvider;
+    connectFlow: "oauth" | "hosted_mcp";
+    enabled: boolean;
+    defaultBundles: ConnectorScopeBundle[];
+  }>;
+  scopeBundles: Array<{
+    id: ConnectorScopeBundle;
+    provider: ConnectorProvider;
+    scopeIds: string[];
+  }>;
+  scopeImplications: Array<{
+    held: string;
+    grants: string[];
+  }>;
+  servers: Array<{
+    id: string;
+    provider: ConnectorProvider;
+    kind: "read" | "action";
+  }>;
+  serverOwnerPrefixes: Array<{
+    prefix: string;
+    provider: ConnectorProvider;
+  }>;
+  actionTools: Array<{
+    id: string;
+    server: string;
+    provider: ConnectorProvider;
+    grantable: boolean;
+  }>;
+  triggers: Array<{
+    id: ConnectorTriggerKind;
+    provider: ConnectorProvider;
+    requiredBundles: ConnectorScopeBundle[];
+  }>;
+  routine: {
+    sandboxedBaseToolsets: string[];
+    readToolsets: string[];
+    actionToolsets: string[];
+    autonomousServerPrefixes: string[];
+  };
+  earnedAutonomyMinApprovalRuns: number;
+};
 
 /** One Linear team: the granularity June's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once

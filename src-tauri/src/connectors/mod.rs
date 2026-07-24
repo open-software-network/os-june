@@ -19,7 +19,7 @@ pub mod google;
 pub mod linear;
 pub mod notion;
 pub mod oauth;
-pub mod scopes;
+pub mod policy;
 pub mod store;
 pub mod triggers;
 
@@ -958,7 +958,7 @@ fn conflicting_existing_account<'a>(
 pub async fn begin_connect(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
-    bundles: &[scopes::ScopeBundle],
+    bundles: &[policy::ScopeBundle],
     login_hint: Option<&str>,
 ) -> Result<ConnectorAccount, AppError> {
     let client = require_oauth_client()?;
@@ -969,14 +969,14 @@ pub async fn begin_connect(
     if let Some(hint) = login_hint.map(str::trim).filter(|hint| !hint.is_empty()) {
         let hint_lower = hint.to_ascii_lowercase();
         if let Some(record) = repos.get_connector_account(&hint_lower).await? {
-            let already_granted = scopes::missing_scopes(&record.scopes, bundles).is_empty();
+            let already_granted = policy::missing_scopes(&record.scopes, bundles).is_empty();
             if already_granted && record.status == ConnectorAccountStatus::Connected.as_str() {
                 return account_dto(&repos, record).await;
             }
         }
     }
 
-    let requested = scopes::requested_scopes(bundles);
+    let requested = policy::requested_scopes(bundles);
     let grant = oauth::authorize(
         flow,
         &client.client_id,
@@ -1042,7 +1042,7 @@ pub async fn begin_connect(
         })
         .map(|record| record.scopes.as_slice());
     let granted_scopes =
-        scopes::resolve_granted_scopes(grant.tokens.scope.as_deref(), &requested, existing_scopes);
+        policy::resolve_granted_scopes(grant.tokens.scope.as_deref(), &requested, existing_scopes);
 
     // Scope escalation on an existing grant can omit the refresh token; keep
     // the one already in custody then.
@@ -1126,7 +1126,7 @@ fn linear_account_metadata_json(identity: &linear::LinearIdentity) -> String {
 pub async fn begin_connect_linear(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
-    bundles: &[scopes::ScopeBundle],
+    bundles: &[policy::ScopeBundle],
     reconnect_account_id: Option<&str>,
 ) -> Result<ConnectorAccount, AppError> {
     // Defensive: the command layer validates too, but a Google bundle here
@@ -1154,7 +1154,7 @@ pub async fn begin_connect_linear(
     // that already holds every wanted scope needs no new consent.
     if let Some(account_id) = reconnect_account_id {
         if let Some(record) = repos.get_connector_account(account_id).await? {
-            let already_granted = scopes::missing_scopes(&record.scopes, bundles).is_empty();
+            let already_granted = policy::missing_scopes(&record.scopes, bundles).is_empty();
             if record.provider == ConnectorProvider::Linear.as_str()
                 && already_granted
                 && record.status == ConnectorAccountStatus::Connected.as_str()
@@ -1164,7 +1164,7 @@ pub async fn begin_connect_linear(
         }
     }
 
-    let requested = scopes::requested_linear_scopes(bundles);
+    let requested = policy::requested_linear_scopes(bundles);
     let grant = linear::authorize(flow, &client_id, &requested, &linear_loopback_ports()).await?;
     let identity = grant.identity;
     let workspace_id = identity.workspace_id.clone();
@@ -1342,7 +1342,7 @@ async fn ensure_github_installed(access_token: &str) -> Result<(), AppError> {
 pub async fn begin_connect_github(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
-    bundles: &[scopes::ScopeBundle],
+    bundles: &[policy::ScopeBundle],
     reconnect_account_id: Option<&str>,
 ) -> Result<ConnectorAccount, AppError> {
     // Defensive: the command layer validates too, but a Google bundle here
@@ -1370,7 +1370,7 @@ pub async fn begin_connect_github(
     // that already holds every wanted scope needs no new device-flow round-trip.
     if let Some(account_id) = reconnect_account_id {
         if let Some(record) = repos.get_connector_account(account_id).await? {
-            let already_granted = scopes::missing_scopes(&record.scopes, bundles).is_empty();
+            let already_granted = policy::missing_scopes(&record.scopes, bundles).is_empty();
             if record.provider == ConnectorProvider::Github.as_str()
                 && already_granted
                 && record.status == ConnectorAccountStatus::Connected.as_str()
@@ -1465,7 +1465,7 @@ pub async fn begin_connect_github(
     // determined by what the user requested. When write is being added to an
     // existing account, union the requested markers with the stored ones so a
     // write-escalation never drops the read marker.
-    let requested_markers = scopes::requested_github_scopes(bundles);
+    let requested_markers = policy::requested_github_scopes(bundles);
     let existing_scopes = existing_accounts
         .iter()
         .find(|record| {
@@ -1474,7 +1474,7 @@ pub async fn begin_connect_github(
         })
         .map(|record| record.scopes.as_slice());
     // GitHub returns no scope field; always use the fallback union path.
-    let granted_scopes = scopes::resolve_granted_scopes(None, &requested_markers, existing_scopes);
+    let granted_scopes = policy::resolve_granted_scopes(None, &requested_markers, existing_scopes);
 
     // Refresh-token keep-existing fallback on escalation: when GitHub omits
     // the refresh token on a write-escalation connect AND the custody already

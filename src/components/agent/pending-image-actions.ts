@@ -1,9 +1,9 @@
-import { hermesBridgeImageDataUrl } from "../../lib/tauri";
-import { HermesGatewayClient } from "../../lib/hermes-gateway";
+import { hermesBridgeImageDataUrl, prepareHermesBridgeImageAttachment } from "../../lib/tauri";
 import {
   createHermesMethods,
   hermesModeFor,
   isHermesFeatureSupported,
+  type HermesRequestLike,
 } from "../../lib/hermes-control-plane";
 import {
   attachImageToSession,
@@ -23,7 +23,7 @@ export function createPendingImageActions(dependencies: createPendingImageAction
   const { pendingFastPathImagesRef, setComposerAttachments } = dependencies;
 
   async function attachPendingImages(
-    gateway: HermesGatewayClient,
+    gateway: HermesRequestLike,
     runtimeSessionId: string,
     storedSessionId: string,
     turnAttachments: AgentAttachment[],
@@ -39,6 +39,9 @@ export function createPendingImageActions(dependencies: createPendingImageAction
       ),
     );
     const deps = {
+      prepareImagePath: prepareHermesBridgeImageAttachment,
+      attachImagePath: methods.attachImagePath,
+      isPathSupported: () => isHermesFeatureSupported("image.attach"),
       attachImage: methods.attachImage,
       readImageData: async (path: string) =>
         heldImageDataByPath.get(path) ?? (await hermesBridgeImageDataUrl(path)),

@@ -19,7 +19,7 @@ export function createAttachmentImportActions(
     agentAttachmentFromImportedFile,
     composerEditorRef,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordImportedArtifact,
     setComposerAttachments,
     setError,
     setImportingFiles,
@@ -51,7 +51,9 @@ export function createAttachmentImportActions(
       // of staging the whole batch (up to ~400 MB) in memory at once.
       const imported: ImportedHermesFile[] = [];
       for (const item of items) {
-        imported.push(await importItem(item));
+        const file = await importItem(item);
+        recordImportedArtifact(file);
+        imported.push(file);
       }
       const nextAttachments = imported.map(agentAttachmentFromImportedFile);
       if (options.onImported) {
@@ -60,7 +62,6 @@ export function createAttachmentImportActions(
         setComposerAttachments((current) => [...current, ...nextAttachments]);
       }
       setError(null);
-      void loadFilesystemSnapshot();
       return true;
     } catch (err) {
       setError(messageFromError(err));

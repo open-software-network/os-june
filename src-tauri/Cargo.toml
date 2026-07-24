@@ -50,6 +50,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 dotenvy = "0.15"
+futures-core = "0.3"
 hound = "3.5"
 # fd plumbing (pipe/dup2) for the managed browser's CDP pipe transport.
 libc = "0.2"
