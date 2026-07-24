@@ -660,13 +660,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
                 }),
               }
             : {}),
-          onSessionCreated: ({
-            created,
-            dispatchReservation: activeReservation,
-            storedSessionId,
-          }) => {
+          onSessionCreated: ({ dispatchReservation: activeReservation, storedSessionId }) => {
             dispatchReservation = activeReservation;
-            if (!created) return;
             capturedAppliedHermesModelId = capturedHermesModelId;
             if (submissionIsCurrent()) {
               appliedHermesModelIdRef.current = capturedHermesModelId;

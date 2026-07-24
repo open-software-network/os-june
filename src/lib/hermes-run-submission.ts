@@ -26,7 +26,6 @@ export type HermesRunSessionCreation = {
   profileAssignment?: {
     profile: string;
     assign: (storedSessionId: string, profile: string) => Promise<void>;
-    timing?: "before-session-resolved" | "after-session-resolved";
   };
 };
 
@@ -165,13 +164,10 @@ export async function submitHermesRun<RunLease = never>({
     if (created) {
       await onSessionCreated?.(resolvedSessionContext);
     }
-    if (profileAssignment && profileAssignment.timing !== "after-session-resolved") {
+    if (profileAssignment) {
       await profileAssignment.assign(storedSessionId, profileAssignment.profile);
     }
     await onSessionResolved?.(resolvedSessionContext);
-    if (profileAssignment?.timing === "after-session-resolved") {
-      await profileAssignment.assign(storedSessionId, profileAssignment.profile);
-    }
 
     const runtimeSessionId =
       created?.session_id ??
@@ -243,6 +239,7 @@ export async function submitHermesRun<RunLease = never>({
       };
     });
   } catch (error) {
+    // cancel() is a no-op once run() has begun, so this only releases pre-dispatch failures.
     dispatchReservation?.cancel();
     throw error;
   }
