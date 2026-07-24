@@ -4,8 +4,10 @@ type TauriListener = (event: { payload: unknown }) => unknown;
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn().mockResolvedValue(undefined),
+  listeners: new Map<string, TauriListener>(),
   unlistenHandles: [] as ReturnType<typeof vi.fn>[],
-  listen: vi.fn((_event: string, _listener: TauriListener) => {
+  listen: vi.fn((event: string, listener: TauriListener) => {
+    mocks.listeners.set(event, listener);
     const unlisten = vi.fn();
     mocks.unlistenHandles.push(unlisten);
     return Promise.resolve(unlisten);
@@ -13,6 +15,14 @@ const mocks = vi.hoisted(() => ({
   hide: vi.fn().mockResolvedValue(undefined),
   startDragging: vi.fn().mockResolvedValue(undefined),
 }));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver;
+  });
+  return { promise, resolve };
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invoke,
@@ -33,7 +43,9 @@ describe("HUD listener lifecycle", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.listeners.clear();
     mocks.unlistenHandles.length = 0;
+    mocks.invoke.mockResolvedValue(undefined);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -41,7 +53,12 @@ describe("HUD listener lifecycle", () => {
     document.body.innerHTML = `
       <main id="agent-hud"></main>
       <main id="hud"></main>
-      <main id="mhud"></main>
+      <main id="mhud">
+        <span class="mhud-bar"></span>
+        <span id="mhud-end-seconds">15</span>
+        <button id="mhud-end-keep" type="button">Keep recording</button>
+        <button id="mhud-end-stop" type="button">Stop now</button>
+      </main>
     `;
   });
 
@@ -55,7 +72,7 @@ describe("HUD listener lifecycle", () => {
     await import("../hud");
     await import("../meeting-hud");
     await vi.waitFor(() => {
-      expect(mocks.unlistenHandles).toHaveLength(15);
+      expect(mocks.unlistenHandles).toHaveLength(16);
     });
 
     window.dispatchEvent(new Event("beforeunload"));
@@ -65,6 +82,77 @@ describe("HUD listener lifecycle", () => {
         expect(unlisten).toHaveBeenCalledOnce();
       }
     });
+  });
+
+  it("shows the meeting-end countdown and wires both safety actions", async () => {
+    await import("../meeting-hud");
+    await vi.waitFor(() => {
+      expect(mocks.listeners.has("meeting-end-state-event")).toBe(true);
+    });
+
+    const countdown = {
+      sessionId: "meeting-session",
+      phase: "countdown",
+      expiresAtMs: Date.now() + 15_000,
+    };
+    mocks.listeners.get("meeting-end-state-event")?.({ payload: countdown });
+
+    const pill = document.querySelector<HTMLElement>("#mhud");
+    const keep = document.querySelector<HTMLButtonElement>("#mhud-end-keep");
+    const stop = document.querySelector<HTMLButtonElement>("#mhud-end-stop");
+    expect(pill?.dataset.mode).toBe("meeting-end");
+    expect(document.querySelector("#mhud-end-seconds")?.textContent).toBe("15");
+    expect(keep?.disabled).toBe(false);
+    expect(stop?.disabled).toBe(false);
+
+    keep?.click();
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("keep_meeting_recording", {
+        sessionId: "meeting-session",
+      });
+    });
+
+    mocks.listeners.get("meeting-end-state-event")?.({ payload: countdown });
+    stop?.click();
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("queue_meeting_end_finish_request", {
+        sessionId: "meeting-session",
+      });
+    });
+
+    mocks.listeners.get("meeting-end-state-event")?.({
+      payload: { sessionId: "meeting-session", phase: "tracking" },
+    });
+    expect(pill?.dataset.mode).toBeUndefined();
+  });
+
+  it("does not let the initial meeting-end read overwrite a newer HUD event", async () => {
+    const initialStatusRead = deferred<{
+      sessionId: string;
+      phase: "countdown";
+      expiresAtMs: number;
+    } | null>();
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "pending_meeting_end_status") return initialStatusRead.promise;
+      return Promise.resolve(undefined);
+    });
+
+    await import("../meeting-hud");
+    await vi.waitFor(() => {
+      expect(mocks.listeners.has("meeting-end-state-event")).toBe(true);
+    });
+    mocks.listeners.get("meeting-end-state-event")?.({
+      payload: { sessionId: "meeting-session", phase: "finishQueued" },
+    });
+    initialStatusRead.resolve({
+      sessionId: "meeting-session",
+      phase: "countdown",
+      expiresAtMs: Date.now() + 15_000,
+    });
+    await initialStatusRead.promise;
+    await Promise.resolve();
+
+    expect(document.querySelector<HTMLElement>("#mhud")?.dataset.mode).toBeUndefined();
   });
 
   it("releases a Tauri listener that resolves after beforeunload", async () => {

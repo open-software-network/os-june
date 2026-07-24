@@ -12,10 +12,11 @@
 //! The main renderer and HUD subscribe to the same event instead of polling
 //! capture independently.
 //!
-//! The window is a fixed square that covers the pill in both orientations, so
-//! it never resizes. The frosted surface is a real NSVisualEffectView sized to
-//! the pill behind the webview (CSS `backdrop-filter` can't sample other apps'
-//! pixels), and depth comes from the native NSWindow shadow.
+//! The window normally stays square around the pill in either orientation. The
+//! end-of-meeting grace period temporarily grows it into a card. The frosted
+//! surface is a real NSVisualEffectView sized to the visible pill or card (CSS
+//! `backdrop-filter` can't sample other apps' pixels), and depth comes from the
+//! native NSWindow shadow.
 //!
 //! The pill is orientation-aware: parked in the left or right third of the
 //! screen it stands upright (mark above the waveform); in the middle third it
@@ -64,6 +65,10 @@ const VERTICAL_PILL_LENGTH: f64 = 62.0;
 /// quarter turn always fits without resizing the native frame — the transparent
 /// gutters above/below (or beside) the pill are part of the window.
 const WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 76.0);
+/// The end-of-meeting card replaces the compact presence pill during its
+/// countdown. The window grows around a 320x76 CSS card with a small transparent
+/// gutter for the native shadow.
+const END_PROMPT_WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(340.0, 96.0);
 
 /// How long the quarter turn takes. The easing matches the app's `--ease-out`
 /// token (cubic-bezier(0.22, 1, 0.36, 1)) so the HUD moves like the rest of
@@ -102,6 +107,9 @@ pub struct MeetingHudState {
     /// Which screen third the pill currently occupies; the webview mirrors this
     /// as its layout orientation.
     zone: Mutex<Zone>,
+    /// The webview expands into an interactive end-of-meeting card while the
+    /// native detector's countdown is active.
+    end_prompt_expanded: Mutex<bool>,
 }
 
 pub fn setup(app: &mut tauri::App) {
@@ -111,6 +119,7 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(MeetingHudState {
         latest_status: Mutex::new(None),
         zone: Mutex::new(Zone::Center),
+        end_prompt_expanded: Mutex::new(false),
     });
     if let Err(error) = configure_window(app.handle()) {
         tracing::warn!(%error, "failed to configure meeting HUD");
@@ -145,6 +154,41 @@ pub fn meeting_hud_reopen(app: AppHandle) {
         "meeting-hud-action",
         serde_json::json!({ "action": "reopen", "noteId": note_id }),
     );
+}
+
+#[tauri::command]
+pub fn meeting_hud_set_end_prompt_expanded(
+    app: AppHandle,
+    state: State<'_, MeetingHudState>,
+    expanded: bool,
+) -> Result<(), String> {
+    let mut guard = state
+        .end_prompt_expanded
+        .lock()
+        .map_err(|_| "meeting HUD state is unavailable".to_string())?;
+    if *guard == expanded {
+        return Ok(());
+    }
+    *guard = expanded;
+    drop(guard);
+
+    let Some(hud) = app.get_webview_window(WINDOW_LABEL) else {
+        return Ok(());
+    };
+    if expanded {
+        set_orientation(&hud, false, false);
+        hud.set_size(END_PROMPT_WINDOW_SIZE)
+            .map_err(|error| error.to_string())?;
+        set_end_prompt_surface(&hud, true);
+        position_end_prompt(&hud);
+    } else {
+        hud.set_size(WINDOW_SIZE)
+            .map_err(|error| error.to_string())?;
+        set_end_prompt_surface(&hud, false);
+        position_window(&app, &hud);
+        apply_zone_now(&hud, &state);
+    }
+    Ok(())
 }
 
 fn is_live(state: RecordingState) -> bool {
@@ -296,10 +340,22 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
         return ACTIVE_TICK;
     };
 
-    let should_show = main_window_dismissed(app);
+    let end_prompt_expanded = state
+        .end_prompt_expanded
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or(false);
+    // The end prompt is the safety grace period, not merely passive presence.
+    // Keep it visible even when the main window is frontmost or is showing a
+    // different note from the recording owner.
+    let should_show = end_prompt_expanded || main_window_dismissed(app);
     let visible = hud.is_visible().unwrap_or(false);
     if should_show && !visible {
-        if tracker.show_armed {
+        if end_prompt_expanded {
+            tracker.show_armed = false;
+            position_end_prompt(&hud);
+            let _ = hud.show();
+        } else if tracker.show_armed {
             // Position + zone went out last tick; the webview has had a full
             // tick to apply data-orient before the first visible frame.
             tracker.show_armed = false;
@@ -318,7 +374,7 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
         }
     }
 
-    if hud.is_visible().unwrap_or(false) {
+    if hud.is_visible().unwrap_or(false) && !end_prompt_expanded {
         track_zone(&hud, &state, tracker);
     }
     ACTIVE_TICK
@@ -446,6 +502,18 @@ fn set_orientation(hud: &WebviewWindow, vertical: bool, animate: bool) {
 #[cfg(not(target_os = "macos"))]
 fn set_orientation(_hud: &WebviewWindow, _vertical: bool, _animate: bool) {}
 
+#[cfg(target_os = "macos")]
+fn set_end_prompt_surface(hud: &WebviewWindow, expanded: bool) {
+    let window = hud.clone();
+    let _ = hud.run_on_main_thread(move || unsafe {
+        resize_frost_for_end_prompt(&window, expanded);
+        invalidate_shadow(&window);
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_end_prompt_surface(_hud: &WebviewWindow, _expanded: bool) {}
+
 fn configure_window(app: &AppHandle) -> Result<(), String> {
     if let Some(hud) = app.get_webview_window(WINDOW_LABEL) {
         hud.set_always_on_top(true)
@@ -472,6 +540,13 @@ fn configure_window(app: &AppHandle) -> Result<(), String> {
         let app_for_events = app.clone();
         hud.on_window_event(move |event| {
             if let WindowEvent::Moved(position) = event {
+                let expanded = app_for_events
+                    .try_state::<MeetingHudState>()
+                    .and_then(|state| state.end_prompt_expanded.lock().ok().map(|guard| *guard))
+                    .unwrap_or(false);
+                if expanded {
+                    return;
+                }
                 if let Some(state) = app_for_events.try_state::<MeetingHudPosition>() {
                     if let Ok(mut guard) = state.inner.lock() {
                         *guard = Some((position.x, position.y));
@@ -501,6 +576,26 @@ fn position_window(app: &AppHandle, hud: &WebviewWindow) {
     if let Some((x, y)) = default_position(hud, window_size) {
         let _ = hud.set_position(PhysicalPosition::new(x, y));
     }
+}
+
+fn position_end_prompt(hud: &WebviewWindow) {
+    const BOTTOM_MARGIN: i32 = 16;
+    let scale = hud.scale_factor().unwrap_or(1.0);
+    let width = (END_PROMPT_WINDOW_SIZE.width * scale).round() as i32;
+    let height = (END_PROMPT_WINDOW_SIZE.height * scale).round() as i32;
+    let monitor = hud
+        .cursor_position()
+        .ok()
+        .and_then(|cursor| hud.monitor_from_point(cursor.x, cursor.y).ok().flatten())
+        .or_else(|| hud.current_monitor().ok().flatten())
+        .or_else(|| hud.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return;
+    };
+    let work = monitor.work_area();
+    let x = work.position.x + (work.size.width as i32 - width) / 2;
+    let y = work.position.y + work.size.height as i32 - height - BOTTOM_MARGIN;
+    let _ = hud.set_position(PhysicalPosition::new(x, y));
 }
 
 fn default_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
@@ -656,6 +751,41 @@ unsafe fn frost_view(content: *mut AnyObject) -> *mut AnyObject {
         }
     }
     std::ptr::null_mut()
+}
+
+/// Resize the native vibrancy surface to the same visible bounds as the CSS
+/// pill or end prompt. The webview window itself includes a transparent gutter
+/// for the shadow in both modes.
+#[cfg(target_os = "macos")]
+unsafe fn resize_frost_for_end_prompt(hud: &WebviewWindow, expanded: bool) {
+    use objc2::msg_send;
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let (_, content) = content_view(hud);
+    if content.is_null() {
+        return;
+    }
+    let frost = frost_view(content);
+    if frost.is_null() {
+        return;
+    }
+    let (window, surface, radius) = if expanded {
+        (END_PROMPT_WINDOW_SIZE, LogicalSize::new(320.0, 76.0), 14.0)
+    } else {
+        (WINDOW_SIZE, PILL_SIZE, 10.0)
+    };
+    let frame = NSRect::new(
+        NSPoint::new(
+            (window.width - surface.width) / 2.0,
+            (window.height - surface.height) / 2.0,
+        ),
+        NSSize::new(surface.width, surface.height),
+    );
+    let _: () = msg_send![frost, setFrame: frame];
+    let layer: *mut AnyObject = msg_send![frost, layer];
+    if !layer.is_null() {
+        let _: () = msg_send![layer, setCornerRadius: radius];
+    }
 }
 
 /// Turn the contentView's layer between flat (0°) and upright (90°). Because
@@ -820,7 +950,7 @@ fn make_nonactivating(hud: &WebviewWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::{PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
+    use super::{END_PROMPT_WINDOW_SIZE, PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
     use crate::domain::types::{
         AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState, RecordingStatusDto,
         RecordingTelemetryDto, SourceState, SourceStatusDto,
@@ -870,6 +1000,14 @@ mod tests {
         assert_eq!(
             css_px(&css, ".mhud[data-orient=\"vertical\"]", "width"),
             VERTICAL_PILL_LENGTH,
+        );
+        assert_eq!(
+            css_px(&css, ".mhud[data-mode=\"meeting-end\"]", "width") + 20.0,
+            END_PROMPT_WINDOW_SIZE.width,
+        );
+        assert_eq!(
+            css_px(&css, ".mhud[data-mode=\"meeting-end\"]", "height") + 20.0,
+            END_PROMPT_WINDOW_SIZE.height,
         );
 
         let conf: serde_json::Value = serde_json::from_str(

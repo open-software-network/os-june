@@ -1,4 +1,6 @@
-use crate::domain::types::{AppError, NoteDto, RecordingSessionDto};
+use crate::domain::types::{
+    AppError, NoteDto, RecordingOrigin, RecordingOriginMetadata, RecordingSessionDto,
+};
 use serde::Serialize;
 use std::{
     collections::BTreeSet,
@@ -9,10 +11,17 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
 const HEARTBEAT_EVERY_ACTIVE_POLLS: u8 = 5;
+const MEETING_END_ABSENT_POLLS: u8 = 15;
+const MEETING_END_ABSENCE_MS: u64 = 15_000;
+const MEETING_END_COUNTDOWN_POLLS: u8 = 15;
+const MEETING_END_COUNTDOWN_MS: u64 = 15_000;
+const MEETING_END_MAX_PROBE_GAP_MS: u64 = 2_500;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEETING_DETECTION_EVENT_NAME: &str = "meeting-detection-event";
 const MEETING_START_REQUEST_EVENT_NAME: &str = "june://meeting-start-transcription";
 const MEETING_START_REQUEST_TTL_MS: u64 = 30_000;
+pub const MEETING_END_STATE_EVENT_NAME: &str = "meeting-end-state-event";
+pub const MEETING_END_FINISH_REQUEST_EVENT_NAME: &str = "june://meeting-end-finish";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +56,7 @@ struct MeetingStartRequest {
     request_id: String,
     note_id: String,
     requested_at_ms: u64,
+    bundle_families: Vec<String>,
     phase: MeetingStartRequestPhase,
 }
 
@@ -59,6 +69,8 @@ struct MeetingStartRequestMailbox {
 #[derive(Debug, Default)]
 pub struct MeetingStartRequestState {
     mailbox: Mutex<MeetingStartRequestMailbox>,
+    detected_bundle_families: Mutex<BTreeSet<String>>,
+    meeting_end: Mutex<Option<MeetingEndTracker>>,
     start_lock: tokio::sync::Mutex<()>,
 }
 
@@ -83,6 +95,13 @@ impl MeetingStartRequestState {
             request_id: request_id.clone(),
             note_id: uuid::Uuid::new_v4().to_string(),
             requested_at_ms,
+            bundle_families: self
+                .detected_bundle_families
+                .lock()
+                .map_err(|_| "meeting detection state is unavailable".to_string())?
+                .iter()
+                .cloned()
+                .collect(),
             phase: MeetingStartRequestPhase::Queued,
         });
         Ok(request_id)
@@ -172,6 +191,26 @@ impl MeetingStartRequestState {
         }
     }
 
+    pub fn start_bundle_families(&self, request_id: &str) -> Result<Vec<String>, AppError> {
+        let mailbox = self.mailbox.lock().map_err(|_| {
+            AppError::new(
+                "meeting_start_unavailable",
+                "The meeting start request is unavailable.",
+            )
+        })?;
+        let pending = mailbox
+            .pending
+            .as_ref()
+            .filter(|pending| pending.request_id == request_id)
+            .ok_or_else(|| {
+                AppError::new(
+                    "meeting_start_not_found",
+                    "The meeting start request was not found.",
+                )
+            })?;
+        Ok(pending.bundle_families.clone())
+    }
+
     pub fn finished_outcome(
         &self,
         request_id: &str,
@@ -249,6 +288,361 @@ impl MeetingStartRequestState {
             }));
         Ok(true)
     }
+
+    fn set_detected_bundle_families(
+        &self,
+        bundle_families: BTreeSet<String>,
+    ) -> Result<(), String> {
+        *self
+            .detected_bundle_families
+            .lock()
+            .map_err(|_| "meeting detection state is unavailable".to_string())? = bundle_families;
+        Ok(())
+    }
+
+    pub fn arm_meeting_end(
+        &self,
+        session_id: String,
+        origin: &RecordingOriginMetadata,
+    ) -> Result<Option<MeetingEndStatus>, AppError> {
+        if origin.origin != RecordingOrigin::MeetingPrompt || !origin.auto_finish_eligible {
+            return Ok(None);
+        }
+        let tracked_families = origin
+            .meeting_app_bundle_families
+            .iter()
+            .cloned()
+            .filter_map(|family| {
+                let family = family.trim().to_ascii_lowercase();
+                (!family.is_empty()).then_some(family)
+            })
+            .collect::<BTreeSet<_>>();
+        if tracked_families.is_empty() {
+            return Ok(None);
+        }
+        let tracker = MeetingEndTracker::new(session_id, tracked_families);
+        let status = tracker.status();
+        *self.meeting_end.lock().map_err(|_| {
+            AppError::new(
+                "meeting_end_unavailable",
+                "Meeting end detection is unavailable.",
+            )
+        })? = Some(tracker);
+        Ok(Some(status))
+    }
+
+    fn observe_meeting_end(
+        &self,
+        active_bundle_families: Option<&BTreeSet<String>>,
+        now_ms: u64,
+    ) -> Result<Option<MeetingEndTransition>, String> {
+        let mut guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        Ok(guard
+            .as_mut()
+            .and_then(|tracker| tracker.observe(active_bundle_families, now_ms)))
+    }
+
+    fn clear_meeting_end_if_inactive<F>(&self, current_session_id: F) -> Result<bool, String>
+    where
+        F: FnOnce() -> Option<String>,
+    {
+        let mut guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        let Some(tracker) = guard.as_ref() else {
+            return Ok(false);
+        };
+        // Read capture ownership while holding the tracker lock. An arm that
+        // races this reconciliation is therefore ordered entirely before the
+        // live read or entirely after this no-op/clear decision.
+        let active_session_id = current_session_id();
+        let should_clear = Some(tracker.session_id.as_str()) != active_session_id.as_deref();
+        if should_clear {
+            *guard = None;
+        }
+        Ok(should_clear)
+    }
+
+    fn meeting_end_status(&self) -> Result<Option<MeetingEndStatus>, String> {
+        let guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        Ok(guard.as_ref().map(MeetingEndTracker::status))
+    }
+
+    fn queue_meeting_end_finish(
+        &self,
+        session_id: &str,
+    ) -> Result<(MeetingEndStatus, PendingMeetingEndFinishRequest), String> {
+        let mut guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        let tracker = guard
+            .as_mut()
+            .filter(|tracker| tracker.session_id == session_id)
+            .ok_or_else(|| "meeting end request is no longer current".to_string())?;
+        let request = tracker.queue_finish()?;
+        Ok((tracker.status(), request))
+    }
+
+    fn keep_meeting_recording(&self, session_id: &str) -> Result<MeetingEndStatus, String> {
+        let mut guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        let tracker = guard
+            .as_mut()
+            .filter(|tracker| tracker.session_id == session_id)
+            .ok_or_else(|| "meeting end request is no longer current".to_string())?;
+        tracker.keep_recording()?;
+        Ok(tracker.status())
+    }
+
+    fn pending_meeting_end_finish(&self) -> Result<Option<PendingMeetingEndFinishRequest>, String> {
+        let guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        Ok(guard
+            .as_ref()
+            .and_then(|tracker| tracker.pending_finish.clone()))
+    }
+
+    fn acknowledge_meeting_end_finish(&self, request_id: &str) -> Result<bool, String> {
+        let mut guard = self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())?;
+        let Some(tracker) = guard.as_mut() else {
+            return Ok(false);
+        };
+        let matches = tracker
+            .pending_finish
+            .as_ref()
+            .is_some_and(|request| request.request_id == request_id);
+        if matches {
+            tracker.pending_finish = None;
+        }
+        Ok(matches)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MeetingEndPhase {
+    Tracking,
+    Countdown,
+    Suppressed,
+    FinishQueued,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingEndStatus {
+    pub session_id: String,
+    pub phase: MeetingEndPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingMeetingEndFinishRequest {
+    pub request_id: String,
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MeetingEndTrackerPhase {
+    Tracking {
+        absent_polls: u8,
+    },
+    Countdown {
+        expires_at_ms: u64,
+        countdown_polls: u8,
+    },
+    Suppressed,
+    FinishQueued,
+}
+
+#[derive(Clone, Debug)]
+struct MeetingEndTracker {
+    session_id: String,
+    tracked_families: BTreeSet<String>,
+    phase: MeetingEndTrackerPhase,
+    last_successful_probe_at_ms: Option<u64>,
+    absence_started_at_ms: Option<u64>,
+    next_request_id: u64,
+    pending_finish: Option<PendingMeetingEndFinishRequest>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MeetingEndTransition {
+    StateChanged(MeetingEndStatus),
+    FinishQueued(MeetingEndStatus, PendingMeetingEndFinishRequest),
+}
+
+impl MeetingEndTracker {
+    fn new(session_id: String, tracked_families: BTreeSet<String>) -> Self {
+        Self {
+            session_id,
+            tracked_families,
+            phase: MeetingEndTrackerPhase::Tracking { absent_polls: 0 },
+            last_successful_probe_at_ms: None,
+            absence_started_at_ms: None,
+            next_request_id: 0,
+            pending_finish: None,
+        }
+    }
+
+    fn status(&self) -> MeetingEndStatus {
+        let (phase, expires_at_ms) = match self.phase {
+            MeetingEndTrackerPhase::Tracking { .. } => (MeetingEndPhase::Tracking, None),
+            MeetingEndTrackerPhase::Countdown { expires_at_ms, .. } => {
+                (MeetingEndPhase::Countdown, Some(expires_at_ms))
+            }
+            MeetingEndTrackerPhase::Suppressed => (MeetingEndPhase::Suppressed, None),
+            MeetingEndTrackerPhase::FinishQueued => (MeetingEndPhase::FinishQueued, None),
+        };
+        MeetingEndStatus {
+            session_id: self.session_id.clone(),
+            phase,
+            expires_at_ms,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        active_bundle_families: Option<&BTreeSet<String>>,
+        now_ms: u64,
+    ) -> Option<MeetingEndTransition> {
+        let Some(active_bundle_families) = active_bundle_families else {
+            self.last_successful_probe_at_ms = None;
+            return self.reset_after_ambiguous_probe();
+        };
+
+        let previous_probe_at_ms = self.last_successful_probe_at_ms;
+        let probe_gap = previous_probe_at_ms.map(|previous| now_ms.saturating_sub(previous));
+        let contiguous_probe = probe_gap.is_some_and(|gap| gap <= MEETING_END_MAX_PROBE_GAP_MS);
+        self.last_successful_probe_at_ms = Some(now_ms);
+        if probe_gap.is_some_and(|gap| gap > MEETING_END_MAX_PROBE_GAP_MS) {
+            let transition = self.reset_after_ambiguous_probe();
+            if transition.is_some() {
+                return transition;
+            }
+        }
+
+        if matches!(
+            self.phase,
+            MeetingEndTrackerPhase::Suppressed | MeetingEndTrackerPhase::FinishQueued
+        ) {
+            return None;
+        }
+
+        let originating_app_active = !self.tracked_families.is_disjoint(active_bundle_families);
+        if originating_app_active {
+            self.absence_started_at_ms = None;
+            return match self.phase {
+                MeetingEndTrackerPhase::Countdown { .. } => {
+                    self.phase = MeetingEndTrackerPhase::Tracking { absent_polls: 0 };
+                    Some(MeetingEndTransition::StateChanged(self.status()))
+                }
+                MeetingEndTrackerPhase::Tracking {
+                    ref mut absent_polls,
+                } => {
+                    *absent_polls = 0;
+                    None
+                }
+                _ => None,
+            };
+        }
+
+        match &mut self.phase {
+            MeetingEndTrackerPhase::Tracking { absent_polls } => {
+                let absence_started_at_ms = *self.absence_started_at_ms.get_or_insert_with(|| {
+                    if contiguous_probe {
+                        previous_probe_at_ms.unwrap_or(now_ms)
+                    } else {
+                        now_ms
+                    }
+                });
+                *absent_polls = absent_polls.saturating_add(1);
+                if *absent_polls < MEETING_END_ABSENT_POLLS
+                    || now_ms.saturating_sub(absence_started_at_ms) < MEETING_END_ABSENCE_MS
+                {
+                    return None;
+                }
+                self.phase = MeetingEndTrackerPhase::Countdown {
+                    expires_at_ms: now_ms.saturating_add(MEETING_END_COUNTDOWN_MS),
+                    countdown_polls: 0,
+                };
+                Some(MeetingEndTransition::StateChanged(self.status()))
+            }
+            MeetingEndTrackerPhase::Countdown {
+                expires_at_ms,
+                countdown_polls,
+            } => {
+                *countdown_polls = countdown_polls.saturating_add(1);
+                if *countdown_polls < MEETING_END_COUNTDOWN_POLLS || now_ms < *expires_at_ms {
+                    return None;
+                }
+                let request = self
+                    .queue_finish()
+                    .expect("countdown phase can queue one finish request");
+                Some(MeetingEndTransition::FinishQueued(self.status(), request))
+            }
+            MeetingEndTrackerPhase::Suppressed | MeetingEndTrackerPhase::FinishQueued => None,
+        }
+    }
+
+    fn reset_after_ambiguous_probe(&mut self) -> Option<MeetingEndTransition> {
+        self.absence_started_at_ms = None;
+        match self.phase {
+            MeetingEndTrackerPhase::Tracking {
+                ref mut absent_polls,
+            } => {
+                *absent_polls = 0;
+                None
+            }
+            MeetingEndTrackerPhase::Countdown { .. } => {
+                self.phase = MeetingEndTrackerPhase::Tracking { absent_polls: 0 };
+                Some(MeetingEndTransition::StateChanged(self.status()))
+            }
+            MeetingEndTrackerPhase::Suppressed | MeetingEndTrackerPhase::FinishQueued => None,
+        }
+    }
+
+    fn queue_finish(&mut self) -> Result<PendingMeetingEndFinishRequest, String> {
+        if let Some(request) = self.pending_finish.clone() {
+            return Ok(request);
+        }
+        if !matches!(self.phase, MeetingEndTrackerPhase::Countdown { .. }) {
+            return Err("meeting end countdown is not active".to_string());
+        }
+        self.next_request_id = self.next_request_id.saturating_add(1).max(1);
+        let request = PendingMeetingEndFinishRequest {
+            request_id: format!("{}:{}", self.session_id, self.next_request_id),
+            session_id: self.session_id.clone(),
+        };
+        self.phase = MeetingEndTrackerPhase::FinishQueued;
+        self.pending_finish = Some(request.clone());
+        Ok(request)
+    }
+
+    fn keep_recording(&mut self) -> Result<(), String> {
+        if !matches!(self.phase, MeetingEndTrackerPhase::Countdown { .. }) {
+            return Err("meeting end countdown is not active".to_string());
+        }
+        self.phase = MeetingEndTrackerPhase::Suppressed;
+        self.pending_finish = None;
+        Ok(())
+    }
 }
 
 fn wall_clock_millis() -> Result<u64, String> {
@@ -286,6 +680,64 @@ pub fn acknowledge_meeting_start_request(
     request_id: String,
 ) -> Result<bool, String> {
     state.acknowledge(&request_id)
+}
+
+#[tauri::command]
+pub fn pending_meeting_end_status(
+    state: State<'_, MeetingStartRequestState>,
+) -> Result<Option<MeetingEndStatus>, String> {
+    state.meeting_end_status()
+}
+
+#[tauri::command]
+pub fn pending_meeting_end_finish_request(
+    state: State<'_, MeetingStartRequestState>,
+) -> Result<Option<PendingMeetingEndFinishRequest>, String> {
+    state.pending_meeting_end_finish()
+}
+
+#[tauri::command]
+pub fn queue_meeting_end_finish_request(
+    app: AppHandle,
+    state: State<'_, MeetingStartRequestState>,
+    session_id: String,
+) -> Result<(), String> {
+    let (status, request) = state.queue_meeting_end_finish(&session_id)?;
+    emit_meeting_end_state(&app, Some(status));
+    emit_meeting_end_finish_request(&app, &request);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn keep_meeting_recording(
+    app: AppHandle,
+    state: State<'_, MeetingStartRequestState>,
+    session_id: String,
+) -> Result<(), String> {
+    let status = state.keep_meeting_recording(&session_id)?;
+    emit_meeting_end_state(&app, Some(status));
+    Ok(())
+}
+
+#[tauri::command]
+pub fn acknowledge_meeting_end_finish_request(
+    state: State<'_, MeetingStartRequestState>,
+    request_id: String,
+) -> Result<bool, String> {
+    state.acknowledge_meeting_end_finish(&request_id)
+}
+
+pub fn arm_meeting_end_for_recording(
+    app: &AppHandle,
+    session_id: String,
+    origin: &RecordingOriginMetadata,
+) -> Result<bool, AppError> {
+    let state = app.state::<MeetingStartRequestState>();
+    let Some(status) = state.arm_meeting_end(session_id, origin)? else {
+        return Ok(false);
+    };
+    emit_meeting_end_state(app, Some(status));
+    Ok(true)
 }
 
 struct AllowedMicApp {
@@ -473,6 +925,32 @@ fn allowed_mic_app(bundle_id: &str) -> Option<&'static AllowedMicApp> {
         .find(|app| bundle_id_matches_prefix(bundle_id, app.bundle_prefix))
 }
 
+fn bundle_family_from_bundle_id(bundle_id: &str) -> Option<String> {
+    allowed_mic_app(bundle_id).map(|app| app.bundle_prefix.to_ascii_lowercase())
+}
+
+fn meeting_end_bundle_families(
+    active_input_processes: &[MicrophoneInputProcess],
+    owned_pids: &BTreeSet<u32>,
+) -> Option<BTreeSet<String>> {
+    let external_processes = active_input_processes
+        .iter()
+        .filter(|process| process.pid != 0 && !owned_pids.contains(&process.pid))
+        .collect::<Vec<_>>();
+    if external_processes
+        .iter()
+        .any(|process| !is_allowed_microphone_app(&process.bundle_id))
+    {
+        return None;
+    }
+    Some(
+        external_processes
+            .into_iter()
+            .filter_map(|process| bundle_family_from_bundle_id(&process.bundle_id))
+            .collect(),
+    )
+}
+
 #[cfg(target_os = "macos")]
 fn spawn_monitor(app: AppHandle) {
     std::thread::spawn(move || {
@@ -486,30 +964,91 @@ fn spawn_monitor(app: AppHandle) {
                 if let Some(event) = state.update(false, false, false) {
                     emit_detection_event(&app, event, &[]);
                 }
+                observe_meeting_end(&app, None);
                 continue;
             }
 
             let active_processes = match active_input_processes() {
                 Ok(active_processes) => {
                     warned_after_probe_error = false;
-                    active_processes
+                    Some(active_processes)
                 }
                 Err(error) => {
                     if !warned_after_probe_error {
                         tracing::warn!(%error, "meeting detection probe failed");
                         warned_after_probe_error = true;
                     }
-                    Vec::new()
+                    None
                 }
             };
-            let allowed_processes =
-                active_allowed_external_processes(&active_processes, &owned_pids(&app));
-            let capture_active = crate::audio::capture::is_capture_active();
-            if let Some(event) = state.update(true, !allowed_processes.is_empty(), capture_active) {
-                emit_detection_event(&app, event, &allowed_processes);
+            let owned_pids = owned_pids(&app);
+            let allowed_processes = active_processes
+                .as_ref()
+                .map(|processes| active_allowed_external_processes(processes, &owned_pids));
+            let bundle_families = active_processes
+                .as_ref()
+                .and_then(|processes| meeting_end_bundle_families(processes, &owned_pids));
+            if let (Some(runtime), Some(bundle_families)) = (
+                app.try_state::<MeetingStartRequestState>(),
+                bundle_families.as_ref(),
+            ) {
+                if let Err(error) = runtime.set_detected_bundle_families(bundle_families.clone()) {
+                    tracing::warn!(%error, "failed to retain detected meeting app families");
+                }
+            }
+
+            let capture_status = crate::audio::capture::current_status();
+            let capture_active = capture_status.is_some();
+            if let Some(runtime) = app.try_state::<MeetingStartRequestState>() {
+                match runtime.clear_meeting_end_if_inactive(|| {
+                    crate::audio::capture::current_status().map(|status| status.session_id)
+                }) {
+                    Ok(true) => emit_meeting_end_state(&app, None),
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to reconcile meeting end session")
+                    }
+                }
+            }
+            observe_meeting_end(&app, bundle_families.as_ref());
+
+            let external_input_active = allowed_processes
+                .as_ref()
+                .is_some_and(|processes| !processes.is_empty());
+            if let Some(event) = state.update(true, external_input_active, capture_active) {
+                emit_detection_event(
+                    &app,
+                    event,
+                    allowed_processes.as_deref().unwrap_or_default(),
+                );
             }
         }
     });
+}
+
+#[cfg(target_os = "macos")]
+fn observe_meeting_end(app: &AppHandle, active_bundle_families: Option<&BTreeSet<String>>) {
+    let Some(state) = app.try_state::<MeetingStartRequestState>() else {
+        return;
+    };
+    let now_ms = match wall_clock_millis() {
+        Ok(now_ms) => now_ms,
+        Err(error) => {
+            tracing::warn!(%error, "meeting end clock unavailable");
+            return;
+        }
+    };
+    match state.observe_meeting_end(active_bundle_families, now_ms) {
+        Ok(Some(MeetingEndTransition::StateChanged(status))) => {
+            emit_meeting_end_state(app, Some(status));
+        }
+        Ok(Some(MeetingEndTransition::FinishQueued(status, request))) => {
+            emit_meeting_end_state(app, Some(status));
+            emit_meeting_end_finish_request(app, &request);
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "meeting end detection update failed"),
+    }
 }
 
 fn owned_pids(app: &AppHandle) -> BTreeSet<u32> {
@@ -580,6 +1119,14 @@ fn emit_detection_event(
             tracing::warn!(%error, "failed to encode meeting detection event");
         }
     }
+}
+
+fn emit_meeting_end_state(app: &AppHandle, status: Option<MeetingEndStatus>) {
+    let _ = app.emit(MEETING_END_STATE_EVENT_NAME, status);
+}
+
+fn emit_meeting_end_finish_request(app: &AppHandle, request: &PendingMeetingEndFinishRequest) {
+    let _ = app.emit(MEETING_END_FINISH_REQUEST_EVENT_NAME, request);
 }
 
 #[cfg(target_os = "macos")]
@@ -1118,6 +1665,288 @@ mod tests {
             .into_iter()
             .map(|process| process.pid)
             .collect()
+    }
+
+    fn families(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn meeting_end_tracker(tracked: &[&str]) -> MeetingEndTracker {
+        MeetingEndTracker::new("meeting-session".to_string(), families(tracked))
+    }
+
+    fn advance_absence_to_countdown(
+        tracker: &mut MeetingEndTracker,
+        start_ms: u64,
+    ) -> MeetingEndStatus {
+        let active = tracker.tracked_families.clone();
+        assert_eq!(
+            tracker.observe(Some(&active), start_ms.saturating_sub(1_000)),
+            None
+        );
+        let empty = BTreeSet::new();
+        let mut transition = None;
+        for poll in 0..MEETING_END_ABSENT_POLLS {
+            transition = tracker.observe(
+                Some(&empty),
+                start_ms.saturating_add(u64::from(poll) * 1_000),
+            );
+        }
+        let Some(MeetingEndTransition::StateChanged(status)) = transition else {
+            panic!("expected countdown transition");
+        };
+        status
+    }
+
+    #[test]
+    fn initial_absence_samples_require_fifteen_elapsed_seconds() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos"]);
+        let empty = BTreeSet::new();
+
+        for poll in 0..MEETING_END_ABSENT_POLLS {
+            assert_eq!(tracker.observe(Some(&empty), u64::from(poll) * 1_000), None);
+        }
+        assert_eq!(tracker.status().phase, MeetingEndPhase::Tracking);
+        assert!(matches!(
+            tracker.observe(Some(&empty), MEETING_END_ABSENCE_MS),
+            Some(MeetingEndTransition::StateChanged(MeetingEndStatus {
+                phase: MeetingEndPhase::Countdown,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn meeting_start_snapshots_stable_bundle_families() {
+        let state = MeetingStartRequestState::default();
+        state
+            .set_detected_bundle_families(families(&["us.zoom.xos", "com.google.chrome"]))
+            .expect("store families");
+        let request_id = state.queue_at(1_000).expect("queue meeting start");
+
+        assert_eq!(
+            state
+                .start_bundle_families(&request_id)
+                .expect("read snapshotted families"),
+            vec!["com.google.chrome".to_string(), "us.zoom.xos".to_string()]
+        );
+    }
+
+    #[test]
+    fn long_audio_silence_does_not_affect_meeting_end_tracking() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos"]);
+        let active = families(&["us.zoom.xos"]);
+
+        for poll in 0..1_800 {
+            assert_eq!(
+                tracker.observe(Some(&active), poll * 1_000),
+                None,
+                "audio levels are not an input to meeting end detection"
+            );
+        }
+        assert_eq!(tracker.status().phase, MeetingEndPhase::Tracking);
+    }
+
+    #[test]
+    fn brief_microphone_release_does_not_start_countdown() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos"]);
+        let empty = BTreeSet::new();
+        let active = families(&["us.zoom.xos"]);
+
+        for poll in 0..(MEETING_END_ABSENT_POLLS - 1) {
+            assert_eq!(tracker.observe(Some(&empty), u64::from(poll) * 1_000), None);
+        }
+        assert_eq!(tracker.observe(Some(&active), 14_000), None);
+        assert_eq!(tracker.status().phase, MeetingEndPhase::Tracking);
+    }
+
+    #[test]
+    fn sustained_release_starts_countdown_then_queues_one_finish() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos"]);
+        let empty = BTreeSet::new();
+        let countdown = advance_absence_to_countdown(&mut tracker, 1_000);
+        assert_eq!(countdown.phase, MeetingEndPhase::Countdown);
+        assert_eq!(countdown.expires_at_ms, Some(30_000));
+
+        let mut terminal = None;
+        for poll in 1..=MEETING_END_COUNTDOWN_POLLS {
+            terminal = tracker.observe(Some(&empty), 15_000 + u64::from(poll) * 1_000);
+        }
+        let Some(MeetingEndTransition::FinishQueued(status, request)) = terminal else {
+            panic!("expected queued finish");
+        };
+        assert_eq!(status.phase, MeetingEndPhase::FinishQueued);
+        assert_eq!(request.session_id, "meeting-session");
+
+        for poll in 1..=30 {
+            assert_eq!(tracker.observe(Some(&empty), 30_000 + poll * 1_000), None);
+        }
+        assert_eq!(tracker.pending_finish.as_ref(), Some(&request));
+        assert_eq!(tracker.queue_finish().expect("idempotent queue"), request);
+    }
+
+    #[test]
+    fn reacquiring_microphone_during_countdown_cancels_finish() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos"]);
+        let countdown = advance_absence_to_countdown(&mut tracker, 1_000);
+        assert_eq!(countdown.phase, MeetingEndPhase::Countdown);
+
+        let active = families(&["us.zoom.xos"]);
+        let transition = tracker.observe(Some(&active), 16_000);
+        assert_eq!(
+            transition,
+            Some(MeetingEndTransition::StateChanged(MeetingEndStatus {
+                session_id: "meeting-session".to_string(),
+                phase: MeetingEndPhase::Tracking,
+                expires_at_ms: None,
+            }))
+        );
+        assert!(tracker.pending_finish.is_none());
+    }
+
+    #[test]
+    fn every_originating_app_must_release_before_countdown() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos", "com.google.chrome"]);
+        let chrome_only = families(&["com.google.chrome"]);
+
+        for poll in 0..60 {
+            assert_eq!(
+                tracker.observe(Some(&chrome_only), poll * 1_000),
+                None,
+                "one tracked app still owns the microphone"
+            );
+        }
+        assert_eq!(tracker.status().phase, MeetingEndPhase::Tracking);
+
+        let countdown = advance_absence_to_countdown(&mut tracker, 60_000);
+        assert_eq!(countdown.phase, MeetingEndPhase::Countdown);
+    }
+
+    #[test]
+    fn probe_error_or_sleep_gap_cancels_countdown() {
+        let mut tracker = meeting_end_tracker(&["us.zoom.xos"]);
+        advance_absence_to_countdown(&mut tracker, 1_000);
+
+        let probe_error = tracker.observe(None, 16_000);
+        assert!(matches!(
+            probe_error,
+            Some(MeetingEndTransition::StateChanged(MeetingEndStatus {
+                phase: MeetingEndPhase::Tracking,
+                ..
+            }))
+        ));
+
+        advance_absence_to_countdown(&mut tracker, 20_000);
+        let empty = BTreeSet::new();
+        let wake = tracker.observe(Some(&empty), 60_000);
+        assert!(matches!(
+            wake,
+            Some(MeetingEndTransition::StateChanged(MeetingEndStatus {
+                phase: MeetingEndPhase::Tracking,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn only_eligible_meeting_recordings_arm_and_keep_suppresses_future_prompts() {
+        let state = MeetingStartRequestState::default();
+        assert!(state
+            .arm_meeting_end(
+                "manual-session".to_string(),
+                &RecordingOriginMetadata::default(),
+            )
+            .expect("manual recording remains ineligible")
+            .is_none());
+        assert!(state
+            .arm_meeting_end(
+                "agent-session".to_string(),
+                &RecordingOriginMetadata {
+                    origin: RecordingOrigin::Other,
+                    meeting_app_bundle_families: vec!["us.zoom.xos".to_string()],
+                    auto_finish_eligible: true,
+                },
+            )
+            .expect("non-meeting recording remains ineligible")
+            .is_none());
+        assert!(state
+            .meeting_end_status()
+            .expect("read manual state")
+            .is_none());
+
+        let origin = RecordingOriginMetadata {
+            origin: RecordingOrigin::MeetingPrompt,
+            meeting_app_bundle_families: vec!["us.zoom.xos".to_string()],
+            auto_finish_eligible: true,
+        };
+        let status = state
+            .arm_meeting_end("meeting-session".to_string(), &origin)
+            .expect("arm meeting recording")
+            .expect("eligible status");
+        assert_eq!(status.phase, MeetingEndPhase::Tracking);
+
+        {
+            let mut guard = state.meeting_end.lock().expect("meeting end tracker");
+            let tracker = guard.as_mut().expect("armed tracker");
+            advance_absence_to_countdown(tracker, 1_000);
+        }
+        let suppressed = state
+            .keep_meeting_recording("meeting-session")
+            .expect("keep recording");
+        assert_eq!(suppressed.phase, MeetingEndPhase::Suppressed);
+        let empty = BTreeSet::new();
+        for poll in 0..60 {
+            assert_eq!(
+                state
+                    .observe_meeting_end(Some(&empty), 20_000 + poll * 1_000)
+                    .expect("observe suppressed recording"),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn arm_between_monitor_snapshot_and_cleanup_survives_live_status_reread() {
+        let state = MeetingStartRequestState::default();
+        let start_of_iteration_session: Option<String> = None;
+        let origin = RecordingOriginMetadata {
+            origin: RecordingOrigin::MeetingPrompt,
+            meeting_app_bundle_families: vec!["us.zoom.xos".to_string()],
+            auto_finish_eligible: true,
+        };
+
+        assert_eq!(start_of_iteration_session, None);
+        state
+            .arm_meeting_end("meeting-session".to_string(), &origin)
+            .expect("arm after stale monitor snapshot")
+            .expect("eligible meeting recording");
+
+        assert!(!state
+            .clear_meeting_end_if_inactive(|| Some("meeting-session".to_string()))
+            .expect("reconcile against live capture status"));
+        assert_eq!(
+            state
+                .meeting_end_status()
+                .expect("read tracker after reconciliation")
+                .expect("freshly armed tracker remains")
+                .session_id,
+            "meeting-session"
+        );
+    }
+
+    #[test]
+    fn unknown_external_microphone_process_makes_meeting_end_probe_ambiguous() {
+        let owned = BTreeSet::from([10]);
+        let processes = vec![
+            input_process(10, "com.june.owned-helper"),
+            input_process(20, "com.unknown.recorder"),
+        ];
+
+        assert_eq!(meeting_end_bundle_families(&processes, &owned), None);
+        assert_eq!(
+            meeting_end_bundle_families(&[input_process(30, "us.zoom.xos")], &owned),
+            Some(families(&["us.zoom.xos"]))
+        );
     }
 
     #[test]

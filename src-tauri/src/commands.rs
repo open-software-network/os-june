@@ -37,20 +37,20 @@ use crate::{
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetAgentTaskRequest,
             GetNoteRequest, ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse,
             MemoryDto, MemorySettingsDto, MicrophonePermissionResponse, NoteDto,
-            OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
-            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
-            SessionProfileDto, SessionRequest, SetSessionCompletedRequest, ShareAddInvitesRequest,
-            ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest,
-            ShareInviteKeyDto, ShareInviteKeySaveRequest, ShareInviteKeysGetRequest,
-            ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest,
-            ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto,
-            StartMeetingRecordingRequest, StartRecordingRequest, SubmitIssueReportRequest,
-            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
-            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
-            UpdateNoteResponse,
+            OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto, RecordingOrigin,
+            RecordingOriginMetadata, RecordingSessionDto, RecordingSource, RecordingSourceMode,
+            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
+            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
+            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
+            SendAgentMessageRequest, SessionFolderDto, SessionProfileDto, SessionRequest,
+            SetSessionCompletedRequest, ShareAddInvitesRequest, ShareCreateRequest,
+            ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
+            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
+            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
+            ShareSummaryDto, SourceReadinessDto, StartMeetingRecordingRequest,
+            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
+            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
+            UpdateDictionaryEntryRequest, UpdateNoteRequest, UpdateNoteResponse,
         },
     },
     meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},
@@ -1771,19 +1771,24 @@ pub async fn start_meeting_recording(
         }
         Err(error) => return Err(error),
     };
+    let bundle_families = state.start_bundle_families(&request.request_id)?;
     let mut completion =
         MeetingStartCompletionGuard::new(state.inner(), request.request_id.clone());
 
-    let outcome =
-        match execute_meeting_recording(app, &note_id, request.source_mode.unwrap_or_default())
-            .await
-        {
-            Ok((note, recording)) => MeetingStartRecordingOutcome::Started {
-                note: Box::new(note),
-                recording: Box::new(recording),
-            },
-            Err(error) => MeetingStartRecordingOutcome::Failed { error },
-        };
+    let outcome = match execute_meeting_recording(
+        app,
+        &note_id,
+        request.source_mode.unwrap_or_default(),
+        bundle_families,
+    )
+    .await
+    {
+        Ok((note, recording)) => MeetingStartRecordingOutcome::Started {
+            note: Box::new(note),
+            recording: Box::new(recording),
+        },
+        Err(error) => MeetingStartRecordingOutcome::Failed { error },
+    };
     completion.finish(outcome.clone())?;
     Ok(outcome)
 }
@@ -1792,6 +1797,7 @@ async fn execute_meeting_recording(
     app: AppHandle,
     note_id: &str,
     requested_source_mode: RecordingSourceMode,
+    bundle_families: Vec<String>,
 ) -> Result<(NoteDto, RecordingSessionDto), AppError> {
     let repos = repositories(&app).await?;
     let profile = active_profile(&app);
@@ -1820,15 +1826,35 @@ async fn execute_meeting_recording(
             requested_source_mode
         };
 
-        start_recording_inner(
+        let meeting_end_app = app.clone();
+        let origin = RecordingOriginMetadata {
+            origin: RecordingOrigin::MeetingPrompt,
+            auto_finish_eligible: !bundle_families.is_empty(),
+            meeting_app_bundle_families: bundle_families.clone(),
+        };
+        let recording = start_recording_inner(
             app,
             StartRecordingRequest {
                 note_id: note.id.clone(),
                 source_mode: Some(source_mode),
             },
             false,
+            origin.clone(),
         )
-        .await
+        .await?;
+        if let Err(error) = crate::meeting_detection::arm_meeting_end_for_recording(
+            &meeting_end_app,
+            recording.id.clone(),
+            &origin,
+        ) {
+            tracing::warn!(
+                recording_id = %recording.id,
+                error_code = %error.code,
+                error_message = %error.message,
+                "meeting end detection could not arm for recording"
+            );
+        }
+        Ok(recording)
     }
     .await;
     match result {
@@ -1865,13 +1891,14 @@ pub async fn start_recording(
     app: AppHandle,
     request: StartRecordingRequest,
 ) -> Result<RecordingSessionDto, AppError> {
-    start_recording_inner(app, request, true).await
+    start_recording_inner(app, request, true, RecordingOriginMetadata::default()).await
 }
 
 async fn start_recording_inner(
     app: AppHandle,
     request: StartRecordingRequest,
     finish_existing_capture: bool,
+    origin: RecordingOriginMetadata,
 ) -> Result<RecordingSessionDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
@@ -1945,6 +1972,7 @@ async fn start_recording_inner(
             &note.id,
             &started.session_id,
             source_mode,
+            &origin,
             &started.partial_path.to_string_lossy(),
             &started.final_path.to_string_lossy(),
             started.device_label.clone(),

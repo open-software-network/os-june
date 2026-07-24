@@ -52,6 +52,7 @@ type NoteEditorProps = {
   transcriptScrollRef?: RefObject<HTMLElement | null>;
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
+  meetingEndCountdown?: { sessionId: string; secondsRemaining: number } | null;
   recordingDisabled?: boolean;
   recordingBlockedReason?: string;
   retryBlockedReason?: string;
@@ -80,6 +81,8 @@ type NoteEditorProps = {
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
   onFinishRecording: (sessionId: string) => void;
+  onKeepRecordingAfterMeetingEnd?: (sessionId: string) => void;
+  onStopNowAfterMeetingEnd?: (sessionId: string) => void;
   onRetry: () => void | Promise<void>;
   onTopUp: () => void;
   topUpLabel?: string;
@@ -158,6 +161,7 @@ export function NoteEditor({
   transcriptScrollRef,
   folders,
   recordingStatus,
+  meetingEndCountdown,
   recordingDisabled = false,
   recordingBlockedReason,
   retryBlockedReason,
@@ -180,6 +184,8 @@ export function NoteEditor({
   onPauseRecording,
   onResumeRecording,
   onFinishRecording,
+  onKeepRecordingAfterMeetingEnd,
+  onStopNowAfterMeetingEnd,
   onRetry,
   onTopUp,
   topUpLabel,
@@ -598,7 +604,44 @@ export function NoteEditor({
         ) : (
           <div className="record-dock">
             <AnimatePresence>
-              {recordingForNote?.warnings?.length ? (
+              {meetingEndCountdown &&
+              recordingForNote?.sessionId === meetingEndCountdown.sessionId ? (
+                <motion.div
+                  key="meeting-end"
+                  className="record-consent-note"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.22, ease: "easeOut" }}
+                >
+                  <InlineNotice
+                    className="record-consent-note-surface record-consent-note-surface-actions meeting-end-notice"
+                    role="status"
+                    aria-label="Meeting ended"
+                    body={`Meeting ended. Stopping in ${meetingEndCountdown.secondsRemaining} seconds.`}
+                    actions={
+                      <>
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() =>
+                            onKeepRecordingAfterMeetingEnd?.(meetingEndCountdown.sessionId)
+                          }
+                        >
+                          Keep recording
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={() => onStopNowAfterMeetingEnd?.(meetingEndCountdown.sessionId)}
+                        >
+                          Stop now
+                        </button>
+                      </>
+                    }
+                  />
+                </motion.div>
+              ) : recordingForNote?.warnings?.length ? (
                 <motion.div
                   key="source-warning"
                   className="record-consent-note"
@@ -614,7 +657,10 @@ export function NoteEditor({
                   />
                 </motion.div>
               ) : null}
-              {recordingForNote && consentReminderVisible && !recordingForNote.warnings?.length ? (
+              {recordingForNote &&
+              consentReminderVisible &&
+              !meetingEndCountdown &&
+              !recordingForNote.warnings?.length ? (
                 <motion.div
                   key="consent"
                   className="record-consent-note"

@@ -192,6 +192,20 @@ const FOLDER_LOCAL_PATH_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "local_path",
     definition: "TEXT",
 }];
+const RECORDING_ORIGIN_COLUMNS: &[ColumnDefinition] = &[
+    ColumnDefinition {
+        name: "recording_origin",
+        definition: "TEXT NOT NULL DEFAULT 'other'",
+    },
+    ColumnDefinition {
+        name: "meeting_app_bundle_families",
+        definition: "TEXT NOT NULL DEFAULT '[]'",
+    },
+    ColumnDefinition {
+        name: "auto_finish_eligible",
+        definition: "INTEGER NOT NULL DEFAULT 0",
+    },
+];
 
 // IMPORTANT: positions in this catalog are shipped schema versions. They must
 // follow the order in which changes reached users, not SQL filename prefixes:
@@ -776,6 +790,28 @@ const MIGRATIONS: &[Migration] = &[
         steps: &[MigrationStep::Sql(include_str!(
             "../../migrations/024_note_hydration_indexes.sql"
         ))],
+    },
+    Migration {
+        version: 32,
+        name: "meeting_recording_origin",
+        requirements: &[
+            SchemaRequirement::Column {
+                table: "recording_sessions",
+                column: "recording_origin",
+            },
+            SchemaRequirement::Column {
+                table: "recording_sessions",
+                column: "meeting_app_bundle_families",
+            },
+            SchemaRequirement::Column {
+                table: "recording_sessions",
+                column: "auto_finish_eligible",
+            },
+        ],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "recording_sessions",
+            columns: RECORDING_ORIGIN_COLUMNS,
+        }],
     },
 ];
 
