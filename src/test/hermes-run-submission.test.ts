@@ -275,7 +275,9 @@ describe("Hermes run submission", () => {
       if (method === "prompt.submit") throw promptError;
       return {};
     });
-    const release = vi.fn(async () => undefined);
+    const release = vi.fn(async () => {
+      throw new Error("lease release failed");
+    });
 
     await expect(
       submitHermesRun<string>({

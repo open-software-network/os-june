@@ -221,7 +221,7 @@ export async function submitHermesRun<RunLease = never>({
         });
       } catch (error) {
         if (lease !== undefined && runLease) {
-          await runLease.release(context, lease);
+          await runLease.release(context, lease).catch(() => undefined);
         }
         throw error;
       }
