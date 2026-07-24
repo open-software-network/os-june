@@ -959,6 +959,47 @@ describe("meeting start transcription event", () => {
     });
   });
 
+  it("does not let the initial status read overwrite a newer state event", async () => {
+    const fresh = note({
+      id: "note-2",
+      title: "New meeting",
+      preview: "",
+      generatedContent: undefined,
+    });
+    const initialStatusRead = deferred<{
+      sessionId: string;
+      phase: "tracking" | "countdown" | "suppressed" | "finishQueued";
+      expiresAtMs?: number;
+    } | null>();
+    mocks.readPendingMeetingEndStatus.mockImplementationOnce(() => initialStatusRead.promise);
+    mocks.startMeetingRecording.mockResolvedValue({
+      status: "started",
+      note: fresh,
+      recording: recording({ id: "meeting-rec-1", noteId: fresh.id }),
+    });
+
+    render(<App />);
+    await waitFor(() => expect(mocks.readPendingMeetingEndStatus).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
+    await fireMeetingStart();
+    await waitFor(() => expect(mocks.startMeetingRecording).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.listeners.has(MEETING_END_STATE_EVENT)).toBe(true));
+
+    await act(async () => {
+      await mocks.listeners.get(MEETING_END_STATE_EVENT)?.({
+        payload: { sessionId: "meeting-rec-1", phase: "finishQueued" },
+      });
+      initialStatusRead.resolve({
+        sessionId: "meeting-rec-1",
+        phase: "countdown",
+        expiresAtMs: Date.now() + 15_000,
+      });
+      await initialStatusRead.promise;
+    });
+
+    expect(screen.queryByLabelText("Meeting ended")).not.toBeInTheDocument();
+  });
+
   it("drains one retained auto-finish request through the normal finish path", async () => {
     const fresh = note({
       id: "note-2",

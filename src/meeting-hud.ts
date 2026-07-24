@@ -53,6 +53,7 @@ const TELEMETRY_WINDOW_PEAKS = 6;
 let recording = false;
 let meetingEndStatus: MeetingEndStatus | null = null;
 let meetingEndTick: number | undefined;
+let meetingEndEventRevision = 0;
 
 lifecycle.addCleanup(() => {
   if (meetingEndTick !== undefined) window.clearInterval(meetingEndTick);
@@ -269,6 +270,7 @@ lifecycle.trackUnlisten(
 
 lifecycle.trackUnlisten(
   listen<MeetingEndStatus | null>(MEETING_END_STATE_EVENT, (event) => {
+    meetingEndEventRevision += 1;
     applyMeetingEndStatus(event.payload ?? null);
   }),
 );
@@ -298,6 +300,7 @@ if (import.meta.env.DEV) {
   window.addEventListener(
     MEETING_END_STATE_EVENT,
     (event) => {
+      meetingEndEventRevision += 1;
       applyMeetingEndStatus((event as CustomEvent<MeetingEndStatus | null>).detail ?? null);
     },
     { signal: lifecycle.signal },
@@ -322,6 +325,11 @@ void invoke<RecordingStatusDto | null>("meeting_hud_latest_status")
   })
   .catch(() => {});
 
+const revisionBeforeInitialMeetingEndRead = meetingEndEventRevision;
 void invoke<MeetingEndStatus | null>("pending_meeting_end_status")
-  .then((status) => applyMeetingEndStatus(status))
+  .then((status) => {
+    if (meetingEndEventRevision === revisionBeforeInitialMeetingEndRead) {
+      applyMeetingEndStatus(status);
+    }
+  })
   .catch(() => {});

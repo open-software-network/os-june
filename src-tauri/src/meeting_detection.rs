@@ -345,17 +345,22 @@ impl MeetingStartRequestState {
             .and_then(|tracker| tracker.observe(active_bundle_families, now_ms)))
     }
 
-    fn clear_meeting_end_if_inactive(
-        &self,
-        active_session_id: Option<&str>,
-    ) -> Result<bool, String> {
+    fn clear_meeting_end_if_inactive<F>(&self, current_session_id: F) -> Result<bool, String>
+    where
+        F: FnOnce() -> Option<String>,
+    {
         let mut guard = self
             .meeting_end
             .lock()
             .map_err(|_| "meeting end detection state is unavailable".to_string())?;
-        let should_clear = guard
-            .as_ref()
-            .is_some_and(|tracker| Some(tracker.session_id.as_str()) != active_session_id);
+        let Some(tracker) = guard.as_ref() else {
+            return Ok(false);
+        };
+        // Read capture ownership while holding the tracker lock. An arm that
+        // races this reconciliation is therefore ordered entirely before the
+        // live read or entirely after this no-op/clear decision.
+        let active_session_id = current_session_id();
+        let should_clear = Some(tracker.session_id.as_str()) != active_session_id.as_deref();
         if should_clear {
             *guard = None;
         }
@@ -994,11 +999,10 @@ fn spawn_monitor(app: AppHandle) {
 
             let capture_status = crate::audio::capture::current_status();
             let capture_active = capture_status.is_some();
-            let active_session_id = capture_status
-                .as_ref()
-                .map(|status| status.session_id.as_str());
             if let Some(runtime) = app.try_state::<MeetingStartRequestState>() {
-                match runtime.clear_meeting_end_if_inactive(active_session_id) {
+                match runtime.clear_meeting_end_if_inactive(|| {
+                    crate::audio::capture::current_status().map(|status| status.session_id)
+                }) {
                     Ok(true) => emit_meeting_end_state(&app, None),
                     Ok(false) => {}
                     Err(error) => {
@@ -1899,6 +1903,35 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn arm_between_monitor_snapshot_and_cleanup_survives_live_status_reread() {
+        let state = MeetingStartRequestState::default();
+        let start_of_iteration_session: Option<String> = None;
+        let origin = RecordingOriginMetadata {
+            origin: RecordingOrigin::MeetingPrompt,
+            meeting_app_bundle_families: vec!["us.zoom.xos".to_string()],
+            auto_finish_eligible: true,
+        };
+
+        assert_eq!(start_of_iteration_session, None);
+        state
+            .arm_meeting_end("meeting-session".to_string(), &origin)
+            .expect("arm after stale monitor snapshot")
+            .expect("eligible meeting recording");
+
+        assert!(!state
+            .clear_meeting_end_if_inactive(|| Some("meeting-session".to_string()))
+            .expect("reconcile against live capture status"));
+        assert_eq!(
+            state
+                .meeting_end_status()
+                .expect("read tracker after reconciliation")
+                .expect("freshly armed tracker remains")
+                .session_id,
+            "meeting-session"
+        );
     }
 
     #[test]

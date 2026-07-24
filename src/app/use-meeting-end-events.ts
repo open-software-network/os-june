@@ -32,6 +32,7 @@ export function useMeetingEndEvents({
     let drainRetryTimer: number | undefined;
     let drainRunning = false;
     let drainAgain = false;
+    let stateEventRevision = 0;
 
     const scheduleDrainRetry = () => {
       if (aborted || drainRetryTimer !== undefined) return;
@@ -86,6 +87,7 @@ export function useMeetingEndEvents({
         try {
           const [stateRegistration, finishRegistration] = await Promise.allSettled([
             listen<MeetingEndStatus | null>(MEETING_END_STATE_EVENT, (event) => {
+              stateEventRevision += 1;
               setStatus(event.payload ?? null);
             }),
             listen(MEETING_END_FINISH_REQUEST_EVENT, drainPendingFinish),
@@ -104,9 +106,12 @@ export function useMeetingEndEvents({
           unlistenState = stateRegistration.value;
           unlistenFinish = finishRegistration.value;
           listenerRegisteredRef.current = true;
+          const revisionBeforeInitialRead = stateEventRevision;
           void pendingMeetingEndStatus()
             .then((status) => {
-              if (!aborted) setStatus(status);
+              if (!aborted && stateEventRevision === revisionBeforeInitialRead) {
+                setStatus(status);
+              }
             })
             .catch(() => undefined);
           drainPendingFinish();

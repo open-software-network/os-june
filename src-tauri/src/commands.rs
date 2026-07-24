@@ -1846,9 +1846,11 @@ async fn execute_meeting_recording(
             recording.id.clone(),
             &origin,
         ) {
-            eprintln!(
-                "meeting end detection could not arm for recording {}: {}: {}",
-                recording.id, error.code, error.message
+            tracing::warn!(
+                recording_id = %recording.id,
+                error_code = %error.code,
+                error_message = %error.message,
+                "meeting end detection could not arm for recording"
             );
         }
         Ok(recording)
