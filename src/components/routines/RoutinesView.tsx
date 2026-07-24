@@ -65,14 +65,14 @@ const RUN_HISTORY_REFRESH_MS = 10000;
 
 /**
  * Advances the earned-autonomy counter by reporting each finished run to the
- * backend, which credits it exactly once and only when the routine is in
+ * local store, which credits it exactly once and only when the routine is in
  * approval mode with the run finishing after approval was enabled. Reporting
  * every finished run (rather than seeding a client-side baseline) is what lets
  * background runs that completed while this view was closed still count on the
  * next visit. Best-effort: a failure just retries on the next refresh.
  *
  * `reported` is a per-mount chatter guard so the 10s refresh does not re-report
- * the same run repeatedly; the backend is the durable, idempotent ledger, so a
+ * the same run repeatedly; the local store is the durable, idempotent ledger, so a
  * fresh mount re-reporting a run is harmless.
  */
 async function creditApprovalRuns(runs: RoutineRunSession[], reported: Set<string>): Promise<void> {
@@ -135,7 +135,7 @@ export function RoutinesView({
   const [allRuns, setRuns] = useState<RoutineRunSession[]>([]);
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
   const runLoadSequenceRef = useRef(0);
-  // Run ids already reported for crediting this mount; the backend is the
+  // Run ids already reported for crediting this mount; the local store is the
   // durable idempotent ledger, this just avoids re-reporting on every refresh.
   const reportedRunsRef = useRef<Set<string>>(new Set());
 
@@ -169,7 +169,7 @@ export function RoutinesView({
     }
   }, []);
 
-  // Run history comes from a different backend (the session store, not the
+  // Run history comes from a different local store (the session store, not the
   // cron manager), so its failure must not take the routines list down with
   // it — it degrades to a quiet notice inside the section instead.
   const loadRuns = useCallback(async () => {
@@ -350,11 +350,10 @@ export function RoutinesView({
             autonomousTools: input.trustMode === "autonomous" ? input.autonomousTools : undefined,
           });
           if (eventTrigger && input.triggerAccountId) {
-            // Pausing and subscribing are required setup, not best-effort. If
-            // either fails, removeRoutine below deletes the June routine and all
+            // Subscribing is required setup, not best-effort. If it fails,
+            // removeRoutine below deletes the June routine and all
             // connector rows so retrying cannot create a duplicate or leave a
             // dormant 2099 placeholder behind.
-            await pauseRoutine(created.job_id);
             await connectorTriggerSet({
               jobId: created.job_id,
               kind: eventTrigger.source,
@@ -375,9 +374,9 @@ export function RoutinesView({
         // The first run fires right away (still under the chosen trust mode, so
         // any actions wait for approval), so an install shows value in the first
         // session instead of waiting for a future email or calendar event. This
-        // one-off trigger does not change the paused state, so an event routine
-        // keeps firing on its trigger for every later run; the schedule owns
-        // later runs for non-event routines. Best-effort.
+        // one-off trigger leaves the routine active, so its event trigger can
+        // keep firing later. The far-future schedule prevents timer dispatch.
+        // Best-effort.
         await triggerRoutine(created.job_id).catch(() => {});
       }
       await loadRoutines();

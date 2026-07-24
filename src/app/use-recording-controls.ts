@@ -12,7 +12,7 @@ import {
 import { playRecordingSound } from "../lib/recording-sounds";
 import { AGENT_RECORDER_REQUEST_EVENT } from "../lib/events";
 import { errorCode, messageFromError } from "../lib/errors";
-import { getActiveAgentProfileName } from "../lib/agent-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import type { RecordingSourceMode } from "../lib/tauri";
 import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import { type AgentRecorderRequestPayload } from "./app-shell";
@@ -187,7 +187,7 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
         setTabs(nextTabs);
       }
       // The old-profile note was temporarily present only to control the
-      // recording. Once the take stops, remove it from the active profile's
+      // recording. Once the take stops, remove it from the current data partition's
       // visible list before any tab or sidebar action can reopen it.
       dispatch({
         type: "notesLoaded",
@@ -221,7 +221,7 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
       const result = await finishRecording(sessionId);
       // The result belongs to the profile where recording started. Once that
       // profile's temporary recording view has been retired, do not let the
-      // finish response upsert the old note into the newly active profile.
+      // finish response upsert the old note into the newly selected data partition.
       if (!wasCrossProfileRecording) {
         dispatch({ type: "noteProcessingUpdated", note: result.note });
       }
@@ -236,14 +236,14 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
       if (options.rethrow) throw err;
     } finally {
       if (wasCrossProfileRecording) {
-        const finishingProfile = getActiveAgentProfileName();
+        const finishingProfile = getCurrentDataPartitionName();
         try {
           const response = await listNotes();
-          if (getActiveAgentProfileName() === finishingProfile) {
+          if (getCurrentDataPartitionName() === finishingProfile) {
             dispatch({ type: "notesLoaded", notes: response.items });
           }
         } catch (refreshErr) {
-          if (getActiveAgentProfileName() === finishingProfile) {
+          if (getCurrentDataPartitionName() === finishingProfile) {
             setError(messageFromError(refreshErr));
           }
         }

@@ -92,7 +92,7 @@ type RoutineDetailProps = {
 };
 
 /** One routine, fully editable in place: schedule, instructions, access and
- * name save through the bridge's cron API, while activity (toggle, run now,
+ * name save through June's routine commands, while activity (toggle, run now,
  * run history) acts immediately. Mount with `key={routine.job_id}` — the
  * draft fields initialize from the routine once and reconcile through the
  * dirty comparison after saves refresh the prop. */
@@ -387,8 +387,8 @@ export function RoutineDetail({
       }
     }
 
-    // Fold the trigger's schedule change into the cron update so it lands
-    // atomically with the rest. The trigger row write and pause/resume are
+    // Fold the trigger's schedule change into the routine update so it lands
+    // atomically with the rest. The trigger row write and activation changes are
     // deferred until after onSave succeeds (below).
     const switchingToSchedule = triggerChanged && trigger.source === "schedule";
     const switchingFromSchedule = switchingToEvent && storedTriggerDraft.source === "schedule";
@@ -449,13 +449,13 @@ export function RoutineDetail({
     // Trigger side effects run only after the cron save succeeded, so a failed
     // onSave can never leave a trigger firing a routine whose schedule/toolsets
     // never saved. If a side effect here fails the routine stays dormant (the
-    // far-future schedule and paused/unpaused state already persisted), which is
+    // far-future schedule and active state already persisted), which is
     // safe: it under-fires rather than acting on stale config. Surface it so the
     // user can retry.
     if (triggerChanged) {
       try {
         if (trigger.source === "schedule") {
-          // Resume first so a gateway failure leaves the existing event
+          // Ensure the routine is active first so a runtime failure leaves the existing event
           // trigger untouched. Only remove that fallback after the scheduled
           // job is live again.
           await resumeRoutine(routine.job_id);
@@ -464,13 +464,13 @@ export function RoutineDetail({
               await connectorTriggerDelete(storedTrigger.id);
             }
           } catch (deleteError) {
-            // The trigger still exists. Restore the previous paused state so
+            // The trigger still exists. Restore the previous inactive state so
             // schedule and event sources cannot both fire this routine.
             try {
               await pauseRoutine(routine.job_id);
             } catch (restoreError) {
               toast.error(
-                `June could not restore the previous paused state: ${messageFromError(restoreError)}`,
+                `June could not restore the previous inactive state: ${messageFromError(restoreError)}`,
               );
             }
             throw deleteError;
@@ -484,9 +484,6 @@ export function RoutineDetail({
             config: triggerConfigFromDraft(trigger),
           });
           setStoredTrigger(stored);
-          if (switchingFromSchedule) {
-            await pauseRoutine(routine.job_id).catch(() => {});
-          }
         }
       } catch (err) {
         toast.error(messageFromError(err));

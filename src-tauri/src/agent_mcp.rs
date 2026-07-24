@@ -491,7 +491,7 @@ pub struct McpDiscoveredTool {
     pub input_schema: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeToolDescriptorJson {
     pub id: String,
@@ -508,6 +508,12 @@ pub struct RegisteredMcpTool {
     pub server_name: String,
     pub remote_name: String,
     pub descriptor: RuntimeToolDescriptorJson,
+}
+
+#[derive(Debug, Clone)]
+pub struct McpToolPolicy {
+    pub server_id: String,
+    pub requires_approval: bool,
 }
 
 #[derive(Default)]
@@ -703,6 +709,113 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
         )
         .await
     }
+
+    pub fn server_name_for_tool(
+        &self,
+        runtime_name: &str,
+    ) -> Result<Option<String>, AgentMcpError> {
+        Ok(self
+            .registry
+            .lock()
+            .map_err(|_| AgentMcpError::Storage)?
+            .resolve(runtime_name)
+            .map(|registered| registered.server_name.clone()))
+    }
+
+    pub fn policy_for_tool(
+        &self,
+        runtime_name: &str,
+    ) -> Result<Option<McpToolPolicy>, AgentMcpError> {
+        Ok(self
+            .registry
+            .lock()
+            .map_err(|_| AgentMcpError::Storage)?
+            .resolve(runtime_name)
+            .map(|registered| McpToolPolicy {
+                server_id: registered.server_id.clone(),
+                requires_approval: registered.descriptor.requires_approval == Some(true),
+            }))
+    }
+}
+
+pub async fn snapshot_run_policies(
+    pool: &SqlitePool,
+    run_id: &str,
+    descriptors: &[RuntimeToolDescriptorJson],
+) -> Result<(), AgentMcpError> {
+    let mut transaction = pool.begin().await.map_err(|_| AgentMcpError::Storage)?;
+    let already_snapshotted =
+        query("SELECT 1 FROM agent_run_mcp_policies WHERE run_id = ? LIMIT 1")
+            .bind(run_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| AgentMcpError::Storage)?
+            .is_some();
+    if already_snapshotted {
+        return transaction
+            .commit()
+            .await
+            .map_err(|_| AgentMcpError::Storage);
+    }
+    for descriptor in descriptors {
+        let Some(server_id) = descriptor
+            .id
+            .strip_prefix("mcp:")
+            .and_then(|value| value.split('/').next())
+        else {
+            continue;
+        };
+        let updated_at = query("SELECT updated_at FROM agent_mcp_servers WHERE id = ?")
+            .bind(server_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|_| AgentMcpError::Storage)?
+            .map(|row| row.get::<String, _>("updated_at"))
+            .ok_or(AgentMcpError::NotFound)?;
+        query(
+            "INSERT INTO agent_run_mcp_policies
+             (run_id, tool_name, server_id, server_updated_at, requires_approval)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(run_id)
+        .bind(&descriptor.name)
+        .bind(server_id)
+        .bind(updated_at)
+        .bind(descriptor.requires_approval == Some(true))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| AgentMcpError::Storage)?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AgentMcpError::Storage)
+}
+
+pub async fn run_policy_matches(
+    pool: &SqlitePool,
+    run_id: &str,
+    tool_name: &str,
+    current: &McpToolPolicy,
+) -> Result<bool, AgentMcpError> {
+    let row = query(
+        "SELECT policy.server_id, policy.server_updated_at, policy.requires_approval,
+                server.updated_at AS current_updated_at
+         FROM agent_run_mcp_policies policy
+         JOIN agent_mcp_servers server ON server.id = policy.server_id
+         WHERE policy.run_id = ? AND policy.tool_name = ?",
+    )
+    .bind(run_id)
+    .bind(tool_name)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| AgentMcpError::Storage)?;
+    Ok(row.is_some_and(|row| {
+        row.get::<String, _>("server_id") == current.server_id
+            && row.get::<String, _>("server_updated_at")
+                == row.get::<String, _>("current_updated_at")
+            && row.get::<bool, _>("requires_approval") == current.requires_approval
+    }))
 }
 
 fn server_available(
@@ -1213,11 +1326,25 @@ pub async fn update_agent_mcp_server(
     let replacement_secrets = input.secrets.clone();
     let mut definition = input.into_definition(Some(&existing));
     definition.validate().map_err(app_error)?;
-    let legacy_oauth = definition
+    let mut legacy_oauth = definition
         .metadata
         .get("legacyAuth")
         .and_then(Value::as_str)
         == Some("oauth");
+    let supplied_supported_credentials = replacement_secrets
+        .as_ref()
+        .is_some_and(|bundle| !bundle.headers.is_empty());
+    if legacy_oauth
+        && definition.transport == McpTransport::StreamableHttp
+        && supplied_supported_credentials
+    {
+        if let Some(metadata) = definition.metadata.as_object_mut() {
+            metadata.remove("legacyAuth");
+            metadata.remove("needsReview");
+            metadata.remove("migrationWarning");
+        }
+        legacy_oauth = false;
+    }
     if legacy_oauth && definition.enabled {
         return Err(crate::domain::types::AppError::new(
             "agent_mcp_oauth_reconnect_required",
@@ -1552,6 +1679,60 @@ mod tests {
             restarted.create(&duplicate).await,
             Err(AgentMcpError::DuplicateServer)
         ));
+    }
+
+    #[tokio::test]
+    async fn active_run_rejects_a_server_definition_changed_after_snapshot() {
+        let repo = repository().await;
+        query("CREATE TABLE agent_runs (id TEXT PRIMARY KEY)")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        for statement in include_str!("../migrations/028_agent_run_mcp_policy.sql")
+            .split(';')
+            .filter(|statement| !statement.trim().is_empty())
+        {
+            query(statement).execute(&repo.pool).await.unwrap();
+        }
+        query("INSERT INTO agent_runs (id) VALUES ('run-1')")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let mut server = McpServerDefinition::new("docs", McpTransport::StreamableHttp);
+        server.url = Some("https://example.test/mcp".into());
+        repo.create(&server).await.unwrap();
+        let descriptor = RuntimeToolDescriptorJson {
+            id: format!("mcp:{}/search", server.id),
+            name: "mcp_docs_search".into(),
+            description: "Search docs".into(),
+            parameters: json!({"type":"object","properties":{}}),
+            requires_approval: None,
+        };
+        snapshot_run_policies(&repo.pool, "run-1", std::slice::from_ref(&descriptor))
+            .await
+            .unwrap();
+        let policy = McpToolPolicy {
+            server_id: server.id.clone(),
+            requires_approval: false,
+        };
+        assert!(
+            run_policy_matches(&repo.pool, "run-1", &descriptor.name, &policy)
+                .await
+                .unwrap()
+        );
+        query("UPDATE agent_mcp_servers SET updated_at = 'changed' WHERE id = ?")
+            .bind(&server.id)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        snapshot_run_policies(&repo.pool, "run-1", std::slice::from_ref(&descriptor))
+            .await
+            .unwrap();
+        assert!(
+            !run_policy_matches(&repo.pool, "run-1", &descriptor.name, &policy)
+                .await
+                .unwrap()
+        );
     }
     #[test]
     fn transport_validation_rejects_ambiguous_and_unsafe_shapes() {

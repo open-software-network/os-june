@@ -8,7 +8,7 @@ import { defaultNav, makeTabId, type Tab, type TabNav } from "./tabs/tabs";
 import type { LiveTranscriptEventDto } from "../lib/tauri";
 import { isMacLikePlatform, isWindowsPlatform } from "../lib/platform";
 import type { AgentSessionStatusDetail } from "../lib/agent-events";
-import { useActiveAgentProfileName } from "../lib/agent-profile";
+import { useCurrentDataPartitionName } from "../lib/data-partition";
 import type { SessionProfileMap } from "../lib/session-profile-filter";
 import type { RecordingInactivityTracker } from "../lib/recording-inactivity";
 import {
@@ -33,7 +33,7 @@ import { SIDEBAR_DEFAULT_WIDTH, type RecordingInactivityPrompt } from "./app-she
 
 export function useAppState() {
   const replayOnboarding = shouldReplayOnboarding();
-  const activeAgentProfileName = useActiveAgentProfileName();
+  const currentDataPartitionName = useCurrentDataPartitionName();
   const startsOnAgent = isMacLikePlatform() || isWindowsPlatform();
   const [profileDataRefreshRevision, setProfileDataRefreshRevision] = useState(0);
   const [state, dispatch] = useReducer(notesReducer, undefined, createInitialState);
@@ -262,7 +262,7 @@ export function useAppState() {
   }, []);
 
   return {
-    activeAgentProfileName,
+    currentDataPartitionName,
     profileDataRefreshRevision,
     setProfileDataRefreshRevision,
     state,

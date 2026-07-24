@@ -136,7 +136,7 @@ import { MemorySettingsSection } from "./MemorySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
 import { StyleSettingsSection } from "./StyleSettingsSection";
 import { PrivacySettingsSection } from "./PrivacySettingsSection";
-import { DEFAULT_AGENT_PROFILE, useActiveAgentProfileName } from "../../lib/agent-profile";
+import { DEFAULT_DATA_PARTITION, useCurrentDataPartitionName } from "../../lib/data-partition";
 import {
   getStoredDateFormat,
   setStoredDateFormat,
@@ -447,9 +447,9 @@ export function AppSettings({
   const [localGenerationDraft, setLocalGenerationDraft] = useState<LocalGenerationSettingsDto>(
     DEFAULT_PROVIDER_MODELS.localGeneration,
   );
-  const activeProfileName = useActiveAgentProfileName();
-  const showingActiveProfileModels = activeProfileName !== DEFAULT_AGENT_PROFILE;
-  const [activeProfileGenerationModel, setActiveProfileGenerationModel] = useState<string>();
+  const currentDataPartitionLabel = useCurrentDataPartitionName();
+  const showingPartitionModels = currentDataPartitionLabel !== DEFAULT_DATA_PARTITION;
+  const [partitionGenerationModel, setPartitionGenerationModel] = useState<string>();
   // Model ids returned by the last successful "Test connection" probe, used to
   // populate the Model ID field's datalist (free text is still allowed).
   const [localProbeModels, setLocalProbeModels] = useState<string[]>([]);
@@ -717,7 +717,7 @@ export function AppSettings({
         confirmedCostQualityRef.current = modelSnapshot.settings.costQuality;
         setProviderSettings(modelSnapshot.settings);
         setEffectiveProviderSettings(modelSnapshot.effectiveSettings);
-        providerSettingsProfileRef.current = activeProfileName;
+        providerSettingsProfileRef.current = currentDataPartitionLabel;
         await requestMicrophones();
         await Promise.all([
           requestVeniceModels("transcription"),
@@ -748,7 +748,7 @@ export function AppSettings({
   useEffect(() => {
     if (
       providerSettingsProfileRef.current === null ||
-      providerSettingsProfileRef.current === activeProfileName
+      providerSettingsProfileRef.current === currentDataPartitionLabel
     ) {
       return;
     }
@@ -761,7 +761,7 @@ export function AppSettings({
         const modelSnapshot = providerModelSettingsSnapshot(modelResponse);
         setProviderSettings(modelSnapshot.settings);
         setEffectiveProviderSettings(modelSnapshot.effectiveSettings);
-        providerSettingsProfileRef.current = activeProfileName;
+        providerSettingsProfileRef.current = currentDataPartitionLabel;
       } catch (error) {
         if (!cancelled) setStatus(messageFromError(error));
       }
@@ -771,21 +771,21 @@ export function AppSettings({
     return () => {
       cancelled = true;
     };
-  }, [activeProfileName]);
+  }, [currentDataPartitionLabel]);
 
   useEffect(() => {
-    if (!showingActiveProfileModels) {
-      setActiveProfileGenerationModel(undefined);
+    if (!showingPartitionModels) {
+      setPartitionGenerationModel(undefined);
       return;
     }
     let cancelled = false;
-    setActiveProfileGenerationModel(undefined);
+    setPartitionGenerationModel(undefined);
 
     async function loadActiveProfileTextModel() {
       try {
-        if (!cancelled) setActiveProfileGenerationModel(effectiveProviderSettings.generationModel);
+        if (!cancelled) setPartitionGenerationModel(effectiveProviderSettings.generationModel);
       } catch {
-        if (!cancelled) setActiveProfileGenerationModel(undefined);
+        if (!cancelled) setPartitionGenerationModel(undefined);
       }
     }
 
@@ -793,7 +793,7 @@ export function AppSettings({
     return () => {
       cancelled = true;
     };
-  }, [effectiveProviderSettings.generationModel, showingActiveProfileModels]);
+  }, [effectiveProviderSettings.generationModel, showingPartitionModels]);
 
   useEffect(() => {
     if (!micOpen) return;
@@ -1110,7 +1110,7 @@ export function AppSettings({
   // Returns whether the switch persisted, so confirmation flows (the Venice
   // key billing choice) can stay open instead of closing over a failed save.
   async function selectVeniceModel(mode: ProviderModelMode, modelId: string): Promise<boolean> {
-    if (showingActiveProfileModels) return false;
+    if (showingPartitionModels) return false;
     try {
       const next = await setVeniceModel(mode, modelId);
       setProviderSettings(next);
@@ -1180,7 +1180,7 @@ export function AppSettings({
     options?: { keepOpen?: boolean },
   ) {
     // Named profiles show their own models read-only; a pick is a no-op.
-    if (showingActiveProfileModels) {
+    if (showingPartitionModels) {
       closeModelPicker();
       return;
     }
@@ -1429,7 +1429,7 @@ export function AppSettings({
     0,
     LANGUAGE_OPTIONS.findIndex((option) => option.value === (settings.language ?? "")),
   );
-  const displayProviderSettings = showingActiveProfileModels
+  const displayProviderSettings = showingPartitionModels
     ? effectiveProviderSettings
     : providerSettings;
   const transcriptionOptions = modelOptions(
@@ -1496,8 +1496,8 @@ export function AppSettings({
   }, [localModelEnabled]);
 
   useEffect(() => {
-    if (showingActiveProfileModels) closeModelPicker();
-  }, [showingActiveProfileModels]);
+    if (showingPartitionModels) closeModelPicker();
+  }, [showingPartitionModels]);
 
   useEffect(() => {
     if (!pickerMode) return;
@@ -1577,8 +1577,8 @@ export function AppSettings({
     if (mode === "transcription") return displayProviderSettings.transcriptionModel;
     if (mode === "image") return displayProviderSettings.imageModel;
     if (mode === "video") return displayProviderSettings.videoModel;
-    if (showingActiveProfileModels) {
-      return activeProfileGenerationModel ?? globalGenerationModelValue();
+    if (showingPartitionModels) {
+      return partitionGenerationModel ?? globalGenerationModelValue();
     }
     return globalGenerationModelValue();
   }
@@ -1591,7 +1591,7 @@ export function AppSettings({
   }
 
   function openModelPicker(mode: ProviderModelMode) {
-    if (showingActiveProfileModels) return;
+    if (showingPartitionModels) return;
     if (mode === "image" && !IMAGE_GENERATION_ENABLED) return;
     if (mode === "video" && !VIDEO_GENERATION_ENABLED) return;
     setPickerMode(mode);
@@ -2133,10 +2133,10 @@ export function AppSettings({
               <p className="settings-group-description">
                 Choose the model June uses for note transcription and dictation.
               </p>
-              {showingActiveProfileModels ? (
+              {showingPartitionModels ? (
                 <p className="settings-models-profile-note">
-                  Showing models for the active profile: {activeProfileName}. Switch to the default
-                  profile to edit global models.
+                  Showing models for the current data set: {currentDataPartitionLabel}. Switch to
+                  the default data set to edit global models.
                 </p>
               ) : null}
               <div className="settings-card settings-models-card">
@@ -2163,7 +2163,7 @@ export function AppSettings({
                     onFlyoutChange={setModelPickerFlyout}
                     onSearchChange={setModelSearch}
                     onSelect={(modelId) => selectModelFromPicker("transcription", modelId)}
-                    readOnly={showingActiveProfileModels}
+                    readOnly={showingPartitionModels}
                   />
                   <div className="settings-row-divider" aria-hidden />
                   <button
@@ -2219,10 +2219,10 @@ export function AppSettings({
               <p className="settings-group-description">
                 Choose the model June uses for generated notes and agent responses.
               </p>
-              {showingActiveProfileModels ? (
+              {showingPartitionModels ? (
                 <p className="settings-models-profile-note">
-                  Showing models for the active profile: {activeProfileName}. Switch to the default
-                  profile to edit global models.
+                  Showing models for the current data set: {currentDataPartitionLabel}. Switch to
+                  the default data set to edit global models.
                 </p>
               ) : null}
               <div className="settings-card settings-models-card">
@@ -2254,7 +2254,7 @@ export function AppSettings({
                       selectModelFromPicker("generation", modelId, costQuality, options)
                     }
                     onCostQualityChange={applyCostQuality}
-                    readOnly={showingActiveProfileModels}
+                    readOnly={showingPartitionModels}
                   />
                   {providerSettings.generationModel === "open-software/auto" ? (
                     <div className="settings-row settings-row-before-divider">
@@ -2479,10 +2479,10 @@ export function AppSettings({
                 <p className="settings-group-description">
                   Choose the models June uses when you ask it to generate an image or video.
                 </p>
-                {showingActiveProfileModels ? (
+                {showingPartitionModels ? (
                   <p className="settings-models-profile-note">
-                    Showing models for the active profile: {activeProfileName}. Switch to the
-                    default profile to edit global models.
+                    Showing models for the current data set: {currentDataPartitionLabel}. Switch to
+                    the default data set to edit global models.
                   </p>
                 ) : null}
                 <div className="settings-card settings-models-card">
@@ -2508,7 +2508,7 @@ export function AppSettings({
                         onFlyoutChange={setModelPickerFlyout}
                         onSearchChange={setModelSearch}
                         onSelect={(modelId) => selectModelFromPicker("image", modelId)}
-                        readOnly={showingActiveProfileModels}
+                        readOnly={showingPartitionModels}
                       />
                     ) : null}
                     {VIDEO_GENERATION_ENABLED ? (
@@ -2532,7 +2532,7 @@ export function AppSettings({
                         onFlyoutChange={setModelPickerFlyout}
                         onSearchChange={setModelSearch}
                         onSelect={(modelId) => selectModelFromPicker("video", modelId)}
-                        readOnly={showingActiveProfileModels}
+                        readOnly={showingPartitionModels}
                       />
                     ) : null}
                     <div className="settings-row-divider" aria-hidden />

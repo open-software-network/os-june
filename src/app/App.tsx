@@ -52,10 +52,10 @@ import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { messageFromError } from "../lib/errors";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
-  getActiveAgentProfileName,
-  PROFILE_DATA_CHANGED_EVENT,
-  type ProfileDataChangedDetail,
-} from "../lib/agent-profile";
+  getCurrentDataPartitionName,
+  DATA_PARTITION_CHANGED_EVENT,
+  type DataPartitionChangedDetail,
+} from "../lib/data-partition";
 import { filterAgentSessionsForProfile, sessionProfileMap } from "../lib/session-profile-filter";
 import {
   authoritativeTranscriptCoverageKey,
@@ -172,7 +172,7 @@ import { renderAppAccountGate } from "./app-account-gates";
 
 export function App() {
   const {
-    activeAgentProfileName,
+    currentDataPartitionName,
     profileDataRefreshRevision,
     setProfileDataRefreshRevision,
     state,
@@ -503,10 +503,10 @@ export function App() {
   const profileScopedAgentSessions = useCallback(
     (sessions: readonly AgentSessionDto[], profiles = sessionProfilesRef.current) => {
       if (profiles === null) return [];
-      const activeProfile = getActiveAgentProfileName().trim() || activeAgentProfileName;
-      return filterAgentSessionsForProfile(sessions, profiles, activeProfile);
+      const currentDataPartition = getCurrentDataPartitionName().trim() || currentDataPartitionName;
+      return filterAgentSessionsForProfile(sessions, profiles, currentDataPartition);
     },
-    [activeAgentProfileName],
+    [currentDataPartitionName],
   );
   const refreshSessionProfiles = useCallback(async () => {
     const profiles = sessionProfileMap(await listSessionProfiles());
@@ -1184,27 +1184,27 @@ export function App() {
 
   useEffect(() => {
     function handleProfileDataChanged(event: Event) {
-      const detail = (event as CustomEvent<ProfileDataChangedDetail>).detail;
-      if (!detail || detail.profile !== getActiveAgentProfileName()) return;
+      const detail = (event as CustomEvent<DataPartitionChangedDetail>).detail;
+      if (!detail || detail.partition !== getCurrentDataPartitionName()) return;
       setProfileDataRefreshRevision((revision) => revision + 1);
     }
 
-    window.addEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+    window.addEventListener(DATA_PARTITION_CHANGED_EVENT, handleProfileDataChanged);
     return () => {
-      window.removeEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+      window.removeEventListener(DATA_PARTITION_CHANGED_EVENT, handleProfileDataChanged);
     };
   }, []);
 
   // A profile switch swaps the visible data, not just the agent runtime
   // (ADR 0031): re-read profile-scoped notes, projects, chat mappings, and
   // sessions together. The same refresh runs when profile data moves into the
-  // already-active profile, where the active profile name itself does not
+  // current data partition, where the partition name itself does not
   // change. If a recording is running its note keeps the selection (get_note
   // is unscoped) so the recording view is never yanked mid-take.
   const lastDataProfileRef = useRef<string | undefined>(undefined);
   const lastProfileDataRefreshRevisionRef = useRef(0);
   useActiveProfileData({
-    activeAgentProfileName,
+    currentDataPartitionName,
     activeViewRef,
     appBlocked,
     bootstrapped,

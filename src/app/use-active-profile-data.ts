@@ -6,7 +6,7 @@ import type { UseActiveProfileDataDependencies } from "./use-active-profile-data
 
 export function useActiveProfileData(dependencies: UseActiveProfileDataDependencies) {
   const {
-    activeAgentProfileName,
+    currentDataPartitionName,
     activeViewRef,
     appBlocked,
     bootstrapped,
@@ -33,17 +33,17 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
   useEffect(() => {
     if (appBlocked || !bootstrapped) return;
     const previous = lastDataProfileRef.current;
-    const profileChanged = previous !== undefined && previous !== activeAgentProfileName;
+    const profileChanged = previous !== undefined && previous !== currentDataPartitionName;
     const refreshRequested =
       lastProfileDataRefreshRevisionRef.current !== profileDataRefreshRevision;
-    lastDataProfileRef.current = activeAgentProfileName;
+    lastDataProfileRef.current = currentDataPartitionName;
     lastProfileDataRefreshRevisionRef.current = profileDataRefreshRevision;
-    if (!refreshRequested && (previous === undefined || previous === activeAgentProfileName)) {
+    if (!refreshRequested && (previous === undefined || previous === currentDataPartitionName)) {
       return;
     }
     // A project-scoped new-session request belongs to the profile that started
     // it. Clear the handoff before any async reload can race a session-created
-    // event from the newly active profile.
+    // event from the newly selected data partition.
     if (profileChanged) pendingSessionProjectRef.current = null;
     let cancelled = false;
     void (async () => {
@@ -102,7 +102,7 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
       cancelled = true;
     };
   }, [
-    activeAgentProfileName,
+    currentDataPartitionName,
     appBlocked,
     bootstrapped,
     commitAgentSessions,

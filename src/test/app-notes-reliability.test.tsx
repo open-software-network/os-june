@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { NOTE_PROCESSING_RECONCILE_INTERVAL_MS } from "../app/use-note-processing-events";
-import { resetActiveAgentProfileForTests, setActiveAgentProfileName } from "../lib/agent-profile";
+import { resetCurrentDataPartitionForTests, setCurrentDataPartitionName } from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   beginMaxGrantWait,
@@ -324,7 +324,7 @@ describe("notes recording reliability", () => {
       mocks.pendingMeetingStartRequest = undefined;
       return true;
     });
-    resetActiveAgentProfileForTests();
+    resetCurrentDataPartitionForTests();
     mocks.listFolders.mockResolvedValue([]);
     mocks.listAgentSessions.mockResolvedValue([]);
 
@@ -481,7 +481,7 @@ describe("notes recording reliability", () => {
     );
   }
 
-  it("swaps notes to the new profile's list when the active profile switches", async () => {
+  it("swaps notes when the data partition switches", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
@@ -491,7 +491,7 @@ describe("notes recording reliability", () => {
     const listCallsBefore = mocks.listNotes.mock.calls.length;
 
     await act(async () => {
-      setActiveAgentProfileName("work");
+      setCurrentDataPartitionName("work");
     });
 
     await waitFor(() => expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBefore));
@@ -616,7 +616,7 @@ describe("notes recording reliability", () => {
     );
     const listCallsBeforeSwitch = mocks.listNotes.mock.calls.length;
     await act(async () => {
-      setActiveAgentProfileName("work");
+      setCurrentDataPartitionName("work");
     });
 
     await waitFor(() =>

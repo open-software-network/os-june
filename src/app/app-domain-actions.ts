@@ -13,7 +13,7 @@ import {
   setSessionCompleted,
 } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import { getActiveAgentProfileName } from "../lib/agent-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import type { CreateAppDomainActionsDependencies } from "./app-domain-actions-types";
 
 export function createAppDomainActions(dependencies: CreateAppDomainActionsDependencies) {
@@ -270,7 +270,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     pendingSessionProjectRef.current = {
       folderId,
       knownSessionIds: new Set(agentSessions.map((session) => session.id)),
-      profile: getActiveAgentProfileName(),
+      profile: getCurrentDataPartitionName(),
     };
     setAgentOrigin({ kind: "project", folderId });
     markAgentNewSessionPending();

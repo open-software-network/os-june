@@ -76,7 +76,7 @@ import {
   osAccountsReferralSummary,
 } from "../../lib/tauri";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
-import { useActiveAgentProfileName } from "../../lib/agent-profile";
+import { useCurrentDataPartitionName } from "../../lib/data-partition";
 import {
   sessionMatchesProfile,
   sessionProfileMap,
@@ -354,17 +354,17 @@ export function Sidebar({
   const [allAgentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
   // Chats belong to the profile they were created under (ADR 0031): the
   // sidebar filters its list through the session→profile map and re-filters
-  // live when the active profile switches, without waiting for a re-fetch.
+  // live when the data partition switches, without waiting for a re-fetch.
   const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap | null>(null);
-  const activeAgentProfileName = useActiveAgentProfileName();
+  const currentDataPartitionName = useCurrentDataPartitionName();
   const profileAgentSessions = useMemo(
     () =>
       sessionProfiles === null
         ? []
         : allAgentSessions.filter((session) =>
-            sessionMatchesProfile(session, sessionProfiles, activeAgentProfileName),
+            sessionMatchesProfile(session, sessionProfiles, currentDataPartitionName),
           ),
-    [allAgentSessions, sessionProfiles, activeAgentProfileName],
+    [allAgentSessions, sessionProfiles, currentDataPartitionName],
   );
   // __emptyStates() preview (dev console): the agent section renders its
   // "No sessions yet" line as a fresh install would, real data untouched.

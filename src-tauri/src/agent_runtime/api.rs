@@ -184,6 +184,7 @@ pub async fn start_agent_run(
         &repository,
         RunParamsInput {
             session_id: &session.id,
+            run_id: &run.id,
             model: &model,
             safety_mode: request.safety_mode,
             workspace: &workspace,
@@ -287,6 +288,7 @@ pub async fn retry_agent_run(
         &repository,
         RunParamsInput {
             session_id: &session.id,
+            run_id: &run.id,
             model: &model,
             safety_mode: session.safety_mode,
             workspace: &workspace,
@@ -376,6 +378,7 @@ pub async fn resolve_agent_interruption(
         &repository,
         RunParamsInput {
             session_id: &session.id,
+            run_id: &run.id,
             model: &model,
             safety_mode: session.safety_mode,
             workspace: &workspace,
@@ -572,6 +575,7 @@ fn normalize_agent_model(model: &str) -> String {
 
 struct RunParamsInput<'a> {
     session_id: &'a str,
+    run_id: &'a str,
     model: &'a str,
     safety_mode: AgentSafetyMode,
     workspace: &'a str,
@@ -592,6 +596,21 @@ async fn run_params(
         .filter_map(history_item)
         .collect();
     let tools = tool_descriptors(app, repository, request.safety_mode, request.workspace).await?;
+    let mcp_descriptors = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|descriptor| {
+            descriptor
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("mcp:"))
+        })
+        .filter_map(|descriptor| serde_json::from_value(descriptor.clone()).ok())
+        .collect::<Vec<crate::agent_mcp::RuntimeToolDescriptorJson>>();
+    crate::agent_mcp::snapshot_run_policies(&repository.pool, request.run_id, &mcp_descriptors)
+        .await
+        .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
         json!({ "model": request.model, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )

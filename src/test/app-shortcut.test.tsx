@@ -4,10 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
 import {
-  dispatchProfileDataChanged,
-  resetActiveAgentProfileForTests,
-  setActiveAgentProfileName,
-} from "../lib/agent-profile";
+  dispatchDataPartitionChanged,
+  resetCurrentDataPartitionForTests,
+  setCurrentDataPartitionName,
+} from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import {
   AGENT_NEW_SESSION_EVENT,
@@ -358,8 +358,8 @@ describe("App shortcuts", () => {
       mocks.pendingMeetingStartRequest = undefined;
       return true;
     });
-    resetActiveAgentProfileForTests();
-    setActiveAgentProfileName("default");
+    resetCurrentDataPartitionForTests();
+    setCurrentDataPartitionName("default");
     const first = note();
     const created = note({
       id: "note-2",
@@ -1374,14 +1374,14 @@ describe("App shortcuts", () => {
     expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
   });
 
-  it("refreshes profile-scoped chat sessions when the active profile switches", async () => {
+  it("refreshes partition-scoped chat sessions when the data partition switches", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await waitFor(() => expect(mocks.listAgentSessions).toHaveBeenCalled());
     const callsBeforeSwitch = mocks.listAgentSessions.mock.calls.length;
 
     act(() => {
-      setActiveAgentProfileName("research");
+      setCurrentDataPartitionName("research");
     });
 
     await waitFor(() =>
@@ -1443,7 +1443,7 @@ describe("App shortcuts", () => {
     mocks.getNote.mockImplementation(async (noteId: string) =>
       noteId === profileBNote.id ? profileBNote : profileANote,
     );
-    act(() => setActiveAgentProfileName("profile-b"));
+    act(() => setCurrentDataPartitionName("profile-b"));
 
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(profileBNote.id));
     mocks.getNote.mockClear();
@@ -1456,7 +1456,7 @@ describe("App shortcuts", () => {
     expect(screen.queryByText("Profile A private note")).toBeNull();
   });
 
-  it("abandons pending project intent when the active profile switches", async () => {
+  it("abandons pending project intent when the data partition switches", async () => {
     const user = userEvent.setup();
     const folder = {
       id: "folder-a",
@@ -1485,7 +1485,7 @@ describe("App shortcuts", () => {
 
     mocks.listNotes.mockResolvedValue({ items: [] });
     mocks.listFolders.mockResolvedValue([]);
-    act(() => setActiveAgentProfileName("profile-b"));
+    act(() => setCurrentDataPartitionName("profile-b"));
     await waitFor(() => expect(mocks.listFolders).toHaveBeenCalled());
 
     act(() => {
@@ -1506,7 +1506,7 @@ describe("App shortcuts", () => {
     expect(mocks.assignSessionToFolder).not.toHaveBeenCalled();
   });
 
-  it("refreshes visible data when rows move into the already-active profile", async () => {
+  it("refreshes visible data when rows move into the current data partition", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await waitFor(() => expect(mocks.listAgentSessions).toHaveBeenCalled());
@@ -1514,7 +1514,7 @@ describe("App shortcuts", () => {
     const sessionCallsBeforeMove = mocks.listAgentSessions.mock.calls.length;
 
     act(() => {
-      dispatchProfileDataChanged("default");
+      dispatchDataPartitionChanged("default");
     });
 
     await waitFor(() =>

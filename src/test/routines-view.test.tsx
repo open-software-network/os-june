@@ -639,7 +639,7 @@ describe("RoutinesView connector templates", () => {
     await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
   });
 
-  it("creates an event-triggered routine paused with the trigger subscription", async () => {
+  it("creates an active event-triggered routine with the trigger subscription", async () => {
     tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
     mocks.listRoutines.mockResolvedValueOnce([]);
     renderView();
@@ -663,7 +663,7 @@ describe("RoutinesView connector templates", () => {
     // Approval trust: the actions servers ride along.
     expect(createArgs.enabledToolsets).toContain("june_gmail_actions");
 
-    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    expect(mocks.pauseRoutine).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(tauriMocks.connectorTriggerSet).toHaveBeenCalledWith({
         jobId: "abc123",
@@ -674,7 +674,7 @@ describe("RoutinesView connector templates", () => {
     );
     // Event template installs still fire an immediate first run (approval-gated),
     // so value shows in the first session per the install contract; the one-off
-    // trigger leaves the routine paused for its event trigger to own later runs.
+    // trigger leaves the routine active for its event trigger to own later runs.
     await waitFor(() => expect(mocks.triggerRoutine).toHaveBeenCalledWith("abc123"));
   });
 
@@ -693,7 +693,7 @@ describe("RoutinesView connector templates", () => {
     expect(mocks.triggerRoutine).not.toHaveBeenCalled();
   });
 
-  it("removes a paused placeholder when event trigger setup fails", async () => {
+  it("removes an event routine when trigger setup fails", async () => {
     tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
     mocks.listRoutines.mockResolvedValue([]);
     tauriMocks.connectorTriggerSet.mockRejectedValueOnce(new Error("trigger store unavailable"));
@@ -704,7 +704,7 @@ describe("RoutinesView connector templates", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByText("trigger store unavailable")).toBeInTheDocument();
-    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123"));
+    expect(mocks.pauseRoutine).not.toHaveBeenCalled();
     expect(mocks.removeRoutine).toHaveBeenCalledWith("abc123");
     expect(mocks.triggerRoutine).not.toHaveBeenCalled();
   });

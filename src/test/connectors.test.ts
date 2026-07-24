@@ -228,7 +228,6 @@ describe("event triggers", () => {
       }),
     ).toEqual({ leadMinutes: 30, externalOnly: true });
     const draft = eventTriggerScheduleDraft();
-    expect(draft.paused).toBe(true);
     expect(new Date(draft.schedule).getFullYear()).toBeGreaterThanOrEqual(2099);
   });
 

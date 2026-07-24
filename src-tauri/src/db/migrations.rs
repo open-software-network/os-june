@@ -1066,6 +1066,17 @@ const MIGRATIONS: &[Migration] = &[
             "../../migrations/027_agent_mcp.sql"
         ))],
     },
+    Migration {
+        version: 35,
+        name: "agent_run_mcp_policy",
+        requirements: &[
+            SchemaRequirement::Table("agent_run_mcp_policies"),
+            SchemaRequirement::Index("idx_agent_run_mcp_policies_run"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/028_agent_run_mcp_policy.sql"
+        ))],
+    },
 ];
 
 struct AppliedMigration {

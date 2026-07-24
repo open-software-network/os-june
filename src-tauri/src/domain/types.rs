@@ -345,7 +345,7 @@ pub struct AssignSessionToFolderRequest {
     pub folder_id: String,
 }
 
-// June records completion locally, keyed by the stable agent session id.
+// June records completion locally, keyed by the stored session id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletedSessionDto {

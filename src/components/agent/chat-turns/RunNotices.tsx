@@ -29,7 +29,7 @@ export function UpstreamProviderFailureNoticePart({
 }) {
   return (
     <div className="agent-system-notice">
-      The model provider could not complete this request.
+      June could not complete this request.
       {onRetry ? (
         <button type="button" onClick={onRetry}>
           Try again

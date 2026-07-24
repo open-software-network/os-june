@@ -57,6 +57,20 @@ pub async fn dispatch_tool(
     name: &str,
     arguments: Value,
 ) -> Result<Value, AppError> {
+    if !name.starts_with("mcp_")
+        && crate::routines::routine_tool_allowed_for_session(
+            &context.repository.pool,
+            &context.session_id,
+            name,
+        )
+        .await?
+            == Some(false)
+    {
+        return Err(AppError::new(
+            "routine_tool_not_enabled",
+            "This tool is not enabled for the routine.",
+        ));
+    }
     if let Some(result) =
         crate::agent_runtime::native_connectors::dispatch(&context.app, name, arguments.clone())
             .await?
@@ -152,6 +166,41 @@ async fn mcp_tool(context: &ToolContext, name: &str, arguments: Value) -> Result
         )
         .await
         .map_err(agent_mcp_error)?;
+    let server_name = subsystem
+        .server_name_for_tool(name)
+        .map_err(agent_mcp_error)?
+        .ok_or_else(|| AppError::new("agent_mcp_tool_failed", "MCP tool is unavailable."))?;
+    if crate::routines::routine_mcp_server_allowed_for_session(
+        &context.repository.pool,
+        &context.session_id,
+        &server_name,
+    )
+    .await?
+        == Some(false)
+    {
+        return Err(AppError::new(
+            "routine_tool_not_enabled",
+            "This MCP server is not enabled for the routine.",
+        ));
+    }
+    let current_policy = subsystem
+        .policy_for_tool(name)
+        .map_err(agent_mcp_error)?
+        .ok_or_else(|| AppError::new("agent_mcp_tool_failed", "MCP tool is unavailable."))?;
+    if !crate::agent_mcp::run_policy_matches(
+        &context.repository.pool,
+        &context.run_id,
+        name,
+        &current_policy,
+    )
+    .await
+    .map_err(agent_mcp_error)?
+    {
+        return Err(AppError::new(
+            "agent_mcp_policy_changed",
+            "This MCP server changed after the run started. Retry the turn to use its current approval policy.",
+        ));
+    }
     subsystem
         .invoke_in_workspace(
             name,

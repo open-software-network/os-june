@@ -344,7 +344,7 @@ fn model_gateway_error_message(body: &Value) -> &str {
         .and_then(|error| error.get("message").or(Some(error)))
         .and_then(Value::as_str)
         .or_else(|| body.get("message").and_then(Value::as_str))
-        .unwrap_or("June's model gateway rejected the request.")
+        .unwrap_or("June's model routing service rejected the request.")
 }
 
 async fn poll_model_stream(

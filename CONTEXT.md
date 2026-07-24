@@ -447,8 +447,9 @@ _Avoid_: auto mode, trust score.
 A typed event that fires a routine outside the cron schedule:
 `email_received` or `event_upcoming`. Produced by the on-device trigger daemon
 polling Gmail history deltas and upcoming calendar events, delivered by
-re-triggering a paused routine through the bridge's run-now action. A trigger
-is a wake-up, not a payload: the routine re-reads state through its tools.
+claiming the active routine through June's durable routine scheduler. A
+far-future timer schedule prevents duplicate timer runs. A trigger is a wake-up,
+not a payload: the routine re-reads state through its tools.
 _Avoid_: webhook (local mode has none; that is away mode), push, notification.
 
 **Biography**:
@@ -461,11 +462,10 @@ snapshot), persona, memory (that is the June **memory entry** store; the
 upstream agent memory toolset is a third thing again — qualify which).
 
 **Admin surface**:
-A June-native management view for the embedded Hermes runtime — skills hub,
-MCP servers and diagnostics, toolsets, integrations health, and similar —
-rendered with June's own UI and driven through the Hermes admin request
-channel, never by exposing Hermes's own web UI.
-_Avoid_: admin panel, Hermes UI (June presents as June).
+A June-native management view for the local agent harness: skills, MCP servers,
+connector health, and similar settings. Rust owns configuration, secrets, and
+safety policy. The UI never exposes raw harness diagnostics.
+_Avoid_: admin panel, runtime UI.
 
 ### AI work & billing
 

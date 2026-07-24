@@ -143,6 +143,48 @@ pub async fn descriptors(app: &AppHandle) -> Result<Vec<Value>, AppError> {
     Ok(descriptors_from_accounts(&accounts))
 }
 
+pub fn routine_tool_allowed(
+    name: &str,
+    enabled_toolsets: &[String],
+    autonomous_tools: &[String],
+) -> bool {
+    use crate::connectors::policy::{
+        JUNE_GCAL_ACTIONS_SERVER, JUNE_GCAL_SERVER, JUNE_GITHUB_ACTIONS_SERVER, JUNE_GITHUB_SERVER,
+        JUNE_GMAIL_ACTIONS_SERVER, JUNE_GMAIL_SERVER, JUNE_LINEAR_ACTIONS_SERVER,
+        JUNE_LINEAR_SERVER,
+    };
+    let has = |server: &str| enabled_toolsets.iter().any(|value| value == server);
+    let has_prefix = |prefix: &str| {
+        enabled_toolsets
+            .iter()
+            .any(|value| value.starts_with(prefix))
+    };
+    match name {
+        "search_threads" | "read_thread" | "list_unread" => has(JUNE_GMAIL_SERVER),
+        "create_draft" | "send_email" => {
+            has(JUNE_GMAIL_ACTIONS_SERVER)
+                || (has_prefix("june_gmail_auto_")
+                    && autonomous_tools.iter().any(|tool| tool == name))
+        }
+        "list_events" | "get_event" | "find_free_slots" => has(JUNE_GCAL_SERVER),
+        "create_event" => {
+            has(JUNE_GCAL_ACTIONS_SERVER)
+                || (has_prefix("june_gcal_auto_")
+                    && autonomous_tools.iter().any(|tool| tool == name))
+        }
+        "list_repositories" | "get_pull_request" => has(JUNE_GITHUB_SERVER),
+        "list_projects" => has(JUNE_LINEAR_SERVER),
+        "search_issues" | "get_issue" | "list_issue_comments" => {
+            has(JUNE_LINEAR_SERVER) || has(JUNE_GITHUB_SERVER)
+        }
+        "create_issue" | "update_issue" | "add_comment" => {
+            has(JUNE_LINEAR_ACTIONS_SERVER) || has(JUNE_GITHUB_ACTIONS_SERVER)
+        }
+        "create_project_update" => has(JUNE_LINEAR_ACTIONS_SERVER),
+        _ => false,
+    }
+}
+
 fn descriptors_from_accounts(accounts: &[ConnectorAccount]) -> Vec<Value> {
     let mut descriptors = CAPABILITIES
         .iter()

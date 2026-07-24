@@ -6,7 +6,7 @@ import type { NotesAction } from "./state/app-state";
 import type * as React from "react";
 
 export type UseActiveProfileDataDependencies = {
-  activeAgentProfileName: string;
+  currentDataPartitionName: string;
   activeViewRef: React.MutableRefObject<SidebarView>;
   appBlocked: boolean;
   bootstrapped: boolean;

@@ -330,8 +330,14 @@ pub async fn claim(
     trigger_kind: &str,
     require_due: bool,
 ) -> Result<Option<Claim>, AppError> {
-    let mut transaction = pool.begin().await.map_err(app_error)?;
-    let routine = query("SELECT id, name, prompt, schedule, model, safety_mode, next_run_at FROM routines WHERE id = ? AND state = 'scheduled' AND enabled = 1 AND claim_token IS NULL AND NOT EXISTS (SELECT 1 FROM routine_runs active WHERE active.routine_id = routines.id AND active.status IN ('queued', 'running', 'waiting_for_user'))")
+    // Serialize the eligibility read with the claim write. A deferred
+    // transaction can fail with SQLITE_BUSY_SNAPSHOT when a scheduler,
+    // connector, and manual trigger race after reading the same free row.
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(app_error)?;
+    let routine = query("SELECT id, name, prompt, schedule, model, safety_mode, next_run_at, metadata_json FROM routines WHERE id = ? AND state = 'scheduled' AND enabled = 1 AND claim_token IS NULL AND NOT EXISTS (SELECT 1 FROM routine_runs active WHERE active.routine_id = routines.id AND active.status IN ('queued', 'running', 'waiting_for_user'))")
         .bind(routine_id).fetch_optional(&mut *transaction).await.map_err(app_error)?;
     let Some(routine) = routine else {
         transaction.commit().await.map_err(app_error)?;
@@ -352,6 +358,9 @@ pub async fn claim(
     let model: String = routine.get("model");
     let model = normalized_model(&model);
     let safety_mode = AgentSafetyMode::from(routine.get::<String, _>("safety_mode").as_str());
+    let metadata = serde_json::from_str::<Value>(&routine.get::<String, _>("metadata_json"))
+        .unwrap_or_else(|_| json!({}));
+    let enabled_toolsets = enabled_toolsets_from_metadata(&metadata);
     let claimed = query("UPDATE routines SET claim_token = ?, claimed_at = ?, updated_at = ? WHERE id = ? AND claim_token IS NULL AND state = 'scheduled' AND enabled = 1")
         .bind(&token).bind(&timestamp).bind(&timestamp).bind(routine_id).execute(&mut *transaction).await.map_err(app_error)?;
     if claimed.rows_affected() != 1 {
@@ -368,6 +377,7 @@ pub async fn claim(
         prompt: routine.get("prompt"),
         model,
         safety_mode,
+        enabled_toolsets,
         token,
         routine_run_id: run_id,
     }))
@@ -531,7 +541,7 @@ pub async fn start_claim(
         repository.append_item(&session_id, Some(&run.id), 0, &AgentItemPayload::UserMessage(MessagePayload { role: "user".into(), content: claim.prompt.clone(), attachments: vec![] }), Some(&format!("routine:{}", claim.routine_run_id))).await.map_err(app_error)?;
         attach_run_mapping(pool, &claim.routine_run_id, &claim.token, &session_id, &run.id, &timestamp).await?;
         host.ensure_started(app, repository.clone()).await?;
-        host.request("run.start", &session_id, &run.id, unattended_run_params(app, &repository, &session_id, &claim.model, claim.safety_mode, workspace.to_string_lossy().as_ref(), &claim.prompt).await?).await?;
+        host.request("run.start", &session_id, &run.id, unattended_run_params(app, &repository, &session_id, &run.id, &claim.routine_id, &claim.model, claim.safety_mode, workspace.to_string_lossy().as_ref(), &claim.prompt, &claim.enabled_toolsets).await?).await?;
         Ok::<_, AppError>(run.id)
     }.await;
     if let Err(error) = started {
@@ -754,6 +764,7 @@ pub struct Claim {
     pub prompt: String,
     pub model: String,
     pub safety_mode: AgentSafetyMode,
+    pub enabled_toolsets: Vec<String>,
     pub token: String,
     pub routine_run_id: String,
 }
@@ -862,10 +873,13 @@ async fn unattended_run_params(
     app: &AppHandle,
     repository: &AgentRepository,
     session_id: &str,
+    run_id: &str,
+    routine_id: &str,
     model: &str,
     safety_mode: AgentSafetyMode,
     workspace: &str,
     prompt: &str,
+    enabled_toolsets: &[String],
 ) -> Result<Value, AppError> {
     let history = repository.items(session_id).await.map_err(app_error)?.into_iter().filter_map(|item| match item.payload { AgentItemPayload::UserMessage(message) | AgentItemPayload::AssistantMessage(message) | AgentItemPayload::SystemMessage(message) => Some(json!({ "id": item.id, "kind": "message", "role": message.role, "text": message.content })), AgentItemPayload::ContextSummary(summary) => Some(json!({ "id": item.id, "kind": "context_summary", "role": "system", "text": summary.text })), _ => None }).collect::<Vec<_>>();
     let tools = unattended_tools(
@@ -873,8 +887,25 @@ async fn unattended_run_params(
         repository,
         safety_mode,
         std::path::Path::new(workspace),
+        routine_id,
+        enabled_toolsets,
     )
     .await;
+    let mcp_descriptors = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|descriptor| {
+            descriptor
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("mcp:"))
+        })
+        .filter_map(|descriptor| serde_json::from_value(descriptor.clone()).ok())
+        .collect::<Vec<crate::agent_mcp::RuntimeToolDescriptorJson>>();
+    crate::agent_mcp::snapshot_run_policies(&repository.pool, run_id, &mcp_descriptors)
+        .await
+        .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
         json!({ "model": model, "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.", "workspace": workspace, "safetyMode": safety_mode.as_db(), "input": prompt, "history": history, "tools": tools, "skills": [], "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
@@ -884,8 +915,19 @@ async fn unattended_tools(
     repository: &AgentRepository,
     safety_mode: AgentSafetyMode,
     workspace: &std::path::Path,
+    routine_id: &str,
+    enabled_toolsets: &[String],
 ) -> Value {
+    let autonomous_tools = routine_autonomous_tools(&repository.pool, routine_id).await;
     let mut tools = base_unattended_tools();
+    if let Some(descriptors) = tools.as_array_mut() {
+        descriptors.retain(|descriptor| {
+            descriptor
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| routine_base_tool_allowed(name, enabled_toolsets))
+        });
+    }
     let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
         crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone()),
         crate::agent_mcp::KeychainMcpSecretStore,
@@ -894,14 +936,32 @@ async fn unattended_tools(
         .refresh_registry_for_workspace(safety_mode == AgentSafetyMode::Sandboxed, Some(workspace))
         .await
     {
-        Ok(descriptors) => tools
-            .as_array_mut()
-            .expect("routine tool catalog is an array")
-            .extend(
-                descriptors
-                    .into_iter()
-                    .filter_map(|descriptor| serde_json::to_value(descriptor).ok()),
-            ),
+        Ok(descriptors) => {
+            let mcp_repository = crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone());
+            for descriptor in descriptors {
+                let Some(server_id) = descriptor
+                    .id
+                    .strip_prefix("mcp:")
+                    .and_then(|value| value.split('/').next())
+                else {
+                    continue;
+                };
+                let Ok(server) = mcp_repository.get(server_id).await else {
+                    continue;
+                };
+                if enabled_toolsets
+                    .iter()
+                    .any(|toolset| toolset == &server.name)
+                {
+                    if let Ok(value) = serde_json::to_value(descriptor) {
+                        tools
+                            .as_array_mut()
+                            .expect("routine tool catalog is an array")
+                            .push(value);
+                    }
+                }
+            }
+        }
         Err(error) => tracing::warn!(
             error_code = "routine_mcp_discovery_failed",
             error = %error,
@@ -912,13 +972,117 @@ async fn unattended_tools(
         Ok(descriptors) => tools
             .as_array_mut()
             .expect("routine tool catalog is an array")
-            .extend(descriptors),
+            .extend(descriptors.into_iter().filter(|descriptor| {
+                descriptor
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| {
+                        crate::agent_runtime::native_connectors::routine_tool_allowed(
+                            name,
+                            enabled_toolsets,
+                            &autonomous_tools,
+                        )
+                    })
+            })),
         Err(error) => tracing::warn!(
             error_code = %error.code,
             "native connector tools were unavailable for this routine run"
         ),
     }
     tools
+}
+
+fn enabled_toolsets_from_metadata(metadata: &Value) -> Vec<String> {
+    metadata
+        .get("enabledToolsets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn routine_autonomous_tools(pool: &SqlitePool, routine_id: &str) -> Vec<String> {
+    query("SELECT autonomous_tools FROM routine_trust WHERE job_id = ?")
+        .bind(routine_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|row| serde_json::from_str(&row.get::<String, _>("autonomous_tools")).ok())
+        .unwrap_or_default()
+}
+
+fn routine_base_tool_allowed(name: &str, enabled_toolsets: &[String]) -> bool {
+    let has = |toolset: &str| enabled_toolsets.iter().any(|value| value == toolset);
+    match name {
+        "search_june" => has("context_engine") || has("memory") || has("session_search"),
+        "web_search" | "web_fetch" => has("web"),
+        "list_files" | "read_file" | "preview_file" | "search_files" => has("file"),
+        _ => false,
+    }
+}
+
+pub async fn routine_tool_allowed_for_session(
+    pool: &SqlitePool,
+    session_id: &str,
+    name: &str,
+) -> Result<Option<bool>, AppError> {
+    let row = query(
+        "SELECT routines.id, routines.metadata_json
+         FROM routine_runs
+         JOIN routines ON routines.id = routine_runs.routine_id
+         WHERE routine_runs.agent_session_id = ?",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(app_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let routine_id: String = row.get("id");
+    let metadata = serde_json::from_str::<Value>(&row.get::<String, _>("metadata_json"))
+        .unwrap_or_else(|_| json!({}));
+    let enabled_toolsets = enabled_toolsets_from_metadata(&metadata);
+    let autonomous_tools = routine_autonomous_tools(pool, &routine_id).await;
+    Ok(Some(
+        routine_base_tool_allowed(name, &enabled_toolsets)
+            || crate::agent_runtime::native_connectors::routine_tool_allowed(
+                name,
+                &enabled_toolsets,
+                &autonomous_tools,
+            )
+            || name == "request_clarification",
+    ))
+}
+
+pub async fn routine_mcp_server_allowed_for_session(
+    pool: &SqlitePool,
+    session_id: &str,
+    server_name: &str,
+) -> Result<Option<bool>, AppError> {
+    let row = query(
+        "SELECT routines.metadata_json
+         FROM routine_runs
+         JOIN routines ON routines.id = routine_runs.routine_id
+         WHERE routine_runs.agent_session_id = ?",
+    )
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(app_error)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let metadata = serde_json::from_str::<Value>(&row.get::<String, _>("metadata_json"))
+        .unwrap_or_else(|_| json!({}));
+    Ok(Some(
+        enabled_toolsets_from_metadata(&metadata)
+            .iter()
+            .any(|toolset| toolset == server_name),
+    ))
 }
 
 fn base_unattended_tools() -> Value {
@@ -1220,6 +1384,21 @@ mod tests {
             list_runs(&pool, Some("routine-1")).await.unwrap()[0].status,
             "interrupted"
         );
+    }
+
+    #[tokio::test]
+    async fn event_style_manual_claim_ignores_far_future_schedule_and_keeps_toolsets() {
+        let pool = pool().await;
+        let mut request = create_request("2099-01-01T09:00:00Z");
+        request.enabled_toolsets = Some(vec!["web".into(), "june_gmail".into()]);
+        create(&pool, request).await.unwrap();
+
+        let claim = claim(&pool, "routine-1", "email_received", false)
+            .await
+            .unwrap()
+            .expect("active event routine should be claimable");
+        assert_eq!(claim.enabled_toolsets, vec!["web", "june_gmail"]);
+        assert_eq!(claim.routine_id, "routine-1");
     }
 
     #[tokio::test]
