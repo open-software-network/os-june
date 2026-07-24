@@ -704,8 +704,7 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
         },
       });
 
-      // The shared module returns normally after acknowledgement even if a
-      // local monitoring/session refresh hook failed afterwards.
+      // Ignore postAcknowledgementError only because loadHermesSessions swallows wire errors and every other post-ack op is non-throwing; surface it like Note Chat if that changes.
       return options?.skipPrompt ? runResult.storedSessionId : undefined;
     } catch (err) {
       clearQueuedIssueReport();
