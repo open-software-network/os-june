@@ -4,6 +4,7 @@ import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { actionToolLabel, providerFromServer } from "../../lib/connectors";
+import { useConnectorPolicy } from "../../lib/connector-policy";
 import { useScrollFade } from "../../lib/use-scroll-fade";
 import {
   CONNECTOR_APPROVALS_CHANGED_EVENT,
@@ -25,6 +26,7 @@ import { ConnectorProviderIcon } from "./ConnectorProviderIcon";
  * it touches and a redacted preview (redaction happens in Rust).
  */
 export function ConnectorApprovalsTray() {
+  const { policy } = useConnectorPolicy();
   const [pending, setPending] = useState<PendingConnectorApproval[]>([]);
   const [busy, setBusy] = useState(false);
   // Collapsed parks the tray as a single header line (the steer queue's
@@ -141,7 +143,7 @@ export function ConnectorApprovalsTray() {
   const stackProviders = [
     ...new Set(
       pending
-        .map((item) => providerFromServer(item.server))
+        .map((item) => (policy ? providerFromServer(policy, item.server) : null))
         .filter((provider): provider is NonNullable<typeof provider> => provider !== null),
     ),
   ].slice(0, 3);
@@ -233,14 +235,17 @@ export function ConnectorApprovalsTray() {
       {collapsed ? null : (
         <ul className="connector-approvals-list scroll-fade-mask" ref={listRef} {...fade.props}>
           {pending.map((item) => {
-            const provider = providerFromServer(item.server);
-            const summary = item.summary || actionToolLabel(item.tool, item.server);
+            const provider = policy ? providerFromServer(policy, item.server) : null;
+            const toolLabel = policy
+              ? actionToolLabel(policy, item.tool, item.server)
+              : item.tool.replace(/[_-]/g, " ");
+            const summary = item.summary || toolLabel;
             const expanded = expandedIds.has(item.approvalId);
             const info = (
               <>
                 <span className="connector-approvals-summary">{summary}</span>
                 <span className="connector-approvals-meta">
-                  {actionToolLabel(item.tool, item.server)} · {item.accountEmail}
+                  {toolLabel} · {item.accountEmail}
                 </span>
                 {item.argsPreview ? (
                   <span className="connector-approvals-preview">{item.argsPreview}</span>

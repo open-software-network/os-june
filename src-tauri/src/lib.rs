@@ -369,6 +369,7 @@ pub fn run() {
             os_accounts::os_accounts_referral_summary,
             extension_host::extension_pairing_status,
             extension_host::register_browser_extension_host,
+            connectors::commands::connectors_policy,
             connectors::commands::connectors_list,
             connectors::commands::connectors_connect,
             connectors::commands::connectors_cancel_connect,

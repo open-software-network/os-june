@@ -16,6 +16,7 @@ import {
   triggerScopeWarning,
   type TriggerDraft,
 } from "../../lib/connectors";
+import { useConnectorPolicy } from "../../lib/connector-policy";
 import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
   pauseRoutine,
@@ -120,6 +121,7 @@ export function RoutineDetail({
   retrying,
 }: RoutineDetailProps) {
   const { browserUseEnabled } = useExperimentalFlags();
+  const { policy } = useConnectorPolicy();
   const [name, setName] = useState(routine.name);
   const [draft, setDraft] = useState<ScheduleDraft>(() => draftFromSchedule(routine.schedule));
   const [prompt, setPrompt] = useState(routine.prompt);
@@ -287,6 +289,15 @@ export function RoutineDetail({
   }
 
   async function save() {
+    const connectorPolicyNeeded =
+      trustChanged ||
+      triggerChanged ||
+      browserAccessChanged ||
+      (modeChanged && storedTrust != null);
+    if (connectorPolicyNeeded && !policy) {
+      toast.error("Connector policy is still loading. Try again.");
+      return;
+    }
     const updates: RoutineUpdates = {};
     if (nameChanged) updates.name = name.trim();
     if (scheduleChanged) updates.schedule = scheduleFromDraft(draft);
@@ -310,7 +321,9 @@ export function RoutineDetail({
       }
       // The account must hold the scope this trigger's daemon polls, or the
       // routine saves but never fires (the Gmail/calendar call fails).
-      const scopeIssue = triggerScopeWarning(trigger, triggerAccount.scopes);
+      const scopeIssue = policy
+        ? triggerScopeWarning(policy, trigger, triggerAccount.scopes)
+        : "Connector policy is still loading. Try again.";
       if (scopeIssue) {
         toast.error(scopeIssue);
         return;
@@ -343,6 +356,7 @@ export function RoutineDetail({
     // Trust first: an autonomous grant mints per-job auto server names that
     // the toolset override must reference.
     if (trustChanged) {
+      if (!policy) return;
       try {
         const previousServers = storedTrust?.autonomousServers ?? [];
         const previousTools = storedTrust?.autonomousTools ?? [];
@@ -352,7 +366,7 @@ export function RoutineDetail({
           autonomousTools: trustMode === "autonomous" ? autonomousTools : undefined,
         });
         setStoredTrust(stored);
-        updates.enabledToolsets = routineToolsetsFor(trustMode, {
+        updates.enabledToolsets = routineToolsetsFor(policy, trustMode, {
           unrestricted,
           autonomousServers: stored.autonomousServers,
           routineBrowserServer: nextBrowserAccess?.serverName ?? undefined,
@@ -380,16 +394,19 @@ export function RoutineDetail({
         return;
       }
     } else if (modeChanged || browserAccessChanged) {
+      if (!policy && (storedTrust || nextBrowserAccess?.enabled)) return;
       // No trust change: connector routines recompose their toolsets around
       // the new base; plain routines keep the legacy boolean path.
       if (storedTrust) {
-        updates.enabledToolsets = routineToolsetsFor(trustMode, {
+        if (!policy) return;
+        updates.enabledToolsets = routineToolsetsFor(policy, trustMode, {
           unrestricted,
           autonomousServers: storedTrust.autonomousServers,
           routineBrowserServer: nextBrowserAccess?.serverName ?? undefined,
         });
       } else if (nextBrowserAccess?.enabled && nextBrowserAccess.serverName) {
-        updates.enabledToolsets = routineToolsetsFor("read_only", {
+        if (!policy) return;
+        updates.enabledToolsets = routineToolsetsFor(policy, "read_only", {
           unrestricted,
           routineBrowserServer: nextBrowserAccess.serverName,
         });
@@ -725,12 +742,17 @@ export function RoutineDetail({
                   hasAccount={accounts.some(
                     (entry) => entry.provider === "google" && entry.status === "connected",
                   )}
-                  scopeWarning={triggerScopeWarning(
-                    trigger,
-                    accounts.find(
-                      (entry) => entry.provider === "google" && entry.status === "connected",
-                    )?.scopes ?? null,
-                  )}
+                  scopeWarning={
+                    policy
+                      ? triggerScopeWarning(
+                          policy,
+                          trigger,
+                          accounts.find(
+                            (entry) => entry.provider === "google" && entry.status === "connected",
+                          )?.scopes ?? null,
+                        )
+                      : null
+                  }
                   onTriggerChange={changeTrigger}
                   onScheduleChange={setDraft}
                 />
@@ -791,6 +813,7 @@ export function RoutineDetail({
               </h2>
               <div className="settings-card">
                 <TrustModePicker
+                  policy={policy}
                   value={trustMode}
                   runCount={storedTrust?.approvalRunCount ?? 0}
                   autonomousTools={autonomousTools}

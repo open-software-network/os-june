@@ -1,10 +1,10 @@
-import type { RoutineTrustMode } from "../../lib/tauri";
+import type { ConnectorPolicyCatalog, RoutineTrustMode } from "../../lib/tauri";
 import {
   autonomyProgressLabel,
   autonomyUnlockHint,
   canSelectAutonomous,
-  GRANTABLE_CONNECTOR_ACTION_TOOLS,
   TRUST_MODE_META,
+  grantableConnectorActionTools,
 } from "../../lib/connectors";
 import { Checkbox } from "../ui/Checkbox";
 import { SegmentedControl } from "../ui/SegmentedControl";
@@ -39,12 +39,14 @@ const MODE_OPTIONS = TRUST_MODES.map((mode) => {
  */
 export function TrustModePicker({
   value,
+  policy,
   runCount,
   autonomousTools,
   onChange,
   onAutonomousToolsChange,
 }: {
   value: RoutineTrustMode;
+  policy: ConnectorPolicyCatalog | null;
   /** Completed approval-mode runs of this routine (0 for a new one). */
   runCount: number;
   /** Connector action tool names granted for autonomous runs. */
@@ -52,7 +54,8 @@ export function TrustModePicker({
   onChange: (mode: RoutineTrustMode) => void;
   onAutonomousToolsChange: (tools: string[]) => void;
 }) {
-  const autonomousUnlocked = canSelectAutonomous(runCount);
+  const grantableTools = policy ? grantableConnectorActionTools(policy) : [];
+  const autonomousUnlocked = policy ? canSelectAutonomous(policy, runCount) : false;
 
   function pick(mode: RoutineTrustMode) {
     if (mode === "autonomous" && !autonomousUnlocked) return;
@@ -63,9 +66,7 @@ export function TrustModePicker({
     const next = new Set(autonomousTools);
     if (granted) next.add(toolId);
     else next.delete(toolId);
-    onAutonomousToolsChange(
-      GRANTABLE_CONNECTOR_ACTION_TOOLS.map((t) => t.id).filter((id) => next.has(id)),
-    );
+    onAutonomousToolsChange(grantableTools.map((tool) => tool.id).filter((id) => next.has(id)));
   }
 
   return (
@@ -77,9 +78,9 @@ export function TrustModePicker({
         aria-label="What can this routine do with your Google account?"
       />
       <p className="routines-mode-hint">{TRUST_MODE_META[value].description}</p>
-      {!autonomousUnlocked ? (
+      {policy && !autonomousUnlocked ? (
         <p className="routines-mode-hint trust-mode-locked-hint">
-          {autonomyUnlockHint(runCount)} {autonomyProgressLabel(runCount)}
+          {autonomyUnlockHint(policy, runCount)} {autonomyProgressLabel(policy, runCount)}
         </p>
       ) : null}
       {value === "autonomous" ? (
@@ -87,7 +88,7 @@ export function TrustModePicker({
           <legend className="trust-mode-grants-legend">Tools this routine may run unasked</legend>
           {/* Grantable tools only: Linear's write tools are approval-only in v1
               and must never appear as autonomy checkboxes. */}
-          {GRANTABLE_CONNECTOR_ACTION_TOOLS.map((tool) => (
+          {grantableTools.map((tool) => (
             <label key={tool.id} className="trust-mode-grant" htmlFor={`trust-grant-${tool.id}`}>
               <Checkbox
                 id={`trust-grant-${tool.id}`}

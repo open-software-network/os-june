@@ -3,8 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorsSection } from "../components/settings/ConnectorsSection";
 import type { ConnectorAccount, LinearTeam } from "../lib/tauri";
+import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
   connectorsList: vi.fn<() => Promise<ConnectorAccount[]>>(),
   connectorsConnect: vi.fn(),
   connectorsCancelConnect: vi.fn(),
@@ -26,6 +28,11 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  invoke: mocks.invoke,
 }));
 
 // Pin BROWSER_USE_ENABLED on so the Browser use capability row stays testable
@@ -124,6 +131,9 @@ beforeEach(() => {
   connectorsChangedListener = null;
   eventHandlers.clear();
   mocks.connectorsList.mockResolvedValue([]);
+  mocks.invoke.mockImplementation(async (command: string) =>
+    command === "connectors_policy" ? representativeConnectorPolicy() : undefined,
+  );
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);

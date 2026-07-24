@@ -1,0 +1,225 @@
+import type { ConnectorPolicyCatalog } from "../../lib/tauri";
+
+export function representativeConnectorPolicy(): ConnectorPolicyCatalog {
+  return {
+    version: 1,
+    providers: [
+      {
+        id: "google",
+        connectFlow: "oauth",
+        enabled: true,
+        defaultBundles: ["gmail_read", "calendar_read"],
+      },
+      {
+        id: "linear",
+        connectFlow: "oauth",
+        enabled: true,
+        defaultBundles: ["linear_read"],
+      },
+      {
+        id: "github",
+        connectFlow: "oauth",
+        enabled: true,
+        defaultBundles: ["github_read"],
+      },
+      {
+        id: "notion",
+        connectFlow: "hosted_mcp",
+        enabled: true,
+        defaultBundles: [],
+      },
+    ],
+    scopeBundles: [
+      {
+        id: "gmail_read",
+        provider: "google",
+        scopeIds: ["https://www.googleapis.com/auth/gmail.readonly"],
+      },
+      {
+        id: "gmail_draft",
+        provider: "google",
+        scopeIds: ["https://www.googleapis.com/auth/gmail.compose"],
+      },
+      {
+        id: "gmail_modify",
+        provider: "google",
+        scopeIds: ["https://www.googleapis.com/auth/gmail.modify"],
+      },
+      {
+        id: "gmail_send",
+        provider: "google",
+        scopeIds: ["https://www.googleapis.com/auth/gmail.send"],
+      },
+      {
+        id: "calendar_read",
+        provider: "google",
+        scopeIds: ["https://www.googleapis.com/auth/calendar.readonly"],
+      },
+      {
+        id: "calendar_events",
+        provider: "google",
+        scopeIds: ["https://www.googleapis.com/auth/calendar.events"],
+      },
+      { id: "linear_read", provider: "linear", scopeIds: ["read"] },
+      { id: "linear_write", provider: "linear", scopeIds: ["write"] },
+      { id: "github_read", provider: "github", scopeIds: ["read"] },
+      { id: "github_write", provider: "github", scopeIds: ["write"] },
+    ],
+    scopeImplications: [
+      {
+        held: "https://www.googleapis.com/auth/gmail.modify",
+        grants: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.compose",
+        ],
+      },
+      {
+        held: "https://www.googleapis.com/auth/calendar.events",
+        grants: ["https://www.googleapis.com/auth/calendar.readonly"],
+      },
+    ],
+    servers: [
+      { id: "june_gmail", provider: "google", kind: "read" },
+      { id: "june_gmail_actions", provider: "google", kind: "action" },
+      { id: "june_gcal", provider: "google", kind: "read" },
+      { id: "june_gcal_actions", provider: "google", kind: "action" },
+      { id: "june_linear", provider: "linear", kind: "read" },
+      { id: "june_linear_actions", provider: "linear", kind: "action" },
+      { id: "june_notion", provider: "notion", kind: "read" },
+      { id: "june_notion_actions", provider: "notion", kind: "action" },
+      { id: "june_github", provider: "github", kind: "read" },
+      { id: "june_github_actions", provider: "github", kind: "action" },
+    ],
+    serverOwnerPrefixes: [
+      { prefix: "june_gmail", provider: "google" },
+      { prefix: "june_gcal", provider: "google" },
+      { prefix: "june_linear", provider: "linear" },
+      { prefix: "june_notion", provider: "notion" },
+      { prefix: "june_github", provider: "github" },
+    ],
+    actionTools: [
+      {
+        id: "create_draft",
+        server: "june_gmail_actions",
+        provider: "google",
+        grantable: true,
+      },
+      {
+        id: "send_email",
+        server: "june_gmail_actions",
+        provider: "google",
+        grantable: true,
+      },
+      {
+        id: "modify_labels",
+        server: "june_gmail_actions",
+        provider: "google",
+        grantable: true,
+      },
+      {
+        id: "archive",
+        server: "june_gmail_actions",
+        provider: "google",
+        grantable: true,
+      },
+      {
+        id: "create_event",
+        server: "june_gcal_actions",
+        provider: "google",
+        grantable: true,
+      },
+      {
+        id: "respond_to_invite",
+        server: "june_gcal_actions",
+        provider: "google",
+        grantable: true,
+      },
+      {
+        id: "create_issue",
+        server: "june_linear_actions",
+        provider: "linear",
+        grantable: false,
+      },
+      {
+        id: "update_issue",
+        server: "june_linear_actions",
+        provider: "linear",
+        grantable: false,
+      },
+      {
+        id: "add_comment",
+        server: "june_linear_actions",
+        provider: "linear",
+        grantable: false,
+      },
+      {
+        id: "create_project_update",
+        server: "june_linear_actions",
+        provider: "linear",
+        grantable: false,
+      },
+      {
+        id: "notion-create-pages",
+        server: "june_notion_actions",
+        provider: "notion",
+        grantable: false,
+      },
+      {
+        id: "notion-update-page",
+        server: "june_notion_actions",
+        provider: "notion",
+        grantable: false,
+      },
+      {
+        id: "create_issue",
+        server: "june_github_actions",
+        provider: "github",
+        grantable: false,
+      },
+      {
+        id: "update_issue",
+        server: "june_github_actions",
+        provider: "github",
+        grantable: false,
+      },
+      {
+        id: "add_comment",
+        server: "june_github_actions",
+        provider: "github",
+        grantable: false,
+      },
+    ],
+    triggers: [
+      {
+        id: "email_received",
+        provider: "google",
+        requiredBundles: ["gmail_read"],
+      },
+      {
+        id: "event_upcoming",
+        provider: "google",
+        requiredBundles: ["calendar_read"],
+      },
+    ],
+    routine: {
+      sandboxedBaseToolsets: [
+        "web",
+        "vision",
+        "todo",
+        "memory",
+        "session_search",
+        "context_engine",
+      ],
+      readToolsets: ["june_gmail", "june_gcal", "june_linear", "june_notion", "june_github"],
+      actionToolsets: [
+        "june_gmail_actions",
+        "june_gcal_actions",
+        "june_linear_actions",
+        "june_notion_actions",
+        "june_github_actions",
+      ],
+      autonomousServerPrefixes: ["june_gmail_auto_", "june_gcal_auto_"],
+    },
+    earnedAutonomyMinApprovalRuns: 3,
+  };
+}
