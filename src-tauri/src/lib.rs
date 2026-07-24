@@ -342,6 +342,7 @@ pub fn run() {
             providers::clear_venice_api_key,
             providers::set_image_safe_mode,
             providers::set_live_transcription,
+            providers::set_microphone_noise_suppression,
             providers::set_image_safe_mode_prompt_dismissed,
             image_safety::image_prompt_may_be_explicit,
             providers::generate_image,

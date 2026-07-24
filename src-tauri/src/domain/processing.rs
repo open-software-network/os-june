@@ -1,6 +1,10 @@
 use crate::{
     audio::{
         live_preview::PREVIEW_CHUNK_MS,
+        noise_suppression::{
+            suppress_microphone_wav_for_transcription, DerivedTranscriptionInputCleanup,
+            SPECTRAL_DENOISER_ID,
+        },
         turns::{
             coalesce_turns_for_transcription_avoiding_echo, detect_turns_with_report,
             normalize_wav_for_transcription, split_wav_for_transcription,
@@ -219,6 +223,7 @@ fn note_transcription_span_id(
 fn note_transcription_configuration_fingerprint(
     title: &str,
     dictionary_context: Option<&str>,
+    microphone_noise_suppression: Option<&str>,
 ) -> String {
     let mut digest = Sha256::new();
     digest.update(b"june-note-transcription-configuration-v1\0");
@@ -236,7 +241,176 @@ fn note_transcription_configuration_fingerprint(
             None => digest.update(b"none"),
         }
     }
+    if let Some(suppression_fingerprint) = microphone_noise_suppression {
+        digest.update(b"microphone-noise-suppression");
+        digest.update((SPECTRAL_DENOISER_ID.len() as u64).to_be_bytes());
+        digest.update(SPECTRAL_DENOISER_ID.as_bytes());
+        digest.update((suppression_fingerprint.len() as u64).to_be_bytes());
+        digest.update(suppression_fingerprint.as_bytes());
+    }
     format!("{:x}", digest.finalize())
+}
+
+fn noise_suppression_transcription_fingerprint(
+    applied: bool,
+    output_fingerprint: &str,
+) -> Option<String> {
+    applied.then(|| format!("applied:{output_fingerprint}"))
+}
+
+async fn apply_microphone_noise_suppression(
+    repos: &Repositories,
+    session_id: &str,
+    sources: &mut [SourceAudioForProcessing],
+    turns: &mut [AudioTurn],
+) -> MicrophoneNoiseSuppressionResult {
+    let Some((artifact_id, source_path)) = sources
+        .iter()
+        .find(|(_artifact_id, source, _source_path, _recorded_silence)| source == "microphone")
+        .map(|(artifact_id, _source, source_path, _recorded_silence)| {
+            (artifact_id.clone(), source_path.clone())
+        })
+    else {
+        return MicrophoneNoiseSuppressionResult::default();
+    };
+    let suppression_started = Instant::now();
+    let result = tokio::task::spawn_blocking(move || {
+        suppress_microphone_wav_for_transcription(&source_path)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            replace_microphone_transcription_path(sources, turns, &artifact_id, &output.path);
+            let status = if output.applied {
+                "applied"
+            } else {
+                "bypassed_clean"
+            };
+            let transcription_fingerprint =
+                noise_suppression_transcription_fingerprint(output.applied, &output.fingerprint);
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    session_id,
+                    Some(artifact_id.as_str()),
+                    Some("microphone"),
+                    "noise_suppression",
+                    Some(
+                        serde_json::json!({
+                            "algorithm": output.denoiser_id,
+                            "cacheHit": output.cache_hit,
+                            "durationMs": elapsed_ms(suppression_started),
+                            "noiseFloorDbfs": output.noise_floor_dbfs,
+                            "outputFingerprint": &output.fingerprint,
+                            "status": status,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %session_id,
+                    %error,
+                    "failed to persist noise_suppression checkpoint"
+                );
+            }
+            MicrophoneNoiseSuppressionResult {
+                transcription_fingerprint,
+                cleanup: output.cleanup,
+            }
+        }
+        Ok(Err(error)) => {
+            persist_noise_suppression_fallback(
+                repos,
+                session_id,
+                &artifact_id,
+                elapsed_ms(suppression_started),
+                &error.code,
+                &error.message,
+            )
+            .await;
+            MicrophoneNoiseSuppressionResult::default()
+        }
+        Err(error) => {
+            persist_noise_suppression_fallback(
+                repos,
+                session_id,
+                &artifact_id,
+                elapsed_ms(suppression_started),
+                "noise_suppression_task_failed",
+                &error.to_string(),
+            )
+            .await;
+            MicrophoneNoiseSuppressionResult::default()
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct MicrophoneNoiseSuppressionResult {
+    transcription_fingerprint: Option<String>,
+    cleanup: Option<DerivedTranscriptionInputCleanup>,
+}
+
+async fn persist_noise_suppression_fallback(
+    repos: &Repositories,
+    session_id: &str,
+    artifact_id: &str,
+    duration_ms: i64,
+    error_code: &str,
+    message: &str,
+) {
+    tracing::warn!(
+        %session_id,
+        %artifact_id,
+        %error_code,
+        error = %message,
+        "Microphone noise suppression failed; using the finalized source WAV"
+    );
+    if let Err(error) = repos
+        .add_source_checkpoint(
+            session_id,
+            Some(artifact_id),
+            Some("microphone"),
+            "noise_suppression_warning",
+            Some(
+                serde_json::json!({
+                    "algorithm": crate::audio::noise_suppression::RNNOISE_DENOISER_ID,
+                    "durationMs": duration_ms,
+                    "errorCode": error_code,
+                    "message": message,
+                    "status": "raw_fallback",
+                })
+                .to_string(),
+            ),
+        )
+        .await
+    {
+        tracing::warn!(
+            %session_id,
+            %error,
+            "failed to persist noise_suppression_warning checkpoint"
+        );
+    }
+}
+
+fn replace_microphone_transcription_path(
+    sources: &mut [SourceAudioForProcessing],
+    turns: &mut [AudioTurn],
+    artifact_id: &str,
+    transcription_path: &Path,
+) {
+    for (source_artifact_id, source, source_path, _recorded_silence) in sources {
+        if source_artifact_id == artifact_id && source == "microphone" {
+            *source_path = transcription_path.to_path_buf();
+        }
+    }
+    for turn in turns {
+        if turn.artifact_id == artifact_id && turn.source == "microphone" {
+            turn.source_path = transcription_path.to_path_buf();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -528,6 +702,11 @@ impl Drop for TempDirCleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+struct PipelineAudioCleanup {
+    _turn_wav_dir: TempDirCleanup,
+    _derived_transcription_input: Option<DerivedTranscriptionInputCleanup>,
 }
 
 fn session_temp_dir(prefix: &str, session_id: &str) -> PathBuf {
@@ -1127,6 +1306,7 @@ async fn process_saved_source_audio_pipeline(
     )
     .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
+    let microphone_noise_suppression = crate::providers::microphone_noise_suppression();
     let dictionary_entries = match repos.list_dictionary_entries().await {
         Ok(entries) => entries,
         Err(error) => {
@@ -1146,7 +1326,7 @@ async fn process_saved_source_audio_pipeline(
     let pipeline_setup = async {
         let detection_started = Instant::now();
         let SilentSystemDropOutcome {
-            kept: sources,
+            kept: mut sources,
             dropped,
         } = partition_silent_system_sources(sources);
         for drop in &dropped {
@@ -1176,19 +1356,12 @@ async fn process_saved_source_audio_pipeline(
                 );
             }
         }
-        let (turns, echo_rejection) = if source_mode == RecordingSourceMode::MicrophoneOnly {
+        let (mut turns, echo_rejection) = if source_mode == RecordingSourceMode::MicrophoneOnly {
             // Microphone-only capture has no attribution problem to solve.
             // Keep it on the same durable pipeline, but represent the saved
             // WAV as one full-Source job instead of paying the dual-Source
             // VAD and echo-rejection cost.
-            (
-                add_full_source_turns_for_missing_sources(
-                    &sources,
-                    Vec::new(),
-                    &EchoRejectionReport::default(),
-                ),
-                EchoRejectionReport::default(),
-            )
+            (Vec::new(), EchoRejectionReport::default())
         } else {
             let detection_sources = sources
                 .iter()
@@ -1231,6 +1404,11 @@ async fn process_saved_source_audio_pipeline(
                 tracing::warn!(%session_id, %error, "failed to persist echo_rejection checkpoint");
             }
         }
+        let noise_suppression = if microphone_noise_suppression {
+            apply_microphone_noise_suppression(repos, session_id, &mut sources, &mut turns).await
+        } else {
+            MicrophoneNoiseSuppressionResult::default()
+        };
         let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
         let turns = coalesce_turns_for_transcription_avoiding_echo(
             turns,
@@ -1261,7 +1439,10 @@ async fn process_saved_source_audio_pipeline(
         let _ = std::fs::remove_dir_all(&turn_wav_dir);
         std::fs::create_dir_all(&turn_wav_dir)
             .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
-        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
+        let pipeline_audio_cleanup = Arc::new(PipelineAudioCleanup {
+            _turn_wav_dir: TempDirCleanup(turn_wav_dir.clone()),
+            _derived_transcription_input: noise_suppression.cleanup,
+        });
 
         let mut all_preparation_jobs = Vec::new();
         for turn in turns {
@@ -1289,8 +1470,11 @@ async fn process_saved_source_audio_pipeline(
             };
             all_preparation_jobs.push(descriptor.clone());
         }
-        let configuration_fingerprint =
-            note_transcription_configuration_fingerprint(&title, dictionary_context.as_deref());
+        let configuration_fingerprint = note_transcription_configuration_fingerprint(
+            &title,
+            dictionary_context.as_deref(),
+            noise_suppression.transcription_fingerprint.as_deref(),
+        );
         let mut fallback_plans = build_source_fallback_plans(&all_preparation_jobs)
             .into_iter()
             .filter(SourceFallbackPlan::eligible)
@@ -1469,7 +1653,7 @@ async fn process_saved_source_audio_pipeline(
         Ok::<_, AppError>((
             sources,
             coverage_turns,
-            turn_wav_dir_cleanup,
+            pipeline_audio_cleanup,
             preparation_jobs,
             fallback_plans,
             cached_candidates,
@@ -1479,7 +1663,7 @@ async fn process_saved_source_audio_pipeline(
     let (
         sources,
         coverage_turns,
-        turn_wav_dir_cleanup,
+        pipeline_audio_cleanup,
         preparation_jobs,
         fallback_plans,
         cached_candidates,
@@ -1543,7 +1727,7 @@ async fn process_saved_source_audio_pipeline(
     };
     let transcriber = retain_cleanup_during_note_transcription(
         instrument_turn_transcriber(default_turn_transcriber(), timeline.clone()),
-        Arc::clone(&turn_wav_dir_cleanup),
+        Arc::clone(&pipeline_audio_cleanup),
     );
     let pipeline_result = prepare_and_transcribe_turn_jobs_bounded(
         preparation_jobs,
@@ -1552,8 +1736,8 @@ async fn process_saved_source_audio_pipeline(
         transcription_provider.clone(),
         title.clone(),
         dictionary_context,
-        guarded_turn_preparer(Arc::clone(&turn_wav_dir_cleanup)),
-        guarded_fallback_preparer(Arc::clone(&turn_wav_dir_cleanup)),
+        guarded_turn_preparer(Arc::clone(&pipeline_audio_cleanup)),
+        guarded_fallback_preparer(Arc::clone(&pipeline_audio_cleanup)),
         transcriber,
         Some(job_claimer),
         Some(result_sink),
@@ -1575,7 +1759,6 @@ async fn process_saved_source_audio_pipeline(
     repos
         .supersede_pending_note_transcription_fallbacks(session_id)
         .await?;
-    drop(turn_wav_dir_cleanup);
 
     let mut fresh_outcome = pipeline.outcome;
     for source in &fresh_outcome.replaced_sources {
@@ -1665,6 +1848,7 @@ async fn process_saved_source_audio_pipeline(
         &persisted_transcripts,
         &visible_failures,
     );
+    drop(pipeline_audio_cleanup);
     // Coverage is diagnostic only and must never fail note processing: a
     // checkpoint that cannot be serialized or persisted is logged and skipped.
     match serde_json::to_string(&transcript_coverage) {
@@ -2251,9 +2435,13 @@ type TurnJobClaimer = Arc<dyn Fn(String) -> TurnClaimFuture + Send + Sync>;
 type TurnResultFuture = Pin<Box<dyn Future<Output = Result<(), AppError>> + Send>>;
 type TurnResultSink = Arc<dyn Fn(CompletedTurnTranscription) -> TurnResultFuture + Send + Sync>;
 
-fn retain_cleanup_during_blocking_work<Input: 'static, Output: 'static>(
+fn retain_cleanup_during_blocking_work<
+    Input: 'static,
+    Output: 'static,
+    Cleanup: Send + Sync + 'static,
+>(
     inner: Arc<dyn Fn(Input) -> Result<Output, AppError> + Send + Sync>,
-    cleanup: Arc<TempDirCleanup>,
+    cleanup: Arc<Cleanup>,
 ) -> Arc<dyn Fn(Input) -> Result<Output, AppError> + Send + Sync> {
     Arc::new(move |input| {
         let _cleanup = Arc::clone(&cleanup);
@@ -2261,26 +2449,28 @@ fn retain_cleanup_during_blocking_work<Input: 'static, Output: 'static>(
     })
 }
 
-fn retain_cleanup_during_turn_preparation(
+fn retain_cleanup_during_turn_preparation<Cleanup: Send + Sync + 'static>(
     inner: TurnPreparer,
-    cleanup: Arc<TempDirCleanup>,
+    cleanup: Arc<Cleanup>,
 ) -> TurnPreparer {
     retain_cleanup_during_blocking_work(inner, cleanup)
 }
 
-fn guarded_turn_preparer(cleanup: Arc<TempDirCleanup>) -> TurnPreparer {
+fn guarded_turn_preparer<Cleanup: Send + Sync + 'static>(cleanup: Arc<Cleanup>) -> TurnPreparer {
     let inner: TurnPreparer = Arc::new(prepare_turn_job);
     retain_cleanup_during_turn_preparation(inner, cleanup)
 }
 
-fn guarded_fallback_preparer(cleanup: Arc<TempDirCleanup>) -> SourceFallbackPreparer {
+fn guarded_fallback_preparer<Cleanup: Send + Sync + 'static>(
+    cleanup: Arc<Cleanup>,
+) -> SourceFallbackPreparer {
     let inner: SourceFallbackPreparer = Arc::new(prepare_source_fallback);
     retain_cleanup_during_blocking_work(inner, cleanup)
 }
 
-fn retain_cleanup_during_note_transcription(
+fn retain_cleanup_during_note_transcription<Cleanup: Send + Sync + 'static>(
     inner: TurnTranscriber,
-    cleanup: Arc<TempDirCleanup>,
+    cleanup: Arc<Cleanup>,
 ) -> TurnTranscriber {
     Arc::new(move |request| {
         let cleanup = Arc::clone(&cleanup);
@@ -6257,19 +6447,107 @@ mod tests {
 
     #[test]
     fn durable_configuration_fingerprint_tracks_output_affecting_context() {
-        let base = note_transcription_configuration_fingerprint("Meeting", Some("- June"));
+        let base = note_transcription_configuration_fingerprint("Meeting", Some("- June"), None);
+        let clean_bypass =
+            noise_suppression_transcription_fingerprint(false, "clean-input-fingerprint");
+        let raw_fallback = MicrophoneNoiseSuppressionResult::default().transcription_fingerprint;
+        let applied = noise_suppression_transcription_fingerprint(true, "derived-a");
         assert_eq!(
             base,
-            note_transcription_configuration_fingerprint("Meeting", Some("- June"))
+            note_transcription_configuration_fingerprint("Meeting", Some("- June"), None)
+        );
+        assert_eq!(
+            base,
+            note_transcription_configuration_fingerprint(
+                "Meeting",
+                Some("- June"),
+                clean_bypass.as_deref(),
+            ),
+            "clean bypass must not invalidate a byte-identical cached transcript"
+        );
+        assert_eq!(
+            base,
+            note_transcription_configuration_fingerprint(
+                "Meeting",
+                Some("- June"),
+                raw_fallback.as_deref(),
+            ),
+            "raw fallback must retain the unsuppressed cache identity"
         );
         assert_ne!(
             base,
-            note_transcription_configuration_fingerprint("Renamed meeting", Some("- June"))
+            note_transcription_configuration_fingerprint("Renamed meeting", Some("- June"), None)
         );
         assert_ne!(
             base,
-            note_transcription_configuration_fingerprint("Meeting", Some("- Junho"))
+            note_transcription_configuration_fingerprint("Meeting", Some("- Junho"), None)
         );
+        assert_ne!(
+            base,
+            note_transcription_configuration_fingerprint(
+                "Meeting",
+                Some("- June"),
+                applied.as_deref(),
+            )
+        );
+    }
+
+    #[test]
+    fn derived_microphone_path_does_not_change_system_or_turn_bounds() {
+        let raw_microphone = PathBuf::from("microphone-raw.wav");
+        let raw_system = PathBuf::from("system-raw.wav");
+        let derived_microphone = PathBuf::from("microphone-denoised.wav");
+        let mut sources = vec![
+            (
+                "microphone-artifact".to_string(),
+                "microphone".to_string(),
+                raw_microphone,
+                false,
+            ),
+            (
+                "system-artifact".to_string(),
+                "system".to_string(),
+                raw_system.clone(),
+                false,
+            ),
+        ];
+        let mut turns = vec![
+            test_audio_turn(
+                "microphone-artifact",
+                "microphone",
+                PathBuf::from("microphone-raw.wav"),
+                0,
+                1_000,
+                2_000,
+            ),
+            test_audio_turn(
+                "system-artifact",
+                "system",
+                raw_system.clone(),
+                1,
+                2_500,
+                4_000,
+            ),
+        ];
+
+        replace_microphone_transcription_path(
+            &mut sources,
+            &mut turns,
+            "microphone-artifact",
+            &derived_microphone,
+        );
+
+        assert_eq!(sources[0].2, derived_microphone);
+        assert_eq!(sources[1].2, raw_system);
+        assert_eq!(
+            turns[0].source_path,
+            PathBuf::from("microphone-denoised.wav")
+        );
+        assert_eq!(turns[0].start_ms, 1_000);
+        assert_eq!(turns[0].end_ms, 2_000);
+        assert_eq!(turns[1].source_path, PathBuf::from("system-raw.wav"));
+        assert_eq!(turns[1].start_ms, 2_500);
+        assert_eq!(turns[1].end_ms, 4_000);
     }
 
     #[tokio::test]
@@ -7686,11 +7964,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn note_transcription_future_retains_turn_wav_temp_dir_after_wrapper_drop() {
+    async fn note_transcription_future_retains_transient_audio_after_wrapper_drop() {
         let root = tempfile::tempdir().expect("temp root");
         let turn_wav_dir = root.path().join("session").join("turns");
         std::fs::create_dir_all(&turn_wav_dir).expect("turn WAV temp dir");
-        let turn_wav_dir_cleanup = Arc::new(TempDirCleanup(turn_wav_dir.clone()));
+        let raw_microphone = root.path().join("session").join("microphone.wav");
+        write_loud_wav(&raw_microphone, 48_000, 48_000);
+        let mut suppression =
+            suppress_microphone_wav_for_transcription(&raw_microphone).expect("suppress noise");
+        assert!(suppression.applied);
+        let derived_input = suppression.path.clone();
+        let pipeline_audio_cleanup = Arc::new(PipelineAudioCleanup {
+            _turn_wav_dir: TempDirCleanup(turn_wav_dir.clone()),
+            _derived_transcription_input: suppression.cleanup.take(),
+        });
         let provider_gate = Arc::new(tokio::sync::Semaphore::new(0));
         let (provider_started_tx, mut provider_started_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = {
@@ -7707,7 +7994,7 @@ mod tests {
             }) as TurnTranscriber
         };
         let guarded =
-            retain_cleanup_during_note_transcription(inner, Arc::clone(&turn_wav_dir_cleanup));
+            retain_cleanup_during_note_transcription(inner, Arc::clone(&pipeline_audio_cleanup));
         let future = guarded(TranscriptionRequest {
             provider: crate::providers::OPENAI_PROVIDER.to_string(),
             audio_path: PathBuf::from("prepared.wav"),
@@ -7719,10 +8006,14 @@ mod tests {
         });
 
         drop(guarded);
-        drop(turn_wav_dir_cleanup);
+        drop(pipeline_audio_cleanup);
         assert!(
             turn_wav_dir.exists(),
             "the returned note transcription future must own the cleanup guard"
+        );
+        assert!(
+            derived_input.exists(),
+            "the derived input must outlive its provider future"
         );
 
         let provider = tokio::spawn(future);
@@ -7737,6 +8028,7 @@ mod tests {
             .expect("provider task panicked")
             .expect("provider failed");
         assert!(!turn_wav_dir.exists());
+        assert!(!derived_input.exists());
     }
 
     #[tokio::test]

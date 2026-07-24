@@ -47,6 +47,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
 - [adr/0036](adr/0036-github-connector-app-user-tokens.md) - GitHub connector uses GitHub App user access tokens only (no app private key on device or backend), local-mode custody per ADR-0016, June-side read/write gating, approval-only writes
 - [adr/0037](adr/0037-versioned-local-sqlite-migrations.md) - June's local SQLite schema uses an append-only release-ordered catalog, introspection-based legacy stamping, and one transaction for all pending migrations
+- [adr/0038](adr/0038-derived-microphone-noise-suppression.md) - optional Microphone noise suppression creates a transient transcription input after raw Turn detection and never rewrites the finalized Source WAV
 
 ## Enforceable rules (spec/)
 
@@ -145,6 +146,7 @@ Per-repo config the engineering skills read before acting (see the
 - [qa/agent-driven-integration.md](qa/agent-driven-integration.md) — QA strategy (3 layers, skill-first agent-driven)
 - [qa/computer-use-parity.md](qa/computer-use-parity.md) - JUN-278 parity, stricter safety differences, evidence map, and signed/manual release matrix
 - [qa/jun-334-note-transcription-latency.md](qa/jun-334-note-transcription-latency.md) — measured baseline and proof for note transcription latency
+- [qa/jun-416-noise-suppression.md](qa/jun-416-noise-suppression.md) - reproducible fixture methodology and measured limits for the interim no-dependency suppressor
 - `qa/feature-user-stories.tsv` — story → code → test traceability matrix
 - `qa/agent-e2e-qa-runs/` — dated end-to-end QA run logs
 

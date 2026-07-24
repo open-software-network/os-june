@@ -30,6 +30,7 @@ import {
   setDictationShortcut,
   setImageSafeMode,
   setLiveTranscription,
+  setMicrophoneNoiseSuppression,
   setCostQuality,
   setVeniceApiKey,
   setVeniceModel,
@@ -310,6 +311,7 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   imageSafeMode: true,
   imageSafeModePromptDismissed: false,
   liveTranscription: true,
+  microphoneNoiseSuppression: false,
 };
 
 type ProviderModelSettingsSnapshot = {
@@ -1411,6 +1413,20 @@ export function AppSettings({
     }
   }
 
+  async function toggleMicrophoneNoiseSuppression(enabled: boolean) {
+    try {
+      const next = await setMicrophoneNoiseSuppression(enabled);
+      setProviderSettings(next);
+      setStatus(
+        enabled
+          ? "Microphone noise suppression on for future note transcriptions."
+          : "Microphone noise suppression off.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   async function toggleImageSafeMode(enabled: boolean) {
     try {
       const next = await setImageSafeMode(enabled);
@@ -2242,6 +2258,24 @@ export function AppSettings({
                             checked={providerSettings.liveTranscription}
                             aria-label="Show a live transcript while recording"
                             onCheckedChange={toggleLiveTranscription}
+                          />
+                        </div>
+                      </div>
+                      <div className="settings-row-divider" aria-hidden />
+                      <div className="settings-row">
+                        <div className="settings-row-info">
+                          <h3 className="settings-row-title">Microphone noise suppression</h3>
+                          <p className="settings-row-description">
+                            Reduce steady room noise before note transcription. Your original
+                            Microphone recording stays unchanged. Turn this off if speech sounds
+                            less natural.
+                          </p>
+                        </div>
+                        <div className="settings-row-control">
+                          <Switch
+                            checked={providerSettings.microphoneNoiseSuppression}
+                            aria-label="Reduce Microphone noise before note transcription"
+                            onCheckedChange={toggleMicrophoneNoiseSuppression}
                           />
                         </div>
                       </div>

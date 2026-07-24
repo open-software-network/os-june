@@ -111,6 +111,10 @@ pub struct ProviderModelSettings {
     /// preview lanes entirely, so nothing is sent or billed.
     #[serde(default = "default_live_transcription")]
     pub live_transcription: bool,
+    /// When true, June creates a denoised, local Microphone transcription
+    /// input after Turn detection. The finalized source WAV remains unchanged.
+    #[serde(default)]
+    pub microphone_noise_suppression: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub profile_overrides: BTreeMap<String, ProfileModelOverrides>,
 }
@@ -156,6 +160,7 @@ pub struct ProviderModelSettingsDto {
     pub image_safe_mode: bool,
     pub image_safe_mode_prompt_dismissed: bool,
     pub live_transcription: bool,
+    pub microphone_noise_suppression: bool,
 }
 
 impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
@@ -177,6 +182,7 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
             image_safe_mode: settings.image_safe_mode,
             image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
             live_transcription: settings.live_transcription,
+            microphone_noise_suppression: settings.microphone_noise_suppression,
         }
     }
 }
@@ -410,6 +416,10 @@ pub fn image_safe_mode_prompt_dismissed() -> bool {
 
 pub fn live_transcription() -> bool {
     current_settings().live_transcription
+}
+
+pub fn microphone_noise_suppression() -> bool {
+    current_settings().microphone_noise_suppression
 }
 
 /// Context window (tokens) of the configured generation model, looked up in
@@ -673,6 +683,12 @@ pub struct SetLiveTranscriptionRequest {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMicrophoneNoiseSuppressionRequest {
+    pub enabled: bool,
+}
+
 #[tauri::command]
 pub fn set_live_transcription(
     state: State<'_, ProviderSettingsState>,
@@ -687,6 +703,23 @@ fn set_live_transcription_impl(
 ) -> Result<ProviderModelSettingsDto, AppError> {
     update_settings(state, |settings| {
         settings.live_transcription = request.enabled;
+    })
+}
+
+#[tauri::command]
+pub fn set_microphone_noise_suppression(
+    state: State<'_, ProviderSettingsState>,
+    request: SetMicrophoneNoiseSuppressionRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    set_microphone_noise_suppression_impl(&state, request)
+}
+
+fn set_microphone_noise_suppression_impl(
+    state: &ProviderSettingsState,
+    request: SetMicrophoneNoiseSuppressionRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings(state, |settings| {
+        settings.microphone_noise_suppression = request.enabled;
     })
 }
 
@@ -1285,6 +1318,7 @@ fn default_settings() -> ProviderModelSettings {
         image_safe_mode_prompt_dismissed: false,
         image_safe_mode_set_by_user: false,
         live_transcription: true,
+        microphone_noise_suppression: false,
         profile_overrides: BTreeMap::new(),
     }
 }
@@ -1422,6 +1456,7 @@ fn sanitize_settings(
         image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
         image_safe_mode_set_by_user: settings.image_safe_mode_set_by_user,
         live_transcription: settings.live_transcription,
+        microphone_noise_suppression: settings.microphone_noise_suppression,
         profile_overrides: sanitize_profile_overrides(settings.profile_overrides),
     }
 }
@@ -2115,6 +2150,44 @@ mod tests {
         let saved: ProviderModelSettings =
             serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
         assert!(saved.live_transcription);
+    }
+
+    #[test]
+    fn microphone_noise_suppression_defaults_off_for_existing_settings() {
+        let settings = serde_json::from_value::<ProviderModelSettings>(serde_json::json!({
+            "transcriptionProvider": "venice",
+            "transcriptionModel": "nvidia/parakeet-tdt-0.6b-v3",
+            "generationModel": "zai-org-glm-5-2",
+            "imageModel": "venice-sd35"
+        }))
+        .unwrap();
+
+        assert!(!settings.microphone_noise_suppression);
+    }
+
+    #[test]
+    fn set_microphone_noise_suppression_persists_the_toggle() {
+        let state = test_state();
+
+        let updated = set_microphone_noise_suppression_impl(
+            &state,
+            SetMicrophoneNoiseSuppressionRequest { enabled: true },
+        )
+        .unwrap();
+        assert!(updated.microphone_noise_suppression);
+        let saved: ProviderModelSettings =
+            serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
+        assert!(saved.microphone_noise_suppression);
+
+        let updated = set_microphone_noise_suppression_impl(
+            &state,
+            SetMicrophoneNoiseSuppressionRequest { enabled: false },
+        )
+        .unwrap();
+        assert!(!updated.microphone_noise_suppression);
+        let saved: ProviderModelSettings =
+            serde_json::from_str(&fs::read_to_string(&state.path).unwrap()).unwrap();
+        assert!(!saved.microphone_noise_suppression);
     }
 
     #[test]

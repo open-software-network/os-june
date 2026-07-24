@@ -38,8 +38,9 @@ preview).
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
-   authoritative full-Source microphone job) → reconcile durable fingerprinted
-   note-transcription jobs → bounded Turn preparation → one
+   authoritative full-Source microphone job) → optional derived Microphone
+   noise suppression → reconcile durable fingerprinted note-transcription jobs
+   → bounded Turn preparation → one
    in-flight provider request per Source → atomically persist each successful
    job and transcript row → **note generation**. Full-Source fallbacks are
    prepared lazily when a Source is materially incomplete and atomically
@@ -80,6 +81,8 @@ for navigation and compatibility, but is no longer polled during processing.
   main.swift` — the system-audio helper and its readiness/permission probes.
 - `src-tauri/src/audio/turns.rs` — turn detection, coalescing, WAV extraction,
   normalization, chunking, per-source configs.
+- `src-tauri/src/audio/noise_suppression.rs` - optional, cached Microphone
+  transcription input and the replaceable frame-level denoiser seam.
 - `src-tauri/src/audio/live_preview.rs` — mic/system preview workers, the
   `WavTailReader` that tails the helper's growing WAV.
 - `src-tauri/src/audio/{validation,recovery}.rs` — artifact validation and
@@ -131,6 +134,31 @@ Energy-based, per-source, **no diarization**:
   the whole turn, so a user's reply that merged with an echo survives.
 
 ## Normalization and chunking
+
+When **Microphone noise suppression** is enabled, June first derives a mono
+Microphone WAV through a bounded-memory two-pass process. This happens after
+Turn detection and speaker-bleed trimming, so source attribution, timestamps,
+and System audio are unchanged. The finalized Microphone WAV is never
+modified. A content-and-version fingerprint can reuse a completed derivative
+after an interrupted attempt. The derived WAV shares the transient Turn-audio
+lifetime guard and is removed after transcription and coverage consumers
+drain. Derivation failure records a Source warning checkpoint and falls back
+to the finalized WAV.
+
+Only an actually applied derivative changes the durable transcription
+configuration fingerprint. A clean bypass or raw fallback keeps the
+suppression-off identity because transcription receives the same audio bytes,
+so toggling the setting cannot bill for a byte-identical clean recording.
+
+The first pass estimates a low-percentile noise floor and bypasses inputs that
+are already clean. Noisy inputs use `nnnoiseless` 0.5.2 through the `Denoiser`
+frame interface. The existing streaming resampler supplies 48 kHz,
+480-sample, non-overlapping frames; the adapter alone converts normalized
+`f32` samples to RNNoise's 16-bit magnitude range and back. The writer pads
+the final processing frame but emits exactly the resampled Source length. If
+RNNoise construction fails, June logs a warning and uses the conservative
+16 kHz spectral-subtraction implementation. The following ordinary
+normalization step still emits mono 16 kHz provider input.
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a
