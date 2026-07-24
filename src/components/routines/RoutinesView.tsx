@@ -23,6 +23,7 @@ import {
   routineTrustModeFromToolsets,
   triggerConfigFromDraft,
 } from "../../lib/connectors";
+import { useConnectorPolicy } from "../../lib/connector-policy";
 import {
   isReplaceableScheduledRunTitle,
   listScheduledRunSessions,
@@ -47,6 +48,7 @@ import {
   connectorTriggerSet,
   routineTrustRecordRun,
   routineTrustSet,
+  type ConnectorPolicyCatalog,
   type HermesSessionInfo,
 } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -109,6 +111,7 @@ export function RoutinesView({
   onOpenRun,
   creditActionsDisabledReason,
 }: RoutinesViewProps) {
+  const { policy } = useConnectorPolicy();
   const [allRoutines, setRoutines] = useState<RoutineJob[]>([]);
   const [loadingState, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -314,26 +317,31 @@ export function RoutinesView({
         input.trustMode !== "read_only" ||
         eventTrigger !== null ||
         (input.connectorScopes?.length ?? 0) > 0;
-      const created = await createRoutine(
-        connectorAware
-          ? {
-              prompt: input.prompt,
-              // Event routines still need a cron record underneath; a
-              // far-future one-time schedule plus the pause below hands the
-              // firing over to the trigger daemon.
-              schedule: eventTrigger ? eventTriggerScheduleDraft().schedule : input.schedule,
-              name: input.name,
-              enabledToolsets: routineToolsetsFor(input.trustMode, {
-                unrestricted: input.unrestricted,
-              }),
-            }
-          : {
-              prompt: input.prompt,
-              schedule: input.schedule,
-              name: input.name,
-              unrestricted: input.unrestricted,
-            },
-      );
+      let created: RoutineJob;
+      if (connectorAware) {
+        if (!policy) {
+          setCreateError("Connector policy is still loading. Try again.");
+          return;
+        }
+        created = await createRoutine({
+          prompt: input.prompt,
+          // Event routines still need a cron record underneath; a
+          // far-future one-time schedule plus the pause below hands the
+          // firing over to the trigger daemon.
+          schedule: eventTrigger ? eventTriggerScheduleDraft().schedule : input.schedule,
+          name: input.name,
+          enabledToolsets: routineToolsetsFor(policy, input.trustMode, {
+            unrestricted: input.unrestricted,
+          }),
+        });
+      } else {
+        created = await createRoutine({
+          prompt: input.prompt,
+          schedule: input.schedule,
+          name: input.name,
+          unrestricted: input.unrestricted,
+        });
+      }
       if (connectorAware) {
         try {
           await routineTrustSet({
@@ -601,6 +609,7 @@ export function RoutinesView({
           {filtered.map((routine) => (
             <RoutineRow
               key={routine.job_id}
+              policy={policy}
               routine={routine}
               busy={busyIds.has(routine.job_id)}
               onOpen={() => openDetail(routine)}
@@ -713,6 +722,7 @@ function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void 
 
 function RoutineRow({
   routine,
+  policy,
   busy,
   onOpen,
   onRunNow,
@@ -720,6 +730,7 @@ function RoutineRow({
   onDelete,
 }: {
   routine: RoutineJob;
+  policy: ConnectorPolicyCatalog | null;
   busy: boolean;
   onOpen: () => void;
   onRunNow: () => void;
@@ -733,7 +744,7 @@ function RoutineRow({
   // Derived from the stored toolset override (no per-row round trip); only
   // the action-capable modes get a badge — ambient read access is every
   // routine's baseline and would read as noise.
-  const trustMode = routineTrustModeFromToolsets(routine.enabled_toolsets);
+  const trustMode = policy ? routineTrustModeFromToolsets(policy, routine.enabled_toolsets) : null;
   const trustBadge = trustMode === "approval" || trustMode === "autonomous" ? trustMode : null;
   const status = paused ? "Paused" : completed ? "Completed" : null;
   const activity =

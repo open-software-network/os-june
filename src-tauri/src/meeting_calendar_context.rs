@@ -9,7 +9,7 @@ use crate::{
     connectors::{
         self,
         google::{self, EventSummary, GoogleApiError, ListEventsParams},
-        scopes::{CALENDAR_EVENTS, CALENDAR_READONLY},
+        policy::{CALENDAR_EVENTS, CALENDAR_READONLY},
     },
     db::repositories::Repositories,
     domain::types::{AppError, NoteCalendarEventDto},

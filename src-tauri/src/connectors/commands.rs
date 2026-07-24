@@ -10,24 +10,19 @@ use std::hash::{Hash, Hasher};
 
 use super::{
     begin_connect, begin_connect_github, begin_connect_linear, disconnect, emit_connectors_changed,
-    linear, list_accounts_resilient, list_google_accounts, notion, scopes::ScopeBundle,
+    linear, list_accounts_resilient, list_google_accounts, notion,
+    policy::{self, ScopeBundle},
     ConnectFlow, ConnectorAccount, ConnectorAccountStatus, ConnectorProvider, NotionConnectFlow,
     SelectedTeamDto,
 };
 
-/// A routine earns autonomy only after this many completed approval-mode
-/// runs. The frontend gates too; this is the backstop.
-const EARNED_AUTONOMY_MIN_APPROVAL_RUNS: i64 = 3;
-
-const TRUST_MODES: &[&str] = &["read_only", "approval", "autonomous"];
-const TRIGGER_KINDS: &[&str] = &["email_received", "event_upcoming"];
-
-/// Mutating tools autonomy can grant, grouped by connector provider. The
-/// bridge mints one auto MCP server per provider that has at least one
-/// granted tool. Any tool not listed here is ignored for grant purposes
-/// (read-only tools never need a grant).
-const GMAIL_AUTONOMOUS_TOOLS: &[&str] = &["create_draft", "send_email", "modify_labels", "archive"];
-const GCAL_AUTONOMOUS_TOOLS: &[&str] = &["create_event", "respond_to_invite"];
+/// Presentation-free connector policy. Additive command: older frontend/native
+/// pairs keep their existing command shapes, while current React reads all
+/// authorization-relevant catalog data from this projection.
+#[tauri::command]
+pub fn connectors_policy() -> policy::ConnectorPolicyCatalog {
+    policy::catalog()
+}
 
 #[tauri::command]
 pub async fn connectors_list(app: tauri::AppHandle) -> Result<Vec<ConnectorAccount>, AppError> {
@@ -340,7 +335,8 @@ pub async fn routine_trust_set(
             return Err(AppError::new(
                 "routine_trust_not_earned",
                 format!(
-                    "This routine needs {EARNED_AUTONOMY_MIN_APPROVAL_RUNS} completed approval runs before it can act on its own."
+                    "This routine needs {} completed approval runs before it can act on its own.",
+                    policy::EARNED_AUTONOMY_MIN_APPROVAL_RUNS
                 ),
             ));
         }
@@ -422,20 +418,11 @@ async fn grant_server_names(repos: &Repositories, job_id: &str) -> Result<Vec<St
 /// The provider whose auto server owns a granted tool, or None for tools
 /// that never need a grant.
 ///
-/// GitHub actions (`june_github_actions`) never earn autonomy in v1 (ADR-0036,
-/// PRD launch non-goal). Any tool from that server is explicitly excluded:
-/// returning None means the grant-minting path ignores it, and no
-/// `june_github_auto_*` server is ever created.
+/// Linear, Notion, and GitHub actions never earn autonomy in v1. The native
+/// policy excludes every tool from those servers: returning None means the
+/// grant-minting path ignores it and no auto server can be created.
 fn provider_for_tool(tool: &str) -> Option<&'static str> {
-    if GMAIL_AUTONOMOUS_TOOLS.contains(&tool) {
-        Some("gmail")
-    } else if GCAL_AUTONOMOUS_TOOLS.contains(&tool) {
-        Some("gcal")
-    } else {
-        // GitHub tools (create_issue, update_issue, add_comment) and all
-        // unrecognized tools never earn a grant.
-        None
-    }
+    policy::autonomy_provider_for_tool(tool)
 }
 
 /// A collision-free, deterministic suffix for a job's auto MCP server name.
@@ -778,7 +765,7 @@ fn validate_selected_teams(teams: &[SelectedTeamDto]) -> Result<Vec<SelectedTeam
 }
 
 fn validate_trust_mode(mode: &str) -> Result<(), AppError> {
-    if TRUST_MODES.contains(&mode) {
+    if policy::TRUST_MODES.contains(&mode) {
         Ok(())
     } else {
         Err(AppError::new(
@@ -789,7 +776,7 @@ fn validate_trust_mode(mode: &str) -> Result<(), AppError> {
 }
 
 fn validate_trigger_kind(kind: &str) -> Result<(), AppError> {
-    if TRIGGER_KINDS.contains(&kind) {
+    if policy::is_trigger_kind(kind) {
         Ok(())
     } else {
         Err(AppError::new(
@@ -800,12 +787,16 @@ fn validate_trigger_kind(kind: &str) -> Result<(), AppError> {
 }
 
 fn autonomy_earned(approval_run_count: i64) -> bool {
-    approval_run_count >= EARNED_AUTONOMY_MIN_APPROVAL_RUNS
+    policy::autonomy_earned(approval_run_count)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bundle(name: &str) -> ScopeBundle {
+        ScopeBundle::from_name(name).expect("known bundle")
+    }
 
     #[test]
     fn parses_known_bundles_and_rejects_unknown() {
@@ -813,7 +804,7 @@ mod tests {
             .expect("known bundles");
         assert_eq!(
             bundles,
-            vec![ScopeBundle::GmailRead, ScopeBundle::CalendarEvents]
+            vec![bundle("gmail_read"), bundle("calendar_events")]
         );
 
         let error = parse_bundles(&["gmail_everything".to_string()]).unwrap_err();
@@ -851,7 +842,7 @@ mod tests {
     fn bundle_provider_mismatch_is_rejected_both_ways() {
         // A Google bundle cannot ride a Linear connect...
         let error = validate_bundle_providers(
-            &[ScopeBundle::LinearRead, ScopeBundle::GmailRead],
+            &[bundle("linear_read"), bundle("gmail_read")],
             ConnectorProvider::Linear,
         )
         .unwrap_err();
@@ -859,30 +850,28 @@ mod tests {
         assert!(error.message.contains("\"gmail_read\""));
         assert!(error.message.contains("linear"));
         // ...nor a Linear bundle a Google connect.
-        let error =
-            validate_bundle_providers(&[ScopeBundle::LinearWrite], ConnectorProvider::Google)
-                .unwrap_err();
+        let error = validate_bundle_providers(&[bundle("linear_write")], ConnectorProvider::Google)
+            .unwrap_err();
         assert_eq!(error.code, "connector_scope_provider_mismatch");
         // Matching sets pass for both providers.
         assert!(validate_bundle_providers(
-            &[ScopeBundle::GmailRead, ScopeBundle::CalendarEvents],
+            &[bundle("gmail_read"), bundle("calendar_events")],
             ConnectorProvider::Google
         )
         .is_ok());
         assert!(validate_bundle_providers(
-            &[ScopeBundle::LinearRead, ScopeBundle::LinearWrite],
+            &[bundle("linear_read"), bundle("linear_write")],
             ConnectorProvider::Linear
         )
         .is_ok());
         assert!(validate_bundle_providers(
-            &[ScopeBundle::GithubRead, ScopeBundle::GithubWrite],
+            &[bundle("github_read"), bundle("github_write")],
             ConnectorProvider::Github
         )
         .is_ok());
         // A GitHub bundle cannot ride a non-GitHub connect.
-        let error =
-            validate_bundle_providers(&[ScopeBundle::GithubRead], ConnectorProvider::Google)
-                .unwrap_err();
+        let error = validate_bundle_providers(&[bundle("github_read")], ConnectorProvider::Google)
+            .unwrap_err();
         assert_eq!(error.code, "connector_scope_provider_mismatch");
     }
 

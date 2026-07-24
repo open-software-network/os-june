@@ -242,16 +242,17 @@ const LEGACY_JUNE_BROWSER_MCP_GATEWAY_CONTEXT_ENV: &str = "JUNE_BROWSER_GATEWAY_
 // They call the loopback provider proxy's /v1/gmail*, /v1/gcal*, /v1/linear*
 // routes, which resolve the account's access token from the keychain and call
 // the provider directly. The MCP processes never see a token.
-const JUNE_GMAIL_MCP_SERVER_NAME: &str = "june_gmail";
+const JUNE_GMAIL_MCP_SERVER_NAME: &str = crate::connectors::policy::JUNE_GMAIL_SERVER;
 const JUNE_GMAIL_MCP_SCRIPT_NAME: &str = "june_gmail_mcp.py";
 const JUNE_GMAIL_MCP_SCRIPT: &str = include_str!("hermes/june_gmail_mcp.py");
-const JUNE_GMAIL_ACTIONS_MCP_SERVER_NAME: &str = "june_gmail_actions";
+const JUNE_GMAIL_ACTIONS_MCP_SERVER_NAME: &str =
+    crate::connectors::policy::JUNE_GMAIL_ACTIONS_SERVER;
 const JUNE_GMAIL_ACTIONS_MCP_SCRIPT_NAME: &str = "june_gmail_actions_mcp.py";
 const JUNE_GMAIL_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_gmail_actions_mcp.py");
-const JUNE_GCAL_MCP_SERVER_NAME: &str = "june_gcal";
+const JUNE_GCAL_MCP_SERVER_NAME: &str = crate::connectors::policy::JUNE_GCAL_SERVER;
 const JUNE_GCAL_MCP_SCRIPT_NAME: &str = "june_gcal_mcp.py";
 const JUNE_GCAL_MCP_SCRIPT: &str = include_str!("hermes/june_gcal_mcp.py");
-const JUNE_GCAL_ACTIONS_MCP_SERVER_NAME: &str = "june_gcal_actions";
+const JUNE_GCAL_ACTIONS_MCP_SERVER_NAME: &str = crate::connectors::policy::JUNE_GCAL_ACTIONS_SERVER;
 const JUNE_GCAL_ACTIONS_MCP_SCRIPT_NAME: &str = "june_gcal_actions_mcp.py";
 const JUNE_GCAL_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_gcal_actions_mcp.py");
 // The Linear servers. Registered only when a Linear workspace is connected
@@ -259,10 +260,11 @@ const JUNE_GCAL_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_gcal_action
 // enforcement boundary, so a server with an empty grant would have nothing
 // it may read or write. The actions server has NO earned-autonomy variant
 // (Linear autonomy is deferred), so every write always parks for approval.
-const JUNE_LINEAR_MCP_SERVER_NAME: &str = "june_linear";
+const JUNE_LINEAR_MCP_SERVER_NAME: &str = crate::connectors::policy::JUNE_LINEAR_SERVER;
 const JUNE_LINEAR_MCP_SCRIPT_NAME: &str = "june_linear_mcp.py";
 const JUNE_LINEAR_MCP_SCRIPT: &str = include_str!("hermes/june_linear_mcp.py");
-const JUNE_LINEAR_ACTIONS_MCP_SERVER_NAME: &str = "june_linear_actions";
+const JUNE_LINEAR_ACTIONS_MCP_SERVER_NAME: &str =
+    crate::connectors::policy::JUNE_LINEAR_ACTIONS_SERVER;
 const JUNE_LINEAR_ACTIONS_MCP_SCRIPT_NAME: &str = "june_linear_actions_mcp.py";
 const JUNE_LINEAR_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_linear_actions_mcp.py");
 // The GitHub servers (ADR-0036). Registered only when a GitHub account is
@@ -271,17 +273,19 @@ const JUNE_LINEAR_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_linear_ac
 // write tools. GitHub has NO earned-autonomy variant (ADR-0036 defers it),
 // so every write always parks for approval. The proxy also enforces the
 // write-marker at the route level as defence in depth.
-const JUNE_GITHUB_MCP_SERVER_NAME: &str = "june_github";
+const JUNE_GITHUB_MCP_SERVER_NAME: &str = crate::connectors::policy::JUNE_GITHUB_SERVER;
 const JUNE_GITHUB_MCP_SCRIPT_NAME: &str = "june_github_mcp.py";
 const JUNE_GITHUB_MCP_SCRIPT: &str = include_str!("hermes/june_github_mcp.py");
-const JUNE_GITHUB_ACTIONS_MCP_SERVER_NAME: &str = "june_github_actions";
+const JUNE_GITHUB_ACTIONS_MCP_SERVER_NAME: &str =
+    crate::connectors::policy::JUNE_GITHUB_ACTIONS_SERVER;
 const JUNE_GITHUB_ACTIONS_MCP_SCRIPT_NAME: &str = "june_github_actions_mcp.py";
 const JUNE_GITHUB_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_github_actions_mcp.py");
 /// Loopback proxy token env var shared by all connector MCP servers; the
-const JUNE_NOTION_MCP_SERVER_NAME: &str = "june_notion";
+const JUNE_NOTION_MCP_SERVER_NAME: &str = crate::connectors::policy::JUNE_NOTION_SERVER;
 const JUNE_NOTION_MCP_SCRIPT_NAME: &str = "june_notion_mcp.py";
 const JUNE_NOTION_MCP_SCRIPT: &str = include_str!("hermes/june_notion_mcp.py");
-const JUNE_NOTION_ACTIONS_MCP_SERVER_NAME: &str = "june_notion_actions";
+const JUNE_NOTION_ACTIONS_MCP_SERVER_NAME: &str =
+    crate::connectors::policy::JUNE_NOTION_ACTIONS_SERVER;
 const JUNE_NOTION_ACTIONS_MCP_SCRIPT_NAME: &str = "june_notion_actions_mcp.py";
 const JUNE_NOTION_ACTIONS_MCP_SCRIPT: &str = include_str!("hermes/june_notion_actions_mcp.py");
 /// Loopback proxy token env var shared by the connector MCP servers; the
@@ -10102,14 +10106,7 @@ pub(crate) fn resolve_june_hermes_home(app: &AppHandle) -> Result<PathBuf, AppEr
 /// src/lib/hermes-routines.ts), which takes precedence over this gate.
 /// The scheduler always strips `cronjob`, `messaging`, and `clarify` from
 /// cron agents on top of either list.
-const CRON_SANDBOXED_TOOLSETS: &[&str] = &[
-    "web",
-    "vision",
-    "todo",
-    "memory",
-    "session_search",
-    "context_engine",
-];
+const CRON_SANDBOXED_TOOLSETS: &[&str] = crate::connectors::policy::SANDBOXED_ROUTINE_BASE_TOOLSETS;
 
 /// Upstream toolsets June never exposes, in any session, under any grant.
 ///
@@ -10400,7 +10397,7 @@ fn linear_actions_server_account(account: &crate::connectors::ConnectorAccount) 
         && account
             .scopes
             .iter()
-            .any(|scope| scope == crate::connectors::scopes::LINEAR_WRITE)
+            .any(|scope| scope == crate::connectors::policy::LINEAR_WRITE)
 }
 
 /// True when this connected account should back the `june_github` read server:
@@ -10420,7 +10417,7 @@ fn github_actions_server_account(account: &crate::connectors::ConnectorAccount) 
         && account
             .scopes
             .iter()
-            .any(|scope| scope == crate::connectors::scopes::GITHUB_WRITE)
+            .any(|scope| scope == crate::connectors::policy::GITHUB_WRITE)
 }
 
 /// Writes the connector MCP scripts and returns their configs. Google servers
@@ -11291,16 +11288,7 @@ fn is_routine_browser_server_name(name: &str) -> bool {
 /// cover the `_actions` servers (including `june_linear_actions` and
 /// `june_github_actions`) and the per-job `_auto_<jobid>` servers.
 fn is_june_connector_server_name(name: &str) -> bool {
-    name == JUNE_GMAIL_MCP_SERVER_NAME
-        || name == JUNE_GCAL_MCP_SERVER_NAME
-        || name == JUNE_LINEAR_MCP_SERVER_NAME
-        || name == JUNE_NOTION_MCP_SERVER_NAME
-        || name == JUNE_NOTION_ACTIONS_MCP_SERVER_NAME
-        || name == JUNE_GITHUB_MCP_SERVER_NAME
-        || name.starts_with("june_gmail_")
-        || name.starts_with("june_gcal_")
-        || name.starts_with("june_linear_")
-        || name.starts_with("june_github_")
+    crate::connectors::policy::is_connector_server_name(name)
 }
 
 /// Resolve the dashboard/TUI toolset pin from the merged Hermes config while
@@ -14006,7 +13994,7 @@ async fn require_github_write_scope(app: &AppHandle, account_id: &str) -> Result
             account
                 .scopes
                 .iter()
-                .any(|scope| scope == crate::connectors::scopes::GITHUB_WRITE)
+                .any(|scope| scope == crate::connectors::policy::GITHUB_WRITE)
         })
         .unwrap_or(false);
     if has_write {
@@ -14203,7 +14191,7 @@ fn local_utc_offset_minutes() -> i32 {
 fn scopes_allow_send(scopes: &[String]) -> bool {
     scopes
         .iter()
-        .any(|scope| scope == crate::connectors::scopes::GMAIL_SEND)
+        .any(|scope| scope == crate::connectors::policy::GMAIL_SEND)
 }
 
 /// Sending mail requires the account to hold the explicit `gmail.send` scope.
@@ -18889,7 +18877,7 @@ assert capped["has_more"] is True, capped
 
     #[test]
     fn send_consent_requires_the_explicit_send_scope() {
-        use crate::connectors::scopes::{GMAIL_COMPOSE, GMAIL_MODIFY, GMAIL_SEND};
+        use crate::connectors::policy::{GMAIL_COMPOSE, GMAIL_MODIFY, GMAIL_SEND};
         // Compose/modify can technically send, but only the explicit send scope
         // counts as consent to dispatch mail.
         assert!(!scopes_allow_send(&[GMAIL_COMPOSE.to_string()]));

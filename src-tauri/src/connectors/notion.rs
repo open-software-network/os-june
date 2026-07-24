@@ -6,7 +6,7 @@
 //! selected-resource scoping is not verified in this preview. See ADR 0033.
 
 use crate::{
-    connectors::{ConnectorAccountStatus, ConnectorProvider},
+    connectors::{policy::JUNE_NOTION_ACTIONS_SERVER, ConnectorAccountStatus, ConnectorProvider},
     domain::types::AppError,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -100,8 +100,6 @@ const NOTION_UPDATE_PAGE_ALLOWED_FIELDS: &[&str] = &[
     "title",
     "name",
 ];
-const NOTION_ACTIONS_SERVER_NAME: &str = "june_notion_actions";
-
 static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 static CREDENTIAL_LIFECYCLE_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 static CONNECT_FLOW_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
@@ -681,7 +679,7 @@ pub async fn call_hosted_action_tool(
     let approval = crate::connectors::approvals::ActionRequest {
         grant_token: None,
         account_id: notion_account_email(),
-        server: NOTION_ACTIONS_SERVER_NAME,
+        server: JUNE_NOTION_ACTIONS_SERVER,
         tool: tool_name,
         summary,
         args_preview,

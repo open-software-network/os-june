@@ -3,9 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const tauriMocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
   connectorApprovalsPending: vi.fn(),
   connectorApprovalRespond: vi.fn(),
   connectorApprovalsRespondAll: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  invoke: tauriMocks.invoke,
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
@@ -30,6 +36,7 @@ vi.mock("../components/connectors/ConnectorProviderIcon", () => ({
 }));
 
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
+import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 function approval(overrides: Record<string, unknown> = {}) {
   return {
@@ -45,6 +52,9 @@ function approval(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  tauriMocks.invoke.mockImplementation(async (command: string) =>
+    command === "connectors_policy" ? representativeConnectorPolicy() : undefined,
+  );
   tauriMocks.connectorApprovalsPending.mockResolvedValue([]);
   tauriMocks.connectorApprovalRespond.mockResolvedValue(undefined);
   tauriMocks.connectorApprovalsRespondAll.mockResolvedValue(undefined);
