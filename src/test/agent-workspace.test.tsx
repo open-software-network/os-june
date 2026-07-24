@@ -11449,6 +11449,53 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("keeps ordinary message growth on the artifact index and refreshes after a file write", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/alex/Library/Application Support/co.opensoftware.june/hermes/workspace";
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    await waitFor(() => expect(mocks.hermesBridgeFilesystemSnapshot).toHaveBeenCalledTimes(1));
+    mocks.hermesBridgeFilesystemSnapshot.mockClear();
+
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Create a report");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "Create a report",
+      }),
+    );
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "message.delta",
+          session_id: "runtime-session-1",
+          payload: { delta: "Working on it." },
+        });
+      }
+    });
+    await act(async () => Promise.resolve());
+    expect(mocks.hermesBridgeFilesystemSnapshot).not.toHaveBeenCalled();
+
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "tool.complete",
+          session_id: "runtime-session-1",
+          payload: {
+            tool_id: "tool-1",
+            tool_name: "write_file",
+            path: `${workspaceRoot}/report.md`,
+          },
+        });
+      }
+    });
+    await waitFor(() => expect(mocks.hermesBridgeFilesystemSnapshot).toHaveBeenCalledTimes(1));
+  });
+
   it("renders a workspace file's download card only on the first response that mentions it", async () => {
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
       roots: [

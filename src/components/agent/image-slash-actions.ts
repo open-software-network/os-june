@@ -33,7 +33,7 @@ export function createImageSlashActions(dependencies: createImageSlashActionsDep
     creditActionsDisabledReason,
     imageSafeModeConsentRequestRef,
     imageSlashBaseTurnId,
-    loadFilesystemSnapshot,
+    recordImportedArtifact,
     newSessionModeRef,
     pendingFastPathImagesRef,
     setError,
@@ -106,7 +106,7 @@ export function createImageSlashActions(dependencies: createImageSlashActionsDep
         },
         hermesModeFor(sessionId),
       );
-      void loadFilesystemSnapshot();
+      recordImportedArtifact(result.file);
       // JUN-171 (Phase A): hold the generated image so the user's next message
       // carries it into the model's context (lazy attach). No composer chip -
       // it already renders in-thread as the assistant image turn above. Reuses

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   hermesAgentCliAccess,
-  type HermesFilesystemSnapshot,
   type HermesMessagingPlatformInfo,
   type HermesSkillInfo,
   type HermesToolsetInfo,
@@ -286,10 +285,6 @@ export function useAgentRuntimeState(dependencies: UseAgentRuntimeStateDependenc
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
   const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] = useState<string>();
   const [messagingEnvEdits, setMessagingEnvEdits] = useState<Record<string, string>>({});
-  const [filesystemSnapshot, setFilesystemSnapshot] = useState<HermesFilesystemSnapshot | null>(
-    null,
-  );
-  const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [artifactPanel, setArtifactPanel] = useState<AgentArtifactPanelState | null>(null);
   // The session whose usage/cost panel is open, or null. Self-contained for
   // feature 09; feature 11's activity drawer will later host the same panel.
@@ -464,9 +459,6 @@ export function useAgentRuntimeState(dependencies: UseAgentRuntimeStateDependenc
     setSelectedMessagingPlatformId,
     messagingEnvEdits,
     setMessagingEnvEdits,
-    filesystemSnapshot,
-    setFilesystemSnapshot,
-    setFilesystemLoading,
     artifactPanel,
     setArtifactPanel,
     usagePanelSessionId,

@@ -33,6 +33,7 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     clearSubmittedSteers,
     continueAfterCompletedAgentRun,
     liveEventsRef,
+    onArtifactFilesystemChange,
     pendingSteerBySessionIdRef,
     promotePendingIssueReportToReview,
     recordHermesActivityAndDeriveStatus,
@@ -161,6 +162,7 @@ export function createSessionEventListener(dependencies: createSessionEventListe
       // unconditional call is safe for every kind. Mode rides along so each
       // artifact can show its blast radius (sandboxed copy vs unrestricted path).
       hermesArtifactStore.record(storedClassified, hermesModeFor(storedSessionId));
+      onArtifactFilesystemChange(storedClassified);
       const nextSessionEvents = appendHermesLiveEvent(
         liveEventsRef.current[storedSessionId] ?? [],
         classified,

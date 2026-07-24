@@ -112,6 +112,7 @@ import { createImageSlashActions } from "./image-slash-actions";
 import { createSubmitHermesSession } from "./session-submission";
 import type { SubmitHermesSession } from "./session-submission-types";
 import { createSubmitComposer } from "./composer/submit-composer";
+import { ARTIFACT_INDEX_RECONCILE_INTERVAL_MS, createAgentArtifactIndex } from "./artifact-index";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 export { SkillsToolsPanel } from "./management/SkillsToolsPanel";
 export {
@@ -530,9 +531,6 @@ export function AgentWorkspace({
     setSelectedMessagingPlatformId,
     messagingEnvEdits,
     setMessagingEnvEdits,
-    filesystemSnapshot,
-    setFilesystemSnapshot,
-    setFilesystemLoading,
     artifactPanel,
     setArtifactPanel,
     usagePanelSessionId,
@@ -567,6 +565,7 @@ export function AgentWorkspace({
     continuity,
     selectedHermesSessionId,
   });
+  const artifactIndex = useMemo(() => createAgentArtifactIndex(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -879,12 +878,12 @@ export function AgentWorkspace({
     chatArtifacts,
   } = useAgentSelection({
     attachments,
+    artifactIndex,
     category,
     composerSizeWarning,
     creditActionsDisabledReason,
     defaultGenerationModelId,
     draft,
-    filesystemSnapshot,
     generationCostQuality,
     generationModels,
     hermesSessionItems,
@@ -1097,7 +1096,9 @@ export function AgentWorkspace({
       void (async () => {
         const imported: AgentArtifact[] = [];
         for (const sample of buildSampleArtifactFiles()) {
-          imported.push(await importHermesBridgeFileBytes(sample.name, sample.bytes));
+          const file = await importHermesBridgeFileBytes(sample.name, sample.bytes);
+          artifactIndex.upsertImportedFile(file);
+          imported.push(file);
         }
         setDevArtifacts(imported);
         setArtifactPanel({ view: "list" });
@@ -1105,7 +1106,7 @@ export function AgentWorkspace({
     };
     window.addEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
     return () => window.removeEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
-  }, []);
+  }, [artifactIndex]);
 
   let stopHermesSessionImplementation: ReturnType<
     typeof createTaskControlActions
@@ -1681,12 +1682,11 @@ export function AgentWorkspace({
     if (!bridge.running || !hermesSessionsHydrated || !selectedHermesSessionId) return;
     if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     void loadFilesystemSnapshot();
-  }, [
-    bridge.running,
-    hermesSessionsHydrated,
-    selectedHermesSessionId,
-    selectedHermesMessages.length,
-  ]);
+    const reconcileInterval = window.setInterval(() => {
+      void loadFilesystemSnapshot();
+    }, ARTIFACT_INDEX_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(reconcileInterval);
+  }, [bridge.running, hermesSessionsHydrated, selectedHermesSessionId]);
 
   useTaskHydration({
     hydratedTaskIdsRef,
@@ -1777,12 +1777,11 @@ export function AgentWorkspace({
 
   const { loadSkillCommands, loadCapabilities, loadMessagingPlatforms, loadFilesystemSnapshot } =
     createManagementLoaders({
+      artifactIndex,
       ensureHermesGateway,
       selectedHermesSessionIdRef,
       setCapabilityLoading,
       setError,
-      setFilesystemLoading,
-      setFilesystemSnapshot,
       setMessagingPlatforms,
       setSelectedMessagingPlatformId,
       setSkillCommandLoading,
@@ -1806,7 +1805,7 @@ export function AgentWorkspace({
     creditActionsDisabledReason,
     imageSafeModeConsentRequestRef,
     imageSlashBaseTurnId,
-    loadFilesystemSnapshot,
+    recordImportedArtifact: artifactIndex.upsertImportedFile,
     newSessionModeRef,
     pendingFastPathImagesRef,
     setError,
@@ -1979,7 +1978,7 @@ export function AgentWorkspace({
     clearComposerCommandDraft,
     composerDispatchWasInvalidated,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordFilesystemArtifact: artifactIndex.upsert,
     newSessionModeRef,
     requestImageSafeModeConsent,
     setError,
@@ -2154,7 +2153,7 @@ export function AgentWorkspace({
     agentAttachmentFromImportedFile,
     composerEditorRef,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordImportedArtifact: artifactIndex.upsertImportedFile,
     setComposerAttachments,
     setError,
     setImportingFiles,
@@ -2279,6 +2278,9 @@ export function AgentWorkspace({
     clearSubmittedSteers,
     continueAfterCompletedAgentRun,
     liveEventsRef,
+    onArtifactFilesystemChange: (event) => {
+      if (artifactIndex.recordToolEvent(event)) void loadFilesystemSnapshot();
+    },
     pendingSteerBySessionIdRef,
     promotePendingIssueReportToReview,
     recordHermesActivityAndDeriveStatus,
@@ -2685,6 +2687,7 @@ export function AgentWorkspace({
     openTimelineArtifact,
   } = useAgentChatPresentation({
     DOWNLOAD_TOAST_ID,
+    artifactIndex,
     chatArtifacts,
     devArtifacts,
     imageTurnsBySession,

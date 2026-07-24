@@ -37,6 +37,7 @@ describe("createSessionEventListener activity publications", () => {
       clearSubmittedSteers: vi.fn(),
       continueAfterCompletedAgentRun: vi.fn(),
       liveEventsRef,
+      onArtifactFilesystemChange: vi.fn(),
       pendingSteerBySessionIdRef: { current: {} },
       promotePendingIssueReportToReview: vi.fn(() => true),
       recordHermesActivityAndDeriveStatus: (event) => agentStatusFromHermesEvent(event),

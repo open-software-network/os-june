@@ -140,6 +140,16 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
   on the fresh connection. The submit's real requests, including
   `session.create` and `prompt.submit`, are sent once with their ordinary
   deadlines.
+- **Artifact discovery is indexed outside the render hot path.**
+  `artifact-index.ts` seeds one flat file index from the Bridge snapshot,
+  coalesces concurrent refreshes, and preserves June-owned writes that land
+  while an older snapshot is in flight. Imports and generated media update the
+  index directly; file-producing tool completions request a reconcile; a
+  15-second mounted-session reconcile catches files added, removed, or renamed
+  outside June. Transcript and reasoning deltas only query the index. File-path
+  and filename aliases are compiled once per index change into a multi-pattern
+  matcher, so assigning files to conversation turns does not compare every turn
+  with every file.
 - **Browser approvals are event-led.** The browser-approval change event
   refreshes pending approvals promptly. Snapshot reads are limited to initial
   subscription, listener reattachment, and focus, visibility, or online

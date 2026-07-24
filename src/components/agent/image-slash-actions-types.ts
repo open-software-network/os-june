@@ -1,4 +1,4 @@
-import { type HermesSessionInfo } from "../../lib/tauri";
+import { type HermesSessionInfo, type ImportedHermesFile } from "../../lib/tauri";
 import { type HermesSessionDispatchReservation } from "../../lib/hermes-session-dispatch-mutex";
 import { type AgentChatPart, type AgentChatTurn } from "../../lib/agent-chat-runtime";
 import type { AgentAttachment } from "./agent-workspace-models";
@@ -17,7 +17,7 @@ export type createImageSlashActionsDependencies = {
   creditActionsDisabledReason: string | undefined;
   imageSafeModeConsentRequestRef: React.MutableRefObject<ImageSafeModeConsentRequest | null>;
   imageSlashBaseTurnId: (assistantTurnId: string) => string;
-  loadFilesystemSnapshot: () => Promise<void>;
+  recordImportedArtifact: (file: ImportedHermesFile) => void;
   newSessionModeRef: React.MutableRefObject<boolean>;
   pendingFastPathImagesRef: React.MutableRefObject<Record<string, AgentAttachment[]>>;
   setError: (message: string | null, options?: AgentWorkspaceErrorOptions) => void;
