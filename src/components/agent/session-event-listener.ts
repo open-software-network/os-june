@@ -21,6 +21,7 @@ import { appendHermesLiveEvent } from "../../lib/agent-chat-runtime";
 import {
   type TurnDiagnosticsContext,
   type TurnTimingState,
+  type TurnUsageSnapshot,
   TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
   computeTurnDiagnostics,
   publishTurnDiagnostics,
@@ -288,7 +289,7 @@ export function createSessionEventListener(dependencies: createSessionEventListe
           turnTiming.terminalAt = eventAt;
           const finalizedTiming = { ...turnTiming };
           void (async () => {
-            let usageAfter = {};
+            let usageAfter: TurnUsageSnapshot = {};
             try {
               const raw = await createHermesMethods(gateway).getSessionUsage(
                 { sessionId: runtimeSessionId },

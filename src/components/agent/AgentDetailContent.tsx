@@ -8,7 +8,6 @@ import { upstreamProviderRecoveryStore } from "../../lib/upstream-provider-recov
 import {
   formatTurnDiagnostics,
   getTurnDiagnostics,
-  getTurnDiagnosticsVersion,
   subscribeTurnDiagnostics,
 } from "../../lib/turn-diagnostics";
 import { useExperimentalFlags } from "../../lib/experimental-flags";
@@ -81,13 +80,9 @@ function TurnDiagnosticsLine({
   sessionId: string;
   sessionRunning: boolean;
 }) {
-  useSyncExternalStore(
-    subscribeTurnDiagnostics,
-    getTurnDiagnosticsVersion,
-    getTurnDiagnosticsVersion,
-  );
+  const getSnapshot = useCallback(() => getTurnDiagnostics(sessionId), [sessionId]);
+  const diagnostics = useSyncExternalStore(subscribeTurnDiagnostics, getSnapshot, getSnapshot);
   if (sessionRunning) return null;
-  const diagnostics = getTurnDiagnostics(sessionId);
   if (!diagnostics) return null;
   return (
     <div className="agent-turn-diagnostics" role="status" aria-label="Turn diagnostics">
