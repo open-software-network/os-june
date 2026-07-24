@@ -12,22 +12,19 @@ import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesArtifactStore } from "../../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
-import { parseSessionUsage } from "../../lib/hermes-session-usage";
 import {
   rememberSessionThinkingLevel,
   thinkingEffortForLevel,
   thinkingLevelForEffort,
 } from "../../lib/thinking-level";
 import { appendHermesLiveEvent } from "../../lib/agent-chat-runtime";
-import { experimentalTurnDiagnosticsEnabled } from "../../lib/experimental-flags";
 import {
+  type TurnDiagnosticsContext,
   type TurnTimingState,
-  type TurnUsageSnapshot,
-  cacheSnapshotFromRaw,
-  clearTurnDiagnostics,
+  TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
   computeTurnDiagnostics,
   publishTurnDiagnostics,
-  snapshotFromUsage,
+  snapshotFromRawUsage,
 } from "../../lib/turn-diagnostics";
 import {
   agentActivityCountsFromStore,
@@ -66,40 +63,23 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     sessionDisplayTitle,
     storedSessionId,
     computerUseRunLeaseId,
+    turnDiagnostics,
   }: {
     gateway: HermesGatewayClient;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
     computerUseRunLeaseId?: string;
+    turnDiagnostics?: TurnDiagnosticsContext;
   }) {
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
     let unlisten = () => {};
-    const turnDiagnosticsEnabled = experimentalTurnDiagnosticsEnabled();
-    const turnTiming: TurnTimingState | null = turnDiagnosticsEnabled
-      ? { submitAt: performance.now() }
+    const turnTiming: TurnTimingState | null = turnDiagnostics
+      ? { startAt: turnDiagnostics.startAt }
       : null;
-    let usageBefore: TurnUsageSnapshot | undefined;
-    if (turnDiagnosticsEnabled && turnTiming) {
-      // Clear any previous diagnostics so stale data from a prior run does not
-      // reappear while this run is in progress.
-      clearTurnDiagnostics(storedSessionId);
-      // Fire-and-forget: snapshot session usage before the prompt is submitted
-      // so we can delta against the post-turn snapshot. If the RPC races with
-      // the first event, the baseline stays undefined and token fields are
-      // omitted from the diagnostic (timing is still reported).
-      createHermesMethods(gateway)
-        .getSessionUsage({ sessionId: runtimeSessionId })
-        .then((raw) => {
-          const parsed = parseSessionUsage(runtimeSessionId, raw);
-          usageBefore = {
-            ...snapshotFromUsage(parsed),
-            ...cacheSnapshotFromRaw(raw),
-          };
-        })
-        .catch(() => undefined);
-    }
+    const usageBefore = turnDiagnostics?.usageBefore;
+    let diagnosticsFinalized = false;
     const liveEventsBatch = createLeadingTrailingMicrobatch(
       () => setLiveEvents(liveEventsRef.current),
       HERMES_STREAM_STATE_BATCH_INTERVAL_MS,
@@ -301,29 +281,28 @@ export function createSessionEventListener(dependencies: createSessionEventListe
         unlisten();
         // JUN-436: finalize per-turn diagnostics. Record the terminal timestamp
         // from the ingress clock and fetch post-turn usage to compute the delta.
-        // Published async when the usage RPC resolves; if it fails, no
-        // diagnostics appear for this turn.
-        if (turnTiming) {
+        // Published exactly once: timing always publishes; usage success enriches
+        // with token/model fields, while usage failure only omits those fields.
+        if (turnTiming && !diagnosticsFinalized) {
+          diagnosticsFinalized = true;
           turnTiming.terminalAt = eventAt;
           const finalizedTiming = { ...turnTiming };
-          createHermesMethods(gateway)
-            .getSessionUsage({ sessionId: runtimeSessionId })
-            .then((raw) => {
-              const parsed = parseSessionUsage(runtimeSessionId, raw);
-              const usageAfter: TurnUsageSnapshot = {
-                ...snapshotFromUsage(parsed),
-                ...cacheSnapshotFromRaw(raw),
-              };
-              const diagnostics = computeTurnDiagnostics(
-                finalizedTiming,
-                usageBefore ?? {},
-                usageAfter,
+          void (async () => {
+            let usageAfter = {};
+            try {
+              const raw = await createHermesMethods(gateway).getSessionUsage(
+                { sessionId: runtimeSessionId },
+                TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
               );
-              if (diagnostics) {
-                publishTurnDiagnostics(storedSessionId, diagnostics);
-              }
-            })
-            .catch(() => undefined);
+              usageAfter = snapshotFromRawUsage(runtimeSessionId, raw);
+            } catch {
+              // Usage RPC failed or timed out: publish timing-only diagnostics.
+            }
+            const diagnostics = computeTurnDiagnostics(finalizedTiming, usageBefore, usageAfter);
+            if (diagnostics) {
+              publishTurnDiagnostics(storedSessionId, diagnostics);
+            }
+          })();
         }
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);

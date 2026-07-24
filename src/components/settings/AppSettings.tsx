@@ -2919,8 +2919,9 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Turn diagnostics</h3>
                       <p className="settings-row-description">
-                        Show per-turn timing and token diagnostics in the agent chat. Includes
-                        provider vs agent overhead breakdown, TPS, and cache metrics.
+                        Show timing spans and available token usage for the latest completed agent
+                        turn. Timing spans are end to end and do not isolate upstream provider
+                        latency.
                       </p>
                     </div>
                     <div className="settings-row-control">

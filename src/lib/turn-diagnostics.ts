@@ -14,7 +14,8 @@
  * names. No prompt contents, credentials, or raw payloads are retained.
  */
 
-import type { SessionUsage } from "./hermes-session-usage";
+import { asRecord } from "./hermes-control-plane";
+import { parseSessionUsage, type SessionUsage } from "./hermes-session-usage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,8 +24,10 @@ import type { SessionUsage } from "./hermes-session-usage";
 /** Mutable timing state captured during one agent run. Uses `performance.now()`
  * for monotonic elapsed measurement. */
 export type TurnTimingState = {
-  /** `performance.now()` at listener attach (just before `prompt.submit`). */
-  submitAt: number;
+  /** Captured in `beforePrompt` after the baseline usage attempt, immediately
+   * before listener setup and `prompt.submit` dispatch. Includes gateway
+   * invocation and transport in TTFT/total duration. */
+  startAt: number;
   /** First non-empty assistant transcript delta (time to first token). */
   firstTokenAt?: number;
   /** Last successful `message.complete` (end of the last assistant segment). */
@@ -46,9 +49,10 @@ export type TurnUsageSnapshot = {
 
 /** Computed diagnostics ready for display. */
 export type TurnDiagnostics = {
-  /** Monotonic milliseconds from submit to terminal. */
+  /** Monotonic milliseconds from diagnostic start boundary to terminal. */
   totalDurationMs: number;
-  /** Submit to first token (end-to-end time to first token). */
+  /** Diagnostic start boundary to first assistant transcript delta (end-to-end
+   * time to first token). */
   ttftMs: number;
   /** First token to last message.complete (active streaming + tool calls +
    * inter-segment orchestration). Not pure provider time. */
@@ -67,8 +71,10 @@ export type TurnDiagnostics = {
   cacheReadTokens?: number;
   /** Cache write tokens (delta, or undefined if baseline was unavailable). */
   cacheWriteTokens?: number;
-  /** Output throughput: output tokens / response span seconds. */
-  tps?: number;
+  /** Completion-token delta divided by first-token-to-last-complete elapsed
+   * seconds. Includes tool calls, multiple assistant segments, and orchestration
+   * gaps. Not pure upstream-provider generation throughput. */
+  responseSpanTokensPerSecond?: number;
   /** Model name from usage snapshot. */
   model?: string;
   /** Provider name from usage snapshot. */
@@ -77,11 +83,27 @@ export type TurnDiagnostics = {
   finalizedAt: string;
 };
 
+/** Bounded timeout for diagnostic usage RPCs so they never delay prompt
+ * dispatch or summary publication by the gateway's default request timeout. */
+export const TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS = 500;
+
+/** Pre-computed diagnostics context passed from `beforePrompt` into the session
+ * event listener. Only the real send path provides this; recovery/restoration
+ * listeners do not, preventing partial-turn diagnostics. */
+export type TurnDiagnosticsContext = {
+  startAt: number;
+  usageBefore?: TurnUsageSnapshot;
+};
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
 const listeners = new Set<() => void>();
+/** One latest completed diagnostic is retained per stored session. Starting a
+ * new instrumented turn clears it. Diagnostics are ephemeral and are not
+ * associated with durable transcript turn IDs. Per-turn history is out of
+ * scope. */
 const diagnosticsBySession = new Map<string, TurnDiagnostics>();
 let version = 0;
 
@@ -138,6 +160,14 @@ export function snapshotFromUsage(usage: SessionUsage | undefined): TurnUsageSna
   };
 }
 
+/** Parse a raw `session.usage` result into a complete diagnostic snapshot. */
+export function snapshotFromRawUsage(sessionId: string, raw: unknown): TurnUsageSnapshot {
+  return {
+    ...snapshotFromUsage(parseSessionUsage(sessionId, raw)),
+    ...cacheSnapshotFromRaw(raw),
+  };
+}
+
 /** Extract cache token fields from a raw `session.usage` result. The normalized
  * `SessionUsage` parser does not currently surface cache metrics, so we read
  * them defensively from the raw payload the same way the parser does. */
@@ -145,10 +175,10 @@ export function cacheSnapshotFromRaw(raw: unknown): {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
 } {
-  if (!raw || typeof raw !== "object") return {};
-  const root = raw as Record<string, unknown>;
-  const usage = root.usage as Record<string, unknown> | undefined;
-  const containers = [usage, root].filter(
+  const root = asRecord(raw);
+  const usage = asRecord(root?.usage);
+  const tokens = asRecord(root?.tokens);
+  const containers = [usage, tokens, root].filter(
     (c): c is Record<string, unknown> => c !== null && c !== undefined,
   );
 
@@ -189,42 +219,29 @@ export function cacheSnapshotFromRaw(raw: unknown): {
  * are left undefined rather than showing cumulative absolute values. */
 export function computeTurnDiagnostics(
   timing: TurnTimingState,
-  usageBefore: TurnUsageSnapshot,
+  usageBefore: TurnUsageSnapshot | undefined,
   usageAfter: TurnUsageSnapshot,
 ): TurnDiagnostics | undefined {
   if (timing.terminalAt === undefined) return undefined;
 
-  const totalDurationMs = timing.terminalAt - timing.submitAt;
+  const totalDurationMs = timing.terminalAt - timing.startAt;
   if (totalDurationMs <= 0) return undefined;
 
   const firstTokenAt = timing.firstTokenAt ?? timing.terminalAt;
   const lastCompleteAt = timing.lastMessageCompleteAt ?? timing.terminalAt;
 
-  const ttftMs = Math.max(0, firstTokenAt - timing.submitAt);
+  const ttftMs = Math.max(0, firstTokenAt - timing.startAt);
   const responseSpanMs = Math.max(0, lastCompleteAt - firstTokenAt);
   const tailMs = Math.max(0, timing.terminalAt - lastCompleteAt);
 
-  const hasBaseline = usageBefore.promptTokens !== undefined;
-  const outputTokens = delta(
-    usageBefore.completionTokens,
-    usageAfter.completionTokens,
-    hasBaseline,
-  );
-  const inputTokens = delta(usageBefore.promptTokens, usageAfter.promptTokens, hasBaseline);
-  const totalTokens = delta(usageBefore.totalTokens, usageAfter.totalTokens, hasBaseline);
-  const cacheReadTokens = delta(
-    usageBefore.cacheReadTokens,
-    usageAfter.cacheReadTokens,
-    hasBaseline,
-  );
-  const cacheWriteTokens = delta(
-    usageBefore.cacheWriteTokens,
-    usageAfter.cacheWriteTokens,
-    hasBaseline,
-  );
+  const outputTokens = delta(usageBefore?.completionTokens, usageAfter.completionTokens);
+  const inputTokens = delta(usageBefore?.promptTokens, usageAfter.promptTokens);
+  const totalTokens = delta(usageBefore?.totalTokens, usageAfter.totalTokens);
+  const cacheReadTokens = delta(usageBefore?.cacheReadTokens, usageAfter.cacheReadTokens);
+  const cacheWriteTokens = delta(usageBefore?.cacheWriteTokens, usageAfter.cacheWriteTokens);
 
   const responseSpanSeconds = responseSpanMs / 1000;
-  const tps =
+  const responseSpanTokensPerSecond =
     outputTokens !== undefined && responseSpanSeconds > 0
       ? outputTokens / responseSpanSeconds
       : undefined;
@@ -239,7 +256,7 @@ export function computeTurnDiagnostics(
     totalTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    tps,
+    responseSpanTokensPerSecond,
     model: usageAfter.model,
     provider: usageAfter.provider,
     finalizedAt: new Date().toISOString(),
@@ -248,13 +265,8 @@ export function computeTurnDiagnostics(
 
 /** Compute a per-turn token delta. When the baseline snapshot is unavailable,
  * returns undefined instead of the cumulative absolute value. */
-function delta(
-  before: number | undefined,
-  after: number | undefined,
-  hasBaseline: boolean,
-): number | undefined {
-  if (after === undefined) return undefined;
-  if (!hasBaseline || before === undefined) return undefined;
+function delta(before: number | undefined, after: number | undefined): number | undefined {
+  if (before === undefined || after === undefined) return undefined;
   return Math.max(0, after - before);
 }
 
@@ -281,8 +293,8 @@ export function formatTurnDiagnostics(d: TurnDiagnostics): string {
     `tail ${fmtMs(d.tailMs)}`,
   ];
 
-  if (d.tps !== undefined) {
-    parts.push(`TPS ${d.tps.toFixed(1)} tok/s`);
+  if (d.responseSpanTokensPerSecond !== undefined) {
+    parts.push(`response avg ${d.responseSpanTokensPerSecond.toFixed(1)} tok/s`);
   }
 
   const tokenParts: string[] = [];

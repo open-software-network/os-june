@@ -31,6 +31,8 @@ import type { PendingIssueReport } from "./agent-session-continuity";
 import type { AgentAttachment } from "./agent-workspace-models";
 import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
 
+import type { TurnDiagnosticsContext } from "../../lib/turn-diagnostics";
+
 export type SubmitHermesSessionDependencies = {
   AGENT_TITLE_MAX_CHARS: 48;
   agentSessionTitleForPrompt: (
@@ -53,12 +55,14 @@ export type SubmitHermesSessionDependencies = {
     sessionDisplayTitle,
     storedSessionId,
     computerUseRunLeaseId,
+    turnDiagnostics,
   }: {
     gateway: HermesGatewayClient;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
     computerUseRunLeaseId?: string;
+    turnDiagnostics?: TurnDiagnosticsContext;
   }) => () => void;
   attachPendingImages: (
     gateway: HermesRequestLike,
