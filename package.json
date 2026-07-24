@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@react-three/drei": "^9",
-    "@react-three/fiber": "^8",
+    "@react-three/fiber": "^9",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
