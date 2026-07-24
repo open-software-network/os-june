@@ -30,7 +30,14 @@ use crate::audio::capture;
 use crate::domain::types::{
     AudioLevelDto, RecordingState, RecordingStatusDto, RecordingTelemetryDto,
 };
-use std::{sync::Mutex, thread, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    thread,
+    time::Duration,
+};
 use tauri::{
     AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow,
     WindowEvent,
@@ -198,6 +205,17 @@ struct ZoneTracker {
     show_armed: bool,
 }
 
+/// Edge-tracks the menu-bar recording dot so the supervisor's 10 Hz poll only
+/// notifies the tray when capture actually starts or stops, not every tick.
+static RECORDING_INDICATOR_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn sync_recording_indicator(app: &AppHandle, active: bool) {
+    if RECORDING_INDICATOR_ACTIVE.swap(active, Ordering::SeqCst) == active {
+        return;
+    }
+    crate::menu_bar::set_meeting_recording_active(app, active);
+}
+
 fn spawn_supervisor(app: AppHandle) {
     thread::spawn(move || {
         let mut tracker = ZoneTracker {
@@ -215,11 +233,23 @@ fn spawn_supervisor(app: AppHandle) {
 }
 
 fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
+    let status = capture::current_status();
+
+    // Drive the native menu-bar recording dot from the same poll. It lights only
+    // while capture is actively running — a paused take stops capturing, so the
+    // dot goes dark until it resumes (matching what a recording dot implies).
+    // Independent of the HUD window and of dictation, both of which can be
+    // active at the same time.
+    let recording_active = status
+        .as_ref()
+        .map(|status| matches!(status.state, RecordingState::Recording))
+        .unwrap_or(false);
+    sync_recording_indicator(app, recording_active);
+
     let Some(state) = app.try_state::<MeetingHudState>() else {
         return IDLE_TICK;
     };
 
-    let status = capture::current_status();
     let live = status.filter(|status| is_live(status.state));
 
     let Some(status) = live else {
