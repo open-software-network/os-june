@@ -30,7 +30,7 @@ jsonwebtoken = "9"
 sha2 = "0.11"
 # Share store (JUN-308): the first persistent state in june-api. rustls only —
 # this binary runs inside a TEE with no OpenSSL.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "migrate", "macros"] }
 # Pure-Rust MP4/M4A parser used for duration probing on the /v1/dictate
 # path, where the desktop helper records AAC-in-MPEG-4. Hound is WAV-only.
 mp4 = "0.14"
