@@ -97,6 +97,9 @@ impl ShareRateLimiter {
         if shard.len() >= self.inner.per_shard_capacity || !self.try_reserve_key() {
             return false;
         }
+        // The shard lock remains held and there is no fallible branch or early
+        // return between a successful reservation and this insert, so every
+        // reservation is paired with exactly one new map entry.
         shard.insert(
             key.to_string(),
             Counter {
@@ -111,8 +114,18 @@ impl ShareRateLimiter {
         let weak = Arc::downgrade(&self.inner);
         // Dropping a Tokio JoinHandle detaches the task. It holds only a Weak,
         // so it exits after the owning ApiState is dropped.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            drop(runtime.spawn(cleanup_loop(weak)));
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => drop(runtime.spawn(cleanup_loop(weak))),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "share-rate-limiter cleanup task not started: no Tokio runtime"
+                );
+                debug_assert!(
+                    tokio::runtime::Handle::try_current().is_ok(),
+                    "share-rate-limiter cleanup task not started: no Tokio runtime"
+                );
+            }
         }
     }
 
@@ -398,5 +411,12 @@ mod tests {
             "one shard admitted more keys than its allocation ceiling"
         );
         assert_eq!(limiter.tracked_key_count(), MAX_KEYS_PER_SHARD);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "share-rate-limiter cleanup task not started: no Tokio runtime")]
+    fn cleanup_start_without_a_runtime_is_loud_in_debug_builds() {
+        ShareRateLimiter::default().start_cleanup();
     }
 }
