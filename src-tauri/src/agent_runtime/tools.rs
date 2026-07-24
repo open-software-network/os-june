@@ -488,6 +488,12 @@ async fn notion_tool(
 }
 
 async fn list_skills(context: &ToolContext) -> Result<Value, AppError> {
+    let allowed = context
+        .repository
+        .run_enabled_skills(&context.run_id)
+        .await?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
     let roots = skill_roots(&context.app);
     let mut skills = Vec::new();
     for root in roots {
@@ -495,8 +501,9 @@ async fn list_skills(context: &ToolContext) -> Result<Value, AppError> {
             continue;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if entry.path().join("SKILL.md").is_file() {
-                skills.push(json!({ "name": entry.file_name().to_string_lossy(), "root": root }));
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if allowed.contains(&name) && entry.path().join("SKILL.md").is_file() {
+                skills.push(json!({ "name": name, "root": root }));
             }
         }
     }
@@ -509,6 +516,18 @@ async fn load_skill(context: &ToolContext, arguments: &Value) -> Result<Value, A
         return Err(AppError::new(
             "agent_skill_invalid",
             "Skill name is invalid.",
+        ));
+    }
+    if !context
+        .repository
+        .run_enabled_skills(&context.run_id)
+        .await?
+        .iter()
+        .any(|allowed| allowed == name)
+    {
+        return Err(AppError::new(
+            "agent_skill_disabled",
+            "This skill is not enabled for the current run.",
         ));
     }
     for root in skill_roots(&context.app) {

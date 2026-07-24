@@ -37,6 +37,37 @@ test("streams lifecycle events and completion in monotonic order", async () => {
   assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5]);
 });
 
+test("emits the visible context summary and exact removed ids after compaction", async () => {
+  const engine = new FakeEngine();
+  const { service, frames } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 9 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `${index}:${"x".repeat(4_000)}`,
+  }));
+
+  await service.handle(
+    request("run.start", {
+      ...runParams,
+      history,
+      contextWindow: 7_000,
+      maxOutputTokens: 1_024,
+    }),
+  );
+  await nextTurn();
+
+  const started = frames().find((frame) => frame.method === "run.started");
+  assert.equal(started?.params.compacted, true);
+  assert.ok(Array.isArray(started?.params.removedItemIds));
+  assert.ok((started?.params.removedItemIds as unknown[]).length > 0);
+  assert.equal(
+    (started?.params.contextSummary as { kind?: string } | undefined)?.kind,
+    "context_summary",
+  );
+});
+
 test("serializes an approval interruption for durable host persistence", async () => {
   const engine = new FakeEngine({
     history: [],

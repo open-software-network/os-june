@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { OpenAIAgentsEngine } from "../src/sdk-engine.ts";
 import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
@@ -105,6 +108,174 @@ test("continues model inference after a host tool result", async () => {
     ),
   );
   assert.ok(events.some((event) => event.type === "tool.completed"));
+});
+
+test("replays a persisted tool group into the next model turn", async () => {
+  let modelRequest: JsonObject | undefined;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    assert.equal(input.name, MODEL_CHAT_COMPLETIONS_TOOL);
+    assert.ok("request" in input.arguments);
+    modelRequest = input.arguments.request;
+    return streamPage("continuation-stream", {
+      id: "completion-continuation",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "The earlier result contained brief.md." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  await engine.start({
+    sessionId: "session-continuation",
+    runId: "run-2",
+    signal: new AbortController().signal,
+    emit: () => {},
+    params: {
+      model: "private-auto",
+      instructions: "Answer from the complete conversation history.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "What did that tool find?",
+      history: [
+        {
+          id: "tool-call-1",
+          kind: "tool_call",
+          name: "list_files",
+          callId: "call-1",
+          groupId: "call-1",
+          payload: {
+            type: "function_call",
+            name: "list_files",
+            callId: "call-1",
+            status: "completed",
+            arguments: "{\"path\":\".\"}",
+          },
+        },
+        {
+          id: "tool-result-1",
+          kind: "tool_result",
+          name: "list_files",
+          callId: "call-1",
+          groupId: "call-1",
+          payload: {
+            type: "function_call_result",
+            name: "list_files",
+            callId: "call-1",
+            status: "completed",
+            output: "{\"files\":[\"brief.md\"]}",
+          },
+        },
+      ],
+      tools: [],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  const messages = modelRequest?.messages;
+  assert.ok(Array.isArray(messages));
+  assert.ok(
+    messages.some(
+      (message) =>
+        isRecord(message) &&
+        message.role === "assistant" &&
+        Array.isArray(message.tool_calls) &&
+        message.tool_calls.some(
+          (call) =>
+            isRecord(call) &&
+            isRecord(call.function) &&
+            call.function.name === "list_files",
+        ),
+    ),
+  );
+  assert.ok(
+    messages.some(
+      (message) =>
+        isRecord(message) &&
+        message.role === "tool" &&
+        message.tool_call_id === "call-1" &&
+        message.content === "{\"files\":[\"brief.md\"]}",
+    ),
+  );
+});
+
+test("sends current and persisted image attachments as vision input", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "june-agent-images-"));
+  const previousImage = join(directory, "previous.png");
+  const currentImage = join(directory, "current.png");
+  await writeFile(previousImage, Buffer.from("previous image"));
+  await writeFile(currentImage, Buffer.from("current image"));
+  let modelRequest: JsonObject | undefined;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    assert.equal(input.name, MODEL_CHAT_COMPLETIONS_TOOL);
+    assert.ok("request" in input.arguments);
+    modelRequest = input.arguments.request;
+    return streamPage("vision-stream", {
+      id: "completion-vision",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "I can see both images." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  await engine.start({
+    sessionId: "session-vision",
+    runId: "run-vision",
+    signal: new AbortController().signal,
+    emit: () => {},
+    params: {
+      model: "private-auto",
+      instructions: "Inspect the attached images.",
+      workspace: directory,
+      safetyMode: "sandboxed",
+      input: "What changed?",
+      attachments: [{ path: currentImage, mimeType: "image/png" }],
+      history: [
+        {
+          id: "previous-message",
+          kind: "message",
+          role: "user",
+          text: "This was the earlier image.",
+          attachments: [{ path: previousImage, mimeType: "image/png" }],
+        },
+      ],
+      tools: [],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  const messages = modelRequest?.messages;
+  assert.ok(Array.isArray(messages));
+  const imageUrls = messages.flatMap((message) => {
+    if (!isRecord(message) || !Array.isArray(message.content)) return [];
+    return message.content.flatMap((part) =>
+      isRecord(part) &&
+      part.type === "image_url" &&
+      isRecord(part.image_url) &&
+      typeof part.image_url.url === "string"
+        ? [part.image_url.url]
+        : [],
+    );
+  });
+  assert.equal(imageUrls.length, 2);
+  assert.ok(imageUrls.every((url) => url.startsWith("data:image/png;base64,")));
+  await rm(directory, { recursive: true });
 });
 
 test("serializes an approval interruption after assistant history", async () => {

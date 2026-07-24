@@ -18,6 +18,140 @@ async fn memory_database() -> SqlitePool {
 }
 
 #[tokio::test]
+async fn compaction_replaces_old_items_with_one_ordered_visible_summary() {
+    let pool = memory_database().await;
+    let repository = AgentRepository::new(pool.clone());
+    let session = repository
+        .create_session(
+            "Compaction",
+            "private-auto",
+            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            None,
+        )
+        .await
+        .expect("session");
+    let run = repository
+        .create_run(&session.id, "private-auto")
+        .await
+        .expect("run");
+    let first = repository
+        .append_item(
+            &session.id,
+            None,
+            0,
+            &AgentItemPayload::UserMessage(MessagePayload {
+                role: "user".into(),
+                content: "Old question".into(),
+                attachments: vec![],
+            }),
+            None,
+        )
+        .await
+        .expect("first item")
+        .expect("first inserted");
+    let second = repository
+        .append_item(
+            &session.id,
+            None,
+            0,
+            &AgentItemPayload::AssistantMessage(MessagePayload {
+                role: "assistant".into(),
+                content: "Old answer".into(),
+                attachments: vec![],
+            }),
+            None,
+        )
+        .await
+        .expect("second item")
+        .expect("second inserted");
+    let recent = repository
+        .append_item(
+            &session.id,
+            None,
+            0,
+            &AgentItemPayload::UserMessage(MessagePayload {
+                role: "user".into(),
+                content: "Recent question".into(),
+                attachments: vec![],
+            }),
+            None,
+        )
+        .await
+        .expect("recent item")
+        .expect("recent inserted");
+
+    let summary = repository
+        .replace_items_with_context_summary(
+            &session.id,
+            &run.id,
+            "Earlier conversation context",
+            &[first.id.clone(), second.id.clone()],
+        )
+        .await
+        .expect("compaction")
+        .expect("summary");
+
+    let items = repository.items(&session.id).await.expect("items");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, summary.id);
+    assert_eq!(items[0].sequence, first.sequence);
+    assert_eq!(items[1].id, recent.id);
+    assert!(matches!(
+        &items[0].payload,
+        AgentItemPayload::ContextSummary(text) if text.text == "Earlier conversation context"
+    ));
+    assert!(repository
+        .replace_items_with_context_summary(
+            &session.id,
+            &run.id,
+            "Duplicate",
+            &[first.id, second.id],
+        )
+        .await
+        .expect("idempotent replay")
+        .is_none());
+}
+
+#[tokio::test]
+async fn run_skills_are_deduplicated_and_persisted_for_retry_and_resume() {
+    let pool = memory_database().await;
+    let repository = AgentRepository::new(pool);
+    let session = repository
+        .create_session(
+            "Skills",
+            "private-auto",
+            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            None,
+        )
+        .await
+        .expect("session");
+    let run = repository
+        .create_run(&session.id, "private-auto")
+        .await
+        .expect("run");
+
+    repository
+        .set_run_enabled_skills(
+            &run.id,
+            &[
+                "notes".to_string(),
+                "notes".to_string(),
+                "research".to_string(),
+            ],
+        )
+        .await
+        .expect("persist skills");
+
+    assert_eq!(
+        repository
+            .run_enabled_skills(&run.id)
+            .await
+            .expect("load skills"),
+        vec!["notes".to_string(), "research".to_string()]
+    );
+}
+
+#[tokio::test]
 async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -37,7 +171,7 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
         "DROP TABLE agent_skill_settings",
         "DROP TABLE agent_migration_manifests",
         "DROP TABLE agent_sessions",
-        "DELETE FROM schema_migrations WHERE version BETWEEN 32 AND 37",
+        "DELETE FROM schema_migrations WHERE version BETWEEN 32 AND 38",
     ] {
         query(statement)
             .execute(&pool)

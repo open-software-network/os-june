@@ -542,6 +542,49 @@ async fn persist_and_emit_event(
                 .update_run_status(&frame.run_id, "running", None, None, None)
                 .await?;
             crate::routines::mark_agent_run_resumed(&repository.pool, &frame.run_id).await?;
+            if params
+                .get("compacted")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                let summary_text = params
+                    .get("contextSummary")
+                    .and_then(|summary| summary.get("text"))
+                    .and_then(Value::as_str);
+                let removed_item_ids = params
+                    .get("removedItemIds")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if let Some(summary_text) = summary_text {
+                    if let Some(summary) = repository
+                        .replace_items_with_context_summary(
+                            &frame.session_id,
+                            &frame.run_id,
+                            summary_text,
+                            &removed_item_ids,
+                        )
+                        .await?
+                    {
+                        data["removedItemIds"] = json!(removed_item_ids);
+                        data["contextSummary"] = json!({
+                            "id": summary.id,
+                            "sessionId": summary.session_id,
+                            "runId": summary.run_id,
+                            "sequence": summary.sequence,
+                            "createdAt": summary.created_at,
+                            "kind": "context_summary",
+                            "text": summary_text,
+                        });
+                    }
+                }
+            }
             None
         }
         "run.completed" => {

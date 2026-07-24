@@ -73,6 +73,63 @@ describe("agent runtime adapter", () => {
     ]);
   });
 
+  it("replaces compacted transcript items with the visible context summary", () => {
+    const projection = createAgentRuntimeProjection({
+      items: [
+        {
+          id: "old-user",
+          sessionId: "session-1",
+          runId: "old-run",
+          sequence: 0,
+          createdAt: "2026-07-22T11:00:00Z",
+          kind: "message",
+          role: "user",
+          text: "Old question",
+          status: "complete",
+        },
+        {
+          id: "recent-assistant",
+          sessionId: "session-1",
+          runId: "old-run",
+          sequence: 1,
+          createdAt: "2026-07-22T11:01:00Z",
+          kind: "message",
+          role: "assistant",
+          text: "Recent answer",
+          status: "complete",
+        },
+      ],
+    });
+    const started: AgentRuntimeEvent = {
+      ...frame,
+      eventId: "event-compacted",
+      sequence: 1,
+      method: "run.started",
+      data: {
+        startedAt: "2026-07-22T12:00:00Z",
+        model: "auto",
+        removedItemIds: ["old-user"],
+        contextSummary: {
+          id: "summary-1",
+          sessionId: "session-1",
+          runId: "run-1",
+          sequence: 0,
+          createdAt: "2026-07-22T12:00:00Z",
+          kind: "context_summary",
+          text: "Earlier conversation context: Old question",
+        },
+      },
+    };
+
+    const next = applyAgentRuntimeEvent(projection, started);
+
+    expect(next.items.map((item) => item.id)).toEqual(["summary-1", "recent-assistant"]);
+    expect(agentItemsToChatTurns(next.items)[0]).toMatchObject({
+      role: "system",
+      parts: [{ type: "context", text: "Earlier conversation context: Old question" }],
+    });
+  });
+
   it("maps approval and clarification interruptions to existing action cards", () => {
     const approval: AgentRuntimeEvent = {
       ...frame,

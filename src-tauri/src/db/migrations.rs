@@ -156,6 +156,10 @@ const AGENT_RUN_MCP_SNAPSHOT_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "mcp_policy_snapshotted",
     definition: "INTEGER NOT NULL DEFAULT 0",
 }];
+const AGENT_RUN_SKILLS_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "enabled_skills_json",
+    definition: "TEXT NOT NULL DEFAULT '[]'",
+}];
 const FOLDER_MEMORY_COLUMNS: &[ColumnDefinition] = &[
     ColumnDefinition {
         name: "instructions",
@@ -1113,6 +1117,18 @@ const MIGRATIONS: &[Migration] = &[
                 "../../migrations/029_agent_run_mcp_snapshot.sql"
             )),
         ],
+    },
+    Migration {
+        version: 38,
+        name: "agent_run_skills",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_runs",
+            column: "enabled_skills_json",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "agent_runs",
+            columns: AGENT_RUN_SKILLS_COLUMN,
+        }],
     },
 ];
 

@@ -178,7 +178,22 @@ pub async fn start_agent_run(
     .await?;
     let prepared_attachments =
         prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
+    let available_skills = agent_skill_catalog(&app, &repository).await?;
+    let requested_skills = request
+        .enabled_skill_ids
+        .iter()
+        .filter(|id| {
+            available_skills.iter().any(|skill| {
+                skill.get("id").and_then(Value::as_str) == Some(id.as_str())
+                    && skill.get("enabled").and_then(Value::as_bool) == Some(true)
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     let run = repository.create_run(&session.id, &model).await?;
+    repository
+        .set_run_enabled_skills(&run.id, &requested_skills)
+        .await?;
     let params = run_params(
         &app,
         &repository,
@@ -189,7 +204,7 @@ pub async fn start_agent_run(
             safety_mode: request.safety_mode,
             workspace: &workspace,
             input: &request.prompt,
-            skills: &request.enabled_skill_ids,
+            skills: &requested_skills,
             attachments: &prepared_attachments,
         },
     )
@@ -283,6 +298,10 @@ pub async fn retry_agent_run(
             .await?;
     }
     let run = repository.create_run(&session.id, &model).await?;
+    let enabled_skill_ids = repository.run_enabled_skills(&previous.id).await?;
+    repository
+        .set_run_enabled_skills(&run.id, &enabled_skill_ids)
+        .await?;
     let params = run_params(
         &app,
         &repository,
@@ -293,7 +312,7 @@ pub async fn retry_agent_run(
             safety_mode: session.safety_mode,
             workspace: &workspace,
             input: &prompt,
-            skills: &[],
+            skills: &enabled_skill_ids,
             attachments: &attachments,
         },
     )
@@ -378,6 +397,7 @@ pub async fn resolve_agent_interruption(
         )
     })?;
     let model = normalize_agent_model(&session.model);
+    let enabled_skill_ids = repository.run_enabled_skills(&run.id).await?;
     host.ensure_started(&app, repository.clone()).await?;
     let mut params = run_params(
         &app,
@@ -389,7 +409,7 @@ pub async fn resolve_agent_interruption(
             safety_mode: session.safety_mode,
             workspace: &workspace,
             input: "",
-            skills: &[],
+            skills: &enabled_skill_ids,
             attachments: &[],
         },
     )
@@ -493,6 +513,13 @@ fn image_mime_type(path: &std::path::Path) -> Option<&'static str> {
 #[tauri::command]
 pub async fn list_agent_skills(app: AppHandle) -> Result<Vec<Value>, AppError> {
     let repository = repository(&app).await?;
+    agent_skill_catalog(&app, &repository).await
+}
+
+async fn agent_skill_catalog(
+    app: &AppHandle,
+    repository: &AgentRepository,
+) -> Result<Vec<Value>, AppError> {
     let overrides: HashMap<String, bool> = repository
         .skills()
         .await?
@@ -500,7 +527,7 @@ pub async fn list_agent_skills(app: AppHandle) -> Result<Vec<Value>, AppError> {
         .map(|skill| (skill.id, skill.enabled))
         .collect();
     let mut result = Vec::new();
-    for (root, managed) in skill_roots(&app) {
+    for (root, managed) in skill_roots(app) {
         let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
             continue;
         };
@@ -595,12 +622,33 @@ async fn run_params(
     repository: &AgentRepository,
     request: RunParamsInput<'_>,
 ) -> Result<Value, AppError> {
-    let history: Vec<Value> = repository
+    let model_capabilities = crate::providers::june_model_runtime_capabilities(request.model).await;
+    let supports_vision = model_capabilities.supports_vision;
+    let mut history: Vec<Value> = repository
         .items(request.session_id)
         .await?
         .into_iter()
         .filter_map(history_item)
         .collect();
+    if !supports_vision {
+        for item in &mut history {
+            if let Some(object) = item.as_object_mut() {
+                object.remove("attachments");
+            }
+        }
+    }
+    let vision_attachments = request
+        .attachments
+        .iter()
+        .filter(|attachment| {
+            supports_vision
+                && attachment
+                    .mime_type
+                    .as_deref()
+                    .is_some_and(is_supported_vision_mime_type)
+        })
+        .map(runtime_attachment)
+        .collect::<Vec<_>>();
     let tools = tool_descriptors(app, repository, request.safety_mode, request.workspace).await?;
     let mcp_descriptors = tools
         .as_array()
@@ -618,7 +666,7 @@ async fn run_params(
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
-        json!({ "model": request.model, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": model_capabilities.context_tokens.unwrap_or(128000), "maxOutputTokens": 8192 }),
     )
 }
 
@@ -700,11 +748,50 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
         AgentItemPayload::UserMessage(message)
         | AgentItemPayload::AssistantMessage(message)
         | AgentItemPayload::SystemMessage(message) => Some(
-            json!({ "id": item.id, "kind": "message", "role": message.role, "text": message_with_attachment_context(&message.content, &message.attachments) }),
+            json!({ "id": item.id, "kind": "message", "role": message.role, "text": message_with_attachment_context(&message.content, &message.attachments), "attachments": message.attachments.iter().map(runtime_attachment).collect::<Vec<_>>() }),
         ),
         AgentItemPayload::ContextSummary(text) => Some(
             json!({ "id": item.id, "kind": "context_summary", "role": "system", "text": text.text }),
         ),
+        AgentItemPayload::ToolCall(tool) => {
+            let name = tool.tool_name?;
+            let call_id = tool.tool_call_id?;
+            let arguments =
+                serde_json::to_string(&tool.arguments.unwrap_or_else(|| json!({}))).ok()?;
+            Some(json!({
+                "id": item.id,
+                "kind": "tool_call",
+                "name": name,
+                "callId": call_id,
+                "groupId": call_id,
+                "payload": {
+                    "type": "function_call",
+                    "name": name,
+                    "callId": call_id,
+                    "status": "completed",
+                    "arguments": arguments,
+                }
+            }))
+        }
+        AgentItemPayload::ToolResult(tool) => {
+            let name = tool.tool_name?;
+            let call_id = tool.tool_call_id?;
+            let output = serde_json::to_string(&tool.result.unwrap_or(Value::Null)).ok()?;
+            Some(json!({
+                "id": item.id,
+                "kind": "tool_result",
+                "name": name,
+                "callId": call_id,
+                "groupId": call_id,
+                "payload": {
+                    "type": "function_call_result",
+                    "name": name,
+                    "callId": call_id,
+                    "status": "completed",
+                    "output": output,
+                }
+            }))
+        }
         _ => None,
     }
 }
@@ -880,6 +967,20 @@ fn message_with_attachment_context(
     )
 }
 
+fn runtime_attachment(attachment: &MessageAttachmentPayload) -> Value {
+    json!({
+        "path": attachment.path,
+        "mimeType": attachment.mime_type,
+    })
+}
+
+fn is_supported_vision_mime_type(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
 fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
@@ -976,10 +1077,62 @@ mod tests {
             created_at: "2026-07-24T12:00:00Z".into(),
         };
 
+        let history = history_item(item.clone()).expect("runtime history");
         let value = item_json(item).expect("public item");
         assert_eq!(value["attachments"][0]["sessionId"], "session-1");
         assert_eq!(value["attachments"][0]["runId"], "run-1");
         assert_eq!(value["attachments"][0]["itemId"], "message-1");
         assert_eq!(value["attachments"][0]["action"], "imported");
+        assert_eq!(
+            history["attachments"][0]["path"],
+            "/workspace/attachments/brief.md"
+        );
+        assert_eq!(history["attachments"][0]["mimeType"], "text/markdown");
+    }
+
+    #[test]
+    fn persisted_tool_groups_continue_as_agents_sdk_history() {
+        let tool_call = history_item(AgentItemDto {
+            id: "tool-call-1".into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 1,
+            payload: AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("list_files".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: Some(json!({"path":"."})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+            external_id: None,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        })
+        .expect("tool call history");
+        let tool_result = history_item(AgentItemDto {
+            id: "tool-result-1".into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 2,
+            payload: AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("list_files".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: None,
+                result: Some(json!({"files":["brief.md"]})),
+                status: Some("complete".into()),
+            }),
+            external_id: None,
+            created_at: "2026-07-24T12:00:01Z".into(),
+        })
+        .expect("tool result history");
+
+        assert_eq!(tool_call["groupId"], "call-1");
+        assert_eq!(tool_call["payload"]["type"], "function_call");
+        assert_eq!(tool_call["payload"]["arguments"], r#"{"path":"."}"#);
+        assert_eq!(tool_result["groupId"], "call-1");
+        assert_eq!(tool_result["payload"]["type"], "function_call_result");
+        assert_eq!(
+            tool_result["payload"]["output"],
+            r#"{"files":["brief.md"]}"#
+        );
     }
 }

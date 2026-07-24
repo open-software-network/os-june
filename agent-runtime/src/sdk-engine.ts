@@ -6,6 +6,7 @@ import {
   tool,
   type FunctionTool,
 } from "@openai/agents";
+import { readFile } from "node:fs/promises";
 import { RpcChatCompletionsModelProvider } from "./rpc-model-provider.js";
 import { REQUEST_CLARIFICATION_TOOL } from "./types.js";
 import type { JsonObject, JsonValue } from "./types.js";
@@ -52,7 +53,10 @@ export class OpenAIAgentsEngine implements AgentEngine {
 
   async start(input: EngineRunInput): Promise<EngineResult> {
     const agent = this.createAgent(input.params, input.sessionId, input.runId, input.emit);
-    const sdkInput = [...historyToSdkInput(input.params.history), userMessage(input.params.input)];
+    const sdkInput = [
+      ...(await historyToSdkInput(input.params.history)),
+      await userMessage(input.params.input, input.params.attachments ?? []),
+    ];
     const stream = (await this.createRunner(input.sessionId, input.runId).run(agent, sdkInput as never, {
       stream: true,
       signal: input.signal,
@@ -206,28 +210,65 @@ export class OpenAIAgentsEngine implements AgentEngine {
   }
 }
 
-function historyToSdkInput(history: RuntimeHistoryItem[]): unknown[] {
-  return history.flatMap((item) => {
+async function historyToSdkInput(history: RuntimeHistoryItem[]): Promise<unknown[]> {
+  const input: unknown[] = [];
+  for (const item of history) {
     if (item.kind === "context_summary" || item.role === "system") {
-      return [{ role: "system", content: item.text ?? "" }];
+      input.push({ role: "system", content: item.text ?? "" });
+      continue;
     }
     if (item.kind === "message" && item.role === "assistant") {
-      return [{
+      input.push({
         role: "assistant",
         status: "completed",
         content: [{ type: "output_text", text: item.text ?? "" }],
-      }];
+      });
+      continue;
     }
     if (item.kind === "message") {
-      return [{ role: "user", content: item.text ?? "" }];
+      input.push(await userMessage(item.text ?? "", item.attachments ?? []));
+      continue;
     }
-    if (item.payload !== undefined) return [item.payload];
-    return [];
-  });
+    if (item.payload !== undefined) input.push(item.payload);
+  }
+  return input;
 }
 
-function userMessage(text: string): unknown {
-  return { role: "user", content: text };
+async function userMessage(
+  text: string,
+  attachments: { path: string; mimeType?: string }[],
+): Promise<unknown> {
+  const images = (
+    await Promise.all(
+      attachments.map(async (attachment) => {
+        if (!isVisionMimeType(attachment.mimeType)) return undefined;
+        try {
+          const bytes = await readFile(attachment.path);
+          return {
+            type: "input_image",
+            image: `data:${attachment.mimeType};base64,${bytes.toString("base64")}`,
+            detail: "auto",
+          };
+        } catch {
+          return undefined;
+        }
+      }),
+    )
+  ).filter((image) => image !== undefined);
+  if (images.length === 0) return { role: "user", content: text };
+  return {
+    role: "user",
+    content: [{ type: "input_text", text }, ...images],
+  };
+}
+
+function isVisionMimeType(mimeType?: string): mimeType is string {
+  return (
+    mimeType === "image/png" ||
+    mimeType === "image/jpeg" ||
+    mimeType === "image/gif" ||
+    mimeType === "image/webp"
+  );
 }
 
 function sdkHistoryToRuntime(history: unknown): RuntimeHistoryItem[] {

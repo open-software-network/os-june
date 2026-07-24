@@ -423,31 +423,15 @@ pub async fn generation_model_context_tokens() -> Option<i64> {
         return None;
     }
     let model_id = generation_model();
-    if let Ok(cache) = context_tokens_cache().lock() {
-        if let Some((cached_id, tokens)) = cache.as_ref() {
-            if *cached_id == model_id {
-                return Some(*tokens);
-            }
-        }
-    }
-    let models = crate::june_api::list_models(ModelMode::Generation.api_type())
+    june_model_runtime_capabilities(&model_id)
         .await
-        .ok()?;
-    let tokens = models
-        .into_iter()
-        .find(|model| model.id == model_id)?
-        .context_tokens?;
-    if let Ok(mut cache) = context_tokens_cache().lock() {
-        *cache = Some((model_id, tokens));
-    }
-    Some(tokens)
+        .context_tokens
 }
 
-/// One entry only: the generation model changes rarely, and a stale entry
-/// for the previous model would otherwise outlive a settings switch.
-fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
-    static CACHE: OnceLock<Mutex<Option<(String, i64)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JuneModelRuntimeCapabilities {
+    pub context_tokens: Option<i64>,
+    pub supports_vision: bool,
 }
 
 /// Whether the configured generation model reports vision (image input) support
@@ -462,16 +446,46 @@ pub async fn generation_model_supports_vision() -> bool {
         return false;
     }
     let model_id = generation_model();
+    june_model_runtime_capabilities(&model_id)
+        .await
+        .supports_vision
+}
+
+/// Resolves the model-specific limits needed by an agent run. Agent sessions
+/// can select a model independently of the global generation setting, so this
+/// cache is keyed by the run model and shared across turns.
+pub async fn june_model_runtime_capabilities(model_id: &str) -> JuneModelRuntimeCapabilities {
+    if let Ok(cache) = model_runtime_capabilities_cache().lock() {
+        if let Some(capabilities) = cache.get(model_id) {
+            return *capabilities;
+        }
+    }
     let Ok(models) = crate::june_api::list_models(ModelMode::Generation.api_type()).await else {
-        return false;
+        return JuneModelRuntimeCapabilities::default();
     };
-    generation_model_supports_vision_from_catalog(
-        &model_id,
-        crate::os_accounts::local_dev_enabled(),
-        models
+    let capabilities = JuneModelRuntimeCapabilities {
+        context_tokens: models
             .iter()
-            .map(|model| (model.id.as_str(), model.capabilities.as_slice())),
-    )
+            .find(|model| model.id == model_id)
+            .and_then(|model| model.context_tokens),
+        supports_vision: generation_model_supports_vision_from_catalog(
+            model_id,
+            crate::os_accounts::local_dev_enabled(),
+            models
+                .iter()
+                .map(|model| (model.id.as_str(), model.capabilities.as_slice())),
+        ),
+    };
+    if let Ok(mut cache) = model_runtime_capabilities_cache().lock() {
+        cache.insert(model_id.to_string(), capabilities);
+    }
+    capabilities
+}
+
+fn model_runtime_capabilities_cache(
+) -> &'static Mutex<BTreeMap<String, JuneModelRuntimeCapabilities>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, JuneModelRuntimeCapabilities>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 fn generation_model_supports_vision_from_catalog<'a>(

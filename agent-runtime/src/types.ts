@@ -13,7 +13,13 @@ export type RuntimeHistoryItem = {
   callId?: string;
   groupId?: string;
   payload?: JsonValue;
+  attachments?: RuntimeAttachmentDescriptor[];
   estimatedTokens?: number;
+};
+
+export type RuntimeAttachmentDescriptor = {
+  path: string;
+  mimeType?: string;
 };
 
 export type RuntimeToolDescriptor = {
@@ -40,6 +46,7 @@ export type RunStartParams = {
   workspace: string;
   safetyMode: SafetyMode;
   input: string;
+  attachments?: RuntimeAttachmentDescriptor[];
   history: RuntimeHistoryItem[];
   tools: RuntimeToolDescriptor[];
   skills: RuntimeSkillDescriptor[];

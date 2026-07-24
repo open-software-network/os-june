@@ -406,13 +406,16 @@ export function AgentWorkspace({
       setDraft("");
       const attachedPaths = attachments;
       setAttachments([]);
+      const enabledSkillIds = (await agentRuntimeBindings.listSkills())
+        .filter((skill) => skill.enabled)
+        .map((skill) => skill.id);
       const run = await agentRuntimeBindings.startRun({
         sessionId: activeSession.id,
         prompt,
         model,
         safetyMode,
         workspacePath: activeSession.workspacePath,
-        enabledSkillIds: [],
+        enabledSkillIds,
         attachments: attachedPaths,
       });
       setProjection((current) => ({ ...current, run }));

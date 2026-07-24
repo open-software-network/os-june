@@ -71,6 +71,26 @@ describe("AgentWorkspace runtime wiring", () => {
         ]);
       }
       if (command === "list_agent_artifacts") return Promise.resolve([]);
+      if (command === "list_agent_skills") {
+        return Promise.resolve([
+          {
+            id: "notes",
+            name: "Notes",
+            description: "Work with June notes.",
+            source: "managed",
+            enabled: true,
+            editable: true,
+          },
+          {
+            id: "disabled",
+            name: "Disabled",
+            description: "Disabled skill.",
+            source: "managed",
+            enabled: false,
+            editable: true,
+          },
+        ]);
+      }
       if (command === "list_venice_models") {
         return Promise.resolve({
           mode: "generation",
@@ -122,7 +142,11 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByText("New request")).toBeInTheDocument();
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
-        request: expect.objectContaining({ model: "fast", safetyMode: "sandboxed" }),
+        request: expect.objectContaining({
+          model: "fast",
+          safetyMode: "sandboxed",
+          enabledSkillIds: ["notes"],
+        }),
       }),
     );
     expect(screen.queryByRole("button", { name: "Model: Fast" })).not.toBeInTheDocument();

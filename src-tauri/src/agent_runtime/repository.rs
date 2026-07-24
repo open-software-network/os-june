@@ -5,6 +5,7 @@ use super::domain::{
 use chrono::{SecondsFormat, Utc};
 use sqlx::{query::query, row::Row};
 use sqlx_sqlite::{SqlitePool, SqliteRow};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -144,6 +145,32 @@ impl AgentRepository {
         Ok(run_from_row(row))
     }
 
+    pub async fn set_run_enabled_skills(
+        &self,
+        run_id: &str,
+        skill_ids: &[String],
+    ) -> Result<(), sqlx::Error> {
+        let unique = skill_ids.iter().cloned().collect::<BTreeSet<_>>();
+        query("UPDATE agent_runs SET enabled_skills_json = ? WHERE id = ?")
+            .bind(
+                serde_json::to_string(&unique)
+                    .map_err(|error| sqlx::Error::Decode(Box::new(error)))?,
+            )
+            .bind(run_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn run_enabled_skills(&self, run_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let row = query("SELECT enabled_skills_json FROM agent_runs WHERE id = ?")
+            .bind(run_id)
+            .fetch_one(&self.pool)
+            .await?;
+        serde_json::from_str(&row.get::<String, _>("enabled_skills_json"))
+            .map_err(|error| sqlx::Error::Decode(Box::new(error)))
+    }
+
     /// Persists one runtime event. Duplicate or out-of-order sequence numbers
     /// are ignored so reconnect/replay cannot duplicate transcript items.
     pub async fn append_item(
@@ -231,6 +258,85 @@ impl AgentRepository {
         .fetch_all(&self.pool)
         .await?;
         rows.into_iter().map(item_from_row).collect()
+    }
+
+    /// Atomically replaces compacted transcript items with one visible context
+    /// summary at the earliest removed position. A replay is a no-op because
+    /// the source item ids have already been removed.
+    pub async fn replace_items_with_context_summary(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        summary_text: &str,
+        removed_item_ids: &[String],
+    ) -> Result<Option<AgentItemDto>, sqlx::Error> {
+        if removed_item_ids.is_empty() {
+            return Ok(None);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let mut earliest_sequence: Option<i64> = None;
+        for item_id in removed_item_ids {
+            let row = query("SELECT sequence FROM agent_items WHERE session_id = ? AND id = ?")
+                .bind(session_id)
+                .bind(item_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+            if let Some(row) = row {
+                let sequence: i64 = row.get("sequence");
+                earliest_sequence =
+                    Some(earliest_sequence.map_or(sequence, |current| current.min(sequence)));
+            }
+        }
+        let Some(sequence) = earliest_sequence else {
+            transaction.rollback().await?;
+            return Ok(None);
+        };
+        for item_id in removed_item_ids {
+            query("DELETE FROM agent_items WHERE session_id = ? AND id = ?")
+                .bind(session_id)
+                .bind(item_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        let id = Uuid::new_v4().to_string();
+        let created_at = now();
+        let payload = AgentItemPayload::ContextSummary(super::domain::TextPayload {
+            text: summary_text.to_string(),
+        });
+        query(
+            "INSERT INTO agent_items
+             (id, session_id, run_id, sequence, kind, payload_json, external_id, created_at)
+             VALUES (?, ?, ?, ?, 'context_summary', ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(session_id)
+        .bind(run_id)
+        .bind(sequence)
+        .bind(
+            payload
+                .value()
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
+                .to_string(),
+        )
+        .bind(format!("context-summary:{run_id}"))
+        .bind(&created_at)
+        .execute(&mut *transaction)
+        .await?;
+        query("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
+            .bind(&created_at)
+            .bind(session_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(Some(AgentItemDto {
+            id,
+            session_id: session_id.to_string(),
+            run_id: Some(run_id.to_string()),
+            sequence,
+            payload,
+            external_id: Some(format!("context-summary:{run_id}")),
+            created_at,
+        }))
     }
 
     pub async fn update_run_status(

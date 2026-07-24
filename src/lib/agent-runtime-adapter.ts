@@ -53,6 +53,13 @@ export function applyAgentRuntimeEvent(
         model: event.data.model,
         startedAt: event.data.startedAt,
       };
+      if (event.data.contextSummary) {
+        const removedIds = new Set(event.data.removedItemIds ?? []);
+        next.items = upsertItem(
+          next.items.filter((item) => !removedIds.has(item.id)),
+          event.data.contextSummary,
+        );
+      }
       break;
     case "message.delta":
       next.items = appendTextDelta(next.items, event, "message");

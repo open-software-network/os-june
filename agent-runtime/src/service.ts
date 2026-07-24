@@ -87,6 +87,9 @@ export class RuntimeService {
       compacted: compaction.compacted,
       history: compaction.history as unknown as JsonValue,
       removedItemIds: compaction.removedItemIds,
+      ...(compaction.summary === undefined
+        ? {}
+        : { contextSummary: compaction.summary as unknown as JsonValue }),
     }, sessionId, runId);
     const runParams: RunStartParams = { ...parsed, history: compaction.history };
     void this.settle(

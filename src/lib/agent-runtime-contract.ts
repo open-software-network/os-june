@@ -174,7 +174,16 @@ type RuntimeFrameBase = {
 
 export type AgentRuntimeEvent = RuntimeFrameBase &
   (
-    | { eventId: string; method: "run.started"; data: { startedAt: string; model: string } }
+    | {
+        eventId: string;
+        method: "run.started";
+        data: {
+          startedAt: string;
+          model: string;
+          removedItemIds?: string[];
+          contextSummary?: AgentContextSummaryItemDto;
+        };
+      }
     | {
         eventId: string;
         method: "message.delta";
