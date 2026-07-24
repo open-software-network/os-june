@@ -27,11 +27,14 @@ static LAST_AGENT_STATE: Mutex<Option<AgentMenuBarState>> = Mutex::new(None);
 /// directly: template rendering keeps only the alpha channel, so the icon's
 /// opaque squircle background becomes a solid blob instead of the glyph.
 const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-template.png");
-/// A microphone mark, shown in place of the logo while a dictation take runs so
-/// the menu bar carries an always-visible dictation indicator (not just the
-/// tooltip). Same template constraints as TRAY_ICON_TEMPLATE_PNG.
-const TRAY_ICON_DICTATING_TEMPLATE_PNG: &[u8] =
-    include_bytes!("../icons/tray-icon-dictating-template.png");
+/// Shown while a dictation take runs: June's "≈" wave plus a red recording dot.
+/// Unlike the logo these are full-colour (NON-template) images, because macOS
+/// flattens a template image to monochrome and would drop the red. That is why
+/// there are two — one per menu-bar appearance — selected by `menu_bar_is_dark`:
+/// a white wave for a dark bar, a black wave for a light one.
+const TRAY_ICON_DICTATING_DARK_PNG: &[u8] = include_bytes!("../icons/tray-icon-dictating-dark.png");
+const TRAY_ICON_DICTATING_LIGHT_PNG: &[u8] =
+    include_bytes!("../icons/tray-icon-dictating-light.png");
 const AGENT_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:agent-state";
 /// Carries the native dictation indicator (a bare `true`/`false`) from the
 /// dictation seam to the tray, so all tray mutation stays inside this module.
@@ -132,6 +135,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
 
     let tray = tray_builder.build(app)?;
     update_tray(
+        app.handle(),
         &tray,
         &initial_state,
         DICTATION_ACTIVE.load(Ordering::SeqCst),
@@ -151,7 +155,12 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         if let Ok(menu) = build_menu(&handle, &state) {
             let _ = tray.set_menu(Some(menu));
         }
-        update_tray(&tray, &state, DICTATION_ACTIVE.load(Ordering::SeqCst));
+        update_tray(
+            &handle,
+            &tray,
+            &state,
+            DICTATION_ACTIVE.load(Ordering::SeqCst),
+        );
     });
 
     // A second, independent listener: the dictation indicator must never
@@ -169,7 +178,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
             .ok()
             .and_then(|last| last.clone())
             .unwrap_or_default();
-        update_tray(&tray, &state, active);
+        update_tray(&handle, &tray, &state, active);
     });
 
     Ok(())
@@ -295,6 +304,7 @@ where
 }
 
 fn update_tray<R: Runtime>(
+    app: &AppHandle<R>,
     tray: &tauri::tray::TrayIcon<R>,
     state: &AgentMenuBarState,
     dictation_active: bool,
@@ -304,23 +314,43 @@ fn update_tray<R: Runtime>(
     // beside the icon in the menu bar.
     let _ = tray.set_title::<&str>(None);
     let _ = tray.set_tooltip(Some(tray_tooltip(state, dictation_active)));
-    apply_tray_icon(tray, dictation_active);
+    apply_tray_icon(app, tray, dictation_active);
 }
 
-/// Swaps the menu-bar icon to the microphone mark while dictating and back to
-/// the June logo otherwise. On a decode failure the current icon is left in
-/// place — a stale-but-present icon beats a missing one. `set_icon_as_template`
-/// is macOS-only and a no-op elsewhere.
-fn apply_tray_icon<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, dictation_active: bool) {
-    let bytes = if dictation_active {
-        TRAY_ICON_DICTATING_TEMPLATE_PNG
+/// While dictating, show the full-colour "≈ + red dot" mark (so the dot stays
+/// red) matched to the menu-bar appearance; otherwise the adaptive monochrome
+/// logo template. On a decode failure the current icon is left in place — a
+/// stale-but-present icon beats a missing one.
+fn apply_tray_icon<R: Runtime>(
+    app: &AppHandle<R>,
+    tray: &tauri::tray::TrayIcon<R>,
+    dictation_active: bool,
+) {
+    let (bytes, is_template) = if dictation_active {
+        let bytes = if menu_bar_is_dark(app) {
+            TRAY_ICON_DICTATING_DARK_PNG
+        } else {
+            TRAY_ICON_DICTATING_LIGHT_PNG
+        };
+        (bytes, false)
     } else {
-        TRAY_ICON_TEMPLATE_PNG
+        (TRAY_ICON_TEMPLATE_PNG, true)
     };
     if let Ok(icon) = tauri::image::Image::from_bytes(bytes) {
-        let _ = tray.set_icon(Some(icon));
-        let _ = tray.set_icon_as_template(true);
+        // Atomic on macOS (no icon+template flicker); falls back to set_icon
+        // on other platforms.
+        let _ = tray.set_icon_with_as_template(Some(icon), is_template);
     }
+}
+
+/// Whether the menu bar renders dark, so the dictating icon can pick the
+/// matching full-colour variant. Follows the main window's effective appearance
+/// (which tracks the system Light/Dark setting); defaults to dark if unknown.
+fn menu_bar_is_dark<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.theme().ok())
+        .map(|theme| theme == tauri::Theme::Dark)
+        .unwrap_or(true)
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -447,40 +477,50 @@ mod tests {
     }
 
     #[test]
-    fn tray_template_icons_are_real_template_images() {
+    fn logo_tray_icon_is_a_real_template_image() {
+        let icon = tauri::image::Image::from_bytes(TRAY_ICON_TEMPLATE_PNG)
+            .expect("embedded logo tray template PNG must decode");
+        assert_eq!(icon.width(), icon.height(), "menu bar icon must be square");
+        // macOS template rendering uses only the alpha channel: the mark must be
+        // opaque and the background transparent, or the menu bar shows a solid
+        // blob (the bug this asset exists to fix). Both must be present.
+        let alphas: Vec<u8> = icon.rgba().chunks(4).map(|px| px[3]).collect();
+        assert!(
+            alphas.contains(&0),
+            "template needs a transparent background"
+        );
+        assert!(alphas.contains(&255), "template needs an opaque mark");
+        // Corners stay transparent — an opaque squircle background (the app
+        // icon's shape) would fail here.
+        let side = icon.width() as usize;
+        for corner in [0, side - 1, side * (side - 1), side * side - 1] {
+            assert_eq!(alphas[corner], 0, "corner pixels must be transparent");
+        }
+    }
+
+    #[test]
+    fn dictating_tray_icons_carry_a_red_recording_dot() {
+        // These are deliberately full-colour (NON-template) so the dot renders
+        // red; a template would flatten it to monochrome. One variant per
+        // menu-bar appearance.
         for (name, bytes) in [
-            ("logo", TRAY_ICON_TEMPLATE_PNG),
-            ("dictating", TRAY_ICON_DICTATING_TEMPLATE_PNG),
+            ("dark", TRAY_ICON_DICTATING_DARK_PNG),
+            ("light", TRAY_ICON_DICTATING_LIGHT_PNG),
         ] {
             let icon = tauri::image::Image::from_bytes(bytes)
-                .unwrap_or_else(|_| panic!("embedded {name} tray template PNG must decode"));
-            assert_eq!(
-                icon.width(),
-                icon.height(),
-                "{name} menu bar icon must be square"
-            );
-            // macOS template rendering uses only the alpha channel: the mark
-            // must be opaque and the background transparent, or the menu bar
-            // shows a solid blob (the bug this asset exists to fix). Both must
-            // be present.
-            let alphas: Vec<u8> = icon.rgba().chunks(4).map(|px| px[3]).collect();
-            assert!(
-                alphas.contains(&0),
-                "{name} template needs a transparent background"
-            );
-            assert!(
-                alphas.contains(&255),
-                "{name} template needs an opaque mark"
-            );
-            // Corners stay transparent — an opaque squircle background (the app
-            // icon's shape) would fail here.
+                .unwrap_or_else(|_| panic!("embedded {name} dictating PNG must decode"));
+            assert_eq!(icon.width(), icon.height(), "{name} icon must be square");
+            let rgba = icon.rgba();
             let side = icon.width() as usize;
+            // Corners transparent — the wave and dot sit inside the canvas.
             for corner in [0, side - 1, side * (side - 1), side * side - 1] {
-                assert_eq!(
-                    alphas[corner], 0,
-                    "{name} corner pixels must be transparent"
-                );
+                assert_eq!(rgba[corner * 4 + 3], 0, "{name} corner must be transparent");
             }
+            // A clearly red, opaque pixel exists: the recording dot.
+            let has_red = rgba
+                .chunks(4)
+                .any(|px| px[3] > 200 && px[0] > 200 && px[1] < 100 && px[2] < 100);
+            assert!(has_red, "{name} icon must contain a red recording dot");
         }
     }
 }
