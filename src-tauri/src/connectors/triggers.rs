@@ -151,48 +151,81 @@ async fn poll_email_account(
             repos
                 .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
                 .await?;
+            for job_id in job_ids {
+                repos
+                    .set_trigger_cursor(account_id, &email_cursor_kind(job_id), &history_id)
+                    .await?;
+            }
         }
         return Ok(());
     };
 
-    let delta = match call_gmail_history(app, account_id, &token, &cursor).await {
-        Ok(delta) => delta,
-        Err(error) if error.code == "connector_history_cursor_expired" => {
-            // The stored history id fell out of Gmail's retention window (e.g.
-            // the machine slept for a long stretch). Reseed the baseline from
-            // the current profile so the next poll starts from a live cursor
-            // instead of retrying the dead one forever.
-            let profile = call_gmail_profile(app, account_id, &token).await?;
-            if let Some(history_id) = profile.history_id {
+    // Each routine owns an acknowledgement cursor. Jobs at the same cursor
+    // share one Gmail request, while a failed job can retry independently
+    // without replaying the delta into subscribers that already succeeded.
+    let mut jobs_by_cursor: HashMap<String, Vec<&String>> = HashMap::new();
+    for job_id in job_ids {
+        let kind = email_cursor_kind(job_id);
+        let job_cursor = match repos.trigger_cursor(account_id, &kind).await? {
+            Some(cursor) => cursor,
+            None => {
+                repos.set_trigger_cursor(account_id, &kind, &cursor).await?;
+                cursor.clone()
+            }
+        };
+        jobs_by_cursor.entry(job_cursor).or_default().push(job_id);
+    }
+
+    let mut latest_account_cursor = cursor;
+    for (job_cursor, cursor_jobs) in jobs_by_cursor {
+        let delta = match call_gmail_history(app, account_id, &token, &job_cursor).await {
+            Ok(delta) => delta,
+            Err(error) if error.code == "connector_history_cursor_expired" => {
+                // Reseed only the affected subscribers. Their cursor may lag
+                // because an earlier dispatch failed while peers advanced.
+                let profile = call_gmail_profile(app, account_id, &token).await?;
+                if let Some(history_id) = profile.history_id {
+                    latest_account_cursor =
+                        newer_history_id(latest_account_cursor, history_id.clone());
+                    for job_id in cursor_jobs {
+                        repos
+                            .set_trigger_cursor(account_id, &email_cursor_kind(job_id), &history_id)
+                            .await?;
+                    }
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(history_id) = delta.history_id else {
+            continue;
+        };
+        latest_account_cursor = newer_history_id(latest_account_cursor, history_id.clone());
+        for job_id in cursor_jobs {
+            let acknowledged =
+                delta.added.is_empty() || email_outcome_acknowledged(fire(app, job_id).await);
+            if acknowledged {
                 repos
-                    .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
+                    .set_trigger_cursor(account_id, &email_cursor_kind(job_id), &history_id)
                     .await?;
             }
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    };
-    // Only INBOX messages count; history_list already filters to INBOX adds.
-    let mut all_acknowledged = true;
-    if !delta.added.is_empty() {
-        for job_id in job_ids {
-            if !email_outcome_acknowledged(fire(app, job_id).await) {
-                all_acknowledged = false;
-            }
         }
     }
-    // Paused, missing, and already-active subscriptions acknowledge this
-    // mailbox delta without queuing. Retaining the shared cursor for one such
-    // subscriber would replay the same mail into every successful routine.
-    // Only an actual dispatch error leaves the cursor pending for retry.
-    if all_acknowledged {
-        if let Some(history_id) = delta.history_id {
-            repos
-                .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
-                .await?;
-        }
-    }
+    repos
+        .set_trigger_cursor(account_id, EMAIL_KIND, &latest_account_cursor)
+        .await?;
     Ok(())
+}
+
+fn email_cursor_kind(job_id: &str) -> String {
+    format!("{EMAIL_KIND}:{job_id}")
+}
+
+fn newer_history_id(current: String, candidate: String) -> String {
+    match (current.parse::<u128>(), candidate.parse::<u128>()) {
+        (Ok(current_id), Ok(candidate_id)) if current_id > candidate_id => current,
+        _ => candidate,
+    }
 }
 
 async fn call_gmail_profile(
@@ -678,6 +711,14 @@ mod tests {
         assert!(email_outcome_acknowledged(FireOutcome::Queued));
         assert!(email_outcome_acknowledged(FireOutcome::NotQueued));
         assert!(!email_outcome_acknowledged(FireOutcome::Failed));
+    }
+
+    #[test]
+    fn email_subscribers_have_independent_monotonic_cursors() {
+        assert_eq!(email_cursor_kind("routine-a"), "email_received:routine-a");
+        assert_eq!(email_cursor_kind("routine-b"), "email_received:routine-b");
+        assert_eq!(newer_history_id("105".into(), "103".into()), "105");
+        assert_eq!(newer_history_id("105".into(), "108".into()), "108");
     }
 
     #[test]

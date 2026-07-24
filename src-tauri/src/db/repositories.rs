@@ -937,7 +937,8 @@ impl Repositories {
             if reset_email_cursor {
                 query(
                     "DELETE FROM trigger_cursors
-                     WHERE account_id = ? AND kind = 'email_received'",
+                     WHERE account_id = ?
+                       AND (kind = 'email_received' OR kind LIKE 'email_received:%')",
                 )
                 .bind(account_id)
                 .execute(&mut *transaction)
@@ -8389,6 +8390,10 @@ mod tests {
             .set_trigger_cursor("user@example.com", "email_received", "50")
             .await
             .expect("stale cursor");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "50")
+            .await
+            .expect("stale per-routine cursor");
 
         repos
             .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
@@ -8398,6 +8403,11 @@ mod tests {
             .trigger_cursor("user@example.com", "email_received")
             .await
             .expect("cursor reset")
+            .is_none());
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .expect("per-routine cursor reset")
             .is_none());
 
         let mut fire_count = simulate_email_poll(&repos, 100, &[]).await;

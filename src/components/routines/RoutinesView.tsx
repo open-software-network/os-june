@@ -39,6 +39,7 @@ import {
   routineCreationPrompt,
   routineUnrestricted,
   triggerRoutine,
+  UNRESTRICTED_ROUTINE_TOOLSETS,
   updateRoutine,
   type RoutineJob,
   type RoutineUpdates,
@@ -311,8 +312,8 @@ export function RoutinesView({
       const eventTrigger = input.trigger.source !== "schedule" ? input.trigger : null;
       // A routine is connector-aware when anything about it touches Google:
       // a non-default trust mode, an event trigger, or a connector template's
-      // scope requirements. Plain routines keep the legacy create path
-      // untouched (no toolset override, no trust record).
+      // scope requirements. Plain routines do not need a trust record, but
+      // they still persist the native base catalog as an explicit grant.
       const connectorAware =
         input.trustMode !== "read_only" ||
         eventTrigger !== null ||
@@ -339,6 +340,9 @@ export function RoutinesView({
           schedule: input.schedule,
           name: input.name,
           unrestricted: input.unrestricted,
+          enabledToolsets: input.unrestricted
+            ? UNRESTRICTED_ROUTINE_TOOLSETS
+            : (policy?.routine.sandboxedBaseToolsets ?? []),
         });
       }
       if (connectorAware) {
