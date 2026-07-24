@@ -448,7 +448,7 @@ export function AgentGeneratedImage({
   }
   const label = part.name?.trim() || "Generated image";
   // "Open" enlarges filesystem-backed images in the artifact viewer. MCP image
-  // blocks have only inline bytes, so they render as a plain frame; the retired runtime
+  // blocks have only inline bytes, so they render as a plain frame. Legacy
   // MEDIA references have a path and lazily fetch their preview data url above.
   const image = imageSrc ? (
     <img src={imageSrc} alt={part.prompt} draggable={false} />

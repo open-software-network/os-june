@@ -19,7 +19,7 @@ export type UseAppNavigationDependencies = {
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
   restoreTargetRef: React.MutableRefObject<TabNav | null>;
   selectedNoteId: string | undefined;

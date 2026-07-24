@@ -45,6 +45,14 @@ pub enum LegacyImportError {
     SecureStorage,
 }
 
+#[derive(Debug, Error)]
+enum LegacyImportCommitError {
+    #[error(transparent)]
+    Destination(#[from] sqlx::Error),
+    #[error("legacy MCP credentials could not be moved to secure storage")]
+    SecureStorage,
+}
+
 /// Stops only gateway processes that are recorded inside June's retired Hermes
 /// home and whose live command line still identifies the Hermes gateway. Stale
 /// state files and unrelated Hermes installations are ignored.
@@ -621,18 +629,8 @@ pub async fn import_legacy_agent_state(
     let secret_store = KeychainMcpSecretStore;
     let mut staged_secrets = Vec::new();
     let mut staged_artifacts = Vec::new();
-    for (secret_ref, bundle) in &legacy_mcp.secrets {
-        let previous = secret_store
-            .get(secret_ref)
-            .map_err(|_| LegacyImportError::SecureStorage)?;
-        if secret_store.put(secret_ref, bundle).is_err() {
-            restore_staged_secrets(&secret_store, &staged_secrets);
-            return Err(LegacyImportError::SecureStorage);
-        }
-        staged_secrets.push((secret_ref.clone(), previous));
-    }
 
-    let result: Result<(), sqlx::Error> = async {
+    let result: Result<(), LegacyImportCommitError> = async {
         let sessions = load_sessions(&source).await?;
         let has_active = table_has_column(&source, "messages", "active").await?;
         let mut transaction = destination.begin().await?;
@@ -860,6 +858,21 @@ pub async fn import_legacy_agent_state(
             .execute(&mut *transaction)
             .await?;
             if inserted.rows_affected() == 1 {
+                if let Some(secret_ref) = definition.secret_ref.as_deref() {
+                    if let Some((_, bundle)) = legacy_mcp
+                        .secrets
+                        .iter()
+                        .find(|(candidate, _)| candidate == secret_ref)
+                    {
+                        let previous = secret_store
+                            .get(secret_ref)
+                            .map_err(|_| LegacyImportCommitError::SecureStorage)?;
+                        staged_secrets.push((secret_ref.to_string(), previous));
+                        secret_store
+                            .put(secret_ref, bundle)
+                            .map_err(|_| LegacyImportCommitError::SecureStorage)?;
+                    }
+                }
                 imported.mcp_servers += 1;
             } else {
                 skipped_count += 1;
@@ -893,7 +906,8 @@ pub async fn import_legacy_agent_state(
         .bind(&completed_at)
         .execute(&mut *transaction)
         .await?;
-        transaction.commit().await
+        transaction.commit().await?;
+        Ok(())
     }
     .await;
 
@@ -911,7 +925,10 @@ pub async fn import_legacy_agent_state(
             &started_at,
         )
         .await?;
-        return Err(LegacyImportError::Destination(error));
+        return Err(match error {
+            LegacyImportCommitError::Destination(error) => LegacyImportError::Destination(error),
+            LegacyImportCommitError::SecureStorage => LegacyImportError::SecureStorage,
+        });
     }
 
     Ok(AgentMigrationManifestDto {

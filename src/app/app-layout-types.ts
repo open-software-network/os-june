@@ -98,7 +98,7 @@ export type RenderAppLayoutDependencies = {
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
   pillIsDemo: boolean;
   pillStatus: RecordingStatusDto | null;

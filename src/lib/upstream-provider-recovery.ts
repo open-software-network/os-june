@@ -15,8 +15,8 @@ export function displayedUpstreamProviderRecoveryText(content: string) {
   return content.trim() === UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT ? "Try again" : content;
 }
 
-/** the retired runtime can truncate a session preview mid-prompt, so the preview is
- * replaced when it is a prefix of the full recovery prompt. That covers every
+/** A session preview can truncate mid-prompt, so the preview is replaced when
+ * it is a prefix of the full recovery prompt. That covers every
  * truncation point while a user message that merely quotes the opener and
  * then diverges stays visible as the user's own text. */
 export function displayedUpstreamProviderRecoveryPreview(preview: string | undefined) {

@@ -1,28 +1,31 @@
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { Tab } from "./tabs/tabs";
-import type { SessionProfileMap } from "../lib/session-profile-filter";
+import type { SessionPartitionMap } from "../lib/session-partition-filter";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { NotesAction } from "./state/app-state";
 import type * as React from "react";
 
-export type UseActiveProfileDataDependencies = {
+export type UseDataPartitionRefreshDependencies = {
   currentDataPartitionName: string;
   activeViewRef: React.MutableRefObject<SidebarView>;
   appBlocked: boolean;
   bootstrapped: boolean;
-  commitAgentSessions: (sessions: readonly AgentSessionDto[], profiles?: SessionProfileMap) => void;
-  crossProfileRecordingNoteIdRef: React.MutableRefObject<string | undefined>;
+  commitAgentSessions: (
+    sessions: readonly AgentSessionDto[],
+    partitions?: SessionPartitionMap,
+  ) => void;
+  crossPartitionRecordingNoteIdRef: React.MutableRefObject<string | undefined>;
   dispatch: React.Dispatch<NotesAction>;
-  lastDataProfileRef: React.MutableRefObject<string | undefined>;
-  lastProfileDataRefreshRevisionRef: React.MutableRefObject<number>;
+  lastDataPartitionRef: React.MutableRefObject<string | undefined>;
+  lastDataPartitionRefreshRevisionRef: React.MutableRefObject<number>;
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
-  profileDataRefreshRevision: number;
+  dataPartitionRefreshRevision: number;
   recordingNoteIdRef: React.MutableRefObject<string | undefined>;
-  refreshSessionProfiles: () => Promise<SessionProfileMap>;
+  refreshSessionPartitions: () => Promise<SessionPartitionMap>;
   setActiveAgentSession: (session: AgentSessionDto | undefined) => void;
   setActiveView: React.Dispatch<React.SetStateAction<SidebarView>>;
   setAgentOrigin: React.Dispatch<

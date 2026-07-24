@@ -50,7 +50,7 @@ export type AgentChatSudoPart = {
 };
 
 export const UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY =
-  "The model provider could not complete this request.";
+  "The upstream provider could not complete this request.";
 export type AgentChatSecretPart = {
   type: "secret";
   id: string;

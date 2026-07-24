@@ -1,9 +1,8 @@
 /**
  * Per-session record of settled title edits. Keyed by stored session id (not
- * runtime session id) because June's session list and persistence use the
- * durable id, while live the retired runtime processes may resume under a different
- * runtime id. Absence means auto-titling is allowed, so sessions from before
- * this record existed fall back to the safe default.
+ * runtime request id) because June's session list and persistence use the
+ * durable id across every run. Absence means auto-titling is allowed, so
+ * sessions from before this record existed fall back to the safe default.
  *
  * localStorage (not the backend) because the runtime's session store is
  * machine-local too, and the map must be readable synchronously before the

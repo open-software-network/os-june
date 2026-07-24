@@ -26,9 +26,9 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
     // the lookup lands; a session that no longer exists stays on the agent
     // view rather than dropping the click on an unrelated one. The sequence
     // counter keeps a slow lookup for an older click from overriding a newer
-    // one. A cold start can reach this before the the retired runtime bridge is up, so a
+    // one. A cold start can reach this before local session storage is ready, so a
     // failed listing (as opposed to a successful listing that lacks the id)
-    // retries while the bridge boots instead of eating the click.
+    // retries during bootstrap instead of eating the click.
     const sessionLookupAttempts = 20;
     const sessionLookupRetryMs = 1_000;
     let openSequence = 0;

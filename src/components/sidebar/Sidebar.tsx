@@ -72,16 +72,16 @@ import type {
 import {
   deleteAgentSession,
   listAgentSessions,
-  listSessionProfiles,
+  listSessionPartitions,
   osAccountsReferralSummary,
 } from "../../lib/tauri";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import { useCurrentDataPartitionName } from "../../lib/data-partition";
 import {
-  sessionMatchesProfile,
-  sessionProfileMap,
-  type SessionProfileMap,
-} from "../../lib/session-profile-filter";
+  sessionMatchesDataPartition,
+  sessionPartitionMap,
+  type SessionPartitionMap,
+} from "../../lib/session-partition-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
 import { SETTINGS_TABS, type SettingsTab } from "../settings/settings-config";
@@ -103,12 +103,12 @@ import { buildSidebarSessionLists } from "./sidebar-session-lists";
 
 const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
 
-/** Full session→profile map from the local store; null when unavailable
+/** Full session-to-data-partition map from the local store. Null when unavailable
  * (outside the Tauri shell, or a transient read failure) so callers keep the
  * last-known map instead of clearing it. */
-async function fetchSessionProfileMap(): Promise<SessionProfileMap | null> {
+async function fetchSessionPartitionMap(): Promise<SessionPartitionMap | null> {
   try {
-    return sessionProfileMap(await listSessionProfiles());
+    return sessionPartitionMap(await listSessionPartitions());
   } catch {
     return null;
   }
@@ -352,23 +352,23 @@ export function Sidebar({
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
   const [allAgentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
-  // Chats belong to the profile they were created under (ADR 0031): the
-  // sidebar filters its list through the session→profile map and re-filters
+  // Chats belong to the data partition they were created under (ADR 0031).
+  // The sidebar filters its list through the session-to-partition map and re-filters
   // live when the data partition switches, without waiting for a re-fetch.
-  const [sessionProfiles, setSessionProfiles] = useState<SessionProfileMap | null>(null);
+  const [sessionPartitions, setSessionPartitions] = useState<SessionPartitionMap | null>(null);
   const currentDataPartitionName = useCurrentDataPartitionName();
-  const profileAgentSessions = useMemo(
+  const dataPartitionAgentSessions = useMemo(
     () =>
-      sessionProfiles === null
+      sessionPartitions === null
         ? []
         : allAgentSessions.filter((session) =>
-            sessionMatchesProfile(session, sessionProfiles, currentDataPartitionName),
+            sessionMatchesDataPartition(session, sessionPartitions, currentDataPartitionName),
           ),
-    [allAgentSessions, sessionProfiles, currentDataPartitionName],
+    [allAgentSessions, sessionPartitions, currentDataPartitionName],
   );
   // __emptyStates() preview (dev console): the agent section renders its
   // "No sessions yet" line as a fresh install would, real data untouched.
-  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : profileAgentSessions;
+  const agentSessions = useForcedEmptyStates() ? NO_AGENT_SESSIONS : dataPartitionAgentSessions;
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
@@ -871,10 +871,10 @@ export function Sidebar({
 
     function loadAgentSessions(attempt: number) {
       Promise.resolve()
-        .then(() => Promise.all([listAgentSessions(), fetchSessionProfileMap()]))
-        .then(([sessions, profiles]) => {
+        .then(() => Promise.all([listAgentSessions(), fetchSessionPartitionMap()]))
+        .then(([sessions, partitions]) => {
           if (!cancelled) {
-            if (profiles) setSessionProfiles(profiles);
+            if (partitions) setSessionPartitions(partitions);
             setAgentSessions((current) => (current.length > 0 ? current : sessions));
             if (sessions.length > 0) {
               emitAgentSessionsChanged({
@@ -910,11 +910,11 @@ export function Sidebar({
     function handleSessionsChanged(event: Event) {
       const detail = (event as CustomEvent<AgentSessionsChangedDetail>).detail;
       if (!detail) return;
-      // Refresh the session→profile map before applying the list so a session
-      // just stamped to a named profile doesn't flash out of the filtered
+      // Refresh the session-to-partition map before applying the list so a session
+      // just stamped to a named partition does not flash out of the filtered
       // list; a failed refresh keeps the last-known map.
-      void fetchSessionProfileMap().then((profiles) => {
-        if (profiles) setSessionProfiles(profiles);
+      void fetchSessionPartitionMap().then((partitions) => {
+        if (partitions) setSessionPartitions(partitions);
         setAgentSessions(detail.sessions.slice(0, AGENT_SIDEBAR_SESSION_FETCH_LIMIT));
       });
       setSelectedAgentSessionId(detail.selectedSessionId);

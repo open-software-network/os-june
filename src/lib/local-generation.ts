@@ -17,9 +17,9 @@ export function localGenerationOptionId(modelId: string) {
 
 /** Inverse of {@link localGenerationOptionId}: the raw local model id encoded
  * in a synthetic option id, or null when the id is not a synthetic local
- * option (or is malformed). The tagged id stays intact inside the retired runtime to retain
- * provider provenance; June's on-device provider proxy uses this inverse only when it
- * needs to display or forward the raw local id. */
+ * option (or is malformed). The tagged id stays intact in session settings to
+ * retain upstream provenance; June's on-device integration uses this inverse
+ * only when it needs to display or forward the raw local id. */
 export function rawLocalGenerationModelId(optionId: string): string | null {
   if (!optionId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) return null;
   try {

@@ -516,6 +516,7 @@ async fn persist_and_emit_event(
                     None,
                 )
                 .await?;
+            crate::routines::mark_agent_run_waiting(&repository.pool, &frame.run_id).await?;
             let kind = params
                 .get("kind")
                 .and_then(Value::as_str)
@@ -540,6 +541,7 @@ async fn persist_and_emit_event(
             repository
                 .update_run_status(&frame.run_id, "running", None, None, None)
                 .await?;
+            crate::routines::mark_agent_run_resumed(&repository.pool, &frame.run_id).await?;
             None
         }
         "run.completed" => {

@@ -451,7 +451,7 @@ fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
 }
 
 /// Whether the configured generation model reports vision (image input) support
-/// in the backend catalog. The agent runtime uses this to decide whether an
+/// in the June API catalog. The agent runtime uses this to decide whether an
 /// image can be attached directly to model context. Returns `false`
 /// when the catalog is unreachable (offline, signed out) or the model reports no
 /// vision capability. In local dev, a persisted Auto selection can use the same
@@ -1556,13 +1556,13 @@ fn validate_profile_override_name(profile: &str) -> Result<&str, AppError> {
     if profile == "default" {
         return Err(AppError::new(
             "profile_model_overrides_default_profile",
-            "The default profile uses global model settings.",
+            "The default data partition uses global model settings.",
         ));
     }
     if !is_safe_profile_name(profile) {
         return Err(AppError::new(
             "profile_model_overrides_invalid_profile",
-            "Invalid agent profile.",
+            "Invalid data partition.",
         ));
     }
     Ok(profile)

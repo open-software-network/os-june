@@ -28,6 +28,7 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
     for statement in [
         "DROP TABLE routine_runs",
         "DROP TABLE routines",
+        "DROP TABLE agent_run_mcp_policies",
         "DROP TABLE agent_mcp_servers",
         "DROP TABLE session_folders",
         "DROP TABLE agent_artifacts",
@@ -36,7 +37,7 @@ async fn runtime_schema_replaces_legacy_tables_and_keeps_folder_assignments() {
         "DROP TABLE agent_skill_settings",
         "DROP TABLE agent_migration_manifests",
         "DROP TABLE agent_sessions",
-        "DELETE FROM schema_migrations WHERE version IN (32, 33, 34)",
+        "DELETE FROM schema_migrations WHERE version BETWEEN 32 AND 37",
     ] {
         query(statement)
             .execute(&pool)
@@ -343,6 +344,48 @@ async fn legacy_import_recovers_routines_and_mcp_when_state_database_is_missing(
         .get("timezone");
     assert_eq!(timezone, "America/New_York");
     assert!(!source_path.exists());
+}
+
+#[tokio::test]
+async fn legacy_import_does_not_touch_secrets_for_a_duplicate_mcp_server() {
+    let destination = memory_database().await;
+    query(
+        "INSERT INTO agent_mcp_servers
+         (id, name, enabled, transport, command, args_json, secret_ref,
+          metadata_json, tool_visibility_json, safety_json, created_at, updated_at)
+         VALUES ('existing-id', 'docs', 1, 'stdio', 'existing-command', '[]',
+                 'existing-secret', '{}', '{}', '{}', '2026-01-01', '2026-01-01')",
+    )
+    .execute(&destination)
+    .await
+    .expect("existing MCP server");
+    let directory = tempfile::tempdir().expect("temporary migration directory");
+    std::fs::write(
+        directory.path().join("config.yaml"),
+        "mcp_servers:\n  docs:\n    command: replacement-command\n    env:\n      TOKEN: must-not-be-staged\n",
+    )
+    .expect("legacy MCP config");
+    let options = LegacyImportOptions {
+        hermes_state_db: directory.path().join("missing-state.db"),
+        hermes_home: Some(directory.path().to_path_buf()),
+        artifact_root: None,
+    };
+
+    let manifest = import_legacy_agent_state(&destination, &options)
+        .await
+        .expect("duplicate definition is skipped without secure storage access");
+
+    assert_eq!(manifest.imported_counts.mcp_servers, 0);
+    assert_eq!(manifest.skipped_count, 1);
+    let existing = query("SELECT command, secret_ref FROM agent_mcp_servers WHERE name = 'docs'")
+        .fetch_one(&destination)
+        .await
+        .expect("existing MCP server remains");
+    assert_eq!(existing.get::<String, _>("command"), "existing-command");
+    assert_eq!(
+        existing.get::<Option<String>, _>("secret_ref").as_deref(),
+        Some("existing-secret")
+    );
 }
 
 #[tokio::test]

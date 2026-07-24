@@ -1,5 +1,5 @@
 import type { SidebarView } from "../components/sidebar/Sidebar";
-import type { SessionProfileMap } from "../lib/session-profile-filter";
+import type { SessionPartitionMap } from "../lib/session-partition-filter";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type * as React from "react";
 
@@ -9,14 +9,14 @@ export type UseAgentMenuEventsDependencies = {
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
-  profileScopedAgentSessions: (
+  dataPartitionScopedAgentSessions: (
     sessions: readonly AgentSessionDto[],
-    profiles?: SessionProfileMap,
+    partitions?: SessionPartitionMap,
   ) => AgentSessionDto[];
   publishAgentMenuBarState: () => void;
-  refreshSessionProfiles: () => Promise<SessionProfileMap>;
+  refreshSessionPartitions: () => Promise<SessionPartitionMap>;
   setActiveAgentSession: (session: AgentSessionDto | undefined) => void;
   setActiveAgentSessionId: React.Dispatch<React.SetStateAction<string | undefined>>;
   setActiveAgentSessionSeed: React.Dispatch<React.SetStateAction<AgentSessionDto | undefined>>;

@@ -755,7 +755,7 @@ export async function assignSessionToFolder(sessionId: string, folderId: string)
   });
 }
 
-export async function listSessionProfiles() {
+export async function listSessionPartitions() {
   return invoke<SessionProfileDto[]>("list_session_profiles");
 }
 

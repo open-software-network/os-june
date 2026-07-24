@@ -104,7 +104,7 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   listAgentTasks: vi.fn(),
   listAgentSessions: vi.fn(),
-  listSessionProfiles: vi.fn(),
+  listSessionPartitions: vi.fn(),
   listVeniceModels: vi.fn(),
   localVideoFileSrc: vi.fn((path: string) => `asset://${path}`),
   p3aSettings: vi.fn(),
@@ -196,7 +196,7 @@ vi.mock("../lib/tauri", () => ({
   listSessionFolders: vi.fn(async () => []),
   listCompletedSessions: vi.fn(async () => []),
   setSessionCompleted: vi.fn(async () => undefined),
-  listSessionProfiles: mocks.listSessionProfiles,
+  listSessionPartitions: mocks.listSessionPartitions,
   assignSessionToFolder: mocks.assignSessionToFolder,
   assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
@@ -419,7 +419,7 @@ describe("App shortcuts", () => {
     mocks.agentOpenReady.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listAgentSessions.mockResolvedValue([]);
-    mocks.listSessionProfiles.mockResolvedValue([]);
+    mocks.listSessionPartitions.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
@@ -1389,18 +1389,20 @@ describe("App shortcuts", () => {
     );
   });
 
-  it("exposes no sessions before the profile mapping has loaded successfully", async () => {
+  it("exposes no sessions before the data partition mapping has loaded successfully", async () => {
     const user = userEvent.setup();
     const privateSession = {
-      id: "profile-a-session",
-      title: "Named profile secret",
-      preview: "Private profile conversation",
+      id: "partition-a-session",
+      title: "Named data partition secret",
+      preview: "Private data partition conversation",
       last_active: now,
     };
-    mocks.listSessionProfiles.mockRejectedValue(new Error("session profile map unavailable"));
+    mocks.listSessionPartitions.mockRejectedValue(
+      new Error("session data partition map unavailable"),
+    );
 
     render(<App />);
-    await waitFor(() => expect(mocks.listSessionProfiles).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listSessionPartitions).toHaveBeenCalled());
 
     await act(async () => {
       window.dispatchEvent(
@@ -1420,32 +1422,32 @@ describe("App shortcuts", () => {
     expect(screen.queryByText(privateSession.title)).toBeNull();
   });
 
-  it("invalidates note tabs from the previous profile", async () => {
+  it("invalidates note tabs from the previous data partition", async () => {
     const user = userEvent.setup();
-    const profileANote = note({ id: "note-a", title: "Profile A private note" });
-    const profileBNote = note({ id: "note-b", title: "Profile B note" });
-    mocks.createNote.mockResolvedValue(profileANote);
+    const partitionANote = note({ id: "note-a", title: "Data partition A private note" });
+    const partitionBNote = note({ id: "note-b", title: "Data partition B note" });
+    mocks.createNote.mockResolvedValue(partitionANote);
 
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Profile A private note" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Data partition A private note" })).toHaveAttribute(
         "data-active",
         "true",
       ),
     );
     await user.click(screen.getByRole("button", { name: "New tab" }));
 
-    mocks.listNotes.mockResolvedValue({ items: [profileBNote] });
+    mocks.listNotes.mockResolvedValue({ items: [partitionBNote] });
     mocks.listFolders.mockResolvedValue([]);
     mocks.getNote.mockImplementation(async (noteId: string) =>
-      noteId === profileBNote.id ? profileBNote : profileANote,
+      noteId === partitionBNote.id ? partitionBNote : partitionANote,
     );
-    act(() => setCurrentDataPartitionName("profile-b"));
+    act(() => setCurrentDataPartitionName("partition-b"));
 
-    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(profileBNote.id));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(partitionBNote.id));
     mocks.getNote.mockClear();
 
     fireEvent.keyDown(window, { key: "1", metaKey: true });
@@ -1453,14 +1455,14 @@ describe("App shortcuts", () => {
     const invalidatedTab = await screen.findByRole("tab", { name: "Notes" });
     await waitFor(() => expect(invalidatedTab).toHaveAttribute("data-active", "true"));
     expect(mocks.getNote).not.toHaveBeenCalled();
-    expect(screen.queryByText("Profile A private note")).toBeNull();
+    expect(screen.queryByText("Data partition A private note")).toBeNull();
   });
 
   it("abandons pending project intent when the data partition switches", async () => {
     const user = userEvent.setup();
     const folder = {
       id: "folder-a",
-      name: "Profile A project",
+      name: "Data partition A project",
       memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
@@ -1485,15 +1487,15 @@ describe("App shortcuts", () => {
 
     mocks.listNotes.mockResolvedValue({ items: [] });
     mocks.listFolders.mockResolvedValue([]);
-    act(() => setCurrentDataPartitionName("profile-b"));
+    act(() => setCurrentDataPartitionName("partition-b"));
     await waitFor(() => expect(mocks.listFolders).toHaveBeenCalled());
 
     act(() => {
       window.dispatchEvent(
         new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
           detail: {
-            sessions: [{ id: "profile-b-session", title: "Profile B session" }],
-            selectedSessionId: "profile-b-session",
+            sessions: [{ id: "partition-b-session", title: "Data partition B session" }],
+            selectedSessionId: "partition-b-session",
             workingSessionIds: [],
           },
         }),

@@ -148,7 +148,7 @@ vi.mock("../lib/tauri", () => ({
   listSessionFolders: vi.fn(async () => []),
   listCompletedSessions: vi.fn(async () => []),
   setSessionCompleted: vi.fn(async () => undefined),
-  listSessionProfiles: vi.fn(async () => []),
+  listSessionPartitions: vi.fn(async () => []),
   assignSessionToFolder: vi.fn(async () => undefined),
   assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
@@ -488,7 +488,7 @@ describe("notes recording reliability", () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    const workNote = note({ id: "note-work", title: "Work profile note" });
+    const workNote = note({ id: "note-work", title: "Work data partition note" });
     mocks.listNotes.mockResolvedValue({ items: [workNote] });
     mocks.getNote.mockResolvedValue(workNote);
     const listCallsBefore = mocks.listNotes.mock.calls.length;
@@ -499,7 +499,7 @@ describe("notes recording reliability", () => {
 
     await waitFor(() => expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(listCallsBefore));
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
-    expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(await screen.findByText("Work data partition note")).toBeInTheDocument();
     expect(screen.queryByText("First note")).toBeNull();
   });
 
@@ -573,7 +573,7 @@ describe("notes recording reliability", () => {
     expect(await screen.findByText("database busy")).toBeInTheDocument();
   });
 
-  it("ignores calendar context without profile provenance after a renderer reload", async () => {
+  it("ignores calendar context without data partition provenance after a renderer reload", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await waitFor(() =>
@@ -590,7 +590,7 @@ describe("notes recording reliability", () => {
             title: "Stale calendar note",
             startAt: "2026-07-20T14:00:00Z",
             endAt: "2026-07-20T14:30:00Z",
-            accountEmail: "unknown-profile@example.com",
+            accountEmail: "unknown-partition@example.com",
           },
         },
       });
@@ -598,12 +598,12 @@ describe("notes recording reliability", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
     expect(screen.queryByText("Stale calendar note")).toBeNull();
-    expect(screen.queryByText("unknown-profile@example.com")).toBeNull();
+    expect(screen.queryByText("unknown-partition@example.com")).toBeNull();
     expect(await screen.findByText("First note")).toBeInTheDocument();
   });
 
-  it("retires an old-profile recording note as soon as the recording stops", async () => {
-    const workNote = note({ id: "note-work", title: "Work profile note" });
+  it("retires an old-partition recording note as soon as the recording stops", async () => {
+    const workNote = note({ id: "note-work", title: "Work data partition note" });
     mocks.finishRecording.mockResolvedValue({
       note: { ...first, processingStatus: "transcribing" },
       recording: recording({ state: "ready" }),
@@ -636,17 +636,17 @@ describe("notes recording reliability", () => {
     const notesTab = await screen.findByRole("tab", { name: "Notes" });
     expect(notesTab).toHaveAttribute("data-active", "true");
     await userEvent.click(screen.getByRole("button", { name: "Meeting notes" }));
-    expect(await screen.findByText("Work profile note")).toBeInTheDocument();
+    expect(await screen.findByText("Work data partition note")).toBeInTheDocument();
     expect(screen.queryByText("First note")).toBeNull();
 
     await act(async () => {
       await mocks.listeners.get("june://note-calendar-context-updated")?.({
         payload: {
           ...first,
-          title: "Old profile calendar note",
+          title: "Old data partition calendar note",
           calendarEvent: {
-            eventId: "event-old-profile",
-            title: "Old profile calendar note",
+            eventId: "event-old-partition",
+            title: "Old data partition calendar note",
             startAt: "2026-07-20T14:00:00Z",
             endAt: "2026-07-20T14:30:00Z",
             accountEmail: "personal@example.com",
@@ -655,7 +655,7 @@ describe("notes recording reliability", () => {
       });
     });
 
-    expect(screen.queryByText("Old profile calendar note")).toBeNull();
+    expect(screen.queryByText("Old data partition calendar note")).toBeNull();
     expect(screen.queryByText("First note")).toBeNull();
   });
 

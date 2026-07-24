@@ -22,8 +22,8 @@ import {
 import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
 
-/** Settings owned by June's local agent runtime. Messaging compatibility,
- * runtime debug panels, and the retired runtime filesystem browser are
+/** Settings owned by June's local agent harness. Messaging compatibility,
+ * raw runtime diagnostics, and the legacy filesystem browser are
  * intentionally absent. */
 export function AgentSettingsSection({
   folders: _folders = [],

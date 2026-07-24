@@ -18,9 +18,9 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
     agentMenuBarSessionsRef,
     handleAgentHudVisibilityRequest,
     pendingSessionProjectRef,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -70,9 +70,9 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
         setActiveView("agent");
         return;
       }
-      void Promise.all([listAgentSessions(), refreshSessionProfiles()])
-        .then(([sessions, profiles]) => {
-          const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+      void Promise.all([listAgentSessions(), refreshSessionPartitions()])
+        .then(([sessions, partitions]) => {
+          const scopedSessions = dataPartitionScopedAgentSessions(sessions, partitions);
           agentMenuBarSessionsRef.current = scopedSessions;
           const session = scopedSessions.find((item) => item.id === sessionId);
           if (session) setActiveAgentSession(session);
@@ -95,8 +95,8 @@ export function useAgentMenuEvents(dependencies: UseAgentMenuEventsDependencies)
     };
   }, [
     handleAgentHudVisibilityRequest,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
   ]);
 }

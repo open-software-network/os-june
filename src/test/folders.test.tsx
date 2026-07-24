@@ -21,7 +21,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
   deleteAgentSession: agentMocks.deleteAgentSession,
   listAgentSessions: agentMocks.listAgentSessions,
-  listSessionProfiles: vi.fn(async () => []),
+  listSessionPartitions: vi.fn(async () => []),
 }));
 
 const now = "2026-05-19T10:00:00Z";

@@ -84,6 +84,14 @@ boundaries — never via the global SOUL.md (see
 _Avoid_: system prompt (that is SOUL territory), folder description (a
 separate, filing-help field).
 
+**Data partition**:
+The local isolation boundary used when June reads or writes notes, projects,
+agent sessions, memories, and related assignments. `default` is the fallback
+partition for data created before partitioning and for stored sessions without
+an explicit mapping. The **current data partition** is the partition selected
+for the active app view.
+_Avoid_: profile, active profile, tenant, account.
+
 **Memory entry**:
 One durable fact June remembers, stored in June's own SQLite `memories`
 table — global or scoped to one project — written by the agent through

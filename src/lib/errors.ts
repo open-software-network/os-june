@@ -67,7 +67,7 @@ export function describeShareError(err: unknown): string {
 
 /** Whether an error message means the user's balance ran out. String match is
  * intentional and a known weakness — billing failures reach us as plain text
- * from several layers (Tauri commands and model-provider errors),
+ * from several layers (Tauri commands and upstream provider errors),
  * none of which carry a structured code today. The patterns cover the June
  * API's friendly message and the raw provider error
  * (`... 'error_code': 4301, 'message': 'insufficient_credits'`). */
@@ -78,20 +78,14 @@ export function isInsufficientCreditsMessage(message?: string) {
   );
 }
 
-/** Whether a Tauri error is a the retired runtime REST 5xx. The desktop bridge's session
- * commands surface a non-2xx response as `the retired runtime API returned <status>: <body>`
- * (see `the retired bridge`); a 5xx is a transient server-side fault worth a
- * retry, unlike a 4xx (the caller's request) or a bridge-down connection error.
- * String matching mirrors the other classifiers here — the wire string carries
- * no structured code today. The `\b` after the status keeps the match anchored
- * to the three-digit code regardless of the trailing `:` or reason phrase. */
 /** Whether an error message means the request outgrew the model's context (or
  * the agent request-size limit) — a hard size failure the user must act on
  * (trim the input, attach a smaller file, start a fresh session), NOT something
  * to retry as-is. Like {@link isInsufficientCreditsMessage}, string matching is
  * a known weakness: the same condition reaches us as plain text from several
  * layers — the June API's `prompt_too_long`/`request_too_large`, the provider
- * proxy's rewritten "maximum context length" wording, and the retired runtime' terminal
+ * proxy's rewritten "maximum context length" wording, and the legacy agent
+ * harness's terminal
  * "Cannot compress further." when it cannot shrink a single oversized turn
  * (JUN-169).
  *
@@ -113,19 +107,20 @@ export function isContextOverflowMessage(message?: string) {
  * assistant answer that merely discusses "the maximum context length" would
  * reload as an overflow notice and drop the real answer (JUN-169). Every real
  * overflow error still contains one of these tokens: the proxy prefixes
- * `prompt_too_long`, and the retired runtime' terminal message says "Cannot compress
+ * `prompt_too_long`, and the legacy agent harness's terminal message says "Cannot compress
  * further." */
 export function isContextOverflowErrorSentinel(message?: string) {
   if (!message) return false;
   const text = message.trimStart();
   // Match an error SHAPE, never a mid-sentence mention (JUN-169 review). Two
   // shapes reach a persisted turn:
-  //   1. the runtime's "Error:" sentinel — how the retired runtime persists a provider
+  //   1. the runtime's "Error:" sentinel. This is how the legacy agent harness
+  //      persists an upstream provider
   //      failure, e.g. `Error: Error code: 400 - {… 'prompt_too_long …'}` (the
   //      same shape the credits path keys on). Treat it as a known error and
   //      match the token anywhere inside it.
   //   2. a bare rejection that LEADS with its own token/shape — the proxy
-  //      rewrite (`prompt_too_long: …`) or the retired runtime' terminal "Context length
+  //      rewrite (`prompt_too_long: …`) or the legacy agent harness's terminal "Context length
   //      exceeded (…). Cannot compress further."
   // Requiring the "Error:" colon (tighter than the credits path's bare `error`
   // word) keeps prose like "Error handling returns prompt_too_long" as text,

@@ -2,23 +2,23 @@ import { useEffect } from "react";
 import { invalidateNoteTabs } from "./tabs/tabs";
 import { getNote, listAgentSessions, listFolders, listNotes } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import type { UseActiveProfileDataDependencies } from "./use-active-profile-data-types";
+import type { UseDataPartitionRefreshDependencies } from "./use-data-partition-refresh-types";
 
-export function useActiveProfileData(dependencies: UseActiveProfileDataDependencies) {
+export function useDataPartitionRefresh(dependencies: UseDataPartitionRefreshDependencies) {
   const {
     currentDataPartitionName,
     activeViewRef,
     appBlocked,
     bootstrapped,
     commitAgentSessions,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
-    lastDataProfileRef,
-    lastProfileDataRefreshRevisionRef,
+    lastDataPartitionRef,
+    lastDataPartitionRefreshRevisionRef,
     pendingSessionProjectRef,
-    profileDataRefreshRevision,
+    dataPartitionRefreshRevision,
     recordingNoteIdRef,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveView,
     setAgentOrigin,
@@ -32,33 +32,33 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
 
   useEffect(() => {
     if (appBlocked || !bootstrapped) return;
-    const previous = lastDataProfileRef.current;
-    const profileChanged = previous !== undefined && previous !== currentDataPartitionName;
+    const previous = lastDataPartitionRef.current;
+    const partitionChanged = previous !== undefined && previous !== currentDataPartitionName;
     const refreshRequested =
-      lastProfileDataRefreshRevisionRef.current !== profileDataRefreshRevision;
-    lastDataProfileRef.current = currentDataPartitionName;
-    lastProfileDataRefreshRevisionRef.current = profileDataRefreshRevision;
+      lastDataPartitionRefreshRevisionRef.current !== dataPartitionRefreshRevision;
+    lastDataPartitionRef.current = currentDataPartitionName;
+    lastDataPartitionRefreshRevisionRef.current = dataPartitionRefreshRevision;
     if (!refreshRequested && (previous === undefined || previous === currentDataPartitionName)) {
       return;
     }
-    // A project-scoped new-session request belongs to the profile that started
+    // A project-scoped new-session request belongs to the data partition that started
     // it. Clear the handoff before any async reload can race a session-created
     // event from the newly selected data partition.
-    if (profileChanged) pendingSessionProjectRef.current = null;
+    if (partitionChanged) pendingSessionProjectRef.current = null;
     let cancelled = false;
     void (async () => {
       try {
-        const [notesResponse, folders, sessions, profiles] = await Promise.all([
+        const [notesResponse, folders, sessions, partitions] = await Promise.all([
           listNotes(),
           listFolders(),
           listAgentSessions(),
-          refreshSessionProfiles(),
+          refreshSessionPartitions(),
         ]);
         if (cancelled) return;
-        commitAgentSessions(sessions, profiles);
+        commitAgentSessions(sessions, partitions);
         const visibleNoteIds = new Set(notesResponse.items.map((note) => note.id));
         const recordingNoteId = recordingNoteIdRef.current;
-        crossProfileRecordingNoteIdRef.current =
+        crossPartitionRecordingNoteIdRef.current =
           recordingNoteId && !visibleNoteIds.has(recordingNoteId) ? recordingNoteId : undefined;
         const invalidNoteIds = new Set<string>();
         for (const tab of tabsRef.current) {
@@ -72,15 +72,15 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
           tabsRef.current = nextTabs;
           setTabs(nextTabs);
         }
-        // The old profile's folder selection and origins point at rows the
-        // new profile can't see — clear them before the new lists land.
+        // The previous partition's folder selection and origins point at rows
+        // the new partition cannot see. Clear them before the new lists land.
         dispatch({ type: "folderSelected", folderId: undefined });
         dispatch({ type: "foldersLoaded", folders });
         dispatch({ type: "notesLoaded", notes: notesResponse.items });
         setOriginFolderId(undefined);
         setOriginAllNotes(false);
         setFolderReturnTarget(undefined);
-        // The open chat came from the old profile's list; keeping it selected
+        // The open chat came from the previous partition's list. Keeping it selected
         // would reopen it (workspace re-applies initialSessionId on mount).
         setActiveAgentSession(undefined);
         setAgentOrigin(undefined);
@@ -106,8 +106,8 @@ export function useActiveProfileData(dependencies: UseActiveProfileDataDependenc
     appBlocked,
     bootstrapped,
     commitAgentSessions,
-    profileDataRefreshRevision,
-    refreshSessionProfiles,
+    dataPartitionRefreshRevision,
+    refreshSessionPartitions,
     setActiveAgentSession,
   ]);
 }

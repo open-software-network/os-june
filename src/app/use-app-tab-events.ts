@@ -12,7 +12,7 @@ export function useAppTabEvents(dependencies: UseAppTabEventsDependencies) {
     activateTab,
     activeTabId,
     activeTabIdRef,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     closeTab,
     cycleTab,
@@ -53,9 +53,9 @@ export function useAppTabEvents(dependencies: UseAppTabEventsDependencies) {
     let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
-      const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
-      calendarContextNoteProfilesRef.current.delete(event.payload.id);
-      if (noteProfile !== getCurrentDataPartitionName()) return;
+      const notePartition = calendarContextNotePartitionsRef.current.get(event.payload.id);
+      calendarContextNotePartitionsRef.current.delete(event.payload.id);
+      if (notePartition !== getCurrentDataPartitionName()) return;
       if (pendingCalendarContextAdoptionsRef.current.delete(event.payload.id)) {
         calendarContextNoteUpdatesRef.current.set(event.payload.id, event.payload);
       }

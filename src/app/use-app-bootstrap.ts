@@ -8,7 +8,7 @@ import type { UseAppBootstrapDependencies } from "./use-app-bootstrap-types";
 export function useAppBootstrap(dependencies: UseAppBootstrapDependencies) {
   const {
     appBlocked,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     pendingCalendarContextAdoptionsRef,
@@ -31,7 +31,7 @@ export function useAppBootstrap(dependencies: UseAppBootstrapDependencies) {
           recordingStatusRef.current = activeRecording;
           dispatch({ type: "recordingStatusChanged", status: activeRecording });
           if (activeRecordingNoteId) {
-            calendarContextNoteProfilesRef.current.set(
+            calendarContextNotePartitionsRef.current.set(
               activeRecordingNoteId,
               getCurrentDataPartitionName(),
             );

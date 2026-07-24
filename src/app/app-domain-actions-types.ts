@@ -12,7 +12,7 @@ export type CreateAppDomainActionsDependencies = {
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;
-    profile: string;
+    partition: string;
   } | null>;
   sessionCompletionTouchedRef: React.MutableRefObject<Set<string>>;
   sessionCompletionWritesRef: React.MutableRefObject<Map<string, Promise<unknown>>>;

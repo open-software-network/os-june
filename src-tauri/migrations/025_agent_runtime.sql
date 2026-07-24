@@ -104,7 +104,7 @@ SELECT session_id, 'Imported session', 'idle', 'auto', 'sandboxed',
 FROM session_folders;
 
 -- Import the old June-owned task projection before retiring its three tables.
--- A task already bound to Hermes keeps that Hermes session id so folder links
+-- A task already bound to Hermes keeps that stored session id so folder links
 -- and conversation history converge on one stable session row.
 INSERT INTO agent_sessions (
   id, title, status, model, safety_mode, source, created_at, updated_at,

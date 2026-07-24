@@ -80,7 +80,7 @@ function installStagedUpdate(onEvent?: (event: DownloadEvent) => void): Promise<
 /**
  * Relaunches June to finish a staged update. Routes through the Rust
  * `relaunch_for_update` command instead of the plugin `relaunch()` so June's
- * child processes (the dictation helper, the the retired runtime runtime) are torn down
+ * child processes (the dictation helper and agent harness) are torn down
  * before the process restarts. A bare relaunch can skip that teardown and orphan
  * the helper, which then blocks the new instance from reading permissions
  * (JUN-338).

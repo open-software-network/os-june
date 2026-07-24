@@ -2072,7 +2072,7 @@ impl Repositories {
         if !matches_active_profile {
             return Err(AppError::new(
                 "note_folder_profile_mismatch",
-                "The note and project must belong to the active profile.",
+                "The note and project must belong to the current data partition.",
             ));
         }
 
@@ -2146,7 +2146,7 @@ impl Repositories {
         if !matches_active_profile {
             return Err(AppError::new(
                 "session_folder_profile_mismatch",
-                "The session and project must belong to the active profile.",
+                "The session and project must belong to the current data partition.",
             ));
         }
 

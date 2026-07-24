@@ -333,6 +333,12 @@ pub async fn resolve_agent_interruption(
     let mut interruption: Value = serde_json::from_str(&row.get::<String, _>("payload_json"))
         .map_err(|error| AppError::new("agent_interruption_invalid", error.to_string()))?;
     let run = repository.get_run(&run_id).await?;
+    if run.status != "waiting_for_user" {
+        return Err(AppError::new(
+            "agent_interruption_expired",
+            "This interruption can no longer be resumed.",
+        ));
+    }
     let session = repository.get_session(&session_id).await?;
     let serialized_state = run
         .interrupted_state

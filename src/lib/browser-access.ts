@@ -1,11 +1,9 @@
 import { experimentalBrowserUseEnabled } from "./experimental-flags";
 
-/** The literal token June's soul tells it to emit when a task needs Browser
- * use while the Browser access grant is off (JUNE_SOUL_BROWSER_BLOCKED_MD in
- * src-tauri/src/the retired bridge — the two must stay in sync). The agent can
- * never flip the setting itself: the flag file lives outside every sandbox
- * write root by design, so the request is rendered as a card the user
- * approves with one click. */
+/** The literal token June emits when a task needs Browser use while the
+ * Browser access grant is off. The agent can never flip the setting itself:
+ * the flag file lives outside every sandbox write root by design, so the
+ * request is rendered as a card the user approves with one click. */
 export const BROWSER_ACCESS_REQUEST_TOKEN = "[REQUEST:BROWSER_ACCESS]";
 
 /** True when the text carries the request token and Browser use exists in

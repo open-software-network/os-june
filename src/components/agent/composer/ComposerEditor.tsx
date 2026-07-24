@@ -104,8 +104,8 @@ type PendingEditorAction =
 
 /** Serializes the doc to the plain string sent to June: paragraph and
  * hard-break boundaries become newlines, the category chip contributes
- * nothing, and note reference atoms emit the stable token the retired runtime resolves via
- * June's note context tool. */
+ * nothing, and note reference atoms emit the stable token June resolves via
+ * the note context tool. */
 export function serializePlainText(doc: ProseMirrorNode): string {
   return doc.textBetween(0, doc.content.size, "\n", (leaf) => {
     if (leaf.type.name === "hardBreak") return "\n";

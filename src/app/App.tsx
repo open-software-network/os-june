@@ -22,7 +22,7 @@ import {
   downloadNoteAudio,
   getNote,
   LIVE_TRANSCRIPT_EVENT,
-  listSessionProfiles,
+  listSessionPartitions,
   listAgentSessions,
   openPrivacySettings,
   osAccountsLogout,
@@ -56,7 +56,10 @@ import {
   DATA_PARTITION_CHANGED_EVENT,
   type DataPartitionChangedDetail,
 } from "../lib/data-partition";
-import { filterAgentSessionsForProfile, sessionProfileMap } from "../lib/session-profile-filter";
+import {
+  filterAgentSessionsForDataPartition,
+  sessionPartitionMap,
+} from "../lib/session-partition-filter";
 import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
@@ -130,7 +133,7 @@ import { useAgentSessionSync } from "./use-agent-session-sync";
 
 import { useAgentMenuEvents } from "./use-agent-menu-events";
 
-import { useActiveProfileData } from "./use-active-profile-data";
+import { useDataPartitionRefresh } from "./use-data-partition-refresh";
 
 import { useRecordingStartActions } from "./use-recording-start-actions";
 
@@ -173,8 +176,8 @@ import { renderAppAccountGate } from "./app-account-gates";
 export function App() {
   const {
     currentDataPartitionName,
-    profileDataRefreshRevision,
-    setProfileDataRefreshRevision,
+    dataPartitionRefreshRevision,
+    setDataPartitionRefreshRevision,
     state,
     dispatch,
     error,
@@ -218,7 +221,7 @@ export function App() {
     sessionCompletionWritesRef,
     sessionCompletionTouchedRef,
     completedSessionsRef,
-    sessionProfilesRef,
+    sessionPartitionsRef,
     moveDialogSessionIds,
     setMoveDialogSessionIds,
     agentOrigin,
@@ -286,8 +289,8 @@ export function App() {
     refreshAccount,
     setAccount,
     recordingNoteIdRef,
-    crossProfileRecordingNoteIdRef,
-    calendarContextNoteProfilesRef,
+    crossPartitionRecordingNoteIdRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,
@@ -500,27 +503,27 @@ export function App() {
     completedSessionsRef.current = completedSessions;
     publishAgentMenuBarState();
   }, [completedSessions, publishAgentMenuBarState]);
-  const profileScopedAgentSessions = useCallback(
-    (sessions: readonly AgentSessionDto[], profiles = sessionProfilesRef.current) => {
-      if (profiles === null) return [];
+  const dataPartitionScopedAgentSessions = useCallback(
+    (sessions: readonly AgentSessionDto[], partitions = sessionPartitionsRef.current) => {
+      if (partitions === null) return [];
       const currentDataPartition = getCurrentDataPartitionName().trim() || currentDataPartitionName;
-      return filterAgentSessionsForProfile(sessions, profiles, currentDataPartition);
+      return filterAgentSessionsForDataPartition(sessions, partitions, currentDataPartition);
     },
     [currentDataPartitionName],
   );
-  const refreshSessionProfiles = useCallback(async () => {
-    const profiles = sessionProfileMap(await listSessionProfiles());
-    sessionProfilesRef.current = profiles;
-    return profiles;
+  const refreshSessionPartitions = useCallback(async () => {
+    const partitions = sessionPartitionMap(await listSessionPartitions());
+    sessionPartitionsRef.current = partitions;
+    return partitions;
   }, []);
   const commitAgentSessions = useCallback(
-    (sessions: readonly AgentSessionDto[], profiles = sessionProfilesRef.current) => {
-      const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+    (sessions: readonly AgentSessionDto[], partitions = sessionPartitionsRef.current) => {
+      const scopedSessions = dataPartitionScopedAgentSessions(sessions, partitions);
       agentMenuBarSessionsRef.current = scopedSessions;
       setAgentSessions(scopedSessions);
       publishAgentMenuBarState();
     },
-    [profileScopedAgentSessions, publishAgentMenuBarState],
+    [dataPartitionScopedAgentSessions, publishAgentMenuBarState],
   );
   const applyAgentHudVisibility = useCallback(
     (enabled: boolean) => {
@@ -736,7 +739,7 @@ export function App() {
     activateTab,
     activeTabId,
     activeTabIdRef,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     closeTab,
     cycleTab,
@@ -1001,10 +1004,10 @@ export function App() {
       // Defer host access so partial test hosts and transient startup failures
       // enter the normal retry path instead of escaping the effect synchronously.
       Promise.resolve()
-        .then(() => Promise.all([listAgentSessions(), refreshSessionProfiles()]))
-        .then(([sessions, profiles]) => {
+        .then(() => Promise.all([listAgentSessions(), refreshSessionPartitions()]))
+        .then(([sessions, partitions]) => {
           if (cancelled) return;
-          commitAgentSessions(sessions, profiles);
+          commitAgentSessions(sessions, partitions);
         })
         .catch(() => {
           if (cancelled) return;
@@ -1022,7 +1025,7 @@ export function App() {
         window.clearTimeout(retryTimeout);
       }
     };
-  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionProfiles]);
+  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionPartitions]);
 
   // Project assignments for agent sessions, loaded once storage is up.
   useSessionMetadata({
@@ -1053,7 +1056,7 @@ export function App() {
     commitAgentSessions,
     pendingSessionProjectRef,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -1096,9 +1099,9 @@ export function App() {
     agentMenuBarSessionsRef,
     handleAgentHudVisibilityRequest,
     pendingSessionProjectRef,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -1171,7 +1174,7 @@ export function App() {
 
   useAppBootstrap({
     appBlocked,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     pendingCalendarContextAdoptionsRef,
@@ -1183,40 +1186,39 @@ export function App() {
   });
 
   useEffect(() => {
-    function handleProfileDataChanged(event: Event) {
+    function handleDataPartitionChanged(event: Event) {
       const detail = (event as CustomEvent<DataPartitionChangedDetail>).detail;
       if (!detail || detail.partition !== getCurrentDataPartitionName()) return;
-      setProfileDataRefreshRevision((revision) => revision + 1);
+      setDataPartitionRefreshRevision((revision) => revision + 1);
     }
 
-    window.addEventListener(DATA_PARTITION_CHANGED_EVENT, handleProfileDataChanged);
+    window.addEventListener(DATA_PARTITION_CHANGED_EVENT, handleDataPartitionChanged);
     return () => {
-      window.removeEventListener(DATA_PARTITION_CHANGED_EVENT, handleProfileDataChanged);
+      window.removeEventListener(DATA_PARTITION_CHANGED_EVENT, handleDataPartitionChanged);
     };
   }, []);
 
-  // A profile switch swaps the visible data, not just the agent runtime
-  // (ADR 0031): re-read profile-scoped notes, projects, chat mappings, and
-  // sessions together. The same refresh runs when profile data moves into the
-  // current data partition, where the partition name itself does not
+  // A data partition switch swaps all visible data (ADR 0031): re-read scoped
+  // notes, projects, chat mappings, and sessions together. The same refresh
+  // runs when data moves into the current partition, where its name does not
   // change. If a recording is running its note keeps the selection (get_note
   // is unscoped) so the recording view is never yanked mid-take.
-  const lastDataProfileRef = useRef<string | undefined>(undefined);
-  const lastProfileDataRefreshRevisionRef = useRef(0);
-  useActiveProfileData({
+  const lastDataPartitionRef = useRef<string | undefined>(undefined);
+  const lastDataPartitionRefreshRevisionRef = useRef(0);
+  useDataPartitionRefresh({
     currentDataPartitionName,
     activeViewRef,
     appBlocked,
     bootstrapped,
     commitAgentSessions,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
-    lastDataProfileRef,
-    lastProfileDataRefreshRevisionRef,
+    lastDataPartitionRef,
+    lastDataPartitionRefreshRevisionRef,
     pendingSessionProjectRef,
-    profileDataRefreshRevision,
+    dataPartitionRefreshRevision,
     recordingNoteIdRef,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveView,
     setAgentOrigin,
@@ -1699,7 +1701,7 @@ export function App() {
     activeViewRef,
     appBlocked,
     bootstrapped,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     fundingRequired,
@@ -1755,7 +1757,7 @@ export function App() {
     activeViewRef,
     appBlocked,
     bootstrapped,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
     finishingSessionsRef,
     handleStartAgentRecording,

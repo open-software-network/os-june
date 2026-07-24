@@ -23,7 +23,7 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     activeViewRef,
     appBlocked,
     bootstrapped,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
     finishingSessionsRef,
     handleStartAgentRecording,
@@ -175,18 +175,18 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
     const owningNoteId = recordingNoteIdRef.current;
-    const wasCrossProfileRecording =
-      !!owningNoteId && crossProfileRecordingNoteIdRef.current === owningNoteId;
+    const wasCrossPartitionRecording =
+      !!owningNoteId && crossPartitionRecordingNoteIdRef.current === owningNoteId;
     dispatch({ type: "recordingStatusCleared" });
     setRecordingNote(undefined);
-    if (wasCrossProfileRecording && owningNoteId) {
-      crossProfileRecordingNoteIdRef.current = undefined;
+    if (wasCrossPartitionRecording && owningNoteId) {
+      crossPartitionRecordingNoteIdRef.current = undefined;
       const nextTabs = invalidateNoteTabs(tabsRef.current, new Set([owningNoteId]));
       if (nextTabs !== tabsRef.current) {
         tabsRef.current = nextTabs;
         setTabs(nextTabs);
       }
-      // The old-profile note was temporarily present only to control the
+      // The previous partition's note was temporarily present only to control the
       // recording. Once the take stops, remove it from the current data partition's
       // visible list before any tab or sidebar action can reopen it.
       dispatch({
@@ -219,15 +219,15 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     }
     try {
       const result = await finishRecording(sessionId);
-      // The result belongs to the profile where recording started. Once that
-      // profile's temporary recording view has been retired, do not let the
+      // The result belongs to the partition where recording started. Once that
+      // partition's temporary recording view has been retired, do not let the
       // finish response upsert the old note into the newly selected data partition.
-      if (!wasCrossProfileRecording) {
+      if (!wasCrossPartitionRecording) {
         dispatch({ type: "noteProcessingUpdated", note: result.note });
       }
     } catch (err) {
       if (
-        wasCrossProfileRecording ||
+        wasCrossPartitionRecording ||
         !owningNoteId ||
         !(await applyNoteScopedProcessingFailure(owningNoteId, err))
       ) {
@@ -235,15 +235,15 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
       }
       if (options.rethrow) throw err;
     } finally {
-      if (wasCrossProfileRecording) {
-        const finishingProfile = getCurrentDataPartitionName();
+      if (wasCrossPartitionRecording) {
+        const finishingPartition = getCurrentDataPartitionName();
         try {
           const response = await listNotes();
-          if (getCurrentDataPartitionName() === finishingProfile) {
+          if (getCurrentDataPartitionName() === finishingPartition) {
             dispatch({ type: "notesLoaded", notes: response.items });
           }
         } catch (refreshErr) {
-          if (getCurrentDataPartitionName() === finishingProfile) {
+          if (getCurrentDataPartitionName() === finishingPartition) {
             setError(messageFromError(refreshErr));
           }
         }

@@ -502,11 +502,66 @@ fn advance_repeat(repeat: &str, metadata: &mut Value) -> bool {
 /// because calling it during normal scheduler ticks would interrupt live work.
 pub async fn reconcile_after_restart(pool: &SqlitePool) -> Result<(), AppError> {
     let timestamp = now();
-    query("UPDATE agent_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE id IN (SELECT agent_run_id FROM routine_runs WHERE agent_run_id IS NOT NULL AND status IN ('running', 'waiting_for_user'))")
+    // The agent run is the source of truth at a process boundary. Mirroring
+    // the active state first closes either crash window between the two normal
+    // persistence writes: a stored waiting run stays resumable, while a stored
+    // running run is interrupted below even if its routine projection was
+    // still waiting.
+    query(
+        "UPDATE routine_runs
+         SET status = (
+           SELECT status FROM agent_runs
+           WHERE agent_runs.id = routine_runs.agent_run_id
+         ), updated_at = ?
+         WHERE agent_run_id IS NOT NULL
+           AND status IN ('running', 'waiting_for_user')
+           AND EXISTS (
+             SELECT 1 FROM agent_runs
+             WHERE agent_runs.id = routine_runs.agent_run_id
+               AND agent_runs.status IN ('running', 'waiting_for_user')
+           )",
+    )
+    .bind(&timestamp)
+    .execute(pool)
+    .await
+    .map_err(app_error)?;
+    // Waiting runs retain their serialized SDK state and routine claim so the
+    // pending approval or clarification remains resumable after relaunch.
+    // Ordinary running work cannot survive the process boundary and is
+    // interrupted, which releases its claim through `reconcile`.
+    query("UPDATE agent_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE id IN (SELECT agent_run_id FROM routine_runs WHERE agent_run_id IS NOT NULL AND status = 'running')")
         .bind(&timestamp).bind(&timestamp).execute(pool).await.map_err(app_error)?;
-    query("UPDATE routine_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE status IN ('queued', 'running', 'waiting_for_user')")
+    query("UPDATE routine_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE status IN ('queued', 'running')")
         .bind(&timestamp).bind(&timestamp).execute(pool).await.map_err(app_error)?;
     reconcile(pool).await
+}
+
+pub async fn mark_agent_run_waiting(pool: &SqlitePool, agent_run_id: &str) -> Result<(), AppError> {
+    query(
+        "UPDATE routine_runs
+         SET status = 'waiting_for_user', updated_at = ?
+         WHERE agent_run_id = ? AND status = 'running'",
+    )
+    .bind(now())
+    .bind(agent_run_id)
+    .execute(pool)
+    .await
+    .map_err(app_error)?;
+    Ok(())
+}
+
+pub async fn mark_agent_run_resumed(pool: &SqlitePool, agent_run_id: &str) -> Result<(), AppError> {
+    query(
+        "UPDATE routine_runs
+         SET status = 'running', updated_at = ?
+         WHERE agent_run_id = ? AND status = 'waiting_for_user'",
+    )
+    .bind(now())
+    .bind(agent_run_id)
+    .execute(pool)
+    .await
+    .map_err(app_error)?;
+    Ok(())
 }
 
 /// Start the single local scheduler for June-owned routines. Claims are stored
@@ -1288,7 +1343,7 @@ mod tests {
         // retired Hermes tables it deliberately imports from.
         for statement in [
             "CREATE TABLE agent_sessions (id TEXT PRIMARY KEY)",
-            "CREATE TABLE agent_runs (id TEXT PRIMARY KEY, status TEXT, updated_at TEXT, completed_at TEXT, error_code TEXT, error_message TEXT)",
+            "CREATE TABLE agent_runs (id TEXT PRIMARY KEY, status TEXT, updated_at TEXT, completed_at TEXT, interrupted_state_json TEXT, error_code TEXT, error_message TEXT)",
             "CREATE TABLE connector_triggers (id TEXT PRIMARY KEY, job_id TEXT, kind TEXT, account_id TEXT)",
         ] {
             query(statement).execute(&pool).await.unwrap();
@@ -1635,5 +1690,148 @@ mod tests {
         let routine = get(&pool, "routine-1").await.unwrap();
         assert_eq!(routine.last_status.as_deref(), Some("error"));
         assert!(routine.next_run_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn restart_preserves_a_waiting_run_and_its_single_flight_claim() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed_run = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-waiting')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO agent_runs (id, status, interrupted_state_json)
+             VALUES ('run-waiting', 'waiting_for_user', '\"serialized-state\"')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed_run.routine_run_id,
+            &claimed_run.token,
+            "session-waiting",
+            "run-waiting",
+            &now(),
+        )
+        .await
+        .unwrap();
+        mark_agent_run_waiting(&pool, "run-waiting").await.unwrap();
+
+        reconcile_after_restart(&pool).await.unwrap();
+
+        assert_eq!(
+            list_runs(&pool, Some("routine-1")).await.unwrap()[0].status,
+            "waiting_for_user"
+        );
+        let claim_token: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("claim_token");
+        assert_eq!(claim_token.as_deref(), Some(claimed_run.token.as_str()));
+        assert!(claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .is_none());
+        let agent_run = query("SELECT status, interrupted_state_json FROM agent_runs WHERE id = ?")
+            .bind("run-waiting")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(agent_run.get::<String, _>("status"), "waiting_for_user");
+        assert_eq!(
+            agent_run.get::<Option<String>, _>("interrupted_state_json"),
+            Some("\"serialized-state\"".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_repairs_a_partially_persisted_waiting_transition() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed_run = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-partial-wait')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO agent_runs (id, status, interrupted_state_json)
+             VALUES ('run-partial-wait', 'waiting_for_user', '\"serialized-state\"')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed_run.routine_run_id,
+            &claimed_run.token,
+            "session-partial-wait",
+            "run-partial-wait",
+            &now(),
+        )
+        .await
+        .unwrap();
+
+        reconcile_after_restart(&pool).await.unwrap();
+
+        assert_eq!(
+            list_runs(&pool, Some("routine-1")).await.unwrap()[0].status,
+            "waiting_for_user"
+        );
+        assert!(claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn restart_repairs_a_partially_persisted_resume_transition() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed_run = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-partial-resume')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query("INSERT INTO agent_runs (id, status) VALUES ('run-partial-resume', 'running')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed_run.routine_run_id,
+            &claimed_run.token,
+            "session-partial-resume",
+            "run-partial-resume",
+            &now(),
+        )
+        .await
+        .unwrap();
+        query("UPDATE routine_runs SET status = 'waiting_for_user' WHERE id = ?")
+            .bind(&claimed_run.routine_run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        reconcile_after_restart(&pool).await.unwrap();
+
+        assert_eq!(
+            list_runs(&pool, Some("routine-1")).await.unwrap()[0].status,
+            "interrupted"
+        );
+        assert!(get(&pool, "routine-1").await.unwrap().next_run_at.is_some());
     }
 }

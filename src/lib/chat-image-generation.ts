@@ -32,7 +32,7 @@ export type GenerateChatImageDeps = {
     requestId: string,
     safeMode?: boolean,
   ) => Promise<GeneratedImageDto>;
-  /** Imports raw bytes into the the retired runtime workspace (the paste path's importer). */
+  /** Imports raw bytes into the session workspace (the paste path's importer). */
   importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedAgentFile>;
   /** Resolves the default image model when the caller passes none. */
   defaultModel?: () => string;
@@ -59,7 +59,7 @@ export type EditChatImageDeps = {
     mimeType?: string,
     model?: string,
   ) => Promise<GeneratedImageDto>;
-  /** Imports edited bytes into the the retired runtime workspace. */
+  /** Imports edited bytes into the session workspace. */
   importImageBytes: (name: string, bytes: Uint8Array) => Promise<ImportedAgentFile>;
 };
 
