@@ -899,6 +899,18 @@ impl Repositories {
     ) -> Result<ConnectorTriggerRecord, sqlx::error::Error> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let replace_result = async {
+            let previous = query(
+                "SELECT kind, account_id
+                 FROM connector_triggers
+                 WHERE job_id = ?",
+            )
+            .bind(job_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let previous_email_account = previous.as_ref().and_then(|row| {
+                (row.get::<String, _>("kind") == "email_received")
+                    .then(|| row.get::<String, _>("account_id"))
+            });
             // Check before deleting this job's old trigger. Editing an existing
             // email subscription for the same account must retain its cursor;
             // only the account's first active email subscription re-baselines.
@@ -918,6 +930,20 @@ impl Repositories {
                 .bind(job_id)
                 .execute(&mut *transaction)
                 .await?;
+            if let Some(previous_account_id) =
+                previous_email_account.filter(|previous_account_id| {
+                    kind != "email_received" || previous_account_id != account_id
+                })
+            {
+                query(
+                    "DELETE FROM trigger_cursors
+                     WHERE account_id = ? AND kind = ?",
+                )
+                .bind(previous_account_id)
+                .bind(format!("email_received:{job_id}"))
+                .execute(&mut *transaction)
+                .await?;
+            }
 
             let id = Uuid::new_v4().to_string();
             let now = timestamp();
@@ -972,10 +998,33 @@ impl Repositories {
     }
 
     pub async fn delete_connector_trigger(&self, id: &str) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let trigger = query(
+            "SELECT job_id, kind, account_id
+             FROM connector_triggers
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
         let result = query("DELETE FROM connector_triggers WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        if let Some(trigger) =
+            trigger.filter(|row| row.get::<String, _>("kind") == "email_received")
+        {
+            let job_id: String = trigger.get("job_id");
+            query(
+                "DELETE FROM trigger_cursors
+                 WHERE account_id = ? AND kind = ?",
+            )
+            .bind(trigger.get::<String, _>("account_id"))
+            .bind(format!("email_received:{job_id}"))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -8435,6 +8484,69 @@ mod tests {
         );
         fire_count += simulate_email_poll(&repos, 101, &[101]).await;
         assert_eq!(fire_count, 1);
+    }
+
+    #[tokio::test]
+    async fn removed_email_subscription_does_not_reuse_its_old_cursor() {
+        let repos = test_repositories().await;
+        let removed = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("first email trigger");
+        repos
+            .replace_connector_trigger("job-2", "email_received", "user@example.com", "{}")
+            .await
+            .expect("peer email trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "100")
+            .await
+            .unwrap();
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "80")
+            .await
+            .unwrap();
+
+        assert!(repos
+            .delete_connector_trigger(&removed.id)
+            .await
+            .expect("remove subscription"));
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
+
+        repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("re-enable subscription");
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("100")
+        );
+
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "100")
+            .await
+            .unwrap();
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("switch trigger kind");
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
