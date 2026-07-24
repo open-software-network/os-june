@@ -1,4 +1,8 @@
 use serde::Deserialize;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -7,6 +11,16 @@ use tauri::{
 
 const TRAY_ID: &str = "agent-menu-bar";
 
+/// Set by `set_dictation_active` (called from the dictation seam) and read when
+/// rendering the tooltip. Independent of the agent-session state so a dictation
+/// edge can never clobber it.
+static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// The last agent-session state seen by the agent listener. The dictation
+/// listener needs it to re-render the tooltip (which carries both the agent
+/// status and the dictation indicator) without an agent payload of its own.
+static LAST_AGENT_STATE: Mutex<Option<AgentMenuBarState>> = Mutex::new(None);
+
 /// The June logo mark as a macOS template image (black glyph on transparent).
 /// The menu bar must show the same mark as the app icon, but the app icon itself
 /// can't be used
@@ -14,6 +28,9 @@ const TRAY_ID: &str = "agent-menu-bar";
 /// opaque squircle background becomes a solid blob instead of the glyph.
 const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-template.png");
 const AGENT_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:agent-state";
+/// Carries the native dictation indicator (a bare `true`/`false`) from the
+/// dictation seam to the tray, so all tray mutation stays inside this module.
+const DICTATION_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:dictation-state";
 const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "june:menu-bar:new-agent-session";
 const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "june:menu-bar:open-agent-session";
 const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT: &str = "june:menu-bar:set-agent-hud";
@@ -91,7 +108,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let initial_menu = build_menu(app, &initial_state)?;
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&initial_menu)
-        .tooltip(tray_tooltip(&initial_state))
+        .tooltip(tray_tooltip(&initial_state, false))
         .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event);
 
@@ -109,23 +126,55 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     }
 
     let tray = tray_builder.build(app)?;
-    update_tray(&tray, &initial_state);
+    update_tray(
+        &tray,
+        &initial_state,
+        DICTATION_ACTIVE.load(Ordering::SeqCst),
+    );
 
     let handle = app.handle().clone();
     app.listen_any(AGENT_MENU_BAR_STATE_EVENT, move |event| {
         let Ok(state) = serde_json::from_str::<AgentMenuBarState>(event.payload()) else {
             return;
         };
+        if let Ok(mut last) = LAST_AGENT_STATE.lock() {
+            *last = Some(state.clone());
+        }
         let Some(tray) = handle.tray_by_id(TRAY_ID) else {
             return;
         };
         if let Ok(menu) = build_menu(&handle, &state) {
             let _ = tray.set_menu(Some(menu));
         }
-        update_tray(&tray, &state);
+        update_tray(&tray, &state, DICTATION_ACTIVE.load(Ordering::SeqCst));
+    });
+
+    // A second, independent listener: the dictation indicator must never
+    // rebuild the menu or touch agent-session state. It only re-renders the
+    // tooltip from the last-seen agent state plus the new dictation flag.
+    let handle = app.handle().clone();
+    app.listen_any(DICTATION_MENU_BAR_STATE_EVENT, move |event| {
+        let active = event.payload() == "true";
+        DICTATION_ACTIVE.store(active, Ordering::SeqCst);
+        let Some(tray) = handle.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        let state = LAST_AGENT_STATE
+            .lock()
+            .ok()
+            .and_then(|last| last.clone())
+            .unwrap_or_default();
+        update_tray(&tray, &state, active);
     });
 
     Ok(())
+}
+
+/// Emits the current dictation-take state toward the tray. Called from the
+/// dictation seam (`dictation.rs`); routing through the event bus keeps every
+/// tray mutation inside this module. Safe to call off the main thread.
+pub fn set_dictation_active(app: &AppHandle, active: bool) {
+    let _ = app.emit(DICTATION_MENU_BAR_STATE_EVENT, active);
 }
 
 fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
@@ -240,12 +289,16 @@ where
     Ok(menu)
 }
 
-fn update_tray<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, state: &AgentMenuBarState) {
+fn update_tray<R: Runtime>(
+    tray: &tauri::tray::TrayIcon<R>,
+    state: &AgentMenuBarState,
+    dictation_active: bool,
+) {
     // Keep the macOS menu extra compact and logo-only. Status details live in
     // the tooltip and dropdown menu; setting a title renders a wide text item
     // beside the icon in the menu bar.
     let _ = tray.set_title::<&str>(None);
-    let _ = tray.set_tooltip(Some(tray_tooltip(state)));
+    let _ = tray.set_tooltip(Some(tray_tooltip(state, dictation_active)));
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -256,8 +309,13 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn tray_tooltip(state: &AgentMenuBarState) -> String {
+fn tray_tooltip(state: &AgentMenuBarState, dictation_active: bool) -> String {
     let status = status_label(state);
+    if dictation_active {
+        // Sentence case, plain hyphen — matches the existing tooltip and the
+        // repo copy specs.
+        return format!("June - Dictating - {status}");
+    }
     format!("June - {status}")
 }
 
@@ -355,6 +413,16 @@ fn escape_menu_text(value: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tooltip_shows_dictating_only_when_active() {
+        let state = AgentMenuBarState::default();
+        assert_eq!(tray_tooltip(&state, false), "June - No active sessions");
+        assert_eq!(
+            tray_tooltip(&state, true),
+            "June - Dictating - No active sessions"
+        );
+    }
 
     #[test]
     fn tray_template_icon_is_a_real_template_image() {

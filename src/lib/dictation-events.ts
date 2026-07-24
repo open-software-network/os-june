@@ -14,6 +14,10 @@ export function parseDictationHelperEvent(payload: unknown): DictationHelperEven
   }
 }
 
+// These two sets are mirrored in Rust by `indicator_action_for_event`
+// (src-tauri/src/dictation.rs) which drives the native menu-bar dictation
+// indicator. Keep the two in step, or the menu bar and the in-app state
+// disagree about whether a take is running. (No automated parity test yet.)
 const DICTATION_ACTIVE_EVENTS = new Set([
   "recording_ready",
   "listening_started",
