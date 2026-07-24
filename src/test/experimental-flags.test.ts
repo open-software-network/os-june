@@ -30,12 +30,16 @@ describe("experimental flags", () => {
   beforeEach(async () => {
     mocks.invoke.mockImplementation(async (command: string, input?: unknown) => {
       if (command === "experimental_flags_set") {
-        return (input as { request: { unlocked: boolean; browser_use: boolean } }).request;
+        return (
+          input as {
+            request: { unlocked: boolean; browser_use: boolean; turn_diagnostics: boolean };
+          }
+        ).request;
       }
-      return { unlocked: false, browser_use: false };
+      return { unlocked: false, browser_use: false, turn_diagnostics: false };
     });
     mocks.listen.mockResolvedValue(() => {});
-    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    await setExperimentalFlags({ unlocked: false, browser_use: false, turn_diagnostics: false });
   });
 
   it("unlocks on the seventh click inside the time window", () => {
@@ -68,7 +72,7 @@ describe("experimental flags", () => {
   it("renders Browser access requests when the cached override is enabled", async () => {
     expect(hasBrowserAccessRequest(BROWSER_ACCESS_REQUEST_TOKEN)).toBe(false);
 
-    await setExperimentalFlags({ unlocked: true, browser_use: true });
+    await setExperimentalFlags({ unlocked: true, browser_use: true, turn_diagnostics: false });
 
     expect(hasBrowserAccessRequest(BROWSER_ACCESS_REQUEST_TOKEN)).toBe(true);
   });
@@ -89,7 +93,7 @@ describe("experimental flags", () => {
     mocks.listen.mockReset();
     mocks.invoke
       .mockRejectedValueOnce(new Error("bridge unavailable"))
-      .mockResolvedValueOnce({ unlocked: true, browser_use: true });
+      .mockResolvedValueOnce({ unlocked: true, browser_use: true, turn_diagnostics: false });
     mocks.listen.mockResolvedValue(() => {});
     const flags = await import("../lib/experimental-flags");
 
@@ -97,6 +101,7 @@ describe("experimental flags", () => {
     expect(flags.getCachedExperimentalFlags()).toEqual({
       unlocked: false,
       browser_use: false,
+      turn_diagnostics: false,
     });
 
     const { result, unmount } = renderHook(() => flags.useExperimentalFlags());

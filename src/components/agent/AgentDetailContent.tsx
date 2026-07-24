@@ -1,10 +1,17 @@
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconStopCircle } from "central-icons/IconStopCircle";
-import { memo, useCallback, useMemo, useRef } from "react";
+import { memo, useCallback, useMemo, useRef, useSyncExternalStore } from "react";
 import { sessionUnrestricted } from "../../lib/agent-session-modes";
 import type { AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { upstreamProviderRecoveryStore } from "../../lib/upstream-provider-recovery";
+import {
+  formatTurnDiagnostics,
+  getTurnDiagnostics,
+  getTurnDiagnosticsVersion,
+  subscribeTurnDiagnostics,
+} from "../../lib/turn-diagnostics";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import { AgentThinking } from "./AgentThinking";
 import type { RenderAgentDetailContentDependencies } from "./AgentDetailContent-types";
 import { HermesTracePanel } from "./HermesTracePanel";
@@ -62,6 +69,32 @@ const StreamingAgentChatTurn = memo(function StreamingAgentChatTurn({
 }) {
   return renderTurn(turn);
 });
+
+/** Dev-only per-turn diagnostics line (JUN-436). Subscribes to the
+ * turn-diagnostics store and renders a concise timing/token summary after the
+ * last completed turn. Only renders when the experimental flag is on, the
+ * session has diagnostics, and the session is not actively running. */
+function TurnDiagnosticsLine({
+  sessionId,
+  sessionRunning,
+}: {
+  sessionId: string;
+  sessionRunning: boolean;
+}) {
+  useSyncExternalStore(
+    subscribeTurnDiagnostics,
+    getTurnDiagnosticsVersion,
+    getTurnDiagnosticsVersion,
+  );
+  if (sessionRunning) return null;
+  const diagnostics = getTurnDiagnostics(sessionId);
+  if (!diagnostics) return null;
+  return (
+    <div className="agent-turn-diagnostics" role="status" aria-label="Turn diagnostics">
+      {formatTurnDiagnostics(diagnostics)}
+    </div>
+  );
+}
 
 function AgentChatTranscriptRows({
   renderTurn,
@@ -489,6 +522,8 @@ export function AgentDetailContent(dependencies: RenderAgentDetailContentDepende
   );
 
   const closeGallery = useCallback(() => setGalleryDesired(false), []);
+  const experimentalFlags = useExperimentalFlags();
+  const turnDiagnosticsEnabled = experimentalFlags.turn_diagnostics;
   const openRawTrace = useCallback(
     (sessionId: string) => setRawTraceSession(sessionId),
     [setRawTraceSession],
@@ -541,6 +576,12 @@ export function AgentDetailContent(dependencies: RenderAgentDetailContentDepende
         onClose={closeRawTrace}
       />
       <AgentChatTranscriptRows turns={hermesTurns} renderTurn={renderHermesTurn} />
+      {turnDiagnosticsEnabled && selectedHermesSessionId ? (
+        <TurnDiagnosticsLine
+          sessionId={selectedHermesSessionId}
+          sessionRunning={workingSessionIds.has(selectedHermesSessionId)}
+        />
+      ) : null}
       {browserApprovalCards}
       <AgentThinking
         visible={

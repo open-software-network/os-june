@@ -3,6 +3,7 @@ import { markAgentRunSucceeded } from "../../lib/agent-run-monitor";
 import { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
   classifyHermesEvent,
+  createHermesMethods,
   hermesModeFor,
   isHermesStreamDelta,
   isTerminalHermesEvent,
@@ -11,12 +12,23 @@ import { unsupportedEventStore } from "../../lib/hermes-unsupported-events";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
 import { hermesArtifactStore } from "../../lib/hermes-artifact-store";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
+import { parseSessionUsage } from "../../lib/hermes-session-usage";
 import {
   rememberSessionThinkingLevel,
   thinkingEffortForLevel,
   thinkingLevelForEffort,
 } from "../../lib/thinking-level";
 import { appendHermesLiveEvent } from "../../lib/agent-chat-runtime";
+import { experimentalTurnDiagnosticsEnabled } from "../../lib/experimental-flags";
+import {
+  type TurnTimingState,
+  type TurnUsageSnapshot,
+  cacheSnapshotFromRaw,
+  clearTurnDiagnostics,
+  computeTurnDiagnostics,
+  publishTurnDiagnostics,
+  snapshotFromUsage,
+} from "../../lib/turn-diagnostics";
 import {
   agentActivityCountsFromStore,
   agentStatusSummaryFromHermesEvent,
@@ -64,6 +76,30 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
     let unlisten = () => {};
+    const turnDiagnosticsEnabled = experimentalTurnDiagnosticsEnabled();
+    const turnTiming: TurnTimingState | null = turnDiagnosticsEnabled
+      ? { submitAt: performance.now() }
+      : null;
+    let usageBefore: TurnUsageSnapshot | undefined;
+    if (turnDiagnosticsEnabled && turnTiming) {
+      // Clear any previous diagnostics so stale data from a prior run does not
+      // reappear while this run is in progress.
+      clearTurnDiagnostics(storedSessionId);
+      // Fire-and-forget: snapshot session usage before the prompt is submitted
+      // so we can delta against the post-turn snapshot. If the RPC races with
+      // the first event, the baseline stays undefined and token fields are
+      // omitted from the diagnostic (timing is still reported).
+      createHermesMethods(gateway)
+        .getSessionUsage({ sessionId: runtimeSessionId })
+        .then((raw) => {
+          const parsed = parseSessionUsage(runtimeSessionId, raw);
+          usageBefore = {
+            ...snapshotFromUsage(parsed),
+            ...cacheSnapshotFromRaw(raw),
+          };
+        })
+        .catch(() => undefined);
+    }
     const liveEventsBatch = createLeadingTrailingMicrobatch(
       () => setLiveEvents(liveEventsRef.current),
       HERMES_STREAM_STATE_BATCH_INTERVAL_MS,
@@ -76,6 +112,10 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     }, HERMES_STREAM_STATE_BATCH_INTERVAL_MS);
     const removeListener = gateway.onEvent((event) => {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
+      // Record the monotonic timestamp immediately at ingress, before any
+      // classification or store work, so timing boundaries are not inflated by
+      // main-thread processing.
+      const eventAt = performance.now();
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
       // Classify the raw frame once at ingress. Stores and transcript rendering
       // consume the typed event; the raw frame remains only for trace capture
@@ -87,6 +127,25 @@ export function createSessionEventListener(dependencies: createSessionEventListe
       // trace panel can reconstruct the session. recordInbound re-classifies and
       // sanitizes internally; nothing raw is retained.
       hermesTraceBuffer.recordInbound(liveEvent, { storedSessionId });
+      // JUN-436: capture per-turn timing boundaries for diagnostics.
+      if (turnTiming) {
+        if (
+          turnTiming.firstTokenAt === undefined &&
+          classified.kind === "transcript" &&
+          typeof classified.delta === "string" &&
+          classified.delta.length > 0 &&
+          !classified.complete
+        ) {
+          turnTiming.firstTokenAt = eventAt;
+        }
+        if (
+          classified.kind === "transcript" &&
+          classified.complete === true &&
+          classified.failed !== true
+        ) {
+          turnTiming.lastMessageCompleteAt = eventAt;
+        }
+      }
       // The runtime's session.info is the source of truth for the effort a
       // session ACTUALLY runs at (emitted after every build and on every
       // live retune): hydrate the per-session record from it so the composer
@@ -240,6 +299,32 @@ export function createSessionEventListener(dependencies: createSessionEventListe
           void releaseAllComputerUseRuns(storedSessionId);
         }
         unlisten();
+        // JUN-436: finalize per-turn diagnostics. Record the terminal timestamp
+        // from the ingress clock and fetch post-turn usage to compute the delta.
+        // Published async when the usage RPC resolves; if it fails, no
+        // diagnostics appear for this turn.
+        if (turnTiming) {
+          turnTiming.terminalAt = eventAt;
+          const finalizedTiming = { ...turnTiming };
+          createHermesMethods(gateway)
+            .getSessionUsage({ sessionId: runtimeSessionId })
+            .then((raw) => {
+              const parsed = parseSessionUsage(runtimeSessionId, raw);
+              const usageAfter: TurnUsageSnapshot = {
+                ...snapshotFromUsage(parsed),
+                ...cacheSnapshotFromRaw(raw),
+              };
+              const diagnostics = computeTurnDiagnostics(
+                finalizedTiming,
+                usageBefore ?? {},
+                usageAfter,
+              );
+              if (diagnostics) {
+                publishTurnDiagnostics(storedSessionId, diagnostics);
+              }
+            })
+            .catch(() => undefined);
+        }
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }

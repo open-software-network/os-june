@@ -665,7 +665,7 @@ describe("AppSettings", () => {
 
   it("shows the experimental restart action under React Strict Mode", async () => {
     const user = userEvent.setup();
-    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    await setExperimentalFlags({ unlocked: false, browser_use: false, turn_diagnostics: false });
     render(
       <StrictMode>
         <AppSettings
@@ -690,12 +690,12 @@ describe("AppSettings", () => {
     await user.click(screen.getByRole("switch", { name: "Enable experimental Browser use" }));
 
     expect(await screen.findByRole("button", { name: "Restart agent" })).toBeInTheDocument();
-    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    await setExperimentalFlags({ unlocked: false, browser_use: false, turn_diagnostics: false });
   });
 
   it("shows the experimental restart action when Browser use is turned off", async () => {
     const user = userEvent.setup();
-    await setExperimentalFlags({ unlocked: true, browser_use: true });
+    await setExperimentalFlags({ unlocked: true, browser_use: true, turn_diagnostics: false });
     render(
       <AppSettings
         account={signedInAccount}
@@ -721,7 +721,7 @@ describe("AppSettings", () => {
     expect(
       screen.getByText("Turning it off applies fully after June restarts.", { exact: false }),
     ).toBeInTheDocument();
-    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    await setExperimentalFlags({ unlocked: false, browser_use: false, turn_diagnostics: false });
   });
 
   it("locks experimental controls while an operation is in progress", async () => {
@@ -733,7 +733,7 @@ describe("AppSettings", () => {
           finishUnpack = resolve;
         }),
     );
-    await setExperimentalFlags({ unlocked: true, browser_use: false });
+    await setExperimentalFlags({ unlocked: true, browser_use: false, turn_diagnostics: false });
     render(
       <AppSettings
         account={signedInAccount}
@@ -761,7 +761,7 @@ describe("AppSettings", () => {
     await act(async () => finishUnpack?.("/tmp/extension-unpacked"));
     await waitFor(() => expect(hide).toBeEnabled());
     expect(browserUse).toBeEnabled();
-    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    await setExperimentalFlags({ unlocked: false, browser_use: false, turn_diagnostics: false });
   });
 
   it("opens checkout from Upgrade in billing settings", async () => {

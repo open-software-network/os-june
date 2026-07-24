@@ -8,6 +8,7 @@ export const EXPERIMENTAL_FLAGS_CHANGED_EVENT = "experimental-flags-changed";
 export type ExperimentalFlags = {
   unlocked: boolean;
   browser_use: boolean;
+  turn_diagnostics: boolean;
 };
 
 type ExperimentalFlagsCache = ExperimentalFlags & {
@@ -21,6 +22,7 @@ export type ExperimentalFlagsSnapshot = ExperimentalFlagsCache & {
 const DEFAULT_FLAGS: ExperimentalFlags = {
   unlocked: false,
   browser_use: false,
+  turn_diagnostics: false,
 };
 
 let cache: ExperimentalFlagsCache = { ...DEFAULT_FLAGS, loaded: false };
@@ -33,6 +35,7 @@ function normalizeFlags(flags: ExperimentalFlags): ExperimentalFlags {
   return {
     unlocked: flags?.unlocked === true,
     browser_use: flags?.browser_use === true,
+    turn_diagnostics: flags?.turn_diagnostics === true,
   };
 }
 
@@ -41,6 +44,7 @@ function publish(flags: ExperimentalFlags, loaded = true) {
   if (
     cache.unlocked === normalized.unlocked &&
     cache.browser_use === normalized.browser_use &&
+    cache.turn_diagnostics === normalized.turn_diagnostics &&
     cache.loaded === loaded
   ) {
     return;
@@ -108,10 +112,16 @@ export function experimentalBrowserUseEnabled() {
   return BROWSER_USE_ENABLED || cache.browser_use;
 }
 
+/** Synchronous effective value for the per-turn diagnostics flag. */
+export function experimentalTurnDiagnosticsEnabled() {
+  return cache.turn_diagnostics;
+}
+
 export function getCachedExperimentalFlags(): ExperimentalFlags {
   return {
     unlocked: cache.unlocked,
     browser_use: cache.browser_use,
+    turn_diagnostics: cache.turn_diagnostics,
   };
 }
 
