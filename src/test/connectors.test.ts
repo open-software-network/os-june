@@ -267,6 +267,12 @@ describe("connector server and action presentation", () => {
   it("labels native action identities and preserves colliding tool ids", () => {
     expect(actionToolLabel(policy, "add_comment", "june_linear_actions")).toBe("Comment on issues");
     expect(actionToolLabel(policy, "add_comment", "june_github_actions")).toBe("Add comment");
+    expect(actionToolLabel(policy, "notion-create-pages", "june_notion_actions")).toBe(
+      "Create Notion pages",
+    );
+    expect(actionToolLabel(policy, "notion-update-page", "june_notion_actions")).toBe(
+      "Update Notion pages",
+    );
     expect(actionToolLabel(policy, "create_issue")).toBe("Create issues");
     expect(actionToolLabel(policy, "do_thing", "june_github_actions")).toBe("do thing");
     expect(

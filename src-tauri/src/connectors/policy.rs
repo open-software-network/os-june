@@ -989,4 +989,17 @@ mod tests {
         assert_eq!(value["actionTools"][0]["server"], JUNE_GMAIL_ACTIONS_SERVER);
         assert_eq!(value["triggers"][0]["requiredBundles"][0], "gmail_read");
     }
+
+    #[test]
+    fn committed_renderer_snapshot_matches_native_catalog() {
+        let snapshot = include_str!("../../../src/test/fixtures/connector-policy.json");
+        let snapshot: serde_json::Value =
+            serde_json::from_str(snapshot).expect("parse committed connector policy snapshot");
+        let native = serde_json::to_value(catalog()).expect("serialize native connector policy");
+
+        assert_eq!(
+            snapshot, native,
+            "refresh the shared connector policy snapshot after changing the native catalog"
+        );
+    }
 }
