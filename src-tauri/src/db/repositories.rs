@@ -885,44 +885,91 @@ impl Repositories {
         Ok(rows.into_iter().map(connector_trigger_from_row).collect())
     }
 
-    /// Set the trigger for a routine. A routine has exactly one trigger, so any
-    /// existing trigger for the job (whatever its kind or account) is removed
-    /// first: without this, editing a routine from `email_received` to
-    /// `event_upcoming` (or to another account) would leave the old row behind,
-    /// and the daemon would fire the routine from both.
-    pub async fn set_connector_trigger(
+    /// Replace the trigger for a routine and, when this creates an account's
+    /// first email subscription, reset its Gmail history cursor atomically.
+    ///
+    /// `BEGIN IMMEDIATE` serializes competing replacements before the
+    /// first-subscription check. Readers therefore observe either the complete
+    /// old trigger+cursor state or the complete new state, and a failed write
+    /// rolls both pieces back together.
+    pub async fn replace_connector_trigger(
         &self,
         job_id: &str,
         kind: &str,
         account_id: &str,
         config_json: &str,
     ) -> Result<ConnectorTriggerRecord, sqlx::error::Error> {
-        query("DELETE FROM connector_triggers WHERE job_id = ?")
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let replace_result = async {
+            // Check before deleting this job's old trigger. Editing an existing
+            // email subscription for the same account must retain its cursor;
+            // only the account's first active email subscription re-baselines.
+            let reset_email_cursor = kind == "email_received"
+                && query(
+                    "SELECT 1
+                     FROM connector_triggers
+                     WHERE kind = 'email_received' AND account_id = ?
+                     LIMIT 1",
+                )
+                .bind(account_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .is_none();
+
+            query("DELETE FROM connector_triggers WHERE job_id = ?")
+                .bind(job_id)
+                .execute(&mut *transaction)
+                .await?;
+
+            let id = Uuid::new_v4().to_string();
+            let now = timestamp();
+            query(
+                "INSERT INTO connector_triggers (id, job_id, kind, account_id, config, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&id)
             .bind(job_id)
-            .execute(&self.pool)
+            .bind(kind)
+            .bind(account_id)
+            .bind(config_json)
+            .bind(&now)
+            .execute(&mut *transaction)
             .await?;
-        let id = Uuid::new_v4().to_string();
-        let now = timestamp();
-        query(
-            "INSERT INTO connector_triggers (id, job_id, kind, account_id, config, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(job_id)
-        .bind(kind)
-        .bind(account_id)
-        .bind(config_json)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        let row = query(
-            "SELECT id, job_id, kind, account_id, config, created_at
-             FROM connector_triggers WHERE id = ?",
-        )
-        .bind(&id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(connector_trigger_from_row(row))
+
+            if reset_email_cursor {
+                query(
+                    "DELETE FROM trigger_cursors
+                     WHERE account_id = ? AND kind = 'email_received'",
+                )
+                .bind(account_id)
+                .execute(&mut *transaction)
+                .await?;
+            }
+
+            let row = query(
+                "SELECT id, job_id, kind, account_id, config, created_at
+                 FROM connector_triggers WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_one(&mut *transaction)
+            .await?;
+            Ok(connector_trigger_from_row(row))
+        }
+        .await;
+
+        match replace_result {
+            Ok(record) => {
+                transaction.commit().await?;
+                Ok(record)
+            }
+            Err(error) => match transaction.rollback().await {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(sqlx::Error::Protocol(format!(
+                    "connector trigger replacement failed ({error}); rollback also failed \
+                     ({rollback_error})"
+                ))),
+            },
+        }
     }
 
     pub async fn delete_connector_trigger(&self, id: &str) -> Result<bool, sqlx::error::Error> {
@@ -3123,17 +3170,20 @@ impl Repositories {
         note_id: &str,
         status: ProcessingStatus,
         last_error: Option<String>,
-    ) -> Result<(), sqlx::error::Error> {
-        query(
-            "UPDATE notes SET processing_status = ?, last_error = ?, updated_at = ? WHERE id = ?",
+    ) -> Result<String, sqlx::error::Error> {
+        let row = query(
+            "UPDATE notes
+             SET processing_status = ?, last_error = ?, updated_at = ?
+             WHERE id = ?
+             RETURNING updated_at",
         )
         .bind(status.as_db())
         .bind(last_error)
         .bind(timestamp())
         .bind(note_id)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
-        Ok(())
+        Ok(row.get("updated_at"))
     }
 
     pub async fn set_note_transcription_warning(
@@ -6243,9 +6293,11 @@ mod tests {
     };
     use sqlx::query::query;
     use sqlx::row::Row;
+    use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+    use std::time::Duration as StdDuration;
 
     async fn test_repositories() -> Repositories {
-        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+        let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
@@ -6254,6 +6306,24 @@ mod tests {
             .await
             .expect("migrations");
         Repositories::new(pool)
+    }
+
+    async fn concurrent_test_repositories() -> (tempfile::TempDir, Repositories) {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let options = SqliteConnectOptions::new()
+            .filename(directory.path().join("connector-concurrency.sqlite3"))
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(StdDuration::from_secs(2));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .expect("file-backed sqlite");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        (directory, Repositories::new(pool))
     }
 
     fn scopes(values: &[&str]) -> Vec<String> {
@@ -8091,7 +8161,7 @@ mod tests {
             .await
             .expect("insert account");
         repos
-            .set_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
             .await
             .expect("set trigger");
         repos
@@ -8503,7 +8573,7 @@ mod tests {
             .await
             .expect("account");
         repos
-            .set_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
             .await
             .expect("trigger");
         repos
@@ -8620,10 +8690,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connector_trigger_set_keeps_one_trigger_per_job() {
+    async fn connector_trigger_replacement_keeps_one_trigger_per_job() {
         let repos = test_repositories().await;
         let first = repos
-            .set_connector_trigger(
+            .replace_connector_trigger(
                 "job-1",
                 "email_received",
                 "user@example.com",
@@ -8635,7 +8705,7 @@ mod tests {
         // Changing the kind (or account) replaces the routine's single trigger
         // rather than adding a second row the daemon would also fire.
         let replaced = repos
-            .set_connector_trigger("job-1", "event_upcoming", "other@example.com", "{}")
+            .replace_connector_trigger("job-1", "event_upcoming", "other@example.com", "{}")
             .await
             .expect("replace trigger");
         assert_ne!(first.id, replaced.id);
@@ -8662,6 +8732,238 @@ mod tests {
             .await
             .expect("list after delete")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn connector_trigger_failure_after_delete_rolls_back_old_state() {
+        let repos = test_repositories().await;
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("old trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "stale-50")
+            .await
+            .expect("stale cursor");
+        query(
+            "CREATE TRIGGER fail_connector_trigger_after_delete
+             AFTER DELETE ON connector_triggers
+             WHEN OLD.job_id = 'job-1'
+             BEGIN
+               SELECT RAISE(ABORT, 'injected failure after trigger delete');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("fault trigger");
+
+        let error = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect_err("replacement must fail");
+        assert!(error.to_string().contains("injected failure"));
+
+        let triggers = repos
+            .list_connector_triggers(Some("job-1"))
+            .await
+            .expect("old trigger after rollback");
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].kind, "event_upcoming");
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .expect("old cursor after rollback")
+                .as_deref(),
+            Some("stale-50")
+        );
+    }
+
+    #[tokio::test]
+    async fn connector_trigger_failure_before_cursor_reset_rolls_back_new_trigger() {
+        let repos = test_repositories().await;
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("old trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "stale-50")
+            .await
+            .expect("stale cursor");
+        query(
+            "CREATE TRIGGER fail_email_cursor_reset
+             BEFORE DELETE ON trigger_cursors
+             WHEN OLD.account_id = 'user@example.com' AND OLD.kind = 'email_received'
+             BEGIN
+               SELECT RAISE(ABORT, 'injected failure before cursor reset');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("fault trigger");
+
+        let error = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect_err("replacement must fail");
+        assert!(error.to_string().contains("injected failure"));
+
+        let triggers = repos
+            .list_connector_triggers(Some("job-1"))
+            .await
+            .expect("old trigger after rollback");
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].kind, "event_upcoming");
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .expect("old cursor after rollback")
+                .as_deref(),
+            Some("stale-50")
+        );
+    }
+
+    async fn simulate_email_poll(
+        repos: &Repositories,
+        current_history_id: u64,
+        message_history_ids: &[u64],
+    ) -> usize {
+        let Some(cursor) = repos
+            .trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("read simulated poll cursor")
+        else {
+            repos
+                .set_trigger_cursor(
+                    "user@example.com",
+                    "email_received",
+                    &current_history_id.to_string(),
+                )
+                .await
+                .expect("seed simulated poll cursor");
+            return 0;
+        };
+        let cursor: u64 = cursor.parse().expect("numeric test cursor");
+        let fire_count = usize::from(
+            message_history_ids
+                .iter()
+                .any(|history_id| *history_id > cursor),
+        );
+        repos
+            .set_trigger_cursor(
+                "user@example.com",
+                "email_received",
+                &current_history_id.to_string(),
+            )
+            .await
+            .expect("advance simulated poll cursor");
+        fire_count
+    }
+
+    #[tokio::test]
+    async fn first_email_after_trigger_replacement_fires_exactly_once() {
+        let repos = test_repositories().await;
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("old event trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "50")
+            .await
+            .expect("stale cursor");
+
+        repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("first email subscription");
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("cursor reset")
+            .is_none());
+
+        let mut fire_count = simulate_email_poll(&repos, 100, &[]).await;
+        fire_count += simulate_email_poll(&repos, 101, &[101]).await;
+        fire_count += simulate_email_poll(&repos, 101, &[101]).await;
+
+        // Editing an existing subscription is a replacement, not a reconnect:
+        // retaining cursor 101 prevents the already-fired mail from repeating.
+        repos
+            .replace_connector_trigger(
+                "job-1",
+                "email_received",
+                "user@example.com",
+                r#"{"query":"is:unread"}"#,
+            )
+            .await
+            .expect("edit email trigger");
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .expect("cursor retained")
+                .as_deref(),
+            Some("101")
+        );
+        fire_count += simulate_email_poll(&repos, 101, &[101]).await;
+        assert_eq!(fire_count, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_poll_snapshot_sees_no_trigger_cursor_half_state() {
+        let (_directory, repos) = concurrent_test_repositories().await;
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("old event trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "stale-50")
+            .await
+            .expect("stale cursor");
+
+        let mut poll_snapshot = repos.pool.begin().await.expect("poll snapshot");
+        let old_kind: String = query("SELECT kind FROM connector_triggers WHERE job_id = 'job-1'")
+            .fetch_one(&mut *poll_snapshot)
+            .await
+            .expect("old trigger in snapshot")
+            .get("kind");
+        assert_eq!(old_kind, "event_upcoming");
+
+        repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("concurrent replacement");
+
+        let snapshot_kind: String =
+            query("SELECT kind FROM connector_triggers WHERE job_id = 'job-1'")
+                .fetch_one(&mut *poll_snapshot)
+                .await
+                .expect("stable trigger snapshot")
+                .get("kind");
+        let snapshot_cursor: String = query(
+            "SELECT cursor FROM trigger_cursors
+             WHERE account_id = 'user@example.com' AND kind = 'email_received'",
+        )
+        .fetch_one(&mut *poll_snapshot)
+        .await
+        .expect("stable cursor snapshot")
+        .get("cursor");
+        assert_eq!(snapshot_kind, "event_upcoming");
+        assert_eq!(snapshot_cursor, "stale-50");
+        poll_snapshot.commit().await.expect("finish poll snapshot");
+
+        let triggers = repos
+            .list_connector_triggers(Some("job-1"))
+            .await
+            .expect("new trigger");
+        assert_eq!(triggers.len(), 1);
+        assert_eq!(triggers[0].kind, "email_received");
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received")
+            .await
+            .expect("new cursor state")
+            .is_none());
     }
 
     #[tokio::test]

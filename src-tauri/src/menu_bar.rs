@@ -1,4 +1,8 @@
 use serde::Deserialize;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -7,13 +11,43 @@ use tauri::{
 
 const TRAY_ID: &str = "agent-menu-bar";
 
+/// Set by `set_dictation_active` (called from the dictation seam) and read when
+/// rendering the tray. Independent of the agent-session state so a dictation
+/// edge can never clobber it.
+static DICTATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Set by `set_meeting_recording_active` (called from the meeting-HUD capture
+/// supervisor) — true while a note recording is actively capturing. Independent
+/// of `DICTATION_ACTIVE`: both can be on at once (dictation during a recording),
+/// and the red dot shows if either is.
+static MEETING_RECORDING_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// The last agent-session state seen by the agent listener. The dictation
+/// listener needs it to re-render the tooltip (which carries both the agent
+/// status and the dictation indicator) without an agent payload of its own.
+static LAST_AGENT_STATE: Mutex<Option<AgentMenuBarState>> = Mutex::new(None);
+
 /// The June logo mark as a macOS template image (black glyph on transparent).
 /// The menu bar must show the same mark as the app icon, but the app icon itself
 /// can't be used
 /// directly: template rendering keeps only the alpha channel, so the icon's
 /// opaque squircle background becomes a solid blob instead of the glyph.
 const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-template.png");
+/// Shown while a dictation take runs: June's "≈" wave plus a red recording dot.
+/// Unlike the logo these are full-colour (NON-template) images, because macOS
+/// flattens a template image to monochrome and would drop the red. That is why
+/// there are two — one per menu-bar appearance — selected by `menu_bar_is_dark`:
+/// a white wave for a dark bar, a black wave for a light one.
+const TRAY_ICON_DICTATING_DARK_PNG: &[u8] = include_bytes!("../icons/tray-icon-dictating-dark.png");
+const TRAY_ICON_DICTATING_LIGHT_PNG: &[u8] =
+    include_bytes!("../icons/tray-icon-dictating-light.png");
 const AGENT_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:agent-state";
+/// Carries the native dictation indicator (a bare `true`/`false`) from the
+/// dictation seam to the tray, so all tray mutation stays inside this module.
+const DICTATION_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:dictation-state";
+/// Carries the note-recording indicator (a bare `true`/`false`) from the capture
+/// supervisor to the tray. Same rationale as the dictation event.
+const MEETING_RECORDING_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:recording-state";
 const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "june:menu-bar:new-agent-session";
 const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "june:menu-bar:open-agent-session";
 const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT: &str = "june:menu-bar:set-agent-hud";
@@ -91,7 +125,7 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     let initial_menu = build_menu(app, &initial_state)?;
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&initial_menu)
-        .tooltip(tray_tooltip(&initial_state))
+        .tooltip(tray_tooltip(&initial_state, false, false))
         .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event);
 
@@ -109,23 +143,70 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
     }
 
     let tray = tray_builder.build(app)?;
-    update_tray(&tray, &initial_state);
+    update_tray(app.handle(), &tray, &initial_state);
 
     let handle = app.handle().clone();
     app.listen_any(AGENT_MENU_BAR_STATE_EVENT, move |event| {
         let Ok(state) = serde_json::from_str::<AgentMenuBarState>(event.payload()) else {
             return;
         };
+        if let Ok(mut last) = LAST_AGENT_STATE.lock() {
+            *last = Some(state.clone());
+        }
         let Some(tray) = handle.tray_by_id(TRAY_ID) else {
             return;
         };
         if let Ok(menu) = build_menu(&handle, &state) {
             let _ = tray.set_menu(Some(menu));
         }
-        update_tray(&tray, &state);
+        update_tray(&handle, &tray, &state);
+    });
+
+    // Independent listeners for the recording indicators: they must never
+    // rebuild the menu or touch agent-session state, only re-render the tray
+    // (icon + tooltip) from the last-seen agent state plus their own flag.
+    let handle = app.handle().clone();
+    app.listen_any(DICTATION_MENU_BAR_STATE_EVENT, move |event| {
+        DICTATION_ACTIVE.store(event.payload() == "true", Ordering::SeqCst);
+        refresh_tray(&handle);
+    });
+
+    let handle = app.handle().clone();
+    app.listen_any(MEETING_RECORDING_MENU_BAR_STATE_EVENT, move |event| {
+        MEETING_RECORDING_ACTIVE.store(event.payload() == "true", Ordering::SeqCst);
+        refresh_tray(&handle);
     });
 
     Ok(())
+}
+
+/// Re-renders the tray from the current cached agent state and the recording
+/// flags. Used by the dictation and recording listeners, which only change a
+/// flag and never the menu or agent state.
+fn refresh_tray(app: &AppHandle) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    let state = LAST_AGENT_STATE
+        .lock()
+        .ok()
+        .and_then(|last| last.clone())
+        .unwrap_or_default();
+    update_tray(app, &tray, &state);
+}
+
+/// Emits the current dictation-take state toward the tray. Called from the
+/// dictation seam (`dictation.rs`); routing through the event bus keeps every
+/// tray mutation inside this module. Safe to call off the main thread.
+pub fn set_dictation_active(app: &AppHandle, active: bool) {
+    let _ = app.emit(DICTATION_MENU_BAR_STATE_EVENT, active);
+}
+
+/// Emits the current note-recording state toward the tray. Called from the
+/// meeting-HUD capture supervisor (`meeting_hud.rs`). Same event-bus routing and
+/// off-main-thread safety as `set_dictation_active`.
+pub fn set_meeting_recording_active(app: &AppHandle, active: bool) {
+    let _ = app.emit(MEETING_RECORDING_MENU_BAR_STATE_EVENT, active);
 }
 
 fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
@@ -240,12 +321,60 @@ where
     Ok(menu)
 }
 
-fn update_tray<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, state: &AgentMenuBarState) {
+fn update_tray<R: Runtime>(
+    app: &AppHandle<R>,
+    tray: &tauri::tray::TrayIcon<R>,
+    state: &AgentMenuBarState,
+) {
+    let dictation_active = DICTATION_ACTIVE.load(Ordering::SeqCst);
+    let recording_active = MEETING_RECORDING_ACTIVE.load(Ordering::SeqCst);
     // Keep the macOS menu extra compact and logo-only. Status details live in
     // the tooltip and dropdown menu; setting a title renders a wide text item
     // beside the icon in the menu bar.
     let _ = tray.set_title::<&str>(None);
-    let _ = tray.set_tooltip(Some(tray_tooltip(state)));
+    let _ = tray.set_tooltip(Some(tray_tooltip(
+        state,
+        dictation_active,
+        recording_active,
+    )));
+    // The red recording dot shows while either activity is capturing audio.
+    apply_tray_icon(app, tray, dictation_active || recording_active);
+}
+
+/// While recording or dictating, show the full-colour "≈ + red dot" mark (so the
+/// dot stays red) matched to the menu-bar appearance; otherwise the adaptive
+/// monochrome logo template. On a decode failure the current icon is left in
+/// place — a stale-but-present icon beats a missing one.
+fn apply_tray_icon<R: Runtime>(
+    app: &AppHandle<R>,
+    tray: &tauri::tray::TrayIcon<R>,
+    show_recording_dot: bool,
+) {
+    let (bytes, is_template) = if show_recording_dot {
+        let bytes = if menu_bar_is_dark(app) {
+            TRAY_ICON_DICTATING_DARK_PNG
+        } else {
+            TRAY_ICON_DICTATING_LIGHT_PNG
+        };
+        (bytes, false)
+    } else {
+        (TRAY_ICON_TEMPLATE_PNG, true)
+    };
+    if let Ok(icon) = tauri::image::Image::from_bytes(bytes) {
+        // Atomic on macOS (no icon+template flicker); falls back to set_icon
+        // on other platforms.
+        let _ = tray.set_icon_with_as_template(Some(icon), is_template);
+    }
+}
+
+/// Whether the menu bar renders dark, so the dictating icon can pick the
+/// matching full-colour variant. Follows the main window's effective appearance
+/// (which tracks the system Light/Dark setting); defaults to dark if unknown.
+fn menu_bar_is_dark<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window("main")
+        .and_then(|window| window.theme().ok())
+        .map(|theme| theme == tauri::Theme::Dark)
+        .unwrap_or(true)
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -256,9 +385,21 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn tray_tooltip(state: &AgentMenuBarState) -> String {
+fn tray_tooltip(
+    state: &AgentMenuBarState,
+    dictation_active: bool,
+    recording_active: bool,
+) -> String {
     let status = status_label(state);
-    format!("June - {status}")
+    // Sentence case, plain hyphens — matches the existing tooltip and the repo
+    // copy specs.
+    let activity = match (recording_active, dictation_active) {
+        (true, true) => "Recording and dictating - ",
+        (true, false) => "Recording - ",
+        (false, true) => "Dictating - ",
+        (false, false) => "",
+    };
+    format!("June - {activity}{status}")
 }
 
 fn status_label(state: &AgentMenuBarState) -> String {
@@ -357,13 +498,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tray_template_icon_is_a_real_template_image() {
+    fn tooltip_reflects_recording_and_dictation() {
+        let s = AgentMenuBarState::default();
+        // (dictation, recording)
+        assert_eq!(tray_tooltip(&s, false, false), "June - No active sessions");
+        assert_eq!(
+            tray_tooltip(&s, true, false),
+            "June - Dictating - No active sessions"
+        );
+        assert_eq!(
+            tray_tooltip(&s, false, true),
+            "June - Recording - No active sessions"
+        );
+        assert_eq!(
+            tray_tooltip(&s, true, true),
+            "June - Recording and dictating - No active sessions"
+        );
+    }
+
+    #[test]
+    fn logo_tray_icon_is_a_real_template_image() {
         let icon = tauri::image::Image::from_bytes(TRAY_ICON_TEMPLATE_PNG)
-            .expect("embedded tray template PNG must decode");
-        assert_eq!(icon.width(), icon.height(), "menu bar icons are square");
-        // macOS template rendering uses only the alpha channel: the mark must
-        // be opaque and the background transparent, or the menu bar shows a
-        // solid blob (the bug this asset exists to fix). Both must be present.
+            .expect("embedded logo tray template PNG must decode");
+        assert_eq!(icon.width(), icon.height(), "menu bar icon must be square");
+        // macOS template rendering uses only the alpha channel: the mark must be
+        // opaque and the background transparent, or the menu bar shows a solid
+        // blob (the bug this asset exists to fix). Both must be present.
         let alphas: Vec<u8> = icon.rgba().chunks(4).map(|px| px[3]).collect();
         assert!(
             alphas.contains(&0),
@@ -375,6 +535,32 @@ mod tests {
         let side = icon.width() as usize;
         for corner in [0, side - 1, side * (side - 1), side * side - 1] {
             assert_eq!(alphas[corner], 0, "corner pixels must be transparent");
+        }
+    }
+
+    #[test]
+    fn dictating_tray_icons_carry_a_red_recording_dot() {
+        // These are deliberately full-colour (NON-template) so the dot renders
+        // red; a template would flatten it to monochrome. One variant per
+        // menu-bar appearance.
+        for (name, bytes) in [
+            ("dark", TRAY_ICON_DICTATING_DARK_PNG),
+            ("light", TRAY_ICON_DICTATING_LIGHT_PNG),
+        ] {
+            let icon = tauri::image::Image::from_bytes(bytes)
+                .unwrap_or_else(|_| panic!("embedded {name} dictating PNG must decode"));
+            assert_eq!(icon.width(), icon.height(), "{name} icon must be square");
+            let rgba = icon.rgba();
+            let side = icon.width() as usize;
+            // Corners transparent — the wave and dot sit inside the canvas.
+            for corner in [0, side - 1, side * (side - 1), side * side - 1] {
+                assert_eq!(rgba[corner * 4 + 3], 0, "{name} corner must be transparent");
+            }
+            // A clearly red, opaque pixel exists: the recording dot.
+            let has_red = rgba
+                .chunks(4)
+                .any(|px| px[3] > 200 && px[0] > 200 && px[1] < 100 && px[2] < 100);
+            assert!(has_red, "{name} icon must contain a red recording dot");
         }
     }
 }

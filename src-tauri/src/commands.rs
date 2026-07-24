@@ -20,8 +20,9 @@ use crate::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::{
         processing::{
-            add_latency_checkpoint, manual_notes_for_generation, process_saved_source_audio,
-            ProcessingTiming,
+            add_latency_checkpoint, manual_notes_for_generation,
+            process_saved_source_audio_with_progress, NoteProcessingProgressReporter,
+            ProcessingTiming, NOTE_PROCESSING_PROGRESS_EVENT,
         },
         processing_queue,
         types::{
@@ -1940,7 +1941,7 @@ async fn start_recording_inner(
         }
     }
     if finish_existing_capture {
-        finish_active_capture_before_start(&repos).await?;
+        finish_active_capture_before_start(&app, &repos).await?;
     } else if is_capture_active() {
         return Err(AppError::new(
             "recording_already_active",
@@ -2359,6 +2360,15 @@ async fn persist_recording_recovery_state(
     Ok(())
 }
 
+fn note_processing_progress_reporter(app: &AppHandle) -> NoteProcessingProgressReporter {
+    let app = app.clone();
+    NoteProcessingProgressReporter::new(move |progress| {
+        if let Err(error) = app.emit(NOTE_PROCESSING_PROGRESS_EVENT, progress) {
+            tracing::warn!(%error, "failed to emit note processing progress");
+        }
+    })
+}
+
 #[tauri::command]
 pub async fn finish_recording(
     app: AppHandle,
@@ -2368,9 +2378,14 @@ pub async fn finish_recording(
     let repos = repositories(&app).await?;
     let finalization_started = Instant::now();
     let finished = finish_capture(&request.session_id)?;
-    let response =
-        finish_recording_session_with_timing(&repos, finished, finalization_started, timing)
-            .await?;
+    let response = finish_recording_session_with_timing(
+        &repos,
+        finished,
+        finalization_started,
+        timing,
+        note_processing_progress_reporter(&app),
+    )
+    .await?;
     if response.processing_started {
         crate::p3a::record_question_best_effort(
             app,
@@ -2380,14 +2395,25 @@ pub async fn finish_recording(
     Ok(response)
 }
 
-async fn finish_active_capture_before_start(repos: &Repositories) -> Result<(), AppError> {
+async fn finish_active_capture_before_start(
+    app: &AppHandle,
+    repos: &Repositories,
+) -> Result<(), AppError> {
     let finalization_started = Instant::now();
     if let Some(finished) = finish_active_capture()? {
-        finish_recording_session(repos, finished, finalization_started).await?;
+        finish_recording_session_with_timing(
+            repos,
+            finished,
+            finalization_started,
+            ProcessingTiming::untracked(),
+            note_processing_progress_reporter(app),
+        )
+        .await?;
     }
     Ok(())
 }
 
+#[cfg(test)]
 async fn finish_recording_session(
     repos: &Repositories,
     finished: crate::audio::capture::FinishedRecording,
@@ -2398,6 +2424,7 @@ async fn finish_recording_session(
         finished,
         finalization_started,
         ProcessingTiming::untracked(),
+        NoteProcessingProgressReporter::default(),
     )
     .await
 }
@@ -2407,6 +2434,7 @@ async fn finish_recording_session_with_timing(
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
     timing: ProcessingTiming,
+    progress: NoteProcessingProgressReporter,
 ) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
@@ -2770,7 +2798,7 @@ async fn finish_recording_session_with_timing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = process_saved_source_audio(
+        let _ = process_saved_source_audio_with_progress(
             &task_repos,
             &task_note_id,
             &task_session_id,
@@ -2780,17 +2808,9 @@ async fn finish_recording_session_with_timing(
             existing_generated_note,
             manual_notes,
             timing,
+            progress.clone(),
         )
         .await;
-        if let Err(error) = result {
-            let _ = task_repos
-                .set_note_status(
-                    &task_note_id,
-                    crate::domain::types::ProcessingStatus::Failed,
-                    Some(error.message),
-                )
-                .await;
-        }
         ticket.finish();
     });
     Ok(FinishRecordingResponse {
@@ -2982,6 +3002,7 @@ pub async fn retry_processing(
         .recording_session_source_mode(&task_recording_session_id)
         .await?
         .unwrap_or(RecordingSourceMode::MicrophoneOnly);
+    let progress = note_processing_progress_reporter(&app);
     tokio::spawn(async move {
         let queue_lock = ticket.lock();
         let _guard = queue_lock.lock().await;
@@ -3003,7 +3024,7 @@ pub async fn retry_processing(
         let title = note.title.clone();
         let existing_generated_note = note.generated_content.clone();
         let manual_notes = manual_notes_for_generation(&note);
-        let result = process_saved_source_audio(
+        let _ = process_saved_source_audio_with_progress(
             &task_repos,
             &task_note_id,
             &task_recording_session_id,
@@ -3018,13 +3039,9 @@ pub async fn retry_processing(
             existing_generated_note,
             manual_notes,
             timing,
+            progress.clone(),
         )
         .await;
-        if let Err(error) = result {
-            let _ = task_repos
-                .set_note_status(&task_note_id, ProcessingStatus::Failed, Some(error.message))
-                .await;
-        }
         ticket.finish();
     });
     Ok(note)
@@ -3072,6 +3089,7 @@ pub async fn recover_recording(
 ) -> Result<NoteDto, AppError> {
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
+    let progress = note_processing_progress_reporter(&app);
     let Some(info) = repos.recording_recovery_info(&request.session_id).await? else {
         return Err(AppError::new(
             "recording_not_found",
@@ -3173,6 +3191,7 @@ pub async fn recover_recording(
             &info.session_id,
             info.source_mode,
             valid_sources,
+            progress,
         )
         .await;
     }
@@ -3244,6 +3263,7 @@ pub async fn recover_recording(
             path,
             validation.recorded_silence,
         )],
+        progress,
     )
     .await
 }
@@ -3254,6 +3274,7 @@ async fn process_recovered_source_audio(
     session_id: &str,
     source_mode: RecordingSourceMode,
     sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
+    progress: NoteProcessingProgressReporter,
 ) -> Result<NoteDto, AppError> {
     let (ticket, _depth) = processing_queue::enqueue(note_id);
     let queue_lock = ticket.lock();
@@ -3265,7 +3286,7 @@ async fn process_recovered_source_audio(
             return Err(error.into());
         }
     };
-    let result = process_saved_source_audio(
+    let result = process_saved_source_audio_with_progress(
         repos,
         note_id,
         session_id,
@@ -3275,6 +3296,7 @@ async fn process_recovered_source_audio(
         note.generated_content.clone(),
         manual_notes_for_generation(&note),
         ProcessingTiming::untracked(),
+        progress.clone(),
     )
     .await;
     ticket.finish();

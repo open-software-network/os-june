@@ -149,6 +149,25 @@ pub struct NoteDto {
     pub retry_recording_session_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NoteProcessingStage {
+    Transcribing,
+    Generating,
+    Done,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteProcessingProgressDto {
+    pub note_id: String,
+    pub recording_session_id: String,
+    pub stage: NoteProcessingStage,
+    pub processing_status: ProcessingStatus,
+    /// The note row's `updated_at` value after this transition.
+    pub revision: String,
+}
+
 /// The note-row fields returned by the single-statement `update_note` path.
 ///
 /// Existing callers can keep requesting the fully hydrated [`NoteDto`].

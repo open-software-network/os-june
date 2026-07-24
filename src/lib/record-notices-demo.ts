@@ -28,7 +28,7 @@
 // Never bundled in production: App gates the dynamic import on
 // import.meta.env.DEV.
 
-import { RECORD_NOTICES_DEMO_SESSION_ID } from "../app/processing-polling";
+import { RECORD_NOTICES_DEMO_SESSION_ID } from "../app/processing-demo-ids";
 import type { NoteDto, RecordingStatusDto } from "./tauri";
 
 const DEMO_NOTE_ID = "dev-record-notices-demo-note";
@@ -76,7 +76,7 @@ function clamp01(value: number): number {
 }
 
 // A minimal in-memory note to park on when nothing is selected. "recording"
-// keeps the processing poll away (it only polls transcribing/generating) and
+// keeps the synthetic note out of native processing and
 // reads truthfully for a note being recorded.
 function buildDemoNote(): NoteDto {
   const timestamp = "2026-06-30T15:04:00.000Z";

@@ -87,6 +87,14 @@ ordinary `finish_recording` command, so writer drain, atomic WAV finalization,
 validation, processing, and saved-audio recovery remain the same as a manual
 stop.
 
+After finalization, `process_saved_source_audio` emits additive
+`note-processing-progress` events when a Note enters `transcribing` and
+`generating`, then emits `done` with the terminal status and the Note row's
+`updated_at` revision. The renderer updates stage-only state from intermediate
+events and hydrates the full Note once on `done`; it drains any debounced
+editor save for that Note before the hydration. `get_note` remains available
+for navigation and compatibility, but is no longer polled during processing.
+
 ## Key files
 
 - `src-tauri/src/audio/capture.rs` — mic capture lifecycle and the single
@@ -107,9 +115,9 @@ stop.
 
 Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 `get_recording_status`, `finish_recording`, `check_recording_source_readiness`,
-`recover_recording`, `get_microphone_permission_state`. Event:
-`recording-telemetry`. Meeting-end state and retained finish delivery use
-`meeting-end-state-event` and `june://meeting-end-finish`.
+`recover_recording`, `get_microphone_permission_state`. Events:
+`recording-telemetry`, `note-processing-progress`, `meeting-end-state-event`,
+and `june://meeting-end-finish`.
 
 ## System-audio helper IPC contract
 

@@ -11,14 +11,14 @@
 // It seeds one synthetic note straight into the reducer and selects it, so the
 // ProcessingProgressIndicator (note-editor/NoteEditor.tsx) renders in the real
 // meeting-notes view with no recording or backend round-trip. The note is
-// purely in-memory under PROCESSING_DEMO_NOTE_ID — the status poll skips it,
+// purely in-memory under PROCESSING_DEMO_NOTE_ID,
 // and a plain app reload clears it completely. Mirrors the dev drivers in
 // lib/global-recorder-demo.ts and lib/dictation-hud-demo.ts.
 //
 // Never bundled in production: App gates the dynamic import on
 // import.meta.env.DEV.
 
-import { PROCESSING_DEMO_NOTE_ID } from "../app/processing-polling";
+import { PROCESSING_DEMO_NOTE_ID } from "../app/processing-demo-ids";
 import type { NoteDto, ProcessingStatus, TranscriptDto } from "./tauri";
 
 export type ProcessingProgressDemoApi = {
