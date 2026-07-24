@@ -445,11 +445,8 @@ fn resolve_priced_text_model_kind(
                 return Ok(DEFAULT_TEXT_MODEL.to_string());
             }
             pricing
-                .priced_models(Some(ModelKind::Text))
-                .into_iter()
+                .find_priced_model(ModelKind::Text, |_, _| true)
                 .map(|(model_id, _)| model_id)
-                .find(|model_id| pricing.ensure_model_kind(model_id, ModelKind::Text).is_ok())
-                .cloned()
                 .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
         }
         Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
@@ -481,11 +478,8 @@ fn resolve_priced_asr_model_kind(
                 return Ok(DEFAULT_ASR_MODEL.to_string());
             }
             pricing
-                .priced_models(Some(ModelKind::Asr))
-                .into_iter()
+                .find_priced_model(ModelKind::Asr, |_, _| true)
                 .map(|(model_id, _)| model_id)
-                .find(|model_id| pricing.ensure_model_kind(model_id, ModelKind::Asr).is_ok())
-                .cloned()
                 .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
         }
         Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
@@ -579,8 +573,8 @@ mod tests {
     #[test]
     fn auto_falls_back_to_the_concrete_default_when_auto_is_not_priced() {
         let mut models = pricing_table()
-            .iter()
-            .map(|(model_id, model)| (model_id.clone(), model.clone()))
+            .priced_models(None)
+            .into_iter()
             .collect::<BTreeMap<_, _>>();
         models.remove(AUTO_TEXT_MODEL);
         let text_model = models
@@ -598,8 +592,8 @@ mod tests {
     #[test]
     fn non_local_auto_without_auto_pricing_fails_loudly() {
         let mut models = pricing_table()
-            .iter()
-            .map(|(model_id, model)| (model_id.clone(), model.clone()))
+            .priced_models(None)
+            .into_iter()
             .collect::<BTreeMap<_, _>>();
         models.remove(AUTO_TEXT_MODEL);
 
@@ -616,8 +610,8 @@ mod tests {
     #[test]
     fn unpriced_text_falls_back_to_another_priced_text_model_without_auto_or_default() {
         let mut models = pricing_table()
-            .iter()
-            .map(|(model_id, model)| (model_id.clone(), model.clone()))
+            .priced_models(None)
+            .into_iter()
             .collect::<BTreeMap<_, _>>();
         models.remove(AUTO_TEXT_MODEL);
 
