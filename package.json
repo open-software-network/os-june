@@ -47,7 +47,7 @@
     "@tiptap/extension-placeholder": "^3.27.1",
     "@tiptap/pm": "3.27.1",
     "@tiptap/react": "^3.27.1",
-    "@tiptap/starter-kit": "^3.27.1",
+    "@tiptap/starter-kit": "^3.27.2",
     "@tiptap/suggestion": "3.27.1",
     "border-beam": "^1.2.0",
     "central-icons": "npm:@central-icons-react/round-outlined-radius-3-stroke-2@1.1.233",
