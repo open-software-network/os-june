@@ -261,6 +261,9 @@ export type ProviderModelSettingsDto = {
    * usage and disclosed in Settings, so previews from this build are sent as
    * consented (JUN-375). Off stops the preview lanes entirely. */
   liveTranscription: boolean;
+  /** Local noise suppression for the derived Microphone transcription input.
+   * Off by default. The finalized source recording stays unchanged. */
+  microphoneNoiseSuppression: boolean;
 };
 
 export type ProfileModelOverridesDto = {
@@ -2130,6 +2133,12 @@ export async function setImageSafeMode(enabled: boolean) {
 // as extra usage when on, no preview audio leaves the device when off.
 export async function setLiveTranscription(enabled: boolean) {
   return invoke<ProviderModelSettingsDto>("set_live_transcription", {
+    request: { enabled },
+  });
+}
+
+export async function setMicrophoneNoiseSuppression(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_microphone_noise_suppression", {
     request: { enabled },
   });
 }

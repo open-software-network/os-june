@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   clearVeniceApiKey: vi.fn(),
   setImageSafeMode: vi.fn(),
   setLiveTranscription: vi.fn(),
+  setMicrophoneNoiseSuppression: vi.fn(),
   setCostQuality: vi.fn(),
   setImageSafeModePromptDismissed: vi.fn(),
   setProfileModelOverrides: vi.fn(),
@@ -127,6 +128,7 @@ vi.mock("../lib/tauri", () => ({
   clearVeniceApiKey: mocks.clearVeniceApiKey,
   setImageSafeMode: mocks.setImageSafeMode,
   setLiveTranscription: mocks.setLiveTranscription,
+  setMicrophoneNoiseSuppression: mocks.setMicrophoneNoiseSuppression,
   setCostQuality: mocks.setCostQuality,
   setImageSafeModePromptDismissed: mocks.setImageSafeModePromptDismissed,
   setProfileModelOverrides: mocks.setProfileModelOverrides,
@@ -267,6 +269,7 @@ function buildProviderSettings() {
     imageSafeMode: true,
     imageSafeModePromptDismissed: false,
     liveTranscription: true,
+    microphoneNoiseSuppression: false,
     costQuality: 50,
   };
 }
@@ -545,6 +548,10 @@ describe("AppSettings", () => {
     mocks.setLiveTranscription.mockImplementation(async (enabled: boolean) => ({
       ...buildProviderSettings(),
       liveTranscription: enabled,
+    }));
+    mocks.setMicrophoneNoiseSuppression.mockImplementation(async (enabled: boolean) => ({
+      ...buildProviderSettings(),
+      microphoneNoiseSuppression: enabled,
     }));
     mocks.setCostQuality.mockImplementation(async (costQuality: number) => ({
       ...buildProviderSettings(),
@@ -3457,7 +3464,7 @@ describe("AppSettings", () => {
     expect(screen.getByText("Enter a local endpoint and model ID first.")).toBeInTheDocument();
   });
 
-  it("shows the Live transcription toggle with disclosure copy in More options", async () => {
+  it("shows persisted voice-processing toggles in More options", async () => {
     const user = userEvent.setup();
 
     render(
@@ -3492,6 +3499,25 @@ describe("AppSettings", () => {
       screen.getByText(
         "Show a live transcript while you record. This transcribes audio twice, so it may use extra credits; turning it off shows the transcript only after the recording ends.",
       ),
+    ).toBeInTheDocument();
+
+    const noiseSuppressionToggle = screen.getByRole("switch", {
+      name: "Reduce Microphone noise before note transcription",
+    });
+    expect(voiceSection).toContainElement(noiseSuppressionToggle);
+    expect(noiseSuppressionToggle).not.toBeChecked();
+    expect(
+      screen.getByText(
+        "Reduce steady room noise before note transcription. Your original Microphone recording stays unchanged. Turn this off if speech sounds less natural.",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(noiseSuppressionToggle);
+
+    expect(mocks.setMicrophoneNoiseSuppression).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(noiseSuppressionToggle).toBeChecked());
+    expect(
+      await screen.findByText("Microphone noise suppression on for future note transcriptions."),
     ).toBeInTheDocument();
 
     await user.click(toggle);

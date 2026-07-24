@@ -38,8 +38,9 @@ preview).
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
-   authoritative full-Source microphone job) → reconcile durable fingerprinted
-   note-transcription jobs → bounded Turn preparation → one
+   authoritative full-Source microphone job) → optional derived Microphone
+   noise suppression → reconcile durable fingerprinted note-transcription jobs
+   → bounded Turn preparation → one
    in-flight provider request per Source → atomically persist each successful
    job and transcript row → **note generation**. Full-Source fallbacks are
    prepared lazily when a Source is materially incomplete and atomically
@@ -72,6 +73,8 @@ waiting for the full timeout.
   main.swift` — the system-audio helper and its readiness/permission probes.
 - `src-tauri/src/audio/turns.rs` — turn detection, coalescing, WAV extraction,
   normalization, chunking, per-source configs.
+- `src-tauri/src/audio/noise_suppression.rs` - optional, cached Microphone
+  transcription input and the replaceable frame-level denoiser seam.
 - `src-tauri/src/audio/live_preview.rs` — mic/system preview workers, the
   `WavTailReader` that tails the helper's growing WAV.
 - `src-tauri/src/audio/{validation,recovery}.rs` — artifact validation and
@@ -123,6 +126,22 @@ Energy-based, per-source, **no diarization**:
   the whole turn, so a user's reply that merged with an echo survives.
 
 ## Normalization and chunking
+
+When **Microphone noise suppression** is enabled, June first derives a mono
+16 kHz Microphone WAV through a bounded-memory two-pass process. This happens
+after Turn detection and speaker-bleed trimming, so source attribution,
+timestamps, and System audio are unchanged. The finalized Microphone WAV is
+never modified. A content-and-version fingerprint reuses the derived WAV on
+retry; derivation failure records a Source warning checkpoint and falls back to
+the finalized WAV.
+
+The interim implementation estimates a stationary noise spectrum from the same
+low-percentile noise-floor principle used by Turn detection, then applies
+smoothed spectral subtraction with a gain floor. It is deliberately
+conservative and bypasses clean inputs. It is more effective for steady room
+noise than short keyboard-like transients. The `Denoiser` frame interface lets
+a stronger offline implementation replace it without changing archive,
+pipeline, or persistence contracts.
 
 Before transcription each turn WAV is downmixed to **mono**, resampled to
 **16 kHz**, and gain-adjusted toward a target peak (bounded, with a

@@ -140,6 +140,13 @@ Preparing a source WAV for transcription: downmix to mono, resample to 16 kHz,
 apply bounded gain toward a target peak.
 _Avoid_: conversion, resampling (that is one step of it).
 
+**Microphone noise suppression**:
+Optional local preparation of a derived Microphone transcription input after
+Turn detection and speaker-bleed trimming. The finalized Source WAV remains the
+replay and recovery source of truth; disabling the setting uses it directly.
+_Avoid_: noise cancellation (implies removal), voice isolation (names
+platform-specific APIs), recording filter (capture remains untouched).
+
 **Live transcript preview**:
 Optional, ephemeral chunked transcription shown while recording. Revisable,
 never written to `transcripts`, never the note's source of truth (see

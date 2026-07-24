@@ -1,6 +1,7 @@
 use crate::{
     audio::{
         live_preview::PREVIEW_CHUNK_MS,
+        noise_suppression::{suppress_microphone_wav_for_transcription, SPECTRAL_DENOISER_ID},
         turns::{
             coalesce_turns_for_transcription_avoiding_echo, detect_turns_with_report,
             normalize_wav_for_transcription, split_wav_for_transcription,
@@ -113,6 +114,7 @@ fn note_transcription_span_id(
 fn note_transcription_configuration_fingerprint(
     title: &str,
     dictionary_context: Option<&str>,
+    microphone_noise_suppression: Option<&str>,
 ) -> String {
     let mut digest = Sha256::new();
     digest.update(b"june-note-transcription-configuration-v1\0");
@@ -130,7 +132,159 @@ fn note_transcription_configuration_fingerprint(
             None => digest.update(b"none"),
         }
     }
+    if let Some(suppression_fingerprint) = microphone_noise_suppression {
+        digest.update(b"microphone-noise-suppression");
+        digest.update((SPECTRAL_DENOISER_ID.len() as u64).to_be_bytes());
+        digest.update(SPECTRAL_DENOISER_ID.as_bytes());
+        digest.update((suppression_fingerprint.len() as u64).to_be_bytes());
+        digest.update(suppression_fingerprint.as_bytes());
+    }
     format!("{:x}", digest.finalize())
+}
+
+async fn apply_microphone_noise_suppression(
+    repos: &Repositories,
+    session_id: &str,
+    sources: &mut [SourceAudioForProcessing],
+    turns: &mut [AudioTurn],
+) -> String {
+    let Some((artifact_id, source_path)) = sources
+        .iter()
+        .find(|(_artifact_id, source, _source_path, _recorded_silence)| source == "microphone")
+        .map(|(artifact_id, _source, source_path, _recorded_silence)| {
+            (artifact_id.clone(), source_path.clone())
+        })
+    else {
+        return "microphone-source-missing".to_string();
+    };
+    let suppression_started = Instant::now();
+    let result = tokio::task::spawn_blocking(move || {
+        suppress_microphone_wav_for_transcription(&source_path)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(output)) => {
+            replace_microphone_transcription_path(sources, turns, &artifact_id, &output.path);
+            let status = if output.applied {
+                "applied"
+            } else {
+                "bypassed_clean"
+            };
+            let durable_fingerprint = format!("{status}:{}", output.fingerprint);
+            if let Err(error) = repos
+                .add_source_checkpoint(
+                    session_id,
+                    Some(artifact_id.as_str()),
+                    Some("microphone"),
+                    "noise_suppression",
+                    Some(
+                        serde_json::json!({
+                            "algorithm": SPECTRAL_DENOISER_ID,
+                            "cacheHit": output.cache_hit,
+                            "durationMs": elapsed_ms(suppression_started),
+                            "noiseFloorDbfs": output.noise_floor_dbfs,
+                            "outputFingerprint": &output.fingerprint,
+                            "status": status,
+                        })
+                        .to_string(),
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(
+                    %session_id,
+                    %error,
+                    "failed to persist noise_suppression checkpoint"
+                );
+            }
+            durable_fingerprint
+        }
+        Ok(Err(error)) => {
+            persist_noise_suppression_fallback(
+                repos,
+                session_id,
+                &artifact_id,
+                elapsed_ms(suppression_started),
+                &error.code,
+                &error.message,
+            )
+            .await;
+            format!("raw-fallback:{SPECTRAL_DENOISER_ID}")
+        }
+        Err(error) => {
+            persist_noise_suppression_fallback(
+                repos,
+                session_id,
+                &artifact_id,
+                elapsed_ms(suppression_started),
+                "noise_suppression_task_failed",
+                &error.to_string(),
+            )
+            .await;
+            format!("raw-fallback:{SPECTRAL_DENOISER_ID}")
+        }
+    }
+}
+
+async fn persist_noise_suppression_fallback(
+    repos: &Repositories,
+    session_id: &str,
+    artifact_id: &str,
+    duration_ms: i64,
+    error_code: &str,
+    message: &str,
+) {
+    tracing::warn!(
+        %session_id,
+        %artifact_id,
+        %error_code,
+        error = %message,
+        "Microphone noise suppression failed; using the finalized source WAV"
+    );
+    if let Err(error) = repos
+        .add_source_checkpoint(
+            session_id,
+            Some(artifact_id),
+            Some("microphone"),
+            "noise_suppression_warning",
+            Some(
+                serde_json::json!({
+                    "algorithm": SPECTRAL_DENOISER_ID,
+                    "durationMs": duration_ms,
+                    "errorCode": error_code,
+                    "message": message,
+                    "status": "raw_fallback",
+                })
+                .to_string(),
+            ),
+        )
+        .await
+    {
+        tracing::warn!(
+            %session_id,
+            %error,
+            "failed to persist noise_suppression_warning checkpoint"
+        );
+    }
+}
+
+fn replace_microphone_transcription_path(
+    sources: &mut [SourceAudioForProcessing],
+    turns: &mut [AudioTurn],
+    artifact_id: &str,
+    transcription_path: &Path,
+) {
+    for (source_artifact_id, source, source_path, _recorded_silence) in sources {
+        if source_artifact_id == artifact_id && source == "microphone" {
+            *source_path = transcription_path.to_path_buf();
+        }
+    }
+    for turn in turns {
+        if turn.artifact_id == artifact_id && turn.source == "microphone" {
+            turn.source_path = transcription_path.to_path_buf();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -957,6 +1111,7 @@ pub(crate) async fn process_saved_source_audio(
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let transcription_provider = crate::providers::configured_transcription_provider();
+    let microphone_noise_suppression = crate::providers::microphone_noise_suppression();
     let dictionary_entries = match repos.list_dictionary_entries().await {
         Ok(entries) => entries,
         Err(error) => {
@@ -976,7 +1131,7 @@ pub(crate) async fn process_saved_source_audio(
     let pipeline_setup = async {
         let detection_started = Instant::now();
         let SilentSystemDropOutcome {
-            kept: sources,
+            kept: mut sources,
             dropped,
         } = partition_silent_system_sources(sources);
         for drop in &dropped {
@@ -1006,19 +1161,12 @@ pub(crate) async fn process_saved_source_audio(
                 );
             }
         }
-        let (turns, echo_rejection) = if source_mode == RecordingSourceMode::MicrophoneOnly {
+        let (mut turns, echo_rejection) = if source_mode == RecordingSourceMode::MicrophoneOnly {
             // Microphone-only capture has no attribution problem to solve.
             // Keep it on the same durable pipeline, but represent the saved
             // WAV as one full-Source job instead of paying the dual-Source
             // VAD and echo-rejection cost.
-            (
-                add_full_source_turns_for_missing_sources(
-                    &sources,
-                    Vec::new(),
-                    &EchoRejectionReport::default(),
-                ),
-                EchoRejectionReport::default(),
-            )
+            (Vec::new(), EchoRejectionReport::default())
         } else {
             let detection_sources = sources
                 .iter()
@@ -1061,6 +1209,14 @@ pub(crate) async fn process_saved_source_audio(
                 tracing::warn!(%session_id, %error, "failed to persist echo_rejection checkpoint");
             }
         }
+        let noise_suppression_fingerprint = if microphone_noise_suppression {
+            Some(
+                apply_microphone_noise_suppression(repos, session_id, &mut sources, &mut turns)
+                    .await,
+            )
+        } else {
+            None
+        };
         let turns = add_full_source_turns_for_missing_sources(&sources, turns, &echo_rejection);
         let turns = coalesce_turns_for_transcription_avoiding_echo(
             turns,
@@ -1119,8 +1275,11 @@ pub(crate) async fn process_saved_source_audio(
             };
             all_preparation_jobs.push(descriptor.clone());
         }
-        let configuration_fingerprint =
-            note_transcription_configuration_fingerprint(&title, dictionary_context.as_deref());
+        let configuration_fingerprint = note_transcription_configuration_fingerprint(
+            &title,
+            dictionary_context.as_deref(),
+            noise_suppression_fingerprint.as_deref(),
+        );
         let mut fallback_plans = build_source_fallback_plans(&all_preparation_jobs)
             .into_iter()
             .filter(SourceFallbackPlan::eligible)
@@ -6012,19 +6171,97 @@ mod tests {
 
     #[test]
     fn durable_configuration_fingerprint_tracks_output_affecting_context() {
-        let base = note_transcription_configuration_fingerprint("Meeting", Some("- June"));
+        let base = note_transcription_configuration_fingerprint("Meeting", Some("- June"), None);
         assert_eq!(
             base,
-            note_transcription_configuration_fingerprint("Meeting", Some("- June"))
+            note_transcription_configuration_fingerprint("Meeting", Some("- June"), None)
         );
         assert_ne!(
             base,
-            note_transcription_configuration_fingerprint("Renamed meeting", Some("- June"))
+            note_transcription_configuration_fingerprint("Renamed meeting", Some("- June"), None)
         );
         assert_ne!(
             base,
-            note_transcription_configuration_fingerprint("Meeting", Some("- Junho"))
+            note_transcription_configuration_fingerprint("Meeting", Some("- Junho"), None)
         );
+        assert_ne!(
+            base,
+            note_transcription_configuration_fingerprint(
+                "Meeting",
+                Some("- June"),
+                Some("applied:derived-a"),
+            )
+        );
+        assert_ne!(
+            note_transcription_configuration_fingerprint(
+                "Meeting",
+                Some("- June"),
+                Some("raw-fallback:spectral-subtraction-v1"),
+            ),
+            note_transcription_configuration_fingerprint(
+                "Meeting",
+                Some("- June"),
+                Some("applied:derived-a"),
+            )
+        );
+    }
+
+    #[test]
+    fn derived_microphone_path_does_not_change_system_or_turn_bounds() {
+        let raw_microphone = PathBuf::from("microphone-raw.wav");
+        let raw_system = PathBuf::from("system-raw.wav");
+        let derived_microphone = PathBuf::from("microphone-denoised.wav");
+        let mut sources = vec![
+            (
+                "microphone-artifact".to_string(),
+                "microphone".to_string(),
+                raw_microphone,
+                false,
+            ),
+            (
+                "system-artifact".to_string(),
+                "system".to_string(),
+                raw_system.clone(),
+                false,
+            ),
+        ];
+        let mut turns = vec![
+            test_audio_turn(
+                "microphone-artifact",
+                "microphone",
+                PathBuf::from("microphone-raw.wav"),
+                0,
+                1_000,
+                2_000,
+            ),
+            test_audio_turn(
+                "system-artifact",
+                "system",
+                raw_system.clone(),
+                1,
+                2_500,
+                4_000,
+            ),
+        ];
+
+        replace_microphone_transcription_path(
+            &mut sources,
+            &mut turns,
+            "microphone-artifact",
+            &derived_microphone,
+        );
+
+        assert_eq!(sources[0].2, derived_microphone);
+        assert_eq!(sources[1].2, raw_system);
+        assert_eq!(
+            turns[0].source_path,
+            PathBuf::from("microphone-denoised.wav")
+        );
+        assert_eq!(turns[0].start_ms, 1_000);
+        assert_eq!(turns[0].end_ms, 2_000);
+        assert_eq!(turns[1].source_path, PathBuf::from("system-raw.wav"));
+        assert_eq!(turns[1].start_ms, 2_500);
+        assert_eq!(turns[1].end_ms, 4_000);
     }
 
     #[tokio::test]
