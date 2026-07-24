@@ -45,6 +45,17 @@ export type McpServersEngine = {
   lifecycle: GatewayLifecycle;
 };
 
+/** Builds the production engine for one already-resolved target. Exported so a
+ * native respawn can immediately create a client from its fresh credentials. */
+export function createMcpServersEngine(target: HermesAdminTarget): McpServersEngine {
+  const client = createHermesAdminClient(target, {
+    fetch: createRustAdminFetch(target.mode),
+  });
+  const cache = new AdminStateCache(target);
+  const lifecycle = new GatewayLifecycle(client, cache);
+  return { target, client, cache, lifecycle };
+}
+
 /** Loading/availability status of the page. A missing runtime ("unavailable")
  * is NOT an error and NOT empty. */
 export type McpServersStatus = "unavailable" | "loading" | "ready" | "error";
@@ -572,10 +583,6 @@ export function useMcpServersEngine(
     () => (bridge ? adminTargetForMode(bridge, mode, profile) : undefined),
     [bridge, mode, profile],
   );
-  const identity = target
-    ? `${target.mode}:${target.profile}:${target.baseUrl}:${target.token}`
-    : null;
-
   return useMemo(() => {
     if (!target) return null;
     // Production routes admin I/O through Rust (`hermes_admin_request`) rather
@@ -583,14 +590,8 @@ export function useMcpServersEngine(
     // bound to this target's mode so Rust targets the chosen runtime, never the
     // first connection. Tests build the engine from the harness and keep the
     // injected node fetch, so this branch is production-only.
-    const client = createHermesAdminClient(target, {
-      fetch: createRustAdminFetch(target.mode),
-    });
-    const cache = new AdminStateCache(target);
-    const lifecycle = new GatewayLifecycle(client, cache);
-    return { target, client, cache, lifecycle };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by identity
-  }, [identity]);
+    return createMcpServersEngine(target);
+  }, [target]);
 }
 
 /**

@@ -109,7 +109,9 @@ export type FakeMcpServer = {
   enabled: boolean;
   transport: "stdio" | "http" | "http-oauth";
   command?: string;
+  args?: string[];
   url?: string;
+  auth?: "none" | "bearer" | "oauth";
   auth_status?: "authenticated" | "unauthenticated" | "expired" | "not-required";
   status?: "connected" | "error" | "untested";
   status_message?: string;
@@ -460,7 +462,7 @@ export class FakeHermesServer {
       return json(200, this.hubScans[identifier] ?? {});
     }
     if (method === "POST" && path === "/api/skills/hub/install") {
-      return this.startOrComplete("install");
+      return this.installHubSkill(body);
     }
     if (method === "POST" && path === "/api/skills/hub/uninstall") {
       return this.startOrComplete("uninstall");
@@ -757,7 +759,9 @@ export class FakeHermesServer {
       enabled: payload.enabled ?? true,
       transport: payload.transport ?? (payload.command ? "stdio" : "http"),
       command: payload.command,
+      args: payload.args,
       url: payload.url,
+      auth: payload.auth,
       auth_status: payload.auth_status,
       status: "untested",
       env: payload.env,
@@ -765,6 +769,22 @@ export class FakeHermesServer {
     };
     this.mcpServers.push(server);
     return json(200, stripMcpSecrets(server));
+  }
+
+  private installHubSkill(body: unknown): Response {
+    if (!this.backgroundActions) {
+      const identifier = (body as { identifier?: unknown })?.identifier;
+      if (typeof identifier !== "string" || identifier.length === 0) {
+        throw new HttpError(422, {
+          code: "validation_error",
+          error: "field required: identifier",
+        });
+      }
+      if (!this.skills.some((skill) => skill.name === identifier)) {
+        this.skills.push({ name: identifier, enabled: true, source: "hub" });
+      }
+    }
+    return this.startOrComplete("install");
   }
 
   /** Mirrors a real catalog install: registers an MCP server in the inventory

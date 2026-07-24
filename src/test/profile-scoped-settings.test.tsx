@@ -1,8 +1,10 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InstalledSkillsSection } from "../components/settings/InstalledSkillsSection";
 import { McpServersSection } from "../components/settings/McpServersSection";
+import { SetupSnapshotSection } from "../components/settings/SetupSnapshotSection";
 import {
   resetActiveHermesProfileForTests,
   setActiveHermesProfileName,
@@ -243,6 +245,78 @@ describe("profile-scoped settings sections", () => {
       await waitFor(() => expect(screen.queryByText("default-skill")).not.toBeInTheDocument());
       expect(paths).toContain("/api/skills?profile=default");
       expect(paths).toContain("/api/skills?profile=work");
+    });
+  });
+
+  describe("SetupSnapshotSection", () => {
+    it("retries native Bridge discovery after an initial failure", async () => {
+      const user = userEvent.setup();
+      const servers = makeServers();
+      setActiveHermesProfileName("default");
+      mocks.hermesBridgeStatus.mockRejectedValue(new Error("Bridge status unavailable"));
+
+      render(<SetupSnapshotSection />);
+
+      expect(await screen.findByText("Couldn't load your setup")).toBeInTheDocument();
+      mocks.hermesBridgeStatus.mockResolvedValue(bridgeStatus(servers.default));
+      routeAdminRequests(servers);
+      await user.click(screen.getByRole("button", { name: "Try again" }));
+
+      expect(await screen.findByRole("button", { name: "Export snapshot" })).toBeEnabled();
+    });
+
+    it("mounts the production import path and restarts through June's native Bridge", async () => {
+      const user = userEvent.setup();
+      const servers = makeServers();
+      const paths = routeAdminRequests(servers);
+      const status = bridgeStatus(servers.default);
+      setActiveHermesProfileName("default");
+      mocks.hermesBridgeStatus.mockResolvedValue(status);
+      mocks.stopHermesBridge.mockResolvedValue(undefined);
+      mocks.startHermesBridge.mockResolvedValue(status);
+
+      render(<SetupSnapshotSection />);
+
+      expect(await screen.findByRole("button", { name: "Export snapshot" })).toBeEnabled();
+      const snapshot = {
+        schemaVersion: 1,
+        generatedAt: new Date(0).toISOString(),
+        profile: "default",
+        mode: "sandboxed",
+        notes: [],
+        profiles: [],
+        skills: [{ name: "default-skill", enabled: false, source: "hub", hubInstalled: true }],
+        mcpServers: [
+          {
+            name: "default-server",
+            enabled: false,
+            transport: "stdio",
+            command: "mcp-default",
+            args: [],
+            envKeys: [],
+            headerKeys: [],
+            includeTools: [],
+            excludeTools: [],
+          },
+        ],
+        catalogInstalls: [],
+        toolFilters: [],
+        requiredInputs: [],
+        readiness: { toolsets: [] },
+      };
+      fireEvent.change(screen.getByLabelText("Snapshot JSON"), {
+        target: { value: JSON.stringify(snapshot) },
+      });
+      await user.click(screen.getByRole("button", { name: "Preview import" }));
+      await user.click(await screen.findByRole("button", { name: "Apply import" }));
+
+      expect(await screen.findByText(/Import applied/)).toBeInTheDocument();
+      expect(mocks.stopHermesBridge).toHaveBeenCalledWith("sandboxed");
+      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false);
+      expect(paths).not.toContain("/api/gateway/restart?profile=default");
+      expect(
+        servers.default.requestLog.some((entry) => entry.path === "/api/gateway/restart"),
+      ).toBe(false);
     });
   });
 });

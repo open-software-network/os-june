@@ -110,8 +110,8 @@ const DEFAULT_POLL_TIMEOUT_MS = 120_000;
 
 /** Payload for `POST /api/mcp/servers`, matching the dashboard's
  * `MCPServerCreate` schema (v2026.7.20): `name` is required; `command`/`args`
- * describe a stdio server, `url`/`auth` an http(-oauth) server; `env` carries
- * secret config. NOTE: this Hermes version's create schema has NO tool
+ * describe a stdio server, `url`/`auth` an http(-oauth) server; `env` and
+ * `headers` carry secret config. NOTE: this Hermes version's create schema has NO tool
  * include/exclude/filter field, so MCP tool filtering is not configured here
  * (see the removed `setToolFilters` note below). Extra keys are tolerated by the
  * server but not part of the contract. */
@@ -129,6 +129,7 @@ export type HermesAddMcpServerPayload = {
   url?: string;
   auth?: string;
   env?: Record<string, string>;
+  headers?: Record<string, string>;
   profile?: string;
 } & Record<string, unknown>;
 
@@ -784,29 +785,47 @@ function makeEnv(send: AdminTransport): HermesAdminClient["env"] {
  * Segments (not a dotted string) so a dynamic key that itself contains a dot —
  * a skill or MCP server name — is written as ONE key, never split. */
 function setConfigAtPath(tree: Record<string, unknown>, segments: string[], value: unknown): void {
+  const leaf = segments.at(-1);
+  if (leaf === undefined) return;
   let node = tree;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const key = segments[i]!;
-    const next = node[key];
+  for (const key of segments.slice(0, -1)) {
+    const next = Object.hasOwn(node, key) ? node[key] : undefined;
     if (typeof next !== "object" || next === null || Array.isArray(next)) {
-      node[key] = {};
+      // defineProperty is deliberate: assigning `__proto__` on a normal object
+      // changes its prototype instead of creating an own config key. Imported
+      // snapshots can contain dynamic skill/server names, so every segment must
+      // stay data even when it matches an Object.prototype property.
+      Object.defineProperty(node, key, {
+        value: {},
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     node = node[key] as Record<string, unknown>;
   }
-  node[segments[segments.length - 1]!] = value;
+  Object.defineProperty(node, leaf, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 /** Deletes a value at the given path SEGMENTS from a config tree in place. No-op
  * if any segment is missing. Segment-based for the same dotted-name reason as
  * {@link setConfigAtPath}. */
 function deleteConfigAtPath(tree: Record<string, unknown>, segments: string[]): void {
+  const leaf = segments.at(-1);
+  if (leaf === undefined) return;
   let node = tree;
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    const next = node[segments[i]!];
+  for (const key of segments.slice(0, -1)) {
+    if (!Object.hasOwn(node, key)) return;
+    const next = node[key];
     if (typeof next !== "object" || next === null || Array.isArray(next)) return;
     node = next as Record<string, unknown>;
   }
-  delete node[segments[segments.length - 1]!];
+  delete node[leaf];
 }
 
 function makeConfig(send: AdminTransport): HermesAdminClient["config"] {

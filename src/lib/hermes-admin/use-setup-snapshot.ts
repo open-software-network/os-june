@@ -15,15 +15,14 @@
  * - IMPORT: preview a pasted/opened snapshot ({@link parseSetupSnapshot}), diff
  *   it against the live setup ({@link diffSnapshot}), collect the missing
  *   secrets the user supplies, then apply in safe order via
- *   {@link applySnapshot}, restart the gateway through the SHARED lifecycle, and
+ *   {@link applySnapshot}, restart the runtime through June's native Bridge, and
  *   report partial failures.
  *
  * Secrets are never read out of June into the export and never imported from a
  * file. Copy is sentence case, no em/en-dashes.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { hermesBridgeStatus, type HermesBridgeStatus } from "../tauri";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { GatewayLifecycleSnapshot } from "./gateway-lifecycle";
 import type {
   HermesMcpCatalogEntry,
@@ -32,8 +31,9 @@ import type {
   HermesSkillInfo,
   HermesToolsetInfo,
 } from "./schemas";
+import { readExternalDirs } from "./schemas";
 import type { HermesAdminMode } from "./target";
-import { useMcpServersEngine, type McpServersEngine } from "./use-mcp-servers";
+import type { McpServersEngine } from "./use-mcp-servers";
 import {
   buildSetupSnapshot,
   diffSnapshot,
@@ -44,7 +44,13 @@ import {
   type SnapshotCapabilities,
   type SnapshotDiff,
 } from "./setup-snapshot";
-import { applySnapshot, type ApplyOptions, type ImportReport } from "./setup-import";
+import {
+  applySnapshot,
+  buildImportPlan,
+  type ApplyOptions,
+  type ImportPlan,
+  type ImportReport,
+} from "./setup-import";
 
 /** A loaded export bundle: the snapshot, its serialized text, and a filename. */
 export type ExportBundle = {
@@ -78,6 +84,8 @@ export type SetupSnapshotState = {
   previewSnapshot?: SetupSnapshot;
   /** The diff of the preview against the live setup. */
   previewDiff?: SnapshotDiff;
+  /** The exact inventory-derived operations apply will revalidate and run. */
+  previewPlan?: ImportPlan;
   importError?: string;
   /** The applied report, when an apply completed. */
   report?: ImportReport;
@@ -137,7 +145,25 @@ type LiveData = {
   toolsets: HermesToolsetInfo[];
   gatewayRunning?: boolean;
   gatewayVersion?: string;
+  config: Record<string, unknown>;
 };
+
+function skillConfigFrom(config: Record<string, unknown>): Record<string, Record<string, string>> {
+  const skills = config.skills;
+  if (!skills || typeof skills !== "object" || Array.isArray(skills)) return {};
+  const values = (skills as Record<string, unknown>).config;
+  if (!values || typeof values !== "object" || Array.isArray(values)) return {};
+  const out: Record<string, Record<string, string>> = {};
+  for (const [skill, rawEntries] of Object.entries(values as Record<string, unknown>)) {
+    if (!rawEntries || typeof rawEntries !== "object" || Array.isArray(rawEntries)) continue;
+    const entries: Record<string, string> = {};
+    for (const [key, value] of Object.entries(rawEntries as Record<string, unknown>)) {
+      if (typeof value === "string") entries[key] = value;
+    }
+    if (Object.keys(entries).length > 0) out[skill] = entries;
+  }
+  return out;
+}
 
 /**
  * Binds the snapshot flows to the shared servers engine for one target. A null
@@ -164,10 +190,11 @@ export function useSetupSnapshotController(
   const [importPhase, setImportPhase] = useState<ImportPhase>("idle");
   const [previewSnapshot, setPreviewSnapshot] = useState<SetupSnapshot>();
   const [previewDiff, setPreviewDiff] = useState<SnapshotDiff>();
+  const [previewPlan, setPreviewPlan] = useState<ImportPlan>();
   const [importError, setImportError] = useState<string>();
   const [report, setReport] = useState<ImportReport>();
 
-  const reloadKey = useRef(0);
+  const [reloadVersion, setReloadVersion] = useState(0);
 
   useEffect(() => {
     if (!engine) return;
@@ -180,7 +207,7 @@ export function useSetupSnapshotController(
       return;
     }
     let cancelled = false;
-    setStatus((prev) => (prev === "ready" ? "ready" : "loading"));
+    setStatus((prev) => (reloadVersion > 0 || prev !== "ready" ? "loading" : "ready"));
     const { client } = engine;
     Promise.all([
       client.profiles.list().catch(() => [] as HermesProfileSummary[]),
@@ -189,8 +216,9 @@ export function useSetupSnapshotController(
       client.mcp.catalog().catch(() => [] as HermesMcpCatalogEntry[]),
       client.toolsets.list().catch(() => [] as HermesToolsetInfo[]),
       client.gateway.status().catch(() => undefined),
+      client.config.get(),
     ])
-      .then(([profiles, skills, mcpServers, catalog, toolsets, gateway]) => {
+      .then(([profiles, skills, mcpServers, catalog, toolsets, gateway, config]) => {
         if (cancelled) return;
         setLive({
           profiles,
@@ -200,6 +228,7 @@ export function useSetupSnapshotController(
           toolsets,
           gatewayRunning: gateway?.gatewayRunning,
           gatewayVersion: gateway?.version,
+          config: config.config,
         });
         setStatus("ready");
         setError(undefined);
@@ -213,12 +242,10 @@ export function useSetupSnapshotController(
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reloadKey forces refetch
-  }, [engine, reloadKey.current]);
+  }, [engine, reloadVersion]);
 
   const refresh = useCallback(() => {
-    reloadKey.current += 1;
-    setStatus("loading");
+    setReloadVersion((version) => version + 1);
   }, []);
 
   const buildExport = useCallback(
@@ -226,9 +253,9 @@ export function useSetupSnapshotController(
       const target = engine?.target;
       const profile = target?.profile ?? "default";
       const mode = target?.mode ?? "sandboxed";
-      // Bundles (spec 11) and external dirs (spec 10) land in parallel and are
-      // not in this branch; pass no capabilities so those sections stay absent.
-      const capabilities: SnapshotCapabilities | undefined = undefined;
+      const capabilities: SnapshotCapabilities | undefined = live
+        ? { externalDirs: readExternalDirs(live.config).map((path) => ({ path })) }
+        : undefined;
       const snapshot = buildSetupSnapshot({
         profile,
         mode,
@@ -241,6 +268,7 @@ export function useSetupSnapshotController(
         gatewayRunning: live?.gatewayRunning,
         gatewayVersion: live?.gatewayVersion,
         includeSkillConfig,
+        skillConfig: live ? skillConfigFrom(live.config) : undefined,
         capabilities,
         now,
       });
@@ -264,15 +292,26 @@ export function useSetupSnapshotController(
         setImportPhase("error");
         setPreviewSnapshot(undefined);
         setPreviewDiff(undefined);
+        setPreviewPlan(undefined);
         return;
       }
+      const plan = buildImportPlan(parsed.snapshot, {
+        skills: live?.skills ?? [],
+        mcpServers: live?.mcpServers ?? [],
+        catalog: live?.catalog ?? [],
+        toolsets: live?.toolsets ?? [],
+        config: live?.config ?? {},
+      });
       const diff = diffSnapshot(parsed.snapshot, {
         skills: live?.skills ?? [],
         mcpServers: live?.mcpServers ?? [],
         catalog: live?.catalog ?? [],
       });
+      diff.requiredSecrets = plan.requiredSecrets;
+      diff.changeCount = plan.changeCount;
       setPreviewSnapshot(parsed.snapshot);
       setPreviewDiff(diff);
+      setPreviewPlan(plan);
       setImportPhase("previewed");
     },
     [live],
@@ -285,8 +324,8 @@ export function useSetupSnapshotController(
       setImportError(undefined);
       try {
         const result = await applySnapshot(engine.client, previewSnapshot, {
-          secrets,
           ...applyOptions,
+          secrets,
         });
         setReport(result);
         setImportPhase("applied");
@@ -304,6 +343,7 @@ export function useSetupSnapshotController(
     setImportPhase("idle");
     setPreviewSnapshot(undefined);
     setPreviewDiff(undefined);
+    setPreviewPlan(undefined);
     setImportError(undefined);
     setReport(undefined);
   }, []);
@@ -325,6 +365,7 @@ export function useSetupSnapshotController(
       importPhase,
       previewSnapshot,
       previewDiff,
+      previewPlan,
       importError,
       report,
       preview,
@@ -344,6 +385,7 @@ export function useSetupSnapshotController(
     importPhase,
     previewSnapshot,
     previewDiff,
+    previewPlan,
     importError,
     report,
     preview,
@@ -352,42 +394,4 @@ export function useSetupSnapshotController(
   ]);
 
   return value;
-}
-
-/**
- * The all-in-one production hook: fetch bridge status once, derive the shared
- * servers engine for the given mode/profile (explicit targeting, no
- * first-connection fallback), and run the snapshot controller. The page calls
- * THIS; tests prefer {@link useSetupSnapshotController} with a harness engine.
- */
-export function useSetupSnapshot(
-  mode: HermesAdminMode = "sandboxed",
-  profile?: string,
-): SetupSnapshotState {
-  const [bridge, setBridge] = useState<HermesBridgeStatus>();
-  const [bridgeError, setBridgeError] = useState<string>();
-
-  useEffect(() => {
-    let cancelled = false;
-    hermesBridgeStatus()
-      .then((s) => {
-        if (!cancelled) setBridge(s);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setBridgeError(err instanceof Error ? err.message : String(err));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const engine = useMcpServersEngine(bridge, mode, profile);
-  const state = useSetupSnapshotController(engine);
-
-  if (engine === null && bridgeError) {
-    return { ...state, status: "error", error: bridgeError, retryable: true };
-  }
-  return state;
 }
