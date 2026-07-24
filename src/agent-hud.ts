@@ -26,14 +26,17 @@ import {
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
 import { titleFromPrompt } from "./lib/hermes-adapter";
+import { createHudLifecycle } from "./lib/hud-lifecycle";
 import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import type { HermesSessionInfo } from "./lib/tauri";
 import { subscribeBrand } from "./lib/brand";
 import "./styles/agent-hud.css";
 
+const lifecycle = createHudLifecycle();
+
 // Recolor this HUD window to the selected accent and keep it live-synced.
-subscribeBrand();
+lifecycle.trackUnlisten(subscribeBrand());
 
 type HudSessionStatus = AgentSessionStatusKind | "idle";
 
@@ -78,7 +81,7 @@ const stack = document.querySelector<HTMLElement>("#agent-hud-stack");
 const menu = document.querySelector<HTMLElement>("#agent-hud-menu");
 const hideHud = document.querySelector<HTMLButtonElement>("#agent-hud-hide");
 
-installNativeContextMenuGuard();
+lifecycle.addCleanup(installNativeContextMenuGuard());
 
 const state = {
   enabled: getAgentHudEnabled(),
@@ -112,6 +115,13 @@ let hideTimer: number | undefined;
 let resizeTimer: number | undefined;
 let widthFlipTimer: number | undefined;
 let windowShown = false;
+
+lifecycle.addCleanup(() => {
+  window.clearTimeout(pruneTimer);
+  window.clearTimeout(hideTimer);
+  window.clearTimeout(resizeTimer);
+  window.clearTimeout(widthFlipTimer);
+});
 
 function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
   if (!detail) return;
@@ -1057,11 +1067,15 @@ pill?.addEventListener("keydown", (event) => {
 // ctrl-clicks before WKWebView sees them (see the Tauri listener below);
 // this DOM listener is the fallback for the standalone browser/demo page,
 // where there is no native panel to intercept.
-window.addEventListener("contextmenu", (event) => {
-  event.preventDefault();
-  event.stopPropagation();
-  openMenu();
-});
+window.addEventListener(
+  "contextmenu",
+  (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openMenu();
+  },
+  { signal: lifecycle.signal },
+);
 
 menu?.addEventListener("pointerdown", (event) => {
   event.stopPropagation();
@@ -1073,61 +1087,95 @@ hideHud?.addEventListener("click", (event) => {
   hideFromMenu();
 });
 
-window.addEventListener("pointerdown", (event) => {
-  if (!state.menuOpen) return;
-  const target = event.target;
-  if (target instanceof Node && menu?.contains(target)) return;
-  closeMenu();
-});
+window.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (!state.menuOpen) return;
+    const target = event.target;
+    if (target instanceof Node && menu?.contains(target)) return;
+    closeMenu();
+  },
+  { signal: lifecycle.signal },
+);
 
-window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeMenu();
-});
+window.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key === "Escape") closeMenu();
+  },
+  { signal: lifecycle.signal },
+);
 
-window.addEventListener(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) => {
-  const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>).detail;
-  if (detail) applyVisibility(detail.enabled);
-});
+window.addEventListener(
+  AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+  (event) => {
+    const detail = (event as CustomEvent<AgentHudVisibilityChangedDetail>).detail;
+    if (detail) applyVisibility(detail.enabled);
+  },
+  { signal: lifecycle.signal },
+);
 
-window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, (event) => {
-  applySessionsChanged((event as CustomEvent<AgentSessionsChangedDetail>).detail);
-});
+window.addEventListener(
+  AGENT_SESSIONS_CHANGED_EVENT,
+  (event) => {
+    applySessionsChanged((event as CustomEvent<AgentSessionsChangedDetail>).detail);
+  },
+  { signal: lifecycle.signal },
+);
 
-window.addEventListener(AGENT_SESSION_STATUS_EVENT, (event) => {
-  applyStatus((event as CustomEvent<AgentSessionStatusDetail>).detail);
-});
+window.addEventListener(
+  AGENT_SESSION_STATUS_EVENT,
+  (event) => {
+    applyStatus((event as CustomEvent<AgentSessionStatusDetail>).detail);
+  },
+  { signal: lifecycle.signal },
+);
 
-window.addEventListener(AGENT_RUN_SETTLED_EVENT, (event) => {
-  applyRunSettled((event as CustomEvent<AgentRunSettledDetail>).detail);
-});
+window.addEventListener(
+  AGENT_RUN_SETTLED_EVENT,
+  (event) => {
+    applyRunSettled((event as CustomEvent<AgentRunSettledDetail>).detail);
+  },
+  { signal: lifecycle.signal },
+);
 
-window.addEventListener("storage", (event) => {
-  if (event.key === AGENT_HUD_ENABLED_KEY) {
-    applyVisibility(event.newValue !== "false");
-  }
-});
+window.addEventListener(
+  "storage",
+  (event) => {
+    if (event.key === AGENT_HUD_ENABLED_KEY) {
+      applyVisibility(event.newValue !== "false");
+    }
+  },
+  { signal: lifecycle.signal },
+);
 
-void listen<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, (event) =>
-  applySessionsChanged(event.payload),
-).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<AgentSessionsChangedDetail>(AGENT_SESSIONS_CHANGED_EVENT, (event) =>
+    applySessionsChanged(event.payload),
+  ),
+);
 
-void listen<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, (event) =>
-  applyStatus(event.payload),
-).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<AgentSessionStatusDetail>(AGENT_SESSION_STATUS_EVENT, (event) =>
+    applyStatus(event.payload),
+  ),
+);
 
-void listen<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, (event) =>
-  applyRunSettled(event.payload),
-).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<AgentRunSettledDetail>(AGENT_RUN_SETTLED_EVENT, (event) => applyRunSettled(event.payload)),
+);
 
-void listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
-  applyVisibility(event.payload.enabled),
-).catch(() => {});
+lifecycle.trackUnlisten(
+  listen<AgentHudVisibilityChangedDetail>(AGENT_HUD_VISIBILITY_CHANGED_EVENT, (event) =>
+    applyVisibility(event.payload.enabled),
+  ),
+);
 
 // The native panel intercepts the right-/ctrl-click and asks us to open the
 // menu. The click never reaches the DOM, so there is no competing
 // pointerdown to close it again (the window pointerdown handler only fires
 // for clicks the webview actually receives).
-void listen(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu()).catch(() => {});
+lifecycle.trackUnlisten(listen(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu()));
 
 setIcon(pillChevron, IconChevronDownSmall, 14);
 render();

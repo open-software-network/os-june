@@ -28,11 +28,13 @@ import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { isWindowsPlatform } from "../../lib/platform";
 import { listHermesSessionMessages } from "../../lib/hermes-adapter";
 import { dispatchAgentSessionStatus } from "../../lib/agent-events";
-import { HermesGatewayClient } from "../../lib/hermes-gateway";
+import type { HermesGatewayClient } from "../../lib/hermes-gateway";
+import { subscribeHermesActiveSessionSnapshots } from "../../lib/hermes-active-session-snapshots";
 import {
   createHermesMethods,
   hermesModeFor,
   type JuneHermesEvent,
+  type HermesRequestLike,
 } from "../../lib/hermes-control-plane";
 import { normalizeSteerText } from "../../lib/hermes-session-steer";
 import { pendingActionStore } from "../../lib/hermes-pending-actions";
@@ -52,11 +54,11 @@ import {
   slashModelResolutionError,
 } from "../../lib/agent-composer-slash-commands";
 import { type ComposerEditorHandle, stripPlaceholder } from "./composer/ComposerEditor";
-import { type NoteReferenceInput } from "./composer/noteReference";
+import type { NoteReferenceInput } from "./composer/noteReference";
 import { sessionUnrestricted } from "../../lib/agent-session-modes";
-import { type AgentChatPart, type AgentChatTurn } from "../../lib/agent-chat-runtime";
+import type { AgentChatPart, AgentChatTurn } from "../../lib/agent-chat-runtime";
 import { ProjectContextSignatureStore } from "../../lib/agent-project-context";
-import { type AgentChatGallerySection } from "../../lib/agent-chat-gallery";
+import type { AgentChatGallerySection } from "../../lib/agent-chat-gallery";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
 import { useAgentGalleryEvents } from "./use-agent-gallery-events";
@@ -110,6 +112,7 @@ import { createImageSlashActions } from "./image-slash-actions";
 import { createSubmitHermesSession } from "./session-submission";
 import type { SubmitHermesSession } from "./session-submission-types";
 import { createSubmitComposer } from "./composer/submit-composer";
+import { ARTIFACT_INDEX_RECONCILE_INTERVAL_MS, createAgentArtifactIndex } from "./artifact-index";
 export type { AgentWorkspaceOrigin } from "./agent-workspace-types";
 export { SkillsToolsPanel } from "./management/SkillsToolsPanel";
 export {
@@ -183,7 +186,7 @@ export {
  * for the team instead of treating it as a normal request for help. */
 import type { PendingIssueReport } from "./agent-session-continuity";
 
-import { type AgentWorkspaceError } from "./agent-workspace-errors";
+import type { AgentWorkspaceError } from "./agent-workspace-errors";
 export { agentWorkspaceErrorStateForMessage } from "./agent-workspace-errors";
 
 import {
@@ -193,7 +196,7 @@ import {
   storedVideoSlashTurns,
   videoSlashTurnsBySessionFromStored,
 } from "./composer/media-slash-persistence";
-import { type CapturedSessionModelTarget } from "./composer/follow-up-queue";
+import type { CapturedSessionModelTarget } from "./composer/follow-up-queue";
 
 import {
   persistedReviewableIssueReports,
@@ -417,8 +420,9 @@ export function AgentWorkspace({
   // the model's session history, so a follow-up ("do you think it's nice?")
   // reaches an empty context. Hold each generated image here, keyed by session,
   // and lazily attach it to the user's NEXT prompt via the same
-  // `image.attach_bytes` path composer attachments use — so the image lands in
-  // context exactly when the model first needs it. A ref (not state) on purpose:
+  // native path snapshot composer attachments use, with `image.attach_bytes`
+  // retained for callers that do not have a gateway-local path. The image lands
+  // in context exactly when the model first needs it. A ref (not state) on purpose:
   // it must NOT render a composer chip (the image already shows in-thread; ADR
   // 0003 decision 2). Cleared once attached.
   const {
@@ -466,7 +470,7 @@ export function AgentWorkspace({
     runtimeSessionIds,
     setRuntimeSessionIds,
     runtimeSessionIdsRef,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     stoppingSessionIds,
     setStoppingSessionIds,
     skills,
@@ -527,9 +531,6 @@ export function AgentWorkspace({
     setSelectedMessagingPlatformId,
     messagingEnvEdits,
     setMessagingEnvEdits,
-    filesystemSnapshot,
-    setFilesystemSnapshot,
-    setFilesystemLoading,
     artifactPanel,
     setArtifactPanel,
     usagePanelSessionId,
@@ -564,6 +565,7 @@ export function AgentWorkspace({
     continuity,
     selectedHermesSessionId,
   });
+  const artifactIndex = useMemo(() => createAgentArtifactIndex(), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -648,6 +650,7 @@ export function AgentWorkspace({
   const composerEditorRef = useRef<ComposerEditorHandle | null>(null);
   const composerTiptapEditorRef = useRef<TiptapEditor | null>(null);
   const composerBoxRef = useRef<HTMLDivElement | null>(null);
+  const [composerHasContent, setComposerHasContent] = useState(Boolean(draft.trim()));
   const [composerClearance, setComposerClearance] = useState(0);
   // A note reference to seed once the editor is ready, set by startNewTask for
   // note-level "Ask June" entry points.
@@ -875,12 +878,12 @@ export function AgentWorkspace({
     chatArtifacts,
   } = useAgentSelection({
     attachments,
+    artifactIndex,
     category,
     composerSizeWarning,
     creditActionsDisabledReason,
     defaultGenerationModelId,
     draft,
-    filesystemSnapshot,
     generationCostQuality,
     generationModels,
     hermesSessionItems,
@@ -1093,7 +1096,9 @@ export function AgentWorkspace({
       void (async () => {
         const imported: AgentArtifact[] = [];
         for (const sample of buildSampleArtifactFiles()) {
-          imported.push(await importHermesBridgeFileBytes(sample.name, sample.bytes));
+          const file = await importHermesBridgeFileBytes(sample.name, sample.bytes);
+          artifactIndex.upsertImportedFile(file);
+          imported.push(file);
         }
         setDevArtifacts(imported);
         setArtifactPanel({ view: "list" });
@@ -1101,7 +1106,7 @@ export function AgentWorkspace({
     };
     window.addEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
     return () => window.removeEventListener(AGENT_DEV_FILES_EVENT, onDevFiles);
-  }, []);
+  }, [artifactIndex]);
 
   let stopHermesSessionImplementation: ReturnType<
     typeof createTaskControlActions
@@ -1162,7 +1167,7 @@ export function AgentWorkspace({
     composerModelSearchRef,
     composerModelTriggerRef,
     composerSteerDemo,
-    draft,
+    composerHasContent,
     errorState,
     fullModeDraftRef,
     gallerySections,
@@ -1439,18 +1444,15 @@ export function AgentWorkspace({
   // working from a trailing user message — would otherwise stay "working"
   // forever, leaving the menu bar stuck on "Working…". The gateway's
   // session.active_list is ground truth for what is actually running, so any
-  // locally-working session absent from it (or sitting idle) for two
-  // consecutive polls gets its activity cleared. Two misses, not one: a
-  // just-submitted prompt can race the runtime session registering.
+  // locally-working session absent from it (or sitting idle) for the original
+  // five-second tolerance gets its activity cleared. The tolerance covers a
+  // just-submitted prompt racing runtime-session registration.
   const {
-    liveRuntimeSessionsForModes,
-    runtimeSnapshotHasSession,
     cancelAgentRunSettlement,
     hasAutomaticContinuation,
     watchCompletedAgentRunSettle,
     reconcileWorkingSessionsAgainstRuntime,
   } = createRuntimeReconciliation({
-    ensureHermesGateway,
     hermesSessionItems,
     pendingAttachmentPreparationsRef,
     pendingSteerBySessionIdRef,
@@ -1459,7 +1461,7 @@ export function AgentWorkspace({
     refreshHermesSession,
     runtimeSessionIdsRef,
     setError,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     workingSessionIdsRef,
   });
 
@@ -1592,6 +1594,7 @@ export function AgentWorkspace({
     setAttachMenuOpen,
     setAttachments,
     setCategory,
+    setComposerHasContent,
     setDraft,
     setError,
     setImportingFiles,
@@ -1679,12 +1682,11 @@ export function AgentWorkspace({
     if (!bridge.running || !hermesSessionsHydrated || !selectedHermesSessionId) return;
     if (isProvisionalHermesSessionId(selectedHermesSessionId)) return;
     void loadFilesystemSnapshot();
-  }, [
-    bridge.running,
-    hermesSessionsHydrated,
-    selectedHermesSessionId,
-    selectedHermesMessages.length,
-  ]);
+    const reconcileInterval = window.setInterval(() => {
+      void loadFilesystemSnapshot();
+    }, ARTIFACT_INDEX_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(reconcileInterval);
+  }, [bridge.running, hermesSessionsHydrated, selectedHermesSessionId]);
 
   useTaskHydration({
     hydratedTaskIdsRef,
@@ -1728,19 +1730,28 @@ export function AgentWorkspace({
     return () => window.clearInterval(interval);
   }, [selectedTask?.id, selectedTask?.status, upsertTask]);
 
-  // Poll every working session — not just the selected one — so a run whose
-  // live gateway stream died (disconnect, navigation) still reconciles from
-  // persisted messages instead of staying "working" forever.
+  // One process-wide active-list poll per mode is shared with run settlement.
+  // Gateway events render live message deltas, while bounded missing-row and
+  // unreachable-snapshot streaks trigger native persisted-history recovery.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: subscription ownership follows mode membership; the render-local reconciler reads current refs, and resubscribing every render would force extra immediate snapshots.
   useEffect(() => {
-    if (!bridge.running || workingSessionIds.size === 0) return;
-    const sessionIds = Array.from(workingSessionIds);
-    const interval = window.setInterval(() => {
-      for (const sessionId of sessionIds) {
-        void refreshHermesSession(sessionId);
+    for (const sessionId of workingReconcileStreaksRef.current.keys()) {
+      if (!workingSessionIds.has(sessionId)) {
+        workingReconcileStreaksRef.current.delete(sessionId);
       }
-      void reconcileWorkingSessionsAgainstRuntime();
-    }, 2500);
-    return () => window.clearInterval(interval);
+    }
+    if (!bridge.running || workingSessionIds.size === 0) return;
+    const modes = new Set(
+      Array.from(workingSessionIds, (sessionId) => sessionUnrestricted(sessionId)),
+    );
+    const unsubscribe = [...modes].map((fullMode) =>
+      subscribeHermesActiveSessionSnapshots(fullMode, (snapshot) => {
+        void reconcileWorkingSessionsAgainstRuntime(snapshot);
+      }),
+    );
+    return () => {
+      for (const remove of unsubscribe) remove();
+    };
   }, [bridge.running, workingSessionIds]);
 
   useEffect(() => {
@@ -1766,12 +1777,11 @@ export function AgentWorkspace({
 
   const { loadSkillCommands, loadCapabilities, loadMessagingPlatforms, loadFilesystemSnapshot } =
     createManagementLoaders({
+      artifactIndex,
       ensureHermesGateway,
       selectedHermesSessionIdRef,
       setCapabilityLoading,
       setError,
-      setFilesystemLoading,
-      setFilesystemSnapshot,
       setMessagingPlatforms,
       setSelectedMessagingPlatformId,
       setSkillCommandLoading,
@@ -1795,7 +1805,7 @@ export function AgentWorkspace({
     creditActionsDisabledReason,
     imageSafeModeConsentRequestRef,
     imageSlashBaseTurnId,
-    loadFilesystemSnapshot,
+    recordImportedArtifact: artifactIndex.upsertImportedFile,
     newSessionModeRef,
     pendingFastPathImagesRef,
     setError,
@@ -1903,6 +1913,7 @@ export function AgentWorkspace({
     sessionId: string,
     level: ThinkingLevel,
     explicitRuntimeSessionId?: string,
+    requestClient?: HermesRequestLike,
   ) {
     const effort = thinkingEffortForLevel(level);
     const runtimeSessionId = explicitRuntimeSessionId ?? runtimeSessionIdsRef.current[sessionId];
@@ -1912,7 +1923,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      const gateway = await ensureHermesGateway(sessionUnrestricted(sessionId));
+      const gateway = requestClient ?? (await ensureHermesGateway(sessionUnrestricted(sessionId)));
       await createHermesMethods(gateway).setSessionReasoningEffort({
         sessionId: runtimeSessionId,
         effort,
@@ -1967,7 +1978,7 @@ export function AgentWorkspace({
     clearComposerCommandDraft,
     composerDispatchWasInvalidated,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordFilesystemArtifact: artifactIndex.upsert,
     newSessionModeRef,
     requestImageSafeModeConsent,
     setError,
@@ -2059,6 +2070,7 @@ export function AgentWorkspace({
   }
 
   function clearComposerCommandDraft(commandText: string) {
+    if (!composerEditorRef.current?.flushPendingChange()) return;
     if (draftRef.current.trim() !== commandText.trim()) return;
     if (categoryRef.current) return;
     composerEditorRef.current?.clear();
@@ -2087,6 +2099,16 @@ export function AgentWorkspace({
 
   let submitImplementation: (event?: FormEvent) => Promise<void>;
   async function submit(event?: FormEvent) {
+    const liveComposer = composerEditorRef.current;
+    if (
+      liveComposer &&
+      !liveComposer.flushPendingChange({
+        changeKey: composerDraftKeyRef.current,
+      })
+    ) {
+      event?.preventDefault();
+      return;
+    }
     return submitImplementation(event);
   }
 
@@ -2131,7 +2153,7 @@ export function AgentWorkspace({
     agentAttachmentFromImportedFile,
     composerEditorRef,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordImportedArtifact: artifactIndex.upsertImportedFile,
     setComposerAttachments,
     setError,
     setImportingFiles,
@@ -2186,12 +2208,13 @@ export function AgentWorkspace({
     });
 
   /**
-   * Attach this turn's pending images to the live session via image.attach_bytes
-   * (feature 19), updating each chip's status and feeding the artifact timeline.
-   * The base64 is read on demand from the workspace file, passed straight to
-   * the typed attachImage, and discarded; it never lands on composer state and
-   * the trace entry is redacted to a byte count. Throws a single blocking error
-   * if any image failed so the prompt is not sent with a missing image.
+   * Attach this turn's pending images to the live session via a Rust-validated
+   * workspace snapshot and `image.attach` (feature 19), updating each chip's
+   * status and feeding the artifact timeline. Image bytes do not cross the JS
+   * bridge or Hermes WebSocket on this path; `image.attach_bytes` remains the
+   * additive fallback for callers without a local path. Throws a single
+   * blocking error if any image failed so the prompt is not sent with a missing
+   * image.
    */
   const { attachPendingImages, clearHeldFastPathImages } = createPendingImageActions({
     pendingFastPathImagesRef,
@@ -2255,6 +2278,9 @@ export function AgentWorkspace({
     clearSubmittedSteers,
     continueAfterCompletedAgentRun,
     liveEventsRef,
+    onArtifactFilesystemChange: (event) => {
+      if (artifactIndex.recordToolEvent(event)) void loadFilesystemSnapshot();
+    },
     pendingSteerBySessionIdRef,
     promotePendingIssueReportToReview,
     recordHermesActivityAndDeriveStatus,
@@ -2335,6 +2361,7 @@ export function AgentWorkspace({
     recordHermesActivityAndDeriveStatus,
     refreshHermesSession,
     selectedHermesSessionIdRef,
+    sessionGatewayUnlistenRef,
     setBridge,
     setBridgeStarting,
     setError,
@@ -2519,9 +2546,9 @@ export function AgentWorkspace({
   // remains read-only; transport state stays out of the visual scan line.
   const { renderSteerCard, renderQueuedAttachmentFollowUp } = createQueuedFollowUpRenderers({
     attachments,
+    composerHasContent,
     composerEditorRef,
     deliverQueuedAttachmentFollowUp,
-    draft,
     draftRef,
     editQueuedAttachmentFollowUp,
     queuedAttachmentFollowUpsRef,
@@ -2660,6 +2687,7 @@ export function AgentWorkspace({
     openTimelineArtifact,
   } = useAgentChatPresentation({
     DOWNLOAD_TOAST_ID,
+    artifactIndex,
     chatArtifacts,
     devArtifacts,
     imageTurnsBySession,
@@ -2720,7 +2748,7 @@ export function AgentWorkspace({
   // hovering the chips, has started typing, or has the window backgrounded;
   // never cycles under reduced motion.
   useAgentHeroRotation({
-    draftRef,
+    composerHasContent,
     heroChipsHoverRef,
     heroMode,
     setHeroChipPhase,
@@ -2761,17 +2789,14 @@ export function AgentWorkspace({
     beginAttachmentPreparation,
     cancelComposerDispatch,
     captureSessionModelTarget,
-    category,
     categoryRef,
     clearComposerDraft,
     composerDispatchOrderRef,
     composerDispatchWasInvalidated,
     composerDraftKeyRef,
     composerEditorRef,
-    composerInputSignature,
     composerSizeProceedSignatureRef,
     deferredFailedIssueReportDeliverySessionIdsRef,
-    draft,
     draftRef,
     enqueueAttachmentFollowUp,
     enqueueFailedComposerFollowUp,
@@ -2781,7 +2806,6 @@ export function AgentWorkspace({
     generationModels,
     handleBuiltinComposerSlashCommand,
     heroMode,
-    imageSlashBlockedByModel,
     importingFiles,
     newSessionModeRef,
     pendingSteerBySessionIdRef,
@@ -2826,6 +2850,8 @@ export function AgentWorkspace({
     composerBoxRef,
     composerDraftKeyRef,
     composerEditorRef,
+    composerHasContent,
+    setComposerHasContent,
     onComposerFocusChange: handleComposerFocusChange,
     composerInSteerState,
     composerModelFlyout,
@@ -2839,7 +2865,6 @@ export function AgentWorkspace({
     composerTiptapEditorRef,
     confirmUnrestricted,
     creditActionsDisabledReason,
-    draft,
     draftRef,
     dropActive,
     editOversizeComposerInput,
@@ -3018,11 +3043,11 @@ export function AgentWorkspace({
     compactSessionId,
     composer,
     composerClearance,
+    composerHasContent,
     compressSessionContext,
     deleteSelectedHermesSession,
     detailContent,
     downloadArtifact,
-    draft,
     fetchSessionUsage,
     galleryErrors,
     generationModel,
@@ -3159,7 +3184,7 @@ export {
   branchSourceSessionIdForTurn,
   turnIsConcreteResponse,
 } from "./chat-turns/BranchAndSensitiveActions";
-import { type AgentArtifact } from "./chat-turns/AgentArtifactPanel";
+import type { AgentArtifact } from "./chat-turns/AgentArtifactPanel";
 export { generatedImagePathAliases } from "./composer/composer-input-helpers";
 import {
   agentActivityCountsFromStore,

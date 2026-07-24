@@ -2,6 +2,8 @@ use os_june_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };
+use sqlx::query::query;
+use sqlx::row::Row;
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -32,6 +34,120 @@ async fn updates_title_body_and_active_tab() {
     assert_eq!(updated.title, "Edited title");
     assert_eq!(updated.edited_content.as_deref(), Some("Edited body"));
     assert_eq!(updated.active_tab.as_deref(), Some("transcription"));
+}
+
+#[tokio::test]
+async fn update_note_returns_its_patch_without_hydrating_related_note_data() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    // A fully hydrated NoteDto reads transcripts after the note row. Removing
+    // the relation makes this a regression guard that update_note executes its
+    // UPDATE ... RETURNING statement without a pre/post hydration round trip.
+    query("DROP TABLE transcripts")
+        .execute(&repos.pool)
+        .await
+        .expect("drop transcript relation");
+
+    let updated = repos
+        .update_note(
+            &note.id,
+            Some("Single statement".to_string()),
+            Some("Returned patch".to_string()),
+            None,
+        )
+        .await
+        .expect("single-query update");
+
+    assert_eq!(updated.id, note.id);
+    assert_eq!(updated.title, "Single statement");
+    assert_eq!(updated.preview, "Returned patch");
+    assert_eq!(updated.edited_content.as_deref(), Some("Returned patch"));
+    assert_eq!(updated.active_tab.as_deref(), Some("notes"));
+    let persisted = query("SELECT title, edited_content, active_tab FROM notes WHERE id = ?")
+        .bind(&note.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("persisted note row");
+    assert_eq!(persisted.get::<String, _>("title"), "Single statement");
+    assert_eq!(
+        persisted
+            .get::<Option<String>, _>("edited_content")
+            .as_deref(),
+        Some("Returned patch")
+    );
+    assert_eq!(
+        persisted.get::<Option<String>, _>("active_tab").as_deref(),
+        Some("notes")
+    );
+}
+
+#[tokio::test]
+async fn update_note_returns_null_content_and_normalizes_a_null_active_tab() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    query("UPDATE notes SET edited_content = NULL, active_tab = NULL WHERE id = ?")
+        .bind(&note.id)
+        .execute(&repos.pool)
+        .await
+        .expect("nullable note row");
+
+    let updated = repos
+        .update_note(&note.id, Some("Title only".to_string()), None, None)
+        .await
+        .expect("patch nullable row");
+
+    assert_eq!(updated.title, "Title only");
+    assert_eq!(updated.edited_content, None);
+    assert_eq!(updated.active_tab.as_deref(), Some("notes"));
+}
+
+#[tokio::test]
+async fn autosave_omits_title_after_generation_commits_a_newer_title() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    let autosave_snapshot = repos.get_note(&note.id).await.expect("autosave snapshot");
+    assert_eq!(autosave_snapshot.title, "");
+
+    let generated = repos
+        .set_generated_note(
+            &note.id,
+            Some("Freshly generated title".to_string()),
+            "Generated content".to_string(),
+        )
+        .await
+        .expect("generated note");
+    assert_eq!(generated.title, "Freshly generated title");
+
+    // The debounced autosave is still based on the pre-generation editor
+    // snapshot. Fail deterministically if its content-only patch touches the
+    // title column at all; doing so can rewrite the stale snapshot over the
+    // title that generation committed in the meantime.
+    query(
+        "CREATE TRIGGER reject_stale_autosave_title_write
+         BEFORE UPDATE OF title ON notes
+         BEGIN
+             SELECT RAISE(ABORT, 'content autosave must not write title');
+         END",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("install title-write guard");
+
+    let updated = repos
+        .update_note(
+            &note.id,
+            None,
+            Some("Content saved from the older editor snapshot".to_string()),
+            None,
+        )
+        .await
+        .expect("content autosave");
+
+    assert_eq!(updated.title, "Freshly generated title");
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("Content saved from the older editor snapshot")
+    );
 }
 
 #[tokio::test]
@@ -378,6 +494,96 @@ async fn generated_note_composes_distinct_session_blocks_in_order() {
     assert_eq!(
         updated.generated_content.as_deref(),
         Some("First transcript result\n\nSecond transcript result")
+    );
+}
+
+#[tokio::test]
+async fn generated_note_preserves_user_edit_written_after_its_read() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+
+    // Generation inserts its session block after reading the note and before
+    // updating it. Use that exact boundary to deterministically model an
+    // autosave that commits while generation is still working from its stale
+    // `edited_content = NULL` snapshot.
+    query(
+        "CREATE TRIGGER simulate_concurrent_note_autosave
+         AFTER INSERT ON note_generation_blocks
+         BEGIN
+             UPDATE notes
+             SET title = 'User title persisted during generation',
+                 edited_content = 'User edit persisted during generation'
+             WHERE id = NEW.note_id;
+         END",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("install concurrent autosave trigger");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "Generated content".to_string(),
+        )
+        .await
+        .expect("generated note");
+
+    assert_eq!(updated.title, "User title persisted during generation");
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("User edit persisted during generation")
+    );
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("Generated content")
+    );
+}
+
+#[tokio::test]
+async fn generated_note_preserves_newer_non_null_user_edit_written_after_its_read() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    repos
+        .update_note(&note.id, None, Some("Initial user edit".to_string()), None)
+        .await
+        .expect("initial user edit");
+
+    // The trigger fires after generation has read the existing edit and
+    // changes it before generation's final compare-and-set update.
+    query(
+        "CREATE TRIGGER simulate_concurrent_non_null_note_autosave
+         AFTER INSERT ON note_generation_blocks
+         BEGIN
+             UPDATE notes
+             SET edited_content = 'Newer user edit persisted during generation'
+             WHERE id = NEW.note_id;
+         END",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("install concurrent autosave trigger");
+
+    let updated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "Generated content".to_string(),
+        )
+        .await
+        .expect("generated note");
+
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some("Newer user edit persisted during generation")
+    );
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("Generated content")
     );
 }
 

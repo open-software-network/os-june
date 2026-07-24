@@ -50,6 +50,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 cpal = "0.15"
 dotenvy = "0.15"
+futures-core = "0.3"
 hound = "3.5"
 # fd plumbing (pipe/dup2) for the managed browser's CDP pipe transport.
 libc = "0.2"
@@ -100,6 +101,7 @@ libc = "0.2"
 # screencapturekit supports >=0.6,<0.9, but apple-metal 0.6.1+ references
 # macOS 26 SDK symbols that do not compile on June's macOS 15/Xcode 16 lane.
 apple-metal = { version = "=0.6.0", default-features = false }
+core-foundation = "0.10"
 keyring = { version = "3", features = ["apple-native"] }
 block2 = "0.6"
 cua-driver-core = { git = "https://github.com/trycua/cua", rev = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1" }
@@ -136,6 +138,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 window-vibrancy = "0.6"
 platform-macos = { git = "https://github.com/trycua/cua", rev = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1" }
+security-framework = "3.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

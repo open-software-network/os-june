@@ -43,6 +43,7 @@ export type createGatewayRecoveryActionsDependencies = {
   ) => AgentSessionStatusKind | undefined;
   refreshHermesSession: (sessionId: string) => Promise<HermesSessionMessage[] | undefined>;
   selectedHermesSessionIdRef: React.MutableRefObject<string | undefined>;
+  sessionGatewayUnlistenRef: React.MutableRefObject<Map<string, () => void>>;
   setBridge: React.Dispatch<React.SetStateAction<HermesBridgeStatus>>;
   setBridgeStarting: React.Dispatch<React.SetStateAction<boolean>>;
   setError: (message: string | null, options?: AgentWorkspaceErrorOptions) => void;

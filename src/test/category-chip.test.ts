@@ -55,6 +55,26 @@ describe("category chip insertion", () => {
     // orphaned separator used to leave behind).
     expect(serializePlainText(editor.state.doc)).toBe(" ");
   });
+
+  it("keeps the chip first when inserting into an existing draft", () => {
+    editor = makeEditor();
+    editor.commands.setContent("Report details");
+    editor.commands.setTextSelection(editor.state.doc.content.size);
+
+    insertReportCategory(editor, "bug");
+
+    expect(categoryFromDoc(editor.state.doc)).toBe("bug");
+    expect(serializePlainText(editor.state.doc)).toBe(" Report details");
+  });
+
+  it("finds the category when text is inserted before the chip", () => {
+    editor = makeEditor();
+    insertReportCategory(editor, "bug");
+    editor.commands.setTextSelection(1);
+    editor.commands.insertContent("Report details");
+
+    expect(categoryFromDoc(editor.state.doc)).toBe("bug");
+  });
 });
 
 describe("hero-shortcut placeholder staging", () => {

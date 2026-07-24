@@ -5,13 +5,13 @@ import type * as React from "react";
 
 export type createQueuedFollowUpRenderersDependencies = {
   attachments: AgentAttachment[];
+  composerHasContent: boolean;
   composerEditorRef: React.MutableRefObject<ComposerEditorHandle | null>;
   deliverQueuedAttachmentFollowUp: (
     queueKey: string,
     itemId?: string,
     options?: { afterCompletion?: boolean },
   ) => Promise<boolean>;
-  draft: string;
   draftRef: React.MutableRefObject<string>;
   editQueuedAttachmentFollowUp: (queueKey: string, itemId: string) => void;
   queuedAttachmentFollowUpsRef: React.MutableRefObject<Record<string, QueuedAttachmentFollowUp[]>>;

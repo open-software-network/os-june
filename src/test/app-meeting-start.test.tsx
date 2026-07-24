@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
   getNote: vi.fn(),
   deleteNote: vi.fn(),
   updateNote: vi.fn(),
+  patchNote: vi.fn(),
+  completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
@@ -114,6 +116,9 @@ vi.mock("../lib/tauri", () => ({
   getNote: mocks.getNote,
   deleteNote: mocks.deleteNote,
   updateNote: mocks.updateNote,
+  patchNote: mocks.patchNote,
+  completeNoteSaveFlush: mocks.completeNoteSaveFlush,
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
@@ -270,6 +275,14 @@ describe("meeting start transcription event", () => {
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,
+    }));
+    mocks.patchNote.mockImplementation(async (noteId, patch) => ({
+      id: noteId,
+      title: patch.title ?? first.title,
+      preview: first.preview,
+      editedContent: patch.editedContent ?? first.editedContent,
+      activeTab: patch.activeTab ?? first.activeTab,
+      updatedAt: first.updatedAt,
     }));
   });
 
@@ -982,6 +995,14 @@ describe("agent recorder request event", () => {
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
     mocks.updateNote.mockImplementation(async (input) => ({ ...first, ...input }));
+    mocks.patchNote.mockImplementation(async (noteId, patch) => ({
+      id: noteId,
+      title: patch.title ?? first.title,
+      preview: first.preview,
+      editedContent: patch.editedContent ?? first.editedContent,
+      activeTab: patch.activeTab ?? first.activeTab,
+      updatedAt: first.updatedAt,
+    }));
     mocks.resolveAgentRecorderRequest.mockResolvedValue(undefined);
   });
 

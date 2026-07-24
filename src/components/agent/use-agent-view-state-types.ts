@@ -33,7 +33,7 @@ export type UseAgentViewStateDependencies = {
   composerModelSearchRef: React.RefObject<HTMLInputElement>;
   composerModelTriggerRef: React.RefObject<HTMLButtonElement>;
   composerSteerDemo: boolean;
-  draft: string;
+  composerHasContent: boolean;
   errorState: AgentWorkspaceError | null;
   fullModeDraftRef: React.MutableRefObject<boolean>;
   gallerySections: AgentChatGallerySection[] | null;

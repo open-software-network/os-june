@@ -8,6 +8,38 @@ function setup() {
 }
 
 describe("createHermesMethods — typed command wrappers", () => {
+  it("createSession maps optional agent-run tool scope to the gateway wire shape", async () => {
+    const { request, methods } = setup();
+    await methods.createSession({
+      title: "Use Computer use",
+      cols: 96,
+      model: "grok-4-5",
+      reasoningEffort: "high",
+      enabledToolsets: ["june_computer_use"],
+    });
+    expect(request).toHaveBeenCalledWith("session.create", {
+      title: "Use Computer use",
+      cols: 96,
+      model: "grok-4-5",
+      reasoning_effort: "high",
+      enabled_toolsets: ["june_computer_use"],
+    });
+  });
+
+  it("submitPrompt maps optional agent-run tool scope to the gateway wire shape", async () => {
+    const { request, methods } = setup();
+    await methods.submitPrompt({
+      sessionId: "runtime-1",
+      text: "Open Calculator.",
+      enabledToolsets: ["june_computer_use"],
+    });
+    expect(request).toHaveBeenCalledWith("prompt.submit", {
+      session_id: "runtime-1",
+      text: "Open Calculator.",
+      enabled_toolsets: ["june_computer_use"],
+    });
+  });
+
   it("steerSession forwards session id and text to session.steer", async () => {
     const { request, methods } = setup();
     await methods.steerSession({ sessionId: "s1", text: "focus on tests" });
@@ -140,6 +172,18 @@ describe("createHermesMethods — typed command wrappers", () => {
       mime_type: "image/png",
       content_base64: "AAAA",
       filename: "diagram.png",
+    });
+  });
+
+  it("attachImagePath forwards only a native path to image.attach", async () => {
+    const { request, methods } = setup();
+    await methods.attachImagePath({
+      sessionId: "runtime-1",
+      path: "/workspace/session-attachments/abc/diagram.png",
+    });
+    expect(request).toHaveBeenCalledWith("image.attach", {
+      session_id: "runtime-1",
+      path: "/workspace/session-attachments/abc/diagram.png",
     });
   });
 

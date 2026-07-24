@@ -16,11 +16,10 @@ import type { createManagementLoadersDependencies } from "./management-loaders-t
 export function createManagementLoaders(dependencies: createManagementLoadersDependencies) {
   const {
     ensureHermesGateway,
+    artifactIndex,
     selectedHermesSessionIdRef,
     setCapabilityLoading,
     setError,
-    setFilesystemLoading,
-    setFilesystemSnapshot,
     setMessagingPlatforms,
     setSelectedMessagingPlatformId,
     setSkillCommandLoading,
@@ -104,19 +103,18 @@ export function createManagementLoaders(dependencies: createManagementLoadersDep
 
   async function loadFilesystemSnapshot() {
     const sessionId = selectedHermesSessionIdRef.current ?? null;
-    setFilesystemLoading(true);
     try {
-      await ensureHermesGateway();
-      setFilesystemSnapshot(await hermesBridgeFilesystemSnapshot());
-      // No setError(null): this refires in the background on message-count
-      // changes, so a success would wipe an unrelated banner (e.g. a failed
-      // send). The banner is dismissable instead.
+      await artifactIndex.refresh(async () => {
+        await ensureHermesGateway();
+        return hermesBridgeFilesystemSnapshot();
+      });
+      // No setError(null): this also runs as a bounded background reconcile,
+      // so a success must not wipe an unrelated banner (for example a failed
+      // send). The banner remains dismissable instead.
     } catch (err) {
       const message = messageFromError(err);
       if (isSessionGoneError(message)) return;
       setError(message, { sessionId });
-    } finally {
-      setFilesystemLoading(false);
     }
   }
 

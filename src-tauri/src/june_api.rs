@@ -1194,6 +1194,45 @@ pub async fn forward_web_request(
     })
 }
 
+/// Streams a web-tool request body from the on-device provider proxy into
+/// June API without first materializing the complete JSON document.
+///
+/// `access_token()` refreshes stale cached credentials before returning. Like
+/// multipart uploads, this one-shot body cannot be replayed after a server-side
+/// 401, so it deliberately relies on that pre-flight refresh instead of
+/// `authed_send`'s response-triggered retry.
+pub async fn forward_streaming_web_request(
+    path: &str,
+    body: reqwest::Body,
+    content_length: usize,
+) -> Result<WebProxyResponse, AppError> {
+    let url = format!("{}{}", june_api_url(), path);
+    let token = crate::os_accounts::access_token().await?;
+    let request = http_client()
+        .post(url)
+        .bearer_auth(token)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header(reqwest::header::CONTENT_LENGTH, content_length)
+        .body(body);
+    let response = with_venice_api_key(path, request, true)
+        .send()
+        .await
+        .map_err(network_error)?;
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+    let bytes = response.bytes().await.map_err(network_error)?;
+    Ok(WebProxyResponse {
+        status,
+        content_type,
+        body: bytes.to_vec(),
+    })
+}
+
 /// Forwards an image tool request (`/v1/image/generate` or `/v1/image/edit`) to
 /// the June API with the user's access token, returning the raw response so the
 /// loopback proxy can pass the metered envelope straight through to the local

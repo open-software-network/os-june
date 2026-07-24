@@ -4,13 +4,10 @@ import {
   type AgentChatTurn,
 } from "../../../lib/agent-chat-runtime";
 import { modelSupportsTools } from "../../../lib/model-privacy";
-import type {
-  HermesFilesystemEntry,
-  HermesFilesystemSnapshot,
-  VeniceModelDto,
-} from "../../../lib/tauri";
+import type { VeniceModelDto } from "../../../lib/tauri";
 import type { AgentArtifact } from "../chat-turns/AgentArtifactPanel";
 import type { AgentAttachment } from "../agent-workspace-models";
+import { workspaceRelativeArtifactPath } from "../artifact-index";
 import type { ReportCategory } from "./reportCategory";
 
 const COMPOSER_TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
@@ -23,14 +20,6 @@ export type ComposerInputSizeWarning = {
   modelName: string;
   switchModel?: VeniceModelDto;
 };
-
-export function artifactsFromFilesystemSnapshot(
-  snapshot: HermesFilesystemSnapshot | null,
-): AgentArtifact[] {
-  return (snapshot?.roots ?? []).flatMap((root) =>
-    filesystemEntriesToArtifacts(root.entries, root.label),
-  );
-}
 
 export function composerInputSignatureFor({
   message,
@@ -211,86 +200,7 @@ export function unsupportedImageInputPrompt({
 }
 
 function attachmentPromptPath(path: string) {
-  const workspaceMatch = path.match(/(?:^|[/\\])workspace[/\\](.+)$/);
-  if (workspaceMatch?.[1]) return workspaceMatch[1];
-  return path;
-}
-
-function filesystemEntriesToArtifacts(
-  entries: HermesFilesystemEntry[],
-  rootLabel: string,
-): AgentArtifact[] {
-  return entries.flatMap((entry) => {
-    const children = filesystemEntriesToArtifacts(entry.children ?? [], rootLabel);
-    if (entry.kind !== "file") return children;
-    return [
-      {
-        name: entry.name,
-        path: entry.path,
-        rootLabel,
-        size: entry.size,
-      },
-      ...children,
-    ];
-  });
-}
-
-// Assigns each workspace file to the first turn that mentions it, so its
-// download card renders once instead of at the end of every later response
-// that happens to repeat the file name. User turns can claim a file too, using
-// either the full artifact path or the workspace-relative path injected for
-// attachments, so a file the user just handed us shouldn't bounce back as a
-// download. Name-only matches are also deduplicated by name, so two workspace
-// copies of the same file don't produce twin cards. A file already rendered
-// inline as a generated image/video part never gets a card at all — the inline
-// figure carries its own open/download affordances, and a duplicate file card
-// would otherwise paint above the generation it came from (JUN-305).
-export function assignArtifactsToTurns(
-  turns: AgentChatTurn[],
-  artifacts: AgentArtifact[],
-): Map<string, AgentArtifact[]> {
-  const byTurn = new Map<string, AgentArtifact[]>();
-  if (!artifacts.length) return byTurn;
-  const claimedPaths = new Set<string>();
-  const claimedNames = new Set<string>();
-  const mediaPaths = new Set<string>();
-  const mediaNames = new Set<string>();
-  for (const turn of turns) {
-    for (const part of turn.parts) {
-      if (part.type !== "image" && part.type !== "video") continue;
-      // A path-bearing inline media part is deduped precisely by its path, so it
-      // needn't also claim its basename (which would wrongly suppress an
-      // unrelated later file sharing that name). Only pathless inline media
-      // (e.g. MCP inline image blocks carrying just a filename) fall back to the
-      // fuzzy name match.
-      if (part.path) mediaPaths.add(part.path);
-      else if (part.name) mediaNames.add(part.name.toLowerCase());
-    }
-  }
-  for (const turn of turns) {
-    const text = turn.parts
-      .map((part) => (part.type === "text" ? part.text : ""))
-      .join("\n")
-      .toLowerCase();
-    if (!text.trim()) continue;
-    const mentioned: AgentArtifact[] = [];
-    for (const artifact of artifacts) {
-      const name = artifact.name.toLowerCase();
-      if (!name || claimedPaths.has(artifact.path)) continue;
-      if (mediaPaths.has(artifact.path) || mediaNames.has(name)) continue;
-      const pathMentioned =
-        text.includes(artifact.path.toLowerCase()) ||
-        text.includes(attachmentPromptPath(artifact.path).toLowerCase());
-      const nameMentioned =
-        turn.role === "assistant" && !claimedNames.has(name) && text.includes(name);
-      if (!pathMentioned && !nameMentioned) continue;
-      claimedPaths.add(artifact.path);
-      claimedNames.add(name);
-      if (turn.role === "assistant") mentioned.push(artifact);
-    }
-    if (mentioned.length) byTurn.set(turn.id, mentioned);
-  }
-  return byTurn;
+  return workspaceRelativeArtifactPath(path);
 }
 
 // The inline media renderer owns generated image and video cards, so

@@ -187,6 +187,21 @@ describe("classifyHermesEvent — transcript", () => {
       expect(complete.delta).toBe("Summary only");
     }
   });
+
+  it("keeps a successful message.complete non-terminal while a failed one ends the run", () => {
+    const successful = classifyHermesEvent(
+      event("message.complete", {
+        message_id: "assistant-tool-call",
+        tool_calls: [{ id: "computer-use-1" }],
+      }),
+    );
+    const failed = classifyHermesEvent(
+      event("message.complete", { message_id: "failed-message", status: "error" }),
+    );
+
+    expect(isTerminalHermesEvent(successful)).toBe(false);
+    expect(isTerminalHermesEvent(failed)).toBe(true);
+  });
 });
 
 describe("classifyHermesEvent — reasoning", () => {
@@ -721,6 +736,19 @@ describe("classifyHermesEvent — lifecycle", () => {
         expect(isTerminalHermesEvent(result)).toBe(true);
       }
     }
+  });
+
+  it("uses pinned-runtime session.info running state as the run lifecycle edge", () => {
+    const running = classifyHermesEvent(event("session.info", { running: true }));
+    const terminal = classifyHermesEvent(event("session.info", { running: false }));
+    const informational = classifyHermesEvent(event("session.info", { status: "ready" }));
+
+    expect(running).toMatchObject({ kind: "lifecycle", flavor: "running" });
+    expect(terminal).toMatchObject({ kind: "lifecycle", flavor: "terminal" });
+    expect(informational).toMatchObject({ kind: "lifecycle", flavor: "info" });
+    expect(isTerminalHermesEvent(running)).toBe(false);
+    expect(isTerminalHermesEvent(terminal)).toBe(true);
+    expect(isTerminalHermesEvent(informational)).toBe(false);
   });
 
   it("keys terminal lifecycle flavor from raw type rather than payload status", () => {

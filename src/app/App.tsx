@@ -30,9 +30,11 @@ import {
   recoverRecording,
   revealPath,
   renameFolder,
-  updateNote,
   agentHudHide,
   agentHudShow,
+  completeNoteSaveFlush,
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT,
+  patchNote,
   type LiveTranscriptEventDto,
 } from "../lib/tauri";
 import { preloadRecordingSounds } from "../lib/recording-sounds";
@@ -70,6 +72,7 @@ import {
   notifyRecordingAutoPaused,
   notifyRecordingStillMeetingPrompt,
 } from "../lib/recording-notifications";
+import { RecordingTelemetryProvider } from "../lib/recording-telemetry-store";
 import {
   OPEN_SETTINGS_EVENT,
   buildAgentMenuBarState,
@@ -151,6 +154,7 @@ import { createAppDomainActions } from "./app-domain-actions";
 import { useAppUpdateActions } from "./use-app-update-actions";
 
 import { createNoteActions } from "./note-actions";
+import { NoteSaveController } from "./note-save-controller";
 
 import { useDictationEvents } from "./use-dictation-events";
 
@@ -290,6 +294,7 @@ export function App() {
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,
+    recordingTelemetryStore,
     recordingStatusRef,
     dictationWorkflowActiveRef,
     recordingInactivityTrackerRef,
@@ -302,6 +307,44 @@ export function App() {
     setLiveTranscriptEvents,
     setRecordingNote,
   } = useAppState();
+  const noteSaveControllerRef = useRef<NoteSaveController | null>(null);
+  if (!noteSaveControllerRef.current) {
+    noteSaveControllerRef.current = new NoteSaveController({
+      persist: patchNote,
+      onPersisted: (patch) => {
+        dispatch({ type: "notePatched", noteId: patch.id, patch });
+      },
+      onError: (saveError) => {
+        setError(messageFromError(saveError));
+      },
+    });
+  }
+  const noteSaveController = noteSaveControllerRef.current;
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    void listen<{ requestId: string }>(NOTE_SAVE_FLUSH_REQUESTED_EVENT, async (event) => {
+      try {
+        await noteSaveController.flushAll();
+        await completeNoteSaveFlush(event.payload.requestId);
+      } catch (saveError) {
+        setError(messageFromError(saveError));
+      }
+    }).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void noteSaveController.flushAll().catch(() => {
+        // Native shutdown owns the durable barrier. React cleanup is only a
+        // best-effort backstop, and persist() has already surfaced the error.
+      });
+    };
+  }, [noteSaveController, setError]);
+
   function getSelectedNoteId() {
     return selectedNoteIdRef.current;
   }
@@ -498,6 +541,17 @@ export function App() {
   }, []);
   const selectedNote = state.selectedNote;
   const selectedNoteId = selectedNote?.id;
+  const visibleEditorNoteId = activeView === "meetings" ? selectedNoteId : undefined;
+  const previousVisibleEditorNoteIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const previousNoteId = previousVisibleEditorNoteIdRef.current;
+    previousVisibleEditorNoteIdRef.current = visibleEditorNoteId;
+    if (previousNoteId && previousNoteId !== visibleEditorNoteId) {
+      void noteSaveController.flush(previousNoteId).catch((saveError) => {
+        setError(messageFromError(saveError));
+      });
+    }
+  }, [noteSaveController, setError, visibleEditorNoteId]);
   const selectedNoteLiveTranscript = useMemo(
     () => liveTranscriptEvents.filter((event) => event.noteId === selectedNoteId),
     [liveTranscriptEvents, selectedNoteId],
@@ -536,8 +590,7 @@ export function App() {
       showNotes:
         selectedNote.activeTab === "transcription"
           ? async () => {
-              const note = await updateNote({ noteId: selectedNote.id, activeTab: "notes" });
-              dispatch({ type: "noteUpdated", note });
+              await handleSaveNoteNow(selectedNote.id, { activeTab: "notes" });
             }
           : undefined,
     });
@@ -868,12 +921,15 @@ export function App() {
     relaunchingUpdateRef.current = true;
     setRelaunchingUpdate(true);
     setUpdateStatus(null);
-    void relaunchJune().catch((error) => {
-      relaunchingUpdateRef.current = false;
-      setRelaunchingUpdate(false);
-      setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`, true);
-    });
-  }, [setUpdateStatus]);
+    void noteSaveController
+      .flushAll()
+      .then(relaunchJune)
+      .catch((error) => {
+        relaunchingUpdateRef.current = false;
+        setRelaunchingUpdate(false);
+        setUpdateStatus(`Relaunch failed: ${messageFromError(error)}`, true);
+      });
+  }, [noteSaveController, setUpdateStatus]);
 
   // Launch check: silent by design — a "no update" result shows nothing so it
   // never interrupts the user (PRD user story 7) — and fired at most once per
@@ -1323,6 +1379,7 @@ export function App() {
 
   useRecordingTelemetry({
     dispatch,
+    recordingTelemetryStore,
     recordingStatusRef,
   });
 
@@ -1543,6 +1600,7 @@ export function App() {
     agentSessions,
     completedSessions,
     dispatch,
+    noteSaveController,
     pendingSessionProjectRef,
     sessionCompletionTouchedRef,
     sessionCompletionWritesRef,
@@ -1625,19 +1683,25 @@ export function App() {
     setFolderReturnTarget(undefined);
   }
 
-  const { handleDeleteNote, handleDeleteNotes, handleSelectNoteFromFolder, handleUpdateNote } =
-    createNoteActions({
-      dispatch,
-      handleEmptyNotesAfterDelete,
-      pruneDeletedNoteTabs,
-      selectedNote,
-      setActiveView,
-      setError,
-      setFolderReturnTarget,
-      setOriginAllNotes,
-      setOriginFolderId,
-      state,
-    });
+  const {
+    handleDeleteNote,
+    handleDeleteNotes,
+    handleFlushNote,
+    handleSaveNoteNow,
+    handleSelectNoteFromFolder,
+    handleUpdateNote,
+  } = createNoteActions({
+    dispatch,
+    handleEmptyNotesAfterDelete,
+    noteSaveController,
+    pruneDeletedNoteTabs,
+    setActiveView,
+    setError,
+    setFolderReturnTarget,
+    setOriginAllNotes,
+    setOriginFolderId,
+    state,
+  });
 
   const {
     handleStartRecording,
@@ -1727,42 +1791,53 @@ export function App() {
   });
 
   useEffect(() => {
-    const status = state.recordingStatus;
-    const now = Date.now();
-    const decision = nextRecordingInactivityDecision(
-      recordingInactivityTrackerRef.current,
-      status,
-      now,
-    );
-    recordingInactivityTrackerRef.current = decision.tracker;
+    const evaluateLatestStatus = () => {
+      const status = recordingTelemetryStore.getStatus();
+      const now = Date.now();
+      const decision = nextRecordingInactivityDecision(
+        recordingInactivityTrackerRef.current,
+        status,
+        now,
+      );
+      recordingInactivityTrackerRef.current = decision.tracker;
 
-    if (
-      recordingInactivityPrompt &&
-      (!status ||
-        status.sessionId !== recordingInactivityPrompt.sessionId ||
-        status.state !== "recording" ||
-        recordingHasActivity(status))
-    ) {
-      setRecordingInactivityPrompt(null);
-      return;
-    }
+      if (
+        recordingInactivityPrompt &&
+        (!status ||
+          status.sessionId !== recordingInactivityPrompt.sessionId ||
+          status.state !== "recording" ||
+          recordingHasActivity(status))
+      ) {
+        setRecordingInactivityPrompt(null);
+        return;
+      }
 
-    if (
-      !status ||
-      !decision.shouldPrompt ||
-      recordingInactivityPrompt?.sessionId === status.sessionId
-    ) {
-      return;
-    }
+      if (
+        !status ||
+        !decision.shouldPrompt ||
+        recordingInactivityPrompt?.sessionId === status.sessionId
+      ) {
+        return;
+      }
 
-    const prompt = {
-      sessionId: status.sessionId,
-      expiresAt: now + RECORDING_INACTIVITY_RESPONSE_MS,
+      const prompt = {
+        sessionId: status.sessionId,
+        expiresAt: now + RECORDING_INACTIVITY_RESPONSE_MS,
+      };
+      setRecordingInactivityNow(now);
+      setRecordingInactivityPrompt(prompt);
+      void notifyRecordingStillMeetingPrompt(status.sessionId);
     };
-    setRecordingInactivityNow(now);
-    setRecordingInactivityPrompt(prompt);
-    void notifyRecordingStillMeetingPrompt(status.sessionId);
-  }, [recordingInactivityPrompt, state.recordingStatus]);
+
+    evaluateLatestStatus();
+    return recordingTelemetryStore.subscribeStatus(evaluateLatestStatus);
+  }, [
+    recordingInactivityPrompt,
+    recordingInactivityTrackerRef,
+    recordingTelemetryStore,
+    setRecordingInactivityNow,
+    setRecordingInactivityPrompt,
+  ]);
 
   useEffect(() => {
     if (!recordingInactivityPrompt) return;
@@ -1884,6 +1959,7 @@ export function App() {
     handleEnableMicrophone,
     handleEnableSystemAudio,
     handleFinishRecording,
+    handleFlushNote,
     handleFoldersImported,
     handleNewAgentSession,
     handleNewAgentSessionInProject,
@@ -1898,6 +1974,7 @@ export function App() {
     handleRenameFolder,
     handleReportIssue,
     handleResumeRecording,
+    handleSaveNoteNow,
     handleReturnToAgentOriginFolder,
     handleReturnToAgentsList,
     handleReturnToNote,
@@ -1956,7 +2033,7 @@ export function App() {
     topUpLabel,
   });
 
-  return renderAppLayout({
+  const appLayout = renderAppLayout({
     accessibilityBannerDismissed,
     accessibilityBlocked,
     account,
@@ -2066,6 +2143,11 @@ export function App() {
     updateStatusLeaving,
     workspaceContent,
   });
+  return (
+    <RecordingTelemetryProvider store={recordingTelemetryStore}>
+      {appLayout}
+    </RecordingTelemetryProvider>
+  );
 }
 
 // The collapsed transform is driven by `aria-pressed` on the parent button.

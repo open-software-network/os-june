@@ -38,6 +38,7 @@ describe("agent HUD", () => {
   });
 
   afterEach(() => {
+    window.dispatchEvent(new Event("pagehide"));
     vi.useRealTimers();
   });
 

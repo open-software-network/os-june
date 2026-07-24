@@ -13,8 +13,6 @@ use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-#[cfg(debug_assertions)]
-use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::AtomicUsize;
 use std::{
@@ -24,8 +22,8 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU32, AtomicU64, Ordering},
-        Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -35,7 +33,7 @@ use tokio::io::BufReader;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt},
     process::Command,
-    sync::{oneshot, Mutex as AsyncMutex},
+    sync::{oneshot, watch, Mutex as AsyncMutex},
 };
 #[cfg(target_os = "macos")]
 use tokio::{
@@ -55,8 +53,12 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
 const DRIVER_CALL_TIMEOUT: Duration = Duration::from_secs(45);
 const DRIVER_START_TIMEOUT: Duration = Duration::from_secs(12);
 const EXTERNAL_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const SIGNATURE_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(15);
+const SIGNATURE_TERMINATION_GRACE: Duration = Duration::from_millis(250);
+const SIGNATURE_REAP_TIMEOUT: Duration = Duration::from_secs(1);
 const SHUTDOWN_MUTEX_TIMEOUT: Duration = Duration::from_millis(250);
 const DRIVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
+const DRIVER_KILL_TIMEOUT: Duration = Duration::from_secs(1);
 const DRIVER_MAX_LINE_BYTES: usize = 24 * 1024 * 1024;
 const SCREENSHOT_MAX_BYTES: usize = 12 * 1024 * 1024;
 const DEFAULT_MAX_ELEMENTS: usize = 100;
@@ -85,6 +87,8 @@ fn driver_pin() -> DriverPin {
 pub struct ComputerUseState {
     operation: AsyncMutex<()>,
     driver: AsyncMutex<Option<DriverClient>>,
+    permission_probe: Arc<PermissionProbeCoordinator>,
+    signature_verification: AsyncMutex<Option<CachedBundleSignature>>,
     driver_pid: AtomicU32,
     target: Mutex<Option<TargetContext>>,
     approvals: Mutex<HashMap<String, PendingEntry>>,
@@ -96,6 +100,9 @@ pub struct ComputerUseState {
     cursor: crate::computer_use_cursor::ComputerUseCursorState,
     capture_generation: AtomicU64,
     runtime_ready_state: AtomicU32,
+    runtime_ready_epoch: AtomicU64,
+    runtime_ready_publish: Mutex<()>,
+    driver_prewarm_in_flight: AtomicBool,
 }
 
 impl ComputerUseState {
@@ -200,10 +207,129 @@ pub struct ComputerUseRunRequest {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PermissionProbe {
     accessibility: bool,
     screen_recording: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PermissionProbeStatus {
+    accessibility: bool,
+    screen_recording: bool,
+    ready: bool,
+    state: &'static str,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+struct PermissionProbeCoordinator {
+    active: AsyncMutex<Option<ActivePermissionProbe>>,
+    next_id: AtomicU64,
+}
+
+struct ActivePermissionProbe {
+    id: u64,
+    prompt: bool,
+    result: watch::Receiver<Option<Result<PermissionProbe, AppError>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileFingerprint {
+    path: PathBuf,
+    length: u64,
+    modified_ns: u128,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundleFingerprint {
+    outer_executable: FileFingerprint,
+    outer_resources: FileFingerprint,
+    helper_executable: FileFingerprint,
+    helper_resources: FileFingerprint,
+}
+
+struct PackagedDriverBundles {
+    outer: PathBuf,
+    helper: PathBuf,
+    fingerprint: BundleFingerprint,
+}
+
+#[derive(Debug, Clone)]
+struct CachedBundleSignature {
+    fingerprint: BundleFingerprint,
+}
+
+impl PermissionProbeCoordinator {
+    async fn run<F, Fut>(
+        self: &Arc<Self>,
+        prompt: bool,
+        probe: F,
+    ) -> Result<PermissionProbe, AppError>
+    where
+        F: Fn(bool) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<PermissionProbe, AppError>> + Send + 'static,
+    {
+        loop {
+            let (receiver, active_prompt) = {
+                let mut active = self.active.lock().await;
+                if let Some(active) = active.as_ref() {
+                    (active.result.clone(), active.prompt)
+                } else {
+                    let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+                    let (sender, receiver) = watch::channel(None);
+                    *active = Some(ActivePermissionProbe {
+                        id,
+                        prompt,
+                        result: receiver.clone(),
+                    });
+                    let coordinator = Arc::clone(self);
+                    let run_probe = probe.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let result = run_probe(prompt).await;
+                        // Publish while this flight is still discoverable. A
+                        // caller in this handoff window must share the completed
+                        // result instead of starting an overlapping probe.
+                        let _ = sender.send(Some(result));
+                        let mut active = coordinator.active.lock().await;
+                        if active.as_ref().is_some_and(|active| active.id == id) {
+                            *active = None;
+                        }
+                    });
+                    (receiver, prompt)
+                }
+            };
+
+            let result = wait_for_permission_probe(receiver).await?;
+            if prompt && !active_prompt && next_permission_prompt(&result).is_some() {
+                // A user request that arrived during a background status
+                // refresh shares that refresh first, then owns the one prompt
+                // it still needs after the background flight has completed.
+                continue;
+            }
+            return Ok(result);
+        }
+    }
+}
+
+async fn wait_for_permission_probe(
+    mut receiver: watch::Receiver<Option<Result<PermissionProbe, AppError>>>,
+) -> Result<PermissionProbe, AppError> {
+    loop {
+        if let Some(result) = receiver.borrow().clone() {
+            return result;
+        }
+        receiver.changed().await.map_err(|_| {
+            AppError::new(
+                "computer_use_driver_stopped",
+                "The Computer use permission probe stopped unexpectedly.",
+            )
+        })?;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,6 +377,21 @@ impl<'a> CleanupInProgress<'a> {
 impl Drop for CleanupInProgress<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct DriverPrewarmInProgress<'a>(&'a AtomicBool);
+
+impl<'a> DriverPrewarmInProgress<'a> {
+    fn try_begin(flag: &'a AtomicBool) -> bool {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+impl Drop for DriverPrewarmInProgress<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -359,10 +500,6 @@ impl DriverClient {
             .ok()
             .and_then(|credentials| credentials.pid())
             .and_then(|pid| u32::try_from(pid).ok())
-            .filter(|pid| {
-                process_executable_path(*pid as libc::pid_t)
-                    .is_some_and(|actual| same_path(&actual, path))
-            })
             .ok_or_else(|| {
                 let _ = std::fs::remove_dir_all(&socket_dir);
                 AppError::new(
@@ -370,6 +507,17 @@ impl DriverClient {
                     "The private Computer use channel was not owned by June's bundled driver.",
                 )
             })?;
+        if !process_executable_path(pid as libc::pid_t)
+            .is_some_and(|actual| same_path(&actual, path))
+            || !process_group_is_owned(pid)
+        {
+            let _ = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+            let _ = std::fs::remove_dir_all(&socket_dir);
+            return Err(AppError::new(
+                "computer_use_driver_start_failed",
+                "The private Computer use channel did not have the expected isolated driver identity.",
+            ));
+        }
         let (stdout, stdin) = stream.into_split();
         let mut client = Self {
             stdin,
@@ -404,10 +552,7 @@ impl DriverClient {
 
     fn terminate(&mut self) {
         if self.pid > 0 {
-            unsafe {
-                libc::kill(self.pid as libc::pid_t, libc::SIGTERM);
-            }
-            self.pid = 0;
+            signal_process_group(self.pid, libc::SIGTERM);
         }
     }
 
@@ -539,7 +684,19 @@ impl DriverClient {
 
     async fn stop(mut self) {
         let _ = tokio::time::timeout(DRIVER_SHUTDOWN_TIMEOUT, self.stdin.shutdown()).await;
-        self.terminate();
+        if !wait_for_process_exit(self.pid, DRIVER_SHUTDOWN_TIMEOUT).await {
+            self.terminate();
+        }
+        if !wait_for_process_exit(self.pid, DRIVER_SHUTDOWN_TIMEOUT).await {
+            force_stop_pid(self.pid);
+        }
+        if !wait_for_process_exit(self.pid, DRIVER_KILL_TIMEOUT).await {
+            tracing::warn!(
+                pid = self.pid,
+                "Computer use driver process group did not exit"
+            );
+        }
+        self.pid = 0;
         let _ = tokio::fs::remove_dir_all(&self.socket_dir).await;
     }
 }
@@ -547,7 +704,10 @@ impl DriverClient {
 #[cfg(target_os = "macos")]
 impl Drop for DriverClient {
     fn drop(&mut self) {
-        self.terminate();
+        if self.pid > 0 {
+            force_stop_pid(self.pid);
+            self.pid = 0;
+        }
         let _ = std::fs::remove_dir_all(&self.socket_dir);
     }
 }
@@ -894,6 +1054,34 @@ async fn connect_driver_socket(path: &Path) -> io::Result<UnixStream> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn process_group_is_owned(pid: u32) -> bool {
+    libc::pid_t::try_from(pid)
+        .ok()
+        .is_some_and(|pid| unsafe { libc::getpgid(pid) } == pid)
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+    if pid == 0 {
+        return true;
+    }
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return true;
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        let result = unsafe { libc::kill(pid, 0) };
+        if result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn next_permission_prompt(probe: &PermissionProbe) -> Option<DriverPermissionPrompt> {
     if !probe.accessibility {
         Some(DriverPermissionPrompt::Accessibility)
@@ -1097,6 +1285,221 @@ fn driver_stamp_matches(executable: &Path, pin: &DriverPin) -> bool {
         && value.get("sourceCommit").and_then(Value::as_str) == Some(pin.source_commit.as_str())
 }
 
+fn file_fingerprint(path: &Path) -> io::Result<FileFingerprint> {
+    let metadata = std::fs::metadata(path)?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(FileFingerprint {
+        path: std::fs::canonicalize(path)?,
+        length: metadata.len(),
+        modified_ns,
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn packaged_driver_bundles(path: &Path) -> Result<Option<PackagedDriverBundles>, AppError> {
+    let app_ancestors = path
+        .ancestors()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        })
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    let (Some(helper), Some(outer)) = (app_ancestors.first(), app_ancestors.get(1)) else {
+        return Ok(None);
+    };
+    let expected_outer_executable = outer.join("Contents").join("MacOS").join("os-june");
+    if !std::env::current_exe()
+        .ok()
+        .is_some_and(|current| same_path(&current, &expected_outer_executable))
+    {
+        return Err(AppError::new(
+            "computer_use_driver_signature_failed",
+            "The Computer use driver is not nested under the running June app.",
+        ));
+    }
+
+    let outer_resources = outer
+        .join("Contents")
+        .join("_CodeSignature")
+        .join("CodeResources");
+    let helper_resources = helper
+        .join("Contents")
+        .join("_CodeSignature")
+        .join("CodeResources");
+    let fingerprint_file = |path: &Path| {
+        file_fingerprint(path).map_err(|error| {
+            AppError::new(
+                "computer_use_driver_signature_failed",
+                format!("The Computer use signature fingerprint is unavailable. {error}"),
+            )
+        })
+    };
+    let fingerprint = BundleFingerprint {
+        outer_executable: fingerprint_file(&expected_outer_executable)?,
+        outer_resources: fingerprint_file(&outer_resources)?,
+        helper_executable: fingerprint_file(path)?,
+        helper_resources: fingerprint_file(&helper_resources)?,
+    };
+    Ok(Some(PackagedDriverBundles {
+        outer: outer.clone(),
+        helper: helper.clone(),
+        fingerprint,
+    }))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn packaged_driver_bundles(_path: &Path) -> Result<Option<PackagedDriverBundles>, AppError> {
+    Ok(None)
+}
+
+async fn verify_packaged_driver_signatures(
+    state: &ComputerUseState,
+    path: &Path,
+    force: bool,
+) -> Result<(), AppError> {
+    let Some(bundles) = packaged_driver_bundles(path)? else {
+        return Ok(());
+    };
+    let mut cache = state.signature_verification.lock().await;
+    if signature_cache_matches(cache.as_ref(), &bundles.fingerprint, force) {
+        return Ok(());
+    }
+
+    verify_bundle_signature(bundles.outer.clone()).await?;
+    verify_bundle_signature(bundles.helper.clone()).await?;
+    *cache = Some(CachedBundleSignature {
+        fingerprint: bundles.fingerprint,
+    });
+    Ok(())
+}
+
+fn signature_cache_matches(
+    cached: Option<&CachedBundleSignature>,
+    fingerprint: &BundleFingerprint,
+    force: bool,
+) -> bool {
+    // SECURITY: This session-local metadata fingerprint is only a cache
+    // invalidation key after a successful `codesign --verify --strict`; it is
+    // not treated as code identity. An attacker able to restore these fields
+    // still cannot inherit the original helper's TCC grant because macOS keys
+    // that grant to its signed code identity/cdhash, or connect to the genuine
+    // helper because every accepted socket is checked live by audit token
+    // against June's identifier and the helper-derived Team OU. Explicit retry
+    // bypasses this cache, and a new June process begins with an empty cache.
+    !force && cached.is_some_and(|cached| cached.fingerprint == *fingerprint)
+}
+
+#[cfg(target_os = "macos")]
+async fn verify_bundle_signature(path: PathBuf) -> Result<(), AppError> {
+    tokio::task::spawn_blocking(move || verify_bundle_signature_sync(&path))
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "computer_use_driver_signature_failed",
+                format!("The Computer use signature verifier could not be joined. {error}"),
+            )
+        })?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn verify_bundle_signature(_path: PathBuf) -> Result<(), AppError> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn verify_bundle_signature_sync(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command as StdCommand, Stdio};
+
+    let mut command = StdCommand::new("/usr/bin/codesign");
+    command
+        .args(["--verify", "--strict"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    let mut child = command.spawn().map_err(|error| {
+        AppError::new(
+            "computer_use_driver_signature_failed",
+            format!("The Computer use signature verifier could not start. {error}"),
+        )
+    })?;
+    let pid = child.id();
+    let deadline = Instant::now() + SIGNATURE_VERIFICATION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                return Err(AppError::new(
+                    "computer_use_driver_signature_failed",
+                    "The signed Computer use bundle could not be verified.",
+                ));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                terminate_owned_process_group(pid, child);
+                return Err(AppError::new(
+                    "computer_use_driver_signature_timeout",
+                    "The signed Computer use bundle verification timed out.",
+                ));
+            }
+            Err(error) => {
+                terminate_owned_process_group(pid, child);
+                return Err(AppError::new(
+                    "computer_use_driver_signature_failed",
+                    format!("The Computer use signature verifier failed. {error}"),
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_owned_process_group(pid: u32, child: std::process::Child) {
+    signal_process_group(pid, libc::SIGTERM);
+    let outcome = crate::shutdown::terminate_child_with(
+        child,
+        SIGNATURE_TERMINATION_GRACE,
+        SIGNATURE_REAP_TIMEOUT,
+        move |child| {
+            signal_process_group(pid, libc::SIGKILL);
+            let _ = child.kill();
+        },
+    );
+    // The leader can exit before a verifier worker. Sweep the group after the
+    // bounded leader wait so no resource-validation descendant survives.
+    signal_process_group(pid, libc::SIGKILL);
+    if !matches!(
+        outcome,
+        crate::shutdown::ChildTermination::Exited | crate::shutdown::ChildTermination::Killed
+    ) {
+        tracing::warn!(?outcome, pid, "signature verifier could not be reaped");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn signal_process_group(pid: u32, signal: libc::c_int) {
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        let _ = unsafe { libc::kill(-pid, signal) };
+    }
+}
+
 fn permission_drag_bundle_path(
     target: crate::computer_use_permission_drag::PermissionDragTarget,
     driver_executable: &Path,
@@ -1173,7 +1576,25 @@ async fn driver_version(path: &Path) -> Result<String, AppError> {
     }
 }
 
-async fn probe_permissions(path: &Path, prompt: bool) -> Result<PermissionProbe, AppError> {
+async fn probe_permissions(
+    state: &ComputerUseState,
+    path: &Path,
+    prompt: bool,
+) -> Result<PermissionProbe, AppError> {
+    let path = path.to_path_buf();
+    state
+        .permission_probe
+        .run(prompt, move |prompt| {
+            let path = path.clone();
+            async move { probe_permissions_uncoordinated(&path, prompt).await }
+        })
+        .await
+}
+
+async fn probe_permissions_uncoordinated(
+    path: &Path,
+    prompt: bool,
+) -> Result<PermissionProbe, AppError> {
     let initial = read_permission_probe(path, None).await?;
     if prompt {
         if let Some(next) = next_permission_prompt(&initial) {
@@ -1339,7 +1760,7 @@ async fn macos_version() -> &'static str {
     MACOS_VERSION.get().map(String::as_str).unwrap_or("unknown")
 }
 
-async fn status_inner(app: &AppHandle) -> ComputerUseStatus {
+async fn status_inner(app: &AppHandle, computer_use: &ComputerUseState) -> ComputerUseStatus {
     let platform_supported = cfg!(target_os = "macos");
     let plan_eligible = plan_eligible().await;
     let grant_enabled = grant_enabled(app).await;
@@ -1424,6 +1845,22 @@ async fn status_inner(app: &AppHandle) -> ComputerUseStatus {
             };
         }
     };
+    if let Err(error) = verify_packaged_driver_signatures(computer_use, &path, false).await {
+        return ComputerUseStatus {
+            platform_supported,
+            plan_eligible,
+            grant_enabled,
+            driver_available: false,
+            driver_version: None,
+            accessibility: false,
+            screen_recording: false,
+            model_supports_vision,
+            generation_model,
+            ready: false,
+            state: "driver_mismatch".to_string(),
+            error: Some(error.message),
+        };
+    }
     let version = match driver_version(&path).await {
         Ok(version) => version,
         Err(error) => {
@@ -1459,33 +1896,10 @@ async fn status_inner(app: &AppHandle) -> ComputerUseStatus {
             error: None,
         };
     }
-    let permissions = match probe_permissions(&path, false).await {
-        Ok(permissions) => permissions,
-        Err(error) => {
-            return ComputerUseStatus {
-                platform_supported,
-                plan_eligible,
-                grant_enabled,
-                driver_available: true,
-                driver_version: Some(version),
-                accessibility: false,
-                screen_recording: false,
-                model_supports_vision,
-                generation_model,
-                ready: false,
-                state: "error".to_string(),
-                error: Some(error.message),
-            };
-        }
-    };
-    let ready = permissions.accessibility && permissions.screen_recording && model_supports_vision;
-    let state = if !permissions.accessibility || !permissions.screen_recording {
-        "permission_missing"
-    } else if !model_supports_vision {
-        "model_unsupported"
-    } else {
-        "ready"
-    };
+    let permissions = permission_probe_status(
+        probe_permissions(computer_use, &path, false).await,
+        model_supports_vision,
+    );
     ComputerUseStatus {
         platform_supported,
         plan_eligible,
@@ -1496,9 +1910,42 @@ async fn status_inner(app: &AppHandle) -> ComputerUseStatus {
         screen_recording: permissions.screen_recording,
         model_supports_vision,
         generation_model,
-        ready,
-        state: state.to_string(),
-        error: None,
+        ready: permissions.ready,
+        state: permissions.state.to_string(),
+        error: permissions.error,
+    }
+}
+
+fn permission_probe_status(
+    result: Result<PermissionProbe, AppError>,
+    model_supports_vision: bool,
+) -> PermissionProbeStatus {
+    match result {
+        Ok(permissions) => {
+            let ready =
+                permissions.accessibility && permissions.screen_recording && model_supports_vision;
+            let state = if !permissions.accessibility || !permissions.screen_recording {
+                "permission_missing"
+            } else if !model_supports_vision {
+                "model_unsupported"
+            } else {
+                "ready"
+            };
+            PermissionProbeStatus {
+                accessibility: permissions.accessibility,
+                screen_recording: permissions.screen_recording,
+                ready,
+                state,
+                error: None,
+            }
+        }
+        Err(error) => PermissionProbeStatus {
+            accessibility: false,
+            screen_recording: false,
+            ready: false,
+            state: "error",
+            error: Some(error.message),
+        },
     }
 }
 
@@ -1524,26 +1971,113 @@ fn subscription_plan_eligible(subscribed: bool, plan: Option<&str>) -> bool {
 }
 
 pub(crate) async fn runtime_ready(app: &AppHandle, supports_vision: bool) -> bool {
-    let ready = if !rollout_gate().await.enabled
+    let state = app.state::<ComputerUseState>();
+    let expected_epoch = app
+        .try_state::<ComputerUseState>()
+        .map(|state| state.epoch.load(Ordering::SeqCst));
+    let mut ready = if !rollout_gate().await.enabled
         || !supports_vision
         || !plan_eligible().await
         || !grant_enabled(app).await
     {
         false
     } else if let Ok(path) = bundled_driver_executable(app) {
-        driver_version(&path).await.is_ok()
-            && probe_permissions(&path, false)
+        verify_packaged_driver_signatures(&state, &path, false)
+            .await
+            .is_ok()
+            && driver_version(&path).await.is_ok()
+            && probe_permissions(&state, &path, false)
                 .await
                 .is_ok_and(|probe| probe.accessibility && probe.screen_recording)
     } else {
         false
     };
-    if let Some(state) = app.try_state::<ComputerUseState>() {
-        state
-            .runtime_ready_state
-            .store(ready_state_value(ready), Ordering::SeqCst);
+    if let (Some(state), Some(expected_epoch)) =
+        (app.try_state::<ComputerUseState>(), expected_epoch)
+    {
+        match publish_runtime_ready_probe(&state, expected_epoch, ready) {
+            Some(previous) if !ready && previous == ready_state_value(true) => {
+                stop_inner(app, &state).await;
+                replace_runtime_ready(&state, false);
+            }
+            Some(_) => {}
+            None => ready = false,
+        }
+    }
+    if ready {
+        schedule_driver_prewarm(app);
     }
     ready
+}
+
+/// Start the persistent private driver away from the first model action.
+///
+/// This shares the same `driver` mutex and cache as `driver_call`, so a focus
+/// event, an enable/status refresh, and a real action collapse to one start.
+/// The captured epoch also makes a queued prewarm lose to Stop or grant
+/// revocation instead of resurrecting a driver after cleanup.
+pub(crate) fn schedule_driver_prewarm(app: &AppHandle) {
+    let Some(state) = app.try_state::<ComputerUseState>() else {
+        return;
+    };
+    if !runtime_ready_is_current(&state, true) {
+        return;
+    }
+    if !DriverPrewarmInProgress::try_begin(&state.driver_prewarm_in_flight) {
+        return;
+    }
+    let expected_epoch = state.epoch.load(Ordering::SeqCst);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<ComputerUseState>();
+        let _prewarm_in_progress = DriverPrewarmInProgress(&state.driver_prewarm_in_flight);
+        let started_at = Instant::now();
+        match prewarm_driver(&app, expected_epoch).await {
+            Ok(started) => tracing::info!(
+                stage = "computer_use_driver_prewarm",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                started,
+                "Computer use startup stage completed"
+            ),
+            Err(error) => tracing::warn!(
+                stage = "computer_use_driver_prewarm",
+                duration_ms = started_at.elapsed().as_millis() as u64,
+                error_code = error.code,
+                "Computer use startup stage failed"
+            ),
+        }
+    });
+}
+
+async fn prewarm_driver(app: &AppHandle, expected_epoch: u64) -> Result<bool, AppError> {
+    let state = app.state::<ComputerUseState>();
+    let mut driver = state.driver.lock().await;
+    if driver.is_some() || !driver_prewarm_is_current(&state, expected_epoch) {
+        return Ok(false);
+    }
+
+    let path = bundled_driver_executable(app)?;
+    // Reuse JUN-411's fingerprint-cached verification before a prewarm can
+    // create a persistent helper. This keeps prewarm behind the same signed
+    // bundle gate as readiness probes and real actions.
+    verify_packaged_driver_signatures(&state, &path, false).await?;
+    driver_version(&path).await?;
+    if !driver_prewarm_is_current(&state, expected_epoch) {
+        return Ok(false);
+    }
+
+    let client = DriverClient::start(&path, None).await?;
+    if !driver_prewarm_is_current(&state, expected_epoch) {
+        client.stop().await;
+        return Ok(false);
+    }
+    state.driver_pid.store(client.pid(), Ordering::SeqCst);
+    *driver = Some(client);
+    Ok(true)
+}
+
+fn driver_prewarm_is_current(state: &ComputerUseState, expected_epoch: u64) -> bool {
+    state.epoch.load(Ordering::SeqCst) == expected_epoch && runtime_ready_is_current(state, true)
 }
 
 #[tauri::command]
@@ -1552,17 +2086,20 @@ pub async fn computer_use_status(
     state: State<'_, ComputerUseState>,
     bridge: State<'_, crate::hermes_bridge::HermesBridge>,
 ) -> Result<ComputerUseStatus, AppError> {
-    let status = status_inner(&app).await;
+    let (status, previous) = status_with_published_readiness(&app, &state).await?;
     let current = ready_state_value(status.ready);
-    let previous = state.runtime_ready_state.swap(current, Ordering::SeqCst);
     if previous != 0 && previous != current {
         if !status.ready {
             stop_inner(&app, &state).await;
+            replace_runtime_ready(&state, false);
         }
-        if let Err(error) = crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await {
-            state.runtime_ready_state.store(previous, Ordering::SeqCst);
-            return Err(error);
-        }
+        // `current` is the authoritative live readiness observation. If the
+        // Hermes config refresh fails, keep that observation instead of
+        // re-arming focus prewarm with the stale previous value.
+        crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
+    }
+    if status.ready {
+        schedule_driver_prewarm(&app);
     }
     Ok(status)
 }
@@ -1573,6 +2110,65 @@ fn ready_state_value(ready: bool) -> u32 {
     } else {
         1
     }
+}
+
+fn runtime_ready_is_current(state: &ComputerUseState, ready: bool) -> bool {
+    state.runtime_ready_epoch.load(Ordering::SeqCst) == state.epoch.load(Ordering::SeqCst)
+        && state.runtime_ready_state.load(Ordering::SeqCst) == ready_state_value(ready)
+}
+
+fn replace_runtime_ready(state: &ComputerUseState, ready: bool) -> u32 {
+    let _publish = state
+        .runtime_ready_publish
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous = state
+        .runtime_ready_state
+        .swap(ready_state_value(ready), Ordering::SeqCst);
+    state
+        .runtime_ready_epoch
+        .store(state.epoch.load(Ordering::SeqCst), Ordering::SeqCst);
+    previous
+}
+
+fn publish_runtime_ready_probe(
+    state: &ComputerUseState,
+    expected_epoch: u64,
+    ready: bool,
+) -> Option<u32> {
+    let _publish = state
+        .runtime_ready_publish
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.epoch.load(Ordering::SeqCst) != expected_epoch {
+        return None;
+    }
+    let previous = state
+        .runtime_ready_state
+        .swap(ready_state_value(ready), Ordering::SeqCst);
+    state
+        .runtime_ready_epoch
+        .store(expected_epoch, Ordering::SeqCst);
+    Some(previous)
+}
+
+async fn status_with_published_readiness(
+    app: &AppHandle,
+    state: &ComputerUseState,
+) -> Result<(ComputerUseStatus, u32), AppError> {
+    let expected_epoch = state.epoch.load(Ordering::SeqCst);
+    let status = status_inner(app, state).await;
+    let previous =
+        publish_runtime_ready_probe(state, expected_epoch, status.ready).ok_or_else(|| {
+            // Stop, revocation, or shutdown won while the helper/version/permission
+            // probe was suspended. Reject the stale observation instead of
+            // publishing, prewarming, or letting the UI render it.
+            AppError::new(
+                "computer_use_status_superseded",
+                "Computer use changed while its status was loading. Try again.",
+            )
+        })?;
+    Ok((status, previous))
 }
 
 #[tauri::command]
@@ -1591,9 +2187,14 @@ pub async fn set_computer_use_grant(
     store_grant(&app, request.enabled).await?;
     if !request.enabled {
         stop_inner(&app, &state).await;
+        replace_runtime_ready(&state, false);
     }
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    Ok(status_inner(&app).await)
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1621,11 +2222,17 @@ pub async fn computer_use_request_permissions(
         ));
     }
     stop_inner(&app, &state).await;
+    replace_runtime_ready(&state, false);
     let path = bundled_driver_executable(&app)?;
+    verify_packaged_driver_signatures(&state, &path, true).await?;
     driver_version(&path).await?;
-    let _ = probe_permissions(&path, true).await?;
+    let _ = probe_permissions(&state, &path, true).await?;
     crate::hermes_bridge::apply_runtime_config_change(&app, &bridge).await?;
-    Ok(status_inner(&app).await)
+    let (status, _) = status_with_published_readiness(&app, &state).await?;
+    if status.ready {
+        schedule_driver_prewarm(&app);
+    }
+    Ok(status)
 }
 
 pub(crate) async fn shutdown(app: &AppHandle) {
@@ -1658,6 +2265,10 @@ pub fn computer_use_begin_run(
         ));
     }
     let session_id = validate_run_session_id(&request.session_id)?;
+    begin_run_lease(&state, session_id)
+}
+
+fn begin_run_lease(state: &ComputerUseState, session_id: String) -> Result<(), AppError> {
     let mut runs = state
         .attended_runs
         .lock()
@@ -1677,10 +2288,19 @@ pub fn computer_use_begin_run(
     if inserted {
         state.attended_generation.fetch_add(1, Ordering::SeqCst);
         if starts_new_task {
-            clear_app_authorizations(&state);
+            clear_app_authorizations(state);
         }
     }
     Ok(())
+}
+
+fn end_run_lease(state: &ComputerUseState, session_id: &str) -> Result<Option<u64>, AppError> {
+    let mut runs = state
+        .attended_runs
+        .lock()
+        .map_err(|_| AppError::new("computer_use_unavailable", "Run lease lock failed."))?;
+    let removed = runs.remove(session_id);
+    Ok((removed && runs.is_empty()).then(|| state.attended_generation.load(Ordering::SeqCst)))
 }
 
 #[tauri::command]
@@ -1690,15 +2310,7 @@ pub async fn computer_use_end_run(
     request: ComputerUseRunRequest,
 ) -> Result<(), AppError> {
     let session_id = validate_run_session_id(&request.session_id)?;
-    let idle_generation = {
-        let mut runs = state
-            .attended_runs
-            .lock()
-            .map_err(|_| AppError::new("computer_use_unavailable", "Run lease lock failed."))?;
-        runs.remove(&session_id);
-        runs.is_empty()
-            .then(|| state.attended_generation.load(Ordering::SeqCst))
-    };
+    let idle_generation = end_run_lease(&state, &session_id)?;
     if let Some(generation) = idle_generation {
         stop_if_idle(&app, &state, generation).await;
     }
@@ -1820,30 +2432,34 @@ async fn stop_for_shutdown(app: &AppHandle, state: &ComputerUseState) {
     let _ = set_june_stage_companion(app, false).await;
 }
 
-/// Ends resources for a completed attended run without erasing a newer run
-/// that began while the terminal event was crossing the webview boundary.
+/// Retires a completed attended run without erasing a newer run that began
+/// while the terminal event was crossing the webview boundary.
+///
+/// The initialized driver is intentionally retained as the off-action-path
+/// prewarm for the next attended task. It has no authority without an attended lease;
+/// explicit Stop, revocation, readiness loss, and shutdown still invalidate the
+/// epoch and terminate it through `stop_inner`/`stop_for_shutdown`.
 async fn stop_if_idle(app: &AppHandle, state: &ComputerUseState, generation: u64) {
     let _operation = state.operation.lock().await;
     let _cleanup = CleanupInProgress::begin(&state.cleanup_in_progress);
-    let still_idle = state.attended_runs.lock().is_ok_and(|runs| {
-        runs.is_empty() && state.attended_generation.load(Ordering::SeqCst) == generation
-    });
-    if !still_idle {
+    if !idle_generation_is_current(state, generation) {
         return;
     }
-    state.epoch.fetch_add(1, Ordering::SeqCst);
     crate::computer_use_cursor::hide(app);
     cancel_pending(app, state);
-    force_stop_pid(state.driver_pid.swap(0, Ordering::SeqCst));
-    if let Some(driver) = state.driver.lock().await.take() {
-        driver.stop().await;
-    }
     if let Ok(mut target) = state.target.lock() {
         *target = None;
     }
     clear_app_authorizations(state);
     clear_capture_dir(app);
     let _ = set_june_stage_companion(app, false).await;
+    schedule_driver_prewarm(app);
+}
+
+fn idle_generation_is_current(state: &ComputerUseState, generation: u64) -> bool {
+    state.attended_runs.lock().is_ok_and(|runs| {
+        runs.is_empty() && state.attended_generation.load(Ordering::SeqCst) == generation
+    })
 }
 
 fn clear_app_authorizations(state: &ComputerUseState) {
@@ -1855,7 +2471,11 @@ fn clear_app_authorizations(state: &ComputerUseState) {
 fn force_stop_pid(_pid: u32) {
     #[cfg(target_os = "macos")]
     if _pid > 0 {
-        let _ = unsafe { libc::kill(_pid as libc::pid_t, libc::SIGKILL) };
+        if process_group_is_owned(_pid) {
+            signal_process_group(_pid, libc::SIGKILL);
+        } else {
+            let _ = unsafe { libc::kill(_pid as libc::pid_t, libc::SIGKILL) };
+        }
     }
 }
 
@@ -2042,6 +2662,7 @@ async fn driver_call(
     ensure_attended_run(state)?;
     if driver.is_none() {
         let path = bundled_driver_executable(app)?;
+        verify_packaged_driver_signatures(state, &path, false).await?;
         driver_version(&path).await?;
         let client = DriverClient::start(&path, None).await?;
         state.driver_pid.store(client.pid(), Ordering::SeqCst);
@@ -4314,6 +4935,260 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn driver_prewarm_loses_to_stop_and_readiness_loss() {
+        let state = ComputerUseState::default();
+        replace_runtime_ready(&state, true);
+        let epoch = state.epoch.load(Ordering::SeqCst);
+        assert!(driver_prewarm_is_current(&state, epoch));
+
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        assert!(!driver_prewarm_is_current(&state, epoch));
+
+        let next_epoch = state.epoch.load(Ordering::SeqCst);
+        replace_runtime_ready(&state, false);
+        assert!(!driver_prewarm_is_current(&state, next_epoch));
+    }
+
+    #[test]
+    fn blocked_runtime_readiness_probe_cannot_publish_after_revocation() {
+        let state = Arc::new(ComputerUseState::default());
+        let probe_epoch = state.epoch.load(Ordering::SeqCst);
+        let probe_blocked = Arc::new(std::sync::Barrier::new(2));
+        let probe_can_publish = Arc::clone(&probe_blocked);
+        let probe_state = Arc::clone(&state);
+        let stale_probe = std::thread::spawn(move || {
+            probe_can_publish.wait();
+            publish_runtime_ready_probe(&probe_state, probe_epoch, true)
+        });
+
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        replace_runtime_ready(&state, false);
+        probe_blocked.wait();
+
+        assert_eq!(stale_probe.join().expect("stale probe joins"), None);
+        assert!(runtime_ready_is_current(&state, false));
+    }
+
+    #[test]
+    fn runtime_readiness_loss_enters_the_stop_path() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("pub(crate) async fn runtime_ready")
+            .expect("runtime readiness boundary");
+        let end = source[start..]
+            .find("/// Start the persistent private driver")
+            .map(|offset| start + offset)
+            .expect("driver prewarm boundary");
+        let readiness = &source[start..end];
+
+        assert!(readiness.contains("previous == ready_state_value(true)"));
+        assert!(readiness.contains("stop_inner(app, &state).await"));
+        assert!(readiness.contains("replace_runtime_ready(&state, false)"));
+    }
+
+    #[test]
+    fn status_probe_does_not_rebind_after_stop_or_shutdown() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("async fn status_with_published_readiness")
+            .expect("status readiness helper boundary");
+        let end = source[start..]
+            .find("#[tauri::command]")
+            .map(|offset| start + offset)
+            .expect("next command boundary");
+        let helper = &source[start..end];
+
+        assert!(!helper.contains("loop {"));
+        assert_eq!(
+            helper.matches("state.epoch.load(Ordering::SeqCst)").count(),
+            1
+        );
+        assert!(helper.contains("computer_use_status_superseded"));
+    }
+
+    #[test]
+    fn driver_prewarm_single_flight_reopens_after_completion() {
+        let in_flight = AtomicBool::new(false);
+        assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+        let first = DriverPrewarmInProgress(&in_flight);
+        assert!(!DriverPrewarmInProgress::try_begin(&in_flight));
+        drop(first);
+        assert!(DriverPrewarmInProgress::try_begin(&in_flight));
+    }
+
+    #[test]
+    fn status_refresh_does_not_restore_stale_readiness_on_config_error() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("pub async fn computer_use_status")
+            .expect("status command boundary");
+        let end = source[start..]
+            .find("fn ready_state_value")
+            .map(|offset| start + offset)
+            .expect("readiness helper boundary");
+
+        assert!(
+            !source[start..end].contains("runtime_ready_state.store(previous"),
+            "a config error must not re-arm prewarm after observed readiness loss"
+        );
+    }
+
+    #[test]
+    fn completed_run_keeps_driver_readiness_for_immediate_retry() {
+        let source = include_str!("computer_use.rs");
+        let start = source
+            .find("async fn stop_if_idle")
+            .expect("completed-run cleanup boundary");
+        let end = source[start..]
+            .find("fn clear_app_authorizations")
+            .map(|offset| start + offset)
+            .expect("completed-run cleanup end");
+        let cleanup = &source[start..end];
+
+        assert!(!cleanup.contains("state.epoch.fetch_add"));
+        assert!(!cleanup.contains("driver.stop().await"));
+        assert!(cleanup.contains("schedule_driver_prewarm(app)"));
+    }
+
+    #[tokio::test]
+    async fn permission_probe_is_single_flight_for_concurrent_pollers() {
+        let coordinator = Arc::new(PermissionProbeCoordinator::default());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let probe = {
+            let calls = Arc::clone(&calls);
+            let release = Arc::clone(&release);
+            move |_prompt| {
+                let calls = Arc::clone(&calls);
+                let release = Arc::clone(&release);
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    Ok(PermissionProbe {
+                        accessibility: true,
+                        screen_recording: false,
+                    })
+                }
+            }
+        };
+
+        let first = {
+            let coordinator = Arc::clone(&coordinator);
+            let probe = probe.clone();
+            tokio::spawn(async move { coordinator.run(false, probe).await })
+        };
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        let second = {
+            let coordinator = Arc::clone(&coordinator);
+            let probe = probe.clone();
+            tokio::spawn(async move { coordinator.run(false, probe).await })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        release.notify_waiters();
+        let first = first.await.expect("first poller").expect("first result");
+        let second = second.await.expect("second poller").expect("second result");
+        assert_eq!(first, second);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn permission_probe_timeout_is_not_reported_as_missing_permissions() {
+        let status = permission_probe_status(
+            Err(AppError::new(
+                "computer_use_driver_timeout",
+                "The Computer use driver did not respond in time.",
+            )),
+            true,
+        );
+
+        assert_eq!(status.state, "error");
+        assert_ne!(
+            (status.accessibility, status.state),
+            (false, "permission_missing")
+        );
+        assert!(!status.ready);
+        assert!(status.error.is_some());
+    }
+
+    #[test]
+    fn signature_cache_invalidates_on_bundle_change_and_explicit_retry() {
+        fn file(name: &str, length: u64) -> FileFingerprint {
+            FileFingerprint {
+                path: PathBuf::from(name),
+                length,
+                modified_ns: 42,
+                #[cfg(unix)]
+                device: 1,
+                #[cfg(unix)]
+                inode: length,
+            }
+        }
+        let fingerprint = BundleFingerprint {
+            outer_executable: file("outer-executable", 100),
+            outer_resources: file("outer-resources", 200),
+            helper_executable: file("helper-executable", 300),
+            helper_resources: file("helper-resources", 400),
+        };
+        let cached = CachedBundleSignature {
+            fingerprint: fingerprint.clone(),
+        };
+        assert!(signature_cache_matches(Some(&cached), &fingerprint, false));
+        assert!(!signature_cache_matches(Some(&cached), &fingerprint, true));
+
+        let mut changed = fingerprint.clone();
+        changed.outer_executable.length += 1;
+        assert!(!signature_cache_matches(Some(&cached), &changed, false));
+    }
+
+    #[test]
+    fn duplicate_run_release_is_idempotent() {
+        let state = ComputerUseState::default();
+        begin_run_lease(&state, "run-a".to_string()).expect("begin first run");
+        let generation = state.attended_generation.load(Ordering::SeqCst);
+
+        assert_eq!(
+            end_run_lease(&state, "run-a").expect("end first run"),
+            Some(generation)
+        );
+        assert_eq!(
+            end_run_lease(&state, "run-a").expect("repeat end first run"),
+            None
+        );
+        assert!(idle_generation_is_current(&state, generation));
+    }
+
+    #[test]
+    fn successor_run_blocks_stale_idle_cleanup() {
+        let state = ComputerUseState::default();
+        begin_run_lease(&state, "run-a".to_string()).expect("begin first run");
+        let stale_generation = end_run_lease(&state, "run-a")
+            .expect("end first run")
+            .expect("idle generation");
+
+        begin_run_lease(&state, "run-b".to_string()).expect("begin successor run");
+
+        assert!(!idle_generation_is_current(&state, stale_generation));
+        assert_eq!(
+            end_run_lease(&state, "run-a").expect("repeat end predecessor"),
+            None
+        );
+        assert!(
+            state
+                .attended_runs
+                .lock()
+                .expect("run lease lock")
+                .contains("run-b"),
+            "a duplicate predecessor release must not remove the successor"
+        );
+        assert!(ensure_attended_run(&state).is_ok());
+    }
 
     #[test]
     fn non_secret_computer_use_grant_never_uses_keychain() {

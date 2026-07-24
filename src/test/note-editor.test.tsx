@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
+import { htmlToMarkdown } from "../components/note-editor/NotePreview";
 import type { NoteDto, RecoverableRecordingDto } from "../lib/tauri";
 
 const now = "2026-05-19T10:00:00Z";
@@ -27,6 +28,7 @@ const props = {
   checkingSourceReadiness: false,
   onTitleChange: vi.fn(),
   onContentChange: vi.fn(),
+  onFlushNote: vi.fn(),
   onSourceModeChange: vi.fn(),
   onEnableSystemAudio: vi.fn(),
   onEnableMicrophone: vi.fn(),
@@ -89,10 +91,21 @@ describe("NoteEditor", () => {
   it("edits title and renders the generated note as a preview", async () => {
     const user = userEvent.setup();
     const onTitleChange = vi.fn();
-    render(<NoteEditor {...props} note={note()} onTitleChange={onTitleChange} />);
+    const onFlushNote = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note()}
+        onTitleChange={onTitleChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
 
-    await user.type(screen.getByLabelText("Note title"), " updated");
+    const title = screen.getByLabelText("Note title");
+    await user.type(title, " updated");
     expect(onTitleChange).toHaveBeenCalled();
+    fireEvent.blur(title);
+    expect(onFlushNote).toHaveBeenCalledWith("note-1");
 
     // The note body is a rendered preview, not an editable textarea.
     expect(screen.getByText("Section one")).toBeInTheDocument();
@@ -938,6 +951,90 @@ describe("NoteEditor", () => {
     expect(editor.querySelector("h1")).toHaveTextContent("Heading");
   });
 
+  it("reports content while typing and flushes it on blur", async () => {
+    const user = userEvent.setup();
+    const onContentChange = vi.fn();
+    const onFlushNote = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        note={note({ generatedContent: "", editedContent: "" })}
+        onContentChange={onContentChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Generated note" });
+
+    await user.click(editor);
+    await user.type(editor, "Unsaved thought");
+
+    expect(onContentChange).toHaveBeenLastCalledWith("note-1", "Unsaved thought");
+    const updateCallCount = onContentChange.mock.calls.length;
+    fireEvent.blur(editor);
+    expect(onContentChange).toHaveBeenCalledTimes(updateCallCount);
+    expect(onFlushNote).toHaveBeenCalledWith("note-1");
+  });
+
+  it("does not echo clean blur or unfocused external content through onContentChange", async () => {
+    const user = userEvent.setup();
+    const onContentChange = vi.fn();
+    const onFlushNote = vi.fn();
+    const { rerender } = render(
+      <NoteEditor
+        {...props}
+        note={note({ generatedContent: "", editedContent: "Before generation" })}
+        onContentChange={onContentChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Generated note" });
+
+    rerender(
+      <NoteEditor
+        {...props}
+        note={note({
+          generatedContent: "",
+          editedContent: "Generated content arrived externally",
+        })}
+        onContentChange={onContentChange}
+        onFlushNote={onFlushNote}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).toHaveTextContent("Generated content arrived externally");
+    });
+    expect(onContentChange).not.toHaveBeenCalled();
+
+    await user.click(editor);
+    fireEvent.blur(editor);
+
+    expect(onContentChange).not.toHaveBeenCalled();
+    expect(onFlushNote).toHaveBeenCalledWith("note-1");
+  });
+
+  it("keeps saved markdown stable for nested lists, code blocks, and Unicode", () => {
+    const editorDom = document.createElement("div");
+    editorDom.innerHTML = [
+      "<ul>",
+      "<li><p>Parent 😀</p><ul><li><p><strong>Nested café</strong></p></li></ul></li>",
+      "</ul>",
+      '<pre><code>const π = "λ";\nconsole.log(π);</code></pre>',
+      "<p>Zażółć <em>gęślą</em> jaźń</p>",
+    ].join("");
+
+    // This is the legacy DOM serializer's exact pre-optimization output.
+    // Actual user edits still take this path; blur now reuses that result.
+    expect(htmlToMarkdown(editorDom)).toBe(
+      [
+        "- Parent 😀**Nested café**",
+        "- **Nested café**",
+        'const π = "λ";\nconsole.log(π);',
+        "Zażółć *gęślą* jaźń",
+      ].join("\n\n"),
+    );
+  });
+
   it("does not erase generated append content that arrives while editing", async () => {
     const user = userEvent.setup();
     const onContentChange = vi.fn();
@@ -964,9 +1061,30 @@ describe("NoteEditor", () => {
         })}
       />,
     );
+    await user.type(editor, " written live");
     fireEvent.blur(editor);
 
-    expect(onContentChange).toHaveBeenLastCalledWith("note-1", "Manual notes\n\nGenerated note");
+    expect(onContentChange).toHaveBeenLastCalledWith(
+      "note-1",
+      "Manual notes written live\n\nGenerated note",
+    );
+
+    const mergedMarkdown = onContentChange.mock.lastCall?.[1];
+    expect(mergedMarkdown).toBe("Manual notes written live\n\nGenerated note");
+    rerender(
+      <NoteEditor
+        {...props}
+        onContentChange={onContentChange}
+        note={note({
+          generatedContent: "Generated note",
+          editedContent: mergedMarkdown,
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(editor).toHaveTextContent("Generated note");
+    });
   });
 
   it("offers retry when transcript failed and audio exists", async () => {

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   hermesAgentCliAccess,
-  type HermesFilesystemSnapshot,
   type HermesMessagingPlatformInfo,
   type HermesSkillInfo,
   type HermesToolsetInfo,
@@ -166,8 +165,12 @@ export function useAgentRuntimeState(dependencies: UseAgentRuntimeStateDependenc
   );
   const runtimeSessionIdsRef = useRef(runtimeSessionIds);
   // Consecutive runtime-reconcile polls in which a locally-working session was
-  // absent from the gateway's live list. Cleared the moment it's seen live.
-  const workingReconcileMissesRef = useRef(new Map<string, number>());
+  // absent from a reachable snapshot or the mode itself was unreachable.
+  // Separate streaks preserve the registration-race tolerance while allowing
+  // faster native recovery from a silently stalled gateway.
+  const workingReconcileStreaksRef = useRef(
+    new Map<string, { missing: number; unreachable: number }>(),
+  );
   const [stoppingSessionIds, setStoppingSessionIds] = useState<ReadonlySet<string>>(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
   const skillCommandsLoadRef = useRef<Promise<HermesSkillInfo[]> | null>(null);
@@ -282,10 +285,6 @@ export function useAgentRuntimeState(dependencies: UseAgentRuntimeStateDependenc
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
   const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] = useState<string>();
   const [messagingEnvEdits, setMessagingEnvEdits] = useState<Record<string, string>>({});
-  const [filesystemSnapshot, setFilesystemSnapshot] = useState<HermesFilesystemSnapshot | null>(
-    null,
-  );
-  const [filesystemLoading, setFilesystemLoading] = useState(false);
   const [artifactPanel, setArtifactPanel] = useState<AgentArtifactPanelState | null>(null);
   // The session whose usage/cost panel is open, or null. Self-contained for
   // feature 09; feature 11's activity drawer will later host the same panel.
@@ -399,7 +398,7 @@ export function useAgentRuntimeState(dependencies: UseAgentRuntimeStateDependenc
     runtimeSessionIds,
     setRuntimeSessionIds,
     runtimeSessionIdsRef,
-    workingReconcileMissesRef,
+    workingReconcileStreaksRef,
     stoppingSessionIds,
     setStoppingSessionIds,
     skills,
@@ -460,9 +459,6 @@ export function useAgentRuntimeState(dependencies: UseAgentRuntimeStateDependenc
     setSelectedMessagingPlatformId,
     messagingEnvEdits,
     setMessagingEnvEdits,
-    filesystemSnapshot,
-    setFilesystemSnapshot,
-    setFilesystemLoading,
     artifactPanel,
     setArtifactPanel,
     usagePanelSessionId,

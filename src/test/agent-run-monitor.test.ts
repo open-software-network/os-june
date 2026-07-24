@@ -16,7 +16,11 @@ const monitorMocks = vi.hoisted(() => {
   const sessionMessages = vi.fn();
   const dispatchSettled = vi.fn();
   const dispatchStatus = vi.fn();
+  const forceDisconnect = vi.fn();
   const instances: MockGateway[] = [];
+  const requestContexts: MockGateway[] = [];
+
+  class MockGatewayRequestTimeoutError extends Error {}
 
   class MockGateway {
     readonly eventHandlers = new Set<EventHandler>();
@@ -38,8 +42,25 @@ const monitorMocks = vi.hoisted(() => {
       return () => this.closeHandlers.delete(handler);
     }
 
-    request<T>(method: string, params: Record<string, unknown>) {
-      return request(method, params) as Promise<T>;
+    request<T>(method: string, params: Record<string, unknown>, timeoutMs = 120_000) {
+      requestContexts.push(this);
+      const response = request.call(this, method, params) as Promise<T>;
+      return new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new MockGatewayRequestTimeoutError(`Hermes request timed out: ${method}`)),
+          timeoutMs,
+        );
+        void Promise.resolve(response).then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
     }
 
     emit(event: GatewayFrame) {
@@ -52,15 +73,20 @@ const monitorMocks = vi.hoisted(() => {
     bridgeStatus,
     dispatchSettled,
     dispatchStatus,
+    forceDisconnect,
     instances,
+    MockGatewayRequestTimeoutError,
     request,
+    requestContexts,
     sessions,
     sessionMessages,
   };
 });
 
 vi.mock("../lib/hermes-gateway", () => ({
+  forceDisconnectHermesGatewayClients: monitorMocks.forceDisconnect,
   HermesGatewayClient: monitorMocks.MockGateway,
+  HermesGatewayRequestTimeoutError: monitorMocks.MockGatewayRequestTimeoutError,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -83,6 +109,10 @@ import {
   resetAgentRunMonitoringForTests,
   startAgentRunMonitoring,
 } from "../lib/agent-run-monitor";
+import {
+  hasHermesActiveSessionSnapshotSubscribers,
+  resetHermesActiveSessionSnapshotsForTests,
+} from "../lib/hermes-active-session-snapshots";
 
 const SANDBOXED_CONNECTION = {
   baseUrl: "http://127.0.0.1:9000",
@@ -140,8 +170,10 @@ function activeRuntime(runtimeSessionId = "runtime-1") {
 describe("agent run monitor", () => {
   beforeEach(() => {
     resetAgentRunMonitoringForTests();
+    resetHermesActiveSessionSnapshotsForTests();
     vi.useFakeTimers();
     monitorMocks.instances.length = 0;
+    monitorMocks.requestContexts.length = 0;
     monitorMocks.bridgeStatus.mockReset().mockResolvedValue({
       running: true,
       connections: [SANDBOXED_CONNECTION, UNRESTRICTED_CONNECTION],
@@ -159,12 +191,26 @@ describe("agent run monitor", () => {
     monitorMocks.sessionMessages.mockReset().mockResolvedValue({ messages: [] });
     monitorMocks.dispatchSettled.mockReset();
     monitorMocks.dispatchStatus.mockReset();
+    monitorMocks.forceDisconnect.mockReset();
   });
 
   afterEach(() => {
     resetAgentRunMonitoringForTests();
+    resetHermesActiveSessionSnapshotsForTests();
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it("reports which runtime mode currently has working-session snapshot subscribers", () => {
+    expect(hasHermesActiveSessionSnapshotSubscribers(false)).toBe(false);
+    expect(hasHermesActiveSessionSnapshotSubscribers(true)).toBe(false);
+
+    startRun();
+    expect(hasHermesActiveSessionSnapshotSubscribers(false)).toBe(true);
+    expect(hasHermesActiveSessionSnapshotSubscribers(true)).toBe(false);
+
+    expect(cancelAgentRunMonitoring("stored-1")).toBe(true);
+    expect(hasHermesActiveSessionSnapshotSubscribers(false)).toBe(false);
   });
 
   it("survives the submitting caller going away and settles from persisted runtime state", async () => {
@@ -382,7 +428,80 @@ describe("agent run monitor", () => {
     expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
   });
 
-  it("uses one dedicated observer gateway per runtime mode", async () => {
+  it("settles from native persistence when active-list frames stop without a close", async () => {
+    monitorMocks.request.mockImplementation(() => new Promise(() => undefined));
+    startRun();
+
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(monitorMocks.sessions).toHaveBeenCalled();
+    expect(monitorMocks.dispatchSettled).toHaveBeenCalledOnce();
+    expect(monitorMocks.forceDisconnect).toHaveBeenCalledWith(false);
+  });
+
+  it("resets heartbeat misses after a successful active-list response", async () => {
+    // timeout, timeout, success, timeout, timeout must not disconnect.
+    let activeListCalls = 0;
+    monitorMocks.request.mockImplementation((method: string) => {
+      if (method !== "session.active_list") return Promise.resolve({});
+      activeListCalls += 1;
+      if (activeListCalls === 3) return Promise.resolve({ sessions: [] });
+      return new Promise(() => undefined);
+    });
+    startRun();
+
+    await flush();
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(activeListCalls).toBe(5);
+    expect(monitorMocks.forceDisconnect).not.toHaveBeenCalled();
+  });
+
+  it("distributes one active-session request per cycle to runs in the same mode", async () => {
+    activeRuntime();
+    startRun();
+    startRun({ storedSessionId: "stored-2", runtimeSessionId: "runtime-2" });
+
+    await flush();
+    expect(monitorMocks.request).toHaveBeenCalledTimes(1);
+    expect(monitorMocks.request).toHaveBeenLastCalledWith("session.active_list", {});
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(monitorMocks.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a healthy runtime mode polling while the other mode is stalled", async () => {
+    monitorMocks.request.mockImplementation(function (
+      this: InstanceType<typeof monitorMocks.MockGateway>,
+    ) {
+      const wsUrl = this.connect.mock.calls[0]?.[0];
+      if (wsUrl === SANDBOXED_CONNECTION.wsUrl) {
+        return new Promise(() => undefined);
+      }
+      return Promise.resolve({
+        sessions: [{ id: "runtime-full", status: "working" }],
+      });
+    });
+    startRun();
+    startRun({
+      storedSessionId: "stored-full",
+      runtimeSessionId: "runtime-full",
+      fullMode: true,
+    });
+
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    const sandboxedRequests = monitorMocks.requestContexts.filter(
+      (gateway) => gateway.connect.mock.calls[0]?.[0] === SANDBOXED_CONNECTION.wsUrl,
+    );
+    const unrestrictedRequests = monitorMocks.requestContexts.filter(
+      (gateway) => gateway.connect.mock.calls[0]?.[0] === UNRESTRICTED_CONNECTION.wsUrl,
+    );
+    expect(sandboxedRequests).toHaveLength(2);
+    expect(unrestrictedRequests).toHaveLength(4);
+  });
+
+  it("uses one shared lifecycle observer gateway per runtime mode", async () => {
     startRun();
     startRun({ storedSessionId: "stored-2", runtimeSessionId: "runtime-2" });
     startRun({

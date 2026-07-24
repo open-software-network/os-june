@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeRecordingTelemetry } from "../lib/recording-telemetry";
+import { mergeRecordingTelemetry, sameRecordingSemantics } from "../lib/recording-telemetry";
 import type { RecordingStatusDto, RecordingTelemetryDto } from "../lib/tauri";
 
 function status(): RecordingStatusDto {
@@ -88,5 +88,59 @@ describe("recording telemetry", () => {
     expect(
       mergeRecordingTelemetry(current, telemetry({ sessionId: "newer-session", state: "idle" })),
     ).toBe(current);
+  });
+});
+
+describe("same recording semantics", () => {
+  it("ignores elapsed time and level-only changes", () => {
+    const current = status();
+    const currentSource = current.sources?.[0];
+    if (!currentSource) throw new Error("expected microphone Source");
+
+    expect(
+      sameRecordingSemantics(current, {
+        ...current,
+        elapsedMs: 900,
+        level: { peak: 0.8, rms: 0.5, recentPeaks: [0.7, 0.8] },
+        sources: [
+          {
+            ...currentSource,
+            elapsedMs: 900,
+            level: { peak: 0.8, rms: 0.5, recentPeaks: [0.7, 0.8] },
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("detects per-Source state and silence warnings plus warning-set changes", () => {
+    const current = status();
+    const currentSource = current.sources?.[0];
+    if (!currentSource) throw new Error("expected microphone Source");
+
+    expect(
+      sameRecordingSemantics(current, {
+        ...current,
+        sources: [{ ...currentSource, state: "paused" }],
+      }),
+    ).toBe(false);
+    expect(
+      sameRecordingSemantics(current, {
+        ...current,
+        sources: [{ ...currentSource, silenceWarning: true }],
+      }),
+    ).toBe(false);
+    expect(
+      sameRecordingSemantics(current, {
+        ...current,
+        warnings: [
+          {
+            source: "microphone",
+            code: "microphone_stream_stalled",
+            message: "Microphone input stopped unexpectedly.",
+          },
+        ],
+      }),
+    ).toBe(false);
   });
 });

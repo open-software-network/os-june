@@ -8,6 +8,7 @@ import {
   triggerScopeWarning,
   type TriggerDraft,
 } from "../../lib/connectors";
+import { useConnectorPolicy } from "../../lib/connector-policy";
 import { messageFromError } from "../../lib/errors";
 import {
   draftFromSchedule,
@@ -56,6 +57,7 @@ type RoutineCreateProps = {
 };
 
 export function RoutineCreate({ template, creating, error, onBack, onCreate }: RoutineCreateProps) {
+  const { policy } = useConnectorPolicy();
   const [name, setName] = useState(template?.name ?? "");
   const [draft, setDraft] = useState<ScheduleDraft>(() =>
     template ? draftFromSchedule(template.schedule) : { kind: "daily", time: "09:00" },
@@ -105,21 +107,29 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   );
   const scopeGateSatisfied =
     !requiredScopes ||
-    (connectedAccount != null && scopesCoverBundles(connectedAccount.scopes, requiredScopes));
+    (policy != null &&
+      connectedAccount != null &&
+      scopesCoverBundles(policy, connectedAccount.scopes, requiredScopes));
   // A connector trigger must run on an account that holds the scope its daemon
   // polls (Gmail read for new mail, calendar read for upcoming events). Checking
   // "any account connected" is not enough: a calendar-only account can't back an
   // email_received trigger, so the daemon's Gmail history call fails and the
   // routine silently never fires. A broader granted scope still counts (an
   // account with calendar write backs an upcoming-event trigger).
-  const triggerBundles = triggerRequiredBundles(trigger);
+  const triggerBundles = policy ? triggerRequiredBundles(policy, trigger) : [];
   const triggerScopeSatisfied =
-    triggerBundles.length === 0 ||
-    (connectedAccount != null && scopesCoverBundles(connectedAccount.scopes, triggerBundles));
-  const blocked = !scopeGateSatisfied || !triggerScopeSatisfied;
+    trigger.source === "schedule" ||
+    (policy != null &&
+      triggerBundles.length > 0 &&
+      connectedAccount != null &&
+      scopesCoverBundles(policy, connectedAccount.scopes, triggerBundles));
+  const connectorPolicyRequired =
+    Boolean(requiredScopes) || trigger.source !== "schedule" || trustMode !== "read_only";
+  const blocked =
+    (connectorPolicyRequired && policy == null) || !scopeGateSatisfied || !triggerScopeSatisfied;
 
   async function connectForTemplate() {
-    if (!requiredScopes || connectBusy) return;
+    if (!requiredScopes || !policy || connectBusy) return;
     setConnectBusy(true);
     setConnectError(null);
     try {
@@ -225,7 +235,11 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
                 trigger={trigger}
                 scheduleDraft={draft}
                 hasAccount={Boolean(connectedAccount)}
-                scopeWarning={triggerScopeWarning(trigger, connectedAccount?.scopes ?? null)}
+                scopeWarning={
+                  policy
+                    ? triggerScopeWarning(policy, trigger, connectedAccount?.scopes ?? null)
+                    : null
+                }
                 onTriggerChange={setTrigger}
                 onScheduleChange={setDraft}
               />
@@ -260,6 +274,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
             </h2>
             <div className="settings-card">
               <TrustModePicker
+                policy={policy}
                 value={trustMode}
                 runCount={0}
                 autonomousTools={autonomousTools}

@@ -6,6 +6,7 @@ mod envelope;
 mod error;
 mod handlers;
 mod multipart;
+mod share_rate_limit;
 mod state;
 mod validation;
 
@@ -45,6 +46,9 @@ pub use handlers::video::{
     VideoAnimateRequest, VideoGenerateRequest, VideoJobResponse, VideoStatusResponse,
 };
 pub use handlers::web::{WebFetchRequest, WebSearchRequest};
+#[cfg(feature = "benchmark")]
+#[doc(hidden)]
+pub use share_rate_limit::ShareRateLimiter;
 pub use state::{ApiLimits, ApiState, ApiStateParams, AttestationInfo, ShareViewerInfo};
 
 /// Real shipped app version, sent by the desktop client on every request.

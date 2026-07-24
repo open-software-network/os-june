@@ -17,10 +17,7 @@ import type { JuneHermesEvent } from "../../lib/hermes-control-plane";
 import { upstreamProviderRecoveryIds } from "../../lib/upstream-provider-recovery";
 import { mergeThinkingTurns } from "./chat-turns/TranscriptViews";
 import { type AgentArtifact } from "./chat-turns/AgentArtifactPanel";
-import {
-  assignArtifactsToTurns,
-  surfacedArtifactsFromTurns,
-} from "./composer/composer-input-helpers";
+import { surfacedArtifactsFromTurns } from "./composer/composer-input-helpers";
 import { DownloadToastMessage, ensureDownloadFileExtension } from "./agent-workspace-support";
 import type { UseAgentChatPresentationDependencies } from "./use-agent-chat-presentation-types";
 
@@ -110,6 +107,7 @@ function useStableMapValues<Key, Value>(
 export function useAgentChatPresentation(dependencies: UseAgentChatPresentationDependencies) {
   const {
     DOWNLOAD_TOAST_ID,
+    artifactIndex,
     chatArtifacts,
     devArtifacts,
     imageTurnsBySession,
@@ -182,8 +180,8 @@ export function useAgentChatPresentation(dependencies: UseAgentChatPresentationD
   const presentedTurns = selectedHermesSessionId ? hermesTurns : taskTurns;
   const turnArtifacts = useStableMapValues(
     useMemo(
-      () => assignArtifactsToTurns(presentedTurns, chatArtifacts),
-      [chatArtifacts, presentedTurns],
+      () => artifactIndex.assignArtifactsToTurns(presentedTurns),
+      [artifactIndex, chatArtifacts, presentedTurns],
     ),
     artifactListsEqual,
   );

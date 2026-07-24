@@ -257,13 +257,29 @@ export type JuneHermesEvent =
  * exhaustiveness assertions. */
 export type JuneHermesEventKind = JuneHermesEvent["kind"];
 
-/** True for classified events that end the current workspace turn. */
+/** True when an event carries an incremental transcript or reasoning chunk. */
+export function isHermesStreamDelta(event: JuneHermesEvent): boolean {
+  return (
+    (event.kind === "transcript" && !event.complete && event.delta !== undefined) ||
+    (event.kind === "reasoning" && !event.full)
+  );
+}
+
+/** True for classified events that end the current agent run.
+ *
+ * A successful `message.complete` seals one assistant transcript segment. It
+ * can precede tool execution or other post-message work, so it is not a
+ * terminal edge. Pinned Hermes v2026.7.20 reports the real idle edge as
+ * `session.info` with `running: false`, which the classifier normalizes to a
+ * terminal lifecycle event. A failed segment remains terminal because Hermes
+ * will not continue its tool loop after that error.
+ */
 export function isTerminalHermesEvent(event: JuneHermesEvent): boolean {
   switch (event.kind) {
     case "error":
       return true;
     case "transcript":
-      return event.complete === true;
+      return event.complete === true && event.failed === true;
     case "lifecycle":
       return event.flavor === "terminal";
     default:

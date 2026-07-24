@@ -11,9 +11,9 @@ export type AgentAttachment = ImportedHermesFile & {
    * the next successful prompt submit. */
   attachDataUrl?: string;
   /** Structured attach status (feature 19). Tracks whether this import has been
-   * sent to the model via image.attach_bytes: imported (ready) → attached (acked) →
-   * or failed. Carries file refs only, never the image bytes. Files stay
-   * `imported` (they only ride along as a path in the prompt). */
+   * sent to the model via the native-path image attach flow: imported (ready) →
+   * attached (acked) → or failed. Carries file refs only, never the image bytes.
+   * Files stay `imported` (they only ride along as a path in the prompt). */
   attach: HermesAttachmentState;
 };
 

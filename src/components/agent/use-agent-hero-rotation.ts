@@ -8,7 +8,7 @@ import {
 import type { useAgentHeroRotationDependencies } from "./use-agent-hero-rotation-types";
 
 export function useAgentHeroRotation(dependencies: useAgentHeroRotationDependencies) {
-  const { draftRef, heroChipsHoverRef, heroMode, setHeroChipPhase, setHeroDeckStart } =
+  const { composerHasContent, heroChipsHoverRef, heroMode, setHeroChipPhase, setHeroDeckStart } =
     dependencies;
 
   useEffect(() => {
@@ -23,7 +23,7 @@ export function useAgentHeroRotation(dependencies: useAgentHeroRotationDependenc
     let swapTimeout: number | undefined;
     const interval = window.setInterval(() => {
       if (document.hidden || heroChipsHoverRef.current) return;
-      if (draftRef.current.trim()) return;
+      if (composerHasContent) return;
       setHeroChipPhase("out");
       swapTimeout = window.setTimeout(() => {
         setHeroDeckStart((start) => (start + HERO_SHORTCUT_COUNT) % AGENT_SHORTCUTS.length);
@@ -38,5 +38,5 @@ export function useAgentHeroRotation(dependencies: useAgentHeroRotationDependenc
       window.clearInterval(interval);
       if (swapTimeout !== undefined) window.clearTimeout(swapTimeout);
     };
-  }, [heroMode]);
+  }, [composerHasContent, heroMode]);
 }

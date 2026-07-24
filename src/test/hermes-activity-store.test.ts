@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyHermesEvent, createSteeringEvent } from "../lib/hermes-control-plane";
 import type { JuneHermesEvent } from "../lib/hermes-control-plane";
-import { ACTIVITY_SESSIONS_CAP, createHermesActivityStore } from "../lib/hermes-activity-store";
+import {
+  ACTIVITY_NOTIFICATION_INTERVAL_MS,
+  ACTIVITY_SESSIONS_CAP,
+  createHermesActivityStore,
+} from "../lib/hermes-activity-store";
 
 // Classify a raw frame and assert it produced the expected kind, so a test
 // can't silently feed the wrong event into the store.
@@ -213,12 +217,17 @@ describe("createHermesActivityStore", () => {
     expect(store.activeCount()).toBe(1);
   });
 
-  it("message completion flips the session to phase 'complete'", () => {
+  it("keeps a successful message completion active until pinned session info reports idle", () => {
     const store = createHermesActivityStore();
     store.record(classified("message.start", "s1"), "sandboxed");
     expect(store.getRecord("s1")?.phase).toBe("running");
 
     store.record(classified("message.complete", "s1", { text: "Done" }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("running");
+    expect(store.activeCount()).toBe(1);
+
+    store.record(classified("session.info", "s1", { running: false }), "sandboxed");
 
     expect(store.getRecord("s1")?.phase).toBe("complete");
     expect(store.activeCount()).toBe(0);
@@ -360,11 +369,92 @@ describe("createHermesActivityStore", () => {
     expect(store.getRecords()).toHaveLength(0);
   });
 
-  it("bumps the version on every mutation for useSyncExternalStore", () => {
+  it("bumps the version when a mutation is published to useSyncExternalStore", () => {
     const store = createHermesActivityStore();
     const before = store.getVersion();
     store.record(classified("tool.start", "s1", { tool_name: "a" }), "sandboxed");
     expect(store.getVersion()).toBeGreaterThan(before);
+  });
+
+  it("micro-batches a 5,000-delta burst and publishes the final synchronous state", () => {
+    const store = createHermesActivityStore();
+    const publishedRecords: ReturnType<typeof store.getRecord>[] = [];
+    store.subscribe(() => publishedRecords.push(store.getRecord("s1")));
+
+    for (let index = 0; index < 5_000; index += 1) {
+      const type = index % 2 === 0 ? "message.delta" : "thinking.delta";
+      const payload = index % 2 === 0 ? { delta: `text-${index}` } : { delta: `thought-${index}` };
+      store.record(classified(type, "s1", payload), "sandboxed");
+      advance(1);
+    }
+
+    // Mutation is authoritative and synchronous even while the trailing
+    // subscriber publication is waiting at the 50 ms boundary.
+    const finalRecord = store.getRecord("s1");
+    expect(finalRecord?.phase).toBe("running");
+    expect(finalRecord?.lastEventAt).toBe(now - 1);
+    expect(publishedRecords).toHaveLength(1);
+
+    vi.advanceTimersByTime(ACTIVITY_NOTIFICATION_INTERVAL_MS);
+
+    expect(publishedRecords).toHaveLength(2);
+    expect(publishedRecords.at(-1)).toEqual(finalRecord);
+  });
+
+  it("does not notify when an event leaves the projected record unchanged", () => {
+    const store = createHermesActivityStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+    const event = classified("tool.start", "s1", { tool_name: "a" });
+
+    store.record(event, "sandboxed");
+    vi.advanceTimersByTime(ACTIVITY_NOTIFICATION_INTERVAL_MS);
+    const publishedVersion = store.getVersion();
+
+    store.record(event, "sandboxed");
+    vi.runAllTimers();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getVersion()).toBe(publishedVersion);
+  });
+
+  it("publishes a pending-action count change even when the session stays waiting", () => {
+    let pendingCount = 2;
+    const store = createHermesActivityStore({ pendingCountFor: () => pendingCount });
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.record(classified("approval.request", "s1", { request_id: "first" }), "sandboxed");
+    expect(store.getRecord("s1")?.pendingActionCount).toBe(2);
+
+    pendingCount = 1;
+    store.record(
+      classified("approval.resolved", "s1", { request_id: "first", approved: true }),
+      "sandboxed",
+    );
+
+    expect(store.getRecord("s1")).toMatchObject({
+      phase: "waiting",
+      pendingActionCount: 1,
+    });
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("applies and publishes a terminal event immediately during a delta batch", () => {
+    const store = createHermesActivityStore();
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.record(classified("message.delta", "s1", { delta: "first" }), "sandboxed");
+    advance(1);
+    store.record(classified("thinking.delta", "s1", { delta: "second" }), "sandboxed");
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    store.record(classified("session.info", "s1", { running: false }), "sandboxed");
+
+    expect(store.getRecord("s1")?.phase).toBe("complete");
+    expect(store.activeCount()).toBe(0);
+    expect(listener).toHaveBeenCalledTimes(2);
+    vi.runAllTimers();
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 
   it("notifies subscribers and stops after unsubscribe", () => {

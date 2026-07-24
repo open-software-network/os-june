@@ -1,13 +1,13 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import type { NoteDto } from "../lib/tauri";
+import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { NotesAction, NotesState } from "./state/app-state";
+import type { NoteSaveController } from "./note-save-controller";
 import type * as React from "react";
 
 export type CreateNoteActionsDependencies = {
   dispatch: React.Dispatch<NotesAction>;
   handleEmptyNotesAfterDelete: () => void;
+  noteSaveController: NoteSaveController;
   pruneDeletedNoteTabs: (removedIds: Set<string>) => void;
-  selectedNote: NoteDto | undefined;
   setActiveView: React.Dispatch<React.SetStateAction<SidebarView>>;
   setError: React.Dispatch<React.SetStateAction<string | null>>;
   setFolderReturnTarget: React.Dispatch<

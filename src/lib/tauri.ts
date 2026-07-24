@@ -474,6 +474,13 @@ export type NoteDto = NoteListItemDto & {
   queuedRecordings?: number;
 };
 
+export type NotePatchDto = Pick<
+  NoteDto,
+  "id" | "title" | "preview" | "editedContent" | "activeTab" | "updatedAt"
+>;
+
+export type NoteEditablePatch = Partial<Pick<NoteDto, "title" | "editedContent" | "activeTab">>;
+
 export type NoteCalendarEventDto = {
   eventId: string;
   title: string;
@@ -626,6 +633,12 @@ export type ImportedHermesFile = {
   rootLabel: string;
   size: number;
   previewDataUrl?: string | null;
+};
+
+export type PreparedHermesImageAttachment = {
+  path: string;
+  mimeType: string;
+  size: number;
 };
 
 export type HermesSkillInfo = {
@@ -1330,6 +1343,12 @@ export async function hermesBridgeImageDataUrl(path: string) {
   });
 }
 
+export async function prepareHermesBridgeImageAttachment(sessionId: string, path: string) {
+  return invoke<PreparedHermesImageAttachment>("prepare_hermes_bridge_image_attachment", {
+    request: { sessionId, path },
+  });
+}
+
 /** Reveals an absolute path in the OS file manager (Finder on macOS). */
 export async function revealPath(path: string) {
   return invoke<void>("reveal_path", { path });
@@ -1741,8 +1760,8 @@ export async function openHermesTuiDebug(input: { sessionId: string; unrestricte
   return invoke<void>("open_hermes_tui_debug", { request: input });
 }
 
-export async function listNotes(folderId?: string, limit?: number) {
-  return invoke<ListNotesResponse>("list_notes", { request: { folderId, limit } });
+export async function listNotes(folderId?: string, limit?: number, cursor?: string) {
+  return invoke<ListNotesResponse>("list_notes", { request: { folderId, limit, cursor } });
 }
 
 export async function getNote(noteId: string) {
@@ -1770,6 +1789,18 @@ export async function updateNote(input: {
   activeTab?: "notes" | "transcription";
 }) {
   return invoke<NoteDto>("update_note", { request: input });
+}
+
+export async function patchNote(noteId: string, patch: NoteEditablePatch) {
+  return invoke<NotePatchDto>("update_note", {
+    request: { noteId, ...patch, patchOnly: true },
+  });
+}
+
+export const NOTE_SAVE_FLUSH_REQUESTED_EVENT = "june://flush-pending-note-saves";
+
+export async function completeNoteSaveFlush(requestId: string) {
+  return invoke<boolean>("complete_note_save_flush", { request: { requestId } });
 }
 
 export async function checkRecordingSourceReadiness(sourceMode: RecordingSourceMode) {
@@ -2318,23 +2349,58 @@ export async function routineBrowserAccessSet(input: { jobId: string; enabled: b
 // Private connectors (local mode): Google and Linear
 // ---------------------------------------------------------------------------
 
-/** Feature bundle wire names the connect flow requests. Mirrors the Rust
- * `ScopeBundle::name()` registry in src-tauri/src/connectors/scopes.rs. */
-export type ConnectorScopeBundle =
-  | "gmail_read"
-  | "gmail_draft"
-  | "gmail_modify"
-  | "gmail_send"
-  | "calendar_read"
-  | "calendar_events"
-  | "linear_read"
-  | "linear_write"
-  | "github_read"
-  | "github_write";
+/** Stable feature-bundle id supplied by the native connector policy. */
+export type ConnectorScopeBundle = string;
 
 export type ConnectorAccountStatus = "connected" | "reconnect_required" | "unavailable";
 
 export type ConnectorProvider = "google" | "linear" | "notion" | "github";
+
+export type ConnectorPolicyCatalog = {
+  version: number;
+  providers: Array<{
+    id: ConnectorProvider;
+    connectFlow: "oauth" | "hosted_mcp";
+    enabled: boolean;
+    defaultBundles: ConnectorScopeBundle[];
+  }>;
+  scopeBundles: Array<{
+    id: ConnectorScopeBundle;
+    provider: ConnectorProvider;
+    scopeIds: string[];
+  }>;
+  scopeImplications: Array<{
+    held: string;
+    grants: string[];
+  }>;
+  servers: Array<{
+    id: string;
+    provider: ConnectorProvider;
+    kind: "read" | "action";
+  }>;
+  serverOwnerPrefixes: Array<{
+    prefix: string;
+    provider: ConnectorProvider;
+  }>;
+  actionTools: Array<{
+    id: string;
+    server: string;
+    provider: ConnectorProvider;
+    grantable: boolean;
+  }>;
+  triggers: Array<{
+    id: ConnectorTriggerKind;
+    provider: ConnectorProvider;
+    requiredBundles: ConnectorScopeBundle[];
+  }>;
+  routine: {
+    sandboxedBaseToolsets: string[];
+    readToolsets: string[];
+    actionToolsets: string[];
+    autonomousServerPrefixes: string[];
+  };
+  earnedAutonomyMinApprovalRuns: number;
+};
 
 /** One Linear team: the granularity June's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once

@@ -1,35 +1,27 @@
 /**
  * Pure orchestration for the structured image attach/edit flow (feature 19).
  *
- * June's existing attachment path imports a dropped/pasted/picked file into the
- * Hermes workspace (`<hermes_home>/workspace/uploads/…`, via the
- * `import_hermes_bridge_file*` bridge commands) and references its PATH in the
- * prompt text. That keeps working. This module adds the STRUCTURED path on top:
- * for image attachments it calls the typed image byte-attach control-plane method
- * (`createHermesMethods(...).attachImage`), so the model/tools receive the image
- * as a first-class input rather than only a path mentioned in prose. Explicit
- * source-image selection is what makes image EDITING reliable (the upstream
- * image_generate edit input shouldn't have to guess which path the user meant).
+ * June imports a dropped/pasted/picked file into the Hermes workspace
+ * (`<hermes_home>/workspace/uploads/…`) before it reaches this module. The
+ * preferred structured path asks Rust to validate and snapshot that workspace
+ * file into a runtime-session directory, then sends only the returned path via
+ * Hermes' local `image.attach` method. No image bytes cross Tauri IPC or the
+ * WebSocket on that path. The additive `image.attach_bytes` flow remains a
+ * fallback for a caller/runtime that cannot use a gateway-local path.
  *
  * It is deliberately UI- and gateway-free (mirrors `hermes-session-steer.ts`):
  * the orchestrator takes its side effects as injected functions, so it is
  * trivially unit-testable and only this seam moves if the wire shape changes.
  *
- * BASE64 DISCIPLINE: the image bytes are read on demand AT ATTACH TIME (through
- * the injected {@link AttachImageDeps.readImageData}, backed by the existing
- * `hermes_bridge_file_preview` bridge command which returns a `data:…;base64,…`
- * url for the workspace file) and discarded the moment the RPC resolves. The
- * base64 NEVER lands on {@link HermesAttachmentState} (which holds only a
- * workspace path + ids), is NEVER passed to the trace buffer (the redacted
- * {@link AttachImageResult.trace} reports only method/session/mime/byte-length),
- * and is NEVER stored in the artifact timeline. Long-term React state keeps file
- * refs and attachment ids, not raw bytes.
+ * BASE64 FALLBACK DISCIPLINE: when path attach is unavailable, bytes are read
+ * only at attach time and discarded when the RPC resolves. Base64 never lands
+ * on attachment state, trace payloads, or the artifact timeline.
  */
 
 import type { ArtifactKind } from "./hermes-artifact-store";
 import type { OutboundTraceInput } from "./hermes-trace-buffer";
-import type { AttachImageParams } from "./hermes-control-plane";
-import type { ImportedHermesFile } from "./tauri";
+import type { AttachImageParams, AttachImagePathParams } from "./hermes-control-plane";
+import type { ImportedHermesFile, PreparedHermesImageAttachment } from "./tauri";
 import { messageFromError } from "./errors";
 
 /**
@@ -83,11 +75,13 @@ export type AttachImageResult = {
   error?: string;
 };
 
-/** Injected side effects. `attachImage` is `createHermesMethods(...).attachImage`;
- * `readImageData` reads the workspace file as a `data:…;base64,…` url (or null
- * if it can't be read as an image); `isSupported` is the feature gate
- * (`() => isHermesFeatureSupported("image.attach_bytes")`). */
+/** Injected side effects. Path attach is preferred when all three path
+ * dependencies are present and supported. The byte dependencies remain
+ * required so remote/legacy callers retain the additive fallback contract. */
 export type AttachImageDeps = {
+  prepareImagePath?: (sessionId: string, path: string) => Promise<PreparedHermesImageAttachment>;
+  attachImagePath?: (params: AttachImagePathParams) => Promise<unknown>;
+  isPathSupported?: () => boolean;
   attachImage: (params: AttachImageParams) => Promise<unknown>;
   readImageData: (path: string) => Promise<string | null>;
   isSupported: () => boolean;
@@ -187,15 +181,13 @@ export function attachErrorNotice(displayName: string, err: unknown): string {
 }
 
 /**
- * Attach one imported image to a Hermes session through the typed image bytes
- * method. Pure w.r.t. injected {@link AttachImageDeps}. Resolves to the next
- * chip {@link HermesAttachmentState} plus, on success, an artifact seed and a
- * REDACTED outbound trace entry; on failure, `state.status` is `failed` and
- * `error` carries recoverable copy. Never throws.
+ * Attach one imported image to a Hermes session. The native path operation is
+ * preferred; byte upload is used only when that additive method is unavailable.
+ * Resolves to the next chip state plus an artifact and redacted trace. Never
+ * throws.
  *
- * Order of guards: feature gate → image-kind → read-bytes → RPC. A gated-off
- * runtime is NOT a failure (the image is still imported and its path rides in
- * the prompt) — it returns the unchanged `imported` state with a notice.
+ * A runtime with neither operation is not a hard failure: the imported path
+ * still rides in the prompt.
  */
 export async function attachImageToSession(
   attachment: HermesAttachmentState,
@@ -203,13 +195,6 @@ export async function attachImageToSession(
   deps: AttachImageDeps,
 ): Promise<AttachImageResult> {
   const withSession: HermesAttachmentState = { ...attachment, sessionId };
-
-  if (!deps.isSupported()) {
-    // Gated off: keep the image imported so the existing path-in-prompt
-    // fallback still carries it. No artifact, no hard failure.
-    return { state: withSession, error: ATTACH_UNSUPPORTED_NOTICE };
-  }
-
   if (attachment.kind !== "image" || !attachment.workspacePath) {
     const error = attachErrorNotice(attachment.displayName, new Error("unsupported file type"));
     return {
@@ -219,25 +204,46 @@ export async function attachImageToSession(
     };
   }
 
+  const { prepareImagePath, attachImagePath } = deps;
+  if (prepareImagePath && attachImagePath && deps.isPathSupported?.()) {
+    try {
+      const prepared = await prepareImagePath(sessionId, attachment.workspacePath);
+      if (!prepared.path || !isAttachableImageType(prepared.mimeType)) {
+        throw new Error("unsupported file type");
+      }
+      const result = await attachImagePath({
+        sessionId,
+        path: prepared.path,
+      });
+      return attachedResult(withSession, result, {
+        method: "image.attach",
+        params: {
+          session_id: sessionId,
+          path: prepared.path,
+          mime_type: prepared.mimeType,
+          bytes: prepared.size,
+        },
+      });
+    } catch (err) {
+      return failedAttachResult(withSession, err);
+    }
+  }
+
+  if (!deps.isSupported()) {
+    // Gated off: keep the image imported so the existing path-in-prompt
+    // fallback still carries it. No artifact, no hard failure.
+    return { state: withSession, error: ATTACH_UNSUPPORTED_NOTICE };
+  }
+
   let parsed: { mimeType: string; dataBase64: string } | null;
   try {
     parsed = parseImageDataUrl(await deps.readImageData(attachment.workspacePath));
   } catch (err) {
-    const error = attachErrorNotice(attachment.displayName, err);
-    return {
-      state: { ...withSession, status: "failed", error },
-      artifact: failedArtifact(withSession),
-      error,
-    };
+    return failedAttachResult(withSession, err);
   }
 
   if (!parsed) {
-    const error = attachErrorNotice(attachment.displayName, new Error("unsupported file type"));
-    return {
-      state: { ...withSession, status: "failed", error },
-      artifact: failedArtifact(withSession),
-      error,
-    };
+    return failedAttachResult(withSession, new Error("unsupported file type"));
   }
 
   try {
@@ -247,42 +253,54 @@ export async function attachImageToSession(
       dataBase64: parsed.dataBase64,
       fileName: attachment.displayName,
     });
-    return {
-      state: {
-        ...withSession,
-        status: "attached",
-        hermesAttachmentId: attachmentIdFrom(result),
-      },
-      artifact: {
-        sessionId,
-        kind: "image",
-        action: "attached",
-        path: attachment.workspacePath,
-        displayName: attachment.displayName,
-        previewAvailable: true,
-      },
+    return attachedResult(withSession, result, {
       // REDACTED on purpose: the trace records that an attach happened and how
       // big it was, never the base64 itself (the trace buffer would otherwise
       // stringify it into its payload preview; the raw content base64 is not a
       // sanitizer-recognized secret key).
-      trace: {
-        sessionId,
-        method: "image.attach_bytes",
-        params: {
-          session_id: sessionId,
-          mime_type: parsed.mimeType,
-          bytes: approxByteLength(parsed.dataBase64),
-        },
+      method: "image.attach_bytes",
+      params: {
+        session_id: sessionId,
+        mime_type: parsed.mimeType,
+        bytes: approxByteLength(parsed.dataBase64),
       },
-    };
+    });
   } catch (err) {
-    const error = attachErrorNotice(attachment.displayName, err);
-    return {
-      state: { ...withSession, status: "failed", error },
-      artifact: failedArtifact(withSession),
-      error,
-    };
+    return failedAttachResult(withSession, err);
   }
+}
+
+function attachedResult(
+  state: HermesAttachmentState,
+  result: unknown,
+  trace: Omit<OutboundTraceInput, "sessionId">,
+): AttachImageResult {
+  const sessionId = state.sessionId ?? "";
+  return {
+    state: {
+      ...state,
+      status: "attached",
+      hermesAttachmentId: attachmentIdFrom(result),
+    },
+    artifact: {
+      sessionId,
+      kind: "image",
+      action: "attached",
+      path: state.workspacePath,
+      displayName: state.displayName,
+      previewAvailable: true,
+    },
+    trace: { sessionId, ...trace },
+  };
+}
+
+function failedAttachResult(state: HermesAttachmentState, err: unknown): AttachImageResult {
+  const error = attachErrorNotice(state.displayName, err);
+  return {
+    state: { ...state, status: "failed", error },
+    artifact: failedArtifact(state),
+    error,
+  };
 }
 
 function failedArtifact(state: HermesAttachmentState): AttachedArtifactSeed {

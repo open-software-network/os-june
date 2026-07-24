@@ -79,6 +79,23 @@ reserved address. It is rate-limited by client address and otherwise returns
 the same `share_not_found` response for missing, deleted, revoked, or wrong
 rows.
 
+### Rate-limit bounds
+
+Share requests keep the deployed fixed-window budget of 60 requests per
+minute. Authenticated endpoints consume both `user:{user_id}` and
+`ip:{client_address}` counters. Anonymous link views use
+`link-ip:{client_address}`, while viewer token exchanges use
+`ip:{client_address}`.
+
+The in-memory limiter has 64 independently locked shards, tracks at most
+100,000 keys across them, and caps each shard at 4,096 keys so retained hash
+table allocations also stay bounded across expiry generations. Expiry cleanup
+runs one shard at a time outside the request path. At capacity, an unknown key
+is denied until expired capacity is reclaimed. Active counters are never
+evicted to admit new keys, so rotating addresses cannot reset an attacker's
+existing counter. Cap exhaustion can therefore reduce availability under
+extreme churn, but it cannot open an abuse bypass or grow memory without bound.
+
 ## Backward compatibility
 
 Previously issued email-invite links retain their OS Accounts authentication.

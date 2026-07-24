@@ -32,7 +32,7 @@ export function createVideoSlashActions(dependencies: createVideoSlashActionsDep
     clearComposerCommandDraft,
     composerDispatchWasInvalidated,
     creditActionsDisabledReason,
-    loadFilesystemSnapshot,
+    recordFilesystemArtifact,
     newSessionModeRef,
     requestImageSafeModeConsent,
     setError,
@@ -154,7 +154,11 @@ export function createVideoSlashActions(dependencies: createVideoSlashActionsDep
         },
         hermesModeFor(sessionId),
       );
-      void loadFilesystemSnapshot();
+      recordFilesystemArtifact({
+        name,
+        path: result.path,
+        rootLabel: "Workspace",
+      });
     } catch (err) {
       updateVideoSlashPart(sessionId, assistantTurnId, {
         status: "error",
@@ -254,7 +258,11 @@ export function createVideoSlashActions(dependencies: createVideoSlashActionsDep
         },
         hermesModeFor(turn.sessionId),
       );
-      void loadFilesystemSnapshot();
+      recordFilesystemArtifact({
+        name,
+        path: result.path,
+        rootLabel: "Workspace",
+      });
       return;
     }
     // Budget exhausted while the job was still processing: it lives on the

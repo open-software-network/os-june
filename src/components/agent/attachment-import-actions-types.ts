@@ -9,7 +9,7 @@ export type createAttachmentImportActionsDependencies = {
   agentAttachmentFromImportedFile: (file: ImportedHermesFile) => AgentAttachment;
   composerEditorRef: React.MutableRefObject<ComposerEditorHandle | null>;
   creditActionsDisabledReason: string | undefined;
-  loadFilesystemSnapshot: () => Promise<void>;
+  recordImportedArtifact: (file: ImportedHermesFile) => void;
   setComposerAttachments: (
     nextValue: AgentAttachment[] | ((current: AgentAttachment[]) => AgentAttachment[]),
   ) => void;

@@ -998,6 +998,336 @@ def verify_new_session_image_attach_is_immediate(root: Path) -> None:
     )
 
 
+def verify_agent_run_scoped_toolsets(root: Path) -> None:
+    server_source = (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(server_source)
+    normalize = copy.deepcopy(_function(tree, "_normalize_agent_run_enabled_toolsets"))
+    namespace = {"_load_enabled_toolsets": lambda: ["web", "june_computer_use"]}
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(normalize),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        namespace,
+    )
+    normalize_toolsets = namespace["_normalize_agent_run_enabled_toolsets"]
+    assert normalize_toolsets(None) is None
+    assert normalize_toolsets(
+        ["june_computer_use", "june_computer_use"]
+    ) == ["june_computer_use"]
+    for invalid in ("june_computer_use", ["todoist"], [""]):
+        try:
+            normalize_toolsets(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("agent-run toolsets widened or accepted an invalid shape")
+
+    make_agent = _function(tree, "_make_agent")
+    assert any(
+        argument.arg == "enabled_toolsets_override"
+        for argument in make_agent.args.args
+    ), "TUI agent constructor omits the agent-run toolset override"
+    agent_calls = [
+        node
+        for node in ast.walk(make_agent)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "AIAgent"
+    ]
+    assert len(agent_calls) == 1
+    assert any(
+        keyword.arg == "enabled_toolsets" for keyword in agent_calls[0].keywords
+    ), "agent-run toolsets are not applied to the agent snapshot"
+
+    apply_toolsets = _function(tree, "_apply_agent_run_enabled_toolsets")
+    apply_calls = {
+        node.func.id
+        for node in ast.walk(apply_toolsets)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "refresh_agent_mcp_tools" in apply_calls, (
+        "live agent scope changes do not use the pinned MCP snapshot refresh helper"
+    )
+    refresh_calls = []
+    fake_mcp_tool = types.ModuleType("tools.mcp_tool")
+
+    def refresh_agent_mcp_tools(
+        agent,
+        *,
+        enabled_override=None,
+        disabled_override=None,
+        quiet_mode=True,
+    ):
+        refresh_calls.append((enabled_override, disabled_override, quiet_mode))
+        agent.enabled_toolsets = enabled_override
+        agent.disabled_toolsets = disabled_override
+        return set()
+
+    fake_mcp_tool.refresh_agent_mcp_tools = refresh_agent_mcp_tools
+    previous_mcp_tool = sys.modules.get("tools.mcp_tool")
+    sys.modules["tools.mcp_tool"] = fake_mcp_tool
+    try:
+        class Agent:
+            enabled_toolsets = ["web", "june_computer_use"]
+            disabled_toolsets = ["browser"]
+
+        class Logger:
+            @staticmethod
+            def info(*_args):
+                return None
+
+        sentinel = object()
+        apply_namespace = {
+            "_AGENT_RUN_TOOLSETS_UNSET": sentinel,
+            "_load_enabled_toolsets": lambda: ["web", "june_computer_use"],
+            "_normalize_agent_run_enabled_toolsets": normalize_toolsets,
+            "_wait_for_session_toolsets": lambda _toolsets: None,
+            "logger": Logger(),
+        }
+        exec(
+            compile(
+                "from __future__ import annotations\n" + ast.unparse(copy.deepcopy(apply_toolsets)),
+                str(root / "tui_gateway" / "server.py"),
+                "exec",
+            ),
+            apply_namespace,
+        )
+        session = {"agent": Agent()}
+        apply_scope = apply_namespace["_apply_agent_run_enabled_toolsets"]
+        apply_scope(session, ["june_computer_use"])
+        assert session["agent"].enabled_toolsets == ["june_computer_use"]
+        apply_scope(session, None)
+        assert session["agent"].enabled_toolsets == ["web", "june_computer_use"]
+        assert [call[0] for call in refresh_calls] == [
+            ["june_computer_use"],
+            ["web", "june_computer_use"],
+        ], "scoped-to-ordinary agent-run transition did not refresh both snapshots"
+    finally:
+        if previous_mcp_tool is None:
+            sys.modules.pop("tools.mcp_tool", None)
+        else:
+            sys.modules["tools.mcp_tool"] = previous_mcp_tool
+
+    enqueue_prompt = copy.deepcopy(_function(tree, "_enqueue_prompt"))
+    enqueue_namespace = {"_AGENT_RUN_TOOLSETS_UNSET": object()}
+    exec(
+        compile(
+            "from __future__ import annotations\n" + ast.unparse(enqueue_prompt),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        enqueue_namespace,
+    )
+    enqueue = enqueue_namespace["_enqueue_prompt"]
+    queued_session = {}
+    assert enqueue(
+        queued_session,
+        "first",
+        "transport-a",
+        ["june_computer_use"],
+    )
+    queued_before_mismatch = copy.deepcopy(queued_session["queued_prompt"])
+    assert not enqueue(queued_session, "second", "transport-b", None)
+    assert queued_session["queued_prompt"] == queued_before_mismatch
+    assert enqueue(
+        queued_session,
+        "compatible",
+        "transport-c",
+        ["june_computer_use"],
+    )
+    assert queued_session["queued_prompt"]["text"] == "first\n\ncompatible"
+
+    create = _rpc_method(tree, "session.create")
+    prompt = _rpc_method(tree, "prompt.submit")
+    create_names = {
+        node.func.id
+        for node in ast.walk(create)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    prompt_names = {
+        node.func.id
+        for node in ast.walk(prompt)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "_normalize_agent_run_enabled_toolsets" in create_names
+    assert "_normalize_agent_run_enabled_toolsets" in prompt_names
+    assert "_dispatch_inline_prompt" in prompt_names
+    assert (
+        "if agent_run_toolsets not in (_AGENT_RUN_TOOLSETS_UNSET, None):\n"
+        "        turn_isolation = False\n"
+        "    if turn_isolation:\n"
+        "        isolated_response = _submit_prompt_to_compute_host("
+    ) in server_source, "scoped prompts can escape or switch back to the compute host"
+    assert (
+        "and queued_agent_run_toolsets in (_AGENT_RUN_TOOLSETS_UNSET, None)"
+    ) in server_source, "scoped queued prompts can escape through an unscoped compute-host frame"
+    assert (
+        'if session.get("_june_inline_executor"):\n'
+        "        return False"
+    ) in server_source, "scoped sessions can switch executors and lose history or controls"
+    assert (
+        "agent-run-scoped toolsets are unavailable under a named profile"
+    ) in server_source, "named profiles can receive a launch-profile tool scope"
+    assert (
+        "agent_run_toolsets = (\n"
+        "        _AGENT_RUN_TOOLSETS_UNSET\n"
+        '        if session.get("profile_home") is not None'
+    ) in server_source, "named-profile prompts can restore the launch profile tool policy"
+    assert (
+        "queued prompt tool scope changed; retry after the current agent run"
+    ) in server_source, "queued prompts can merge incompatible tool scopes"
+    assert (
+        'worker = session.get("slash_worker")\n'
+        "    if worker is None:\n"
+        "        return"
+    ) in server_source, "automatic lifecycle paths can eagerly start the broad slash worker"
+    assert (
+        'if current.get("enabled_toolsets_override") is None:\n'
+        "                try:\n"
+        "                    worker = _SlashWorker("
+    ) in server_source, "scoped sessions still eagerly start the broad slash worker"
+
+    failed_prompt_setup = copy.deepcopy(
+        _function(tree, "_record_failed_inline_prompt_setup")
+    )
+    dispatch_inline = copy.deepcopy(_function(tree, "_dispatch_inline_prompt"))
+    failed_setup_calls = [
+        node
+        for node in ast.walk(dispatch_inline)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_record_failed_inline_prompt_setup"
+    ]
+    assert len(failed_setup_calls) == 2, (
+        "acknowledged prompts are not recovered from every inline setup failure"
+    )
+    ready_gate = threading.Event()
+    dispatch_calls = []
+
+    class FailedPromptDb:
+        def __init__(self):
+            self.messages = []
+
+        def append_message(self, **message):
+            self.messages.append(message)
+
+    class FailedPromptDbContext:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class Logger:
+        @staticmethod
+        def debug(*_args, **_kwargs):
+            return None
+
+    failed_prompt_db = FailedPromptDb()
+    dispatch_namespace = {
+        "_AGENT_RUN_TOOLSETS_UNSET": object(),
+        "_ensure_session_db_row": lambda _session: dispatch_calls.append("persist"),
+        "_persist_branch_seed": lambda _session: dispatch_calls.append("branch"),
+        "_start_agent_build": lambda _sid, _session: dispatch_calls.append("build"),
+        "_wait_agent": lambda _session, _rid: (
+            ready_gate.wait(timeout=2),
+            dispatch_calls.append("ready"),
+            None,
+        )[-1],
+        "_apply_agent_run_enabled_toolsets": lambda _session, _toolsets: dispatch_calls.append(
+            "scope"
+        ),
+        "_run_prompt_submit": lambda _rid, _sid, _session, _text: dispatch_calls.append(
+            "run"
+        ),
+        "_emit": lambda *_args, **_kwargs: None,
+        "_clear_inflight_turn": lambda session: session.update(inflight_turn=None),
+        "_session_db": lambda _session: FailedPromptDbContext(failed_prompt_db),
+        "_drain_queued_prompt": lambda *_args: dispatch_calls.append("drain"),
+        "logger": Logger(),
+        "threading": threading,
+    }
+    exec(
+        compile(
+            "from __future__ import annotations\n"
+            + ast.unparse(failed_prompt_setup)
+            + "\n\n"
+            + ast.unparse(dispatch_inline),
+            str(root / "tui_gateway" / "server.py"),
+            "exec",
+        ),
+        dispatch_namespace,
+    )
+    blocked_session = {
+        "history_lock": threading.Lock(),
+        "running": True,
+    }
+    dispatch_namespace["_dispatch_inline_prompt"](
+        "rid",
+        "sid",
+        blocked_session,
+        "prompt",
+        ["june_computer_use"],
+    )
+    time.sleep(0.02)
+    assert "run" not in dispatch_calls, "queued scoped prompt ran before agent readiness"
+    ready_gate.set()
+    blocked_session["_run_thread"].join(timeout=2)
+    assert dispatch_calls == [
+        "persist",
+        "branch",
+        "build",
+        "ready",
+        "scope",
+        "run",
+    ], "queued scoped prompt did not use the full readiness-gated inline path"
+
+    dispatch_calls.clear()
+    failed_session = {
+        "history": [],
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "inflight_turn": {"user": "prompt"},
+        "running": True,
+        "session_key": "failed-session",
+    }
+    dispatch_namespace["_wait_agent"] = lambda _session, _rid: {
+        "error": {"message": "synthetic setup failure"}
+    }
+    dispatch_namespace["_dispatch_inline_prompt"](
+        "failed-rid",
+        "failed-sid",
+        failed_session,
+        "preserve this prompt",
+        ["june_computer_use"],
+    )
+    failed_session["_run_thread"].join(timeout=2)
+    assert failed_session["history"] == [
+        {"role": "user", "content": "preserve this prompt"}
+    ], "acknowledged prompt vanished from in-memory history after setup failure"
+    assert failed_session["history_version"] == 1
+    assert failed_session["running"] is False
+    assert failed_session["inflight_turn"] is None
+    assert failed_prompt_db.messages == [
+        {
+            "session_id": "failed-session",
+            "role": "user",
+            "content": "preserve this prompt",
+        }
+    ], "acknowledged prompt was not durable after setup failure"
+    assert dispatch_calls == [
+        "persist",
+        "branch",
+        "build",
+        "drain",
+    ], "a later queued prompt was not offered after setup failure"
+
+
 def verify_tui_memory_deny_propagation(root: Path) -> None:
     tree = ast.parse(
         (root / "tui_gateway" / "server.py").read_text(encoding="utf-8")
@@ -1806,6 +2136,7 @@ def main() -> int:
         upstream_root = args.upstream_root.resolve() if args.upstream_root else None
         verify_patch_state_machine(root, upstream_root)
         verify_new_session_image_attach_is_immediate(root)
+        verify_agent_run_scoped_toolsets(root)
         verify_tui_memory_deny_propagation(root)
         verify_memory_lifecycle_deny(root)
         verify_cross_process_config_writer(root)

@@ -1,5 +1,6 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
+import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { HermesSessionInfo } from "../lib/tauri";
+import type { NoteSaveController } from "./note-save-controller";
 import type { NotesAction, NotesState } from "./state/app-state";
 import type * as React from "react";
 
@@ -7,6 +8,7 @@ export type CreateAppDomainActionsDependencies = {
   agentSessions: HermesSessionInfo[];
   completedSessions: Record<string, string>;
   dispatch: React.Dispatch<NotesAction>;
+  noteSaveController: NoteSaveController;
   pendingSessionProjectRef: React.MutableRefObject<{
     folderId: string;
     knownSessionIds: Set<string>;

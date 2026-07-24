@@ -35,6 +35,15 @@ export function createTaskSubmissionAction(dependencies: createTaskSubmissionAct
     request?: AgentNewSessionDetail,
     options: { deferSeed?: boolean } = {},
   ) {
+    const liveComposer = composerEditorRef.current;
+    if (
+      liveComposer &&
+      !liveComposer.flushPendingChange({
+        changeKey: composerDraftKeyRef.current,
+      })
+    ) {
+      return;
+    }
     clearPendingNewSessionRequest();
     const seedCategory = request?.category ?? null;
     const seedNoteRef = seedCategory ? null : (request?.noteRef ?? null);
