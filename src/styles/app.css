@@ -24369,6 +24369,50 @@ button.memory-project:hover {
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
+/* Morning brief opt-in: one bordered card previewing the routine that a
+ * click will create — icon chip, name, schedule line. Mirrors the intent
+ * grid's card idiom so the step reads as part of the same flow. */
+.onboarding-brief-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  margin-block-start: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--card);
+  text-align: left;
+}
+
+.onboarding-brief-icon {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
+  color: var(--warm-strong);
+}
+
+.onboarding-brief-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.onboarding-brief-name {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.onboarding-brief-meta {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
 /* Permissions: one bordered card, one row per permission — icon chip, a
  * line of copy, the grant affordance. A granted row trades its icon for a
  * check and tints terracotta. */
