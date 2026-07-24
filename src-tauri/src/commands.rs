@@ -3055,7 +3055,11 @@ pub(crate) async fn repositories(app: &AppHandle) -> Result<Repositories, AppErr
             run_migrations(&pool)
                 .await
                 .map_err(|error| AppError::new("migration_failed", error.to_string()))?;
-            let legacy_state = paths.data_dir.join("hermes").join("state.db");
+            let legacy_home = paths.data_dir.join("hermes");
+            let user_home = app.path().home_dir().ok();
+            crate::agent_runtime::stop_legacy_hermes_runtime(&legacy_home, user_home.as_deref())
+                .await;
+            let legacy_state = legacy_home.join("state.db");
             let artifact_root = paths.data_dir.join("agent-workspaces");
             if let Err(error) = crate::agent_runtime::import_legacy_agent_state(
                 &pool,

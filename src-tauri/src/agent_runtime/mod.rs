@@ -10,5 +10,7 @@ pub mod tools;
 
 pub use domain::*;
 pub use host::AgentRuntimeHost;
-pub use migration::{import_legacy_agent_state, LegacyImportError, LegacyImportOptions};
+pub use migration::{
+    import_legacy_agent_state, stop_legacy_hermes_runtime, LegacyImportError, LegacyImportOptions,
+};
 pub use repository::AgentRepository;

@@ -8,12 +8,16 @@ use sqlx_sqlite::{
 };
 use std::{
     collections::BTreeSet,
+    fs,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 use thiserror::Error;
 
 const MIGRATION_KEY: &str = "hermes-to-june-agent-runtime-v1";
+const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
+const LEGACY_GATEWAY_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct LegacyImportOptions {
@@ -29,6 +33,164 @@ pub enum LegacyImportError {
     Destination(#[source] sqlx::Error),
     #[error("legacy state metadata could not be read: {0}")]
     Metadata(#[source] std::io::Error),
+}
+
+/// Stops only gateway processes that are recorded inside June's retired Hermes
+/// home and whose live command line still identifies the Hermes gateway. Stale
+/// state files and unrelated Hermes installations are ignored.
+pub async fn stop_legacy_hermes_runtime(hermes_home: &Path, user_home: Option<&Path>) {
+    for pid in legacy_gateway_pids(hermes_home) {
+        if pid == std::process::id() || !live_gateway_matches(pid).await {
+            continue;
+        }
+        stop_legacy_gateway_process(pid).await;
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(user_home) = user_home {
+        stop_legacy_launch_agent(hermes_home, user_home).await;
+    }
+}
+
+fn legacy_gateway_pids(hermes_home: &Path) -> BTreeSet<u32> {
+    let mut state_paths = vec![hermes_home.join("gateway_state.json")];
+    if let Ok(profiles) = fs::read_dir(hermes_home.join("profiles")) {
+        state_paths.extend(
+            profiles
+                .flatten()
+                .map(|entry| entry.path().join("gateway_state.json")),
+        );
+    }
+    state_paths
+        .into_iter()
+        .filter_map(|path| fs::read(path).ok())
+        .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter_map(|state| legacy_gateway_pid_from_state(&state))
+        .collect()
+}
+
+fn legacy_gateway_pid_from_state(state: &Value) -> Option<u32> {
+    if state.get("kind").and_then(Value::as_str) != Some("hermes-gateway") {
+        return None;
+    }
+    let argv = state.get("argv").and_then(Value::as_array)?;
+    let command = argv
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" ");
+    if !legacy_gateway_command_matches(&command) {
+        return None;
+    }
+    state
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid > 1)
+}
+
+fn legacy_gateway_command_matches(command: &str) -> bool {
+    let normalized = command.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("resources/native/hermes/")
+        && normalized.contains("hermes_cli")
+        && normalized.contains("gateway run")
+}
+
+#[cfg(target_os = "macos")]
+async fn live_gateway_matches(pid: u32) -> bool {
+    tokio::process::Command::new("/bin/ps")
+        .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|command| legacy_gateway_command_matches(&command))
+}
+
+#[cfg(target_os = "windows")]
+async fn live_gateway_matches(pid: u32) -> bool {
+    let script = format!("(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine");
+    tokio::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|command| legacy_gateway_command_matches(&command))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn live_gateway_matches(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+async fn stop_legacy_gateway_process(pid: u32) {
+    let pid = pid as libc::pid_t;
+    // SAFETY: the live command line and June-owned state file were validated
+    // immediately above. Signals target that exact positive pid only.
+    let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+    let exited = tokio::time::timeout(LEGACY_GATEWAY_STOP_TIMEOUT, async {
+        loop {
+            // SAFETY: signal 0 only probes whether the validated pid exists.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok();
+    if !exited {
+        // SAFETY: this is the same validated pid after a bounded graceful stop.
+        let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+#[cfg(target_os = "windows")]
+async fn stop_legacy_gateway_process(pid: u32) {
+    let _ = tokio::time::timeout(
+        LEGACY_GATEWAY_STOP_TIMEOUT,
+        tokio::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .status(),
+    )
+    .await;
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn stop_legacy_gateway_process(_pid: u32) {}
+
+#[cfg(target_os = "macos")]
+async fn stop_legacy_launch_agent(hermes_home: &Path, user_home: &Path) {
+    let plist = user_home
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{HERMES_GATEWAY_LAUNCHD_LABEL}.plist"));
+    let Ok(contents) = fs::read_to_string(&plist) else {
+        return;
+    };
+    if !contents.contains(HERMES_GATEWAY_LAUNCHD_LABEL)
+        || !contents.contains(hermes_home.to_string_lossy().as_ref())
+    {
+        return;
+    }
+    // SAFETY: getuid reads the current process's immutable real-user id.
+    let uid = unsafe { libc::getuid() };
+    for target in [
+        format!("gui/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"),
+        format!("user/{uid}/{HERMES_GATEWAY_LAUNCHD_LABEL}"),
+    ] {
+        let _ = tokio::time::timeout(
+            LEGACY_GATEWAY_STOP_TIMEOUT,
+            tokio::process::Command::new("/bin/launchctl")
+                .args(["bootout", &target])
+                .status(),
+        )
+        .await;
+    }
+    let _ = fs::remove_file(plist);
 }
 
 #[derive(Debug)]
@@ -679,4 +841,92 @@ fn timestamp(value: f64) -> String {
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        legacy_gateway_command_matches, legacy_gateway_pid_from_state, stop_legacy_hermes_runtime,
+    };
+    use serde_json::json;
+    use std::{fs, time::Duration};
+
+    #[test]
+    fn accepts_june_hermes_gateway_state() {
+        let state = json!({
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": [
+                "/Applications/June.app/Contents/Resources/native/hermes/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "--profile",
+                "profile-2",
+                "gateway",
+                "run",
+                "--replace"
+            ]
+        });
+
+        assert_eq!(legacy_gateway_pid_from_state(&state), Some(42));
+    }
+
+    #[test]
+    fn rejects_unrelated_or_incomplete_process_state() {
+        assert_eq!(
+            legacy_gateway_pid_from_state(&json!({
+                "pid": 42,
+                "kind": "other",
+                "argv": ["hermes", "gateway", "run"]
+            })),
+            None
+        );
+        assert_eq!(
+            legacy_gateway_pid_from_state(&json!({
+                "pid": 42,
+                "kind": "hermes-gateway",
+                "argv": ["hermes", "status"]
+            })),
+            None
+        );
+        assert!(!legacy_gateway_command_matches(
+            "/usr/bin/python unrelated_agent.py"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn stops_only_a_live_gateway_recorded_in_junes_legacy_home() {
+        let root = tempfile::tempdir().expect("temporary Hermes home");
+        let mut child = tokio::process::Command::new("/bin/bash")
+            .args([
+                "-c",
+                "exec -a '/tmp/June.app/Contents/Resources/native/hermes/hermes_cli gateway run' sleep 30",
+            ])
+            .spawn()
+            .expect("spawn fake legacy gateway");
+        let pid = child.id().expect("child pid");
+        fs::write(
+            root.path().join("gateway_state.json"),
+            serde_json::to_vec(&json!({
+                "pid": pid,
+                "kind": "hermes-gateway",
+                "argv": [
+                    "/tmp/June.app/Contents/Resources/native/hermes/hermes_cli/main.py",
+                    "gateway",
+                    "run",
+                    "--replace"
+                ]
+            }))
+            .expect("serialize gateway state"),
+        )
+        .expect("write gateway state");
+
+        stop_legacy_hermes_runtime(root.path(), None).await;
+
+        tokio::time::timeout(Duration::from_secs(3), child.wait())
+            .await
+            .expect("gateway should stop before the timeout")
+            .expect("wait for fake gateway");
+    }
 }
