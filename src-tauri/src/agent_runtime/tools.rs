@@ -201,15 +201,20 @@ async fn mcp_tool(context: &ToolContext, name: &str, arguments: Value) -> Result
             "This MCP server changed after the run started. Retry the turn to use its current approval policy.",
         ));
     }
-    subsystem
-        .invoke_in_workspace(
-            name,
-            arguments,
-            context.safety_mode == AgentSafetyMode::Sandboxed,
-            Some(&context.workspace),
-        )
-        .await
-        .map_err(agent_mcp_error)
+    let invocation = subsystem.invoke_in_workspace(
+        name,
+        arguments,
+        context.safety_mode == AgentSafetyMode::Sandboxed,
+        Some(&context.workspace),
+    );
+    let mut cancelled = context.cancellations.register(&context.run_id).await;
+    tokio::select! {
+        result = invocation => result.map_err(agent_mcp_error),
+        _ = &mut cancelled => {
+            crate::agent_mcp::retire_server_sessions(&current_policy.server_id).await;
+            Err(AppError::new("agent_tool_cancelled", "MCP tool call was cancelled."))
+        }
+    }
 }
 
 fn agent_mcp_error(error: crate::agent_mcp::AgentMcpError) -> AppError {

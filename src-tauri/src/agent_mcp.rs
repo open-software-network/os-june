@@ -15,17 +15,17 @@ use sha2::{Digest, Sha256};
 use sqlx::{query::query, row::Row};
 use sqlx_sqlite::SqlitePool;
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
+    collections::{BTreeMap, BTreeSet, HashMap},
     process::Stdio,
-    sync::Mutex,
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use tauri::AppHandle;
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader},
-    process::Command,
+    process::{Child, ChildStdin, ChildStdout, Command},
+    sync::Mutex as AsyncMutex,
     time::timeout,
 };
 use uuid::Uuid;
@@ -55,6 +55,32 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1_048_576;
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.agent-mcp";
 const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.agent-mcp";
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+
+type SharedMcpSession = Arc<AsyncMutex<McpSessionSlot>>;
+static MCP_SESSIONS: OnceLock<AsyncMutex<HashMap<String, SharedMcpSession>>> = OnceLock::new();
+
+struct McpSessionSlot {
+    fingerprint: String,
+    next_request_id: u64,
+    transport: Option<PersistentMcpTransport>,
+}
+
+enum PersistentMcpTransport {
+    Stdio(Box<StdioMcpSession>),
+    Http(HttpMcpSession),
+}
+
+struct StdioMcpSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+struct HttpMcpSession {
+    client: reqwest::Client,
+    session_id: Option<String>,
+}
 
 #[derive(Debug, Error)]
 pub enum AgentMcpError {
@@ -80,6 +106,8 @@ pub enum AgentMcpError {
     Storage,
     #[error("MCP transport operation failed")]
     Transport,
+    #[error("MCP server requested user input that June could not safely resume")]
+    ElicitationUnsupported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -854,15 +882,8 @@ async fn discover_server(
     secrets: &McpSecretBundle,
     sandbox_workspace: Option<&std::path::Path>,
 ) -> Result<Vec<McpDiscoveredTool>, AgentMcpError> {
-    let value = session_request(
-        server,
-        secrets,
-        2,
-        "tools/list",
-        json!({}),
-        sandbox_workspace,
-    )
-    .await?;
+    let value =
+        session_request(server, secrets, "tools/list", json!({}), sandbox_workspace).await?;
     let tools = value
         .get("result")
         .and_then(|result| result.get("tools"))
@@ -898,7 +919,6 @@ async fn call_server(
     let value = session_request(
         server,
         secrets,
-        3,
         "tools/call",
         json!({"name":tool_name,"arguments":arguments}),
         sandbox_workspace,
@@ -909,32 +929,140 @@ async fn call_server(
 async fn session_request(
     server: &McpServerDefinition,
     secrets: &McpSecretBundle,
-    id: u64,
     method: &str,
     params: Value,
     sandbox_workspace: Option<&std::path::Path>,
 ) -> Result<Value, AgentMcpError> {
     let deadline = Duration::from_millis(server.safety.timeout_ms);
-    timeout(deadline, async {
-        match server.transport {
-            McpTransport::Stdio => {
-                stdio_session(server, secrets, id, method, params, sandbox_workspace).await
-            }
-            McpTransport::StreamableHttp => http_session(server, secrets, id, method, params).await,
+    let result = timeout(deadline, async move {
+        let shared = persistent_session(server, secrets, sandbox_workspace).await;
+        let mut slot = shared.lock().await;
+        let fingerprint = session_fingerprint(server, secrets, sandbox_workspace);
+        if slot.fingerprint != fingerprint {
+            slot.close().await;
+            slot.fingerprint = fingerprint;
+            slot.next_request_id = 2;
         }
+        for attempt in 0..2 {
+            if slot.transport.is_none() {
+                slot.transport = Some(start_transport(server, secrets, sandbox_workspace).await?);
+            }
+            let id = slot.next_request_id;
+            slot.next_request_id = slot.next_request_id.saturating_add(1);
+            let result = match slot.transport.as_mut().expect("transport initialized") {
+                PersistentMcpTransport::Stdio(session) => {
+                    session
+                        .request(id, method, params.clone(), server.safety.max_output_bytes)
+                        .await
+                }
+                PersistentMcpTransport::Http(session) => {
+                    session
+                        .request(server, secrets, id, method, params.clone())
+                        .await
+                }
+            };
+            match result {
+                Ok(value) => return Ok(value),
+                Err(AgentMcpError::Transport) if attempt == 0 => {
+                    slot.close().await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(AgentMcpError::Transport)
     })
-    .await
-    .map_err(|_| AgentMcpError::TimedOut)?
+    .await;
+    match result {
+        Ok(Err(AgentMcpError::ElicitationUnsupported)) => {
+            retire_server_sessions(&server.id).await;
+            Err(AgentMcpError::ElicitationUnsupported)
+        }
+        Ok(result) => result,
+        Err(_) => {
+            retire_server_sessions(&server.id).await;
+            Err(AgentMcpError::TimedOut)
+        }
+    }
 }
 
-async fn stdio_session(
+async fn persistent_session(
     server: &McpServerDefinition,
     secrets: &McpSecretBundle,
-    id: u64,
-    method: &str,
-    params: Value,
     sandbox_workspace: Option<&std::path::Path>,
-) -> Result<Value, AgentMcpError> {
+) -> SharedMcpSession {
+    let key = session_key(server, sandbox_workspace);
+    let sessions = MCP_SESSIONS.get_or_init(|| AsyncMutex::new(HashMap::new()));
+    let mut sessions = sessions.lock().await;
+    sessions
+        .entry(key)
+        .or_insert_with(|| {
+            Arc::new(AsyncMutex::new(McpSessionSlot {
+                fingerprint: session_fingerprint(server, secrets, sandbox_workspace),
+                next_request_id: 2,
+                transport: None,
+            }))
+        })
+        .clone()
+}
+
+fn session_key(
+    server: &McpServerDefinition,
+    sandbox_workspace: Option<&std::path::Path>,
+) -> String {
+    let workspace = sandbox_workspace
+        .and_then(|path| path.canonicalize().ok())
+        .unwrap_or_default();
+    format!("{}:{}", server.id, workspace.display())
+}
+
+fn session_fingerprint(
+    server: &McpServerDefinition,
+    secrets: &McpSecretBundle,
+    sandbox_workspace: Option<&std::path::Path>,
+) -> String {
+    let mut hash = Sha256::new();
+    if let Ok(server) = serde_json::to_vec(server) {
+        hash.update(server);
+    }
+    for (key, value) in &secrets.env {
+        hash.update(key.as_bytes());
+        hash.update([0]);
+        hash.update(value.as_bytes());
+        hash.update([0]);
+    }
+    for (key, value) in &secrets.headers {
+        hash.update(key.as_bytes());
+        hash.update([0]);
+        hash.update(value.as_bytes());
+        hash.update([0]);
+    }
+    if let Some(workspace) = sandbox_workspace {
+        hash.update(workspace.as_os_str().as_encoded_bytes());
+    }
+    format!("{:x}", hash.finalize())
+}
+
+async fn start_transport(
+    server: &McpServerDefinition,
+    secrets: &McpSecretBundle,
+    sandbox_workspace: Option<&std::path::Path>,
+) -> Result<PersistentMcpTransport, AgentMcpError> {
+    match server.transport {
+        McpTransport::Stdio => start_stdio_session(server, secrets, sandbox_workspace)
+            .await
+            .map(Box::new)
+            .map(PersistentMcpTransport::Stdio),
+        McpTransport::StreamableHttp => start_http_session(server, secrets)
+            .await
+            .map(PersistentMcpTransport::Http),
+    }
+}
+
+async fn start_stdio_session(
+    server: &McpServerDefinition,
+    secrets: &McpSecretBundle,
+    sandbox_workspace: Option<&std::path::Path>,
+) -> Result<StdioMcpSession, AgentMcpError> {
     let executable = server.command.as_deref().ok_or(AgentMcpError::Transport)?;
     let mut command = if let Some(workspace) = sandbox_workspace {
         #[cfg(target_os = "macos")]
@@ -969,13 +1097,30 @@ async fn stdio_session(
     let mut stdin = child.stdin.take().ok_or(AgentMcpError::Transport)?;
     let stdout = child.stdout.take().ok_or(AgentMcpError::Transport)?;
     let mut stdout = BufReader::new(stdout);
-    write_stdio_frame(&mut stdin, 1, "initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"June","version":"1"}})).await?;
+    write_stdio_frame(&mut stdin, 1, "initialize", initialize_params()).await?;
     read_stdio_response(&mut stdout, server.safety.max_output_bytes, 1).await?;
     write_stdio_notification(&mut stdin, "notifications/initialized", json!({})).await?;
-    write_stdio_frame(&mut stdin, id, method, params).await?;
-    let response = read_stdio_response(&mut stdout, server.safety.max_output_bytes, id).await?;
-    let _ = child.kill().await;
-    Ok(response)
+    Ok(StdioMcpSession {
+        child,
+        stdin,
+        stdout,
+    })
+}
+
+impl StdioMcpSession {
+    async fn request(
+        &mut self,
+        id: u64,
+        method: &str,
+        params: Value,
+        max_output_bytes: usize,
+    ) -> Result<Value, AgentMcpError> {
+        if self.child.id().is_none() {
+            return Err(AgentMcpError::Transport);
+        }
+        write_stdio_frame(&mut self.stdin, id, method, params).await?;
+        read_stdio_response(&mut self.stdout, max_output_bytes, id).await
+    }
 }
 
 async fn write_stdio_frame(
@@ -1033,6 +1178,11 @@ async fn read_stdio_response<R: tokio::io::AsyncRead + Unpin>(
         let Ok(candidate) = serde_json::from_slice::<Value>(&raw) else {
             return Err(AgentMcpError::Protocol);
         };
+        if candidate.get("method").and_then(Value::as_str) == Some("elicitation/create")
+            && candidate.get("id").is_some()
+        {
+            return Err(AgentMcpError::ElicitationUnsupported);
+        }
         if candidate.get("id").and_then(Value::as_u64) != Some(id) {
             continue;
         }
@@ -1050,13 +1200,10 @@ async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
 ) -> Result<Vec<u8>, AgentMcpError> {
     let mut output = Vec::new();
     loop {
-        let byte = reader.read_u8().await.map_err(|error| {
-            if error.kind() == io::ErrorKind::UnexpectedEof {
-                AgentMcpError::Protocol
-            } else {
-                AgentMcpError::Transport
-            }
-        })?;
+        let byte = reader
+            .read_u8()
+            .await
+            .map_err(|_| AgentMcpError::Transport)?;
         if byte == b'\n' {
             return Ok(output);
         }
@@ -1067,18 +1214,24 @@ async fn read_bounded_line<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
-async fn http_session(
+async fn start_http_session(
     server: &McpServerDefinition,
     secrets: &McpSecretBundle,
-    id: u64,
-    method: &str,
-    params: Value,
-) -> Result<Value, AgentMcpError> {
+) -> Result<HttpMcpSession, AgentMcpError> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| AgentMcpError::Transport)?;
-    let (_, session_id) = http_post(&client, server, secrets, None, 1, "initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"June","version":"1"}})).await?;
+    let (_, session_id) = http_post(
+        &client,
+        server,
+        secrets,
+        None,
+        1,
+        "initialize",
+        initialize_params(),
+    )
+    .await?;
     http_notify(
         &client,
         server,
@@ -1088,17 +1241,87 @@ async fn http_session(
         json!({}),
     )
     .await?;
-    http_post(
-        &client,
-        server,
-        secrets,
-        session_id.as_deref(),
-        id,
-        method,
-        params,
-    )
-    .await
-    .map(|(value, _)| value)
+    Ok(HttpMcpSession { client, session_id })
+}
+
+impl HttpMcpSession {
+    async fn request(
+        &mut self,
+        server: &McpServerDefinition,
+        secrets: &McpSecretBundle,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, AgentMcpError> {
+        let (value, session_id) = http_post(
+            &self.client,
+            server,
+            secrets,
+            self.session_id.as_deref(),
+            id,
+            method,
+            params,
+        )
+        .await?;
+        if session_id.is_some() {
+            self.session_id = session_id;
+        }
+        Ok(value)
+    }
+}
+
+fn initialize_params() -> Value {
+    json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "June", "version": "1"}
+    })
+}
+
+impl McpSessionSlot {
+    async fn close(&mut self) {
+        if let Some(PersistentMcpTransport::Stdio(session)) = self.transport.as_mut() {
+            let _ = session.child.kill().await;
+            let _ = session.child.wait().await;
+        }
+        self.transport = None;
+    }
+}
+
+pub async fn shutdown_sessions() {
+    let Some(sessions) = MCP_SESSIONS.get() else {
+        return;
+    };
+    let drained = {
+        let mut sessions = sessions.lock().await;
+        sessions
+            .drain()
+            .map(|(_, session)| session)
+            .collect::<Vec<_>>()
+    };
+    for session in drained {
+        session.lock().await.close().await;
+    }
+}
+
+pub(crate) async fn retire_server_sessions(server_id: &str) {
+    let Some(sessions) = MCP_SESSIONS.get() else {
+        return;
+    };
+    let retired = {
+        let mut sessions = sessions.lock().await;
+        let keys = sessions
+            .keys()
+            .filter(|key| key.starts_with(&format!("{server_id}:")))
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| sessions.remove(&key))
+            .collect::<Vec<_>>()
+    };
+    for session in retired {
+        session.lock().await.close().await;
+    }
 }
 
 async fn http_notify(
@@ -1114,7 +1337,7 @@ async fn http_notify(
         .post(url)
         .header("accept", "application/json, text/event-stream")
         .header("content-type", "application/json")
-        .header("mcp-protocol-version", "2025-06-18");
+        .header("mcp-protocol-version", MCP_PROTOCOL_VERSION);
     for (key, value) in &secrets.headers {
         request = request.header(key, value);
     }
@@ -1147,7 +1370,7 @@ async fn http_post(
         .post(url)
         .header("accept", "application/json, text/event-stream")
         .header("content-type", "application/json")
-        .header("mcp-protocol-version", "2025-06-18");
+        .header("mcp-protocol-version", MCP_PROTOCOL_VERSION);
     for (key, value) in &secrets.headers {
         request = request.header(key, value);
     }
@@ -1178,25 +1401,52 @@ async fn http_post(
             return Err(AgentMcpError::OutputTooLarge);
         }
         bytes.extend_from_slice(&chunk);
+        if contains_elicitation_request(&bytes) {
+            return Err(AgentMcpError::ElicitationUnsupported);
+        }
     }
     Ok((parse_mcp_response(&bytes, id)?, session_id))
 }
 
-fn parse_mcp_response(bytes: &[u8], id: u64) -> Result<Value, AgentMcpError> {
-    let raw = std::str::from_utf8(bytes).map_err(|_| AgentMcpError::Protocol)?;
-    let candidate: Value = serde_json::from_str(raw)
+fn contains_elicitation_request(bytes: &[u8]) -> bool {
+    let Ok(raw) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    serde_json::from_str(raw)
         .ok()
-        .or_else(|| {
+        .into_iter()
+        .chain(
             raw.lines()
                 .filter_map(|line| line.strip_prefix("data:"))
                 .map(str::trim)
-                .find_map(|data| serde_json::from_str(data).ok())
+                .filter_map(|data| serde_json::from_str(data).ok()),
+        )
+        .any(|candidate: Value| {
+            candidate.get("method").and_then(Value::as_str) == Some("elicitation/create")
+                && candidate.get("id").is_some()
         })
-        .ok_or(AgentMcpError::Protocol)?;
-    if candidate.get("id").and_then(Value::as_u64) != Some(id) || candidate.get("error").is_some() {
-        return Err(AgentMcpError::Protocol);
+}
+
+fn parse_mcp_response(bytes: &[u8], id: u64) -> Result<Value, AgentMcpError> {
+    let raw = std::str::from_utf8(bytes).map_err(|_| AgentMcpError::Protocol)?;
+    let candidates = serde_json::from_str(raw)
+        .ok()
+        .into_iter()
+        .chain(
+            raw.lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(str::trim)
+                .filter_map(|data| serde_json::from_str(data).ok()),
+        )
+        .collect::<Vec<Value>>();
+    if contains_elicitation_request(bytes) {
+        return Err(AgentMcpError::ElicitationUnsupported);
     }
-    Ok(candidate)
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.get("id").and_then(Value::as_u64) == Some(id))
+        .filter(|candidate| candidate.get("error").is_none())
+        .ok_or(AgentMcpError::Protocol)
 }
 
 /// Identifiers for existing Rust-owned connector clients. These are intentionally
@@ -1406,6 +1656,7 @@ pub async fn update_agent_mcp_server(
         }
         return Err(app_error(error));
     }
+    retire_server_sessions(&id).await;
     Ok(definition)
 }
 
@@ -1416,6 +1667,7 @@ pub async fn delete_agent_mcp_server(
 ) -> Result<(), crate::domain::types::AppError> {
     let repository = command_repository(&app).await.map_err(app_error)?;
     let deleted = repository.delete(&server_id).await.map_err(app_error)?;
+    retire_server_sessions(&server_id).await;
     if let Some(secret_ref) = deleted.secret_ref.as_deref() {
         // A failed cleanup leaves an unreachable keychain entry, never a
         // plaintext secret or a live duplicate registration.
@@ -1851,6 +2103,298 @@ mod tests {
         let mut reader = BufReader::new(reader);
         let response = read_stdio_response(&mut reader, 1024, 3).await.unwrap();
         assert_eq!(response["result"]["tools"], json!([]));
+    }
+    #[tokio::test]
+    async fn stdio_session_preserves_server_state_across_discovery_and_calls() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("stateful-mcp.sh");
+            std::fs::write(
+                &script,
+                r#"#!/bin/sh
+count=0
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stateful","version":"1"}}}\n' "$id"
+      ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"increment","description":"Increment","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id"
+      ;;
+    *'"method":"tools/call"'*)
+      count=$((count + 1))
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}],"count":%s}}\n' "$id" "$count" "$count"
+      ;;
+  esac
+done
+"#,
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&script, permissions).unwrap();
+
+            let mut server = McpServerDefinition::new(
+                format!("stateful-{}", Uuid::new_v4()),
+                McpTransport::Stdio,
+            );
+            server.command = Some(script.to_string_lossy().into_owned());
+            let secrets = McpSecretBundle::default();
+
+            let tools = discover_server(&server, &secrets, None).await.unwrap();
+            assert_eq!(tools[0].name, "increment");
+            let first = call_server(&server, &secrets, "increment", json!({}), None)
+                .await
+                .unwrap();
+            let second = call_server(&server, &secrets, "increment", json!({}), None)
+                .await
+                .unwrap();
+
+            assert_eq!(first["count"], 1);
+            assert_eq!(second["count"], 2);
+            retire_server_sessions(&server.id).await;
+        }
+    }
+    #[tokio::test]
+    async fn http_session_reuses_one_initialized_server_session() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let initialize_count = Arc::new(AtomicUsize::new(0));
+        let tool_count = Arc::new(AtomicUsize::new(0));
+        let initialize_count_server = initialize_count.clone();
+        let tool_count_server = tool_count.clone();
+        let server_task = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    let Some(headers_end) =
+                        request.windows(4).position(|window| window == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..headers_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= headers_end + 4 + content_length {
+                        break;
+                    }
+                }
+                let body_start = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                let frame: Value = serde_json::from_slice(&request[body_start..]).unwrap();
+                let method = frame
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let response = match method {
+                    "initialize" => {
+                        initialize_count_server.fetch_add(1, Ordering::SeqCst);
+                        Some(
+                            json!({"jsonrpc":"2.0","id":frame["id"],"result":{"protocolVersion":MCP_PROTOCOL_VERSION,"capabilities":{},"serverInfo":{"name":"stateful-http","version":"1"}}}),
+                        )
+                    }
+                    "tools/list" => Some(
+                        json!({"jsonrpc":"2.0","id":frame["id"],"result":{"tools":[{"name":"increment","description":"Increment","inputSchema":{"type":"object","properties":{}}}]}}),
+                    ),
+                    "tools/call" => {
+                        let count = tool_count_server.fetch_add(1, Ordering::SeqCst) + 1;
+                        Some(
+                            json!({"jsonrpc":"2.0","id":frame["id"],"result":{"content":[{"type":"text","text":count.to_string()}],"count":count}}),
+                        )
+                    }
+                    _ => None,
+                };
+                let (status, body) = response.map_or_else(
+                    || ("202 Accepted", String::new()),
+                    |value| ("200 OK", value.to_string()),
+                );
+                let headers = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nmcp-session-id: stable-session\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(headers.as_bytes()).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
+            }
+        });
+
+        let mut server = McpServerDefinition::new(
+            format!("http-{}", Uuid::new_v4()),
+            McpTransport::StreamableHttp,
+        );
+        server.url = Some(format!("http://{address}/mcp"));
+        let secrets = McpSecretBundle::default();
+        discover_server(&server, &secrets, None).await.unwrap();
+        let first = call_server(&server, &secrets, "increment", json!({}), None)
+            .await
+            .unwrap();
+        let second = call_server(&server, &secrets, "increment", json!({}), None)
+            .await
+            .unwrap();
+
+        assert_eq!(first["count"], 1);
+        assert_eq!(second["count"], 2);
+        assert_eq!(initialize_count.load(Ordering::SeqCst), 1);
+        retire_server_sessions(&server.id).await;
+        server_task.abort();
+    }
+    #[tokio::test]
+    async fn stdio_session_reconnects_once_after_server_exit_and_retires_cleanly() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("restarting-mcp.sh");
+            let generations = directory.path().join("generations");
+            std::fs::write(
+                &script,
+                r#"#!/bin/sh
+generations="$1"
+generation=0
+if [ -f "$generations" ]; then generation=$(cat "$generations"); fi
+generation=$((generation + 1))
+printf '%s' "$generation" > "$generations"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"restarting","version":"1"}}}\n' "$id"
+      ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"instance","description":"Instance","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id"
+      ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"generation":%s,"pid":%s}}\n' "$id" "$generation" "$$"
+      exit 0
+      ;;
+  esac
+done
+"#,
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&script, permissions).unwrap();
+
+            let mut server = McpServerDefinition::new(
+                format!("restarting-{}", Uuid::new_v4()),
+                McpTransport::Stdio,
+            );
+            server.command = Some(script.to_string_lossy().into_owned());
+            server.args = vec![generations.to_string_lossy().into_owned()];
+            let secrets = McpSecretBundle::default();
+
+            discover_server(&server, &secrets, None).await.unwrap();
+            let first = call_server(&server, &secrets, "instance", json!({}), None)
+                .await
+                .unwrap();
+            let second = call_server(&server, &secrets, "instance", json!({}), None)
+                .await
+                .unwrap();
+
+            assert_eq!(first["generation"], 1);
+            assert_eq!(second["generation"], 2);
+            retire_server_sessions(&server.id).await;
+            assert_eq!(std::fs::read_to_string(generations).unwrap(), "2");
+        }
+    }
+    #[tokio::test]
+    async fn timed_out_stdio_request_retires_the_poisoned_session() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = tempfile::tempdir().unwrap();
+            let script = directory.path().join("hanging-mcp.sh");
+            std::fs::write(
+                &script,
+                r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"hanging","version":"1"}}}\n' "$id"
+      ;;
+  esac
+done
+"#,
+            )
+            .unwrap();
+            let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&script, permissions).unwrap();
+
+            let mut server = McpServerDefinition::new(
+                format!("hanging-{}", Uuid::new_v4()),
+                McpTransport::Stdio,
+            );
+            server.command = Some(script.to_string_lossy().into_owned());
+            server.safety.timeout_ms = 250;
+            let key = session_key(&server, None);
+
+            assert!(matches!(
+                session_request(
+                    &server,
+                    &McpSecretBundle::default(),
+                    "tools/call",
+                    json!({"name":"hang","arguments":{}}),
+                    None
+                )
+                .await,
+                Err(AgentMcpError::TimedOut)
+            ));
+            assert!(!MCP_SESSIONS.get().unwrap().lock().await.contains_key(&key));
+        }
+    }
+    #[tokio::test]
+    async fn elicitation_is_detected_instead_of_silently_dropped() {
+        let (mut writer, reader) = tokio::io::duplex(1024);
+        tokio::spawn(async move {
+            writer
+                .write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":\"question-1\",\"method\":\"elicitation/create\",\"params\":{\"message\":\"Choose a project\"}}\n",
+                )
+                .await
+                .unwrap();
+        });
+        let mut reader = BufReader::new(reader);
+        assert!(matches!(
+            read_stdio_response(&mut reader, 1024, 3).await,
+            Err(AgentMcpError::ElicitationUnsupported)
+        ));
+        assert!(contains_elicitation_request(
+            b"event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"question-2\",\"method\":\"elicitation/create\",\"params\":{\"message\":\"Choose\"}}\n\n"
+        ));
     }
     #[test]
     fn mapping_is_stable_visibility_aware_and_duplicate_free() {

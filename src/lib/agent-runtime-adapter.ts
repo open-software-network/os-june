@@ -117,15 +117,21 @@ export function applyAgentRuntimeEvent(
       break;
     }
     case "interruption.requested":
-      next.items = upsertItem(next.items, {
-        id: event.data.itemId,
-        sessionId: event.sessionId,
-        runId: event.runId,
-        sequence: event.sequence,
-        createdAt: event.data.interruption.createdAt,
-        kind: "interruption",
-        interruption: event.data.interruption,
-      });
+      next.items = upsertItem(
+        next.items.filter(
+          (item) =>
+            item.kind !== "interruption" || item.interruption.id !== event.data.interruption.id,
+        ),
+        {
+          id: event.data.itemId,
+          sessionId: event.sessionId,
+          runId: event.runId,
+          sequence: event.sequence,
+          createdAt: event.data.interruption.createdAt,
+          kind: "interruption",
+          interruption: event.data.interruption,
+        },
+      );
       if (next.run) next.run = { ...next.run, status: "waiting_for_user" };
       break;
     case "usage.updated":

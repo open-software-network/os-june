@@ -203,6 +203,48 @@ describe("agent runtime adapter", () => {
     ]);
   });
 
+  it("replaces a replayed interruption by stable interruption id", () => {
+    const interruption: AgentRuntimeEvent = {
+      ...frame,
+      eventId: "event-interruption-first",
+      sequence: 1,
+      method: "interruption.requested",
+      data: {
+        itemId: "item-interruption-first",
+        interruption: {
+          id: "approval-stable",
+          kind: "approval",
+          sessionId: "session-1",
+          runId: "run-1",
+          status: "pending",
+          createdAt: "2026-07-22T12:00:02Z",
+          toolName: "write_file",
+          title: "File change requested",
+          description: "June wants to update the project.",
+          allowAlways: true,
+        },
+      },
+    };
+
+    let projection = applyAgentRuntimeEvent(createAgentRuntimeProjection(), interruption);
+    projection = applyAgentRuntimeEvent(projection, {
+      ...interruption,
+      eventId: "event-interruption-replayed",
+      sequence: 2,
+      data: {
+        ...interruption.data,
+        itemId: "item-interruption-replayed",
+      },
+    });
+
+    expect(projection.items).toHaveLength(1);
+    expect(projection.items[0]).toMatchObject({
+      id: "item-interruption-replayed",
+      kind: "interruption",
+      interruption: { id: "approval-stable" },
+    });
+  });
+
   it("replaces a running tool card with its persisted result", () => {
     const started: AgentRuntimeEvent = {
       ...frame,

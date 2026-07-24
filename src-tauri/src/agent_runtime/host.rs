@@ -151,6 +151,7 @@ impl AgentRuntimeHost {
     }
 
     pub async fn shutdown(&self) {
+        crate::agent_mcp::shutdown_sessions().await;
         let mut guard = self.inner.lock().await;
         let Some(mut runtime) = guard.take() else {
             return;
