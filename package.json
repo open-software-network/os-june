@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p extension"
   },
   "dependencies": {
-    "@react-three/drei": "^9",
+    "@react-three/drei": "^10",
     "@react-three/fiber": "^8",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-autostart": "^2.5.1",
