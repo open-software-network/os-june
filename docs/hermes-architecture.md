@@ -41,10 +41,19 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
 
 ## Submit flow
 
-1. Composer text → `AgentWorkspace.submit`.
+1. Agent Workspace or Note Chat captures the surface-specific prompt,
+   Send-time model target, attachments, and optimistic presentation state.
 2. `ensureHermesGateway(unrestricted?)` picks/creates a `HermesGatewayClient`
-   from `gatewaysRef` — **one gateway per write-mode**.
-3. `gateway.request("session.create")` returns **both** a `stored_session_id`
+   from `gatewaysRef` - **one gateway per write-mode**.
+3. Both surfaces call `submitHermesRun`
+   (`src/lib/hermes-run-submission.ts`). The shared module owns the ordered run
+   protocol: idle-safe Gateway preflight, create/resume resolution, explicit
+   profile assignment, the stored-session FIFO, thinking/model application,
+   attachments, optional attended-run lease begin, one `prompt.submit`, and
+   the monitoring handoff. Surface adapters supply their legitimate
+   differences; Note Chat stays sandboxed and does not open a Computer use run
+   lease.
+4. `gateway.request("session.create")` returns **both** a `stored_session_id`
    (June's persistent id) and a `session_id` (the live runtime id);
    `ensureHermesBridgeSession` persists the mapping. An explicit request to use
    Computer use also carries `enabled_toolsets: ["june_computer_use"]`.
@@ -60,16 +69,16 @@ classified events into `AgentChatTurn` / `AgentChatPart[]` for rendering.
    sessions until a slash command is actually dispatched. Named profiles retain
    their independent tool policy and do not accept the default profile's narrow
    scope.
-4. If the session has a queued model choice, June applies it to the idle live
+5. If the session has a queued model choice, June applies it to the idle live
    session with `config.set` before submitting anything. A failed switch blocks
    the send and leaves the choice queued.
-5. Images are attached by asking Rust to validate and snapshot the source into
+6. Images are attached by asking Rust to validate and snapshot the source into
    a session-scoped workspace directory, then passing that local path through
    `image.attach`. Image bytes never cross the JS bridge or Hermes WebSocket on
    this path. `image.attach_bytes` remains an additive fallback for callers
    without a gateway-local path; neither path stores bytes in state, traces, or
    artifacts.
-6. `gateway.request("prompt.submit")` (ack-style) → live `event` frames →
+7. `gateway.request("prompt.submit")` (ack-style) → live `event` frames →
    `classifyHermesEvent` → `agent-chat-runtime` builds turns → React renders.
 
 ## Key concepts

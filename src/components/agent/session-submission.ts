@@ -12,11 +12,9 @@ import { toolsetsForComputerUseAgentRun } from "../../lib/computer-use-agent-run
 import { messageFromError } from "../../lib/errors";
 import { titleFromPrompt } from "../../lib/hermes-adapter";
 import { hasHermesActiveSessionSnapshotSubscribers } from "../../lib/hermes-active-session-snapshots";
-import { createHermesMethods, hermesModeFor } from "../../lib/hermes-control-plane";
 import { isSessionBusyError } from "../../lib/hermes-gateway";
-import { createHermesIdleSubmitGateway } from "../../lib/hermes-idle-submit-recovery";
 import { pendingImageAttachments } from "../../lib/hermes-image-attach";
-import { applySessionModelWhenIdle } from "../../lib/hermes-next-prompt-model";
+import { submitHermesRun } from "../../lib/hermes-run-submission";
 import {
   type HermesSessionDispatchReservation,
   reserveHermesSessionDispatch,
@@ -41,7 +39,6 @@ import {
 import { rememberSessionThinkingLevel, thinkingEffortForLevel } from "../../lib/thinking-level";
 import { AUTO_MODEL_ID } from "../settings/ModelPickerDialog";
 import type { PendingIssueReport } from "./agent-session-continuity";
-import type { HermesRuntimeSessionResponse } from "./agent-session-continuity";
 import type { AgentAttachment } from "./agent-workspace-models";
 import { unsupportedImageInputPrompt } from "./composer/composer-input-helpers";
 import {
@@ -284,6 +281,26 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
             ...(targetSessionModelId ? { model: targetSessionModelId } : {}),
           });
     let storedSessionIdForRollback: string | undefined;
+    let pendingUserMessage: HermesSessionMessage | undefined;
+    let promptStageStarted = false;
+    let preparedProjectContextSignature: string | null | undefined;
+    let scopedAgentRunToolsets = agentRunToolsets;
+    let createdSessionModelId: string | undefined;
+    const sessionDisplayTitle = fallbackSessionTitle;
+    const queuedIssueReport = options?.issueReport;
+    if (queuedIssueReport && targetStoredSessionId) {
+      queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
+    }
+    const clearQueuedIssueReport = () => {
+      const storedSessionId = storedSessionIdForRollback;
+      if (
+        storedSessionId &&
+        queuedIssueReport &&
+        pendingIssueReportsRef.current.get(storedSessionId) === queuedIssueReport
+      ) {
+        pendingIssueReportsRef.current.delete(storedSessionId);
+      }
+    };
     const rollbackOptimisticBeforePrompt = (err: unknown): never => {
       dispatchReservation?.cancel();
       if (optimisticSession) {
@@ -296,493 +313,439 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
     // the mode its session was created with. Without this, one Unrestricted
     // session would leave the runtime unsandboxed under every other
     // session's follow-ups.
-    const { created, createdUnderProfile, submitGateway, sessionTitle, storedSessionId } =
-      await (async () => {
-        const [nextGateway] = await Promise.all([
-          ensureHermesGateway(submitFullMode),
-          // Re-read the sticky active profile for every brand-new session so an
-          // out-of-band switch (Hermes CLI, upstream dashboard) is honored
-          // without a workspace remount. Runs in parallel with gateway setup
-          // (no added wall-clock) and never throws; the store keeps the
-          // last-known value on failure. Both runtimes share one Hermes home,
-          // so the value is mode-independent.
-          targetStoredSessionId
-            ? Promise.resolve()
-            : refreshActiveHermesProfile({
-                mode: fullModeDraftRef.current ? "unrestricted" : "sandboxed",
-              }),
-        ]);
-        const nextUnderProfileName = targetStoredSessionId
-          ? undefined
-          : getActiveHermesProfileName();
-        const underProfile =
-          nextUnderProfileName !== undefined && nextUnderProfileName !== "default";
-        const submitGateway = createHermesIdleSubmitGateway({
-          fullMode: submitFullMode,
-          gateway: nextGateway,
-          shouldProbeFirstRequest: () => !hasHermesActiveSessionSnapshotSubscribers(submitFullMode),
-          reconnect: () => ensureHermesGateway(submitFullMode),
-        });
-        const nextCreated = targetStoredSessionId
-          ? undefined
-          : await createHermesMethods(submitGateway).createSession<HermesRuntimeSessionResponse>({
-              title: fallbackSessionTitle,
-              cols: 96,
-              // session.create treats `model` as a per-session override.
-              // Under a named profile the override would silently bypass the
-              // profile's own configured text model - the point of profiles -
-              // so it is omitted and the profile's model applies. The
-              // thinking level's reasoning_effort follows the same rule.
-              ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
-              ...(!underProfile
-                ? { reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) }
-                : {}),
-              ...(underProfile ? { profile: nextUnderProfileName } : {}),
-              ...(agentRunToolsets && !underProfile ? { enabledToolsets: agentRunToolsets } : {}),
-            });
-        const nextStoredSessionId =
-          targetStoredSessionId ?? nextCreated?.stored_session_id ?? nextCreated?.session_id;
-        if (!nextStoredSessionId) {
-          throw new Error("Hermes did not create a session.");
-        }
-        return {
-          created: nextCreated,
-          createdUnderProfile: underProfile ? nextUnderProfileName : undefined,
-          submitGateway,
-          sessionTitle: fallbackSessionTitle,
-          storedSessionId: nextStoredSessionId,
-        };
-      })().catch(rollbackOptimisticBeforePrompt);
-    storedSessionIdForRollback = storedSessionId;
-    if (created) {
-      clearBackgroundSessionTitleGuard(storedSessionId);
-    }
-    if (createdUnderProfile) {
-      await assignSessionToProfile(storedSessionId, createdUnderProfile).catch(
-        rollbackOptimisticBeforePrompt,
-      );
-      profileOwnedSessionIdsRef.current.add(storedSessionId);
-    }
-    const scopedAgentRunToolsets =
-      createdUnderProfile || profileOwnedSessionIdsRef.current.has(storedSessionId)
-        ? null
-        : agentRunToolsets;
-    const createdSessionModelId = createdUnderProfile ? undefined : targetSessionModelId;
-    const activeDispatchReservation =
-      dispatchReservation ?? reserveHermesSessionDispatch(storedSessionId);
-    dispatchReservation = activeDispatchReservation;
-    // Once session.create returns, this Send's captured target is no longer a
-    // provisional "new session". If a later attach or prompt step fails after
-    // the user has started another draft, recovery can now retain the original
-    // message as an Up next item on the durable session.
-    if (!modelTarget.targetStoredSessionId) {
-      modelTarget.targetStoredSessionId = storedSessionId;
-    }
-    if (created && !createdUnderProfile) {
-      // Record the new session's level as its own (persisted, so a relaunch
-      // still shows this chat at its level), and mark its runtime as already
-      // at it: the create pinned this effort, so the re-assert path must not
-      // fire a redundant config.set on the session's first turns. Skipped
-      // under a named profile, where the profile's own config applies.
-      const createdLevel = thinkingLevelRef.current;
-      sessionThinkingEffortsRef.current = {
-        ...sessionThinkingEfforts(),
-        [storedSessionId]: createdLevel,
-      };
-      rememberSessionThinkingLevel(storedSessionId, createdLevel);
-      sessionThinkingAppliedRef.current = {
-        ...sessionThinkingAppliedRef.current,
-        [storedSessionId]: {
-          runtimeId: created.session_id ?? "",
-          effort: thinkingEffortForLevel(createdLevel),
-        },
-      };
-    }
-    const queuedIssueReport = options?.issueReport;
-    if (queuedIssueReport && targetStoredSessionId) {
-      queuedIssueReport.diagnosisStartedAt = new Date().toISOString();
-    }
-    const clearQueuedIssueReport = () => {
-      if (
-        queuedIssueReport &&
-        pendingIssueReportsRef.current.get(storedSessionId) === queuedIssueReport
-      ) {
-        pendingIssueReportsRef.current.delete(storedSessionId);
-      }
-    };
-    if (options?.issueReport) {
-      pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
-    }
-    if (!targetStoredSessionId) {
-      rememberSessionMode(storedSessionId, fullModeDraftRef.current);
-    }
-    const sessionDisplayTitle = sessionTitle;
-    const ensureStoredHermesSession = () =>
-      ensureHermesBridgeSession({
-        sessionId: storedSessionId,
-        ...(!targetStoredSessionId ? { title: sessionDisplayTitle } : {}),
-        ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
-      });
-    if (optimisticSession) {
-      await ensureStoredHermesSession().catch(rollbackOptimisticBeforePrompt);
-      migrateOptimisticHermesSession({
-        clearModel: Boolean(createdUnderProfile),
-        createdAt: optimisticSession.createdAt,
-        displayContent,
-        fromSessionId: optimisticSession.id,
-        ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
-        title: sessionDisplayTitle,
-        toSessionId: storedSessionId,
-      });
-    }
-    if (initialTitleSuggestionPromise) {
-      void applyInitialSessionTitleSuggestion(storedSessionId, initialTitleSuggestionPromise);
-    }
-    if (!targetStoredSessionId && !options?.skipPrompt && !createdUnderProfile) {
-      const latestDefaultSelection: SessionModelSelection = {
-        modelId: defaultGenerationModelIdRef.current,
-        ...(defaultGenerationModelIdRef.current === AUTO_MODEL_ID &&
-        generationCostQualityRef.current !== undefined
-          ? { costQuality: generationCostQualityRef.current }
-          : {}),
-      };
-      const defaultChangedAfterSend =
-        modelTarget.globalIntentRevision !== generationSelectionIntentRevisionRef.current &&
-        latestDefaultSelection.modelId &&
-        !sameSessionModelSelection(latestDefaultSelection, targetSessionModelSelection);
-      if (defaultChangedAfterSend && !sessionModelSelectionsRef.current[storedSessionId]) {
-        commitSessionModelSelections(
-          stageSessionModelSelection(storedSessionId, latestDefaultSelection),
-        );
-      }
-      // session.create already fixed the live route to the Send-time snapshot.
-      // Preserve any newer staged picker choice while recording that actual
-      // live route separately.
-      commitSessionModelSelections(
-        rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
-      );
-    }
-    if (!optimisticSession) {
-      await withTimeout(ensureStoredHermesSession(), 2500).catch(() => undefined);
-    }
-    let runtimeSessionId: string | undefined;
+    const [gateway] = await Promise.all([
+      ensureHermesGateway(submitFullMode),
+      // Re-read the sticky active profile for every brand-new session so an
+      // out-of-band switch is honored without a workspace remount. Both
+      // runtimes share one Hermes home, so the value is mode-independent.
+      targetStoredSessionId
+        ? Promise.resolve()
+        : refreshActiveHermesProfile({
+            mode: submitFullMode ? "unrestricted" : "sandboxed",
+          }),
+    ]).catch(rollbackOptimisticBeforePrompt);
+    const nextUnderProfileName = targetStoredSessionId ? undefined : getActiveHermesProfileName();
+    const underProfile = nextUnderProfileName !== undefined && nextUnderProfileName !== "default";
+
     try {
-      runtimeSessionId =
-        created?.session_id ??
-        runtimeSessionIdsRef.current[storedSessionId] ??
-        (
-          await submitGateway.request<HermesRuntimeSessionResponse>("session.resume", {
-            session_id: storedSessionId,
-            cols: 96,
-          })
-        ).session_id;
-    } catch (err) {
-      activeDispatchReservation.cancel();
-      clearQueuedIssueReport();
-      if (optimisticSession) {
-        removeOptimisticHermesSession(optimisticSession.id, storedSessionIdForRollback);
-      }
-      throw err;
-    }
-    if (!runtimeSessionId) {
-      clearQueuedIssueReport();
-      rollbackOptimisticBeforePrompt(new Error("Hermes did not resume the session."));
-    }
-    // A thinking level picked while this session's runtime was down (or a
-    // live retune that failed) re-asserts here, before the prompt, so the
-    // turn runs at the level the control shows. No-op when the current
-    // runtime is already known to be at it (see applyThinkingLevelToSession).
-    const thinkingSessionLevel = sessionThinkingEfforts()[storedSessionId];
-    if (thinkingSessionLevel) {
-      await applyThinkingLevelToSession(
-        storedSessionId,
-        thinkingSessionLevel,
-        runtimeSessionId,
-        submitGateway,
-      );
-    }
-    const dispatchPreparedSession = async (): Promise<string | undefined> => {
-      // Re-read after acquiring the cross-surface lock. NoteChat may have sent
-      // this same stored session and changed its live model after this Send was
-      // captured; if so, restore the captured route before accepting the prompt.
-      const currentModelEntry = readSessionModelSelections()[storedSessionId];
-      const currentStoredModelId = currentModelEntry?.appliedSelection
-        ? hermesModelIdForSelection(currentModelEntry.appliedSelection)
-        : undefined;
-      const mustApplyCapturedModel =
-        !options?.skipPrompt &&
-        (shouldApplySessionModel ||
-          activeDispatchReservation.queuedBehindPrior ||
-          (Boolean(targetStoredSessionId) &&
-            currentStoredModelId !== undefined &&
-            currentStoredModelId !== targetSessionModelId));
-      if (mustApplyCapturedModel) {
-        try {
-          await applySessionModelWhenIdle(() =>
-            createHermesMethods(submitGateway).switchActiveSessionModel({
-              mode: hermesModeFor(storedSessionId),
-              sessionId: runtimeSessionId,
-              model: targetSessionModelId,
-            }),
-          );
-        } catch (err) {
-          clearQueuedIssueReport();
-          rollbackOptimisticBeforePrompt(err);
-        }
-        if (targetSessionModelRevision !== undefined) {
-          commitSessionModelSelections(
-            markSessionModelSelectionApplied(
-              storedSessionId,
-              targetSessionModelRevision,
-              targetSessionModelSelection,
-            ),
-          );
-        } else {
-          commitSessionModelSelections(
-            rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
-          );
-        }
-        const applyModel = (sessions: HermesSessionInfo[]) =>
-          sessions.map((session) =>
-            session.id === storedSessionId ? { ...session, model: targetSessionModelId } : session,
-          );
-        hermesSessionItemsRef.current = applyModel(hermesSessionItemsRef.current);
-        setHermesSessionItems((current) => applyModel(current));
-      }
-      if (!imageInputFallbackContent) {
-        // Feature 19: send any imported images to the session through the
-        // structured image attach flow before the prompt, so the model/tools see
-        // them as first-class inputs (not just a path mentioned in prose) and an
-        // image-edit prompt names a concrete source. A failed attach throws here,
-        // which the submit() catch turns into a restored composer the user can
-        // retry — the prompt is NOT sent with a silently-missing image.
-        try {
-          const updatedAttachments = await attachPendingImages(
-            submitGateway,
-            runtimeSessionId,
-            storedSessionId,
-            agentRunAttachments,
-          );
-          options?.onAttachmentsUpdated?.(updatedAttachments);
-        } catch (err) {
-          clearQueuedIssueReport();
-          rollbackOptimisticBeforePrompt(err);
-        }
-      }
-      const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
-      setRuntimeSessionIds((current) => ({
-        ...current,
-        [storedSessionId]: runtimeSessionId,
-      }));
-      if (!optimisticSession) {
-        if (!targetStoredSessionId && options?.skipPrompt) {
-          // Media commands do not have a provisional stored session id to receive a
-          // picker change while session.create/ensure/resume is in flight. Keep
-          // the Send-time model on the media agent run, then take one final snapshot
-          // of the new-session default immediately before the stored session
-          // becomes active. From that point onward the picker stages changes
-          // directly against the stored id.
-          const latestDefaultSelection: SessionModelSelection = {
-            modelId: defaultGenerationModelIdRef.current,
-            ...(defaultGenerationModelIdRef.current === AUTO_MODEL_ID &&
-            generationCostQualityRef.current !== undefined
-              ? { costQuality: generationCostQualityRef.current }
-              : {}),
-          };
-          const defaultChangedAfterSend =
-            modelTarget.globalIntentRevision !== generationSelectionIntentRevisionRef.current &&
-            latestDefaultSelection.modelId &&
-            !sameSessionModelSelection(latestDefaultSelection, targetSessionModelSelection);
-          if (defaultChangedAfterSend) {
-            commitSessionModelSelections(
-              stageSessionModelSelection(storedSessionId, latestDefaultSelection),
-            );
-          }
-          commitSessionModelSelections(
-            rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
-          );
-        }
-        if (options?.selectSession !== false) {
-          newSessionModeRef.current = false;
-          setNewSessionMode(false);
-          selectedHermesSessionIdRef.current = storedSessionId;
-          setSelectedHermesSessionId(storedSessionId);
-          setSelectedTaskId(undefined);
-        }
-        const optimisticSessionItem: HermesSessionInfo = {
-          id: storedSessionId,
-          title: sessionDisplayTitle,
-          preview: displayContent,
-          started_at: createdAt,
-          last_active: createdAt,
-          message_count: 1,
-          ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
-        };
-        setHermesSessionItems((current) => {
-          const existingSession = current.find((session) => session.id === storedSessionId);
-          if (existingSession) {
-            const mergedSession: HermesSessionInfo = targetStoredSessionId
-              ? {
-                  ...existingSession,
-                  title: existingSession.title?.trim()
-                    ? existingSession.title
-                    : sessionDisplayTitle,
-                  preview: displayContent,
-                  last_active: createdAt,
-                  message_count:
-                    typeof existingSession.message_count === "number"
-                      ? existingSession.message_count + 1
-                      : optimisticSessionItem.message_count,
-                  ...(targetSessionModelId && !existingSession.model?.trim()
-                    ? { model: targetSessionModelId }
+      const runResult = await submitHermesRun<string>({
+        fullMode: submitFullMode,
+        gateway,
+        reconnectGateway: () => ensureHermesGateway(submitFullMode),
+        shouldProbeFirstRequest: () => !hasHermesActiveSessionSnapshotSubscribers(submitFullMode),
+        storedSessionId: targetStoredSessionId,
+        runtimeSessionId: targetStoredSessionId
+          ? runtimeSessionIdsRef.current[targetStoredSessionId]
+          : undefined,
+        dispatchReservation,
+        ...(!targetStoredSessionId
+          ? {
+              createSession: () => ({
+                params: {
+                  title: sessionDisplayTitle,
+                  cols: 96,
+                  // A named profile owns its text model and reasoning effort.
+                  ...(targetSessionModelId && !underProfile ? { model: targetSessionModelId } : {}),
+                  ...(!underProfile
+                    ? { reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) }
                     : {}),
-                }
-              : { ...existingSession, ...optimisticSessionItem };
-            return current.map((session) =>
-              session.id === storedSessionId ? mergedSession : session,
+                  ...(underProfile && nextUnderProfileName
+                    ? { profile: nextUnderProfileName }
+                    : {}),
+                  ...(agentRunToolsets && !underProfile
+                    ? { enabledToolsets: agentRunToolsets }
+                    : {}),
+                },
+                ...(underProfile && nextUnderProfileName
+                  ? {
+                      profileAssignment: {
+                        profile: nextUnderProfileName,
+                        assign: assignSessionToProfile,
+                      },
+                    }
+                  : {}),
+              }),
+            }
+          : {}),
+        onSessionCreated: ({ dispatchReservation: activeReservation, storedSessionId }) => {
+          storedSessionIdForRollback = storedSessionId;
+          dispatchReservation = activeReservation;
+          clearBackgroundSessionTitleGuard(storedSessionId);
+        },
+        onSessionResolved: async ({
+          created,
+          createdUnderProfile,
+          dispatchReservation: activeReservation,
+          storedSessionId,
+        }) => {
+          storedSessionIdForRollback = storedSessionId;
+          dispatchReservation = activeReservation;
+          if (createdUnderProfile) {
+            profileOwnedSessionIdsRef.current.add(storedSessionId);
+          }
+          scopedAgentRunToolsets =
+            createdUnderProfile || profileOwnedSessionIdsRef.current.has(storedSessionId)
+              ? null
+              : agentRunToolsets;
+          createdSessionModelId = createdUnderProfile ? undefined : targetSessionModelId;
+          // The provisional new-session target becomes durable as soon as
+          // session.create resolves, so later recovery stays on this session.
+          if (!modelTarget.targetStoredSessionId) {
+            modelTarget.targetStoredSessionId = storedSessionId;
+          }
+          if (created && !createdUnderProfile) {
+            const createdLevel = thinkingLevelRef.current;
+            sessionThinkingEffortsRef.current = {
+              ...sessionThinkingEfforts(),
+              [storedSessionId]: createdLevel,
+            };
+            rememberSessionThinkingLevel(storedSessionId, createdLevel);
+            sessionThinkingAppliedRef.current = {
+              ...sessionThinkingAppliedRef.current,
+              [storedSessionId]: {
+                runtimeId: created.session_id ?? "",
+                effort: thinkingEffortForLevel(createdLevel),
+              },
+            };
+          }
+          if (queuedIssueReport) {
+            pendingIssueReportsRef.current.set(storedSessionId, queuedIssueReport);
+          }
+          if (!targetStoredSessionId) {
+            rememberSessionMode(storedSessionId, fullModeDraftRef.current);
+          }
+          const ensureStoredHermesSession = () =>
+            ensureHermesBridgeSession({
+              sessionId: storedSessionId,
+              ...(!targetStoredSessionId ? { title: sessionDisplayTitle } : {}),
+              ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
+            });
+          if (optimisticSession) {
+            await ensureStoredHermesSession().catch(rollbackOptimisticBeforePrompt);
+            migrateOptimisticHermesSession({
+              clearModel: Boolean(createdUnderProfile),
+              createdAt: optimisticSession.createdAt,
+              displayContent,
+              fromSessionId: optimisticSession.id,
+              ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
+              title: sessionDisplayTitle,
+              toSessionId: storedSessionId,
+            });
+          }
+          if (initialTitleSuggestionPromise) {
+            void applyInitialSessionTitleSuggestion(storedSessionId, initialTitleSuggestionPromise);
+          }
+          if (!targetStoredSessionId && !options?.skipPrompt && !createdUnderProfile) {
+            const latestDefaultSelection: SessionModelSelection = {
+              modelId: defaultGenerationModelIdRef.current,
+              ...(defaultGenerationModelIdRef.current === AUTO_MODEL_ID &&
+              generationCostQualityRef.current !== undefined
+                ? { costQuality: generationCostQualityRef.current }
+                : {}),
+            };
+            const defaultChangedAfterSend =
+              modelTarget.globalIntentRevision !== generationSelectionIntentRevisionRef.current &&
+              latestDefaultSelection.modelId &&
+              !sameSessionModelSelection(latestDefaultSelection, targetSessionModelSelection);
+            if (defaultChangedAfterSend && !sessionModelSelectionsRef.current[storedSessionId]) {
+              commitSessionModelSelections(
+                stageSessionModelSelection(storedSessionId, latestDefaultSelection),
+              );
+            }
+            commitSessionModelSelections(
+              rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
             );
           }
-          return [optimisticSessionItem, ...current];
-        });
-      }
-      const pendingUserMessage: HermesSessionMessage = {
-        id: optimisticSession?.userMessage.id ?? `pending:user:${Date.now()}`,
-        role: "user",
-        content: displayContent,
-        timestamp: createdAt,
-      };
-      if (!optimisticSession && !options?.skipPrompt) {
-        setPendingHermesMessages((current) => {
-          const next = {
+          if (!optimisticSession) {
+            await withTimeout(ensureStoredHermesSession(), 2500).catch(() => undefined);
+          }
+        },
+        applyThinkingLevel: async ({ runtimeSessionId, storedSessionId, submitGateway }) => {
+          // Re-assert a stored level only at this ordered run boundary.
+          const thinkingSessionLevel = sessionThinkingEfforts()[storedSessionId];
+          if (thinkingSessionLevel) {
+            await applyThinkingLevelToSession(
+              storedSessionId,
+              thinkingSessionLevel,
+              runtimeSessionId,
+              submitGateway,
+            );
+          }
+        },
+        model: {
+          mode: submitFullMode ? "unrestricted" : "sandboxed",
+          modelId: targetSessionModelId,
+          shouldApply: ({ dispatchReservation: activeReservation, storedSessionId }) => {
+            // Re-read under the cross-surface FIFO because Note Chat may have
+            // changed the live model after this Send captured its target.
+            const currentModelEntry = readSessionModelSelections()[storedSessionId];
+            const currentStoredModelId = currentModelEntry?.appliedSelection
+              ? hermesModelIdForSelection(currentModelEntry.appliedSelection)
+              : undefined;
+            return (
+              !options?.skipPrompt &&
+              (shouldApplySessionModel ||
+                activeReservation.queuedBehindPrior ||
+                (Boolean(targetStoredSessionId) &&
+                  currentStoredModelId !== undefined &&
+                  currentStoredModelId !== targetSessionModelId))
+            );
+          },
+          onApplied: ({ storedSessionId }) => {
+            if (targetSessionModelRevision !== undefined) {
+              commitSessionModelSelections(
+                markSessionModelSelectionApplied(
+                  storedSessionId,
+                  targetSessionModelRevision,
+                  targetSessionModelSelection,
+                ),
+              );
+            } else {
+              commitSessionModelSelections(
+                rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
+              );
+            }
+            const applyModel = (sessions: HermesSessionInfo[]) =>
+              sessions.map((session) =>
+                session.id === storedSessionId
+                  ? { ...session, model: targetSessionModelId }
+                  : session,
+              );
+            hermesSessionItemsRef.current = applyModel(hermesSessionItemsRef.current);
+            setHermesSessionItems((current) => applyModel(current));
+          },
+        },
+        attach: async ({ runtimeSessionId, storedSessionId, submitGateway }) => {
+          if (imageInputFallbackContent) return;
+          try {
+            const updatedAttachments = await attachPendingImages(
+              submitGateway,
+              runtimeSessionId,
+              storedSessionId,
+              agentRunAttachments,
+            );
+            options?.onAttachmentsUpdated?.(updatedAttachments);
+          } catch (err) {
+            clearQueuedIssueReport();
+            rollbackOptimisticBeforePrompt(err);
+          }
+        },
+        preparePrompt: ({ runtimeSessionId, storedSessionId }) => {
+          const createdAt = optimisticSession?.createdAt ?? new Date().toISOString();
+          setRuntimeSessionIds((current) => ({
             ...current,
-            [storedSessionId]: [...(current[storedSessionId] ?? []), pendingUserMessage],
+            [storedSessionId]: runtimeSessionId,
+          }));
+          if (!optimisticSession) {
+            if (!targetStoredSessionId && options?.skipPrompt) {
+              const latestDefaultSelection: SessionModelSelection = {
+                modelId: defaultGenerationModelIdRef.current,
+                ...(defaultGenerationModelIdRef.current === AUTO_MODEL_ID &&
+                generationCostQualityRef.current !== undefined
+                  ? { costQuality: generationCostQualityRef.current }
+                  : {}),
+              };
+              const defaultChangedAfterSend =
+                modelTarget.globalIntentRevision !== generationSelectionIntentRevisionRef.current &&
+                latestDefaultSelection.modelId &&
+                !sameSessionModelSelection(latestDefaultSelection, targetSessionModelSelection);
+              if (defaultChangedAfterSend) {
+                commitSessionModelSelections(
+                  stageSessionModelSelection(storedSessionId, latestDefaultSelection),
+                );
+              }
+              commitSessionModelSelections(
+                rememberAppliedSessionModelSelection(storedSessionId, targetSessionModelSelection),
+              );
+            }
+            if (options?.selectSession !== false) {
+              newSessionModeRef.current = false;
+              setNewSessionMode(false);
+              selectedHermesSessionIdRef.current = storedSessionId;
+              setSelectedHermesSessionId(storedSessionId);
+              setSelectedTaskId(undefined);
+            }
+            const optimisticSessionItem: HermesSessionInfo = {
+              id: storedSessionId,
+              title: sessionDisplayTitle,
+              preview: displayContent,
+              started_at: createdAt,
+              last_active: createdAt,
+              message_count: 1,
+              ...(createdSessionModelId ? { model: createdSessionModelId } : {}),
+            };
+            setHermesSessionItems((current) => {
+              const existingSession = current.find((session) => session.id === storedSessionId);
+              if (existingSession) {
+                const mergedSession: HermesSessionInfo = targetStoredSessionId
+                  ? {
+                      ...existingSession,
+                      title: existingSession.title?.trim()
+                        ? existingSession.title
+                        : sessionDisplayTitle,
+                      preview: displayContent,
+                      last_active: createdAt,
+                      message_count:
+                        typeof existingSession.message_count === "number"
+                          ? existingSession.message_count + 1
+                          : optimisticSessionItem.message_count,
+                      ...(targetSessionModelId && !existingSession.model?.trim()
+                        ? { model: targetSessionModelId }
+                        : {}),
+                    }
+                  : { ...existingSession, ...optimisticSessionItem };
+                return current.map((session) =>
+                  session.id === storedSessionId ? mergedSession : session,
+                );
+              }
+              return [optimisticSessionItem, ...current];
+            });
+          }
+          pendingUserMessage = {
+            id: optimisticSession?.userMessage.id ?? `pending:user:${Date.now()}`,
+            role: "user",
+            content: displayContent,
+            timestamp: createdAt,
           };
-          pendingHermesMessagesRef.current = next;
-          return next;
-        });
+          if (!optimisticSession && !options?.skipPrompt) {
+            setPendingHermesMessages((current) => {
+              const next = {
+                ...current,
+                [storedSessionId]: [
+                  ...(current[storedSessionId] ?? []),
+                  pendingUserMessage as HermesSessionMessage,
+                ],
+              };
+              pendingHermesMessagesRef.current = next;
+              return next;
+            });
+          }
+          // `/image` creates/selects the session and presents the user bubble
+          // without starting an agent run.
+          if (options?.skipPrompt) return undefined;
+          promptStageStarted = true;
+          recordSessionRunningActivity(storedSessionId);
+          dispatchAgentSessionStatus({
+            sessionId: storedSessionId,
+            title: sessionDisplayTitle,
+            prompt: displayContent,
+            status: "running",
+            summary: "June is working.",
+          });
+          const targetProjectContext = explicitSession
+            ? resolveSessionProjectContext?.(storedSessionId)
+            : submittedProjectContext;
+          const preparedProjectPrompt = prepareProjectPrompt(
+            promptSubmitContent,
+            targetProjectContext,
+            projectContextSignaturesBySessionId.get(storedSessionId),
+          );
+          preparedProjectContextSignature = preparedProjectPrompt.contextSignature;
+          return {
+            text: preparedProjectPrompt.text,
+            ...(scopedAgentRunToolsets ? { enabledToolsets: scopedAgentRunToolsets } : {}),
+          };
+        },
+        runLease: {
+          begin: async ({ storedSessionId }) => {
+            const runLeaseId = `${storedSessionId}:${crypto.randomUUID()}`;
+            await computerUseBeginRun(runLeaseId);
+            try {
+              rememberComputerUseRun(storedSessionId, runLeaseId);
+              return runLeaseId;
+            } catch (err) {
+              await releaseComputerUseRun(storedSessionId, runLeaseId);
+              throw err;
+            }
+          },
+          release: ({ storedSessionId }, runLeaseId) =>
+            releaseComputerUseRun(storedSessionId, runLeaseId),
+        },
+        beforePrompt: (
+          { runtimeSessionId, storedSessionId, submitGateway },
+          prompt,
+          computerUseRunLeaseId,
+        ) => {
+          attachHermesSessionEventListener({
+            gateway: submitGateway.currentGateway(),
+            runtimeSessionId,
+            sessionDisplayTitle,
+            storedSessionId,
+            computerUseRunLeaseId,
+          });
+          hermesTraceBuffer.recordOutbound({
+            sessionId: storedSessionId,
+            method: "prompt.submit",
+            params: { session_id: runtimeSessionId, text: prompt.text },
+          });
+        },
+        afterPromptAcknowledged: async ({ runtimeSessionId, storedSessionId }) => {
+          startAgentRunMonitoring({
+            storedSessionId,
+            runtimeSessionId,
+            title: sessionDisplayTitle,
+            fullMode: sessionUnrestricted(storedSessionId),
+            settlementHeld: true,
+          });
+          if (preparedProjectContextSignature !== undefined) {
+            projectContextSignaturesBySessionId.set(
+              storedSessionId,
+              preparedProjectContextSignature,
+            );
+          }
+          clearHeldFastPathImages(storedSessionId, heldFastPathImages);
+          markStoredVideoSlashContextsSent(
+            storedSessionId,
+            heldVideoContexts.map((videoContext) => videoContext.id),
+          );
+          await loadHermesSessions({
+            suppressStartupRequestError: !hermesSessionsHydratedRef.current,
+          });
+        },
+      });
+
+      // Ignore postAcknowledgementError only because loadHermesSessions swallows wire errors and every other post-ack op is non-throwing; surface it like Note Chat if that changes.
+      return options?.skipPrompt ? runResult.storedSessionId : undefined;
+    } catch (err) {
+      clearQueuedIssueReport();
+      const storedSessionId = storedSessionIdForRollback;
+      if (!promptStageStarted || !storedSessionId || !pendingUserMessage) {
+        if (optimisticSession) {
+          removeOptimisticHermesSession(optimisticSession.id, storedSessionId);
+        }
+        throw err;
       }
-      // `/image`: the session exists and the user bubble is shown — hand the id
-      // back and let the caller render the generated image. No prompt.submit, so
-      // the model is never called and no "working" loader competes with the
-      // image's own in-thread loader.
-      if (options?.skipPrompt) return storedSessionId;
-      recordSessionRunningActivity(storedSessionId);
+
+      hermesTraceBuffer.recordError({
+        sessionId: storedSessionId,
+        method: "prompt.submit",
+        message: messageFromError(err),
+      });
+      setPendingHermesMessages((current) => {
+        const next = {
+          ...current,
+          [storedSessionId]: (current[storedSessionId] ?? []).filter(
+            (message) => message.id !== pendingUserMessage?.id,
+          ),
+        };
+        pendingHermesMessagesRef.current = next;
+        return next;
+      });
+      if (isSessionBusyError(err)) {
+        // The prior agent run still owns the session. Keep its listener and
+        // working state; callers translate this into the composer notice.
+        throw err;
+      }
+      sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
+      recordSessionErrorActivity(storedSessionId, messageFromError(err));
       dispatchAgentSessionStatus({
         sessionId: storedSessionId,
         title: sessionDisplayTitle,
-        prompt: displayContent,
-        status: "running",
-        summary: "June is working.",
+        status: "failed",
+        summary: messageFromError(err),
       });
-      const computerUseRunLeaseId = `${storedSessionId}:${crypto.randomUUID()}`;
-      let computerUseRunStarted = false;
-      try {
-        const targetProjectContext = explicitSession
-          ? resolveSessionProjectContext?.(storedSessionId)
-          : submittedProjectContext;
-        const preparedProjectPrompt = prepareProjectPrompt(
-          promptSubmitContent,
-          targetProjectContext,
-          projectContextSignaturesBySessionId.get(storedSessionId),
-        );
-        await computerUseBeginRun(computerUseRunLeaseId);
-        computerUseRunStarted = true;
-        rememberComputerUseRun(storedSessionId, computerUseRunLeaseId);
-        attachHermesSessionEventListener({
-          gateway: submitGateway.currentGateway(),
-          runtimeSessionId,
-          sessionDisplayTitle,
-          storedSessionId,
-          computerUseRunLeaseId,
-        });
-        // Feature 15: record the outbound prompt.submit in the trace buffer. Its
-        // params are sanitized before storage (the text is the user's own prompt,
-        // kept; any secret-like value would be masked). This is the primary
-        // outbound call from this surface; other RPCs go direct via
-        // gateway.request and are not yet traced (see feature 15 notes).
-        hermesTraceBuffer.recordOutbound({
-          sessionId: storedSessionId,
-          method: "prompt.submit",
-          params: { session_id: runtimeSessionId, text: preparedProjectPrompt.text },
-        });
-        await createHermesMethods(submitGateway).submitPrompt({
-          sessionId: runtimeSessionId,
-          text: preparedProjectPrompt.text,
-          ...(scopedAgentRunToolsets ? { enabledToolsets: scopedAgentRunToolsets } : {}),
-        });
-        startAgentRunMonitoring({
-          storedSessionId,
-          runtimeSessionId,
-          title: sessionDisplayTitle,
-          fullMode: sessionUnrestricted(storedSessionId),
-          settlementHeld: true,
-        });
-        projectContextSignaturesBySessionId.set(
-          storedSessionId,
-          preparedProjectPrompt.contextSignature,
-        );
-        // JUN-171 (Phase A): the held fast-path images have now ridden along
-        // with a successful follow-up prompt, either as structured image bytes or
-        // in the non-vision path fallback. Clear only after prompt.submit accepts
-        // the message, so a rejected submit can be retried with the same image
-        // context.
-        clearHeldFastPathImages(storedSessionId, heldFastPathImages);
-        // Same contract for the video fold: clear only after prompt.submit
-        // accepts, so a rejected submit retries with the same video context.
-        markStoredVideoSlashContextsSent(
-          storedSessionId,
-          heldVideoContexts.map((videoContext) => videoContext.id),
-        );
-        await loadHermesSessions({
-          suppressStartupRequestError: !hermesSessionsHydratedRef.current,
-        });
-      } catch (err) {
-        if (computerUseRunStarted) {
-          await releaseComputerUseRun(storedSessionId, computerUseRunLeaseId);
-        }
-        // Record the rejection so the trace panel shows failed outbound calls
-        // alongside the inbound stream. messageFromError yields a user-safe string.
-        hermesTraceBuffer.recordError({
-          sessionId: storedSessionId,
-          method: "prompt.submit",
-          message: messageFromError(err),
-        });
-        // A queued report must not outlive its failed prompt; submit() re-arms
-        // issue-report mode so the retry can queue it again.
-        clearQueuedIssueReport();
-        // The prompt never entered the session, so its optimistic bubble must
-        // not linger — a retained pending message renders below every later
-        // persisted message and reads as a send June ignored.
-        setPendingHermesMessages((current) => {
-          const next = {
-            ...current,
-            [storedSessionId]: (current[storedSessionId] ?? []).filter(
-              (message) => message.id !== pendingUserMessage.id,
-            ),
-          };
-          pendingHermesMessagesRef.current = next;
-          return next;
-        });
-        if (isSessionBusyError(err)) {
-          // The gateway rejected this prompt because the previous agent run is still
-          // running — the session itself is healthy, so keep the listener and
-          // working state. Callers translate this into the composer notice.
-          throw err;
-        }
-        sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
-        recordSessionErrorActivity(storedSessionId, messageFromError(err));
-        dispatchAgentSessionStatus({
-          sessionId: storedSessionId,
-          title: sessionDisplayTitle,
-          status: "failed",
-          summary: messageFromError(err),
-        });
-        throw err;
-      }
-      return undefined;
-    };
-
-    return activeDispatchReservation.run(dispatchPreparedSession);
+      throw err;
+    }
   }
 
   return submitHermesSession;
