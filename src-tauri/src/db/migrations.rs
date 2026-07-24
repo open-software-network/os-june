@@ -206,8 +206,8 @@ const FOLDER_LOCAL_PATH_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
 // databases; folders.profile precedes local_path when fresh but follows it when
 // upgraded. All access must name columns explicitly; never rely on cid order,
 // positional decoding, or SELECT *. The integration guard in
-// tests/sql_query_guards.rs enforces the unqualified star-select rule for both
-// affected tables.
+// tests/sql_query_guards.rs enforces the projection star-select rule for both
+// affected tables, including qualified stars.
 const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 1,

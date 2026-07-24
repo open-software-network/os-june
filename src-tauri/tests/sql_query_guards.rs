@@ -6,7 +6,7 @@ use std::{
 const COLUMN_ORDER_DIVERGENT_TABLES: &[&str] = &["transcripts", "folders"];
 
 #[test]
-fn column_order_divergent_tables_never_use_unqualified_star_selects() {
+fn column_order_divergent_tables_never_use_projection_star_selects() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut source_files = Vec::new();
     collect_source_files(&source_root, &mut source_files);
@@ -18,9 +18,9 @@ fn column_order_divergent_tables_never_use_unqualified_star_selects() {
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         let tokens = sql_tokens(&source);
         for table in COLUMN_ORDER_DIVERGENT_TABLES {
-            if has_unqualified_star_select(&tokens, table) {
+            if has_projection_star_select_from_table(&tokens, table) {
                 let relative_path = path.strip_prefix(&source_root).unwrap_or(&path).display();
-                violations.push(format!("{relative_path}: SELECT * FROM {table}"));
+                violations.push(format!("{relative_path}: projection star from {table}"));
             }
         }
     }
@@ -34,12 +34,31 @@ fn column_order_divergent_tables_never_use_unqualified_star_selects() {
 }
 
 #[test]
-fn star_select_guard_is_case_and_whitespace_insensitive() {
-    let tokens = sql_tokens("SeLeCt\n  *\tFROM\ntranscripts");
-    assert!(has_unqualified_star_select(&tokens, "transcripts"));
+fn star_select_guard_detects_projection_star_shapes() {
+    for (query, table) in [
+        ("SeLeCt\n  *\tFROM\ntranscripts", "transcripts"),
+        ("SELECT t.* FROM transcripts t", "transcripts"),
+        ("SELECT transcripts.* FROM transcripts", "transcripts"),
+        ("SELECT *, extra FROM folders", "folders"),
+    ] {
+        let tokens = sql_tokens(query);
+        assert!(
+            has_projection_star_select_from_table(&tokens, table),
+            "star projection should be rejected: {query}"
+        );
+    }
 
     let tokens = sql_tokens("SELECT id, text FROM transcripts");
-    assert!(!has_unqualified_star_select(&tokens, "transcripts"));
+    assert!(!has_projection_star_select_from_table(
+        &tokens,
+        "transcripts"
+    ));
+
+    let tokens = sql_tokens("SELECT COUNT(*) AS count FROM transcripts");
+    assert!(!has_projection_star_select_from_table(
+        &tokens,
+        "transcripts"
+    ));
 }
 
 fn collect_source_files(directory: &Path, files: &mut Vec<PathBuf>) {
@@ -71,8 +90,8 @@ fn sql_tokens(source: &str) -> Vec<String> {
         if !word.is_empty() {
             tokens.push(std::mem::take(&mut word));
         }
-        if character == '*' {
-            tokens.push("*".to_string());
+        if matches!(character, '*' | '(' | ')' | '.' | ';') {
+            tokens.push(character.to_string());
         }
     }
     if !word.is_empty() {
@@ -81,8 +100,40 @@ fn sql_tokens(source: &str) -> Vec<String> {
     tokens
 }
 
-fn has_unqualified_star_select(tokens: &[String], table: &str) -> bool {
-    tokens.windows(4).any(|window| {
-        window[0] == "select" && window[1] == "*" && window[2] == "from" && window[3] == table
-    })
+fn has_projection_star_select_from_table(tokens: &[String], table: &str) -> bool {
+    for select_index in tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| (token == "select").then_some(index))
+    {
+        let mut parenthesis_depth = 0_u32;
+        let mut has_projection_star = false;
+        for (index, token) in tokens.iter().enumerate().skip(select_index + 1) {
+            match token.as_str() {
+                "(" => parenthesis_depth += 1,
+                ")" if parenthesis_depth == 0 => break,
+                ")" => parenthesis_depth -= 1,
+                "*" if parenthesis_depth == 0 => has_projection_star = true,
+                "from" if parenthesis_depth == 0 => {
+                    if has_projection_star && from_targets_table(tokens, index, table) {
+                        return true;
+                    }
+                    break;
+                }
+                "select" | ";" if parenthesis_depth == 0 => break,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+fn from_targets_table(tokens: &[String], from_index: usize, table: &str) -> bool {
+    tokens
+        .get(from_index + 1)
+        .is_some_and(|token| token == table)
+        || (tokens.get(from_index + 2).is_some_and(|token| token == ".")
+            && tokens
+                .get(from_index + 3)
+                .is_some_and(|token| token == table))
 }
