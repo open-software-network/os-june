@@ -36,9 +36,12 @@ pub mod updates;
 pub mod video_download_url;
 
 use serde::Deserialize;
-use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use std::sync::OnceLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
@@ -83,6 +86,19 @@ struct RegisteredRecordingPresenceBounds {
 
 #[derive(Default)]
 struct RecordingPresenceBoundsState(Mutex<Option<RegisteredRecordingPresenceBounds>>);
+
+#[derive(Default)]
+struct AfterFirstPaintStartup {
+    scheduled: AtomicBool,
+}
+
+impl AfterFirstPaintStartup {
+    fn try_schedule(&self) -> bool {
+        self.scheduled
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+}
 
 #[cfg(target_os = "macos")]
 static MAIN_WINDOW_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -164,6 +180,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             theme_icon::set_dock_icon,
             print_current_webview,
+            start_after_first_paint,
             commands::bootstrap_app,
             commands::experimental_flags_get,
             commands::experimental_flags_set,
@@ -412,6 +429,7 @@ pub fn run() {
             updates::relaunch_for_update,
         ])
         .manage(RecordingPresenceBoundsState::default())
+        .manage(AfterFirstPaintStartup::default())
         .manage(note_save_flush::NoteSaveFlushState::default())
         .manage(hermes_bridge::HermesBridge::default())
         .manage(computer_use::ComputerUseState::default())
@@ -421,7 +439,6 @@ pub fn run() {
         .manage(connectors::ConnectFlow::default())
         .manage(connectors::NotionConnectFlow::default())
         .setup(|app| {
-            browser::setup_on_app_start();
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             experimental_settings::setup(app)?;
@@ -520,7 +537,9 @@ fn single_instance_enabled_for_build(debug_assertions: bool, force_dev: bool) ->
 
 #[cfg(all(test, desktop))]
 mod tests {
-    use super::{should_emit_close_tab_event, single_instance_enabled_for_build};
+    use super::{
+        should_emit_close_tab_event, single_instance_enabled_for_build, AfterFirstPaintStartup,
+    };
 
     #[test]
     fn single_instance_is_disabled_for_dev_builds_by_default() {
@@ -542,6 +561,14 @@ mod tests {
         assert!(should_emit_close_tab_event(Some(true)));
         assert!(!should_emit_close_tab_event(Some(false)));
         assert!(!should_emit_close_tab_event(None));
+    }
+
+    #[test]
+    fn after_first_paint_startup_is_scheduled_once() {
+        let startup = AfterFirstPaintStartup::default();
+
+        assert!(startup.try_schedule());
+        assert!(!startup.try_schedule());
     }
 }
 
@@ -706,6 +733,40 @@ fn main_window_focus_state(app: &tauri::AppHandle) -> Option<bool> {
 
 fn should_emit_close_tab_event(main_window_focused: Option<bool>) -> bool {
     main_window_focused == Some(true)
+}
+
+/// Moves process/helper startup behind the renderer's first visible frame. The
+/// command returns as soon as the worker is scheduled; each owned subsystem
+/// keeps its own one-time or shutdown-aware guard.
+#[tauri::command]
+fn start_after_first_paint(app: tauri::AppHandle, state: tauri::State<'_, AfterFirstPaintStartup>) {
+    if !state.try_schedule() {
+        return;
+    }
+    let worker_app = app.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("june-after-first-paint".to_string())
+        .spawn(move || {
+            if !worker_app
+                .state::<shutdown::ShutdownCoordinator>()
+                .is_idle()
+            {
+                return;
+            }
+            browser::setup_on_app_start();
+            if worker_app
+                .state::<shutdown::ShutdownCoordinator>()
+                .is_idle()
+            {
+                dictation::start_helper_after_first_paint(&worker_app);
+            }
+        })
+    {
+        app.state::<AfterFirstPaintStartup>()
+            .scheduled
+            .store(false, Ordering::SeqCst);
+        tracing::warn!(%error, "could not schedule after-first-paint startup");
+    }
 }
 
 #[tauri::command]

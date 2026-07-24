@@ -13,14 +13,20 @@ use std::future::Future;
 #[cfg(test)]
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Once;
+
+static STARTUP_PROFILE_SWEEP: Once = Once::new();
 
 /// Boxed future used by the injectable resolver seam.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Reaps profiles left by a crashed prior run before managed sessions can
-/// start in this app process.
+/// start in this app process. The renderer normally starts this after its first
+/// paint; [`launcher::EphemeralProfile::create`] calls the same one-time gate
+/// so an unusually early automatic routine waits for cleanup instead of racing
+/// it.
 pub(crate) fn setup_on_app_start() {
-    launcher::sweep_profiles_root();
+    STARTUP_PROFILE_SWEEP.call_once(launcher::sweep_profiles_root);
 }
 
 #[cfg(test)]

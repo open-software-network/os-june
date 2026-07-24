@@ -145,6 +145,7 @@ Per-repo config the engineering skills read before acting (see the
 - [qa/agent-driven-integration.md](qa/agent-driven-integration.md) — QA strategy (3 layers, skill-first agent-driven)
 - [qa/computer-use-parity.md](qa/computer-use-parity.md) - JUN-278 parity, stricter safety differences, evidence map, and signed/manual release matrix
 - [qa/jun-334-note-transcription-latency.md](qa/jun-334-note-transcription-latency.md) — measured baseline and proof for note transcription latency
+- [qa/jun-391-paint-first.md](qa/jun-391-paint-first.md) - launch boundary tradeoff, experimental flag audit, and controlled time-to-first-frame evidence
 - `qa/feature-user-stories.tsv` — story → code → test traceability matrix
 - `qa/agent-e2e-qa-runs/` — dated end-to-end QA run logs
 

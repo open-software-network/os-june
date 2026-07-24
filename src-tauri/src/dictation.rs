@@ -97,6 +97,9 @@ pub struct HelperState {
     /// Set only on intentional teardown (app quit / [`stop_helper`]) so the
     /// supervisor can tell a deliberate stop from a crash and skip respawning.
     shutting_down: AtomicBool,
+    /// Collapses repeated first-paint signals into one potentially blocking
+    /// orphan sweep and helper spawn.
+    initial_start_in_flight: AtomicBool,
     /// Consecutive rapid respawn attempts, used to cap a crash loop. Reset once
     /// a respawned helper survives long enough to be considered healthy.
     respawn_failures: AtomicU32,
@@ -108,6 +111,7 @@ impl Default for HelperState {
             process: Mutex::new(None),
             composer_registration: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
+            initial_start_in_flight: AtomicBool::new(false),
             respawn_failures: AtomicU32::new(0),
         }
     }
@@ -846,39 +850,9 @@ pub fn setup(app: &mut tauri::App) {
         controller: Mutex::new(ShortcutActivationController::default()),
     });
 
-    // Install state before spawning so a helper that exits immediately can be
-    // observed by its stdout supervisor instead of disappearing during setup.
+    // Install every command/shutdown-owned state synchronously. The helper
+    // itself starts only after the renderer's first paint.
     app.manage(HelperState::default());
-    let helper_started = match spawn_helper(app.handle()) {
-        Ok(helper) => {
-            let helper_state = app.state::<HelperState>();
-            matches!(
-                store_respawned_helper(&helper_state, helper),
-                StoreRespawnedHelper::Stored
-            )
-        }
-        Err(error) => {
-            tracing::warn!(
-                error = %error.message,
-                "failed to start dictation helper during setup; retrying in background"
-            );
-            false
-        }
-    };
-
-    if helper_started {
-        let settings = app.state::<DictationSettingsState>();
-        let helper_state = app.state::<HelperState>();
-        let settings = settings
-            .settings
-            .lock()
-            .ok()
-            .map(|settings| settings.clone());
-        if let Some(settings) = settings {
-            let _ = apply_microphone_setting(&helper_state, &settings.microphone);
-            let _ = apply_shortcut_settings(&helper_state, &settings);
-        }
-    }
 
     let settings = app
         .state::<DictationSettingsState>()
@@ -887,20 +861,74 @@ pub fn setup(app: &mut tauri::App) {
         .map(|settings| settings.clone())
         .unwrap_or_default();
     let helper_expected = cfg!(any(target_os = "macos", target_os = "windows"));
-    let event = if helper_started || !helper_expected {
-        initial_hotkey_event(&settings)
-    } else {
+    let event = if helper_expected {
         helper_unavailable_event("restarting", "Dictation is starting.")
+    } else {
+        initial_hotkey_event(&settings)
     };
     app.manage(HotkeyStatus {
         event: Mutex::new(event.clone()),
     });
     let _ = app.emit("dictation-event", event.to_string());
+}
 
-    if helper_expected && !helper_started {
-        let app_handle = app.handle().clone();
-        thread::spawn(move || supervise_initial_helper_start(&app_handle));
+struct InitialHelperStartInProgress<'a>(&'a AtomicBool);
+
+impl<'a> InitialHelperStartInProgress<'a> {
+    fn try_begin(in_flight: &'a AtomicBool) -> Option<Self> {
+        in_flight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            .then_some(Self(in_flight))
     }
+}
+
+impl Drop for InitialHelperStartInProgress<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Starts the persistent dictation helper from a native background thread
+/// after the renderer's first paint. Shutdown owns the terminal
+/// `shutting_down` bit; both the initial store and every retry honor it so a
+/// late startup can never resurrect the helper during teardown.
+pub(crate) fn start_helper_after_first_paint(app: &AppHandle) {
+    if !cfg!(any(target_os = "macos", target_os = "windows")) {
+        return;
+    }
+    let Some(state) = app.try_state::<HelperState>() else {
+        return;
+    };
+    let Some(_start_in_progress) =
+        InitialHelperStartInProgress::try_begin(&state.initial_start_in_flight)
+    else {
+        return;
+    };
+    if state.shutting_down.load(Ordering::SeqCst)
+        || state.process.lock().is_ok_and(|process| process.is_some())
+    {
+        return;
+    }
+
+    match spawn_helper(app) {
+        Ok(helper) => match store_respawned_helper(&state, helper) {
+            StoreRespawnedHelper::Stored => {
+                reapply_helper_settings(app);
+                return;
+            }
+            StoreRespawnedHelper::ExitedBeforeStore => {}
+            StoreRespawnedHelper::Abandoned => return,
+        },
+        Err(error) => {
+            tracing::warn!(
+                error = %error.message,
+                "failed to start dictation helper after first paint; retrying"
+            );
+        }
+    }
+
+    supervise_initial_helper_start(app);
 }
 
 #[tauri::command]
@@ -3477,8 +3505,8 @@ fn send_helper_shutdown_nonblocking(mut stdin: ChildStdin) {
 }
 
 /// Re-applies the persisted microphone and shortcut settings to a just-respawned
-/// helper and re-arms the hotkey, mirroring the one-time wiring in [`setup`]. The
-/// hotkey-ready event also clears the "dictation restarting" notice in the UI.
+/// helper and re-arms the hotkey. The hotkey-ready event also clears the
+/// "dictation restarting" notice in the UI.
 fn reapply_helper_settings(app: &AppHandle) {
     let Some(helper_state) = app.try_state::<HelperState>() else {
         return;
@@ -5943,6 +5971,18 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_helper_start_is_single_flight_and_reopens_after_completion() {
+        let in_flight = AtomicBool::new(false);
+        let first = InitialHelperStartInProgress::try_begin(&in_flight)
+            .expect("first helper start acquires the flight");
+
+        assert!(InitialHelperStartInProgress::try_begin(&in_flight).is_none());
+
+        drop(first);
+        assert!(InitialHelperStartInProgress::try_begin(&in_flight).is_some());
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
