@@ -73,10 +73,6 @@ impl PricingTable {
         self.read_models().contains_key(model_id)
     }
 
-    pub fn model(&self, model_id: &str) -> Option<ModelPriceConfig> {
-        self.read_models().get(model_id).cloned()
-    }
-
     pub fn is_venice_model(&self, model_id: &str) -> bool {
         self.read_models()
             .get(model_id)
@@ -92,33 +88,29 @@ impl PricingTable {
     }
 
     pub fn ensure_model_kind(&self, model_id: &str, kind: ModelKind) -> Result<(), PricingError> {
+        self.priced_model(model_id, kind).map(drop)
+    }
+
+    pub fn priced_model(
+        &self,
+        model_id: &str,
+        kind: ModelKind,
+    ) -> Result<ModelPriceConfig, PricingError> {
         let models = self.read_models();
         let model = models.get(model_id).ok_or(PricingError::NotPriced)?;
-        if !model_type_matches_kind(model.model_type, kind) {
-            return Err(PricingError::WrongUnit);
-        }
-        match kind {
-            ModelKind::Asr => {
-                if model.unit != PriceUnit::Seconds {
-                    return Err(PricingError::WrongUnit);
-                }
-                model
-                    .credits_per_million_seconds
-                    .ok_or(PricingError::MissingRate)?;
-            }
-            ModelKind::Text => {
-                if model.unit != PriceUnit::Tokens {
-                    return Err(PricingError::WrongUnit);
-                }
-                model
-                    .input_credits_per_million_tokens
-                    .ok_or(PricingError::MissingRate)?;
-                model
-                    .output_credits_per_million_tokens
-                    .ok_or(PricingError::MissingRate)?;
-            }
-        }
-        Ok(())
+        validate_model_kind(model, kind)?;
+        Ok(model.clone())
+    }
+
+    pub fn find_priced_model(
+        &self,
+        kind: ModelKind,
+        mut predicate: impl FnMut(&str, &ModelPriceConfig) -> bool,
+    ) -> Option<(String, ModelPriceConfig)> {
+        let models = self.read_models().clone();
+        models.into_iter().find(|(model_id, model)| {
+            validate_model_kind(model, kind).is_ok() && predicate(model_id, model)
+        })
     }
 
     pub fn priced_models(&self, kind: Option<ModelKind>) -> Vec<(String, ModelPriceConfig)> {
@@ -161,6 +153,34 @@ fn model_type_matches_kind(model_type: ModelType, kind: ModelKind) -> bool {
         (model_type, kind),
         (ModelType::Asr, ModelKind::Asr) | (ModelType::Text, ModelKind::Text)
     )
+}
+
+fn validate_model_kind(model: &ModelPriceConfig, kind: ModelKind) -> Result<(), PricingError> {
+    if !model_type_matches_kind(model.model_type, kind) {
+        return Err(PricingError::WrongUnit);
+    }
+    match kind {
+        ModelKind::Asr => {
+            if model.unit != PriceUnit::Seconds {
+                return Err(PricingError::WrongUnit);
+            }
+            model
+                .credits_per_million_seconds
+                .ok_or(PricingError::MissingRate)?;
+        }
+        ModelKind::Text => {
+            if model.unit != PriceUnit::Tokens {
+                return Err(PricingError::WrongUnit);
+            }
+            model
+                .input_credits_per_million_tokens
+                .ok_or(PricingError::MissingRate)?;
+            model
+                .output_credits_per_million_tokens
+                .ok_or(PricingError::MissingRate)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]

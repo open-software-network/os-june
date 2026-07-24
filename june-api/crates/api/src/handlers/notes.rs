@@ -445,10 +445,8 @@ fn resolve_priced_text_model_kind(
                 return Ok(DEFAULT_TEXT_MODEL.to_string());
             }
             pricing
-                .priced_models(Some(ModelKind::Text))
-                .into_iter()
+                .find_priced_model(ModelKind::Text, |_, _| true)
                 .map(|(model_id, _)| model_id)
-                .find(|model_id| pricing.ensure_model_kind(model_id, ModelKind::Text).is_ok())
                 .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
         }
         Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),
@@ -480,10 +478,8 @@ fn resolve_priced_asr_model_kind(
                 return Ok(DEFAULT_ASR_MODEL.to_string());
             }
             pricing
-                .priced_models(Some(ModelKind::Asr))
-                .into_iter()
+                .find_priced_model(ModelKind::Asr, |_, _| true)
                 .map(|(model_id, _)| model_id)
-                .find(|model_id| pricing.ensure_model_kind(model_id, ModelKind::Asr).is_ok())
                 .ok_or_else(|| ApiError::unprocessable("model_not_priced"))
         }
         Err(PricingError::WrongUnit) => Err(ApiError::unprocessable("model_type_invalid")),

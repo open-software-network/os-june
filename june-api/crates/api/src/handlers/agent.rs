@@ -12,8 +12,9 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
 };
+use june_config::ModelPriceConfig;
 use june_domain::{ModelId, ModelKind, UpstreamRouteMetadata};
-use june_services::{AgentChatParams, AgentChatStreamOutput, PricingTable};
+use june_services::{AgentChatParams, AgentChatStreamOutput};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 const PREFERRED_VISION_TEXT_MODEL: &str = "kimi-k2-6";
@@ -161,35 +162,27 @@ fn resolve_priced_agent_text_model(
     if resolved_model_id == AUTO_TEXT_MODEL
         || resolved_model_id == requested_model_id
         || requirements.is_empty()
-        || model_supports_requirements(state.pricing(), &resolved_model_id, requirements)
+        || state
+            .pricing()
+            .priced_model(&resolved_model_id, ModelKind::Text)
+            .is_ok_and(|model| model_supports_requirements(&model, requirements))
     {
         return Ok(resolved_model_id);
     }
 
-    let compatible_model = [PREFERRED_VISION_TEXT_MODEL]
-        .into_iter()
-        .filter(|model_id| {
-            state
-                .pricing()
-                .ensure_model_kind(model_id, ModelKind::Text)
-                .is_ok()
-        })
-        .find(|model_id| model_supports_requirements(state.pricing(), model_id, requirements))
-        .map(str::to_string)
+    let compatible_model = state
+        .pricing()
+        .priced_model(PREFERRED_VISION_TEXT_MODEL, ModelKind::Text)
+        .ok()
+        .filter(|model| model_supports_requirements(model, requirements))
+        .map(|_| PREFERRED_VISION_TEXT_MODEL.to_string())
         .or_else(|| {
             state
                 .pricing()
-                .priced_models(Some(ModelKind::Text))
-                .into_iter()
-                .map(|(model_id, _)| model_id)
-                .filter(|model_id| *model_id != AUTO_TEXT_MODEL)
-                .find(|model_id| {
-                    state
-                        .pricing()
-                        .ensure_model_kind(model_id, ModelKind::Text)
-                        .is_ok()
-                        && model_supports_requirements(state.pricing(), model_id, requirements)
+                .find_priced_model(ModelKind::Text, |model_id, model| {
+                    model_id != AUTO_TEXT_MODEL && model_supports_requirements(model, requirements)
                 })
+                .map(|(model_id, _)| model_id)
         });
 
     if compatible_model.is_none() {
@@ -218,16 +211,13 @@ fn chat_items_contain_image(value: &serde_json::Value) -> bool {
 }
 
 fn model_supports_requirements(
-    pricing: &PricingTable,
-    model_id: &str,
+    model: &ModelPriceConfig,
     requirements: AgentModelRequirements,
 ) -> bool {
-    pricing.model(model_id).is_some_and(|model| {
-        (!requirements.vision || has_capability(&model.capabilities, "supportsvision"))
-            && (!requirements.tools
-                || has_capability(&model.capabilities, "functioncalling")
-                || has_capability(&model.capabilities, "toolcalling"))
-    })
+    (!requirements.vision || has_capability(&model.capabilities, "supportsvision"))
+        && (!requirements.tools
+            || has_capability(&model.capabilities, "functioncalling")
+            || has_capability(&model.capabilities, "toolcalling"))
 }
 
 fn has_capability(capabilities: &[String], expected: &str) -> bool {

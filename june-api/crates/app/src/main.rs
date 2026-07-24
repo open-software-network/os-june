@@ -227,18 +227,16 @@ fn build_router(
     pricing: Arc<PricingTable>,
     share_store: Option<Arc<dyn june_domain::ShareStore>>,
 ) -> axum::Router {
-    let openai_model_ids = pricing
-        .priced_models(None)
-        .into_iter()
-        .filter(|(_, model)| model.provider == ModelProvider::Openai)
-        .map(|(model_id, _)| model_id)
-        .collect::<Vec<_>>();
-
     let os_accounts = build_os_accounts_client(config, clients.default);
+    let routing_pricing = pricing.clone();
     let transcriber: Arc<dyn june_domain::Transcriber> = Arc::new(RoutingTranscriber::from_config(
         clients.upstream.clone(),
         &config.upstreams,
-        openai_model_ids,
+        Arc::new(move |model_id| {
+            routing_pricing
+                .priced_model(model_id, june_domain::ModelKind::Asr)
+                .is_ok_and(|model| model.provider == ModelProvider::Openai)
+        }),
     ));
     // Note generation and agent chat can now run long (streamed/kept-alive
     // responses), so their upstream window must leave the settlement budget
