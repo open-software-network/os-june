@@ -69,6 +69,10 @@ the `spec/` entries above for the enforceable versions).
 - [design/conventions.md](design/conventions.md) — flat-namespace naming, interaction and visual rules, theming pipeline, and how to open or extend the styleguide page
 - [design/taste.md](design/taste.md) — the sensibility behind the rules (quiet by default, weight as punctuation, color spent not sprayed); the portable layer for other projects
 
+## Growth
+
+- [growth/paid-ads-campaign-proposal.md](growth/paid-ads-campaign-proposal.md) - paid acquisition decision package: positioning, audiences, three gated budgets, funnel forecasts, privacy-safe measurement, creative, and stop/scale rules
+
 ## Agent skill config (docs/agents/)
 
 Per-repo config the engineering skills read before acting (see the
