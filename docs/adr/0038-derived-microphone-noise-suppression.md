@@ -67,6 +67,23 @@ trait, with no archive or orchestration change.
 - Product acceptance remains held until the user chooses gate-only or approves
   the neural dependency and reviews measured audio and transcription impact.
 
+## 2026-07-24 review addendum: cost boundaries
+
+The deterministic derived path is a transient cache, not a second retained
+recording. Its cleanup token shares the existing Turn-WAV lifetime guard, so
+the file remains available through blocking Turn preparation, provider work,
+and transcript-coverage calculation, including when the caller is cancelled.
+It is deleted after those consumers drain, and the private cache directory is
+removed when empty. A completed derivative left by a process crash can still
+be reused by Retry and is then removed through the same guard.
+
+The durable configuration fingerprint records suppression only when the
+denoiser actually produced a different transcription input. Clean bypass and
+raw fallback both use the suppression-off fingerprint because the provider
+receives the same audio bytes. This prevents a setting toggle from causing a
+billed re-transcription of byte-identical clean audio while still invalidating
+cached text whenever suppression was applied.
+
 ## Rejected alternatives
 
 - **Rewrite the finalized Microphone WAV.** This destroys the recovery

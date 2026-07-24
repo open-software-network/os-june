@@ -51,13 +51,58 @@ pub trait Denoiser: Send {
     fn process(&mut self, frame: &mut [f32]) -> Result<(), AppError>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct NoiseSuppressionOutput {
     pub path: PathBuf,
     pub cache_hit: bool,
     pub applied: bool,
     pub fingerprint: String,
     pub noise_floor_dbfs: Option<f32>,
+    pub cleanup: Option<DerivedTranscriptionInputCleanup>,
+}
+
+/// Keeps one derived transcription input alive until every preparation and
+/// provider task that can read it has drained.
+///
+/// The deterministic path remains reusable after a process crash, but normal
+/// completion and cancellation remove it instead of retaining a second
+/// recording-sized WAV indefinitely.
+#[derive(Debug)]
+pub struct DerivedTranscriptionInputCleanup {
+    path: PathBuf,
+}
+
+impl DerivedTranscriptionInputCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for DerivedTranscriptionInputCleanup {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    %error,
+                    "failed to remove derived transcription input"
+                );
+                return;
+            }
+        }
+
+        let Some(parent) = self.path.parent() else {
+            return;
+        };
+        let directory_is_empty = std::fs::read_dir(parent)
+            .ok()
+            .is_some_and(|mut entries| entries.next().is_none());
+        if directory_is_empty {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +126,7 @@ pub fn suppress_microphone_wav_for_transcription(
 
     if valid_cached_wav(&cache_path, expected_samples) {
         return Ok(NoiseSuppressionOutput {
+            cleanup: Some(DerivedTranscriptionInputCleanup::new(cache_path.clone())),
             path: cache_path,
             cache_hit: true,
             applied: true,
@@ -97,6 +143,7 @@ pub fn suppress_microphone_wav_for_transcription(
             applied: false,
             fingerprint,
             noise_floor_dbfs: Some(profile.noise_floor_dbfs),
+            cleanup: None,
         });
     }
 
@@ -120,6 +167,7 @@ pub fn suppress_microphone_wav_for_transcription(
     }
 
     Ok(NoiseSuppressionOutput {
+        cleanup: Some(DerivedTranscriptionInputCleanup::new(cache_path.clone())),
         path: cache_path,
         cache_hit: false,
         applied: true,
@@ -708,6 +756,11 @@ mod tests {
             std::fs::read(&first.path).unwrap()
         );
         assert_eq!(std::fs::read(&input).unwrap(), original);
+        let derived = first.path.clone();
+        drop(second);
+        drop(first);
+        assert!(!derived.exists());
+        assert!(!dir.join(CACHE_DIRECTORY).exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -797,6 +850,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn spectral_suppression_resamples_48khz_input_to_expected_length() {
+        let dir = test_dir("resample-48khz");
+        let input = dir.join("microphone.wav");
+        let seconds = 2.25;
+        write_fixture_at_sample_rate(&input, seconds, true, 48_000);
+        let original = std::fs::read(&input).unwrap();
+
+        let output = suppress_microphone_wav_for_transcription(&input).unwrap();
+
+        assert!(output.applied);
+        let reader = WavReader::open(&output.path).unwrap();
+        assert_eq!(reader.spec().sample_rate, TARGET_SAMPLE_RATE);
+        assert_eq!(
+            reader.duration() as usize,
+            (seconds * TARGET_SAMPLE_RATE as f32) as usize
+        );
+        assert_eq!(std::fs::read(&input).unwrap(), original);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn test_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "os-june-noise-suppression-{label}-{}",
@@ -815,17 +889,26 @@ mod tests {
     }
 
     fn write_fixture(path: &Path, seconds: f32, include_noise: bool) {
+        write_fixture_at_sample_rate(path, seconds, include_noise, TARGET_SAMPLE_RATE);
+    }
+
+    fn write_fixture_at_sample_rate(
+        path: &Path,
+        seconds: f32,
+        include_noise: bool,
+        sample_rate: u32,
+    ) {
         let spec = WavSpec {
             channels: 1,
-            sample_rate: TARGET_SAMPLE_RATE,
+            sample_rate,
             bits_per_sample: 16,
             sample_format: SampleFormat::Int,
         };
-        let sample_count = (seconds * TARGET_SAMPLE_RATE as f32) as usize;
+        let sample_count = (seconds * sample_rate as f32) as usize;
         let mut writer = WavWriter::create(path, spec).unwrap();
         let mut random_state = 0x1234_5678_u32;
         for index in 0..sample_count {
-            let time = index as f32 / TARGET_SAMPLE_RATE as f32;
+            let time = index as f32 / sample_rate as f32;
             let speech_active = (time % 2.0) >= 0.55;
             let envelope = if speech_active {
                 let phase = (time % 2.0) - 0.55;

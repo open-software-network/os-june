@@ -131,9 +131,16 @@ When **Microphone noise suppression** is enabled, June first derives a mono
 16 kHz Microphone WAV through a bounded-memory two-pass process. This happens
 after Turn detection and speaker-bleed trimming, so source attribution,
 timestamps, and System audio are unchanged. The finalized Microphone WAV is
-never modified. A content-and-version fingerprint reuses the derived WAV on
-retry; derivation failure records a Source warning checkpoint and falls back to
-the finalized WAV.
+never modified. A content-and-version fingerprint can reuse a completed
+derivative after an interrupted attempt. The derived WAV shares the transient
+Turn-audio lifetime guard and is removed after transcription and coverage
+consumers drain. Derivation failure records a Source warning checkpoint and
+falls back to the finalized WAV.
+
+Only an actually applied derivative changes the durable transcription
+configuration fingerprint. A clean bypass or raw fallback keeps the
+suppression-off identity because transcription receives the same audio bytes,
+so toggling the setting cannot bill for a byte-identical clean recording.
 
 The interim implementation estimates a stationary noise spectrum from the same
 low-percentile noise-floor principle used by Turn detection, then applies

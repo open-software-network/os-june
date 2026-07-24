@@ -14,8 +14,9 @@ broadband noise, and keyboard-like transients. The 16-second reference has
 three seconds of leading silence and about three seconds of trailing silence,
 so the noise estimator sees quiet regions as it would in natural speech. Each
 noisy WAV passes through
-`suppress_microphone_wav_for_transcription`, the same cached derivation called
-by saved-audio processing. The original SHA-256 is checked before and after.
+`suppress_microphone_wav_for_transcription`, the same transient derivation
+called by saved-audio processing. The original SHA-256 is checked before and
+after.
 The reproducible invocation is:
 
 ```sh
@@ -61,6 +62,20 @@ No ASR comparison or blinded listening panel was run in this environment.
 Therefore this evidence makes no transcription-accuracy, clean-speech WER,
 consonant-preservation, or perceptual-quality claim. Those remain blocking
 product-quality checks for the held feature.
+
+## Cost and resampling regressions
+
+Automated coverage also checks the non-quality boundaries found during review:
+
+- a clean bypass and a raw fallback produce the same durable transcription
+  configuration fingerprint as suppression off, while an applied derivative
+  changes it;
+- the derived WAV and its empty `.june-transcription-input` directory are
+  removed after the retained transcription consumer drains, while the
+  finalized input remains byte-identical; and
+- a 2.25-second 48 kHz noisy input runs through the production streaming
+  resampler and suppressor without error, producing exactly 36,000 mono 16 kHz
+  samples while preserving the input bytes.
 
 ## Expected limitation
 
