@@ -322,12 +322,14 @@ describe("OnboardingFlow", () => {
     await advanceToArea();
     await chooseArea("work");
 
-    const firstMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    const firstMessage = document.querySelector(
+      ".onboarding-personality-message-body",
+    )?.textContent;
     expect(firstMessage).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /Calm collaborator/i }));
     expect(await screen.findByRole("status")).toHaveTextContent("June is typing");
     await waitFor(() =>
-      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
         firstMessage,
       ),
     );
@@ -336,10 +338,10 @@ describe("OnboardingFlow", () => {
       "true",
     );
 
-    const calmMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    const calmMessage = document.querySelector(".onboarding-personality-message-body")?.textContent;
     fireEvent.keyDown(screen.getByRole("slider", { name: "Depth" }), { key: "End" });
     await waitFor(() =>
-      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
         calmMessage,
       ),
     );
@@ -348,18 +350,20 @@ describe("OnboardingFlow", () => {
       "false",
     );
 
-    const deepMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    const deepMessage = document.querySelector(".onboarding-personality-message-body")?.textContent;
     fireEvent.keyDown(screen.getByRole("slider", { name: "Initiative" }), { key: "Home" });
     await waitFor(() =>
-      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
         deepMessage,
       ),
     );
 
-    const quietMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    const quietMessage = document.querySelector(
+      ".onboarding-personality-message-body",
+    )?.textContent;
     fireEvent.keyDown(screen.getByRole("slider", { name: "Playfulness" }), { key: "End" });
     await waitFor(() =>
-      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
         quietMessage,
       ),
     );

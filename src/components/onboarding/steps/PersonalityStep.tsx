@@ -219,13 +219,15 @@ export function PersonalityStep({
               <AnimatePresence mode="wait" initial={false}>
                 <motion.article
                   key={previewKey}
-                  className="agent-assistant-turn"
+                  className="agent-user-turn onboarding-personality-message"
+                  data-user-run-end="true"
+                  aria-label="Example message from June"
                   initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 2 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -2 }}
                   transition={{ duration: reduceMotion ? 0.1 : 0.16, ease: [0.22, 1, 0.36, 1] }}
                 >
-                  <div className="agent-assistant-turn-body">
+                  <div className="agent-user-turn-body onboarding-personality-message-body">
                     <p>{message}</p>
                   </div>
                 </motion.article>
