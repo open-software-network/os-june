@@ -5,19 +5,24 @@ import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconCircleInfo } from "central-icons/IconCircleInfo";
 import { IconCircleX } from "central-icons/IconCircleX";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  adminTargetForMode,
+  createMcpServersEngine,
   requiredSecretId,
+  restartHermesRuntime,
   useMcpServersEngine,
   useSetupSnapshotController,
   type DiffEntry,
   type HermesAdminMode,
   type ImportReport,
+  type ImportPlanStep,
   type ImportStepResult,
   type SetupSnapshotState,
   type SnapshotRequiredSecret,
 } from "../../lib/hermes-admin";
 import { hermesBridgeStatus, type HermesBridgeStatus } from "../../lib/tauri";
+import { SettingsPageHeader } from "./AppSettings";
 import { useConfirmedSettingsProfile } from "./useConfirmedSettingsProfile";
 
 type SetupSnapshotSectionProps = {
@@ -52,12 +57,17 @@ function SetupSnapshotSectionReady({
 }: SetupSnapshotSectionProps & { mode: HermesAdminMode; profile: string }) {
   const [bridge, setBridge] = useState<HermesBridgeStatus>();
   const [bridgeError, setBridgeError] = useState<string>();
+  const [bridgeAttempt, setBridgeAttempt] = useState(0);
 
   useEffect(() => {
+    const requestedAttempt = bridgeAttempt;
     let cancelled = false;
     hermesBridgeStatus()
       .then((status) => {
-        if (!cancelled) setBridge(status);
+        if (!cancelled && requestedAttempt === bridgeAttempt) {
+          setBridge(status);
+          setBridgeError(undefined);
+        }
       })
       .catch((error: unknown) => {
         if (!cancelled) {
@@ -67,13 +77,46 @@ function SetupSnapshotSectionReady({
     return () => {
       cancelled = true;
     };
+  }, [bridgeAttempt]);
+
+  const retryBridge = useCallback(() => {
+    setBridge(undefined);
+    setBridgeError(undefined);
+    setBridgeAttempt((attempt) => attempt + 1);
   }, []);
 
+  const restartRuntime = useCallback(async () => {
+    try {
+      const status = await restartHermesRuntime(mode);
+      setBridge(status);
+      const target = adminTargetForMode(status, mode, profile);
+      if (!target) throw new Error("The restarted runtime did not become available.");
+      return createMcpServersEngine(target).client;
+    } catch (error) {
+      // The stop may have landed even if the start failed. Reconcile the page
+      // with native reality instead of retaining a dead client.
+      try {
+        setBridge(await hermesBridgeStatus());
+      } catch {
+        setBridge(undefined);
+      }
+      throw error;
+    }
+  }, [mode, profile]);
+
+  const applyOptions = useMemo(() => ({ restartRuntime }), [restartRuntime]);
+
   const engine = useMcpServersEngine(bridge, mode, profile);
-  const base = useSetupSnapshotController(engine);
+  const base = useSetupSnapshotController(engine, applyOptions);
   const state: SetupSnapshotState =
     engine === null && bridgeError
-      ? { ...base, status: "error", error: bridgeError, retryable: true }
+      ? {
+          ...base,
+          status: "error",
+          error: bridgeError,
+          retryable: true,
+          refresh: retryBridge,
+        }
       : base;
 
   return <SetupSnapshotView state={state} mode={mode} />;
@@ -133,26 +176,29 @@ export function SetupSnapshotView({
 
   return (
     <section className="settings-group setup-snapshot" aria-labelledby="setup-snapshot-heading">
-      <h2 id="setup-snapshot-heading" className="settings-group-heading">
-        Import / export
-      </h2>
-      <p className="settings-group-description">
-        Export a sanitized snapshot of your skills, MCP servers, and profile setup to reproduce it
-        on another machine, or import one to apply it here. Secret values are never included.{" "}
-        <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
-      </p>
+      <SettingsPageHeader
+        id="setup-snapshot-heading"
+        title="Import / export"
+        blurb={
+          <>
+            Move a sanitized copy of the active profile's agent setup between June installs. This
+            does not export Notes or other June data. Secret values are never included.{" "}
+            <ModeNote mode={state.mode ?? mode} profile={state.profile} show={!isUnavailable} />
+          </>
+        }
+      />
 
       {isUnavailable ? (
         <div className="settings-card setup-snapshot-card">
           <EmptyState
-            title="Hermes is not running"
-            description="Start Hermes to export or import a setup snapshot."
+            title="Agent setup is unavailable"
+            description="Start June's agent runtime to export or import a setup snapshot."
           />
         </div>
       ) : isErrored ? (
         <div className="settings-card setup-snapshot-card">
           <ErrorState
-            message={state.error ?? "Could not load your setup from Hermes."}
+            message={state.error ?? "Could not load your setup from the agent runtime."}
             retryable={state.retryable}
             onRetry={state.refresh}
           />
@@ -200,8 +246,12 @@ function ExportCard({ state }: { state: SetupSnapshotState }) {
         Export
       </h3>
       <p className="setup-snapshot-card-body">
-        Saves a JSON snapshot. Profiles, skills, MCP servers, tool filters, and toolset readiness
-        are included. Memory, sessions, and secret values are not.
+        Saves a JSON snapshot of skills, non-secret skill config you opt into, complete MCP
+        connection definitions, tool filters, toolset toggles, and external skill directory paths.
+      </p>
+      <p className="setup-snapshot-exclusions">
+        Not included: Notes, Projects, sessions, filing, completion, memories, preferences, profile
+        instructions, or secret values.
       </p>
       <label className="setup-snapshot-opt">
         <input
@@ -215,7 +265,7 @@ function ExportCard({ state }: { state: SetupSnapshotState }) {
       </label>
       <button
         type="button"
-        className="setup-snapshot-export-button"
+        className="primary-action primary-solid setup-snapshot-export-button"
         disabled={!state.canExport}
         onClick={handleExport}
       >
@@ -230,6 +280,7 @@ function ExportCard({ state }: { state: SetupSnapshotState }) {
  * secrets, then apply. */
 function ImportCard({ state }: { state: SetupSnapshotState }) {
   const [raw, setRaw] = useState("");
+  const [previewKey, setPreviewKey] = useState(0);
   const phase = state.importPhase;
 
   return (
@@ -258,16 +309,19 @@ function ImportCard({ state }: { state: SetupSnapshotState }) {
       <div className="setup-snapshot-import-actions">
         <button
           type="button"
-          className="setup-snapshot-preview-button"
+          className="primary-action primary-solid setup-snapshot-preview-button"
           disabled={raw.trim().length === 0 || phase === "applying"}
-          onClick={() => state.preview(raw)}
+          onClick={() => {
+            setPreviewKey((key) => key + 1);
+            state.preview(raw);
+          }}
         >
           Preview import
         </button>
         {phase !== "idle" ? (
           <button
             type="button"
-            className="setup-snapshot-reset-button"
+            className="primary-action setup-snapshot-reset-button"
             onClick={() => {
               setRaw("");
               state.resetImport();
@@ -285,7 +339,9 @@ function ImportCard({ state }: { state: SetupSnapshotState }) {
         </p>
       ) : null}
 
-      {phase === "previewed" || phase === "applying" ? <ImportPreview state={state} /> : null}
+      {phase === "previewed" || phase === "applying" ? (
+        <ImportPreview key={previewKey} state={state} />
+      ) : null}
 
       {phase === "applied" && state.report ? <ImportReportView report={state.report} /> : null}
     </div>
@@ -296,10 +352,15 @@ function ImportCard({ state }: { state: SetupSnapshotState }) {
 function ImportPreview({ state }: { state: SetupSnapshotState }) {
   const diff = state.previewDiff;
   const [secrets, setSecrets] = useState<Record<string, string>>({});
+  const [confirmedProfileMismatch, setConfirmedProfileMismatch] = useState(false);
 
   if (!diff) return null;
 
+  const planChanges = state.previewPlan?.steps.filter((step) => step.disposition !== "skip");
   const changing = diff.entries.filter((entry) => entry.status !== "unchanged");
+  const sourceProfile = state.previewSnapshot?.profile ?? "default";
+  const targetProfile = state.profile ?? "default";
+  const profileMismatch = sourceProfile !== targetProfile;
 
   return (
     <div className="setup-snapshot-preview">
@@ -307,17 +368,40 @@ function ImportPreview({ state }: { state: SetupSnapshotState }) {
         <IconCircleInfo size={14} ariaHidden />
         {diff.changeCount === 0
           ? "This snapshot matches your current setup. Nothing to apply."
-          : `This import would change ${diff.changeCount} ${
-              diff.changeCount === 1 ? "thing" : "things"
-            }.`}
+          : `This import plan has ${diff.changeCount} ${
+              diff.changeCount === 1 ? "step" : "steps"
+            } to apply or review.`}
       </p>
 
-      {changing.length > 0 ? (
+      {planChanges && planChanges.length > 0 ? (
+        <ul className="setup-snapshot-diff">
+          {planChanges.map((step) => (
+            <PlanRow
+              key={`${step.category}:${step.name}:${step.disposition}:${step.detail}`}
+              step={step}
+            />
+          ))}
+        </ul>
+      ) : changing.length > 0 ? (
         <ul className="setup-snapshot-diff">
           {changing.map((entry) => (
             <DiffRow key={`${entry.category}:${entry.name}`} entry={entry} />
           ))}
         </ul>
+      ) : null}
+
+      {profileMismatch ? (
+        <label className="setup-snapshot-profile-confirm">
+          <input
+            type="checkbox"
+            checked={confirmedProfileMismatch}
+            onChange={(event) => setConfirmedProfileMismatch(event.currentTarget.checked)}
+          />
+          <span>
+            This snapshot came from profile {sourceProfile}. Apply it to the active profile{" "}
+            {targetProfile}.
+          </span>
+        </label>
       ) : null}
 
       {diff.requiredSecrets.length > 0 ? (
@@ -330,13 +414,27 @@ function ImportPreview({ state }: { state: SetupSnapshotState }) {
 
       <button
         type="button"
-        className="setup-snapshot-apply-button"
-        disabled={state.importPhase === "applying" || diff.changeCount === 0}
+        className="primary-action primary-solid setup-snapshot-apply-button"
+        disabled={
+          state.importPhase === "applying" ||
+          diff.changeCount === 0 ||
+          (profileMismatch && !confirmedProfileMismatch)
+        }
         onClick={() => void state.apply(secrets)}
       >
         {state.importPhase === "applying" ? "Applying import" : "Apply import"}
       </button>
     </div>
+  );
+}
+
+function PlanRow({ step }: { step: ImportPlanStep }) {
+  return (
+    <li className="setup-snapshot-diff-row" data-status={step.disposition}>
+      <span className="setup-snapshot-diff-status">{step.disposition}</span>
+      <span className="setup-snapshot-diff-name">{step.name}</span>
+      <span className="setup-snapshot-diff-detail">{step.detail}</span>
+    </li>
   );
 }
 
@@ -401,25 +499,28 @@ function ImportReportView({ report }: { report: ImportReport }) {
         {report.hadFailures ? (
           <>
             <IconExclamationCircle size={14} ariaHidden />
-            Import finished with some failures. Review the steps below and retry the failed ones.
+            Import finished with issues. Review failed or unsupported steps below.
           </>
         ) : (
           <>
             <IconCircleCheck size={14} ariaHidden />
-            Import applied. {report.restarted ? "The gateway restarted to apply it." : ""}
+            Import applied. {report.restarted ? "The agent runtime restarted to apply it." : ""}
           </>
         )}
       </p>
       {report.health ? (
         <p className="setup-snapshot-report-health">
           {report.health.gatewayRunning === false
-            ? "Gateway is not running. Start it to use the imported setup."
-            : `Gateway is running with ${report.health.enabledServers} of ${report.health.serverCount} servers enabled.`}
+            ? "The agent runtime is not running. Start it to use the imported setup."
+            : `The agent runtime is running with ${report.health.enabledServers} of ${report.health.serverCount} servers enabled.`}
         </p>
       ) : null}
       <ul className="setup-snapshot-report-steps">
-        {report.steps.map((step, index) => (
-          <ReportStepRow key={`${step.category}:${step.name}:${index}`} step={step} />
+        {report.steps.map((step) => (
+          <ReportStepRow
+            key={`${step.category}:${step.name}:${step.status}:${step.detail}`}
+            step={step}
+          />
         ))}
       </ul>
     </div>
@@ -475,7 +576,7 @@ function ErrorState({
       <p className="setup-snapshot-empty-title">Couldn't load your setup</p>
       <p className="setup-snapshot-empty-description">{message}</p>
       {retryable ? (
-        <button type="button" className="setup-snapshot-retry" onClick={onRetry}>
+        <button type="button" className="primary-action setup-snapshot-retry" onClick={onRetry}>
           Try again
         </button>
       ) : null}

@@ -271,6 +271,27 @@ describe("HermesAdminClient — real-contract paths and shapes (v2026.7.20)", ()
     // Not split into my -> skill.
     expect(body?.config?.skills?.config?.["my"]).toBeUndefined();
   });
+
+  it("treats prototype-named config segments as data without polluting objects", async () => {
+    const { client, server } = makeAdminHarness(emptyInstallScenario());
+
+    await client.config.applyWritesAtSegments([
+      {
+        op: "set",
+        segments: ["skills", "config", "__proto__", "polluted"],
+        value: "snapshot-value",
+      },
+    ]);
+
+    expect(Object.prototype).not.toHaveProperty("polluted");
+    const entry = server.requestLog.at(-1);
+    const body = entry?.body as {
+      config?: { skills?: { config?: Record<string, { polluted?: string }> } };
+    };
+    const skillConfig = body.config?.skills?.config;
+    expect(Object.hasOwn(skillConfig ?? {}, "__proto__")).toBe(true);
+    expect(skillConfig?.["__proto__"]?.polluted).toBe("snapshot-value");
+  });
 });
 
 describe("HermesAdminClient — error normalization", () => {

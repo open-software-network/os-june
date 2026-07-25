@@ -392,7 +392,6 @@ export const HIDDEN_SETTINGS_TABS: ReadonlySet<SettingsTab> = new Set<SettingsTa
   "toolsets",
   "bundles",
   "integrations-health",
-  "import-export",
 ]);
 
 export function Sidebar({
