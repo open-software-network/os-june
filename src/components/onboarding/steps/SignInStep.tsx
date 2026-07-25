@@ -1,53 +1,27 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconCalendar1 } from "central-icons/IconCalendar1";
+import { IconBrain } from "central-icons/IconBrain";
+import { IconFolderShield } from "central-icons/IconFolderShield";
 import { IconLock } from "central-icons/IconLock";
-import { IconMicrophone } from "central-icons/IconMicrophone";
-import { IconSparkle } from "central-icons/IconSparkle";
-import { IconTelegram } from "central-icons/IconTelegram";
-import { fallbackDictationCapabilities } from "../../../lib/platform";
-import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
+import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
-import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
-// Desktop platforms with bundled helpers can introduce the full agent,
-// dictation, and notes surface. Unsupported platforms narrow the welcome
-// promise until native helpers are turnkey there.
-const JUNE_POINTS = [
+const PRIVACY_POINTS = [
   {
-    icon: IconSparkle,
-    title: "Chat and work with June",
-    detail: "Hand June real work. It runs the session and comes back done.",
-  },
-  {
-    icon: IconMicrophone,
-    title: "Speak instead of type",
-    detail: "June turns your voice into polished writing in any app on your computer.",
-  },
-  {
-    icon: IconCalendar1,
-    title: "Effortlessly capture meetings",
-    detail: "June takes meeting notes without ever having to join the meeting.",
+    icon: IconFolderShield,
+    title: "Your private life stays on this Mac",
+    detail: "Your saved files, recordings, notes, and conversations stay here by default.",
   },
   {
     icon: IconLock,
-    title: "Private by default",
-    detail: "Prompts leverage private, zero-retention Venice AI models by default.",
-  },
-];
-
-const WINDOWS_JUNE_POINTS = [
-  {
-    icon: IconSparkle,
-    title: "Desktop notes for your work",
-    detail: "Keep meeting notes and projects together in one app.",
+    title: "I default to Private models",
+    detail: "Zero-retention models don't store your prompts or train on them.",
   },
   {
-    icon: IconMicrophone,
-    title: "Meeting notes from your mic",
-    detail: "Record meetings from your microphone and turn them into notes.",
+    icon: IconBrain,
+    title: "I learn and remember everything locally",
+    detail: "What I learn about you and remember stays on this Mac too.",
   },
-  JUNE_POINTS[3],
 ];
 
 /**
@@ -67,9 +41,6 @@ export function SignInStep({
 }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  const capabilities = fallbackDictationCapabilities();
-  const points = capabilities.available ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
-  const introClassName = capabilities.available ? "welcome-card-intro" : undefined;
 
   const cancelInFlight = useCallback(async () => {
     try {
@@ -106,14 +77,14 @@ export function SignInStep({
 
   return (
     <StepCard
-      title="Welcome to June"
-      subtitle="Private AI for everyday life and work."
+      title="Hi, I'm June. Your private AI."
+      subtitle="I make it easy to use AI without worrying about exposing your personal life."
       mark
       wide
-      className={introClassName}
+      className="welcome-card-intro"
     >
       <ul className="onboarding-points">
-        {points.map(({ icon: Icon, title, detail }) => (
+        {PRIVACY_POINTS.map(({ icon: Icon, title, detail }) => (
           <li key={title}>
             <span className="onboarding-point-icon" aria-hidden>
               <Icon size={15} />
@@ -125,15 +96,16 @@ export function SignInStep({
           </li>
         ))}
       </ul>
-      <p className="onboarding-community">
-        <button
-          type="button"
-          className="onboarding-community-link"
-          onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
+      <p className="onboarding-source-note">
+        My code is open source, so you can{" "}
+        <a
+          href="https://github.com/open-software-network/os-june"
+          target="_blank"
+          rel="noreferrer"
         >
-          <IconTelegram size={16} aria-hidden />
-          <span>Join the June community on Telegram</span>
-        </button>
+          verify everything yourself
+        </a>
+        .
       </p>
       {account.configured ? (
         <div className="welcome-providers">
@@ -156,14 +128,13 @@ export function SignInStep({
             </div>
           ) : (
             <OnboardingPrimaryButton onClick={() => void handleSignIn()}>
-              <OsMark />
-              <span>Continue with OpenSoftware</span>
+              <span>Continue with June</span>
             </OnboardingPrimaryButton>
           )}
         </div>
       ) : (
         <p className="welcome-status welcome-status-info">
-          OpenSoftware sign-in is not configured for this build.
+          June sign-in isn't configured for this build.
         </p>
       )}
       {status ? <p className="welcome-status">{status}</p> : null}

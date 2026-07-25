@@ -5,6 +5,8 @@
 
 use crate::{
     domain::types::AppError,
+    hermes_bridge::{load_june_character_override, resolve_june_hermes_home},
+    june_persona::{compile_june_core_prompt, load_june_persona_or_default},
     providers::{LocalGenerationSettings, PROVIDER_LOCAL, PROVIDER_OPENAI},
 };
 use reqwest::multipart::{Form, Part};
@@ -1624,7 +1626,27 @@ pub async fn suggest_agent_session_title(
     })
 }
 
-const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are June, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: June is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks June to remember or update a lasting preference, call start_task with a standalone prompt to save it to June's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+const JUNE_HOME_CHAT_HANDOFF_PROMPT: &str = r#"
+# Home conversation
+
+This is June's persistent Home conversation. Keep conversation, quick answers, and clarifying questions here.
+
+Home has no live external sources. For news, weather, prices, scores, schedules, current events, or any other answer that depends on up-to-date external facts, call start_task and do not answer from memory.
+
+When the user explicitly asks June to remember or update a lasting preference, call start_task with a standalone prompt to save it to June's on-device memory.
+
+When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. After calling start_task, do not perform or answer that focused task in Home. The UI will show the created session. Do not mention internal routing, prompts, or tools unless the user asks.
+"#;
+
+fn june_home_chat_system_prompt(hermes_home: &Path) -> String {
+    let persona = load_june_persona_or_default(hermes_home);
+    let character = load_june_character_override(hermes_home);
+    format!(
+        "{}\n{}",
+        compile_june_core_prompt(&persona, "home_fast", character.as_deref()),
+        JUNE_HOME_CHAT_HANDOFF_PROMPT
+    )
+}
 const JUNE_HOME_MEMORY_MAX_ITEMS: usize = 12;
 const JUNE_HOME_MEMORY_MAX_ITEM_CHARS: usize = 400;
 const JUNE_HOME_MEMORY_MAX_TOTAL_CHARS: usize = 4_000;
@@ -2113,9 +2135,11 @@ pub async fn june_home_chat(
         .map(str::trim)
         .filter(|profile| !profile.is_empty())
         .map(str::to_string);
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    let system_prompt = june_home_chat_system_prompt(&hermes_home);
     let mut messages = vec![serde_json::json!({
         "role": "system",
-        "content": JUNE_HOME_CHAT_SYSTEM_PROMPT,
+        "content": system_prompt,
     })];
     if let Some(memory_context) = june_home_memory_context(&app, profile.as_deref()).await {
         messages.push(serde_json::json!({
@@ -4439,6 +4463,37 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             .expect("formatted content should include assistant reply prefix");
         assert_eq!(excerpt.chars().count(), 1200);
         assert_eq!(excerpt, "é".repeat(1200));
+    }
+
+    #[test]
+    fn home_prompt_uses_the_shared_native_persona_and_character_override() {
+        let home = tempfile::tempdir().expect("tempdir");
+        crate::june_persona::write_june_persona(
+            home.path(),
+            &crate::june_persona::JunePersonaSettings {
+                schema_version: crate::june_persona::JUNE_PERSONA_SCHEMA_VERSION,
+                area: crate::june_persona::JunePersonaArea::Personal,
+                voice: 80,
+                detail: 55,
+                initiative: 70,
+                humor: 45,
+            },
+        )
+        .expect("write persona");
+        std::fs::write(
+            home.path().join("CHARACTER.md"),
+            "Prefer short paragraphs and concrete examples.\n",
+        )
+        .expect("write character");
+
+        let prompt = june_home_chat_system_prompt(home.path());
+
+        assert!(prompt.contains("Polish 20/100"));
+        assert!(prompt.contains("help managing personal life"));
+        assert!(prompt.contains("Prefer short paragraphs and concrete examples."));
+        assert!(prompt.contains("June is local-first, not entirely offline"));
+        assert!(prompt.contains("# Home conversation"));
+        assert!(prompt.contains("call start_task exactly once"));
     }
 
     #[test]

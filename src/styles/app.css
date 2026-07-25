@@ -24642,18 +24642,37 @@ button.memory-project:hover {
   width: min(100%, 360px);
 }
 
-/* Welcome step lays its four what-is-June points out as a 2x2 grid rather
- * than a tall single column, so the card needs a touch more width. Cells
- * top-align (align-items: start in .onboarding-points li) so uneven body
- * lengths sit cleanly rather than centering against each other. */
+/* The private-AI introduction keeps each promise on its own line. The point
+ * rows use the same anatomy as the rest of onboarding, while a wider measure
+ * keeps the privacy explanation conversational instead of tall and choppy. */
 .welcome-card-intro {
-  width: min(100%, 500px);
+  width: min(100%, 540px);
 }
 
 .welcome-card-intro .onboarding-points {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--sp-6) var(--sp-6);
+  grid-template-columns: 1fr;
+  gap: var(--sp-4);
+  width: min(100%, 480px);
+  margin-inline: auto;
+}
+
+.onboarding-source-note {
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.onboarding-source-note a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--foreground) 30%, transparent);
+  text-underline-offset: 2px;
 }
 
 /* The 2x2 grid wants the full card width, but the sign-in button and footer
@@ -24721,7 +24740,7 @@ button.memory-project:hover {
 }
 
 /* Onboarding wizard ---------------------------------------------------
- * Welcome-cards in a row: sign in, permissions, try it.
+ * Welcome-cards in a row: sign in, preferences, then permissions.
  * Each step reuses the account gate chrome (welcome-card,
  * welcome-mark, welcome-title) so first-run looks like the app greeting
  * the user, not a separate tour. */
@@ -25011,7 +25030,7 @@ button.memory-project:hover {
 .onboarding-intent-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   min-inline-size: 0;
   margin: var(--sp-2) 0 0;
   padding: 0;
@@ -25019,12 +25038,13 @@ button.memory-project:hover {
 }
 
 .onboarding-intent-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 18px;
   min-width: 0;
-  min-height: var(--control-xl);
-  align-items: center;
+  min-height: 92px;
+  align-items: start;
   gap: var(--sp-3);
-  padding: 0 var(--sp-3);
+  padding: var(--sp-4);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   background: var(--card);
@@ -25066,21 +25086,63 @@ button.memory-project:hover {
   background: color-mix(in oklch, var(--warm-soft) 44%, var(--card));
 }
 
-.onboarding-intent-option span:last-child {
+.onboarding-card-areas {
+  width: min(100%, 660px);
+}
+
+.onboarding-card-areas .welcome-providers {
+  width: min(100%, 320px);
+  margin-inline: auto;
+}
+
+.onboarding-intent-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 72%, var(--card));
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.onboarding-intent-option[aria-pressed="true"] .onboarding-intent-icon {
+  background: color-mix(in oklch, var(--warm-soft) 65%, var(--card));
+  color: var(--warm-strong);
+}
+
+.onboarding-intent-copy {
+  display: grid;
   min-width: 0;
+  gap: var(--sp-1);
+}
+
+.onboarding-intent-title {
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+}
+
+.onboarding-intent-examples {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  text-wrap: pretty;
   overflow-wrap: anywhere;
 }
 
-/* A rounded-square checkbox (multiple can be picked), mirroring the
- * canonical .folder-note-select-box: unchecked outline, filled on select. */
+/* The single chosen area uses the familiar check treatment without turning
+ * the whole screen into a radio-button form. */
 .onboarding-intent-check {
-  flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
   width: 18px;
   height: 18px;
+  margin-top: var(--sp-1);
   border: 1px solid var(--border);
-  border-radius: var(--r-xs);
+  border-radius: 50%;
   background: var(--card);
   color: var(--on-solid);
   transition: background-color var(--t-fast) var(--ease-out);
@@ -25089,6 +25151,373 @@ button.memory-project:hover {
 .onboarding-intent-option[aria-pressed="true"] .onboarding-intent-check {
   border-color: var(--warm-strong);
   background: var(--warm-strong);
+}
+
+/* Personality: a character sheet turns four abstract settings into one shape.
+ * Presets make the first choice quick; the four points remain directly
+ * draggable for people who want to tune June themselves. */
+.onboarding-card-personality {
+  width: min(100%, 820px);
+}
+
+.onboarding-personality-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  margin-top: var(--sp-1);
+}
+
+.onboarding-personality-editor {
+  display: grid;
+  grid-template-columns: minmax(340px, 1fr) minmax(240px, 272px);
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.onboarding-personality-chart-wrap {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  justify-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.onboarding-personality-chart {
+  display: block;
+  width: min(100%, 380px);
+  height: auto;
+  margin-inline: auto;
+  overflow: visible;
+  touch-action: none;
+  user-select: none;
+}
+
+.onboarding-personality-grid polygon,
+.onboarding-personality-grid line {
+  fill: none;
+  stroke: color-mix(in oklch, var(--border-subtle) 82%, transparent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.onboarding-personality-grid polygon:last-of-type {
+  stroke: color-mix(in oklch, var(--border) 84%, transparent);
+}
+
+.onboarding-personality-shape {
+  fill: color-mix(in oklch, var(--warm-soft) 72%, transparent);
+  stroke: var(--warm-strong);
+  stroke-linejoin: round;
+  stroke-width: 2;
+  filter: drop-shadow(0 6px 10px color-mix(in oklch, var(--warm-strong) 14%, transparent));
+  vector-effect: non-scaling-stroke;
+}
+
+.onboarding-personality-handle {
+  cursor: grab;
+  outline: none;
+}
+
+.onboarding-personality-handle:active {
+  cursor: grabbing;
+}
+
+.onboarding-personality-handle-hit {
+  fill: transparent;
+  stroke: transparent;
+  pointer-events: all;
+}
+
+.onboarding-personality-handle-dot {
+  fill: var(--card);
+  stroke: var(--warm-strong);
+  stroke-width: 3;
+  filter: drop-shadow(0 2px 4px color-mix(in oklch, var(--foreground) 18%, transparent));
+  transition:
+    fill var(--t-fast) var(--ease-out),
+    r var(--t-fast) var(--ease-out),
+    stroke-width var(--t-fast) var(--ease-out);
+  vector-effect: non-scaling-stroke;
+}
+
+.onboarding-personality-handle:hover .onboarding-personality-handle-dot,
+.onboarding-personality-handle:active .onboarding-personality-handle-dot {
+  r: 10px;
+  fill: color-mix(in oklch, var(--warm-soft) 54%, var(--card));
+}
+
+.onboarding-personality-handle:focus-visible .onboarding-personality-handle-dot {
+  stroke-width: 5;
+  filter: drop-shadow(0 0 2px var(--focus-ring));
+}
+
+.onboarding-personality-axis-labels {
+  fill: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: var(--fw-medium);
+  pointer-events: none;
+}
+
+.onboarding-personality-presets {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.onboarding-personality-presets-heading {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+}
+
+.onboarding-personality-preset-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.onboarding-personality-preset {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 20px;
+  min-height: 64px;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--muted) 52%, var(--card));
+  color: var(--foreground);
+  font: inherit;
+  text-align: left;
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out),
+    transform 120ms var(--ease-out);
+}
+
+.onboarding-personality-preset:hover {
+  background: color-mix(in oklch, var(--muted) 72%, var(--card));
+}
+
+.onboarding-personality-preset:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px var(--warm-strong),
+    0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-personality-preset:active {
+  transform: scale(0.96);
+}
+
+.onboarding-personality-preset[aria-pressed="true"] {
+  background: color-mix(in oklch, var(--warm-soft) 52%, var(--card));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklch, var(--warm-strong) 72%, var(--border)),
+    0 5px 14px color-mix(in oklch, var(--warm-strong) 8%, transparent);
+}
+
+.onboarding-personality-preset-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--card) 78%, transparent);
+  color: var(--muted-foreground);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.onboarding-personality-preset[aria-pressed="true"] .onboarding-personality-preset-icon {
+  background: color-mix(in oklch, var(--warm-soft) 72%, var(--card));
+  color: var(--warm-strong);
+}
+
+.onboarding-personality-preset-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.onboarding-personality-preset-copy > span:first-child {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: 1.3;
+}
+
+.onboarding-personality-preset-copy > span:last-child {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  text-wrap: pretty;
+}
+
+.onboarding-personality-preset-check {
+  display: inline-grid;
+  place-items: center;
+  color: var(--warm-strong);
+  opacity: 0;
+  filter: blur(4px);
+  transform: scale(0.25);
+  transition:
+    opacity 180ms var(--ease-out),
+    filter 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+
+.onboarding-personality-preset-check[data-visible="true"] {
+  opacity: 1;
+  filter: blur(0);
+  transform: scale(1);
+}
+
+.onboarding-personality-custom-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+.onboarding-personality-preview {
+  display: flex;
+  min-height: 72px;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 var(--sp-1);
+  text-align: left;
+}
+
+.onboarding-personality-thread {
+  display: flex;
+  min-height: 56px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.onboarding-personality-thread.agent-timeline[data-home="true"] {
+  gap: 0;
+  padding-top: 0;
+}
+
+.onboarding-personality-thread.agent-timeline[data-home="true"] .agent-assistant-turn-body {
+  width: fit-content;
+  max-width: 100%;
+  box-shadow:
+    inset 0 0 0 1px var(--border-subtle),
+    var(--shadow-sm);
+}
+
+.onboarding-personality-thread .agent-assistant-turn-body p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+.onboarding-personality-save-error {
+  width: min(100%, 320px);
+  margin: var(--sp-2) auto 0;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+.onboarding-card-personality .welcome-providers {
+  width: min(100%, 320px);
+  margin-inline: auto;
+}
+
+.onboarding-card-permissions {
+  width: min(100%, 620px);
+}
+
+.onboarding-card-permissions .welcome-providers {
+  width: min(100%, 320px);
+  margin-inline: auto;
+}
+
+@media (max-width: 720px) {
+  .onboarding-intent-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .onboarding-personality-editor {
+    grid-template-columns: 1fr;
+    gap: var(--sp-4);
+  }
+
+  .onboarding-personality-chart {
+    width: min(100%, 330px);
+  }
+
+  .onboarding-personality-presets {
+    width: min(100%, 360px);
+    margin-inline: auto;
+  }
+
+  .onboarding-personality-preview {
+    min-height: 72px;
+  }
+
+  .onboarding-personality-thread {
+    min-height: 56px;
+  }
+}
+
+@media (max-height: 720px) and (min-width: 721px) {
+  .onboarding-card-personality {
+    gap: var(--sp-3);
+  }
+
+  .onboarding-card-personality .onboarding-personality-layout {
+    gap: var(--sp-3);
+  }
+
+  .onboarding-card-personality .onboarding-personality-preview {
+    min-height: 56px;
+  }
+
+  .onboarding-card-personality .onboarding-personality-editor {
+    gap: var(--sp-4);
+  }
+
+  .onboarding-card-personality .onboarding-personality-chart {
+    width: min(100%, 300px);
+  }
+
+  .onboarding-card-personality .onboarding-personality-presets {
+    gap: var(--sp-2);
+  }
+
+  .onboarding-card-personality .onboarding-personality-preset-list {
+    gap: 6px;
+  }
+
+  .onboarding-card-personality .onboarding-personality-preset {
+    min-height: 54px;
+    padding-block: var(--sp-1);
+  }
+
+  .onboarding-card-personality .welcome-providers {
+    margin-top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-personality-preset,
+  .onboarding-personality-preset-check,
+  .onboarding-personality-handle-dot {
+    transition-duration: 0.01ms;
+  }
 }
 
 .onboarding-intent-other {
