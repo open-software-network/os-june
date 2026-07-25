@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
@@ -8,13 +8,15 @@ import {
   isOnboardingComplete,
   markOnboardingComplete,
   ONBOARDING_COMPLETED_EVENT,
-  onboardingCustomUseCase,
-  onboardingUseCases,
+  onboardingArea,
+  onboardingPersonality,
   onboardingResumeStep,
   resetOnboardingForReplay,
   setOnboardingResumeStep,
   subscribeToOnboardingComplete,
+  type OnboardingArea,
 } from "../lib/onboarding";
+import { personalityPreviewMessage, personalityStylesForArea } from "../lib/onboarding-personality";
 import { TELEMETRY_INFO_URL } from "../lib/p3a";
 import type { AccountStatus, RecordingSourceReadinessDto } from "../lib/tauri";
 
@@ -23,15 +25,12 @@ const mocks = vi.hoisted(() => ({
   dictationHelperCommand: vi.fn(),
   checkRecordingSourceReadiness: vi.fn(),
   openPrivacySettings: vi.fn(),
-  setDictationLanguage: vi.fn(),
   setDictationShortcut: vi.fn(),
   setP3aEnabled: vi.fn(),
   p3aRecord: vi.fn(),
   osAccountsLogin: vi.fn(),
-  juneOpenCommunityPage: vi.fn(),
-  juneOpenVerifyPage: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
-  osAccountsOpenPortal: vi.fn(),
+  setJunePersona: vi.fn(),
   listen: vi.fn(),
 }));
 
@@ -51,15 +50,12 @@ vi.mock("../lib/tauri", () => ({
   dictationHelperCommand: mocks.dictationHelperCommand,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   openPrivacySettings: mocks.openPrivacySettings,
-  setDictationLanguage: mocks.setDictationLanguage,
   setDictationShortcut: mocks.setDictationShortcut,
   setP3aEnabled: mocks.setP3aEnabled,
   p3aRecord: mocks.p3aRecord,
   osAccountsLogin: mocks.osAccountsLogin,
-  juneOpenCommunityPage: mocks.juneOpenCommunityPage,
-  juneOpenVerifyPage: mocks.juneOpenVerifyPage,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
-  osAccountsOpenPortal: mocks.osAccountsOpenPortal,
+  setJunePersona: mocks.setJunePersona,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -74,11 +70,6 @@ const account: AccountStatus = {
   subscription: { subscribed: true, status: "trialing" },
 };
 
-const unsubscribedAccount: AccountStatus = {
-  ...account,
-  subscription: { subscribed: false },
-};
-
 const signedOutAccount: AccountStatus = {
   signedIn: false,
   configured: true,
@@ -86,9 +77,6 @@ const signedOutAccount: AccountStatus = {
 
 type ListenHandler = (event: { payload: string }) => void;
 
-// What check_recording_source_readiness returns after the capture-helper
-// probe: a passing probe reports the system source as granted; a denial
-// flips both ready and permissionState.
 function systemAudioReadiness(granted: boolean): RecordingSourceReadinessDto {
   return {
     sourceMode: "microphonePlusSystem",
@@ -143,6 +131,20 @@ function shortcut(label: string) {
   };
 }
 
+const AREA_TITLES: Record<OnboardingArea, string> = {
+  work: "Staying on top of work",
+  personal: "Managing my personal life",
+  thinking: "Thinking, writing, and reflecting",
+  play: "Having fun and creating",
+};
+
+const AREA_PERSONALITY_STYLES: Record<OnboardingArea, string> = {
+  work: "Clearheaded co-pilot",
+  personal: "Easygoing companion",
+  thinking: "Thoughtful partner",
+  play: "Playful wildcard",
+};
+
 describe("OnboardingFlow", () => {
   let emitDictationEvent: ListenHandler | undefined;
 
@@ -158,9 +160,6 @@ describe("OnboardingFlow", () => {
     mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(true));
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
-    mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
-    mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
-    mocks.setDictationLanguage.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockResolvedValue(undefined);
     mocks.setP3aEnabled.mockImplementation((enabled: boolean) =>
       Promise.resolve({
@@ -172,6 +171,14 @@ describe("OnboardingFlow", () => {
       }),
     );
     mocks.p3aRecord.mockResolvedValue(undefined);
+    mocks.setJunePersona.mockResolvedValue({
+      schemaVersion: 1,
+      area: "work",
+      voice: 10,
+      detail: 40,
+      initiative: 85,
+      humor: 20,
+    });
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: shortcut("fn"),
@@ -190,19 +197,6 @@ describe("OnboardingFlow", () => {
       onComplete: vi.fn(),
       ...overrides,
     };
-  }
-
-  async function renderFlow(onComplete = vi.fn()) {
-    render(<OnboardingFlow {...flowProps({ onComplete })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Work" }));
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
-    return onComplete;
   }
 
   function grantPermissions() {
@@ -226,16 +220,10 @@ describe("OnboardingFlow", () => {
       get: () => userAgent,
     });
     return () => {
-      if (ownPlatform) {
-        Object.defineProperty(navigator, "platform", ownPlatform);
-      } else {
-        Reflect.deleteProperty(navigator, "platform");
-      }
-      if (ownUserAgent) {
-        Object.defineProperty(navigator, "userAgent", ownUserAgent);
-      } else {
-        Reflect.deleteProperty(navigator, "userAgent");
-      }
+      if (ownPlatform) Object.defineProperty(navigator, "platform", ownPlatform);
+      else Reflect.deleteProperty(navigator, "platform");
+      if (ownUserAgent) Object.defineProperty(navigator, "userAgent", ownUserAgent);
+      else Reflect.deleteProperty(navigator, "userAgent");
     };
   }
 
@@ -243,138 +231,225 @@ describe("OnboardingFlow", () => {
     return stubNavigatorPlatform("MacIntel", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)");
   }
 
-  it("walks the full flow for a subscribed user", async () => {
-    const user = userEvent.setup();
-    const onComplete = await renderFlow();
+  async function advanceToArea() {
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "Help improve June" });
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Where could I help most?" });
+  }
 
-    // Permissions: continue stays locked until the helper reports both granted.
-    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-    grantPermissions();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    // The next step is hands-on practice. Onboarding no longer opens billing
-    // or asks for a card before the user tries the product.
-    const input = await screen.findByPlaceholderText(/Tell June what to do/i);
-    await user.type(input, "hello there");
-    await screen.findByRole("status", { name: "Dictation is working" });
-    await user.click(screen.getByRole("button", { name: "Start using June" }));
+  async function chooseArea(area: OnboardingArea) {
+    await userEvent.click(screen.getByRole("button", { name: new RegExp(AREA_TITLES[area], "i") }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Choose my personality" });
+  }
 
-    expect(onComplete).toHaveBeenCalledOnce();
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
-    // Completion is the caller's job (App marks it), not the flow's.
-    expect(isOnboardingComplete()).toBe(false);
+  it("introduces June as a private AI without using the Open Software name", async () => {
+    render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
+
+    await screen.findByRole("heading", { name: "Hi, I'm June. Your private AI." });
+    expect(screen.getByText("Your private life stays on this Mac")).toBeInTheDocument();
+    expect(screen.getByText("I learn and remember everything locally")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "verify everything yourself" })).toHaveAttribute(
+      "href",
+      "https://github.com/open-software-network/os-june",
+    );
+    expect(screen.getByText("I default to Private models")).toBeInTheDocument();
+    expect(
+      screen.getByText("Zero-retention models don't store your prompts or train on them."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Continue with June" })).toBeInTheDocument();
+    expect(screen.queryByText(/OpenSoftware|Open Software/)).not.toBeInTheDocument();
+  });
+
+  it("signs the user in from the private-AI introduction", async () => {
+    const onAccountChanged = vi.fn();
+    mocks.osAccountsLogin.mockResolvedValue(account);
+    const { rerender } = render(
+      <OnboardingFlow {...flowProps({ account: signedOutAccount, onAccountChanged })} />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Continue with June" }));
+    await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
+    rerender(<OnboardingFlow {...flowProps({ account, onAccountChanged })} />);
+    await screen.findByRole("heading", { name: "Help improve June" });
   });
 
   it("keeps anonymous usage statistics off by default", async () => {
     render(<OnboardingFlow {...flowProps()} />);
 
     await screen.findByRole("heading", { name: "Help improve June" });
-    expect(screen.queryByText("See exactly what is shared")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Share anonymous usage statistics" }),
+    ).toHaveAttribute("aria-checked", "false");
     expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
       "href",
       TELEMETRY_INFO_URL,
     );
-    expect(
-      screen.getByRole("switch", { name: "Share anonymous usage statistics" }),
-    ).toHaveAttribute("aria-checked", "false");
 
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-
     expect(mocks.setP3aEnabled).toHaveBeenCalledWith(false);
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
+    await screen.findByRole("heading", { name: "Where could I help most?" });
   });
 
-  it("saves anonymous usage statistics consent when selected", async () => {
-    const user = userEvent.setup();
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", { name: "Help improve June" });
-    await user.click(screen.getByRole("switch", { name: "Share anonymous usage statistics" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-
-    expect(mocks.setP3aEnabled).toHaveBeenCalledWith(true);
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
-  });
-
-  it("asks what the user wants to use June for", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("usage-intent");
-    render(<OnboardingFlow {...flowProps()} />);
-
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
+  it("saves one broad help area instead of collecting a multi-select survey", async () => {
+    await advanceToArea();
     const continueButton = screen.getByRole("button", { name: "Continue" });
     expect(continueButton).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "Work" }));
-    await user.click(screen.getByRole("button", { name: "Personal" }));
-    expect(continueButton).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: /Staying on top of work/i }));
+    await userEvent.click(screen.getByRole("button", { name: /Managing my personal life/i }));
+    await userEvent.click(continueButton);
 
-    await user.click(continueButton);
-
-    expect(onboardingUseCases()).toEqual(["work", "personal"]);
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.personal");
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    expect(onboardingArea()).toBe("personal");
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.personal");
+    await screen.findByRole("heading", { name: "Choose my personality" });
   });
 
-  it("saves a custom onboarding use case locally", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("usage-intent");
+  it.each(
+    Object.keys(AREA_TITLES) as OnboardingArea[],
+  )("sets the intended %s personality preset", async (area) => {
+    await advanceToArea();
+    await chooseArea(area);
+
+    expect(
+      screen.getByRole("button", { name: new RegExp(AREA_PERSONALITY_STYLES[area], "i") }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByRole("slider")).toHaveLength(4);
+  });
+
+  it("reshapes the character sheet and shows a new Home-style message", async () => {
+    await advanceToArea();
+    await chooseArea("work");
+
+    const firstMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    expect(firstMessage).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: /Calm collaborator/i }));
+    expect(await screen.findByRole("status")).toHaveTextContent("June is typing");
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+        firstMessage,
+      ),
+    );
+    expect(screen.getByRole("button", { name: /Calm collaborator/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    const calmMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Depth" }), { key: "End" });
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+        calmMessage,
+      ),
+    );
+    expect(screen.getByRole("button", { name: /Calm collaborator/i })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    const deepMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Initiative" }), { key: "Home" });
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+        deepMessage,
+      ),
+    );
+
+    const quietMessage = document.querySelector(".agent-assistant-turn-body")?.textContent;
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Playfulness" }), { key: "End" });
+    await waitFor(() =>
+      expect(document.querySelector(".agent-assistant-turn-body")?.textContent).not.toBe(
+        quietMessage,
+      ),
+    );
+  });
+
+  it("persists personality choices and carries the selected area into permissions", async () => {
+    await advanceToArea();
+    await chooseArea("personal");
+    await userEvent.click(screen.getByRole("button", { name: /Playful sidekick/i }));
+    fireEvent.keyDown(screen.getByRole("slider", { name: "Depth" }), { key: "Home" });
+    expect(screen.queryByText(/85%|0%|80%|95%/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByRole("heading", { name: "A few things I need from your Mac" });
+    expect(onboardingPersonality("personal")).toMatchObject({
+      voice: 85,
+      detail: 0,
+      initiative: 80,
+      humor: 95,
+    });
+    expect(mocks.setJunePersona).toHaveBeenCalledWith({
+      area: "personal",
+      voice: 85,
+      detail: 0,
+      initiative: 80,
+      humor: 95,
+    });
+    expect(
+      screen.getByText(
+        "I need this for voice notes, reflections, and anything you'd rather say than type.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "You don't need this for journaling. I only use it when you ask me to capture a call.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "work",
+      "I need this to hear the other people on calls, so your meeting notes include everyone.",
+    ],
+    [
+      "personal",
+      "You don't need this for journaling. I only use it when you ask me to capture a call.",
+    ],
+    [
+      "thinking",
+      "You don't need this for solo thinking. I only use it to capture a call on this Mac.",
+    ],
+    ["play", "You don't need this for solo play. I only use it to capture a call on this Mac."],
+  ] as const)("adapts system-audio copy for the %s route", async (area, expectedCopy) => {
+    localStorage.setItem("june.onboarding.area", area);
+    setOnboardingResumeStep("permissions");
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
-    const continueButton = screen.getByRole("button", { name: "Continue" });
-
-    await user.click(screen.getByRole("button", { name: "Other" }));
-    expect(continueButton).toBeDisabled();
-
-    await user.type(screen.getByPlaceholderText("Type your own use case"), "  family admin  ");
-    expect(continueButton).toBeEnabled();
-
-    await user.click(continueButton);
-
-    expect(onboardingUseCases()).toEqual(["other"]);
-    expect(onboardingCustomUseCase()).toBe("family admin");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.other");
-    expect(mocks.p3aRecord.mock.calls.flat()).not.toContain("family admin");
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", { name: "A few things I need from your Mac" });
+    expect(screen.getByText(expectedCopy)).toBeInTheDocument();
   });
 
-  async function walkToPractice(user: ReturnType<typeof userEvent.setup>) {
-    grantPermissions();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByPlaceholderText(/Tell June what to do/i);
-  }
+  it("completes after permissions instead of inserting a separate practice screen", async () => {
+    const onComplete = vi.fn();
+    const restoreNavigator = stubMacNavigatorPlatform();
+    try {
+      render(<OnboardingFlow {...flowProps({ onComplete })} />);
+      await screen.findByRole("heading", { name: "Help improve June" });
+      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await screen.findByRole("heading", { name: "Where could I help most?" });
+      await userEvent.click(screen.getByRole("button", { name: /Staying on top of work/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await screen.findByRole("heading", { name: "Choose my personality" });
+      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+      await screen.findByRole("heading", { name: "A few things I need from your Mac" });
 
-  it("enables practice completion for a one-character reply", async () => {
-    const user = userEvent.setup();
-    await renderFlow();
-    await walkToPractice(user);
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+      grantPermissions();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    const startButton = screen.getByRole("button", {
-      name: "Start using June",
-    });
-    expect(startButton).toBeDisabled();
-
-    await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "h");
-
-    await screen.findByRole("status", { name: "Dictation is working" });
-    expect(startButton).toBeEnabled();
+      await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+      expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
+      expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
+    } finally {
+      restoreNavigator();
+    }
   });
 
-  it("normalizes the factory-default shortcut to fn", async () => {
-    // A fresh install still carries the Rust-side Ctrl+Opt+D default; only
-    // then does onboarding write the bare-fn product default.
+  it("keeps the existing fresh-install fn shortcut default", async () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -396,9 +471,8 @@ describe("OnboardingFlow", () => {
         language: undefined,
       },
     });
-    setOnboardingResumeStep("dictation-practice");
+
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
@@ -408,9 +482,7 @@ describe("OnboardingFlow", () => {
     );
   });
 
-  it("keeps a customized shortcut on a wizard replay", async () => {
-    // A version bump replays the wizard for existing users; a key they set
-    // in Settings must survive untouched and show in the hint keycaps.
+  it("does not overwrite a customized dictation shortcut", async () => {
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -432,217 +504,98 @@ describe("OnboardingFlow", () => {
         language: undefined,
       },
     });
-    setOnboardingResumeStep("dictation-practice");
-    render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
 
-    await waitFor(() => expect(screen.getAllByText("F5")).toHaveLength(2));
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "Help improve June" });
+    await waitFor(() => expect(mocks.dictationSettings).toHaveBeenCalledOnce());
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
   });
 
-  it("rebinds the dictation key from the practice screen", async () => {
-    const user = userEvent.setup();
-    await renderFlow();
-    await walkToPractice(user);
-    mocks.setDictationShortcut.mockClear();
-
-    // "Change key" hands the helper the capture; the chord comes back as a
-    // shortcut_captured event and lands in the setting.
-    await user.click(screen.getByRole("button", { name: "Change key" }));
-    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
-      type: "start_shortcut_capture",
-      kind: "push_to_talk",
-      pressCount: 1,
-    });
-    await screen.findByText(/Press shortcut/);
-
-    emitDictationEvent?.({
-      payload: JSON.stringify({
-        type: "shortcut_captured",
-        payload: {
-          shortcut: {
-            code: "F5",
-            label: "F5",
-            pressCount: 1,
-            modifiers: {
-              command: false,
-              control: false,
-              option: false,
-              shift: false,
-              function: false,
-            },
-          },
-        },
-      }),
-    });
-
-    await waitFor(() =>
-      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
-        "push_to_talk",
-        expect.objectContaining({ code: "F5", label: "F5" }),
-      ),
-    );
-    // Both the instruction row and the composer-corner chip show the new key.
-    await waitFor(() => expect(screen.getAllByText("F5")).toHaveLength(2));
-  });
-
-  it("cancels a shortcut capture with Escape", async () => {
-    const user = userEvent.setup();
-    await renderFlow();
-    await walkToPractice(user);
-
-    await user.click(screen.getByRole("button", { name: "Change key" }));
-    await screen.findByText(/Press shortcut/);
-    await user.keyboard("{Escape}");
-
-    await waitFor(() =>
-      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
-        type: "cancel_shortcut_capture",
-      }),
-    );
-    // Back to the idle instruction with the key unchanged (the keycaps
-    // render the fn glyph lowercase).
-    await waitFor(() => expect(screen.getAllByText("fn")).toHaveLength(2));
-    expect(mocks.setDictationShortcut).not.toHaveBeenCalledWith(
-      "push_to_talk",
-      expect.objectContaining({ code: "F5" }),
-    );
-  });
-
-  it("signs the user in from the first step", async () => {
-    const user = userEvent.setup();
-    const onAccountChanged = vi.fn();
-    mocks.osAccountsLogin.mockResolvedValue(account);
-    const { rerender } = render(
-      <OnboardingFlow {...flowProps({ account: signedOutAccount, onAccountChanged })} />,
-    );
-
-    await screen.findByRole("heading", { name: "Welcome to June" });
-    await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
-
-    expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
-    await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
-    rerender(<OnboardingFlow {...flowProps({ account, onAccountChanged })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
-  });
-
-  it("opens the June community from the welcome step", async () => {
-    const user = userEvent.setup();
-    render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
-
-    await screen.findByRole("heading", { name: "Welcome to June" });
-    await user.click(
-      screen.getByRole("button", {
-        name: "Join the June community on Telegram",
-      }),
-    );
-
-    expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
-  });
-
-  it("shows Windows-accurate welcome copy", async () => {
-    const restoreNavigator = stubNavigatorPlatform(
-      "Win32",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    );
-    try {
-      render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
-
-      await screen.findByRole("heading", { name: "Welcome to June" });
-      expect(screen.getByText("Speak instead of type")).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "June turns your voice into polished writing in any app on your computer.",
-        ),
-      ).toBeInTheDocument();
-      expect(screen.getByText("Effortlessly capture meetings")).toBeInTheDocument();
-      expect(screen.getByText("Chat and work with June")).toBeInTheDocument();
-    } finally {
-      restoreNavigator();
-    }
-  });
-
-  it("does not ask unsubscribed users for a card during onboarding", async () => {
-    const user = userEvent.setup();
-    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
-    await user.click(screen.getByRole("button", { name: "Work" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
-
-    grantPermissions();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByPlaceholderText(/Tell June what to do/i);
-
-    expect(screen.queryByRole("heading", { name: /free trial/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Start free trial/i })).toBeNull();
-    expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
-  });
-
-  it("resumes a half-finished run at the saved step", async () => {
-    setOnboardingResumeStep("dictation-practice");
+  it("requests microphone and system-audio access on the permission step", async () => {
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("permissions");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
-  });
 
-  it("does not collect onboarding source metadata", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("dictation-practice");
-    render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(screen.queryByRole("option")).toBeNull();
-
-    await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "hello there");
-    await user.click(screen.getByRole("button", { name: "Start using June" }));
-  });
-
-  it("resets only onboarding progress when replaying the wizard", () => {
-    markOnboardingComplete();
-    setOnboardingResumeStep("setup");
-    localStorage.setItem("june.agent.riskAcknowledged", "true");
-
-    resetOnboardingForReplay();
-
-    expect(isOnboardingComplete()).toBe(false);
-    expect(onboardingResumeStep()).toBeNull();
-    expect(isAgentRiskAcknowledged()).toBe(true);
-  });
-
-  it("applies the replay flag only in development", () => {
-    markOnboardingComplete();
-    setOnboardingResumeStep("setup");
-
-    applyOnboardingReplayFlag({
-      DEV: false,
-      VITE_JUNE_REPLAY_ONBOARDING: "1",
-    });
-
-    expect(isOnboardingComplete()).toBe(true);
-    expect(onboardingResumeStep()).toBe("setup");
-
-    applyOnboardingReplayFlag({
-      DEV: true,
-      VITE_JUNE_REPLAY_ONBOARDING: "1",
-    });
-
-    expect(isOnboardingComplete()).toBe(false);
-    expect(onboardingResumeStep()).toBeNull();
-  });
-
-  it("requests the mic permission when the mic screen shows", async () => {
-    await renderFlow();
+    await screen.findByRole("heading", { name: "A few things I need from your Mac" });
     await waitFor(() =>
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
         type: "request_microphone_permission",
       }),
     );
+    await waitFor(() =>
+      expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith("microphonePlusSystem"),
+    );
+  });
+
+  it("keeps continue locked and opens System Settings when system audio is denied", async () => {
+    const restoreNavigator = stubMacNavigatorPlatform();
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(false));
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("permissions");
+    try {
+      render(<OnboardingFlow {...flowProps()} />);
+      grantPermissions();
+      await screen.findByText(
+        "Turned off in System Settings. Flip the toggle and June will notice.",
+      );
+      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+
+      await userEvent.click(screen.getByRole("button", { name: "Allow system audio access" }));
+      expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+    } finally {
+      restoreNavigator();
+    }
+  });
+
+  it("does not block continue when system audio is unsupported", async () => {
+    const readiness = systemAudioReadiness(false);
+    const system = readiness.sources.find((source) => source.source === "system");
+    if (system) system.permissionState = "unsupported";
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(readiness);
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("permissions");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    grantPermissions();
+    await screen.findByText("Needs macOS 14.2 or later.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+  });
+
+  it("explains when system audio needs a restart without blocking continue", async () => {
+    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioCaptureUnavailableReadiness());
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("permissions");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    grantPermissions();
+    await screen.findByText("Allowed. Restart June to finish turning it on.");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    expect(mocks.openPrivacySettings).not.toHaveBeenCalled();
+  });
+
+  it("only requires microphone access on Windows", async () => {
+    const restoreNavigator = stubNavigatorPlatform(
+      "Win32",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    );
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("permissions");
+    try {
+      render(<OnboardingFlow {...flowProps()} />);
+      await screen.findByRole("heading", { name: "A few things I need" });
+      expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
+      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
+
+      emitDictationEvent?.({
+        payload: JSON.stringify({
+          type: "permission_status",
+          payload: { microphone: "granted", accessibility: "missing" },
+        }),
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    } finally {
+      restoreNavigator();
+    }
   });
 
   it("shows no-device guidance on Windows without opening privacy settings", async () => {
@@ -650,8 +603,10 @@ describe("OnboardingFlow", () => {
       "Win32",
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("permissions");
     try {
-      await renderFlow();
+      render(<OnboardingFlow {...flowProps()} />);
       emitDictationEvent?.({
         payload: JSON.stringify({
           type: "permission_status",
@@ -669,8 +624,6 @@ describe("OnboardingFlow", () => {
           "No microphone found. Connect one, choose it in Windows sound settings, then try again.",
         ),
       ).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-
       await userEvent.click(screen.getByRole("button", { name: "Allow microphone access" }));
       expect(mocks.openPrivacySettings).not.toHaveBeenCalled();
       expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
@@ -681,129 +634,63 @@ describe("OnboardingFlow", () => {
     }
   });
 
-  it("only requires microphone access on Windows", async () => {
-    const restoreNavigator = stubNavigatorPlatform(
-      "Win32",
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+  it("resumes at the saved personality step with the saved area", async () => {
+    localStorage.setItem("june.onboarding.area", "thinking");
+    setOnboardingResumeStep("personality");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    await screen.findByRole("heading", { name: "Choose my personality" });
+    expect(screen.getByRole("button", { name: /Thoughtful partner/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
-    try {
-      await renderFlow();
-
-      expect(
-        screen.getByText("Dictation and meeting notes need microphone access."),
-      ).toBeInTheDocument();
-      expect(screen.queryByText("Accessibility")).not.toBeInTheDocument();
-      expect(screen.queryByText("System audio")).not.toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
-
-      emitDictationEvent?.({
-        payload: JSON.stringify({
-          type: "permission_status",
-          payload: { microphone: "granted", accessibility: "missing" },
-        }),
-      });
-
-      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-
-      await screen.findByRole("heading", { name: "Talk to June" });
-    } finally {
-      restoreNavigator();
-    }
+    expect(screen.getByText(/I found the thought underneath your brain-dump/)).toBeInTheDocument();
   });
 
-  it("probes system audio when the macOS permissions screen shows", async () => {
-    // The probe is what surfaces the system-audio TCC prompt on a fresh
-    // install; it must fire here, in context, not after onboarding.
-    const restoreNavigator = stubMacNavigatorPlatform();
-    try {
-      await renderFlow();
-      await waitFor(() =>
-        expect(mocks.checkRecordingSourceReadiness).toHaveBeenCalledWith("microphonePlusSystem"),
-      );
-    } finally {
-      restoreNavigator();
-    }
+  it("resets only onboarding progress when replaying the wizard", () => {
+    markOnboardingComplete();
+    setOnboardingResumeStep("area");
+    localStorage.setItem("june.agent.riskAcknowledged", "true");
+
+    resetOnboardingForReplay();
+
+    expect(isOnboardingComplete()).toBe(false);
+    expect(onboardingResumeStep()).toBeNull();
+    expect(isAgentRiskAcknowledged()).toBe(true);
   });
 
-  it("keeps continue locked and falls back to settings when system audio is denied", async () => {
-    const user = userEvent.setup();
-    const restoreNavigator = stubMacNavigatorPlatform();
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(false));
-    try {
-      await renderFlow();
-      grantPermissions();
+  it("applies the replay flag only in development", () => {
+    markOnboardingComplete();
+    setOnboardingResumeStep("area");
 
-      await screen.findByText(
-        "Turned off in System Settings. Flip the toggle and June will notice.",
-      );
-      expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+    applyOnboardingReplayFlag({ DEV: false, VITE_JUNE_REPLAY_ONBOARDING: "1" });
+    expect(isOnboardingComplete()).toBe(true);
 
-      await user.click(screen.getByRole("button", { name: "Allow system audio access" }));
-      expect(mocks.openPrivacySettings).toHaveBeenCalledWith("systemAudio");
+    applyOnboardingReplayFlag({ DEV: true, VITE_JUNE_REPLAY_ONBOARDING: "1" });
+    expect(isOnboardingComplete()).toBe(false);
+    expect(onboardingResumeStep()).toBeNull();
+  });
+});
 
-      // The user flips the toggle and comes back; the focus re-probe picks
-      // up the grant.
-      mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(true));
-      window.dispatchEvent(new Event("focus"));
-      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    } finally {
-      restoreNavigator();
-    }
+describe("onboarding personality contract", () => {
+  const areas: readonly OnboardingArea[] = ["work", "personal", "thinking", "play"];
+  const axes = ["voice", "detail", "initiative", "humor"] as const;
+
+  it.each(areas)("uses %s-specific names and descriptions for all four starting styles", (area) => {
+    const styles = personalityStylesForArea(area);
+    expect(styles).toHaveLength(4);
+    expect(new Set(styles.map((style) => style.name)).size).toBe(4);
+    expect(styles.every((style) => style.description.length > 12)).toBe(true);
   });
 
-  it("does not block continue when system audio is unsupported", async () => {
-    const restoreNavigator = stubMacNavigatorPlatform();
-    const readiness = systemAudioReadiness(false);
-    const sysIdx = readiness.sources.findIndex((s) => s.source === "system");
-    readiness.sources[sysIdx] = {
-      ...readiness.sources[sysIdx],
-      permissionState: "unsupported",
-    };
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(readiness);
-    try {
-      await renderFlow();
-      grantPermissions();
-
-      await screen.findByText("Needs macOS 14.2 or later.");
-      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    } finally {
-      restoreNavigator();
-    }
-  });
-
-  it("does not show System Settings copy when system audio permission is granted but capture is unavailable", async () => {
-    const restoreNavigator = stubMacNavigatorPlatform();
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioCaptureUnavailableReadiness());
-    try {
-      await renderFlow();
-      grantPermissions();
-
-      expect(
-        screen.queryByText("Turned off in System Settings. Flip the toggle and June will notice."),
-      ).not.toBeInTheDocument();
-      await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    } finally {
-      restoreNavigator();
-    }
-  });
-
-  it("says system audio needs a restart rather than calling it allowed", async () => {
-    const restoreNavigator = stubMacNavigatorPlatform();
-    mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioCaptureUnavailableReadiness());
-    try {
-      await renderFlow();
-      grantPermissions();
-
-      // The grant exists, so there is nothing left to allow, but the source
-      // does not work yet and the row must not claim otherwise.
-      await screen.findByText("Allowed. Restart June to finish turning it on.");
-      expect(
-        screen.queryByText("Hears your calls and meetings, only while you record."),
-      ).not.toBeInTheDocument();
-      expect(mocks.openPrivacySettings).not.toHaveBeenCalled();
-    } finally {
-      restoreNavigator();
+  it.each(areas)("changes the %s preview at every adjacent value on every axis", (area) => {
+    const baseline = { voice: 50, detail: 50, initiative: 50, humor: 50 };
+    for (const axis of axes) {
+      for (let value = 0; value < 100; value += 1) {
+        const current = personalityPreviewMessage(area, { ...baseline, [axis]: value });
+        const next = personalityPreviewMessage(area, { ...baseline, [axis]: value + 1 });
+        expect(next, `${area}.${axis} ${value}→${value + 1}`).not.toBe(current);
+      }
     }
   });
 });
@@ -817,9 +704,6 @@ describe("subscribeToOnboardingComplete", () => {
     const callback = vi.fn();
     const unsubscribe = subscribeToOnboardingComplete(callback);
 
-    // A sibling window (the HUD) receives both the storage event and the
-    // BroadcastChannel message for the same completion; the guard collapses
-    // them into a single invocation.
     localStorage.setItem("june.onboarding.completedVersion", "999");
     window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));

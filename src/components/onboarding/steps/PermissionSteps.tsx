@@ -6,6 +6,7 @@ import { IconTextIndicator } from "central-icons/IconTextIndicator";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import { dictationHelperCommand, openPrivacySettings } from "../../../lib/tauri";
 import { fallbackDictationCapabilities } from "../../../lib/platform";
+import type { OnboardingArea } from "../../../lib/onboarding";
 import { StepActions, StepCard } from "../StepChrome";
 import {
   isAccessibilityGranted,
@@ -14,6 +15,47 @@ import {
   type PermissionStatuses,
   type SystemAudioStatus,
 } from "../use-permission-status";
+
+const PERMISSION_COPY: Record<
+  OnboardingArea,
+  {
+    subtitle: string;
+    microphone: string;
+    accessibility: string;
+    systemAudio: string;
+  }
+> = {
+  work: {
+    subtitle: "This lets me take meeting notes, hear dictation, and type for you.",
+    microphone: "I need this to hear your dictation and the meetings you choose to record.",
+    accessibility: "I need this to put your words where you're typing, in any app.",
+    systemAudio:
+      "I need this to hear the other people on calls, so your meeting notes include everyone.",
+  },
+  personal: {
+    subtitle: "This lets me hear voice notes, type for you, and capture a call when you choose.",
+    microphone:
+      "I need this for voice notes, reflections, and anything you'd rather say than type.",
+    accessibility: "I need this to put dictated messages and notes into other apps.",
+    systemAudio:
+      "You don't need this for journaling. I only use it when you ask me to capture a call.",
+  },
+  thinking: {
+    subtitle:
+      "This lets me hear rough ideas, type drafts, and capture a conversation when you choose.",
+    microphone: "I need this when you want to talk through an idea or dictate a draft.",
+    accessibility: "I need this to put your spoken draft into the app you're working in.",
+    systemAudio:
+      "You don't need this for solo thinking. I only use it to capture a call on this Mac.",
+  },
+  play: {
+    subtitle:
+      "This lets me hear your ideas, type for you, and capture a role-play when you choose.",
+    microphone: "I need this when you'd rather speak as a character or talk through a story.",
+    accessibility: "I need this to put dialogue and ideas into the app you're using.",
+    systemAudio: "You don't need this for solo play. I only use it to capture a call on this Mac.",
+  },
+};
 
 function PermissionRow({
   icon,
@@ -58,11 +100,13 @@ function PermissionRow({
 }
 
 export function PermissionsStep({
+  area,
   statuses,
   systemAudioStatus,
   onAllowSystemAudio,
   onContinue,
 }: {
+  area: OnboardingArea;
   statuses: PermissionStatuses;
   systemAudioStatus: SystemAudioStatus;
   /** Re-runs the capture-helper probe; fires the TCC prompt while the
@@ -89,6 +133,7 @@ export function PermissionsStep({
   const capabilities = fallbackDictationCapabilities();
   const macLikePlatform = capabilities.platform === "macos";
   const windowsPlatform = capabilities.platform === "windows";
+  const copy = PERMISSION_COPY[area];
 
   // Fire the native TCC prompt as soon as the screen shows — the user just
   // read why we're asking, so the dialog lands in context. No-op when
@@ -125,15 +170,14 @@ export function PermissionsStep({
 
   return (
     <StepCard
-      title="Let June listen and type"
+      title={macLikePlatform ? "A few things I need from your Mac" : "A few things I need"}
       subtitle={
-        macLikePlatform
-          ? "Dictation and meeting notes need three macOS permissions."
-          : windowsPlatform
-            ? "Dictation and meeting notes need microphone access."
-            : "Meeting notes need microphone access."
+        windowsPlatform
+          ? "This lets me hear dictation and the meetings you choose to record."
+          : copy.subtitle
       }
       wide
+      className="onboarding-card-permissions"
     >
       <ul
         className="onboarding-perms"
@@ -151,7 +195,7 @@ export function PermissionsStep({
                 ? macLikePlatform
                   ? "Turned off in System Settings. Flip the toggle and June will notice."
                   : "Turned off in Windows settings. Flip the toggle and June will notice."
-                : "Hears you only when you ask June to listen."
+                : copy.microphone
           }
           onAllow={
             showPermissionRows
@@ -175,7 +219,7 @@ export function PermissionsStep({
               icon={<IconTextIndicator size={15} />}
               granted={showPermissionRows && accessibilityGranted}
               title="Accessibility"
-              detail="Types your words at your cursor, in any app."
+              detail={copy.accessibility}
               onAllow={showPermissionRows ? openAccessibilitySettings : undefined}
             />
             <PermissionRow
@@ -192,7 +236,7 @@ export function PermissionsStep({
                       ? "Allowed. Restart June to finish turning it on."
                       : systemAudioStatus === "probing"
                         ? "Waiting for macOS. Approve the prompt when it appears."
-                        : "Hears your calls and meetings, only while you record."
+                        : copy.systemAudio
               }
               onAllow={
                 showPermissionRows

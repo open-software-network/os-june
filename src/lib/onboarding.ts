@@ -6,10 +6,12 @@
  * everyone after a flow redesign.
  */
 
-const ONBOARDING_VERSION = 8;
+const ONBOARDING_VERSION = 9;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
+const AREA_KEY = "june.onboarding.area";
+const PERSONALITY_KEY = "june.onboarding.personality";
 const USE_CASES_KEY = "june.onboarding.useCases";
 const CUSTOM_USE_CASE_KEY = "june.onboarding.customUseCase";
 const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
@@ -29,6 +31,112 @@ export const ONBOARDING_USE_CASES = [
 export type OnboardingUseCase = (typeof ONBOARDING_USE_CASES)[number];
 
 const ONBOARDING_USE_CASE_SET = new Set<string>(ONBOARDING_USE_CASES);
+
+export const ONBOARDING_AREAS = ["work", "personal", "thinking", "play"] as const;
+export type OnboardingArea = (typeof ONBOARDING_AREAS)[number];
+
+export type OnboardingPersonality = {
+  voice: number;
+  detail: number;
+  initiative: number;
+  humor: number;
+};
+
+export type OnboardingHomeRoute = {
+  firstAction: string;
+  immediateOutput: string;
+  retainedBehavior: string;
+};
+
+const ONBOARDING_AREA_SET = new Set<string>(ONBOARDING_AREAS);
+
+const LEGACY_VOICE_VALUES: Record<string, number> = {
+  professional: 0,
+  natural: 50,
+  relaxed: 100,
+};
+const LEGACY_DETAIL_VALUES: Record<string, number> = {
+  concise: 0,
+  balanced: 50,
+  thorough: 100,
+};
+const LEGACY_INITIATIVE_VALUES: Record<string, number> = {
+  "answer-only": 0,
+  "suggest-next": 100,
+};
+const LEGACY_HUMOR_VALUES: Record<string, number> = {
+  serious: 0,
+  playful: 50,
+  funny: 100,
+};
+
+function isSpectrumValue(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
+function spectrumValue(
+  value: unknown,
+  fallback: number,
+  legacyValues: Record<string, number>,
+): number {
+  if (isSpectrumValue(value)) return value;
+  if (typeof value === "string" && value in legacyValues) return legacyValues[value];
+  return fallback;
+}
+
+export const ONBOARDING_PERSONALITY_PRESETS: Record<OnboardingArea, OnboardingPersonality> = {
+  work: {
+    voice: 10,
+    detail: 40,
+    initiative: 85,
+    humor: 20,
+  },
+  personal: {
+    voice: 80,
+    detail: 55,
+    initiative: 70,
+    humor: 45,
+  },
+  thinking: {
+    voice: 45,
+    detail: 90,
+    initiative: 75,
+    humor: 20,
+  },
+  play: {
+    voice: 85,
+    detail: 70,
+    initiative: 80,
+    humor: 95,
+  },
+};
+
+/**
+ * The routing contract for the Home follow-up. Onboarding persists the area
+ * now; Home can consume this map when its first-run recommendation is built.
+ */
+export const ONBOARDING_HOME_ROUTES: Record<OnboardingArea, OnboardingHomeRoute> = {
+  work: {
+    firstAction: "Record a meeting or dictate a follow-up",
+    immediateOutput: "A clean summary, decisions, and follow-ups",
+    retainedBehavior: "Capture the next meeting and clear follow-ups from Home",
+  },
+  personal: {
+    firstAction: "Talk through something on your mind",
+    immediateOutput: "A private journal entry with the thoughts worth keeping",
+    retainedBehavior: "Return to Home for spoken notes, plans, and decisions",
+  },
+  thinking: {
+    firstAction: "Talk through a rough idea, decision, or reflection",
+    immediateOutput: "A clearer structure, draft, or perspective",
+    retainedBehavior: "Use dictation and Home to think, write, and reflect",
+  },
+  play: {
+    firstAction: "Create a character and start a role-play",
+    immediateOutput: "A character, setting, and first scene to jump into",
+    retainedBehavior: "Return to Home to continue the story or invent a new world",
+  },
+};
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
@@ -156,6 +264,63 @@ export function setOnboardingResumeStep(stepId: string) {
     window.localStorage.setItem(RESUME_KEY, stepId);
   } catch {
     // Ignore; worst case the wizard restarts from the top.
+  }
+}
+
+export function onboardingArea(): OnboardingArea | null {
+  try {
+    const value = window.localStorage.getItem(AREA_KEY);
+    return value && ONBOARDING_AREA_SET.has(value) ? (value as OnboardingArea) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveOnboardingArea(area: OnboardingArea) {
+  try {
+    if (!ONBOARDING_AREA_SET.has(area)) return;
+    window.localStorage.setItem(AREA_KEY, area);
+  } catch {
+    // Ignore; this preference can be chosen again if storage is unavailable.
+  }
+}
+
+export function personalityPresetForArea(area: OnboardingArea): OnboardingPersonality {
+  return { ...ONBOARDING_PERSONALITY_PRESETS[area] };
+}
+
+export function onboardingPersonality(
+  fallbackArea: OnboardingArea = "work",
+): OnboardingPersonality {
+  const fallback = personalityPresetForArea(fallbackArea);
+  try {
+    const raw = window.localStorage.getItem(PERSONALITY_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      voice: spectrumValue(parsed.voice, fallback.voice, LEGACY_VOICE_VALUES),
+      detail: spectrumValue(parsed.detail, fallback.detail, LEGACY_DETAIL_VALUES),
+      initiative: spectrumValue(parsed.initiative, fallback.initiative, LEGACY_INITIATIVE_VALUES),
+      humor: spectrumValue(parsed.humor, fallback.humor, LEGACY_HUMOR_VALUES),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveOnboardingPersonality(personality: OnboardingPersonality) {
+  try {
+    if (
+      !isSpectrumValue(personality.voice) ||
+      !isSpectrumValue(personality.detail) ||
+      !isSpectrumValue(personality.initiative) ||
+      !isSpectrumValue(personality.humor)
+    ) {
+      return;
+    }
+    window.localStorage.setItem(PERSONALITY_KEY, JSON.stringify(personality));
+  } catch {
+    // Ignore; the preset remains available if storage is unavailable.
   }
 }
 

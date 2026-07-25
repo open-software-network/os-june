@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
   Dev-only onboarding preview. Runs the real wizard in a plain browser by
-  faking the Tauri IPC bridge inline: signed in, permissions grant on
-  request, and the dictation practice can be watched in isolation. Nothing
+  faking the Tauri IPC bridge inline: signed in and permissions grant on
+  request. Nothing
   here ships: vite builds only index.html, and no app code references this
   file.
 
@@ -13,18 +13,16 @@
   Console helpers once it's open:
     june.replayOnboarding()            restart the wizard from step 1
     june.replayOnboarding("permissions")
-                                       jump to a step (sign-in, permissions,
-                                       telemetry, usage-intent,
-                                       dictation-practice)
+                                       jump to a step (sign-in, telemetry,
+                                       area, personality, permissions)
     __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
     localStorage.setItem("os-june:theme", "dark"); location.reload()
 
   The preview opens signed out — the real first-run experience. Clicking
-  "Continue with OpenSoftware" fake-signs-in as Sam Carter. "Change key" on
-  the practice step pretends the user presses F5 a beat after recording
-  starts.
+  "Continue with June" fake-signs-in as Sam Carter.
 
-  URL params (for scripted screenshots): ?theme=dark, ?step=<step id>
+  URL params (for scripted screenshots): ?theme=dark, ?step=<step id>,
+  ?area=work|personal|thinking|play
   (a step jump implies a signed-in account), ?perms=missing|denied
   (permissions, including system audio, start ungranted; the row actions
   then grant after a beat, so ?step=permissions&perms=missing walks the
@@ -44,6 +42,9 @@
           var stored =
             new URLSearchParams(location.search).get("theme") ||
             localStorage.getItem("os-june:theme");
+          if (stored === "light" || stored === "dark") {
+            localStorage.setItem("os-june:theme", stored);
+          }
           var resolved =
             stored === "light" || stored === "dark"
               ? stored
@@ -76,6 +77,7 @@
         // opens signed out: the real first-run experience.
         const params = new URLSearchParams(location.search);
         const step = params.get("step");
+        const area = params.get("area");
 
         // ?perms=missing starts all permissions ungranted; ?perms=denied
         // starts the mic and system audio at the System Settings dead end.
@@ -102,6 +104,10 @@
           localStorage.removeItem("june.onboarding.completedVersion");
           if (step) localStorage.setItem("june.onboarding.resumeStep", step);
           else localStorage.removeItem("june.onboarding.resumeStep");
+          if (["work", "personal", "thinking", "play"].includes(area)) {
+            localStorage.setItem("june.onboarding.area", area);
+            localStorage.removeItem("june.onboarding.personality");
+          }
         } catch (e) {}
 
         // A plainly-not-June account for the signed-in preview path.
@@ -224,6 +230,8 @@
                   pushToTalkShortcut = args.shortcut;
                 }
                 return dictationSettings();
+              case "set_june_persona":
+                return { schemaVersion: 1, ...(args.request || {}) };
               case "open_privacy_settings": {
                 // Pretend the user flips the toggle in System Settings and
                 // comes back; the wizard's poll picks it up. System audio

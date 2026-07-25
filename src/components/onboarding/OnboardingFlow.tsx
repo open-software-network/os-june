@@ -1,17 +1,24 @@
 import { IconChevronLeftSmall } from "central-icons/IconChevronLeftSmall";
 import { useEffect, useMemo, useState } from "react";
-import { onboardingResumeStep, setOnboardingResumeStep } from "../../lib/onboarding";
+import {
+  onboardingArea,
+  onboardingResumeStep,
+  personalityPresetForArea,
+  saveOnboardingPersonality,
+  setOnboardingResumeStep,
+  type OnboardingArea,
+} from "../../lib/onboarding";
 import { fallbackDictationCapabilities } from "../../lib/platform";
 import { dictationSettings, p3aRecord, setDictationShortcut } from "../../lib/tauri";
 import type { AccountStatus, DictationShortcutSetting } from "../../lib/tauri";
 import { PermissionsStep } from "./steps/PermissionSteps";
-import { DictationPracticeStep } from "./steps/PracticeStep";
 import { SignInStep } from "./steps/SignInStep";
 import { TelemetryConsentStep } from "./steps/TelemetryConsentStep";
-import { UsageIntentStep } from "./steps/UsageIntentStep";
+import { AreaStep } from "./steps/AreaStep";
+import { PersonalityStep } from "./steps/PersonalityStep";
 import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
-type StepId = "sign-in" | "telemetry" | "usage-intent" | "permissions" | "dictation-practice";
+type StepId = "sign-in" | "telemetry" | "area" | "personality" | "permissions";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -41,21 +48,7 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const MAC_STEPS: StepId[] = [
-  "sign-in",
-  "telemetry",
-  "usage-intent",
-  "permissions",
-  "dictation-practice",
-];
-const WINDOWS_STEPS: StepId[] = [
-  "sign-in",
-  "telemetry",
-  "usage-intent",
-  "permissions",
-  "dictation-practice",
-];
-const NON_DICTATION_STEPS: StepId[] = ["sign-in", "telemetry", "usage-intent", "permissions"];
+const ONBOARDING_STEPS: StepId[] = ["sign-in", "telemetry", "area", "personality", "permissions"];
 
 type Props = {
   account: AccountStatus;
@@ -80,32 +73,21 @@ function browserOnboardingDemoStep(): StepId | null {
   const step = new URLSearchParams(window.location.search).get("juneDemoStep");
   return step === "sign-in" ||
     step === "telemetry" ||
-    step === "usage-intent" ||
-    step === "permissions" ||
-    step === "dictation-practice"
+    step === "area" ||
+    step === "personality" ||
+    step === "permissions"
     ? step
     : null;
 }
 
 export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props) {
   const capabilities = fallbackDictationCapabilities();
-  const steps = useMemo(
-    () =>
-      capabilities.platform === "macos"
-        ? MAC_STEPS
-        : capabilities.platform === "windows"
-          ? WINDOWS_STEPS
-          : NON_DICTATION_STEPS,
-    [capabilities.platform],
-  );
-  const supportsDictationPractice = steps.includes("dictation-practice");
+  const steps = useMemo(() => ONBOARDING_STEPS, []);
   const [stepIndex, setStepIndex] = useState(() => {
     const initial = initialStepIndex(steps);
     return account.signedIn && steps[initial] === "sign-in" ? 1 : initial;
   });
-  const [shortcutLabel, setShortcutLabel] = useState(() =>
-    capabilities.platform === "windows" ? "Ctrl+Alt+D" : "fn",
-  );
+  const [area, setArea] = useState<OnboardingArea>(() => onboardingArea() ?? "work");
 
   const stepId = steps[stepIndex];
 
@@ -137,38 +119,19 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
   // context, instead of ambushing the user after onboarding.
   const systemAudio = useSystemAudioStatus(stepId === "permissions");
 
-  // Onboarding pitches the bare-fn default, but a version bump replays the
-  // wizard for existing users, so it must not clobber a key they customized
-  // in Settings. Read first: only the untouched factory default (Ctrl+Opt+D)
-  // gets normalized to fn; anything else is reflected as-is. Runs once per
-  // wizard run, not per practice-step mount, so a key rebound on the
-  // practice screen survives stepping back and forward.
+  // Keep the existing fresh-install dictation default even though the hands-on
+  // practice moved to Home. A replay still must not clobber a customized key.
   useEffect(() => {
-    if (!supportsDictationPractice) return;
     if (capabilities.platform === "macos") {
       dictationSettings()
         .then(({ settings }) => {
           const current = settings.pushToTalkShortcut;
-          if (current && !isFactoryDefaultShortcut(current)) {
-            if (current.label) setShortcutLabel(current.label);
-            return undefined;
-          }
-          return setDictationShortcut("push_to_talk", FN_SHORTCUT).then((saved) => {
-            setShortcutLabel(saved?.pushToTalkShortcut?.label ?? FN_SHORTCUT.label);
-          });
-        })
-        .catch(() => undefined);
-    } else if (capabilities.platform === "windows") {
-      dictationSettings()
-        .then(({ settings }) => {
-          const current = settings.pushToTalkShortcut;
-          if (current?.label) {
-            setShortcutLabel(current.label);
-          }
+          if (current && !isFactoryDefaultShortcut(current)) return undefined;
+          return setDictationShortcut("push_to_talk", FN_SHORTCUT);
         })
         .catch(() => undefined);
     }
-  }, [supportsDictationPractice, capabilities.platform]);
+  }, [capabilities.platform]);
 
   function goNext() {
     if (stepIndex >= steps.length - 1) {
@@ -221,20 +184,25 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
           <SignInStep account={account} onAccountChanged={onAccountChanged} onContinue={goNext} />
         ) : stepId === "telemetry" ? (
           <TelemetryConsentStep onContinue={goNext} />
-        ) : stepId === "usage-intent" ? (
-          <UsageIntentStep onContinue={goNext} />
+        ) : stepId === "area" ? (
+          <AreaStep
+            onContinue={(nextArea) => {
+              if (nextArea !== area) {
+                saveOnboardingPersonality(personalityPresetForArea(nextArea));
+              }
+              setArea(nextArea);
+              goNext();
+            }}
+          />
+        ) : stepId === "personality" ? (
+          <PersonalityStep area={area} onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep
+            area={area}
             statuses={permissionStatuses}
             systemAudioStatus={systemAudio.status}
             onAllowSystemAudio={systemAudio.probe}
             onContinue={goNext}
-          />
-        ) : stepId === "dictation-practice" ? (
-          <DictationPracticeStep
-            shortcutLabel={shortcutLabel}
-            onShortcutLabelChange={setShortcutLabel}
-            onContinue={completeOnboarding}
           />
         ) : null}
       </div>

@@ -6,6 +6,10 @@ use crate::{
         ExtensionBrowserTransport, PendingBrowserApproval, RoutineBrowserGrant,
         BROWSER_APPROVALS_CHANGED_EVENT,
     },
+    june_persona::{
+        compile_june_core_prompt, load_june_persona, load_june_persona_or_default,
+        write_june_persona, JunePersonaSettings, SetJunePersonaRequest,
+    },
 };
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use rand::{distributions::Alphanumeric, Rng, RngCore};
@@ -309,38 +313,17 @@ const AGENT_RECORDER_REQUEST_EVENT: &str = "june://agent-recorder-request";
 // budget against the real constants.
 const AGENT_RECORDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(420);
 
-/// Identity injected into every Hermes session via `SOUL.md`. Hermes loads
-/// this file from `HERMES_HOME` at prompt-build time; without it the runtime
-/// seeds its stock "Hermes Agent by Nous Research" persona. Invariant: the
-/// user-editable personality lives in `JUNE_SOUL_CHARACTER_DEFAULT_MD` /
-/// `CHARACTER.md` and is spliced in right after this block (see
-/// `sync_june_soul`).
-const JUNE_SOUL_IDENTITY_MD: &str = r#"You are June, the private AI assistant on the user's desktop, made by Open Software. You run on the open-source Hermes agent framework, but your name and identity are June — when asked who or what you are, answer as June, not as Hermes or the underlying model.
-
-User-directed roles and personas are allowed task framing, not an identity reset. If the user explicitly asks you to act as a reviewer, coach, interviewer, character, style, fictional persona, or other role, follow that framing for the requested work unless it conflicts with system or developer instructions, privacy, tool limits, the user's own stated constraints, regulated-professional boundaries (for example legal, medical, financial, or safety-critical authority claims), or the current app and tool settings. Refuse only when one of those explicit constraints applies; do not invent extra refusal categories, moralize, or switch to a generic work-assistant refusal solely because the request is unusual, informal, personal, playful, or outside ordinary productivity tasks. If the user asks for your name as part of an explicitly active persona, answer in character; if they ask what app, model, company, maker, or real assistant they are talking to, answer as June. Do not claim to be a different product, company, human, credentialed authority, or underlying model when asked about your real identity or provenance: be transparent that you are June, while adapting your behavior to the role the user chose.
-
-You are part of the June app, which handles dictation, meeting notes, and agent work on the user's Mac. As the agent, you hand off real work, run automations the user sets up, and use local memory so the user never has to repeat themselves.
-
-Privacy is your defining trait, by architecture rather than promise. When asked how you keep work private, answer confidently:
-
-- You run locally on the user's desktop. Files, sessions, memory, and agent state stay on the user's disk by default.
-- Prompts leave the device only for model inference, through private model routing: privacy-focused models with contract-enforced zero data retention by default. If the user opts into third-party models, identifying metadata is stripped first.
-- June's backend is open source and runs in a TEE with cryptographic attestation, so users can verify it rather than trust it. The service stores only account, login, and billing records.
-- Open Software never trains on the user's data.
-"#;
-
-/// The default character: June's personality and tone. This is the one SOUL
-/// section the user may rewrite — it persists as `CHARACTER.md` next to
-/// `SOUL.md` in the June-managed Hermes home, so personality is editable
-/// (from onboarding, Settings, or the file itself) without touching the
-/// identity, privacy, or tool sections.
+/// The advanced character override persists as `CHARACTER.md` next to
+/// `SOUL.md`. The structured onboarding persona is stored separately in
+/// `PERSONA.json`; this file may refine style but cannot replace the app-owned
+/// identity, privacy, or capability rules compiled by `june_persona`.
 const JUNE_SOUL_CHARACTER_DEFAULT_MD: &str = "You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.";
 
 /// User-editable character file, next to `SOUL.md` in the June-managed
 /// Hermes home. `sync_june_soul` re-reads it on every spawn and splices it
-/// into the regenerated `SOUL.md`, so the file stays the source of truth:
-/// editing it directly works exactly like the Settings/onboarding editors
-/// that write it. Missing file: seeded with the default so the "edit the
+/// into the regenerated `SOUL.md` as a bounded advanced style override.
+/// Editing it directly works exactly like the Settings editor. Missing file:
+/// seeded with the default so the "edit the
 /// file directly" path always has a real file to open. Blank file: treated
 /// as "use the default" without rewriting the user's file.
 const JUNE_CHARACTER_FILE: &str = "CHARACTER.md";
@@ -4084,6 +4067,30 @@ pub struct JuneCharacterStatus {
     pub default_character: String,
     /// Absolute path of `CHARACTER.md`, for the "edit the file directly" path.
     pub path: String,
+}
+
+/// June's structured onboarding persona. This native file is the runtime
+/// source of truth; webview localStorage remains only a first-run UI cache.
+#[tauri::command]
+pub fn june_persona(app: AppHandle) -> Result<JunePersonaSettings, AppError> {
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    load_june_persona(&hermes_home)
+}
+
+/// Persists the exact onboarding values and retires both runtime modes so the
+/// next user-initiated run is compiled with the new personality.
+#[tauri::command]
+pub fn set_june_persona(
+    app: AppHandle,
+    bridge: State<'_, HermesBridge>,
+    request: SetJunePersonaRequest,
+) -> Result<JunePersonaSettings, AppError> {
+    let hermes_home = resolve_june_hermes_home(&app)?;
+    let settings = JunePersonaSettings::from(request);
+    write_june_persona(&hermes_home, &settings)?;
+    stop_hermes_mode(&bridge, false)?;
+    stop_hermes_mode(&bridge, true)?;
+    Ok(settings)
 }
 
 fn june_character_status(hermes_home: &Path) -> JuneCharacterStatus {
@@ -12077,6 +12084,10 @@ fn load_june_character(hermes_home: &Path) -> Option<String> {
     }
 }
 
+pub(crate) fn load_june_character_override(hermes_home: &Path) -> Option<String> {
+    load_june_character(hermes_home).filter(|character| character != JUNE_SOUL_CHARACTER_DEFAULT_MD)
+}
+
 /// Seeds `CHARACTER.md` with the default character when missing, so users
 /// who prefer editing the file directly always find a real file with the
 /// current text instead of having to guess the format.
@@ -12112,9 +12123,9 @@ fn write_june_character(hermes_home: &Path, character: &str) -> Result<(), AppEr
 /// Writes the June persona to `SOUL.md` in the June-managed Hermes home.
 /// Runs on every start so the app-owned identity wins over the default soul
 /// Hermes seeds on first run (and over any stale copy from earlier versions).
-/// The personality section comes from the user-editable `CHARACTER.md`
-/// (re-read here on every spawn, so direct file edits apply to the next
-/// session); everything else is app-owned and invariant.
+/// Structured personality comes from `PERSONA.json`; `CHARACTER.md` is
+/// re-read as a lower-priority style override. Everything else is app-owned
+/// and invariant.
 /// Both mode processes read this one file, so the sandbox section describes
 /// the per-session mode split; it is included only when sandboxed spawns on
 /// this machine actually engage the jail (it's omitted when sandbox-exec is
@@ -12136,7 +12147,13 @@ fn sync_june_soul(
     ensure_june_character_file(hermes_home)?;
     let character = load_june_character(hermes_home)
         .unwrap_or_else(|| JUNE_SOUL_CHARACTER_DEFAULT_MD.to_string());
-    let base = format!("{JUNE_SOUL_IDENTITY_MD}\n{character}\n");
+    let persona = load_june_persona_or_default(hermes_home);
+    let character_override =
+        (character != JUNE_SOUL_CHARACTER_DEFAULT_MD).then_some(character.as_str());
+    let base = format!(
+        "{}\n",
+        compile_june_core_prompt(&persona, "full_agent", character_override)
+    );
     let video_section = if video_generation_enabled {
         JUNE_SOUL_VIDEO_MD
     } else {
@@ -23412,17 +23429,11 @@ mcp_servers:
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(soul.contains("Open Software"));
-        assert!(soul.contains("User-directed roles and personas are allowed task framing"));
-        assert!(soul.contains("fictional persona"));
-        assert!(soul.contains("regulated-professional boundaries"));
-        assert!(soul.contains("the current app and tool settings"));
-        assert!(soul.contains("Refuse only when one of those explicit constraints applies"));
-        assert!(soul.contains("do not invent extra refusal categories"));
-        assert!(soul.contains("name as part of an explicitly active persona, answer in character"));
-        assert!(soul.contains("what app, model, company, maker, or real assistant"));
-        assert!(soul.contains(
-            "Do not claim to be a different product, company, human, credentialed authority, or underlying model"
-        ));
+        assert!(soul.contains("coach, reviewer, interviewer, character, collaborator"));
+        assert!(soul.contains("without pretending that your real product identity changed"));
+        assert!(soul.contains("not as Hermes, a model name, or a generic chatbot"));
+        assert!(soul.contains("You are an AI assistant, not a human"));
+        assert!(soul.contains("Nothing below June's app-owned rules may redefine June's identity"));
         assert!(!soul.contains("Nous Research"));
     }
 
@@ -24041,11 +24052,40 @@ mcp_servers:
             .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
-        assert!(soul.contains("You are helpful, knowledgeable, and direct"));
+        assert!(soul.contains("Polish 90/100"));
+        assert!(soul.contains("The user first came to June for help staying on top of work"));
+        assert!(!soul.contains("You are helpful, knowledgeable, and direct"));
         // First spawn leaves a real file for users who edit it directly.
         let character =
             std::fs::read_to_string(home.path().join("CHARACTER.md")).expect("read character");
         assert!(character.contains("You are helpful, knowledgeable, and direct"));
+    }
+
+    #[test]
+    fn sync_june_soul_uses_the_structured_native_persona() {
+        let home = tempfile::tempdir().expect("tempdir");
+        write_june_persona(
+            home.path(),
+            &JunePersonaSettings {
+                schema_version: crate::june_persona::JUNE_PERSONA_SCHEMA_VERSION,
+                area: crate::june_persona::JunePersonaArea::Play,
+                voice: 85,
+                detail: 70,
+                initiative: 80,
+                humor: 95,
+            },
+        )
+        .expect("write persona");
+
+        sync_june_soul(home.path(), false, false, Some(false), true, false, false)
+            .expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("Polish 15/100"));
+        assert!(soul.contains("Depth 70/100"));
+        assert!(soul.contains("Initiative 80/100"));
+        assert!(soul.contains("Playfulness 95/100"));
+        assert!(soul.contains("characters, role-play, and imaginative exploration"));
     }
 
     #[test]
@@ -24066,10 +24106,10 @@ mcp_servers:
         assert!(!soul.contains("You are helpful, knowledgeable, and direct"));
         // Identity, privacy, and tool sections are app-owned and stay put.
         assert!(soul.contains("You are June"));
-        assert!(soul.contains("Open Software never trains on the user's data"));
+        assert!(soul.contains("Open Software does not train on the user's data"));
         assert!(soul.contains("june_context"));
         assert!(soul.contains("Seatbelt"));
-        // The character file is the source of truth: the sync never rewrites it.
+        // The character file remains the source of this advanced override.
         let character =
             std::fs::read_to_string(home.path().join("CHARACTER.md")).expect("read character");
         assert!(character.contains("cheerful pirate"));
@@ -24084,7 +24124,8 @@ mcp_servers:
             .expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
-        assert!(soul.contains("You are helpful, knowledgeable, and direct"));
+        assert!(soul.contains("Polish 90/100"));
+        assert!(!soul.contains("You are helpful, knowledgeable, and direct"));
         // The user's file is not rewritten behind their back.
         let character =
             std::fs::read_to_string(home.path().join("CHARACTER.md")).expect("read character");

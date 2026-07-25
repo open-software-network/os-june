@@ -16,6 +16,7 @@ pub mod feature_flags;
 pub mod hermes_bridge;
 pub mod image_safety;
 pub mod june_api;
+pub mod june_persona;
 pub mod macos_menu_icons;
 pub mod meeting_calendar_context;
 pub mod meeting_detection;
@@ -272,6 +273,8 @@ pub fn run() {
             hermes_bridge::set_hermes_browser_access,
             hermes_bridge::routine_browser_access_get,
             hermes_bridge::routine_browser_access_set,
+            hermes_bridge::june_persona,
+            hermes_bridge::set_june_persona,
             hermes_bridge::june_character,
             hermes_bridge::set_june_character,
             hermes_bridge::open_hermes_tui_debug,

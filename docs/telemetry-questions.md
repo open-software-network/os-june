@@ -32,6 +32,10 @@ Every report is one question per request and carries only:
 | `agent.privacy-guard` | Agent privacy guard mode | off / structured | Rampart default-on decision |
 | `models.privacy-mode` | Most-selected model privacy mode this week | e2ee / private / anonymous | Model catalog and TEE roadmap |
 | `onboarding.completed` | Onboarding completed | completed | Onboarding funnel health |
+| `onboarding.area.work` | Primary onboarding area selected: work | selected | New-user intent and activation segmentation |
+| `onboarding.area.personal` | Primary onboarding area selected: personal life | selected | New-user intent and activation segmentation |
+| `onboarding.area.thinking` | Primary onboarding area selected: thinking and reflection | selected | New-user intent and activation segmentation |
+| `onboarding.area.play` | Primary onboarding area selected: play and creativity | selected | New-user intent and activation segmentation |
 | `onboarding.use-case.work` | Onboarding interest selected: work | selected | New-user intent and activation segmentation |
 | `onboarding.use-case.personal` | Onboarding interest selected: personal | selected | New-user intent and activation segmentation |
 | `onboarding.use-case.school` | Onboarding interest selected: school | selected | New-user intent and activation segmentation |
