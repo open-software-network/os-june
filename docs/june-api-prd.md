@@ -329,8 +329,14 @@ Three workflows under `.github/workflows/`:
 - `build-june-api.yml` — push to `main` touching `june-api/**`, or
   manual dispatch. Builds and pushes `ghcr.io/open-software-network/june-api:<short-sha>`
   + updates `:staging`. Stops at GHCR.
-- `promote-june-api.yml` — manual dispatch. Verifies an existing image,
-  re-tags `:<short-sha>` to `:production`. Never rebuilds.
+- `promote-june-api.yml` — manual dispatch. Resolves an existing image once,
+  replays the stable-client contract suite against its source commit, deploys
+  through a per-commit tag pinned to the resolved digest, and waits for both
+  public health and `/verify` to report the promoted build-stamped source
+  commit before re-tagging the resolved digest as `:production` and recording
+  the immutable deploy tag. This verifies source identity, not the runtime
+  image digest; the separate mutable-tag, tag-to-digest, and attestation limits
+  are documented in `reproducible-builds.md`. Never rebuilds.
 
 The two composite actions (`setup-rust`, `changed-paths`) from the skill
 get added under `.github/actions/`, with `setup-rust` pointed at
