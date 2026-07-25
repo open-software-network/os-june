@@ -322,51 +322,41 @@ describe("OnboardingFlow", () => {
     await advanceToArea();
     await chooseArea("work");
 
-    const firstMessage = document.querySelector(
-      ".onboarding-personality-message-body",
-    )?.textContent;
+    const bubble = screen.getByLabelText("Example message from June");
+    const messageCopy = () =>
+      document.querySelector(".onboarding-personality-message-copy")?.textContent;
+    const firstMessage = messageCopy();
     expect(firstMessage).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /Calm collaborator/i }));
+    expect(screen.getByLabelText("Example message from June")).toBe(bubble);
+    expect(bubble).toHaveAttribute("data-streaming", "true");
     expect(await screen.findByRole("status")).toHaveTextContent("June is typing");
-    await waitFor(() =>
-      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
-        firstMessage,
-      ),
-    );
+    await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
+    expect(messageCopy()).not.toBe(firstMessage);
     expect(screen.getByRole("button", { name: /Calm collaborator/i })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
 
-    const calmMessage = document.querySelector(".onboarding-personality-message-body")?.textContent;
+    const calmMessage = messageCopy();
     fireEvent.keyDown(screen.getByRole("slider", { name: "Depth" }), { key: "End" });
-    await waitFor(() =>
-      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
-        calmMessage,
-      ),
-    );
+    expect(bubble).toHaveAttribute("data-streaming", "true");
+    await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
+    expect(messageCopy()).not.toBe(calmMessage);
     expect(screen.getByRole("button", { name: /Calm collaborator/i })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
 
-    const deepMessage = document.querySelector(".onboarding-personality-message-body")?.textContent;
+    const deepMessage = messageCopy();
     fireEvent.keyDown(screen.getByRole("slider", { name: "Initiative" }), { key: "Home" });
-    await waitFor(() =>
-      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
-        deepMessage,
-      ),
-    );
+    await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
+    expect(messageCopy()).not.toBe(deepMessage);
 
-    const quietMessage = document.querySelector(
-      ".onboarding-personality-message-body",
-    )?.textContent;
+    const quietMessage = messageCopy();
     fireEvent.keyDown(screen.getByRole("slider", { name: "Playfulness" }), { key: "End" });
-    await waitFor(() =>
-      expect(document.querySelector(".onboarding-personality-message-body")?.textContent).not.toBe(
-        quietMessage,
-      ),
-    );
+    await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
+    expect(messageCopy()).not.toBe(quietMessage);
   });
 
   it("persists personality choices and carries the selected area into permissions", async () => {
@@ -648,7 +638,9 @@ describe("OnboardingFlow", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getByText(/I found the thought underneath your brain-dump/)).toBeInTheDocument();
+    expect(document.querySelector(".onboarding-personality-message-copy")).toHaveTextContent(
+      "I found the thought underneath your brain-dump",
+    );
   });
 
   it("resets only onboarding progress when replaying the wizard", () => {

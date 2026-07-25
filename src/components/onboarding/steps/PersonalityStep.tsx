@@ -3,7 +3,7 @@ import { IconCompassRound } from "central-icons/IconCompassRound";
 import { IconSparklesSoft } from "central-icons/IconSparklesSoft";
 import { IconSun } from "central-icons/IconSun";
 import { IconThinkingBubble } from "central-icons/IconThinkingBubble";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import {
   ONBOARDING_PERSONALITY_PRESETS,
@@ -18,7 +18,6 @@ import {
   personalityStylesForArea,
 } from "../../../lib/onboarding-personality";
 import { setJunePersona } from "../../../lib/tauri";
-import { AgentThinking } from "../../agent/AgentThinking";
 import { StepActions, StepCard } from "../StepChrome";
 
 const PERSONALITY_STYLE_ICONS = {
@@ -89,16 +88,19 @@ export function PersonalityStep({
   const [personality, setPersonality] = useState<OnboardingPersonality>(() =>
     onboardingPersonality(area),
   );
-  const [typing, setTyping] = useState(false);
   const [draggingAxis, setDraggingAxis] = useState<PersonalityAxis | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const typingTimer = useRef<number>();
   const dragOffset = useRef(0);
   const reduceMotion = useReducedMotion();
   const message = useMemo(() => personalityPreviewMessage(area, personality), [area, personality]);
+  const [streamedMessage, setStreamedMessage] = useState(message);
+  const [announcedMessage, setAnnouncedMessage] = useState(message);
+  const [streaming, setStreaming] = useState(false);
+  const previousMessage = useRef(message);
+  const streamTimer = useRef<number>();
+  const streamGeneration = useRef(0);
   const personalityStyles = useMemo(() => personalityStylesForArea(area), [area]);
-  const previewKey = `${personality.voice}:${personality.detail}:${personality.initiative}:${personality.humor}`;
   const selectedStyle = personalityStyles.find((style) =>
     personalitiesMatch(personality, ONBOARDING_PERSONALITY_PRESETS[style.id]),
   );
@@ -107,30 +109,57 @@ export function PersonalityStep({
   );
   const polygonPoints = chartPoints.map(({ x, y }) => `${x},${y}`).join(" ");
 
-  useEffect(
-    () => () => {
-      if (typingTimer.current !== undefined) window.clearTimeout(typingTimer.current);
-    },
-    [],
-  );
+  useEffect(() => {
+    if (previousMessage.current === message) return;
+    previousMessage.current = message;
+    streamGeneration.current += 1;
+    const generation = streamGeneration.current;
 
-  function showTypingBriefly() {
-    setTyping(true);
-    if (typingTimer.current !== undefined) window.clearTimeout(typingTimer.current);
-    typingTimer.current = window.setTimeout(
-      () => {
-        setTyping(false);
-        typingTimer.current = undefined;
-      },
-      reduceMotion ? 80 : 240,
-    );
-  }
+    if (streamTimer.current !== undefined) window.clearTimeout(streamTimer.current);
 
-  function setPersonalityValue(next: OnboardingPersonality, typeResponse = false) {
+    if (reduceMotion) {
+      setStreamedMessage(message);
+      setAnnouncedMessage(message);
+      setStreaming(false);
+      return;
+    }
+
+    setStreamedMessage("");
+    setAnnouncedMessage("");
+    setStreaming(true);
+
+    let visibleCharacters = 0;
+    const chunkSize = Math.max(2, Math.ceil(message.length / 44));
+
+    function revealNextChunk() {
+      if (streamGeneration.current !== generation) return;
+      visibleCharacters = Math.min(message.length, visibleCharacters + chunkSize);
+      setStreamedMessage(message.slice(0, visibleCharacters));
+
+      if (visibleCharacters < message.length) {
+        streamTimer.current = window.setTimeout(revealNextChunk, 16);
+        return;
+      }
+
+      streamTimer.current = undefined;
+      setStreaming(false);
+      setAnnouncedMessage(message);
+    }
+
+    streamTimer.current = window.setTimeout(revealNextChunk, 48);
+
+    return () => {
+      if (streamTimer.current !== undefined) {
+        window.clearTimeout(streamTimer.current);
+        streamTimer.current = undefined;
+      }
+    };
+  }, [message, reduceMotion]);
+
+  function setPersonalityValue(next: OnboardingPersonality) {
     setPersonality(next);
     saveOnboardingPersonality(next);
     setSaveError(null);
-    if (typeResponse) showTypingBriefly();
   }
 
   function pointerCoordinate(event: PointerEvent<SVGGElement>, axis: PersonalityAxis) {
@@ -160,7 +189,6 @@ export function PersonalityStep({
     event.currentTarget.setPointerCapture(event.pointerId);
     dragOffset.current =
       coordinateForAxis(axis, axisValue(personality, axis)) - pointerCoordinate(event, axis);
-    setTyping(false);
     setDraggingAxis(axis);
   }
 
@@ -213,26 +241,34 @@ export function PersonalityStep({
       <div className="onboarding-personality-layout">
         <div className="onboarding-personality-preview">
           <div className="agent-timeline onboarding-personality-thread" data-home="true">
-            {typing ? (
-              <AgentThinking visible variant="typing-bubble" />
-            ) : (
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.article
-                  key={previewKey}
-                  className="agent-user-turn onboarding-personality-message"
-                  data-user-run-end="true"
-                  aria-label="Example message from June"
-                  initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 2 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -2 }}
-                  transition={{ duration: reduceMotion ? 0.1 : 0.16, ease: [0.22, 1, 0.36, 1] }}
+            <motion.article
+              className="agent-user-turn onboarding-personality-message"
+              data-user-run-end="true"
+              data-streaming={streaming ? "true" : undefined}
+              aria-label="Example message from June"
+              aria-busy={streaming}
+              initial={false}
+            >
+              <div
+                className="agent-user-turn-body onboarding-personality-message-body"
+                data-reserve-message={message}
+              >
+                <p className="onboarding-personality-message-copy" aria-hidden="true">
+                  {streamedMessage}
+                  {streaming ? (
+                    <span className="onboarding-personality-stream-caret" aria-hidden="true" />
+                  ) : null}
+                </p>
+                <span
+                  className="visually-hidden"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
                 >
-                  <div className="agent-user-turn-body onboarding-personality-message-body">
-                    <p>{message}</p>
-                  </div>
-                </motion.article>
-              </AnimatePresence>
-            )}
+                  {streaming ? "June is typing" : announcedMessage}
+                </span>
+              </div>
+            </motion.article>
           </div>
         </div>
 
@@ -378,9 +414,7 @@ export function PersonalityStep({
                     type="button"
                     className="onboarding-personality-preset"
                     aria-pressed={selected}
-                    onClick={() =>
-                      setPersonalityValue({ ...ONBOARDING_PERSONALITY_PRESETS[id] }, true)
-                    }
+                    onClick={() => setPersonalityValue({ ...ONBOARDING_PERSONALITY_PRESETS[id] })}
                   >
                     <span className="onboarding-personality-preset-icon" aria-hidden="true">
                       <Icon size={20} />

@@ -25414,9 +25414,51 @@ button.memory-project:hover {
   justify-content: center;
 }
 
+.onboarding-personality-thread .onboarding-personality-message-body {
+  display: grid;
+}
+
+.onboarding-personality-thread .onboarding-personality-message-body::before {
+  grid-area: 1 / 1;
+  visibility: hidden;
+  content: attr(data-reserve-message);
+  pointer-events: none;
+  text-wrap: pretty;
+}
+
 .onboarding-personality-thread .onboarding-personality-message-body p {
+  grid-area: 1 / 1;
   margin: 0;
   text-wrap: pretty;
+}
+
+.onboarding-personality-message-copy {
+  position: relative;
+  z-index: 1;
+  align-self: start;
+}
+
+.onboarding-personality-stream-caret {
+  display: inline-block;
+  width: var(--sp-px);
+  height: 1.05em;
+  margin-left: var(--sp-px);
+  background: currentColor;
+  opacity: 0.52;
+  vertical-align: -0.14em;
+  animation: onboarding-personality-caret 720ms step-end infinite;
+}
+
+@keyframes onboarding-personality-caret {
+  50% {
+    opacity: 0.14;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-personality-stream-caret {
+    animation: none;
+  }
 }
 
 .onboarding-personality-save-error {
