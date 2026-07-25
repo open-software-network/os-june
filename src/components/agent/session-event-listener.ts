@@ -3,6 +3,7 @@ import { markAgentRunSucceeded } from "../../lib/agent-run-monitor";
 import { HermesGatewayClient } from "../../lib/hermes-gateway";
 import {
   classifyHermesEvent,
+  createHermesMethods,
   hermesModeFor,
   isHermesStreamDelta,
   isTerminalHermesEvent,
@@ -17,6 +18,15 @@ import {
   thinkingLevelForEffort,
 } from "../../lib/thinking-level";
 import { appendHermesLiveEvent } from "../../lib/agent-chat-runtime";
+import {
+  type TurnDiagnosticsContext,
+  type TurnTimingState,
+  type TurnUsageSnapshot,
+  TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
+  computeTurnDiagnostics,
+  publishTurnDiagnostics,
+  snapshotFromRawUsage,
+} from "../../lib/turn-diagnostics";
 import {
   agentActivityCountsFromStore,
   agentStatusSummaryFromHermesEvent,
@@ -54,16 +64,23 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     sessionDisplayTitle,
     storedSessionId,
     computerUseRunLeaseId,
+    turnDiagnostics,
   }: {
     gateway: HermesGatewayClient;
     runtimeSessionId: string;
     sessionDisplayTitle: string;
     storedSessionId: string;
     computerUseRunLeaseId?: string;
+    turnDiagnostics?: TurnDiagnosticsContext;
   }) {
     sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
     const agentRunCompletionSource = Symbol(storedSessionId);
     let unlisten = () => {};
+    const turnTiming: TurnTimingState | null = turnDiagnostics
+      ? { startAt: turnDiagnostics.startAt }
+      : null;
+    const usageBefore = turnDiagnostics?.usageBefore;
+    let diagnosticsFinalized = false;
     const liveEventsBatch = createLeadingTrailingMicrobatch(
       () => setLiveEvents(liveEventsRef.current),
       HERMES_STREAM_STATE_BATCH_INTERVAL_MS,
@@ -76,6 +93,10 @@ export function createSessionEventListener(dependencies: createSessionEventListe
     }, HERMES_STREAM_STATE_BATCH_INTERVAL_MS);
     const removeListener = gateway.onEvent((event) => {
       if (event.session_id !== runtimeSessionId && event.session_id !== storedSessionId) return;
+      // Record the monotonic timestamp immediately at ingress, before any
+      // classification or store work, so timing boundaries are not inflated by
+      // main-thread processing.
+      const eventAt = performance.now();
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
       // Classify the raw frame once at ingress. Stores and transcript rendering
       // consume the typed event; the raw frame remains only for trace capture
@@ -87,6 +108,25 @@ export function createSessionEventListener(dependencies: createSessionEventListe
       // trace panel can reconstruct the session. recordInbound re-classifies and
       // sanitizes internally; nothing raw is retained.
       hermesTraceBuffer.recordInbound(liveEvent, { storedSessionId });
+      // JUN-436: capture per-turn timing boundaries for diagnostics.
+      if (turnTiming) {
+        if (
+          turnTiming.firstTokenAt === undefined &&
+          classified.kind === "transcript" &&
+          typeof classified.delta === "string" &&
+          classified.delta.length > 0 &&
+          !classified.complete
+        ) {
+          turnTiming.firstTokenAt = eventAt;
+        }
+        if (
+          classified.kind === "transcript" &&
+          classified.complete === true &&
+          classified.failed !== true
+        ) {
+          turnTiming.lastMessageCompleteAt = eventAt;
+        }
+      }
       // The runtime's session.info is the source of truth for the effort a
       // session ACTUALLY runs at (emitted after every build and on every
       // live retune): hydrate the per-session record from it so the composer
@@ -240,6 +280,31 @@ export function createSessionEventListener(dependencies: createSessionEventListe
           void releaseAllComputerUseRuns(storedSessionId);
         }
         unlisten();
+        // JUN-436: finalize per-turn diagnostics. Record the terminal timestamp
+        // from the ingress clock and fetch post-turn usage to compute the delta.
+        // Published exactly once: timing always publishes; usage success enriches
+        // with token/model fields, while usage failure only omits those fields.
+        if (turnTiming && !diagnosticsFinalized) {
+          diagnosticsFinalized = true;
+          turnTiming.terminalAt = eventAt;
+          const finalizedTiming = { ...turnTiming };
+          void (async () => {
+            let usageAfter: TurnUsageSnapshot = {};
+            try {
+              const raw = await createHermesMethods(gateway).getSessionUsage(
+                { sessionId: runtimeSessionId },
+                TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
+              );
+              usageAfter = snapshotFromRawUsage(runtimeSessionId, raw);
+            } catch {
+              // Usage RPC failed or timed out: publish timing-only diagnostics.
+            }
+            const diagnostics = computeTurnDiagnostics(finalizedTiming, usageBefore, usageAfter);
+            if (diagnostics) {
+              publishTurnDiagnostics(storedSessionId, diagnostics);
+            }
+          })();
+        }
         if (!activityCounts) {
           clearSessionActivity(storedSessionId);
         }

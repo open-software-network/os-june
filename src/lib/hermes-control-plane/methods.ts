@@ -111,7 +111,7 @@ export type HermesMethods = {
   steerSession(params: SteerSessionParams): Promise<unknown>;
   branchSession(params: BranchSessionParams): Promise<unknown>;
   compressSession(params: CompressSessionParams): Promise<unknown>;
-  getSessionUsage(params: SessionUsageParams): Promise<unknown>;
+  getSessionUsage(params: SessionUsageParams, timeoutMs?: number): Promise<unknown>;
   dispatchCommand(params: DispatchCommandParams): Promise<unknown>;
   /** Switches the model on an idle live session with session-scoped
    * `config.set`. Hermes rejects this mutation with 4009 while the session is
@@ -181,8 +181,8 @@ export function createHermesMethods(client: HermesRequestLike): HermesMethods {
     compressSession({ sessionId }) {
       return request("session.compress", { session_id: sessionId });
     },
-    getSessionUsage({ sessionId }) {
-      return request("session.usage", { session_id: sessionId });
+    getSessionUsage({ sessionId }, timeoutMs) {
+      return request("session.usage", { session_id: sessionId }, timeoutMs);
     },
     dispatchCommand({ sessionId, command, args }) {
       return request("command.dispatch", {

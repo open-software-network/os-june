@@ -29,6 +29,15 @@ import {
 } from "../../lib/hermes-session-model-selection";
 import { hermesTraceBuffer } from "../../lib/hermes-trace-buffer";
 import { modelSupportsImageInput } from "../../lib/model-privacy";
+import { experimentalTurnDiagnosticsEnabled } from "../../lib/experimental-flags";
+import {
+  type TurnDiagnosticsContext,
+  type TurnUsageSnapshot,
+  TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
+  clearTurnDiagnostics,
+  snapshotFromRawUsage,
+} from "../../lib/turn-diagnostics";
+import { createHermesMethods } from "../../lib/hermes-control-plane";
 import {
   assignSessionToProfile,
   computerUseBeginRun,
@@ -661,17 +670,37 @@ export function createSubmitHermesSession(dependencies: SubmitHermesSessionDepen
           release: ({ storedSessionId }, runLeaseId) =>
             releaseComputerUseRun(storedSessionId, runLeaseId),
         },
-        beforePrompt: (
+        beforePrompt: async (
           { runtimeSessionId, storedSessionId, submitGateway },
           prompt,
           computerUseRunLeaseId,
         ) => {
+          const gateway = submitGateway.currentGateway();
+          let turnDiagnostics: TurnDiagnosticsContext | undefined;
+          if (experimentalTurnDiagnosticsEnabled()) {
+            clearTurnDiagnostics(storedSessionId);
+            let usageBefore: TurnUsageSnapshot | undefined;
+            try {
+              const raw = await createHermesMethods(gateway).getSessionUsage(
+                { sessionId: runtimeSessionId },
+                TURN_DIAGNOSTICS_USAGE_TIMEOUT_MS,
+              );
+              usageBefore = snapshotFromRawUsage(runtimeSessionId, raw);
+            } catch {
+              // Baseline RPC failed or timed out: token fields will be omitted.
+            }
+            turnDiagnostics = {
+              startAt: performance.now(),
+              usageBefore,
+            };
+          }
           attachHermesSessionEventListener({
-            gateway: submitGateway.currentGateway(),
+            gateway,
             runtimeSessionId,
             sessionDisplayTitle,
             storedSessionId,
             computerUseRunLeaseId,
+            turnDiagnostics,
           });
           hermesTraceBuffer.recordOutbound({
             sessionId: storedSessionId,

@@ -19,6 +19,8 @@ pub struct ExperimentalSettings {
     pub unlocked: bool,
     #[serde(default)]
     pub browser_use: bool,
+    #[serde(default)]
+    pub turn_diagnostics: bool,
 }
 
 pub struct ExperimentalSettingsState {
@@ -160,6 +162,7 @@ mod tests {
         let settings = ExperimentalSettings {
             unlocked: true,
             browser_use: true,
+            turn_diagnostics: true,
         };
 
         save_settings(&path, &settings).expect("save experimental settings");
