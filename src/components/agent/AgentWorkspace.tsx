@@ -402,6 +402,7 @@ export function AgentWorkspace({
     }
 
     sessionCostQualityExplicitRef.current = false;
+    const sessionIdAtSave = selectedIdRef.current;
     const version = ++latestCostQualitySaveRef.current;
     const save = costQualitySaveChainRef.current.then(() => setProviderCostQuality(normalized));
     costQualitySaveChainRef.current = save.then(
@@ -411,7 +412,12 @@ export function AgentWorkspace({
     void save.then(
       (next) => {
         confirmedCostQualityRef.current = next.costQuality;
-        if (version !== latestCostQualitySaveRef.current) return;
+        if (
+          version !== latestCostQualitySaveRef.current ||
+          selectedIdRef.current !== sessionIdAtSave
+        ) {
+          return;
+        }
         costQualityRef.current = next.costQuality;
         setCostQuality(next.costQuality);
         setError(undefined);

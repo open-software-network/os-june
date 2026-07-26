@@ -695,6 +695,56 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(trigger).toHaveAttribute("title", expect.stringContaining("Preference: Economy"));
   });
 
+  it("does not overwrite a session preference when a global save finishes after navigation", async () => {
+    const user = userEvent.setup();
+    const balancedSession = { ...session, model: "__june_auto_generation__:50" };
+    let resolveSave: ((value: { costQuality: number }) => void) | undefined;
+    const pendingSave = new Promise<{ costQuality: number }>((resolve) => {
+      resolveSave = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_sessions") return Promise.resolve([balancedSession]);
+      if (command === "get_agent_session") return Promise.resolve(balancedSession);
+      if (command === "set_cost_quality") return pendingSave;
+      return defaultInvoke?.(command, args);
+    });
+
+    const { rerender } = render(<AgentWorkspace />);
+    const freshTrigger = await screen.findByRole("button", { name: "Model: Auto" });
+    await user.click(freshTrigger);
+    await user.click(screen.getByRole("button", { name: /Preference.*Quality/ }));
+    await user.click(
+      within(screen.getByRole("group", { name: "Auto preference" })).getByRole("menuitemradio", {
+        name: /Economy/,
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("set_cost_quality", {
+        request: { value: 20 },
+      }),
+    );
+
+    rerender(<AgentWorkspace initialSession={balancedSession} />);
+    const sessionTrigger = await screen.findByRole("button", { name: "Model: Auto" });
+    await waitFor(() =>
+      expect(sessionTrigger).toHaveAttribute(
+        "title",
+        expect.stringContaining("Preference: Balanced"),
+      ),
+    );
+
+    await act(async () => {
+      resolveSave?.({ costQuality: 20 });
+      await pendingSave;
+    });
+
+    expect(sessionTrigger).toHaveAttribute(
+      "title",
+      expect.stringContaining("Preference: Balanced"),
+    );
+  });
+
   it("shows context, estimated charge, and per-tool usage for the latest run", async () => {
     const user = userEvent.setup();
     render(<AgentWorkspace initialSession={session} />);
