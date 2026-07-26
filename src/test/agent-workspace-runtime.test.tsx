@@ -66,7 +66,7 @@ describe("AgentWorkspace runtime wiring", () => {
     mocks.runtimeListener = undefined;
     mocks.invoke.mockReset();
     mocks.openDialog.mockReset();
-    mocks.invoke.mockImplementation((command: string) => {
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
       if (command === "list_agent_sessions") return Promise.resolve([session]);
       if (command === "get_agent_session") return Promise.resolve(session);
       if (command === "list_agent_items") {
@@ -132,6 +132,16 @@ describe("AgentWorkspace runtime wiring", () => {
             },
           ],
         });
+      }
+      if (command === "provider_model_settings") {
+        return Promise.resolve({
+          settings: { costQuality: 100 },
+          effectiveSettings: { veniceApiKeyConfigured: false },
+        });
+      }
+      if (command === "set_cost_quality") {
+        const value = (args as { request?: { value?: number } } | undefined)?.request?.value ?? 100;
+        return Promise.resolve({ costQuality: value });
       }
       if (command === "create_agent_session") return Promise.resolve(newSession);
       if (command === "start_agent_run") {
@@ -391,7 +401,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
         request: expect.objectContaining({
           prompt: "Use the staged model",
-          model: "open-software/auto",
+          model: "__june_auto_generation__:100",
         }),
       }),
     );
@@ -513,6 +523,165 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("combobox", { name: "Search models" })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("restores Auto Economy, Balanced, and Quality with session-persistent routing", async () => {
+    const user = userEvent.setup();
+    const autoSession = {
+      ...session,
+      model: "__june_auto_generation__:50",
+    };
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_sessions") return Promise.resolve([autoSession]);
+      if (command === "get_agent_session") return Promise.resolve(autoSession);
+      if (command === "provider_model_settings") {
+        return Promise.resolve({
+          settings: { costQuality: 100 },
+          effectiveSettings: { veniceApiKeyConfigured: false },
+        });
+      }
+      return defaultInvoke?.(command, args);
+    });
+
+    render(<AgentWorkspace initialSession={autoSession} />);
+    await screen.findByText("Earlier answer");
+    const trigger = await screen.findByRole("button", { name: "Model: Auto" });
+    expect(trigger).toHaveAttribute("title", expect.stringContaining("Preference: Balanced"));
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Preference.*Balanced/ }));
+    const preferences = screen.getByRole("group", { name: "Auto preference" });
+    expect(
+      within(preferences).getByRole("menuitemradio", {
+        name: /Economy.*Favors cheaper models/,
+      }),
+    ).toBeVisible();
+    expect(
+      within(preferences).getByRole("menuitemradio", {
+        name: /Balanced.*Weighs quality against cost/,
+      }),
+    ).toBeVisible();
+    expect(
+      within(preferences).getByRole("menuitemradio", {
+        name: /Quality.*Routes to the strongest model/,
+      }),
+    ).toBeVisible();
+
+    await user.click(within(preferences).getByRole("menuitemradio", { name: /Economy/ }));
+    expect(trigger).toHaveAttribute("title", expect.stringContaining("Preference: Economy"));
+    expect(mocks.invoke).not.toHaveBeenCalledWith("set_cost_quality", expect.anything());
+
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("group", { name: "Auto preference" })).not.toBeInTheDocument(),
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
+    );
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    composer.textContent = "Use Economy";
+    fireEvent.input(composer);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+        request: expect.objectContaining({
+          sessionId: autoSession.id,
+          prompt: "Use Economy",
+          model: "__june_auto_generation__:20",
+        }),
+      }),
+    );
+  });
+
+  it("persists a fresh Auto preference and applies it to the first run", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+
+    const trigger = await screen.findByRole("button", { name: "Model: Auto" });
+    expect(trigger).toHaveAttribute("title", expect.stringContaining("Preference: Quality"));
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Preference.*Quality/ }));
+    await user.click(
+      within(screen.getByRole("group", { name: "Auto preference" })).getByRole("menuitemradio", {
+        name: /Economy/,
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("set_cost_quality", {
+        request: { value: 20 },
+      }),
+    );
+
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("group", { name: "Auto preference" })).not.toBeInTheDocument(),
+    );
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Choose text model" })).not.toBeInTheDocument(),
+    );
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    composer.textContent = "Fresh Economy request";
+    fireEvent.input(composer);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
+        request: expect.objectContaining({
+          title: "Fresh Economy request",
+          model: "__june_auto_generation__:20",
+        }),
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+        request: expect.objectContaining({
+          prompt: "Fresh Economy request",
+          model: "__june_auto_generation__:20",
+        }),
+      }),
+    );
+  });
+
+  it("keeps a freshly selected Auto preference when settings hydration finishes late", async () => {
+    const user = userEvent.setup();
+    let resolveSettings: ((value: unknown) => void) | undefined;
+    const pendingSettings = new Promise((resolve) => {
+      resolveSettings = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "provider_model_settings") return pendingSettings;
+      return defaultInvoke?.(command, args);
+    });
+
+    render(<AgentWorkspace />);
+    const trigger = await screen.findByRole("button", { name: "Model: Auto" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: /Preference.*Quality/ }));
+    await user.click(
+      within(screen.getByRole("group", { name: "Auto preference" })).getByRole("menuitemradio", {
+        name: /Economy/,
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("set_cost_quality", {
+        request: { value: 20 },
+      }),
+    );
+
+    await act(async () => {
+      resolveSettings?.({
+        settings: { costQuality: 100 },
+        effectiveSettings: { veniceApiKeyConfigured: false },
+      });
+      await pendingSettings;
+    });
+
+    expect(trigger).toHaveAttribute("title", expect.stringContaining("Preference: Economy"));
   });
 
   it("shows context, estimated charge, and per-tool usage for the latest run", async () => {
@@ -721,7 +890,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(starts[1]?.[1]).toMatchObject({
         request: expect.objectContaining({
           prompt: "Send this next",
-          model: "open-software/auto",
+          model: "__june_auto_generation__:100",
         }),
       });
     });
@@ -1384,7 +1553,7 @@ describe("AgentWorkspace runtime wiring", () => {
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
         request: expect.objectContaining({
-          model: "open-software/auto",
+          model: "__june_auto_generation__:100",
           title: "Fresh request",
           profile: "private",
         }),
@@ -1419,7 +1588,10 @@ describe("AgentWorkspace runtime wiring", () => {
         });
       }
       if (command === "provider_model_settings") {
-        return Promise.resolve({ effectiveSettings: { veniceApiKeyConfigured: true } });
+        return Promise.resolve({
+          settings: { costQuality: 100 },
+          effectiveSettings: { veniceApiKeyConfigured: true },
+        });
       }
       return defaultInvoke?.(command, args);
     });

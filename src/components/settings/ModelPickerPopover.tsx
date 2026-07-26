@@ -117,6 +117,7 @@ export function ModelPickerPopover({
   onSearchChange,
   onSelect,
   onCostQualityChange,
+  showAutoToggle = true,
   showAutoPreference = true,
   thinkingLevel,
   onSelectThinking,
@@ -162,10 +163,12 @@ export function ModelPickerPopover({
   /** `keepOpen` asks the host to leave the popover mounted (used by the Auto
    * toggle, where switching is a mid-flow adjustment, not a final pick). */
   onSelect: (modelId: string, costQuality?: number, options?: { keepOpen?: boolean }) => void;
-  /** Enables the pinned Auto section (generation surfaces): a toggle that
-   * swaps the selection to/from the Auto router, plus the Preference
-   * drill-in writing through this callback while Auto is on. */
+  /** Enables the pinned Auto controls on generation surfaces. */
   onCostQualityChange?: (value: number) => void;
+  /** Whether Auto is a pinned toggle or remains in the host's suggestion
+   * list. Agent sessions keep Auto as their one quick pick and use the
+   * Preference row only after it is selected. */
+  showAutoToggle?: boolean;
   /** Whether Auto's Preference drill-in appears inside the popover. Settings
    * keeps that preference visible as its own segmented row, so its picker
    * omits the duplicate while retaining the Auto toggle. */
@@ -378,9 +381,9 @@ export function ModelPickerPopover({
           // With the Auto section shown, the toggle is the router's one home;
           // keep the catalog's Auto entry out of the lists so it doesn't
           // double up as a row.
-          !(onCostQualityChange && option.id === AUTO_MODEL_ID),
+          !(onCostQualityChange && showAutoToggle && option.id === AUTO_MODEL_ID),
       ),
-    [mode, onCostQualityChange, options],
+    [mode, onCostQualityChange, options, showAutoToggle],
   );
   const suggested = useMemo(() => {
     if (!suggestedModelIds) return suggestedModelsForMode(mode, selectable);
@@ -440,7 +443,7 @@ export function ModelPickerPopover({
   const rootQuery = (rootSearch ?? "").trim().toLowerCase();
   const rootQueryActive = Boolean(rootSearchRef) && Boolean(rootQuery);
   const rootControlTerms = [
-    ...(onCostQualityChange ? ["auto", "automatic"] : []),
+    ...(onCostQualityChange && showAutoToggle ? ["auto", "automatic"] : []),
     ...(onCostQualityChange && autoEnabled && showAutoPreference
       ? [
           "preference",
@@ -458,7 +461,7 @@ export function ModelPickerPopover({
       rootControlTerms.some((term) => term.toLowerCase().includes(queryTerm)),
     );
   const rootVisibleControlCount =
-    (onCostQualityChange ? 1 : 0) +
+    (onCostQualityChange && showAutoToggle ? 1 : 0) +
     (onCostQualityChange && autoEnabled && showAutoPreference ? 1 : 0) +
     (thinkingLevel && onSelectThinking ? 1 : 0);
   const rootMatchingSuggested = rootQueryActive
@@ -831,7 +834,7 @@ export function ModelPickerPopover({
                 .filter(Boolean)
                 .join(" ")}
             >
-              {onCostQualityChange ? (
+              {onCostQualityChange && showAutoToggle ? (
                 <>
                   <div className="agent-composer-model-filter agent-composer-model-auto-toggle">
                     <span>Auto</span>

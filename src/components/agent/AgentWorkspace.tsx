@@ -47,12 +47,14 @@ import {
   type JuneHomeChatResponse,
   listVeniceModels,
   providerModelSettings,
+  setCostQuality as setProviderCostQuality,
   type VeniceModelDto,
 } from "../../lib/tauri";
 import { shouldBlockTextOnFunding } from "../../lib/account-gate";
 import { dispatchAgentSessionStatus, dispatchAgentSessionsChanged } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
 import { persistAgentDefaultModel } from "../../lib/agent-default-model";
+import { agentModelSelection, agentRunModelId } from "../../lib/agent-model-selection";
 import {
   loadQueuedAgentFollowUps,
   reconcileConsumedAgentFollowUp,
@@ -100,6 +102,7 @@ import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEd
 import { agentComposerClearance } from "./composer/layout";
 import { ComposerModelPicker, heroPrivacyFootnote } from "./composer/ModelPicker";
 import { modelPrivacyBadge } from "../../lib/model-privacy";
+import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
@@ -254,11 +257,18 @@ export function AgentWorkspace({
   const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
   const focusedHomeModelRef = useRef(DEFAULT_MODEL);
   const focusedHomeThinkingLevelRef = useRef(loadThinkingLevel());
-  const [model, setModel] = useState(
-    homeMode ? AUTO_MODEL_ID : initialAgentSession?.model || DEFAULT_MODEL,
-  );
+  const initialModelSelection = agentModelSelection(initialAgentSession?.model || DEFAULT_MODEL);
+  const [model, setModel] = useState(homeMode ? AUTO_MODEL_ID : initialModelSelection.modelId);
   const modelRef = useRef(model);
   modelRef.current = model;
+  const [costQuality, setCostQuality] = useState(initialModelSelection.costQuality ?? 100);
+  const costQualityRef = useRef(costQuality);
+  costQualityRef.current = costQuality;
+  const confirmedCostQualityRef = useRef(costQuality);
+  const costQualitySaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const latestCostQualitySaveRef = useRef(0);
+  const costQualityIntentRevisionRef = useRef(0);
+  const sessionCostQualityExplicitRef = useRef(initialModelSelection.costQuality !== undefined);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>(() => {
     if (homeMode) return "instant";
     const sessionLevel = initialAgentSession?.id
@@ -379,6 +389,42 @@ export function AgentWorkspace({
     [onSessionSelected],
   );
 
+  const applyCostQuality = useCallback((value: number) => {
+    const normalized = Math.max(0, Math.min(100, Math.round(value)));
+    costQualityIntentRevisionRef.current += 1;
+    costQualityRef.current = normalized;
+    setCostQuality(normalized);
+    const sessionId = selectedIdRef.current;
+    if (sessionId) {
+      sessionCostQualityExplicitRef.current = true;
+      rememberSessionModel(sessionId, agentRunModelId(modelRef.current, normalized));
+      return;
+    }
+
+    sessionCostQualityExplicitRef.current = false;
+    const version = ++latestCostQualitySaveRef.current;
+    const save = costQualitySaveChainRef.current.then(() => setProviderCostQuality(normalized));
+    costQualitySaveChainRef.current = save.then(
+      () => undefined,
+      () => undefined,
+    );
+    void save.then(
+      (next) => {
+        confirmedCostQualityRef.current = next.costQuality;
+        if (version !== latestCostQualitySaveRef.current) return;
+        costQualityRef.current = next.costQuality;
+        setCostQuality(next.costQuality);
+        setError(undefined);
+      },
+      (cause) => {
+        if (version !== latestCostQualitySaveRef.current) return;
+        costQualityRef.current = confirmedCostQualityRef.current;
+        setCostQuality(confirmedCostQualityRef.current);
+        setError(messageFromError(cause));
+      },
+    );
+  }, []);
+
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? projection.session;
   const running = projection.run?.status === "running" || projection.run?.status === "queued";
@@ -455,6 +501,19 @@ export function AgentWorkspace({
     return next;
   }, [publishSessions]);
 
+  const applySessionModel = useCallback((storedModel: string) => {
+    const selection = agentModelSelection(storedModel);
+    setModel(selection.modelId || DEFAULT_MODEL);
+    sessionCostQualityExplicitRef.current = selection.costQuality !== undefined;
+    if (selection.costQuality !== undefined) {
+      costQualityRef.current = selection.costQuality;
+      setCostQuality(selection.costQuality);
+    } else {
+      costQualityRef.current = confirmedCostQualityRef.current;
+      setCostQuality(confirmedCostQualityRef.current);
+    }
+  }, []);
+
   const hydrate = useCallback(
     async (sessionId: string) => {
       const requestId = crypto.randomUUID();
@@ -482,7 +541,11 @@ export function AgentWorkspace({
       );
       setHydratedSelectionId(sessionId);
       setArtifacts(files);
-      setModel(homeMode ? AUTO_MODEL_ID : (loadSessionModels()[session.id] ?? session.model));
+      if (homeMode) {
+        setModel(AUTO_MODEL_ID);
+      } else {
+        applySessionModel(loadSessionModels()[session.id] ?? session.model);
+      }
       setThinkingLevel(
         homeMode ? "instant" : (loadSessionThinkingLevels()[session.id] ?? loadThinkingLevel()),
       );
@@ -491,7 +554,7 @@ export function AgentWorkspace({
       if (!homeMode) writeLastOpenSessionId(sessionId);
       onSessionSelected?.(session);
     },
-    [homeMode, onSessionSelected, updateQueuedFollowUps],
+    [applySessionModel, homeMode, onSessionSelected, updateQueuedFollowUps],
   );
 
   useEffect(() => {
@@ -519,10 +582,17 @@ export function AgentWorkspace({
         }
       })
       .catch(() => undefined);
+    const costQualityRequestRevision = costQualityIntentRevisionRef.current;
     void providerModelSettings()
-      .then((response) =>
-        setVeniceApiKeyConfigured(response.effectiveSettings.veniceApiKeyConfigured),
-      )
+      .then((response) => {
+        setVeniceApiKeyConfigured(response.effectiveSettings.veniceApiKeyConfigured);
+        if (costQualityRequestRevision !== costQualityIntentRevisionRef.current) return;
+        confirmedCostQualityRef.current = response.settings.costQuality;
+        if (!sessionCostQualityExplicitRef.current) {
+          costQualityRef.current = response.settings.costQuality;
+          setCostQuality(response.settings.costQuality);
+        }
+      })
       .catch(() => setVeniceApiKeyConfigured(false));
   }, [homeMode, initialAgentSession, initialSessionId, refreshSessions]);
 
@@ -545,7 +615,9 @@ export function AgentWorkspace({
         ...current.filter((session) => session.id !== initialSession.id),
       ]);
       setProjection((current) => ({ ...current, session: initialSession }));
-      setModel(loadSessionModels()[initialSession.id] ?? (initialSession.model || DEFAULT_MODEL));
+      applySessionModel(
+        loadSessionModels()[initialSession.id] ?? (initialSession.model || DEFAULT_MODEL),
+      );
       setSafetyMode(initialSession.safetyMode);
       setNewSessionMode(false);
     }
@@ -553,7 +625,7 @@ export function AgentWorkspace({
       if (homeMode && selectedIdRef.current !== nextId) return;
       setError(messageFromError(cause));
     });
-  }, [homeMode, hydrate, initialSession?.id, initialSessionId]);
+  }, [applySessionModel, homeMode, hydrate, initialSession?.id, initialSessionId]);
 
   useEffect(() => {
     const handleNewSession = (event: Event) => {
@@ -735,7 +807,13 @@ export function AgentWorkspace({
       const messageId = crypto.randomUUID();
       updateQueuedFollowUps((current) => ({
         ...current,
-        [ownerSessionId]: { messageId, prompt, attachments, model, thinkingLevel },
+        [ownerSessionId]: {
+          messageId,
+          prompt,
+          attachments,
+          model: agentRunModelId(model, costQuality),
+          thinkingLevel,
+        },
       }));
       setDraft("");
       setAttachments([]);
@@ -750,7 +828,8 @@ export function AgentWorkspace({
     recoverableSubmissionSnapshotRef.current = undefined;
     const queuedSnapshot = queuedSubmission;
     const recoveredSnapshot = recoveredSubmission;
-    const submittedModel = queuedSnapshot?.model ?? recoveredSnapshot?.model ?? model;
+    const submittedModel =
+      queuedSnapshot?.model ?? recoveredSnapshot?.model ?? agentRunModelId(model, costQuality);
     const submittedThinkingLevel =
       queuedSnapshot?.thinkingLevel ?? recoveredSnapshot?.thinkingLevel ?? thinkingLevel;
     const submissionId = crypto.randomUUID();
@@ -799,7 +878,7 @@ export function AgentWorkspace({
           profile: getCurrentDataPartitionName(),
         });
         session = createdSession;
-        const latestModel = modelRef.current;
+        const latestModel = agentRunModelId(modelRef.current, costQualityRef.current);
         if (latestModel !== submittedModel) {
           rememberSessionModel(createdSession.id, latestModel);
         }
@@ -1610,17 +1689,27 @@ export function AgentWorkspace({
       draft={draft}
       setDraft={setComposerDraft}
       model={model}
-      setModel={(nextModel) => {
+      setModel={(nextModel, nextCostQuality) => {
+        const selectedCostQuality =
+          nextModel === AUTO_MODEL_ID ? (nextCostQuality ?? costQualityRef.current) : undefined;
         setModel(nextModel);
         if (selectedId) {
-          rememberSessionModel(selectedId, nextModel);
+          if (selectedCostQuality !== undefined) {
+            costQualityRef.current = selectedCostQuality;
+            setCostQuality(selectedCostQuality);
+          }
+          sessionCostQualityExplicitRef.current = selectedCostQuality !== undefined;
+          rememberSessionModel(selectedId, agentRunModelId(nextModel, selectedCostQuality));
           return;
         }
         if (pendingSessionCreationRef.current) return;
+        if (nextCostQuality !== undefined) applyCostQuality(nextCostQuality);
         void persistAgentDefaultModel(nextModel).catch((cause) => {
           if (modelRef.current === nextModel) setError(messageFromError(cause));
         });
       }}
+      costQuality={costQuality}
+      onCostQualityChange={applyCostQuality}
       thinkingLevel={thinkingLevel}
       setThinkingLevel={(level) => {
         setThinkingLevel(level);
@@ -2133,6 +2222,8 @@ function AgentComposer({
   setDraft,
   model,
   setModel,
+  costQuality,
+  onCostQualityChange,
   thinkingLevel,
   setThinkingLevel,
   models,
@@ -2155,7 +2246,9 @@ function AgentComposer({
   draft: string;
   setDraft: (value: string) => void;
   model: string;
-  setModel: (value: string) => void;
+  setModel: (value: string, costQuality?: number) => void;
+  costQuality: number;
+  onCostQualityChange: (value: number) => void;
   thinkingLevel: ThinkingLevel;
   setThinkingLevel: (value: ThinkingLevel) => void;
   models: VeniceModelDto[];
@@ -2348,6 +2441,7 @@ function AgentComposer({
               <ComposerModelPicker
                 open={modelOpen}
                 model={activeModel}
+                detail={model === AUTO_MODEL_ID ? autoPillDesignation(costQuality) : undefined}
                 effort={thinkingLevel}
                 triggerRef={modelTriggerRef}
                 onToggleOpen={() => {
@@ -2492,6 +2586,7 @@ function AgentComposer({
           flyout={modelFlyout}
           model={activeModel}
           options={modelOptions(pickerModels, model)}
+          costQuality={costQuality}
           search={modelSearch}
           popoverRef={modelPopoverRef}
           searchRef={modelSearchRef}
@@ -2500,16 +2595,18 @@ function AgentComposer({
           onRootSearchChange={setModelRootSearch}
           catalogLoaded={models.length > 0}
           suggestedModelIds={AGENT_SUGGESTED_MODEL_IDS}
+          showAutoToggle={false}
           thinkingLevel={thinkingLevel}
           onFlyoutChange={setModelFlyout}
           onSearchChange={setModelSearch}
-          onSelect={(nextModel, _costQuality, options) => {
-            setModel(nextModel);
+          onSelect={(nextModel, nextCostQuality, options) => {
+            setModel(nextModel, nextCostQuality);
             if (!options?.keepOpen) {
               setModelOpen(false);
               requestAnimationFrame(() => modelTriggerRef.current?.focus());
             }
           }}
+          onCostQualityChange={onCostQualityChange}
           onSelectThinking={(level) => {
             setThinkingLevel(level);
             setModelFlyout(null);
