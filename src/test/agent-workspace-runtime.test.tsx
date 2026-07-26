@@ -1507,7 +1507,7 @@ describe("AgentWorkspace runtime wiring", () => {
       return defaultInvoke?.(command, args);
     });
 
-    const { rerender } = render(<AgentWorkspace />);
+    const { container, rerender } = render(<AgentWorkspace />);
     await user.click(await screen.findByRole("button", { name: "Model: Auto" }));
     await user.click(screen.getByRole("button", { name: "All models" }));
     await user.click(
@@ -1516,9 +1516,17 @@ describe("AgentWorkspace runtime wiring", () => {
       }),
     );
     const composer = screen.getByRole("textbox", { name: "Message June" });
-    await user.type(composer, "Create this slowly");
-    await user.click(screen.getByRole("button", { name: "Send message" }));
-    await screen.findByText("Thinking…");
+    composer.textContent = "Create this slowly";
+    fireEvent.input(composer);
+    const send = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(send).toBeEnabled());
+    await user.click(send);
+    await waitFor(
+      () =>
+        expect(container.querySelector(".agent-user-turn")).toHaveTextContent("Create this slowly"),
+      { timeout: 3_000 },
+    );
+    expect(screen.getByText("Thinking…")).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Model: Fast" }));
     await user.click(

@@ -282,11 +282,15 @@ export function AgentWorkspace({
     initialAgentSession?.safetyMode ?? "sandboxed",
   );
   const [draft, setDraft] = useState(pendingRequestRef.current?.prompt ?? "");
+  const [draftRevision, setDraftRevision] = useState(0);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const draftHasContentRef = useRef(Boolean(draft.trim()));
   const setComposerDraft = useCallback((value: string) => {
     draftRef.current = value;
+    draftHasContentRef.current = Boolean(value.trim());
     setDraft(value);
+    setDraftRevision((revision) => revision + 1);
   }, []);
   const [attachments, setAttachments] = useState<string[]>([]);
   const attachmentsRef = useRef(attachments);
@@ -379,14 +383,14 @@ export function AgentWorkspace({
       setShareOpen(false);
       setShareUrl(undefined);
       setThinkingLevel(loadThinkingLevel());
-      setDraft(request?.prompt ?? "");
+      setComposerDraft(request?.prompt ?? "");
       setAttachments([]);
       setPendingInitialTurn(undefined);
       setSubmitting(false);
       setError(undefined);
       onSessionSelected?.(undefined);
     },
-    [onSessionSelected],
+    [onSessionSelected, setComposerDraft],
   );
 
   const applyCostQuality = useCallback((value: number) => {
@@ -805,7 +809,11 @@ export function AgentWorkspace({
       return;
     }
     const recoveredSubmission = recoverableSubmissionSnapshotRef.current;
-    const prompt = (queuedSubmission?.prompt ?? recoveredSubmission?.prompt ?? draft).trim();
+    const prompt = (
+      queuedSubmission?.prompt ??
+      recoveredSubmission?.prompt ??
+      draftRef.current
+    ).trim();
     if (!prompt || waiting || submitting || textActionsDisabledReason) return;
     if (running) {
       const ownerSessionId = selectedIdRef.current;
@@ -821,7 +829,7 @@ export function AgentWorkspace({
           thinkingLevel,
         },
       }));
-      setDraft("");
+      setComposerDraft("");
       setAttachments([]);
       if (attachments.length === 0 && projection.run) {
         void agentRuntimeBindings
@@ -870,7 +878,7 @@ export function AgentWorkspace({
         },
       });
       if (submissionOwnerRef.current === submissionId && !recoveredSnapshot) {
-        setDraft("");
+        setComposerDraft("");
         setAttachments([]);
       }
     }
@@ -943,7 +951,7 @@ export function AgentWorkspace({
         !creatingSession &&
         submissionOwnerRef.current === submissionId
       ) {
-        setDraft("");
+        setComposerDraft("");
         setAttachments([]);
       }
       const enabledSkillIds = (await agentRuntimeBindings.listSkills())
@@ -1038,7 +1046,7 @@ export function AgentWorkspace({
         if (recoveredSnapshot || draftRef.current.trim() || attachmentsRef.current.length > 0) {
           setRecoverableSubmission(failedSubmission);
         } else {
-          setDraft(prompt);
+          setComposerDraft(prompt);
           setAttachments(attachedPaths);
         }
       }
@@ -1201,7 +1209,7 @@ export function AgentWorkspace({
 
   async function submitHomeMessage(event?: FormEvent) {
     event?.preventDefault();
-    const message = draft.trim();
+    const message = draftRef.current.trim();
     if (!message || submitting || textActionsDisabledReason) return;
     if (Array.from(message).length > 64_000) {
       setError("Home messages must be 64,000 characters or less.");
@@ -1209,8 +1217,7 @@ export function AgentWorkspace({
     }
     const profile = getCurrentDataPartitionName();
     const messageAttachments = attachments;
-    setDraft("");
-    draftRef.current = "";
+    setComposerDraft("");
     setAttachments([]);
     setHomeDirectPendingCount((count) => count + 1);
 
@@ -1362,7 +1369,7 @@ export function AgentWorkspace({
       // The persisted user bubble is the durable retry record. Never remove it
       // when a newer draft exists or when this workspace unmounted while the
       // request was in flight. Restore the text only when the composer is free.
-      if (!draftRef.current.trim()) setDraft(message);
+      if (!draftHasContentRef.current) setComposerDraft(message);
       setError(messageFromError(cause));
     } finally {
       setHomeDirectPendingCount((count) => Math.max(0, count - 1));
@@ -1695,7 +1702,11 @@ export function AgentWorkspace({
       formRef={composerRef}
       scrollRef={scrollRef}
       draft={draft}
+      draftRevision={draftRevision}
       setDraft={setComposerDraft}
+      onDraftContentChange={(hasContent) => {
+        draftHasContentRef.current = hasContent;
+      }}
       model={model}
       setModel={(nextModel, nextCostQuality) => {
         const selectedCostQuality =
@@ -1858,7 +1869,7 @@ export function AgentWorkspace({
                 {homeConversationTurns.length === 0 ? (
                   <section className="agent-home-nudges" aria-label="Suggestions">
                     {homeNudgePrompts.map((prompt) => (
-                      <button key={prompt} type="button" onClick={() => setDraft(prompt)}>
+                      <button key={prompt} type="button" onClick={() => setComposerDraft(prompt)}>
                         {prompt}
                       </button>
                     ))}
@@ -1894,7 +1905,7 @@ export function AgentWorkspace({
                     style={{ "--chip-i": index } as CSSProperties}
                     title={shortcut.description}
                     disabled={submitting}
-                    onClick={() => setDraft(shortcut.prompt)}
+                    onClick={() => setComposerDraft(shortcut.prompt)}
                   >
                     <span className="agent-hero-chip-icon" aria-hidden>
                       {shortcut.icon}
@@ -2225,7 +2236,9 @@ function AgentComposer({
   formRef,
   scrollRef,
   draft,
+  draftRevision,
   setDraft,
+  onDraftContentChange,
   model,
   setModel,
   costQuality,
@@ -2250,7 +2263,9 @@ function AgentComposer({
   formRef: RefObject<HTMLFormElement>;
   scrollRef: RefObject<HTMLDivElement>;
   draft: string;
+  draftRevision: number;
   setDraft: (value: string) => void;
+  onDraftContentChange: (hasContent: boolean) => void;
   model: string;
   setModel: (value: string, costQuality?: number) => void;
   costQuality: number;
@@ -2274,6 +2289,8 @@ function AgentComposer({
 }) {
   const editorRef = useRef<ComposerEditorHandle>(null);
   const publishedDraftRef = useRef(draft);
+  const appliedDraftRevisionRef = useRef(draftRevision);
+  const [hasEditorContent, setHasEditorContent] = useState(Boolean(draft.trim()));
   const [modelOpen, setModelOpen] = useState(false);
   const [modelFlyout, setModelFlyout] = useState<ModelPickerFlyout>(null);
   const [modelSearch, setModelSearch] = useState("");
@@ -2295,10 +2312,14 @@ function AgentComposer({
     : [AGENT_AUTO_MODEL, ...models];
 
   useEffect(() => {
+    if (appliedDraftRevisionRef.current === draftRevision && draft === publishedDraftRef.current) {
+      return;
+    }
+    appliedDraftRevisionRef.current = draftRevision;
     if (draft === publishedDraftRef.current) return;
     publishedDraftRef.current = draft;
     editorRef.current?.setContent(draft, null, { focus: false });
-  }, [draft]);
+  }, [draft, draftRevision]);
 
   useEffect(() => {
     if (!modelOpen && !safetyOpen && !attachOpen) return;
@@ -2371,7 +2392,11 @@ function AgentComposer({
       ref={formRef}
       className="agent-composer"
       data-hero={hero ? "true" : undefined}
-      onSubmit={(event) => void onSubmit(event)}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (editorRef.current?.flushPendingChange() === false) return;
+        void onSubmit(event);
+      }}
     >
       {hero ? null : (
         <AgentScrollToLatestButton
@@ -2405,6 +2430,10 @@ function AgentComposer({
           onChange={(text) => {
             publishedDraftRef.current = text;
             setDraft(text);
+          }}
+          onContentChange={(hasContent) => {
+            setHasEditorContent(hasContent);
+            onDraftContentChange(hasContent);
           }}
           onSubmit={() => void onSubmit()}
         />
@@ -2477,7 +2506,7 @@ function AgentComposer({
             </button>
             {running ? (
               <>
-                {draft.trim() ? (
+                {hasEditorContent ? (
                   <button
                     type="submit"
                     className="agent-composer-send"
@@ -2500,7 +2529,7 @@ function AgentComposer({
                 type="submit"
                 className="agent-composer-send"
                 aria-label="Send message"
-                disabled={submitting || !draft.trim() || Boolean(disabledReason)}
+                disabled={submitting || !hasEditorContent || Boolean(disabledReason)}
                 title={disabledReason}
               >
                 {submitting ? <Spinner /> : <IconArrowUp size={18} />}
