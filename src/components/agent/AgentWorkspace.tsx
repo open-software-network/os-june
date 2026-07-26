@@ -1123,7 +1123,7 @@ export function AgentWorkspace({
 
     let focusedSession: AgentSessionDto | undefined;
     try {
-      const focusedModel = focusedHomeModelRef.current;
+      const focusedModel = agentRunModelId(focusedHomeModelRef.current, costQualityRef.current);
       const focusedThinkingLevel = focusedHomeThinkingLevelRef.current;
       focusedSession = await agentRuntimeBindings.createSession({
         title: request.title,
@@ -1617,11 +1617,13 @@ export function AgentWorkspace({
       setError(messageFromError(cause));
     }
   };
+  const runDisplayModel = agentModelSelection(projection.run?.model ?? "").modelId;
+  const sessionDisplayModel = agentModelSelection(selectedSession?.model ?? model).modelId;
   const usageModel = selectedModel(
     models,
-    models.some((candidate) => candidate.id === projection.run?.model)
-      ? (projection.run?.model ?? model)
-      : (selectedSession?.model ?? model),
+    models.some((candidate) => candidate.id === runDisplayModel)
+      ? runDisplayModel
+      : sessionDisplayModel,
   );
   const runUsage = projection.run?.usage;
   const contextLimit = usageModel?.contextTokens;
@@ -2033,9 +2035,7 @@ export function AgentWorkspace({
           <div className="agent-usage-body">
             <div className="agent-usage-row">
               <span className="agent-usage-primary">Model</span>
-              <span className="agent-usage-value">
-                {usageModel?.name ?? projection.run?.model ?? selectedSession.model}
-              </span>
+              <span className="agent-usage-value">{usageModel?.name ?? sessionDisplayModel}</span>
             </div>
             {projection.run?.usage?.provider || usageModel?.provider ? (
               <div className="agent-usage-row">

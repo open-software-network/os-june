@@ -226,7 +226,18 @@ describe("AgentWorkspace runtime wiring", () => {
       if (command === "list_agent_items" || command === "list_agent_artifacts") return [];
       if (command === "list_agent_skills") return [];
       if (command === "list_venice_models") {
-        return { mode: "generation", selectedModel: "fast", modelType: "text", models: [] };
+        return {
+          mode: "generation",
+          selectedModel: "open-software/auto",
+          modelType: "text",
+          models: [],
+        };
+      }
+      if (command === "provider_model_settings") {
+        return {
+          settings: { costQuality: 20 },
+          effectiveSettings: { veniceApiKeyConfigured: false },
+        };
       }
       if (command === "create_agent_session") return focusedSession;
       if (command === "start_agent_run") {
@@ -253,7 +264,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
         request: {
           title: "Summarize this file",
-          model: "fast",
+          model: "__june_auto_generation__:20",
           safetyMode: "sandboxed",
           profile: "work",
         },
@@ -264,7 +275,7 @@ describe("AgentWorkspace runtime wiring", () => {
         request: expect.objectContaining({
           sessionId: "focused-session",
           prompt: "Summarize this file",
-          model: "fast",
+          model: "__june_auto_generation__:20",
           reasoningEffort: "medium",
           safetyMode: "sandboxed",
           attachments: ["/tmp/brief.pdf"],
@@ -747,9 +758,10 @@ describe("AgentWorkspace runtime wiring", () => {
   });
 
   it("shows route-only persisted usage without crashing", async () => {
+    const autoSession = { ...session, model: "__june_auto_generation__:20" };
     mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === "list_agent_sessions") return [session];
-      if (command === "get_agent_session") return session;
+      if (command === "list_agent_sessions") return [autoSession];
+      if (command === "get_agent_session") return autoSession;
       if (command === "list_agent_items") {
         return [
           {
@@ -770,7 +782,7 @@ describe("AgentWorkspace runtime wiring", () => {
           id: "run-route-only",
           sessionId: session.id,
           status: "completed",
-          model: "zai-org-glm-5-2",
+          model: "__june_auto_generation__:20",
           usage: {
             provider: "qa-fixture",
             privacyLevel: "isolated",
@@ -781,7 +793,7 @@ describe("AgentWorkspace runtime wiring", () => {
       return undefined;
     });
     const user = userEvent.setup();
-    render(<AgentWorkspace initialSession={session} />);
+    render(<AgentWorkspace initialSession={autoSession} />);
     await screen.findByText("Earlier answer");
 
     await user.click(screen.getByRole("button", { name: "Session actions" }));
@@ -791,6 +803,8 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(usagePanel).toHaveTextContent("qa-fixture");
     expect(usagePanel).toHaveTextContent("isolated");
     expect(usagePanel).toHaveTextContent("localhost");
+    expect(usagePanel).toHaveTextContent("Auto");
+    expect(usagePanel).not.toHaveTextContent("__june_auto_generation__");
     expect(usagePanel).toHaveTextContent("Token counts were not reported for this request.");
   });
 
