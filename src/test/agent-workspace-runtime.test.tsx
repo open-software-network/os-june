@@ -151,6 +151,49 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(agentComposerClearance(600, 620)).toBe(0);
   });
 
+  it("reserves the fixed composer before Home has a persisted session", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_sessions") return Promise.resolve([]);
+      if (command === "list_venice_models") {
+        return Promise.resolve({
+          mode: "generation",
+          selectedModel: "open-software/auto",
+          modelType: "text",
+          models: [],
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    const bounds = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const top = this.classList.contains("agent-composer") ? 520 : 0;
+        const bottom = this.classList.contains("agent-scroll") ? 640 : top;
+        return {
+          x: 0,
+          y: top,
+          top,
+          right: 0,
+          bottom,
+          left: 0,
+          width: 0,
+          height: Math.max(0, bottom - top),
+          toJSON: () => ({}),
+        } as DOMRect;
+      });
+
+    try {
+      const { container } = render(<AgentWorkspace homeMode />);
+      const scroller = container.querySelector<HTMLElement>(".agent-scroll");
+
+      await waitFor(() =>
+        expect(scroller?.style.getPropertyValue("--agent-composer-clearance")).toBe("120px"),
+      );
+    } finally {
+      bounds.mockRestore();
+    }
+  });
+
   it("hands Home attachments to a focused June runtime session with send-time profile", async () => {
     const user = userEvent.setup();
     const homeSession: AgentSessionDto = {

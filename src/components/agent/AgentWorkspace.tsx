@@ -675,7 +675,12 @@ export function AgentWorkspace({
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
     const composer = composerRef.current;
-    if (newSessionMode || !selectedSession || !scroller || !composer) {
+    // Home renders its composer before it has a persisted backing session.
+    // It is still fixed over the scroller, so skipping clearance in that
+    // state lets the greeting and suggestions settle underneath the input.
+    // The focused new-session hero is inline and remains the only mode that
+    // intentionally needs no fixed-composer clearance.
+    if ((!homeMode && (newSessionMode || !selectedSession)) || !scroller || !composer) {
       setComposerClearance(0);
       return;
     }
@@ -695,7 +700,7 @@ export function AgentWorkspace({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [newSessionMode, selectedSession]);
+  }, [homeMode, newSessionMode, selectedSession]);
 
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");
