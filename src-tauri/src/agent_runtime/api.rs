@@ -479,12 +479,18 @@ pub async fn delete_agent_session(app: AppHandle, session_id: String) -> Result<
 
 #[tauri::command]
 pub async fn list_agent_items(app: AppHandle, session_id: String) -> Result<Vec<Value>, AppError> {
-    repository(&app)
-        .await?
+    let repository = repository(&app).await?;
+    let active_run_id = repository
+        .latest_run(&session_id)
+        .await
+        .ok()
+        .filter(|run| matches!(run.status.as_str(), "running" | "waiting_for_user"))
+        .map(|run| run.id);
+    repository
         .items(&session_id)
         .await?
         .into_iter()
-        .map(item_json)
+        .map(|item| item_json_with_active_run(item, active_run_id.as_deref()))
         .collect()
 }
 
@@ -1601,8 +1607,25 @@ fn run_json(run: super::AgentRunDto) -> Value {
     json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "error": run.error_message })
 }
 
-fn item_json(item: AgentItemDto) -> Result<Value, AppError> {
-    let base = json!({ "id": item.id, "sessionId": item.session_id, "runId": item.run_id, "sequence": item.sequence, "createdAt": item.created_at });
+fn item_json_with_active_run(
+    item: AgentItemDto,
+    active_run_id: Option<&str>,
+) -> Result<Value, AppError> {
+    let is_active_run = item.run_id.as_deref() == active_run_id;
+    let stable_stream_id = is_active_run
+        .then_some(item.external_id.as_deref())
+        .flatten()
+        .filter(|external_id| {
+            external_id.starts_with("assistant:") || external_id.starts_with("reasoning:")
+        });
+    let public_item_id = stable_stream_id.unwrap_or(&item.id).to_string();
+    let stream_status =
+        if stable_stream_id.is_some_and(|external_id| external_id.starts_with("assistant:")) {
+            "streaming"
+        } else {
+            "complete"
+        };
+    let base = json!({ "id": public_item_id, "sessionId": item.session_id, "runId": item.run_id, "sequence": item.sequence, "createdAt": item.created_at });
     let mut object = base.as_object().cloned().expect("base object");
     let fields = match item.payload {
         AgentItemPayload::UserMessage(v)
@@ -1627,10 +1650,10 @@ fn item_json(item: AgentItemDto) -> Result<Value, AppError> {
                     })
                 })
                 .collect::<Vec<_>>();
-            json!({ "kind": "message", "role": v.role, "text": v.content, "status": "complete", "attachments": attachments })
+            json!({ "kind": "message", "role": v.role, "text": v.content, "status": stream_status, "attachments": attachments })
         }
         AgentItemPayload::Reasoning(v) => {
-            json!({ "kind": "reasoning", "text": v.text, "status": "complete" })
+            json!({ "kind": "reasoning", "text": v.text, "status": stream_status })
         }
         AgentItemPayload::Steering(v) => json!({ "kind": "steering", "text": v.text }),
         AgentItemPayload::ContextSummary(v) => json!({ "kind": "context_summary", "text": v.text }),
@@ -2017,7 +2040,7 @@ mod tests {
         };
 
         let history = history_item(item.clone()).expect("runtime history");
-        let value = item_json(item).expect("public item");
+        let value = item_json_with_active_run(item, None).expect("public item");
         assert_eq!(value["attachments"][0]["sessionId"], "session-1");
         assert_eq!(value["attachments"][0]["runId"], "run-1");
         assert_eq!(value["attachments"][0]["itemId"], "message-1");
@@ -2028,6 +2051,53 @@ mod tests {
         );
         assert_eq!(history["attachments"][0]["mimeType"], "text/markdown");
         assert_eq!(history["attachments"][0]["sizeBytes"], 42);
+    }
+
+    #[test]
+    fn active_stream_items_keep_runtime_identity_and_streaming_status() {
+        let item = AgentItemDto {
+            id: "database-item-1".into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 1,
+            payload: AgentItemPayload::AssistantMessage(super::super::MessagePayload {
+                role: "assistant".into(),
+                content: "Everything emitted so far".into(),
+                attachments: vec![],
+            }),
+            external_id: Some("assistant:run-1".into()),
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+
+        let active =
+            item_json_with_active_run(item.clone(), Some("run-1")).expect("active public item");
+        assert_eq!(active["id"], "assistant:run-1");
+        assert_eq!(active["status"], "streaming");
+        assert_eq!(active["text"], "Everything emitted so far");
+
+        let completed = item_json_with_active_run(item, None).expect("completed public item");
+        assert_eq!(completed["id"], "database-item-1");
+        assert_eq!(completed["status"], "complete");
+
+        let user = item_json_with_active_run(
+            AgentItemDto {
+                id: "user-item-1".into(),
+                session_id: "session-1".into(),
+                run_id: Some("run-1".into()),
+                sequence: 0,
+                payload: AgentItemPayload::UserMessage(super::super::MessagePayload {
+                    role: "user".into(),
+                    content: "Keep this complete".into(),
+                    attachments: vec![],
+                }),
+                external_id: Some("user:run-1".into()),
+                created_at: "2026-07-24T11:59:59Z".into(),
+            },
+            Some("run-1"),
+        )
+        .expect("active user item");
+        assert_eq!(user["id"], "user-item-1");
+        assert_eq!(user["status"], "complete");
     }
 
     #[test]
@@ -2091,7 +2161,7 @@ mod tests {
         };
 
         let history = history_item(item.clone()).expect("runtime history");
-        let value = item_json(item).expect("public item");
+        let value = item_json_with_active_run(item, None).expect("public item");
 
         assert_eq!(history["kind"], "message");
         assert_eq!(history["role"], "user");

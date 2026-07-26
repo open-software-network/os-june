@@ -98,6 +98,69 @@ async fn run_configuration_and_streamed_reasoning_survive_resume_and_hydration()
 }
 
 #[tokio::test]
+async fn streamed_assistant_text_survives_mid_run_hydration_without_duplicates() {
+    let pool = memory_database().await;
+    let repository = AgentRepository::new(pool);
+    let session = repository
+        .create_session(
+            "Visible active run",
+            "private-auto",
+            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            None,
+        )
+        .await
+        .expect("session");
+    let run = repository
+        .create_run(&session.id, "private-auto", Some("medium"))
+        .await
+        .expect("run");
+    let stream_id = format!("assistant:{}", run.id);
+
+    repository
+        .append_assistant_message_delta(&session.id, &run.id, 1, "What was ", &stream_id)
+        .await
+        .expect("first message delta");
+    repository
+        .append_assistant_message_delta(&session.id, &run.id, 2, "already said", &stream_id)
+        .await
+        .expect("second message delta");
+
+    let partial = repository.items(&session.id).await.expect("partial items");
+    assert_eq!(partial.len(), 1);
+    assert_eq!(partial[0].external_id.as_deref(), Some(stream_id.as_str()));
+    assert!(matches!(
+        &partial[0].payload,
+        AgentItemPayload::AssistantMessage(message)
+            if message.content == "What was already said"
+    ));
+
+    repository
+        .complete_assistant_message(
+            &session.id,
+            &run.id,
+            3,
+            "What was already said, plus the ending.",
+            &stream_id,
+        )
+        .await
+        .expect("completed message");
+
+    let completed = repository
+        .items(&session.id)
+        .await
+        .expect("completed items");
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].id, partial[0].id);
+    assert_eq!(completed[0].external_id, None);
+    assert!(matches!(
+        &completed[0].payload,
+        AgentItemPayload::AssistantMessage(message)
+            if message.content == "What was already said, plus the ending."
+    ));
+    assert_eq!(repository.get_run(&run.id).await.unwrap().last_sequence, 3);
+}
+
+#[tokio::test]
 async fn compaction_replaces_old_items_with_one_ordered_visible_summary() {
     let pool = memory_database().await;
     let repository = AgentRepository::new(pool.clone());

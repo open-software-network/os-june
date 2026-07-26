@@ -370,6 +370,223 @@ impl AgentRepository {
         }))
     }
 
+    /// Coalesces streamed assistant output into one durable row. Persisting
+    /// partial output lets another window hydrate the full response-so-far
+    /// instead of only receiving deltas emitted after it subscribed.
+    pub async fn append_assistant_message_delta(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        sequence: i64,
+        delta: &str,
+        external_id: &str,
+    ) -> Result<Option<AgentItemDto>, sqlx::Error> {
+        let now = now();
+        let mut transaction = self.pool.begin().await?;
+        let updated = query(
+            "UPDATE agent_runs SET last_sequence = ?, updated_at = ?
+             WHERE id = ? AND last_sequence < ?",
+        )
+        .bind(sequence)
+        .bind(&now)
+        .bind(run_id)
+        .bind(sequence)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+
+        if let Some(row) = query(
+            "SELECT id, sequence, payload_json, created_at
+             FROM agent_items WHERE external_id = ?",
+        )
+        .bind(external_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            let id: String = row.get("id");
+            let display_sequence: i64 = row.get("sequence");
+            let created_at: String = row.get("created_at");
+            let mut payload: super::domain::MessagePayload =
+                serde_json::from_str(&row.get::<String, _>("payload_json"))
+                    .map_err(|error| sqlx::Error::Decode(Box::new(error)))?;
+            payload.content.push_str(delta);
+            query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
+                .bind(
+                    serde_json::to_string(&payload)
+                        .map_err(|error| sqlx::Error::Encode(Box::new(error)))?,
+                )
+                .bind(&id)
+                .execute(&mut *transaction)
+                .await?;
+            query("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(session_id)
+                .execute(&mut *transaction)
+                .await?;
+            transaction.commit().await?;
+            return Ok(Some(AgentItemDto {
+                id,
+                session_id: session_id.to_string(),
+                run_id: Some(run_id.to_string()),
+                sequence: display_sequence,
+                payload: AgentItemPayload::AssistantMessage(payload),
+                external_id: Some(external_id.to_string()),
+                created_at,
+            }));
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let display_sequence: i64 = query(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
+             FROM agent_items WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *transaction)
+        .await?
+        .get("next_sequence");
+        let payload = super::domain::MessagePayload {
+            role: "assistant".into(),
+            content: delta.to_string(),
+            attachments: Vec::new(),
+        };
+        query(
+            "INSERT INTO agent_items
+             (id, session_id, run_id, sequence, kind, payload_json, external_id, created_at)
+             VALUES (?, ?, ?, ?, 'assistant_message', ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(session_id)
+        .bind(run_id)
+        .bind(display_sequence)
+        .bind(
+            serde_json::to_string(&payload)
+                .map_err(|error| sqlx::Error::Encode(Box::new(error)))?,
+        )
+        .bind(external_id)
+        .bind(&now)
+        .execute(&mut *transaction)
+        .await?;
+        query("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(session_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(Some(AgentItemDto {
+            id,
+            session_id: session_id.to_string(),
+            run_id: Some(run_id.to_string()),
+            sequence: display_sequence,
+            payload: AgentItemPayload::AssistantMessage(payload),
+            external_id: Some(external_id.to_string()),
+            created_at: now,
+        }))
+    }
+
+    /// Replaces the coalesced response-so-far with the SDK's authoritative
+    /// completed text without creating a duplicate assistant message.
+    pub async fn complete_assistant_message(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        sequence: i64,
+        text: &str,
+        external_id: &str,
+    ) -> Result<Option<AgentItemDto>, sqlx::Error> {
+        let now = now();
+        let mut transaction = self.pool.begin().await?;
+        let updated = query(
+            "UPDATE agent_runs SET last_sequence = ?, updated_at = ?
+             WHERE id = ? AND last_sequence < ?",
+        )
+        .bind(sequence)
+        .bind(&now)
+        .bind(run_id)
+        .bind(sequence)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+
+        let payload = super::domain::MessagePayload {
+            role: "assistant".into(),
+            content: text.to_string(),
+            attachments: Vec::new(),
+        };
+        let payload_json = serde_json::to_string(&payload)
+            .map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
+        let item = if let Some(row) =
+            query("SELECT id, sequence, created_at FROM agent_items WHERE external_id = ?")
+                .bind(external_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+        {
+            let id: String = row.get("id");
+            let display_sequence: i64 = row.get("sequence");
+            let created_at: String = row.get("created_at");
+            query("UPDATE agent_items SET payload_json = ?, external_id = NULL WHERE id = ?")
+                .bind(&payload_json)
+                .bind(&id)
+                .execute(&mut *transaction)
+                .await?;
+            AgentItemDto {
+                id,
+                session_id: session_id.to_string(),
+                run_id: Some(run_id.to_string()),
+                sequence: display_sequence,
+                payload: AgentItemPayload::AssistantMessage(payload),
+                external_id: None,
+                created_at,
+            }
+        } else {
+            let id = Uuid::new_v4().to_string();
+            let display_sequence: i64 = query(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
+                 FROM agent_items WHERE session_id = ?",
+            )
+            .bind(session_id)
+            .fetch_one(&mut *transaction)
+            .await?
+            .get("next_sequence");
+            query(
+                "INSERT INTO agent_items
+                 (id, session_id, run_id, sequence, kind, payload_json, external_id, created_at)
+                 VALUES (?, ?, ?, ?, 'assistant_message', ?, NULL, ?)",
+            )
+            .bind(&id)
+            .bind(session_id)
+            .bind(run_id)
+            .bind(display_sequence)
+            .bind(&payload_json)
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+            AgentItemDto {
+                id,
+                session_id: session_id.to_string(),
+                run_id: Some(run_id.to_string()),
+                sequence: display_sequence,
+                payload: AgentItemPayload::AssistantMessage(payload),
+                external_id: None,
+                created_at: now.clone(),
+            }
+        };
+        query("UPDATE agent_sessions SET updated_at = ? WHERE id = ?")
+            .bind(&now)
+            .bind(session_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        Ok(Some(item))
+    }
+
     /// Persists one runtime event. Duplicate or out-of-order sequence numbers
     /// are ignored so reconnect/replay cannot duplicate transcript items.
     pub async fn append_item(

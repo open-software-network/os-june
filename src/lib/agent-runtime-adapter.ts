@@ -32,6 +32,74 @@ export function createAgentRuntimeProjection(
   };
 }
 
+/**
+ * Hydrates a persisted transcript without dropping deltas that arrived while
+ * the snapshot request was in flight. Only streamed text from the active run
+ * is carried across, so switching sessions cannot leak items from the previous
+ * transcript.
+ */
+export function mergeAgentRuntimeSnapshot(
+  current: AgentRuntimeProjection,
+  input: { session: AgentSessionDto; run?: AgentRunDto; items: AgentItemDto[] },
+): AgentRuntimeProjection {
+  const snapshot = createAgentRuntimeProjection(input);
+  const run = input.run;
+  if (!run || (run.status !== "running" && run.status !== "waiting_for_user")) return snapshot;
+
+  const liveItems = current.items.filter(
+    (item) =>
+      item.sessionId === input.session.id &&
+      item.runId === run.id &&
+      (item.kind === "message" || item.kind === "reasoning") &&
+      item.status === "streaming",
+  );
+  let items = snapshot.items;
+  for (const liveItem of liveItems) {
+    const persisted = items.find((item) => item.id === liveItem.id);
+    if (
+      persisted &&
+      (persisted.kind === "message" || persisted.kind === "reasoning") &&
+      persisted.kind === liveItem.kind
+    ) {
+      const text = mergeStreamText(persisted.text, liveItem.text);
+      items = upsertItem(items, { ...persisted, text, status: "streaming" });
+    } else {
+      items = upsertItem(items, liveItem);
+    }
+  }
+
+  const currentRun = current.run?.id === run.id ? current.run : undefined;
+  const currentRunFinished =
+    currentRun &&
+    (currentRun.status === "completed" ||
+      currentRun.status === "cancelled" ||
+      currentRun.status === "failed");
+  return {
+    ...snapshot,
+    run: currentRunFinished ? currentRun : run,
+    items,
+    lastSequenceByRun: {
+      ...snapshot.lastSequenceByRun,
+      ...(current.lastSequenceByRun[run.id] === undefined
+        ? {}
+        : { [run.id]: current.lastSequenceByRun[run.id] }),
+    },
+    processedEventIds: new Set(current.processedEventIds),
+  };
+}
+
+function mergeStreamText(persisted: string, live: string) {
+  if (live.startsWith(persisted)) return live;
+  if (persisted.startsWith(live)) return persisted;
+  const maxOverlap = Math.min(persisted.length, live.length);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (persisted.endsWith(live.slice(0, overlap))) {
+      return persisted + live.slice(overlap);
+    }
+  }
+  return persisted + live;
+}
+
 export function applyAgentRuntimeEvent(
   projection: AgentRuntimeProjection,
   event: AgentRuntimeEvent,

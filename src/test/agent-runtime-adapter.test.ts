@@ -3,6 +3,7 @@ import {
   agentItemsToChatTurns,
   applyAgentRuntimeEvent,
   createAgentRuntimeProjection,
+  mergeAgentRuntimeSnapshot,
 } from "../lib/agent-runtime-adapter";
 import {
   AGENT_RUNTIME_PROTOCOL_VERSION,
@@ -114,6 +115,83 @@ describe("agent runtime adapter", () => {
         parts: [{ type: "text", text: "Hello there", status: "running" }],
       },
     ]);
+  });
+
+  it("keeps deltas received while an active-session snapshot is loading", () => {
+    const session = {
+      id: "session-1",
+      title: "Active session",
+      status: "running" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-1",
+      source: "user" as const,
+      createdAt: "2026-07-22T12:00:00Z",
+      updatedAt: "2026-07-22T12:00:01Z",
+    };
+    const run = {
+      id: "run-1",
+      sessionId: session.id,
+      status: "running" as const,
+      model: "auto",
+      startedAt: "2026-07-22T12:00:00Z",
+    };
+    let current = createAgentRuntimeProjection({ session, run });
+    current = applyAgentRuntimeEvent(current, {
+      ...frame,
+      eventId: "event-after-snapshot",
+      sequence: 4,
+      method: "message.delta",
+      data: {
+        itemId: "assistant:run-1",
+        role: "assistant",
+        delta: " plus the newest words",
+        createdAt: "2026-07-22T12:00:02Z",
+      },
+    });
+
+    const hydrated = mergeAgentRuntimeSnapshot(current, {
+      session,
+      run,
+      items: [
+        {
+          id: "assistant:run-1",
+          sessionId: session.id,
+          runId: run.id,
+          sequence: 1,
+          createdAt: "2026-07-22T12:00:01Z",
+          kind: "message",
+          role: "assistant",
+          text: "Everything said before opening",
+          status: "streaming",
+        },
+      ],
+    });
+
+    expect(hydrated.items).toMatchObject([
+      {
+        id: "assistant:run-1",
+        text: "Everything said before opening plus the newest words",
+        status: "streaming",
+      },
+    ]);
+    expect(hydrated.lastSequenceByRun[run.id]).toBe(4);
+
+    const continued = applyAgentRuntimeEvent(hydrated, {
+      ...frame,
+      eventId: "event-after-hydration",
+      sequence: 5,
+      method: "message.delta",
+      data: {
+        itemId: "assistant:run-1",
+        role: "assistant",
+        delta: " and the continuation",
+        createdAt: "2026-07-22T12:00:03Z",
+      },
+    });
+    expect(continued.items[0]).toMatchObject({
+      text: "Everything said before opening plus the newest words and the continuation",
+    });
   });
 
   it("replaces compacted transcript items with the visible context summary", () => {

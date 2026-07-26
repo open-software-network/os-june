@@ -1,7 +1,7 @@
 use super::{
     protocol::{RpcFrame, PROTOCOL_VERSION},
     tools::{dispatch_tool, ToolCancellationRegistry, ToolContext},
-    AgentItemPayload, AgentRepository, MessagePayload, TextPayload, ToolPayload,
+    AgentItemPayload, AgentRepository, TextPayload, ToolPayload,
 };
 use crate::domain::types::AppError;
 use serde_json::{json, Value};
@@ -510,6 +510,18 @@ async fn persist_and_emit_event(
             data["itemId"] = json!(assistant_id);
             data["role"] = json!("assistant");
             data["createdAt"] = json!(created_at);
+            repository
+                .append_assistant_message_delta(
+                    &frame.session_id,
+                    &frame.run_id,
+                    frame.sequence,
+                    params
+                        .get("delta")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    &assistant_id,
+                )
+                .await?;
             None
         }
         "message.completed" => {
@@ -520,11 +532,16 @@ async fn persist_and_emit_event(
             data["itemId"] = json!(assistant_id);
             data["role"] = json!("assistant");
             data["createdAt"] = json!(created_at);
-            Some(AgentItemPayload::AssistantMessage(MessagePayload {
-                role: "assistant".into(),
-                content: text.into(),
-                attachments: Vec::new(),
-            }))
+            repository
+                .complete_assistant_message(
+                    &frame.session_id,
+                    &frame.run_id,
+                    frame.sequence,
+                    text,
+                    &assistant_id,
+                )
+                .await?;
+            None
         }
         "reasoning.delta" => {
             data["itemId"] = json!(reasoning_id);

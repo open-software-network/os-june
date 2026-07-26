@@ -29,6 +29,7 @@ import {
   agentItemsToChatTurns,
   applyAgentRuntimeEvent,
   createAgentRuntimeProjection,
+  mergeAgentRuntimeSnapshot,
   type AgentRuntimeProjection,
 } from "../../lib/agent-runtime-adapter";
 import type {
@@ -538,10 +539,13 @@ export function AgentWorkspace({
       if (selectedIdRef.current !== sessionId || hydrationRequestRef.current !== requestId) {
         return;
       }
-      setProjection({
-        ...createAgentRuntimeProjection({ session, items }),
-        run: latestRun ?? undefined,
-      });
+      setProjection((current) =>
+        mergeAgentRuntimeSnapshot(current, {
+          session,
+          items,
+          run: latestRun ?? undefined,
+        }),
+      );
       updateQueuedFollowUps((current) =>
         reconcileConsumedAgentFollowUp(
           current,
