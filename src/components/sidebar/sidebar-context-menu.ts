@@ -17,6 +17,23 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
+export function sidebarContextMenuAnchorIsVisible(
+  anchor: Pick<DOMRect, "top" | "bottom" | "left" | "right">,
+  viewport: ViewportSize,
+): boolean {
+  // Layout-free environments report an all-zero rectangle. Keep the menu
+  // usable there; a real sidebar action button always has measurable bounds.
+  if (anchor.top === 0 && anchor.bottom === 0 && anchor.left === 0 && anchor.right === 0) {
+    return true;
+  }
+  return (
+    anchor.bottom > 0 &&
+    anchor.top < viewport.height &&
+    anchor.right > 0 &&
+    anchor.left < viewport.width
+  );
+}
+
 /**
  * Align a sidebar context menu to its trigger while keeping the full menu in
  * the viewport. Menus prefer opening below the trigger, then flip above when

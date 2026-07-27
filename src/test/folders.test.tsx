@@ -386,6 +386,13 @@ describe("folders UI", () => {
       await waitFor(() => {
         expect(menuShell).toHaveStyle({ right: "408px", top: "76px" });
       });
+
+      anchorRect = { top: -40, bottom: -18, right: 232 };
+      act(() => trigger.dispatchEvent(new Event("scroll")));
+
+      await waitFor(() => {
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      });
     } finally {
       menuRectSpy.mockRestore();
       innerHeightSpy.mockRestore();

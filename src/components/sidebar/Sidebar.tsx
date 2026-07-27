@@ -104,7 +104,10 @@ import {
   type DateFormatPreference,
 } from "../../lib/date-format";
 import { buildSidebarSessionLists } from "./sidebar-session-lists";
-import { positionSidebarContextMenu } from "./sidebar-context-menu";
+import {
+  positionSidebarContextMenu,
+  sidebarContextMenuAnchorIsVisible,
+} from "./sidebar-context-menu";
 
 const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
 
@@ -2309,7 +2312,7 @@ function AgentSessionContextMenu({
   onClose: () => void;
 }) {
   return (
-    <SidebarContextMenu anchor={anchor}>
+    <SidebarContextMenu anchor={anchor} onClose={onClose}>
       <button
         type="button"
         role="menuitem"
@@ -2428,7 +2431,7 @@ function NoteContextMenu({
   const hasFolder = Boolean(currentFolderId);
 
   return (
-    <SidebarContextMenu anchor={anchor}>
+    <SidebarContextMenu anchor={anchor} onClose={onClose}>
       <button
         type="button"
         role="menuitem"
@@ -2470,7 +2473,15 @@ function NoteContextMenu({
   );
 }
 
-function SidebarContextMenu({ anchor, children }: { anchor: HTMLElement; children: ReactNode }) {
+function SidebarContextMenu({
+  anchor,
+  children,
+  onClose,
+}: {
+  anchor: HTMLElement;
+  children: ReactNode;
+  onClose: () => void;
+}) {
   const menuRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const fade = useScrollFade(scrollerRef);
@@ -2480,12 +2491,14 @@ function SidebarContextMenu({ anchor, children }: { anchor: HTMLElement; childre
     function updatePosition() {
       const menu = menuRef.current;
       if (!menu) return;
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      const anchorRect = anchor.getBoundingClientRect();
+      if (!sidebarContextMenuAnchorIsVisible(anchorRect, viewport)) {
+        onClose();
+        return;
+      }
       const { width, height } = menu.getBoundingClientRect();
-      const next = positionSidebarContextMenu(
-        anchor.getBoundingClientRect(),
-        { width, height },
-        { width: window.innerWidth, height: window.innerHeight },
-      );
+      const next = positionSidebarContextMenu(anchorRect, { width, height }, viewport);
       setPosition((current) =>
         current?.right === next.right && current.top === next.top ? current : next,
       );
@@ -2498,7 +2511,7 @@ function SidebarContextMenu({ anchor, children }: { anchor: HTMLElement; childre
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [anchor]);
+  }, [anchor, onClose]);
 
   const initialAnchor = anchor.getBoundingClientRect();
 

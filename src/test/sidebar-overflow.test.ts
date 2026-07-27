@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { positionSidebarContextMenu } from "../components/sidebar/sidebar-context-menu";
+import {
+  positionSidebarContextMenu,
+  sidebarContextMenuAnchorIsVisible,
+} from "../components/sidebar/sidebar-context-menu";
 import appCss from "../styles/app.css?raw";
 
 function cssRuleFor(selector: string) {
@@ -56,5 +59,16 @@ describe("sidebar overflow containment", () => {
         height: 420,
       }),
     ).toEqual({ right: 408, top: 124 });
+  });
+
+  it("detects when scrolling moves a menu trigger outside the viewport", () => {
+    const viewport = { width: 900, height: 620 };
+
+    expect(
+      sidebarContextMenuAnchorIsVisible({ top: 550, bottom: 572, left: 206, right: 228 }, viewport),
+    ).toBe(true);
+    expect(
+      sidebarContextMenuAnchorIsVisible({ top: -40, bottom: -18, left: 206, right: 228 }, viewport),
+    ).toBe(false);
   });
 });
