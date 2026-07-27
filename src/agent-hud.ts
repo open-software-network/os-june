@@ -1340,18 +1340,20 @@ lifecycle.trackUnlisten(
   ),
 );
 
-lifecycle.trackUnlisten(
-  listen<boolean>(AGENT_HUD_MAIN_FOCUS_EVENT, (event) => {
-    mainFocusEventRevision += 1;
-    applyMainFocus(Boolean(event.payload));
-  }),
-);
+const mainFocusListenerRegistration = listen<boolean>(AGENT_HUD_MAIN_FOCUS_EVENT, (event) => {
+  mainFocusEventRevision += 1;
+  applyMainFocus(Boolean(event.payload));
+});
+lifecycle.trackUnlisten(mainFocusListenerRegistration);
 
-// Catch up on the focus state that existed before this webview subscribed.
-// Standalone page: the invoke rejects and the "away" default stands.
-const initialFocusEventRevision = mainFocusEventRevision;
-void agentHudMainFocused()
-  .then((focused) => {
+// Subscribe before sampling so a focus transition during listener setup is
+// reflected by the later snapshot. Events received while that snapshot is in
+// flight advance the revision and take precedence over its result.
+void mainFocusListenerRegistration
+  .then(async () => {
+    if (lifecycle.signal.aborted) return;
+    const initialFocusEventRevision = mainFocusEventRevision;
+    const focused = await agentHudMainFocused();
     if (!lifecycle.signal.aborted && mainFocusEventRevision === initialFocusEventRevision) {
       applyMainFocus(Boolean(focused));
     }

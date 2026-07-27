@@ -37,6 +37,10 @@ describe("agent HUD", () => {
     mocks.invoke.mockReset().mockResolvedValue(undefined);
     mocks.emit.mockReset().mockResolvedValue(undefined);
     mocks.listeners.clear();
+    mocks.listen.mockReset().mockImplementation((event: string, listener: TauriListener) => {
+      mocks.listeners.set(event, listener);
+      return Promise.resolve(vi.fn());
+    });
     vi.useRealTimers();
     localStorage.clear();
     document.body.innerHTML = agentHudMarkup();
@@ -1232,6 +1236,42 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(hudElement().dataset.visible).toBe("true");
+  });
+
+  it("queries initial focus only after native listener registration completes", async () => {
+    let completeFocusRegistration: (() => void) | undefined;
+    let mainFocused = false;
+    mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
+      if (event === "june:agent-hud:main-focus") {
+        return new Promise((resolve) => {
+          completeFocusRegistration = () => {
+            mocks.listeners.set(event, listener);
+            resolve(vi.fn());
+          };
+        });
+      }
+      mocks.listeners.set(event, listener);
+      return Promise.resolve(vi.fn());
+    });
+    mocks.invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === "agent_hud_main_focused" ? mainFocused : undefined),
+    );
+    await loadAgentHud();
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_main_focused");
+    mainFocused = true;
+    completeFocusRegistration?.();
+    await flushPromises();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_main_focused");
+    expect(hudElement().dataset.visible).toBe("false");
   });
 
   it("stays down while the June main window is focused", async () => {
