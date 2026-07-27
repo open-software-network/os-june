@@ -3,12 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { appSettingsTabsForCompanionPairing } from "../components/settings/AppSettings";
+import { settingsTabsForCompanionPairing } from "../components/settings/settings-config";
 import {
   dispatchDataPartitionChanged,
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
 import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
@@ -86,6 +89,7 @@ const mocks = vi.hoisted(() => ({
   checkRecordingSourceReadiness: vi.fn(),
   companionCompleteFrontendRequest: vi.fn(),
   companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
+  companionPairingEnabled: true,
   listAgentItems: vi.fn().mockResolvedValue([]),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
@@ -130,6 +134,21 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: mocks.getCurrentWindow,
+}));
+
+vi.mock("../lib/experimental-flags", () => ({
+  INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE: { count: 0, startedAt: null },
+  experimentalBrowserUseEnabled: () => false,
+  registerExperimentalUnlockClick: vi.fn((state) => ({ state, unlocked: false })),
+  setExperimentalFlags: vi.fn(async (flags) => flags),
+  useExperimentalFlags: () => ({
+    unlocked: false,
+    browser_use: false,
+    companion_pairing: mocks.companionPairingEnabled,
+    loaded: true,
+    browserUseEnabled: false,
+    companionPairingEnabled: mocks.companionPairingEnabled,
+  }),
 }));
 
 vi.mock("../lib/recording-sounds", () => ({
@@ -355,6 +374,7 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
       async () => mocks.pendingMeetingStartRequest ?? null,
@@ -1005,6 +1025,76 @@ describe("App shortcuts", () => {
     expect(
       await screen.findByRole("heading", { name: "General" }, { timeout: 10_000 }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps every companion surface dark until the experiment is enabled", async () => {
+    mocks.companionPairingEnabled = false;
+    const disabled = render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("june://agent-runtime-event")).toBe(true));
+    expect(mocks.listeners.has("june://companion-focus")).toBe(false);
+    expect(mocks.listeners.has("june://companion-request")).toBe(false);
+    expect(companionFrontendConsumerAvailable()).toBe(false);
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          method: "message.delta",
+          sessionId: "session-companion",
+          data: { delta: "Hidden companion update" },
+        },
+      });
+    });
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
+    expect(
+      appSettingsTabsForCompanionPairing(false).some((tab) => tab.id === "linked-devices"),
+    ).toBe(false);
+    expect(settingsTabsForCompanionPairing(false).some((tab) => tab.id === "linked-devices")).toBe(
+      false,
+    );
+
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    await screen.findByRole("heading", { name: "General" });
+    expect(screen.queryByRole("button", { name: "Linked devices" })).not.toBeInTheDocument();
+
+    disabled.unmount();
+    mocks.listeners.clear();
+    mocks.listen.mockClear();
+    mocks.companionPairingEnabled = true;
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    expect(mocks.listeners.has("june://companion-request")).toBe(true);
+    await waitFor(() => expect(companionFrontendConsumerAvailable()).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          method: "message.delta",
+          sessionId: "session-companion",
+          data: { delta: "Visible companion update" },
+        },
+      });
+    });
+    expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+      type: "delta",
+      data: {
+        storedSessionId: "session-companion",
+        text: "Visible companion update",
+      },
+    });
+    expect(
+      appSettingsTabsForCompanionPairing(true).some((tab) => tab.id === "linked-devices"),
+    ).toBe(true);
+    expect(settingsTabsForCompanionPairing(true).some((tab) => tab.id === "linked-devices")).toBe(
+      true,
+    );
+
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    expect(await screen.findByRole("button", { name: "Linked devices" })).toBeInTheDocument();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {

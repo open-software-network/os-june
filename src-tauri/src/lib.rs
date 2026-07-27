@@ -429,6 +429,8 @@ pub fn run() {
             notifications::setup(app);
             meeting_detection::setup(app);
             extension_host::setup(app);
+            // Companion pairing is restart-required: the persisted experiment
+            // is read once here and the transport remains stopped when off.
             companion::start(app.handle());
             routines::start_scheduler(app.handle());
             // Poll Google for the events routines subscribe to (email arrivals

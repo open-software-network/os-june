@@ -79,6 +79,7 @@ import {
 } from "../../lib/tauri";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import { useCurrentDataPartitionName } from "../../lib/data-partition";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
   sessionMatchesDataPartition,
   sessionPartitionMap,
@@ -86,7 +87,7 @@ import {
 } from "../../lib/session-partition-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
-import { SETTINGS_TABS, type SettingsTab } from "../settings/settings-config";
+import { settingsTabsForCompanionPairing, type SettingsTab } from "../settings/settings-config";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { CopyLinkField } from "../ui/CopyLinkField";
 import { Dialog } from "../ui/Dialog";
@@ -363,6 +364,7 @@ export function Sidebar({
   const searchShortcut = primaryShortcutLabel("K");
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
+  const { companionPairingEnabled } = useExperimentalFlags();
   const [allAgentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
   // Chats belong to the data partition they were created under (ADR 0031).
   // The sidebar filters its list through the session-to-partition map and re-filters
@@ -657,27 +659,29 @@ export function Sidebar({
       // Appearance carry their row-level terms so "theme" or "account"
       // still finds the right tab.
       ...(normalized
-        ? SETTINGS_TABS.filter(
-            (tab) =>
-              !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
-          ).map(
-            (tab): CommandPromptItem => ({
-              id: `quick:settings-${tab.id}`,
-              label: `Settings -> ${tab.label}`,
-              icon: <IconSettingsGear4 size={15} />,
-              searchText: normalizeCommandQuery(
-                tab.id === "general"
-                  ? "settings general account permissions privacy"
-                  : tab.id === "appearance"
-                    ? "settings appearance theme accent text size dark light mode"
-                    : `settings ${tab.label}`,
-              ),
-              action: () => {
-                onSettingsTabChange?.(tab.id);
-                onChangeView("settings");
-              },
-            }),
-          )
+        ? settingsTabsForCompanionPairing(companionPairingEnabled)
+            .filter(
+              (tab) =>
+                !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
+            )
+            .map(
+              (tab): CommandPromptItem => ({
+                id: `quick:settings-${tab.id}`,
+                label: `Settings -> ${tab.label}`,
+                icon: <IconSettingsGear4 size={15} />,
+                searchText: normalizeCommandQuery(
+                  tab.id === "general"
+                    ? "settings general account permissions privacy"
+                    : tab.id === "appearance"
+                      ? "settings appearance theme accent text size dark light mode"
+                      : `settings ${tab.label}`,
+                ),
+                action: () => {
+                  onSettingsTabChange?.(tab.id);
+                  onChangeView("settings");
+                },
+              }),
+            )
         : []),
     ].filter(matches);
 
@@ -731,6 +735,7 @@ export function Sidebar({
     account.signedIn,
     agentSessions,
     commandQuery,
+    companionPairingEnabled,
     homeEnabled,
     notes,
     onChangeView,
@@ -1104,6 +1109,7 @@ export function Sidebar({
       {inSettings ? (
         <SettingsSidebarNav
           activeTab={settingsTab}
+          companionPairingEnabled={companionPairingEnabled}
           localDev={account.localDev === true}
           onSelectTab={(tab) => onSettingsTabChange?.(tab)}
           onBack={() => (onExitSettings ? onExitSettings() : onChangeView("notes"))}
@@ -1701,11 +1707,13 @@ function buildSidebarDevStateSessions(): AgentSessionDto[] {
 
 function SettingsSidebarNav({
   activeTab,
+  companionPairingEnabled,
   localDev,
   onSelectTab,
   onBack,
 }: {
   activeTab: SettingsTab;
+  companionPairingEnabled: boolean;
   localDev: boolean;
   onSelectTab: (tab: SettingsTab) => void;
   onBack: () => void;
@@ -1716,7 +1724,10 @@ function SettingsSidebarNav({
   const groups = SETTINGS_SIDEBAR_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter(
-      (item) => !HIDDEN_SETTINGS_TABS.has(item.id) && !(localDev && item.id === "billing"),
+      (item) =>
+        !HIDDEN_SETTINGS_TABS.has(item.id) &&
+        !(localDev && item.id === "billing") &&
+        (companionPairingEnabled || item.id !== "linked-devices"),
     ),
   })).filter((group) => group.items.length > 0);
 

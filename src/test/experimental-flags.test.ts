@@ -30,12 +30,24 @@ describe("experimental flags", () => {
   beforeEach(async () => {
     mocks.invoke.mockImplementation(async (command: string, input?: unknown) => {
       if (command === "experimental_flags_set") {
-        return (input as { request: { unlocked: boolean; browser_use: boolean } }).request;
+        return (
+          input as {
+            request: {
+              unlocked: boolean;
+              browser_use: boolean;
+              companion_pairing: boolean;
+            };
+          }
+        ).request;
       }
-      return { unlocked: false, browser_use: false };
+      return { unlocked: false, browser_use: false, companion_pairing: false };
     });
     mocks.listen.mockResolvedValue(() => {});
-    await setExperimentalFlags({ unlocked: false, browser_use: false });
+    await setExperimentalFlags({
+      unlocked: false,
+      browser_use: false,
+      companion_pairing: false,
+    });
   });
 
   it("unlocks on the seventh click inside the time window", () => {
@@ -68,7 +80,11 @@ describe("experimental flags", () => {
   it("renders Browser access requests when the cached override is enabled", async () => {
     expect(hasBrowserAccessRequest(BROWSER_ACCESS_REQUEST_TOKEN)).toBe(false);
 
-    await setExperimentalFlags({ unlocked: true, browser_use: true });
+    await setExperimentalFlags({
+      unlocked: true,
+      browser_use: true,
+      companion_pairing: false,
+    });
 
     expect(hasBrowserAccessRequest(BROWSER_ACCESS_REQUEST_TOKEN)).toBe(true);
   });
@@ -87,9 +103,11 @@ describe("experimental flags", () => {
     vi.resetModules();
     mocks.invoke.mockReset();
     mocks.listen.mockReset();
-    mocks.invoke
-      .mockRejectedValueOnce(new Error("bridge unavailable"))
-      .mockResolvedValueOnce({ unlocked: true, browser_use: true });
+    mocks.invoke.mockRejectedValueOnce(new Error("bridge unavailable")).mockResolvedValueOnce({
+      unlocked: true,
+      browser_use: true,
+      companion_pairing: true,
+    });
     mocks.listen.mockResolvedValue(() => {});
     const flags = await import("../lib/experimental-flags");
 
@@ -97,6 +115,7 @@ describe("experimental flags", () => {
     expect(flags.getCachedExperimentalFlags()).toEqual({
       unlocked: false,
       browser_use: false,
+      companion_pairing: false,
     });
 
     const { result, unmount } = renderHook(() => flags.useExperimentalFlags());
@@ -104,6 +123,7 @@ describe("experimental flags", () => {
 
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(result.current.unlocked).toBe(true);
+    expect(result.current.companionPairingEnabled).toBe(true);
     unmount();
   });
 });

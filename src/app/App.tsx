@@ -9,6 +9,7 @@ import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
+import { useExperimentalFlags } from "../lib/experimental-flags";
 import { noteReadyToShare } from "../lib/share-payload";
 import { SETTINGS_TABS } from "../components/settings/AppSettings";
 import type { TabItem } from "../components/tabs/TabBar";
@@ -185,6 +186,7 @@ import { useAppState } from "./use-app-state";
 import { renderAppAccountGate } from "./app-account-gates";
 
 export function App() {
+  const { companionPairingEnabled } = useExperimentalFlags();
   const {
     currentDataPartitionName,
     dataPartitionRefreshRevision,
@@ -1039,6 +1041,7 @@ export function App() {
   );
 
   useEffect(() => {
+    if (!companionPairingEnabled) return;
     type CompanionFocusTarget =
       | "settings"
       | { agent: { storedSessionId?: string | null } }
@@ -1068,9 +1071,10 @@ export function App() {
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openSettings]);
+  }, [companionPairingEnabled, openSettings]);
 
   useEffect(() => {
+    if (!companionPairingEnabled) return;
     let aborted = false;
     let unlisten: (() => void) | undefined;
 
@@ -1169,7 +1173,7 @@ export function App() {
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setActiveAgentSession]);
+  }, [companionPairingEnabled, setActiveAgentSession]);
 
   useAgentAttentionNotifications({
     activeAgentSessionIdRef,

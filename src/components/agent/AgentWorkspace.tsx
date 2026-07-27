@@ -58,6 +58,7 @@ import {
 import { shouldBlockTextOnFunding } from "../../lib/account-gate";
 import { dispatchAgentSessionStatus, dispatchAgentSessionsChanged } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
   COMPANION_FRONTEND_QUEUE_EVENT,
   registerCompanionFrontendConsumer,
@@ -305,6 +306,7 @@ export function AgentWorkspace({
   projectContext,
   creditActionsDisabledReason,
 }: AgentWorkspaceProps = {}) {
+  const { companionPairingEnabled } = useExperimentalFlags();
   const initialAgentSession = initialSession;
   const pendingRequestRef = useRef(pendingNewSessionRequest());
   const [sessions, setSessions] = useState<AgentSessionDto[]>(
@@ -750,7 +752,7 @@ export function AgentWorkspace({
           clearQueuedAgentFollowUpSteering(current, payload.sessionId),
         );
       }
-      if (payload.method === "message.delta" && payload.data.delta) {
+      if (companionPairingEnabled && payload.method === "message.delta" && payload.data.delta) {
         void companionPublishAgentEvent({
           type: "delta",
           data: { storedSessionId: payload.sessionId, text: payload.data.delta },
@@ -768,7 +770,7 @@ export function AgentWorkspace({
                 : payload.method === "run.started"
                   ? "running"
                   : undefined;
-      if (companionStatus) {
+      if (companionPairingEnabled && companionStatus) {
         void companionPublishAgentEvent({
           type: "status",
           data: { storedSessionId: payload.sessionId, status: companionStatus },
@@ -804,9 +806,10 @@ export function AgentWorkspace({
       disposed = true;
       unlisten?.();
     };
-  }, [hydrate, refreshSessions, updateQueuedFollowUps]);
+  }, [companionPairingEnabled, hydrate, refreshSessions, updateQueuedFollowUps]);
 
   useEffect(() => {
+    if (!companionPairingEnabled) return;
     async function handleCompanionRequest(payload: CompanionFrontendRequest) {
       try {
         switch (payload.intent.type) {
@@ -893,7 +896,7 @@ export function AgentWorkspace({
       window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [companionPairingEnabled]);
 
   useEffect(() => {
     const scroller = scrollRef.current;

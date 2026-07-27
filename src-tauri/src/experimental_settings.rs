@@ -19,6 +19,8 @@ pub struct ExperimentalSettings {
     pub unlocked: bool,
     #[serde(default)]
     pub browser_use: bool,
+    #[serde(default)]
+    pub companion_pairing: bool,
 }
 
 pub struct ExperimentalSettingsState {
@@ -84,6 +86,16 @@ pub fn browser_use_enabled(app: &AppHandle) -> bool {
         .and_then(|state| get(state.inner()).ok())
         .unwrap_or_default();
     browser_use_enabled_with(crate::feature_flags::BROWSER_USE_ENABLED, &stored)
+}
+
+/// Companion transport availability for native callers. Unlike Browser use,
+/// this experiment has no public kill switch and stays off unless this install
+/// explicitly enables it.
+pub fn companion_pairing_enabled(app: &AppHandle) -> bool {
+    app.try_state::<ExperimentalSettingsState>()
+        .and_then(|state| get(state.inner()).ok())
+        .unwrap_or_default()
+        .companion_pairing
 }
 
 fn browser_use_enabled_with(kill_switch: bool, settings: &ExperimentalSettings) -> bool {
@@ -160,6 +172,7 @@ mod tests {
         let settings = ExperimentalSettings {
             unlocked: true,
             browser_use: true,
+            companion_pairing: true,
         };
 
         save_settings(&path, &settings).expect("save experimental settings");

@@ -8,6 +8,7 @@ export const EXPERIMENTAL_FLAGS_CHANGED_EVENT = "experimental-flags-changed";
 export type ExperimentalFlags = {
   unlocked: boolean;
   browser_use: boolean;
+  companion_pairing: boolean;
 };
 
 type ExperimentalFlagsCache = ExperimentalFlags & {
@@ -16,11 +17,13 @@ type ExperimentalFlagsCache = ExperimentalFlags & {
 
 export type ExperimentalFlagsSnapshot = ExperimentalFlagsCache & {
   browserUseEnabled: boolean;
+  companionPairingEnabled: boolean;
 };
 
 const DEFAULT_FLAGS: ExperimentalFlags = {
   unlocked: false,
   browser_use: false,
+  companion_pairing: false,
 };
 
 let cache: ExperimentalFlagsCache = { ...DEFAULT_FLAGS, loaded: false };
@@ -33,6 +36,7 @@ function normalizeFlags(flags: ExperimentalFlags): ExperimentalFlags {
   return {
     unlocked: flags?.unlocked === true,
     browser_use: flags?.browser_use === true,
+    companion_pairing: flags?.companion_pairing === true,
   };
 }
 
@@ -41,6 +45,7 @@ function publish(flags: ExperimentalFlags, loaded = true) {
   if (
     cache.unlocked === normalized.unlocked &&
     cache.browser_use === normalized.browser_use &&
+    cache.companion_pairing === normalized.companion_pairing &&
     cache.loaded === loaded
   ) {
     return;
@@ -100,6 +105,7 @@ export function useExperimentalFlags(): ExperimentalFlagsSnapshot {
   return {
     ...stored,
     browserUseEnabled: BROWSER_USE_ENABLED || stored.browser_use,
+    companionPairingEnabled: stored.companion_pairing,
   };
 }
 
@@ -112,6 +118,7 @@ export function getCachedExperimentalFlags(): ExperimentalFlags {
   return {
     unlocked: cache.unlocked,
     browser_use: cache.browser_use,
+    companion_pairing: cache.companion_pairing,
   };
 }
 

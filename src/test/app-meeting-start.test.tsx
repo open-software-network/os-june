@@ -70,6 +70,21 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: mocks.getCurrentWindow,
 }));
 
+vi.mock("../lib/experimental-flags", () => ({
+  INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE: { count: 0, startedAt: null },
+  experimentalBrowserUseEnabled: () => false,
+  registerExperimentalUnlockClick: vi.fn((state) => ({ state, unlocked: false })),
+  setExperimentalFlags: vi.fn(async (flags) => flags),
+  useExperimentalFlags: () => ({
+    unlocked: false,
+    browser_use: false,
+    companion_pairing: false,
+    loaded: true,
+    browserUseEnabled: false,
+    companionPairingEnabled: false,
+  }),
+}));
+
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,

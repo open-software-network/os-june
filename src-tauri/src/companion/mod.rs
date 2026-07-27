@@ -198,8 +198,10 @@ pub struct RenameDeviceRequest {
 
 #[tauri::command]
 pub async fn companion_begin_pairing(
+    app: AppHandle,
     runtime: State<'_, CompanionRuntime>,
 ) -> Result<PairingQrPayload, AppError> {
+    ensure_companion_pairing_enabled(&app)?;
     let _account_activity = CompanionAccountActivityGuard::begin(&runtime)?;
     let account_user_id = crate::os_accounts::current_user_id().await?;
     let identity = load_or_create_identity(&account_user_id)?;
@@ -289,6 +291,7 @@ pub async fn companion_approve_pairing(
     pairing_id: Uuid,
     mobile_device_id: Uuid,
 ) -> Result<PairingStatus, AppError> {
+    ensure_companion_pairing_enabled(&app)?;
     let _account_activity = CompanionAccountActivityGuard::begin(&runtime)?;
     {
         let pending = runtime
@@ -359,7 +362,7 @@ pub async fn companion_approve_pairing(
             return Err(error.into());
         }
     }
-    transport::start(&app);
+    start(&app);
 
     if let Err(error) = wait_for_relay_connection(&runtime).await {
         clear_pairing_mobile(&runtime, pairing_id, mobile_device_id);
@@ -750,7 +753,9 @@ pub async fn companion_publish_agent_event(
 }
 
 pub fn start(app: &AppHandle) {
-    transport::start(app);
+    if crate::experimental_settings::companion_pairing_enabled(app) {
+        transport::start(app);
+    }
 }
 
 pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
@@ -832,7 +837,24 @@ pub fn resume_account_transport(app: &AppHandle) {
         .account_transport_enabled
         .store(true, Ordering::Release);
     runtime.account_session_changed.notify_waiters();
-    transport::start(app);
+    start(app);
+}
+
+fn ensure_companion_pairing_enabled(app: &AppHandle) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled_with(crate::experimental_settings::companion_pairing_enabled(
+        app,
+    ))
+}
+
+fn ensure_companion_pairing_enabled_with(enabled: bool) -> Result<(), AppError> {
+    if enabled {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "companion_experimental_disabled",
+            "June Companion is off. Enable Companion pairing in Experiments, then restart June.",
+        ))
+    }
 }
 
 pub fn pairing_secret(
@@ -1099,6 +1121,17 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn begin_pairing_refuses_when_the_experiment_is_off() {
+        let error = ensure_companion_pairing_enabled_with(false).unwrap_err();
+
+        assert_eq!(error.code, "companion_experimental_disabled");
+        assert_eq!(
+            error.message,
+            "June Companion is off. Enable Companion pairing in Experiments, then restart June."
+        );
+    }
 
     #[test]
     fn manual_pairing_code_contains_the_same_bootstrap_payload_as_the_qr() {
