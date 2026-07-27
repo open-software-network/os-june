@@ -303,7 +303,7 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
 const HOME_TASK_ACTION_REQUEST =
   /\b(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_ACTION_NEGATION =
-  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|investigate|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|investigate|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_REPEAT_REQUEST =
   /\b(?:another one|continue (?:it|that|this)|do (?:it|that|this) again|pick (?:it|that|this) up|redo (?:it|that|this)|repeat (?:it|that|this)|resume (?:it|that|this)|same thing)\b/i;
 const HOME_TASK_REPEAT_NEGATION =
@@ -326,6 +326,19 @@ function homeTaskGroundingTokens(value: string): Set<string> {
   );
 }
 
+function normalizedHomeTaskIntent(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[’‘]/g, "'")
+    .replace(/[^\p{L}\p{N}']+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function homeTaskTokensOverlap(left: Set<string>, right: Set<string>): boolean {
+  return [...left].some((token) => right.has(token));
+}
+
 function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
   const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
   const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
@@ -339,17 +352,21 @@ export function isHomeTaskReplayWithoutNewIntent(
   latestMessage: string,
   handoffs: HomeTaskHandoff[],
 ): boolean {
-  const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(latestMessage);
-  const negatesAction = HOME_TASK_ACTION_NEGATION.test(latestMessage);
+  const intentText = normalizedHomeTaskIntent(latestMessage);
+  const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(intentText);
+  const negatesAction = HOME_TASK_ACTION_NEGATION.test(intentText);
   const matchesPriorHandoff = handoffs.some(
     (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
   );
   if (!matchesPriorHandoff) return false;
   if (negatesRepeat || negatesAction) return true;
+  const latestTokens = homeTaskGroundingTokens(latestMessage);
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
   if (
-    HOME_TASK_ACTION_REQUEST.test(latestMessage) ||
-    HOME_TASK_REPEAT_REQUEST.test(latestMessage) ||
-    HOME_TASK_CONTEXTUAL_REQUEST.test(latestMessage)
+    (HOME_TASK_ACTION_REQUEST.test(intentText) &&
+      homeTaskTokensOverlap(latestTokens, taskTokens)) ||
+    HOME_TASK_REPEAT_REQUEST.test(intentText) ||
+    HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)
   ) {
     return false;
   }
