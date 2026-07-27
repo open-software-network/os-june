@@ -185,3 +185,6 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #985 | Spec (codex, r1+final) | 1 | 1 | caught immutable trigger geometry leaving the menu stale after viewport changes; final pass traced footer containment and the full menu lifecycle clean |
 | #985 | Adversarial (codex, r1-r5 hard cap) | 7 | 7 | found stale scroll/resize geometry, offscreen and nested-clipped anchors, collapse orphaning, live sidebar-drag drift, and partial clipping; every finding received focused coverage |
 | #985 | Cross-harness convergence (claude) | — | — | OAuth refresh failed before a verdict; the cycle continued with fresh read-only reviewers and did not count the missing output as approval |
+| #985 Home replay follow-up | Standards (final) | 0 | — | clean on Home terminology, user-facing copy, task-boundary naming, and the combined sidebar diff |
+| #985 Home replay follow-up | Spec (final) | 0 | — | clean on greeting conversation, task-bearing greetings, stale-session prevention, and the existing sidebar requirements |
+| #985 Home replay follow-up | Adversarial (iterative) | 14 | 14 | drove the guard from an exact greeting list to a fail-safe task-boundary check, then closed variant greetings, negation, unrelated-action overlap, short-topic, inflection, prefix-collision, and contextual-follow-up gaps |

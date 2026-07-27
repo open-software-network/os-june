@@ -275,7 +275,7 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "agent",
   "analyze", "analyse", "build", "check", "compare",
   "create",
-  "draft", "edit", "explore", "find", "fix", "generate", "help", "investigate", "look",
+  "draft", "edit", "email", "explore", "find", "fix", "generate", "help", "investigate", "look",
   "day",
   "evening",
   "focused",
@@ -305,15 +305,16 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
 ]);
 
 const HOME_TASK_ACTION_REQUEST =
-  /\b(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+  /\b(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_ACTION_NEGATION =
-  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_REPEAT_REQUEST =
   /\b(?:another one|continue (?:it|that|this)|do (?:it|that|this) again|pick (?:it|that|this) up|redo (?:it|that|this)|repeat (?:it|that|this)|resume (?:it|that|this)|same thing)\b/i;
 const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_REQUEST =
-  /\b(?:do (?:it|that|this|the same)|how about|one more|same for|what about|(?:first|second|third|next) one)\b/i;
+  /\b(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST = /\b(?:how about|what about)\b/i;
 const HOME_TASK_CONTEXTUAL_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
 
@@ -367,15 +368,18 @@ export function isHomeTaskReplayWithoutNewIntent(
   const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(intentText);
   const negatesAction = HOME_TASK_ACTION_NEGATION.test(intentText);
   const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
+  const actionCount = intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
   const matchesPriorHandoff = handoffs.some(
     (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
   );
   if (!matchesPriorHandoff) return false;
-  if (negatesRepeat || negatesAction || negatesContext) return true;
+  if (negatesRepeat || negatesContext || (negatesAction && actionCount < 2)) return true;
   const latestTokens = homeTaskGroundingTokens(latestMessage);
   const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
   if (
     (HOME_TASK_ACTION_REQUEST.test(intentText) &&
+      homeTaskTokensOverlap(latestTokens, taskTokens)) ||
+    (HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST.test(intentText) &&
       homeTaskTokensOverlap(latestTokens, taskTokens)) ||
     HOME_TASK_REPEAT_REQUEST.test(intentText) ||
     HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)

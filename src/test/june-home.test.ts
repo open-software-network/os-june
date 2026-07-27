@@ -294,6 +294,9 @@ describe("June Home", () => {
       true,
     );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't do that", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "How about a Japan itinerary?", [prior])).toBe(
+      true,
+    );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
       false,
     );
@@ -309,6 +312,34 @@ describe("June Home", () => {
             id: "home-task-apples",
             title: "Apple research Mexico",
             prompt: "Research apples in Mexico.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Project update", prompt: "Email the team the project update." },
+        "Email the team the project update",
+        [
+          {
+            id: "home-task-project",
+            title: "Project update",
+            prompt: "Draft the project update.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Paris plans", prompt: "Plan a birthday dinner in Paris." },
+        "Don't research Paris restaurants, plan a birthday dinner in Paris",
+        [
+          {
+            id: "home-task-paris-plans",
+            title: "Paris plans",
+            prompt: "Research Paris restaurants.",
             status: "running",
           },
         ],
