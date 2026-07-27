@@ -237,11 +237,20 @@ describe("June Home", () => {
   });
 
   it("keeps bare greetings in the Home conversation", () => {
-    for (const greeting of ["Hey June", "Hey, June!", "hello", "Good morning, June."]) {
+    for (const greeting of [
+      "Hey June",
+      "Hey, June!",
+      "Hey there, June",
+      "Hey June 👋",
+      "hello",
+      "Morning June",
+      "Good morning, June.",
+    ]) {
       expect(homeConversationGreetingReply(greeting)).toBe("Hey! What can I help with?");
     }
 
     expect(homeConversationGreetingReply("Hey June, research apples in Mexico")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hey there, research apples in Mexico")).toBeUndefined();
     expect(homeConversationGreetingReply("Good morning, plan my day")).toBeUndefined();
   });
 

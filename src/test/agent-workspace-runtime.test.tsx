@@ -366,7 +366,7 @@ describe("AgentWorkspace runtime wiring", () => {
     ).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
 
-    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Hey June");
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Hey there, June 👋");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(await screen.findByText("Hey! What can I help with?")).toBeVisible();

@@ -248,20 +248,8 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
   "yup",
 ]);
 
-const HOME_CONVERSATION_GREETINGS = new Set([
-  "good afternoon",
-  "good afternoon june",
-  "good evening",
-  "good evening june",
-  "good morning",
-  "good morning june",
-  "hello",
-  "hello june",
-  "hey",
-  "hey june",
-  "hi",
-  "hi june",
-]);
+const HOME_CONVERSATION_GREETING =
+  /^(?:(?:hi|hey|hello)(?: there)?|(?:good )?(?:morning|afternoon|evening))(?: june)?$/;
 
 function normalizedHomeAcknowledgement(message: string): string {
   return message
@@ -272,8 +260,13 @@ function normalizedHomeAcknowledgement(message: string): string {
 }
 
 export function homeConversationGreetingReply(message: string): string | undefined {
-  const normalized = normalizedHomeAcknowledgement(message).replace(/,/g, "");
-  return HOME_CONVERSATION_GREETINGS.has(normalized) ? "Hey! What can I help with?" : undefined;
+  const normalized = message
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  return HOME_CONVERSATION_GREETING.test(normalized) ? "Hey! What can I help with?" : undefined;
 }
 
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {
