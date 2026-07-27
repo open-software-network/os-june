@@ -914,6 +914,12 @@ pub trait CompanionStore: Send + Sync {
         device_id: uuid::Uuid,
         token: Vec<u8>,
     ) -> Result<(), CompanionStoreError>;
+    async fn clear_push_token(
+        &self,
+        user_id: &UserId,
+        device_id: uuid::Uuid,
+        rejected_token: &[u8],
+    ) -> Result<(), CompanionStoreError>;
 }
 
 #[cfg(test)]

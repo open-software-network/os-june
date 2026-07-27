@@ -271,6 +271,24 @@ impl CompanionStore for PgCompanionStore {
         .map_err(companion_query_error)?;
         Ok(())
     }
+
+    async fn clear_push_token(
+        &self,
+        user_id: &UserId,
+        device_id: uuid::Uuid,
+        rejected_token: &[u8],
+    ) -> Result<(), CompanionStoreError> {
+        sqlx::query(
+            "UPDATE companion_devices SET apns_token = NULL, updated_at = NOW() WHERE device_id = $1 AND user_id = $2 AND apns_token = $3 AND revoked_at IS NULL",
+        )
+        .bind(device_id)
+        .bind(&user_id.0)
+        .bind(rejected_token)
+        .execute(&self.pool)
+        .await
+        .map_err(companion_query_error)?;
+        Ok(())
+    }
 }
 
 impl PgShareStore {

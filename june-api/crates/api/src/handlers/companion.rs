@@ -265,6 +265,7 @@ pub(crate) struct RegisterPushRequest {
 struct ApnsClient {
     http: reqwest::Client,
     config: CompanionPushConfig,
+    endpoint: Option<String>,
     provider_token: Mutex<Option<CachedApnsProviderToken>>,
 }
 
@@ -277,6 +278,34 @@ struct CachedApnsProviderToken {
 struct ApnsClaims<'a> {
     iss: &'a str,
     iat: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApnsErrorResponse {
+    reason: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ApnsWakeError {
+    #[error("{0}")]
+    ProviderToken(String),
+    #[error("APNs request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    #[error("APNs rejected generic wake with status {status}: {reason}")]
+    Rejected {
+        status: reqwest::StatusCode,
+        reason: String,
+    },
+}
+
+impl ApnsWakeError {
+    fn is_unregistered(&self) -> bool {
+        matches!(
+            self,
+            Self::Rejected { status, reason }
+                if *status == reqwest::StatusCode::GONE && reason == "Unregistered"
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1146,9 +1175,40 @@ impl CompanionRelay {
         if let (Some(push), Some(token)) = (&self.push, push_token)
             && let Err(error) = push.send_wake(&token).await
         {
+            let unregistered = error.is_unregistered();
             tracing::warn!(%error, "opaque companion wake delivery failed");
+            if unregistered {
+                self.clear_rejected_push_token(user_id, envelope.recipient_device_id, &token)
+                    .await;
+            }
         }
         Err(RelayError::RecipientOffline)
+    }
+
+    async fn clear_rejected_push_token(
+        &self,
+        user_id: &UserId,
+        device_id: Uuid,
+        rejected_token: &[u8],
+    ) {
+        if let Some(store) = &self.store
+            && let Err(error) = store
+                .clear_push_token(user_id, device_id, rejected_token)
+                .await
+        {
+            tracing::warn!(%error, %device_id, "unregistered companion push-token eviction failed");
+            return;
+        }
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(device) = state.devices.get_mut(&device_id)
+            && device.push_token.as_deref() == Some(rejected_token)
+        {
+            device.push_token = None;
+            state.last_push_at.remove(&device_id);
+        }
     }
 
     async fn register_push(
@@ -1252,6 +1312,20 @@ impl ApnsClient {
         Self {
             http: reqwest::Client::new(),
             config,
+            endpoint: None,
+            provider_token: Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_endpoint(config: CompanionPushConfig, endpoint: String) -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+            config,
+            endpoint: Some(endpoint),
             provider_token: Mutex::new(None),
         }
     }
@@ -1286,9 +1360,13 @@ impl ApnsClient {
         Ok(value)
     }
 
-    async fn send_wake(&self, device_token: &[u8]) -> Result<(), String> {
-        let authorization = self.provider_token(now_ms() / 1_000)?;
-        let host = if self.config.production {
+    async fn send_wake(&self, device_token: &[u8]) -> Result<(), ApnsWakeError> {
+        let authorization = self
+            .provider_token(now_ms() / 1_000)
+            .map_err(ApnsWakeError::ProviderToken)?;
+        let host = if let Some(endpoint) = &self.endpoint {
+            endpoint.as_str()
+        } else if self.config.production {
             "https://api.push.apple.com"
         } else {
             "https://api.sandbox.push.apple.com"
@@ -1307,16 +1385,16 @@ impl ApnsClient {
             .header("apns-priority", "5")
             .json(&serde_json::json!({ "aps": { "content-available": 1 } }))
             .send()
-            .await
-            .map_err(|error| format!("APNs request failed: {error}"))?;
+            .await?;
         if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "APNs rejected generic wake with status {}",
-                response.status()
-            ))
+            return Ok(());
         }
+        let status = response.status();
+        let reason = response
+            .json::<ApnsErrorResponse>()
+            .await
+            .map_or_else(|_| "unknown_error".to_string(), |body| body.reason);
+        Err(ApnsWakeError::Rejected { status, reason })
     }
 }
 
@@ -1493,6 +1571,63 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const TEST_APNS_PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgnB6/YZKC/GxlEvb+\n\
+embriDjaqjD4mtsz8mWx10EjirOhRANCAAQX6n2qEI4r/9d4wN02blHr2FFKpIl4\n\
+RIka62gMy7ZimPaKaOpY0TuAiZjxiQ7MsSwyGrt766jyZ3XWBg3s4tWO\n\
+-----END PRIVATE KEY-----";
+
+    #[derive(Default)]
+    struct RecordingCompanionStore {
+        cleared_tokens: Mutex<Vec<(UserId, Uuid, Vec<u8>)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl CompanionStore for RecordingCompanionStore {
+        async fn snapshot(&self) -> Result<CompanionSnapshot, CompanionStoreError> {
+            Ok(CompanionSnapshot::default())
+        }
+
+        async fn approve_pairing(
+            &self,
+            _user_id: &UserId,
+            _approval: CompanionApprovalRecord,
+        ) -> Result<(), CompanionStoreError> {
+            Ok(())
+        }
+
+        async fn revoke_device(
+            &self,
+            _user_id: &UserId,
+            _device_id: Uuid,
+        ) -> Result<(), CompanionStoreError> {
+            Ok(())
+        }
+
+        async fn set_push_token(
+            &self,
+            _user_id: &UserId,
+            _device_id: Uuid,
+            _token: Vec<u8>,
+        ) -> Result<(), CompanionStoreError> {
+            Ok(())
+        }
+
+        async fn clear_push_token(
+            &self,
+            user_id: &UserId,
+            device_id: Uuid,
+            rejected_token: &[u8],
+        ) -> Result<(), CompanionStoreError> {
+            self.cleared_tokens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((user_id.clone(), device_id, rejected_token.to_vec()));
+            Ok(())
+        }
+    }
 
     fn user() -> UserId {
         UserId("usr_companion".to_string())
@@ -1814,6 +1949,105 @@ mod tests {
         assert!(!token.is_fresh(999));
         assert!(token.is_fresh(1_000 + APNS_PROVIDER_TOKEN_MAX_AGE_SECS - 1));
         assert!(!token.is_fresh(1_000 + APNS_PROVIDER_TOKEN_MAX_AGE_SECS));
+    }
+
+    #[tokio::test]
+    async fn apns_unregistered_response_evicts_the_persisted_push_token() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            let body = r#"{"reason":"Unregistered","timestamp":123}"#;
+            let response = format!(
+                "HTTP/1.1 410 Gone\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            request
+        });
+
+        let desktop = Uuid::new_v4();
+        let mobile = Uuid::new_v4();
+        let push_token = vec![0xab; 32];
+        let store = Arc::new(RecordingCompanionStore::default());
+        let mut relay = CompanionRelay::new(
+            Some(store.clone()),
+            CompanionSnapshot {
+                devices: vec![
+                    CompanionDeviceRecord {
+                        device_id: desktop,
+                        user_id: user(),
+                        public_key: [1; 32],
+                        display_name: "Mac".to_string(),
+                        credential_hash: None,
+                        push_token: None,
+                    },
+                    CompanionDeviceRecord {
+                        device_id: mobile,
+                        user_id: user(),
+                        public_key: [2; 32],
+                        display_name: "iPhone".to_string(),
+                        credential_hash: Some([3; 32]),
+                        push_token: Some(push_token.clone()),
+                    },
+                ],
+                links: vec![CompanionLinkRecord {
+                    left_device_id: desktop,
+                    right_device_id: mobile,
+                }],
+            },
+            true,
+            None,
+        );
+        relay.push = Some(ApnsClient::with_endpoint(
+            CompanionPushConfig {
+                team_id: "TEAMID1234".to_string(),
+                key_id: "KEYID12345".to_string(),
+                private_key_pem: TEST_APNS_PRIVATE_KEY.to_string(),
+                bundle_id: "co.opensoftware.june.companion".to_string(),
+                production: false,
+            },
+            format!("http://{address}"),
+        ));
+
+        let result = relay
+            .route(
+                &user(),
+                RelayEnvelope {
+                    version: PROTOCOL_VERSION,
+                    sender_device_id: desktop,
+                    recipient_device_id: mobile,
+                    message_id: Uuid::new_v4(),
+                    created_at_ms: now_ms(),
+                    ciphertext: vec![1],
+                },
+            )
+            .await;
+
+        assert_eq!(result, Err(RelayError::RecipientOffline));
+        let request = server.await.unwrap();
+        assert!(request.contains(&format!("/3/device/{}", "ab".repeat(32))));
+        assert_eq!(
+            *store
+                .cleared_tokens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![(user(), mobile, push_token)]
+        );
+        assert!(
+            relay
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .devices[&mobile]
+                .push_token
+                .is_none()
+        );
     }
 
     #[test]
