@@ -12,7 +12,7 @@ export type QueuedAgentFollowUp = {
 
 export type QueuedAgentFollowUps = Record<string, QueuedAgentFollowUp>;
 
-export const ATTACHMENT_FOLLOW_UP_PROMPT = "Use these attachments with my previous instruction.";
+export const ATTACHMENT_FOLLOW_UP_NOTE = "The files are attached to this message.";
 
 const STORAGE_KEY = "june.agent.queuedFollowUps";
 
@@ -46,7 +46,6 @@ function queuedFollowUp(value: unknown): QueuedAgentFollowUp | undefined {
     model: record.model,
     thinkingLevel: record.thinkingLevel,
     ...(record.delivery ? { delivery: record.delivery } : {}),
-    ...(record.steering ? { steering: record.steering } : {}),
   };
 }
 
@@ -79,6 +78,27 @@ export function saveQueuedAgentFollowUps(queued: QueuedAgentFollowUps) {
   }
 }
 
+export function mergeQueuedAgentFollowUp(
+  current: QueuedAgentFollowUp | undefined,
+  incoming: QueuedAgentFollowUp,
+): QueuedAgentFollowUp {
+  const attachments = Array.from(
+    new Set([...(current?.attachments ?? []), ...incoming.attachments]),
+  );
+  return { ...incoming, attachments };
+}
+
+export function clearQueuedAgentFollowUpSteering(
+  queued: QueuedAgentFollowUps,
+  sessionId: string,
+): QueuedAgentFollowUps {
+  const current = queued[sessionId];
+  if (!current?.steering) return queued;
+  const nextItem = { ...current };
+  delete nextItem.steering;
+  return { ...queued, [sessionId]: nextItem };
+}
+
 /** Steering items are persisted as `steering:<messageId>`. Once native
  * history proves the active run consumed the text, retire its full fallback
  * while preserving any attachments as a contextual next turn. */
@@ -102,7 +122,9 @@ export function reconcileConsumedAgentFollowUp(
   }
   const attachmentsOnly: QueuedAgentFollowUp = {
     ...current,
-    prompt: ATTACHMENT_FOLLOW_UP_PROMPT,
+    prompt: current.prompt.trim()
+      ? `${current.prompt.trim()}\n\n${ATTACHMENT_FOLLOW_UP_NOTE}`
+      : ATTACHMENT_FOLLOW_UP_NOTE,
     delivery: "attachments",
   };
   delete attachmentsOnly.steering;

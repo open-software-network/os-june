@@ -1618,7 +1618,14 @@ fn item_json_with_active_run(
         .filter(|external_id| {
             external_id.starts_with("assistant:") || external_id.starts_with("reasoning:")
         });
-    let public_item_id = stable_stream_id.unwrap_or(&item.id).to_string();
+    let stable_steering_id = item
+        .external_id
+        .as_deref()
+        .filter(|external_id| external_id.starts_with("steering:"));
+    let public_item_id = stable_steering_id
+        .or(stable_stream_id)
+        .unwrap_or(&item.id)
+        .to_string();
     let stream_status =
         if stable_stream_id.is_some_and(|external_id| external_id.starts_with("assistant:")) {
             "streaming"
@@ -2149,25 +2156,31 @@ mod tests {
     #[test]
     fn consumed_steering_is_visible_and_replayed_as_user_context() {
         let item = AgentItemDto {
-            id: "steering-1".into(),
+            id: "c896c2a5-7cd1-4695-870d-707fdbcb4abf".into(),
             session_id: "session-1".into(),
             run_id: Some("run-1".into()),
             sequence: 3,
             payload: AgentItemPayload::Steering(super::super::TextPayload {
                 text: "Use the launch plan".into(),
             }),
-            external_id: Some("steering-event-1".into()),
+            external_id: Some("steering:message-1".into()),
             created_at: "2026-07-24T12:00:02Z".into(),
         };
 
         let history = history_item(item.clone()).expect("runtime history");
-        let value = item_json_with_active_run(item, None).expect("public item");
+        let active =
+            item_json_with_active_run(item.clone(), Some("run-1")).expect("active public item");
+        let completed = item_json_with_active_run(item, None).expect("completed public item");
 
         assert_eq!(history["kind"], "message");
         assert_eq!(history["role"], "user");
         assert_eq!(history["text"], "Use the launch plan");
-        assert_eq!(value["kind"], "steering");
-        assert_eq!(value["text"], "Use the launch plan");
+        assert_eq!(active["id"], "steering:message-1");
+        assert_eq!(active["kind"], "steering");
+        assert_eq!(active["text"], "Use the launch plan");
+        assert_eq!(completed["id"], "steering:message-1");
+        assert_eq!(completed["kind"], "steering");
+        assert_eq!(completed["text"], "Use the launch plan");
     }
 
     #[test]

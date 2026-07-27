@@ -38,10 +38,7 @@ import {
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
-import {
-  ATTACHMENT_FOLLOW_UP_PROMPT,
-  saveQueuedAgentFollowUps,
-} from "../lib/agent-follow-up-queue";
+import { ATTACHMENT_FOLLOW_UP_NOTE, saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
 
 const session: AgentSessionDto = {
   id: "session-1",
@@ -1059,7 +1056,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(starts).toHaveLength(2);
       expect(starts[1]?.[1]).toMatchObject({
         request: expect.objectContaining({
-          prompt: ATTACHMENT_FOLLOW_UP_PROMPT,
+          prompt: `Use the attached brief\n\n${ATTACHMENT_FOLLOW_UP_NOTE}`,
           attachments: ["/tmp/brief.pdf"],
         }),
       });
@@ -1068,6 +1065,117 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
     ).toHaveLength(2);
+  });
+
+  it("merges a later steer into an attachments-only queue without dropping files", async () => {
+    const user = userEvent.setup();
+    mocks.openDialog
+      .mockResolvedValueOnce(["/tmp/brief.pdf"])
+      .mockResolvedValueOnce(["/tmp/notes.md"]);
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+
+    let composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Start the analysis");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("button", { name: "Stop June" });
+
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+    composer = screen.getByRole("textbox", { name: "Message June" });
+    composer.textContent = "Use the first brief";
+    fireEvent.input(composer);
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+    let steerCalls = mocks.invoke.mock.calls.filter(([command]) => command === "steer_agent_run");
+    const firstMessageId = String(
+      (steerCalls[0]?.[1] as { messageId?: string } | undefined)?.messageId,
+    );
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-consumed-first-brief",
+          sessionId: session.id,
+          runId: "run-1",
+          sequence: 3,
+          method: "steering.consumed",
+          data: {
+            itemId: `steering:${firstMessageId}`,
+            messageId: firstMessageId,
+            text: "Use the first brief",
+            createdAt: "2026-07-22T12:01:00Z",
+          },
+        },
+      });
+    });
+    expect(await screen.findByText("1 attachment queued for next turn")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+    composer = screen.getByRole("textbox", { name: "Message June" });
+    composer.textContent = "Use the latest plan";
+    fireEvent.input(composer);
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+    steerCalls = mocks.invoke.mock.calls.filter(([command]) => command === "steer_agent_run");
+    expect(steerCalls).toHaveLength(2);
+    const secondMessageId = String(
+      (steerCalls[1]?.[1] as { messageId?: string } | undefined)?.messageId,
+    );
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem("june.agent.queuedFollowUps") ?? "{}",
+      ) as Record<string, { messageId?: string; prompt?: string; attachments?: string[] }>;
+      expect(stored[session.id]).toMatchObject({
+        messageId: secondMessageId,
+        prompt: "Use the latest plan",
+        attachments: ["/tmp/brief.pdf", "/tmp/notes.md"],
+      });
+    });
+
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-consumed-latest-plan",
+          sessionId: session.id,
+          runId: "run-1",
+          sequence: 4,
+          method: "steering.consumed",
+          data: {
+            itemId: `steering:${secondMessageId}`,
+            messageId: secondMessageId,
+            text: "Use the latest plan",
+            createdAt: "2026-07-22T12:01:30Z",
+          },
+        },
+      });
+    });
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-completed-after-merged-steer",
+          sessionId: session.id,
+          runId: "run-1",
+          sequence: 5,
+          method: "run.completed",
+          data: { completedAt: "2026-07-22T12:02:00Z" },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const starts = mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run");
+      expect(starts).toHaveLength(2);
+      expect(starts[1]?.[1]).toMatchObject({
+        request: expect.objectContaining({
+          prompt: `Use the latest plan\n\n${ATTACHMENT_FOLLOW_UP_NOTE}`,
+          attachments: ["/tmp/brief.pdf", "/tmp/notes.md"],
+        }),
+      });
+    });
   });
 
   it("falls back to the full queued follow-up when steering is rejected", async () => {
@@ -1098,7 +1206,9 @@ describe("AgentWorkspace runtime wiring", () => {
       fireEvent.input(composer);
       await user.click(await screen.findByRole("button", { name: "Steer active run" }));
 
-      expect(await screen.findByText("Queued follow-up")).toBeVisible();
+      expect(
+        await screen.findByText("Queued follow-up. 1 attachment queued for next turn"),
+      ).toBeVisible();
       expect(warn).toHaveBeenCalledWith(
         "Live steering was rejected; queued the full follow-up instead.",
         expect.objectContaining({ reason: "not_active", messageId: expect.any(String) }),
@@ -1188,6 +1298,113 @@ describe("AgentWorkspace runtime wiring", () => {
       });
     });
     expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
+  });
+
+  it("downgrades terminal steering and clears the queued snapshot when delivery races a new run", async () => {
+    const user = userEvent.setup();
+    mocks.openDialog.mockResolvedValue(["/tmp/brief.pdf"]);
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+
+    let composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Start the analysis");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("button", { name: "Stop June" });
+
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+    composer = screen.getByRole("textbox", { name: "Message June" });
+    composer.textContent = "Deliver this after settlement";
+    fireEvent.input(composer);
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+    expect(
+      await screen.findByText("Steering active run. 1 attachment queued for next turn"),
+    ).toBeVisible();
+
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const animationFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      });
+    try {
+      act(() => {
+        mocks.runtimeListener?.({
+          payload: {
+            protocolVersion: 1,
+            eventId: "event-terminal-before-queued-delivery",
+            sessionId: session.id,
+            runId: "run-1",
+            sequence: 3,
+            method: "run.completed",
+            data: { completedAt: "2026-07-22T12:01:00Z" },
+          },
+        });
+      });
+
+      expect(
+        await screen.findByText("Queued follow-up. 1 attachment queued for next turn"),
+      ).toBeVisible();
+      await waitFor(() => expect(frameCallbacks.length).toBeGreaterThan(0));
+
+      act(() => {
+        mocks.runtimeListener?.({
+          payload: {
+            protocolVersion: 1,
+            eventId: "event-new-run-before-queued-delivery",
+            sessionId: session.id,
+            runId: "run-2",
+            sequence: 0,
+            method: "run.started",
+            data: {
+              startedAt: "2026-07-22T12:01:01Z",
+              model: "fast",
+            },
+          },
+        });
+      });
+      const queuedFrames = frameCallbacks.splice(0);
+      act(() => {
+        for (const callback of queuedFrames) callback(0);
+      });
+
+      await waitFor(() => {
+        const steerCalls = mocks.invoke.mock.calls.filter(
+          ([command]) => command === "steer_agent_run",
+        );
+        expect(steerCalls).toHaveLength(2);
+        expect(steerCalls[1]?.[1]).toMatchObject({
+          runId: "run-2",
+          text: "Deliver this after settlement",
+        });
+      });
+
+      composer = screen.getByRole("textbox", { name: "Message June" });
+      composer.textContent = "Latest live correction";
+      fireEvent.input(composer);
+      await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+      await waitFor(() => {
+        const steerCalls = mocks.invoke.mock.calls.filter(
+          ([command]) => command === "steer_agent_run",
+        );
+        expect(steerCalls).toHaveLength(3);
+        expect(steerCalls[2]?.[1]).toMatchObject({
+          runId: "run-2",
+          text: "Latest live correction",
+        });
+        const stored = JSON.parse(
+          window.localStorage.getItem("june.agent.queuedFollowUps") ?? "{}",
+        ) as Record<string, { prompt?: string; attachments?: string[] }>;
+        expect(stored[session.id]).toMatchObject({
+          prompt: "Latest live correction",
+          attachments: ["/tmp/brief.pdf"],
+        });
+      });
+    } finally {
+      animationFrame.mockRestore();
+    }
   });
 
   it("keeps a queued follow-up owned by its running session across navigation", async () => {
@@ -1318,6 +1535,56 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByText("Resume with this file")).toBeVisible();
   });
 
+  it("releases a queued attempt when submit becomes blocked before its frame", async () => {
+    saveQueuedAgentFollowUps({
+      [session.id]: {
+        messageId: "blocked-frame",
+        prompt: "Retry after funding refresh",
+        attachments: ["/tmp/retry.pdf"],
+        model: "fast",
+        thinkingLevel: "medium",
+      },
+    });
+    const frameCallbacks: FrameRequestCallback[] = [];
+    const animationFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) => {
+        frameCallbacks.push(callback);
+        return frameCallbacks.length;
+      });
+    try {
+      const view = render(<AgentWorkspace initialSession={session} />);
+      await waitFor(() => expect(frameCallbacks).toHaveLength(1));
+
+      view.rerender(
+        <AgentWorkspace
+          initialSession={session}
+          creditActionsDisabledReason="Add credits to continue"
+        />,
+      );
+      act(() => frameCallbacks.shift()?.(0));
+      await waitFor(() =>
+        expect(
+          mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
+        ).toHaveLength(0),
+      );
+
+      view.rerender(<AgentWorkspace initialSession={session} />);
+      await waitFor(() => expect(frameCallbacks).toHaveLength(1));
+      act(() => frameCallbacks.shift()?.(0));
+      await waitFor(() =>
+        expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+          request: expect.objectContaining({
+            prompt: "Retry after funding refresh",
+            attachments: ["/tmp/retry.pdf"],
+          }),
+        }),
+      );
+    } finally {
+      animationFrame.mockRestore();
+    }
+  });
+
   it("keeps a restored follow-up when its run start fails after navigation", async () => {
     saveQueuedAgentFollowUps({
       [session.id]: {
@@ -1378,14 +1645,16 @@ describe("AgentWorkspace runtime wiring", () => {
     });
   });
 
-  it("does not replay a restored follow-up that persisted history already consumed", async () => {
+  it("hydrates a public steering item and submits only its pending attachments", async () => {
     saveQueuedAgentFollowUps({
       [session.id]: {
         messageId: "already-consumed",
-        prompt: "Do not send this twice",
-        attachments: [],
+        prompt: "Use this restored brief",
+        attachments: ["/tmp/restored-brief.pdf"],
         model: "fast",
         thinkingLevel: "medium",
+        delivery: "follow_up",
+        steering: "accepted",
       },
     });
     const defaultInvoke = mocks.invoke.getMockImplementation();
@@ -1399,7 +1668,7 @@ describe("AgentWorkspace runtime wiring", () => {
             sequence: 1,
             createdAt: session.createdAt,
             kind: "steering",
-            text: "Do not send this twice",
+            text: "Use this restored brief",
           },
         ]);
       }
@@ -1407,12 +1676,17 @@ describe("AgentWorkspace runtime wiring", () => {
     });
 
     render(<AgentWorkspace initialSession={session} />);
-    expect(await screen.findByText("Steering: Do not send this twice")).toBeVisible();
-    await waitFor(() =>
-      expect(
-        mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
-      ).toHaveLength(0),
-    );
+    expect(await screen.findByText("Steering: Use this restored brief")).toBeVisible();
+    await waitFor(() => {
+      const starts = mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run");
+      expect(starts).toHaveLength(1);
+      expect(starts[0]?.[1]).toMatchObject({
+        request: expect.objectContaining({
+          prompt: `Use this restored brief\n\n${ATTACHMENT_FOLLOW_UP_NOTE}`,
+          attachments: ["/tmp/restored-brief.pdf"],
+        }),
+      });
+    });
   });
 
   it("does not let a slow global catalog overwrite a restored session model", async () => {

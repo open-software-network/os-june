@@ -57,7 +57,9 @@ import { messageFromError } from "../../lib/errors";
 import { persistAgentDefaultModel } from "../../lib/agent-default-model";
 import { agentModelSelection, agentRunModelId } from "../../lib/agent-model-selection";
 import {
+  clearQueuedAgentFollowUpSteering,
   loadQueuedAgentFollowUps,
+  mergeQueuedAgentFollowUp,
   reconcileConsumedAgentFollowUp,
   saveQueuedAgentFollowUps,
   type QueuedAgentFollowUp,
@@ -225,10 +227,14 @@ function queuedAttachmentStatus(attachments: readonly string[]) {
 }
 
 function queuedFollowUpStatus(queued: QueuedAgentFollowUp, failed: boolean) {
+  const withAttachmentStatus = (status: string) =>
+    queued.attachments.length ? `${status}. ${queuedAttachmentStatus(queued.attachments)}` : status;
   if (failed) {
-    return queued.delivery === "attachments"
-      ? "Couldn't send queued attachments"
-      : "Couldn't send queued follow-up";
+    return withAttachmentStatus(
+      queued.delivery === "attachments"
+        ? "Couldn't send queued attachments"
+        : "Couldn't send queued follow-up",
+    );
   }
   if (queued.delivery === "attachments") {
     return queuedAttachmentStatus(queued.attachments);
@@ -236,11 +242,9 @@ function queuedFollowUpStatus(queued: QueuedAgentFollowUp, failed: boolean) {
   if (queued.steering) {
     const steeringStatus =
       queued.steering === "accepted" ? "Steering active run" : "Sending to active run";
-    return queued.attachments.length
-      ? `${steeringStatus}. ${queuedAttachmentStatus(queued.attachments)}`
-      : steeringStatus;
+    return withAttachmentStatus(steeringStatus);
   }
-  return "Queued follow-up";
+  return withAttachmentStatus("Queued follow-up");
 }
 
 function queuedFollowUpText(queued: QueuedAgentFollowUp) {
@@ -726,6 +730,15 @@ export function AgentWorkspace({
           ]),
         );
       }
+      const terminal =
+        payload.method === "run.completed" ||
+        payload.method === "run.cancelled" ||
+        payload.method === "run.failed";
+      if (terminal) {
+        updateQueuedFollowUps((current) =>
+          clearQueuedAgentFollowUpSteering(current, payload.sessionId),
+        );
+      }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
         return;
@@ -744,11 +757,7 @@ export function AgentWorkspace({
                   ? "failed"
                   : "running",
       });
-      if (
-        payload.method === "run.completed" ||
-        payload.method === "run.cancelled" ||
-        payload.method === "run.failed"
-      ) {
+      if (terminal) {
         setSubmitting(false);
         void Promise.all([hydrate(payload.sessionId), refreshSessions()]);
       }
@@ -863,8 +872,14 @@ export function AgentWorkspace({
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const queuedSubmission = queuedSubmissionSnapshotRef.current;
-    if (queuedSubmission && queuedSubmission.sessionId !== selectedIdRef.current) {
+    const clearQueuedSubmissionAttempt = () => {
       queuedSubmissionSnapshotRef.current = undefined;
+      if (queuedSubmission) {
+        attemptedQueuedMessageIdsRef.current.delete(queuedSubmission.messageId);
+      }
+    };
+    if (queuedSubmission && queuedSubmission.sessionId !== selectedIdRef.current) {
+      clearQueuedSubmissionAttempt();
       return;
     }
     const recoveredSubmission = recoverableSubmissionSnapshotRef.current;
@@ -873,22 +888,29 @@ export function AgentWorkspace({
       recoveredSubmission?.prompt ??
       draftRef.current
     ).trim();
-    if (!prompt || waiting || submitting || textActionsDisabledReason) return;
+    if (!prompt || waiting || submitting || textActionsDisabledReason) {
+      clearQueuedSubmissionAttempt();
+      return;
+    }
     if (running) {
+      const submittedAttachments = queuedSubmission?.attachments ?? attachments;
+      const submittedModel = queuedSubmission?.model ?? agentRunModelId(model, costQuality);
+      const submittedThinkingLevel = queuedSubmission?.thinkingLevel ?? thinkingLevel;
+      clearQueuedSubmissionAttempt();
       const ownerSessionId = selectedIdRef.current;
       if (!ownerSessionId) return;
       const messageId = crypto.randomUUID();
       updateQueuedFollowUps((current) => ({
         ...current,
-        [ownerSessionId]: {
+        [ownerSessionId]: mergeQueuedAgentFollowUp(current[ownerSessionId], {
           messageId,
           prompt,
-          attachments,
-          model: agentRunModelId(model, costQuality),
-          thinkingLevel,
+          attachments: submittedAttachments,
+          model: submittedModel,
+          thinkingLevel: submittedThinkingLevel,
           delivery: "follow_up",
           steering: "pending",
-        },
+        }),
       }));
       setComposerDraft("");
       setAttachments([]);

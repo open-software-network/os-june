@@ -561,11 +561,8 @@ async fn persist_and_emit_event(
             None
         }
         "steering.consumed" => {
-            let message_id = params
-                .get("messageId")
-                .and_then(Value::as_str)
-                .unwrap_or(&event_id);
-            data["itemId"] = json!(format!("steering:{message_id}"));
+            persistence_external_id = steering_stable_id(&params, &event_id);
+            data["itemId"] = json!(persistence_external_id.clone());
             data["createdAt"] = json!(created_at);
             Some(AgentItemPayload::Steering(TextPayload {
                 text: params
@@ -846,6 +843,16 @@ fn interruption_stable_id(params: &Value, event_id: &str) -> String {
         .to_string()
 }
 
+fn steering_stable_id(params: &Value, event_id: &str) -> String {
+    format!(
+        "steering:{}",
+        params
+            .get("messageId")
+            .and_then(Value::as_str)
+            .unwrap_or(event_id)
+    )
+}
+
 fn sanitize_log(value: &str) -> String {
     let value = redact_bearer_tokens(value);
     let value = redact_key_tokens(&value);
@@ -935,6 +942,18 @@ fn redact_key_tokens(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumed_steering_uses_message_id_as_its_persisted_external_id() {
+        assert_eq!(
+            steering_stable_id(&json!({ "messageId": "message-1" }), "event-1"),
+            "steering:message-1"
+        );
+        assert_eq!(
+            steering_stable_id(&json!({}), "event-1"),
+            "steering:event-1"
+        );
+    }
 
     #[test]
     fn model_gateway_errors_preserve_top_level_messages() {
