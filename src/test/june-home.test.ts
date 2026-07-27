@@ -16,6 +16,7 @@ import {
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
   withJuneHomeContext,
+  withJuneHomeLatestTaskIntent,
   writeJuneHomeStoredSessionId,
 } from "../lib/june-home";
 import {
@@ -531,6 +532,20 @@ describe("June Home", () => {
     expect(stripJuneHomeContext(runtimePrompt)).toBe("Help me plan tomorrow");
     expect(stripJuneHomeContextFromPreview(runtimePrompt)).toBe("Help me plan tomorrow");
     expect(stripJuneHomeContextFromPreview("[June home context]\nThis is Ju")).toBe("Home message");
+  });
+
+  it("keeps resolved Home task context while making the latest request authoritative", () => {
+    const prompt = withJuneHomeLatestTaskIntent(
+      "Research wines in France for the second region.",
+      "Do the same for Japan",
+    );
+
+    expect(prompt).toMatch(/^Do the same for Japan/);
+    expect(prompt).toContain("Research wines in France for the second region.");
+    expect(prompt).toContain("latest Home request above is authoritative");
+    expect(withJuneHomeLatestTaskIntent("Plan a trip to Rome.", "Plan a trip to Rome")).toBe(
+      "Plan a trip to Rome.",
+    );
   });
 
   it("requires retrieved sources for a current-information handoff", () => {

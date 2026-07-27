@@ -402,7 +402,9 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
         request: expect.objectContaining({
           sessionId: focusedSession.id,
-          prompt: "Plan a trip to Rome",
+          prompt: expect.stringMatching(
+            /Plan a trip to Rome[\s\S]+latest Home request above is authoritative[\s\S]+Research good wines near southern France\./,
+          ),
         }),
       }),
     );

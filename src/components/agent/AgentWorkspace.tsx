@@ -148,6 +148,7 @@ import {
   resolveJuneHomeThreadSessionId,
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
+  withJuneHomeLatestTaskIntent,
   type JuneHomeConversationContext,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
@@ -1683,7 +1684,12 @@ export function AgentWorkspace({
             ),
         );
         const responseTask =
-          rejectedStaleTask || !response.task ? undefined : { ...response.task, prompt: message };
+          rejectedStaleTask || !response.task
+            ? undefined
+            : {
+                ...response.task,
+                prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
+              };
         const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
           responseTask && toolCallId
