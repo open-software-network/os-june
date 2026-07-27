@@ -5,6 +5,7 @@ import {
   agentItemsToChatTurns,
   applyAgentRuntimeEvent,
   createAgentRuntimeProjection,
+  mergeAgentRuntimeSnapshot,
   type AgentRuntimeProjection,
 } from "../../lib/agent-runtime-adapter";
 import type { AgentItemDto, AgentRuntimeEvent } from "../../lib/agent-runtime-contract";
@@ -86,10 +87,13 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
     ]);
     if (sessionIdRef.current !== sessionId) return;
-    setProjection({
-      ...createAgentRuntimeProjection({ session, items }),
-      run: latestRun ?? undefined,
-    });
+    setProjection((current) =>
+      mergeAgentRuntimeSnapshot(current, {
+        session,
+        items,
+        run: latestRun ?? undefined,
+      }),
+    );
     setModel(session.model || DEFAULT_MODEL);
   }, []);
 
