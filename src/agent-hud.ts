@@ -147,6 +147,7 @@ let nativeVisibilityKnown = false;
 let desiredWindowVisible = false;
 let visibilityQueue: Promise<void> = Promise.resolve();
 let layoutRequestId = 0;
+let mainFocusEventRevision = 0;
 
 lifecycle.addCleanup(() => {
   layoutRequestId += 1;
@@ -1340,14 +1341,20 @@ lifecycle.trackUnlisten(
 );
 
 lifecycle.trackUnlisten(
-  listen<boolean>(AGENT_HUD_MAIN_FOCUS_EVENT, (event) => applyMainFocus(Boolean(event.payload))),
+  listen<boolean>(AGENT_HUD_MAIN_FOCUS_EVENT, (event) => {
+    mainFocusEventRevision += 1;
+    applyMainFocus(Boolean(event.payload));
+  }),
 );
 
 // Catch up on the focus state that existed before this webview subscribed.
 // Standalone page: the invoke rejects and the "away" default stands.
+const initialFocusEventRevision = mainFocusEventRevision;
 void agentHudMainFocused()
   .then((focused) => {
-    if (!lifecycle.signal.aborted) applyMainFocus(Boolean(focused));
+    if (!lifecycle.signal.aborted && mainFocusEventRevision === initialFocusEventRevision) {
+      applyMainFocus(Boolean(focused));
+    }
   })
   .catch(() => {});
 

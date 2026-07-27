@@ -1182,6 +1182,58 @@ describe("agent HUD", () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
   });
 
+  it("does not let the initial focus query override a newer focused event", async () => {
+    let resolveInitialFocus: ((focused: boolean) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "agent_hud_main_focused") {
+        return new Promise<boolean>((resolve) => {
+          resolveInitialFocus = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    await flushPromises();
+
+    resolveInitialFocus?.(false);
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("false");
+  });
+
+  it("does not let the initial focus query override a newer away event", async () => {
+    let resolveInitialFocus: ((focused: boolean) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "agent_hud_main_focused") {
+        return new Promise<boolean>((resolve) => {
+          resolveInitialFocus = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: false });
+    await flushPromises();
+
+    resolveInitialFocus?.(true);
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("true");
+  });
+
   it("stays down while the June main window is focused", async () => {
     await loadAgentHud();
 
