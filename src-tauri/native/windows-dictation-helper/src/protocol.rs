@@ -17,6 +17,8 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub text: Option<String>,
     #[serde(default)]
+    pub take_id: Option<String>,
+    #[serde(default)]
     pub composer_request_id: Option<String>,
     #[serde(default)]
     pub june_process_id: Option<u32>,
@@ -123,6 +125,15 @@ mod tests {
         assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
         assert_eq!(command.june_process_id, Some(42));
         assert_eq!(command.inserted, Some(true));
+    }
+
+    #[test]
+    fn dictation_take_id_parses() {
+        let command: CommandEnvelope =
+            serde_json::from_str(r#"{"type":"paste_text","takeId":"take-1","text":"hello"}"#)
+                .expect("take-correlated command parses");
+
+        assert_eq!(command.take_id.as_deref(), Some("take-1"));
     }
 }
 

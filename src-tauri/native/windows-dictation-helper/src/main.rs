@@ -14,15 +14,28 @@ use permissions::ComApartment;
 use protocol::{error_event, event, simple_event, CommandEnvelope, ShortcutKind};
 use std::{
     io::{self, BufRead, Write},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(700);
 const CLIPBOARD_RESTORE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const CLIPBOARD_RESTORE_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const COMPOSER_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+static NEXT_TAKE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_take_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let sequence = NEXT_TAKE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{timestamp}-{sequence}", std::process::id())
+}
 
 #[derive(Clone)]
 struct EventWriter {
@@ -98,6 +111,8 @@ struct HelperApp {
     direct_composer_request: Option<DirectComposerRequest>,
     pending_composer_ack: Option<PendingComposerAck>,
     awaiting_transcript: bool,
+    active_take_id: Option<String>,
+    last_cancelled_take_id: Option<String>,
     last_mic_test_path: Option<std::path::PathBuf>,
 }
 
@@ -186,6 +201,8 @@ impl HelperApp {
             direct_composer_request: None,
             pending_composer_ack: None,
             awaiting_transcript: false,
+            active_take_id: None,
+            last_cancelled_take_id: None,
             last_mic_test_path: None,
         }
     }
@@ -261,7 +278,11 @@ impl HelperApp {
             "paste_text" => self.paste_text(
                 command.text.unwrap_or_default(),
                 command.composer_request_id,
+                command.take_id,
             ),
+            "copy_text_for_recovery" => {
+                self.copy_text_for_recovery(command.text.unwrap_or_default(), command.take_id)
+            }
             "composer_delivery_result" => self.composer_delivery_result(
                 command.composer_request_id,
                 command.inserted.unwrap_or(false),
@@ -341,7 +362,9 @@ impl HelperApp {
         let start_target = focus::pin_foreground_window();
         match Recorder::start(self.selected_microphone_id.as_deref()) {
             Ok(recorder) => {
+                let take_id = next_take_id();
                 self.recorder = Some(recorder);
+                self.active_take_id = Some(take_id.clone());
                 self.pinned_target = None;
                 self.direct_composer_request = composer_request_id.map(|id| {
                     let verified_start_target = match (june_pid, june_window_handle, start_target) {
@@ -367,6 +390,7 @@ impl HelperApp {
                             .direct_composer_request
                             .as_ref()
                             .map(|request| request.id.as_str()),
+                        "takeId": take_id,
                     }),
                 ));
                 self.spawn_level_thread();
@@ -403,7 +427,10 @@ impl HelperApp {
         };
         self.awaiting_transcript = true;
         self.pinned_target = focus::pin_foreground_window();
-        self.writer.emit(simple_event("finalizing_transcript"));
+        self.writer.emit(event(
+            "finalizing_transcript",
+            serde_json::json!({ "takeId": self.active_take_id }),
+        ));
         match recorder.stop() {
             Ok(summary) => {
                 let target = self.pinned_target;
@@ -421,11 +448,13 @@ impl HelperApp {
                         "targetWindowHandle": target.map(|target| target.hwnd_value()),
                         "targetWindowTitle": target.map(|target| target.title()),
                         "composerRequestId": composer_request_id,
+                        "takeId": self.active_take_id,
                     }),
                 ));
             }
             Err(error) => {
                 self.awaiting_transcript = false;
+                self.active_take_id = None;
                 if let Some(request) = self.direct_composer_request.take() {
                     self.writer.emit(composer_error_event(
                         "recording_stop_failed",
@@ -440,7 +469,20 @@ impl HelperApp {
         }
     }
 
-    fn paste_text(&mut self, text: String, composer_request_id: Option<String>) {
+    fn paste_text(
+        &mut self,
+        text: String,
+        composer_request_id: Option<String>,
+        take_id: Option<String>,
+    ) {
+        if !accepts_dictation_take_text(
+            self.active_take_id.as_deref(),
+            self.last_cancelled_take_id.as_deref(),
+            take_id.as_deref(),
+            self.awaiting_transcript,
+        ) {
+            return;
+        }
         let owns_current_request = match (
             self.direct_composer_request.as_ref(),
             composer_request_id.as_deref(),
@@ -477,6 +519,7 @@ impl HelperApp {
             return;
         }
         self.awaiting_transcript = false;
+        self.active_take_id = None;
         self.finish_clipboard_restore(false);
         if self.direct_composer_request.is_none() && composer_request_id.is_none() {
             self.writer.emit(event(
@@ -597,6 +640,26 @@ impl HelperApp {
                 text,
                 backup,
             });
+        }
+    }
+
+    fn copy_text_for_recovery(&mut self, text: String, take_id: Option<String>) {
+        if !accepts_dictation_take_text(
+            self.active_take_id.as_deref(),
+            self.last_cancelled_take_id.as_deref(),
+            take_id.as_deref(),
+            self.awaiting_transcript,
+        ) {
+            return;
+        }
+        self.awaiting_transcript = false;
+        self.active_take_id = None;
+        self.pinned_target = None;
+        self.direct_composer_request = None;
+        self.finish_clipboard_restore(false);
+        if let Err(error) = clipboard::replace_text(&text) {
+            self.writer
+                .emit(error_event("clipboard_write_failed", error.to_string()));
         }
     }
 
@@ -765,6 +828,7 @@ impl HelperApp {
     }
 
     fn discard_recording(&mut self) {
+        let cancelled_take_id = self.active_take_id.take();
         if let Some(recorder) = self.recorder.take() {
             if let Ok(summary) = recorder.stop() {
                 let _ = std::fs::remove_file(summary.path);
@@ -772,13 +836,22 @@ impl HelperApp {
         }
         self.awaiting_transcript = false;
         self.pinned_target = None;
+        if let Some(cancelled_take_id) = cancelled_take_id.as_ref() {
+            self.last_cancelled_take_id = Some(cancelled_take_id.clone());
+        }
         if let Some(request) = self.direct_composer_request.take() {
             self.writer.emit(event(
                 "recording_discarded",
                 serde_json::json!({
                     "delivery": "agent_composer",
                     "composerRequestId": request.id,
+                    "takeId": cancelled_take_id,
                 }),
+            ));
+        } else if let Some(cancelled_take_id) = cancelled_take_id {
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({ "takeId": cancelled_take_id }),
             ));
         } else {
             self.writer.emit(simple_event("recording_discarded"));
@@ -799,6 +872,24 @@ impl HelperApp {
                 writer.emit(event("audio_level", serde_json::json!({ "level": level })));
             }
         });
+    }
+}
+
+fn accepts_dictation_take_text(
+    active_take_id: Option<&str>,
+    last_cancelled_take_id: Option<&str>,
+    incoming_take_id: Option<&str>,
+    awaiting_transcript: bool,
+) -> bool {
+    if incoming_take_id.is_some() && incoming_take_id == last_cancelled_take_id {
+        return false;
+    }
+    match (active_take_id, incoming_take_id) {
+        (Some(active), Some(incoming)) => awaiting_transcript && active == incoming,
+        // Missing IDs preserve compatibility with an older coordinator. No
+        // active take preserves ADR-0014's clipboard recovery after a helper
+        // replacement loses the original paste target.
+        _ => true,
     }
 }
 
@@ -913,11 +1004,41 @@ mod tests {
                 backup: None,
             }),
             awaiting_transcript: false,
+            active_take_id: None,
+            last_cancelled_take_id: None,
             last_mic_test_path: None,
         };
 
         assert!(!app.can_start_listening(Some("replacement-request")));
         assert!(app.can_start_listening(None));
+    }
+
+    #[test]
+    fn cancelled_take_text_is_rejected_but_restart_recovery_remains_available() {
+        assert!(!accepts_dictation_take_text(
+            Some("take-1"),
+            Some("take-1"),
+            Some("take-1"),
+            false,
+        ));
+        assert!(!accepts_dictation_take_text(
+            Some("take-2"),
+            Some("take-1"),
+            Some("take-1"),
+            true,
+        ));
+        assert!(accepts_dictation_take_text(
+            None,
+            None,
+            Some("take-from-exited-helper"),
+            false,
+        ));
+        assert!(accepts_dictation_take_text(
+            Some("take-1"),
+            None,
+            None,
+            true,
+        ));
     }
 
     fn restore_with_expiry(
