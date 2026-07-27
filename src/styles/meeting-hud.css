@@ -163,7 +163,7 @@ body:has(.mhud[data-mode="meeting-end"]):active {
 
 .mhud[data-mode="meeting-end"] .mhud-end {
   display: flex;
-  animation: mhud-end-in 200ms var(--ease-out);
+  animation: mhud-end-in var(--t-slow) var(--ease-out);
 }
 
 @keyframes mhud-end-in {
