@@ -2243,7 +2243,12 @@ impl Repositories {
              SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
                  calendar_event_id = ?, calendar_event_title = ?,
                  calendar_event_start_at = ?, calendar_event_end_at = ?,
-                 calendar_account_email = ?, updated_at = ?
+                 calendar_account_email = ?,
+                 revision = revision + CASE
+                     WHEN ? = 1 AND title = ? AND title != ? THEN 1
+                     ELSE 0
+                 END,
+                 updated_at = ?
              WHERE id = ? AND calendar_event_id IS NULL",
         )
         .bind(i64::from(expected_title.trim().is_empty()))
@@ -2254,6 +2259,9 @@ impl Repositories {
         .bind(&event.start_at)
         .bind(&event.end_at)
         .bind(&event.account_email)
+        .bind(i64::from(expected_title.trim().is_empty()))
+        .bind(expected_title)
+        .bind(&event.title)
         .bind(timestamp())
         .bind(note_id)
         .execute(&self.pool)
@@ -6553,10 +6561,12 @@ mod tests {
     async fn calendar_event_titles_only_untouched_notes_and_hydrates_context() {
         let repos = test_repositories().await;
         let untouched = repos.create_note("default", None).await.expect("note");
+        let untouched_revision = untouched.revision;
         let named = repos
             .create_note("default", None)
             .await
             .expect("named note");
+        let named_revision = named.revision;
         query("UPDATE notes SET title = 'My own title' WHERE id = ?")
             .bind(&named.id)
             .execute(&repos.pool)
@@ -6583,8 +6593,30 @@ mod tests {
         let named = repos.get_note(&named.id).await.expect("named");
         assert_eq!(untouched.title, "Product review");
         assert_eq!(untouched.calendar_event, Some(event.clone()));
+        assert_eq!(untouched.revision, untouched_revision + 1);
         assert_eq!(named.title, "My own title");
         assert_eq!(named.calendar_event, Some(event));
+        assert_eq!(named.revision, named_revision);
+
+        let conflict = repos
+            .update_note_cas(
+                &untouched.id,
+                untouched_revision,
+                Some("Stale phone title".to_string()),
+                Some("Stale phone content".to_string()),
+            )
+            .await
+            .expect_err("calendar title must invalidate a stale companion edit");
+        assert_eq!(conflict.code, "note_revision_conflict");
+        let current = repos
+            .get_note(&untouched.id)
+            .await
+            .expect("calendar-titled note");
+        assert_eq!(current.title, "Product review");
+        assert_ne!(
+            current.edited_content.as_deref(),
+            Some("Stale phone content")
+        );
     }
 
     async fn recording_fixture(
