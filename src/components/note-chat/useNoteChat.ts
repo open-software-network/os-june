@@ -76,6 +76,9 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const generationRef = useRef(0);
   const sessionIdRef = useRef<string>();
   const activeSubmitRef = useRef<symbol>();
+  const sessionTitleRef = useRef<string>();
+  const runtimeListenerReadyRef = useRef<Promise<boolean>>(Promise.resolve(false));
+  sessionTitleRef.current = projection.session?.title;
 
   const working = runIsActive(projection);
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
@@ -94,6 +97,55 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   }, []);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    runtimeListenerReadyRef.current = listen<AgentRuntimeEvent>(
+      AGENT_RUNTIME_EVENT,
+      ({ payload }) => {
+        if (payload.sessionId !== sessionIdRef.current) return;
+        setProjection((current) => applyAgentRuntimeEvent(current, payload));
+        const terminal =
+          payload.method === "run.completed" ||
+          payload.method === "run.cancelled" ||
+          payload.method === "run.failed";
+        dispatchAgentSessionStatus({
+          sessionId: payload.sessionId,
+          title: sessionTitleRef.current ?? "Note chat",
+          status:
+            payload.method === "run.completed"
+              ? "completed"
+              : payload.method === "run.cancelled"
+                ? "cancelled"
+                : payload.method === "run.failed"
+                  ? "failed"
+                  : "running",
+          ...(payload.method === "run.failed" ? { summary: payload.data.message } : {}),
+        });
+        if (terminal) void hydrate(payload.sessionId).catch(() => undefined);
+      },
+    )
+      .then((dispose) => {
+        if (disposed) {
+          dispose();
+          return false;
+        }
+        unlisten = dispose;
+        return true;
+      })
+      .catch((cause) => {
+        if (!disposed) {
+          setError(messageFromError(cause));
+          setLoading(false);
+        }
+        return false;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [hydrate]);
+
+  useEffect(() => {
     const generation = ++generationRef.current;
     const rememberedSessionId = noteId ? noteChatSessionIdFor(noteId) : undefined;
     sessionIdRef.current = rememberedSessionId;
@@ -108,7 +160,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     }
 
     setLoading(true);
-    void hydrate(rememberedSessionId)
+    void runtimeListenerReadyRef.current
+      .then((ready) => (ready ? hydrate(rememberedSessionId) : undefined))
       .catch(() => {
         if (generation !== generationRef.current) return;
         forgetNoteChatSession(noteId!);
@@ -119,40 +172,6 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
         if (generation === generationRef.current) setLoading(false);
       });
   }, [hydrate, noteId]);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
-      if (payload.sessionId !== sessionIdRef.current) return;
-      setProjection((current) => applyAgentRuntimeEvent(current, payload));
-      const terminal =
-        payload.method === "run.completed" ||
-        payload.method === "run.cancelled" ||
-        payload.method === "run.failed";
-      dispatchAgentSessionStatus({
-        sessionId: payload.sessionId,
-        title: projection.session?.title ?? "Note chat",
-        status:
-          payload.method === "run.completed"
-            ? "completed"
-            : payload.method === "run.cancelled"
-              ? "cancelled"
-              : payload.method === "run.failed"
-                ? "failed"
-                : "running",
-        ...(payload.method === "run.failed" ? { summary: payload.data.message } : {}),
-      });
-      if (terminal) void hydrate(payload.sessionId).catch(() => undefined);
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [hydrate, projection.session?.title]);
 
   const submit = useCallback(
     async (
