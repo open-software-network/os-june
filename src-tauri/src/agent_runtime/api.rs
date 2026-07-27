@@ -183,6 +183,12 @@ pub async fn compact_agent_session(
         .await;
     host.cancel_run_streams(&stream_scope_id).await;
     let response = response?;
+    if let Some(usage) = response
+        .get("usage")
+        .filter(|usage| usage.as_object().is_some_and(|usage| !usage.is_empty()))
+    {
+        repository.add_run_usage(&run_id, usage).await?;
+    }
     let removed_item_ids = response
         .get("removedItemIds")
         .and_then(Value::as_array)

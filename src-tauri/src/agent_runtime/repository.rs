@@ -979,6 +979,31 @@ impl AgentRepository {
         self.get_run(run_id).await.map(Some).map_err(Into::into)
     }
 
+    pub async fn add_run_usage(
+        &self,
+        run_id: &str,
+        usage: &serde_json::Value,
+    ) -> Result<AgentRunDto, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let existing = query("SELECT usage_json FROM agent_runs WHERE id = ?")
+            .bind(run_id)
+            .fetch_one(&mut *transaction)
+            .await?
+            .get::<Option<String>, _>("usage_json")
+            .map(|value| serde_json::from_str::<serde_json::Value>(&value))
+            .transpose()
+            .map_err(decode_error)?;
+        let merged = merge_usage(existing.as_ref(), usage);
+        query("UPDATE agent_runs SET usage_json = ?, updated_at = ? WHERE id = ?")
+            .bind(merged.to_string())
+            .bind(now())
+            .bind(run_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
+        self.get_run(run_id).await
+    }
+
     pub async fn mark_active_runs_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
         let now = now();
         let result = query("UPDATE agent_runs SET status = 'interrupted', updated_at = ?, completed_at = ?, error_code = 'runtime_crashed', error_message = ? WHERE status IN ('queued', 'running')")
@@ -1177,6 +1202,39 @@ fn json_column(row: &SqliteRow, column: &str) -> Option<serde_json::Value> {
 
 fn decode_error(error: serde_json::Error) -> sqlx::Error {
     sqlx::Error::Decode(Box::new(error))
+}
+
+fn merge_usage(
+    earlier: Option<&serde_json::Value>,
+    later: &serde_json::Value,
+) -> serde_json::Value {
+    let mut merged = earlier
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let Some(later) = later.as_object() else {
+        return serde_json::Value::Object(merged);
+    };
+    merged.extend(later.clone());
+    for key in ["inputTokens", "outputTokens", "totalTokens", "requests"] {
+        let left = earlier
+            .and_then(|usage| usage.get(key))
+            .and_then(serde_json::Value::as_u64);
+        let right = later.get(key).and_then(serde_json::Value::as_u64);
+        if left.is_some() || right.is_some() {
+            merged.insert(
+                key.to_string(),
+                serde_json::json!(left.unwrap_or(0) + right.unwrap_or(0)),
+            );
+        }
+    }
+    if let Some(latest) = later
+        .get("latestInputTokens")
+        .or_else(|| later.get("inputTokens"))
+    {
+        merged.insert("latestInputTokens".to_string(), latest.clone());
+    }
+    serde_json::Value::Object(merged)
 }
 
 #[cfg(test)]
@@ -1511,6 +1569,63 @@ mod tests {
                 .expect("routine claim")
                 .get("claim_token");
         assert_eq!(claim_token.as_deref(), Some(claim.token.as_str()));
+    }
+
+    #[tokio::test]
+    async fn manual_usage_is_added_to_a_terminal_run() {
+        let repository = repository().await;
+        let session = repository
+            .create_session("Completed", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        repository
+            .update_run_status(
+                &run.id,
+                "completed",
+                Some(&serde_json::json!({
+                    "inputTokens": 10,
+                    "outputTokens": 4,
+                    "totalTokens": 14,
+                    "requests": 1,
+                    "latestInputTokens": 10,
+                    "provider": "initial"
+                })),
+                None,
+                None,
+            )
+            .await
+            .expect("completed run");
+
+        let updated = repository
+            .add_run_usage(
+                &run.id,
+                &serde_json::json!({
+                    "inputTokens": 6,
+                    "outputTokens": 2,
+                    "totalTokens": 8,
+                    "requests": 1,
+                    "provider": "summary"
+                }),
+            )
+            .await
+            .expect("usage update");
+
+        assert_eq!(updated.status, "completed");
+        assert_eq!(
+            updated.usage,
+            Some(serde_json::json!({
+                "inputTokens": 16,
+                "outputTokens": 6,
+                "totalTokens": 22,
+                "requests": 2,
+                "latestInputTokens": 6,
+                "provider": "summary"
+            }))
+        );
     }
 
     #[tokio::test]
