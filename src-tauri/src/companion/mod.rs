@@ -660,7 +660,7 @@ pub async fn companion_consume_attachments(
         &crate::os_accounts::current_user_id().await?,
         &reference_ids,
     )
-    .await;
+    .await?;
     Ok(())
 }
 

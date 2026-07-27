@@ -690,7 +690,7 @@ pub(super) async fn consume_attachments(
     repositories: &Repositories,
     account_user_id: &str,
     reference_ids: &[Uuid],
-) {
+) -> Result<(), AppError> {
     if let Ok(mut references) = app
         .state::<super::CompanionRuntime>()
         .browse_references
@@ -714,25 +714,28 @@ pub(super) async fn consume_attachments(
         .bind(account_user_id)
         .bind(reference_id.to_string())
         .fetch_optional(&repositories.pool)
-        .await;
-        let Ok(Some(row)) = row else {
+        .await?;
+        let Some(row) = row else {
             continue;
         };
         let device_id: String = row.get("device_id");
         let reservation_id: String = row.get("reservation_id");
-        if query(
-            "DELETE FROM companion_uploads
+        let invalidated = query(
+            "UPDATE companion_uploads
+             SET attachment_reference_id = NULL
              WHERE account_user_id = ? AND attachment_reference_id = ?",
         )
         .bind(account_user_id)
         .bind(reference_id.to_string())
         .execute(&repositories.pool)
-        .await
-        .is_ok()
+        .await?;
+        if invalidated.rows_affected() == 1
+            && remove_upload_directory(app, account_user_id, &device_id, &reservation_id).await
         {
-            remove_upload_directory(app, account_user_id, &device_id, &reservation_id).await;
+            delete_upload_record(repositories, account_user_id, &device_id, &reservation_id).await;
         }
     }
+    Ok(())
 }
 
 pub(super) async fn cleanup_device_uploads(
@@ -751,22 +754,11 @@ pub(super) async fn cleanup_device_uploads(
     .fetch_all(&repositories.pool)
     .await
     .unwrap_or_default();
-    let _ = query(
-        "DELETE FROM companion_uploads
-         WHERE account_user_id = ? AND device_id = ?",
-    )
-    .bind(account_user_id)
-    .bind(device_id)
-    .execute(&repositories.pool)
-    .await;
     for row in rows {
-        remove_upload_directory(
-            app,
-            account_user_id,
-            device_id,
-            &row.get::<String, _>("reservation_id"),
-        )
-        .await;
+        let reservation_id = row.get::<String, _>("reservation_id");
+        if remove_upload_directory(app, account_user_id, device_id, &reservation_id).await {
+            delete_upload_record(repositories, account_user_id, device_id, &reservation_id).await;
+        }
     }
     if let Ok(mut references) = app
         .state::<super::CompanionRuntime>()
@@ -802,20 +794,32 @@ async fn cleanup_expired_uploads(
     .bind(now_ms_i64())
     .fetch_all(&repositories.pool)
     .await?;
-    query("DELETE FROM companion_uploads WHERE expires_at_ms < ?")
-        .bind(now_ms_i64())
-        .execute(&repositories.pool)
-        .await?;
     for row in rows {
-        remove_upload_directory(
-            app,
-            &row.get::<String, _>("account_user_id"),
-            &row.get::<String, _>("device_id"),
-            &row.get::<String, _>("reservation_id"),
-        )
-        .await;
+        let account_user_id = row.get::<String, _>("account_user_id");
+        let device_id = row.get::<String, _>("device_id");
+        let reservation_id = row.get::<String, _>("reservation_id");
+        if remove_upload_directory(app, &account_user_id, &device_id, &reservation_id).await {
+            delete_upload_record(repositories, &account_user_id, &device_id, &reservation_id).await;
+        }
     }
     Ok(())
+}
+
+async fn delete_upload_record(
+    repositories: &Repositories,
+    account_user_id: &str,
+    device_id: &str,
+    reservation_id: &str,
+) {
+    let _ = query(
+        "DELETE FROM companion_uploads
+         WHERE account_user_id = ? AND device_id = ? AND reservation_id = ?",
+    )
+    .bind(account_user_id)
+    .bind(device_id)
+    .bind(reservation_id)
+    .execute(&repositories.pool)
+    .await;
 }
 
 fn validate_root(selected_path: &Path) -> Result<BrowseRootRecord, AppError> {
@@ -1181,14 +1185,18 @@ async fn remove_upload_directory(
     account_user_id: &str,
     device_id: &str,
     reservation_id: &str,
-) {
+) -> bool {
     let Ok(reservation_id) = parse_uuid(reservation_id) else {
-        return;
+        return false;
     };
     let Ok(directory) = upload_directory(app, account_user_id, device_id, reservation_id) else {
-        return;
+        return false;
     };
-    let _ = fs::remove_dir_all(directory).await;
+    match fs::remove_dir_all(directory).await {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
 }
 
 #[cfg(unix)]
