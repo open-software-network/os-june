@@ -20,6 +20,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   readonly takeSteering: (() => SteeringMessage[]) | undefined;
   readonly onSteeringConsumed: ((message: SteeringMessage) => void) | undefined;
   latestRoute: ModelRoute | undefined;
+  private usesReasoningContent = false;
 
   constructor(
     invoke: ModelRpcInvoker,
@@ -41,11 +42,12 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
         completions: {
           create: async (body: unknown, options?: { signal?: AbortSignal }) => {
             const wantsStream = asRecord(body).stream === true;
-            const request = asJsonObject({
+            let request = asJsonObject({
               ...asRecord(body),
               stream: true,
               stream_options: { include_usage: true },
             });
+            if (this.usesReasoningContent) request = restoreReasoningContent(request);
             const chunks = this.streamChunks(request, options?.signal);
             if (wantsStream) return chunks;
             return collectChatCompletion(chunks);
@@ -82,7 +84,9 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
     while (true) {
       if (page.route) this.latestRoute = page.route;
       for (const chunk of page.chunks) {
-        yield normalizeEmptyToolArguments(chunk, toolArgumentState);
+        const normalizedReasoning = normalizeReasoningContent(chunk);
+        if (normalizedReasoning.usesReasoningContent) this.usesReasoningContent = true;
+        yield normalizeEmptyToolArguments(normalizedReasoning.chunk, toolArgumentState);
       }
       if (page.done) return;
       page = requireStreamPage(
@@ -95,6 +99,43 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       );
     }
   }
+}
+
+function normalizeReasoningContent(chunk: JsonObject): {
+  chunk: JsonObject;
+  usesReasoningContent: boolean;
+} {
+  if (!Array.isArray(chunk.choices)) return { chunk, usesReasoningContent: false };
+  let changed = false;
+  let usesReasoningContent = false;
+  const choices = chunk.choices.map((choiceValue) => {
+    if (!isRecord(choiceValue) || !isRecord(choiceValue.delta)) return choiceValue;
+    const reasoningContent = choiceValue.delta.reasoning_content;
+    if (typeof reasoningContent !== "string") return choiceValue;
+    usesReasoningContent = true;
+    changed = true;
+    const { reasoning_content: _, ...delta } = choiceValue.delta;
+    return { ...choiceValue, delta: { ...delta, reasoning: reasoningContent } };
+  });
+  return {
+    chunk: changed ? { ...chunk, choices } : chunk,
+    usesReasoningContent,
+  };
+}
+
+function restoreReasoningContent(request: JsonObject): JsonObject {
+  if (!Array.isArray(request.messages)) return request;
+  let changed = false;
+  const messages = request.messages.map((messageValue) => {
+    if (!isRecord(messageValue) || messageValue.role !== "assistant") return messageValue;
+    if (typeof messageValue.reasoning !== "string" || messageValue.reasoning === "") {
+      return messageValue;
+    }
+    changed = true;
+    const { reasoning, ...message } = messageValue;
+    return { ...message, reasoning_content: reasoning };
+  });
+  return changed ? { ...request, messages } : request;
 }
 
 function normalizeEmptyToolArguments(

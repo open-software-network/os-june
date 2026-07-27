@@ -32,6 +32,7 @@ test("continues model inference after a host tool result", async () => {
             finish_reason: "tool_calls",
             delta: {
               role: "assistant",
+              reasoning_content: "I should inspect the installed skills.",
               tool_calls: [
                 {
                   index: 0,
@@ -109,14 +110,27 @@ test("continues model inference after a host tool result", async () => {
   assert.equal(modelRequests[0]?.reasoning_effort, "high");
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
-  assert.ok(
-    secondMessages.some(
-      (message) =>
-        isRecord(message) &&
-        message.role === "tool" &&
-        message.tool_call_id === "call-list-skills",
-    ),
+  const toolResultIndex = secondMessages.findIndex(
+    (message) =>
+      isRecord(message) &&
+      message.role === "tool" &&
+      message.tool_call_id === "call-list-skills",
   );
+  assert.ok(toolResultIndex > 0);
+  const assistantToolMessage = secondMessages[toolResultIndex - 1];
+  assert.ok(isRecord(assistantToolMessage));
+  assert.equal(assistantToolMessage.role, "assistant");
+  assert.equal(assistantToolMessage.content, null);
+  assert.ok(Array.isArray(assistantToolMessage.tool_calls));
+  assert.equal(assistantToolMessage.tool_calls[0]?.id, "call-list-skills");
+  assert.ok(isRecord(assistantToolMessage.tool_calls[0]?.function));
+  assert.equal(assistantToolMessage.tool_calls[0].function.name, "list_skills");
+  assert.equal(assistantToolMessage.tool_calls[0].function.arguments, "{}");
+  assert.equal(assistantToolMessage.reasoning_content, "I should inspect the installed skills.");
+  assert.equal(assistantToolMessage.reasoning, undefined);
+  assert.deepEqual(modelRequests[1]?.tools, modelRequests[0]?.tools);
+  assert.equal(modelRequests[1]?.stream, true);
+  assert.deepEqual(modelRequests[1]?.stream_options, { include_usage: true });
   assert.ok(events.some((event) => event.type === "tool.completed"));
   assert.equal(result.usage.provider, "phala");
   assert.equal(result.usage.privacyLevel, "tee");
