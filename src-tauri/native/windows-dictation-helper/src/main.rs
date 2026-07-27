@@ -674,9 +674,11 @@ impl HelperApp {
         self.pinned_target = None;
         self.direct_composer_request = None;
         self.finish_clipboard_restore(false);
-        if let Err(error) = clipboard::replace_text(&text) {
-            self.writer
-                .emit(error_event("clipboard_write_failed", error.to_string()));
+        match clipboard::replace_text(&text) {
+            Ok(_) => self.writer.emit(recovery_clipboard_event()),
+            Err(error) => self
+                .writer
+                .emit(error_event("clipboard_write_failed", error.to_string())),
         }
     }
 
@@ -984,6 +986,13 @@ fn paste_completed_event(submission: &focus::InputSubmission) -> serde_json::Val
     )
 }
 
+fn recovery_clipboard_event() -> serde_json::Value {
+    error_event(
+        "dictation_recovery_clipboard",
+        "Could not save this dictation. Use Ctrl+V to keep the transcript.",
+    )
+}
+
 impl Drop for HelperApp {
     fn drop(&mut self) {
         self.finish_clipboard_restore(true);
@@ -1028,6 +1037,17 @@ mod tests {
         assert_eq!(event["payload"]["inputSubmitted"], true);
         assert_eq!(event["payload"]["deliveryConfirmed"], false);
         assert_eq!(event["payload"]["eventsSubmitted"], 4);
+    }
+
+    #[test]
+    fn recovery_clipboard_copy_emits_a_visible_terminal_event() {
+        let event = recovery_clipboard_event();
+
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["payload"]["code"], "dictation_recovery_clipboard");
+        assert!(event["payload"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Ctrl+V")));
     }
 
     #[test]
