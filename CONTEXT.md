@@ -200,9 +200,9 @@ _Avoid_: dictation app, keyboard helper.
 **Dictation take**:
 One helper-owned dictation capture from `listening_started` until its text is
 delivered or the capture is discarded. The helper gives each take an opaque
-identity so June can cancel its pending transcription, cleanup, history, and
-delivery without affecting a newer take. Cancellation is terminal; a late
-result never regains delivery authority.
+identity so June can cancel its pending dictation transcription, cleanup,
+history, and delivery without affecting a newer take. Cancellation is
+terminal; a late result never regains delivery authority.
 _Avoid_: recording session (that is note-backed), utterance (that identifies a
 metered June API request, not the user-visible capture lifecycle).
 

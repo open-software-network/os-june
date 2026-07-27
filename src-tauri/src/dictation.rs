@@ -18,7 +18,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread,
@@ -173,9 +173,10 @@ impl Default for HelperState {
     }
 }
 
-const DICTATION_TAKE_PENDING: u8 = 0;
-const DICTATION_TAKE_CANCELLED: u8 = 1;
-const DICTATION_TAKE_DELIVERING: u8 = 2;
+const DICTATION_TAKE_CAPTURING: u8 = 0;
+const DICTATION_TAKE_PROCESSING: u8 = 1;
+const DICTATION_TAKE_CANCELLED: u8 = 2;
+const DICTATION_TAKE_DELIVERING: u8 = 3;
 
 #[derive(Clone)]
 struct DictationTakeToken {
@@ -194,7 +195,7 @@ impl DictationTakeToken {
         Self {
             inner: Arc::new(DictationTakeTokenInner {
                 id,
-                state: AtomicU8::new(DICTATION_TAKE_PENDING),
+                state: AtomicU8::new(DICTATION_TAKE_CAPTURING),
                 cancellation,
             }),
         }
@@ -208,12 +209,10 @@ impl DictationTakeToken {
         if self
             .inner
             .state
-            .compare_exchange(
-                DICTATION_TAKE_PENDING,
-                DICTATION_TAKE_CANCELLED,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            )
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                matches!(state, DICTATION_TAKE_CAPTURING | DICTATION_TAKE_PROCESSING)
+                    .then_some(DICTATION_TAKE_CANCELLED)
+            })
             .is_err()
         {
             return false;
@@ -222,16 +221,33 @@ impl DictationTakeToken {
         true
     }
 
-    fn try_begin_delivery(&self) -> bool {
+    fn try_begin_processing(&self) -> bool {
         self.inner
             .state
             .compare_exchange(
-                DICTATION_TAKE_PENDING,
-                DICTATION_TAKE_DELIVERING,
+                DICTATION_TAKE_CAPTURING,
+                DICTATION_TAKE_PROCESSING,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             )
             .is_ok()
+    }
+
+    fn try_begin_delivery(&self) -> Option<DictationDeliveryClaim> {
+        self.inner
+            .state
+            .compare_exchange(
+                DICTATION_TAKE_PROCESSING,
+                DICTATION_TAKE_DELIVERING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .ok()
+            .map(|_| DictationDeliveryClaim { take: self.clone() })
+    }
+
+    fn state(&self) -> u8 {
+        self.inner.state.load(Ordering::SeqCst)
     }
 
     #[cfg(test)]
@@ -249,12 +265,24 @@ impl DictationTakeToken {
     }
 }
 
+struct DictationDeliveryClaim {
+    take: DictationTakeToken,
+}
+
+enum DictationFinalizedTake {
+    Start(DictationTakeToken),
+    Cancelled,
+    Duplicate,
+    Stale,
+}
+
 /// The one helper-owned take that may still produce text. A cancelled token is
-/// retained by its transcription task even after a replacement take begins,
+/// retained by its dictation transcription task after a replacement take begins,
 /// so late completion cannot inherit the replacement's delivery authority.
 #[derive(Default)]
 pub struct DictationTakeState {
     current: Mutex<Option<DictationTakeToken>>,
+    start_attempt_generation: AtomicU64,
 }
 
 impl DictationTakeState {
@@ -277,23 +305,34 @@ impl DictationTakeState {
         token
     }
 
-    fn token_for_finalized(&self, id: Option<&str>) -> Option<DictationTakeToken> {
+    fn claim_finalized(&self, id: Option<&str>) -> DictationFinalizedTake {
         let mut current = self
             .current
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(existing) = current.as_ref() {
-            return match id {
-                Some(id) if existing.id() != id => None,
-                _ => Some(existing.clone()),
+            if id.is_some_and(|id| existing.id() != id) {
+                return DictationFinalizedTake::Stale;
+            }
+            if existing.try_begin_processing() {
+                return DictationFinalizedTake::Start(existing.clone());
+            }
+            return match existing.state() {
+                DICTATION_TAKE_CANCELLED => DictationFinalizedTake::Cancelled,
+                DICTATION_TAKE_PROCESSING | DICTATION_TAKE_DELIVERING => {
+                    DictationFinalizedTake::Duplicate
+                }
+                _ => DictationFinalizedTake::Stale,
             };
         }
         let id = id
             .map(str::to_string)
             .unwrap_or_else(|| format!("legacy-{}", uuid::Uuid::new_v4()));
         let token = DictationTakeToken::new(id);
+        let processing_started = token.try_begin_processing();
+        debug_assert!(processing_started);
         *current = Some(token.clone());
-        Some(token)
+        DictationFinalizedTake::Start(token)
     }
 
     fn cancel(&self, id: Option<&str>) -> bool {
@@ -305,6 +344,16 @@ impl DictationTakeState {
             return false;
         }
         current.as_ref().is_some_and(DictationTakeToken::cancel)
+    }
+
+    fn begin_start_attempt(&self) -> u64 {
+        self.start_attempt_generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1)
+    }
+
+    fn is_current_start_attempt(&self, generation: u64) -> bool {
+        self.start_attempt_generation.load(Ordering::SeqCst) == generation
     }
 }
 
@@ -1295,6 +1344,12 @@ pub fn dictation_helper_command(
         .to_string();
     if command_type == "discard_recording" {
         cancel_current_dictation_take(&app);
+    }
+    if matches!(
+        command_type.as_str(),
+        "start_listening" | "toggle_listening"
+    ) {
+        begin_dictation_start_attempt(&app);
     }
     if matches!(
         command_type.as_str(),
@@ -2510,6 +2565,16 @@ fn cancel_current_dictation_take(app: &AppHandle) {
     cancel_dictation_take(app, None);
 }
 
+fn begin_dictation_start_attempt(app: &AppHandle) -> Option<u64> {
+    app.try_state::<DictationTakeState>()
+        .map(|state| state.begin_start_attempt())
+}
+
+fn is_current_dictation_start_attempt(app: &AppHandle, generation: u64) -> bool {
+    app.try_state::<DictationTakeState>()
+        .is_some_and(|state| state.is_current_start_attempt(generation))
+}
+
 fn acknowledge_shortcut_toggle(app: &AppHandle) {
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
@@ -2556,11 +2621,20 @@ fn send_dictation_command(
     // before. ToggleListening can also start, but we can't tell
     // start-from-stop without extra state; transcribe_recording_ready acts
     // as the backstop there.
+    let start_attempt = matches!(
+        command,
+        DictationCommand::StartListening | DictationCommand::ToggleListening
+    )
+    .then(|| begin_dictation_start_attempt(app))
+    .flatten();
     let forwarded = forward_dictation_command(app, command, shortcut_label, starts_recording);
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
     }
-    if matches!(command, DictationCommand::StartListening) {
+    if forwarded && matches!(command, DictationCommand::StartListening) {
+        let Some(start_attempt) = start_attempt else {
+            return;
+        };
         let app = app.clone();
         let label = shortcut_label.to_string();
         tauri::async_runtime::spawn(async move {
@@ -2572,6 +2646,9 @@ fn send_dictation_command(
                 // the finalized audio and shows a retriable error.
                 DictationAuthGate::Unavailable(_) => {}
                 DictationAuthGate::SignedOut => {
+                    if !is_current_dictation_start_attempt(&app, start_attempt) {
+                        return;
+                    }
                     forward_dictation_command(
                         &app,
                         DictationCommand::DiscardListening,
@@ -4103,28 +4180,43 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         if let Some(event) = event.as_ref() {
             match recording_ready_info_from_event(event) {
                 Ok(info) => {
-                    let take = app
+                    let finalized_take = app
                         .try_state::<DictationTakeState>()
-                        .and_then(|state| state.token_for_finalized(info.take_id.as_deref()));
-                    let Some(take) = take else {
-                        tracing::warn!(
-                            take_id = info.take_id.as_deref(),
-                            "ignoring recording from a stale dictation take"
-                        );
-                        let _ = std::fs::remove_file(&info.audio_path);
-                        return;
-                    };
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        transcribe_recording_ready(app, info, take).await;
-                    });
+                        .map(|state| state.claim_finalized(info.take_id.as_deref()))
+                        .unwrap_or(DictationFinalizedTake::Stale);
+                    match finalized_take {
+                        DictationFinalizedTake::Start(take) => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                transcribe_recording_ready(app, info, take).await;
+                            });
+                        }
+                        DictationFinalizedTake::Cancelled | DictationFinalizedTake::Stale => {
+                            tracing::info!(
+                                take_id = info.take_id.as_deref(),
+                                "discarding recording from a cancelled or stale dictation take"
+                            );
+                            let _ = std::fs::remove_file(&info.audio_path);
+                            return;
+                        }
+                        DictationFinalizedTake::Duplicate => {
+                            tracing::warn!(
+                                take_id = info.take_id.as_deref(),
+                                "ignoring duplicate ready event for a dictation take"
+                            );
+                            return;
+                        }
+                    }
                 }
                 Err(error) => {
+                    let take_id = dictation_take_id_from_event(event);
+                    cancel_dictation_take(app, take_id);
+                    let mut command = serde_json::json!({ "type": "discard_recording" });
+                    if let (Some(take_id), Some(object)) = (take_id, command.as_object_mut()) {
+                        object.insert("takeId".into(), serde_json::json!(take_id));
+                    }
                     let state = app.state::<HelperState>();
-                    let _ = send_helper_command(
-                        &state,
-                        serde_json::json!({ "type": "discard_recording" }),
-                    );
+                    let _ = send_helper_command(&state, command);
                     emit_dictation_event_value(app, app_error_event(error));
                 }
             }
@@ -4210,33 +4302,29 @@ async fn transcribe_recording_ready(
     transcribe_recording_ready_inner(&app, recording, &take).await;
 }
 
-fn add_dictation_take_id(command: &mut serde_json::Value, take: &DictationTakeToken) {
+fn add_dictation_take_id(command: &mut serde_json::Value, claim: &DictationDeliveryClaim) {
     if let Some(object) = command.as_object_mut() {
-        object.insert("takeId".into(), serde_json::json!(take.id()));
+        object.insert("takeId".into(), serde_json::json!(claim.take.id()));
     }
 }
 
-fn claim_dictation_take_command(
-    take: &DictationTakeToken,
-    command: &mut serde_json::Value,
-) -> bool {
-    if !take.try_begin_delivery() {
-        return false;
-    }
-    add_dictation_take_id(command, take);
-    true
+fn send_claimed_dictation_take_command(
+    app: &AppHandle,
+    claim: &DictationDeliveryClaim,
+    mut command: serde_json::Value,
+) -> Result<(), AppError> {
+    add_dictation_take_id(&mut command, claim);
+    let state = app.state::<HelperState>();
+    send_helper_command(&state, command)
 }
 
 fn send_dictation_take_command(
     app: &AppHandle,
     take: &DictationTakeToken,
-    mut command: serde_json::Value,
+    command: serde_json::Value,
 ) -> Option<Result<(), AppError>> {
-    if !claim_dictation_take_command(take, &mut command) {
-        return None;
-    }
-    let state = app.state::<HelperState>();
-    Some(send_helper_command(&state, command))
+    let claim = take.try_begin_delivery()?;
+    Some(send_claimed_dictation_take_command(app, &claim, command))
 }
 
 fn remove_cancelled_dictation_audio(
@@ -4386,6 +4474,11 @@ async fn transcribe_recording_ready_inner(
     )
     .await;
     let Some(result) = result else {
+        tracing::info!(
+            take_id = take.id(),
+            utterance_id,
+            "dictation take cancelled after metered dictation transcription started"
+        );
         remove_cancelled_dictation_audio(&audio_path, Some(&transcription_audio));
         return;
     };
@@ -4412,27 +4505,62 @@ async fn transcribe_recording_ready_inner(
         return;
     };
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
+    let mut delivery_claim = None;
     let history_already_persisted = if low_speech_evidence {
         let recovery_transcript = outcome
             .transcript
             .as_ref()
             .or(outcome.quarantine_transcript.as_ref());
         if let Some(transcript) = recovery_transcript {
-            let persisted = run_dictation_take_step(
+            let staged = run_dictation_take_step(
                 take,
-                persist_dictation_history_item(app, transcript, &history_profile),
+                stage_dictation_history_item(app, transcript, &history_profile),
             )
             .await;
-            let Some(persisted) = persisted else {
+            let Some(staged) = staged else {
                 remove_cancelled_dictation_audio(&audio_path, None);
                 return;
             };
-            match persisted {
-                Ok(()) => true,
+            match staged {
+                Ok(Some(pending)) => {
+                    let Some(claim) = take.try_begin_delivery() else {
+                        if let Err(error) = pending.rollback().await {
+                            tracing::error!(
+                                %error,
+                                take_id = take.id(),
+                                "cancelled dictation history rollback failed"
+                            );
+                        }
+                        remove_cancelled_dictation_audio(&audio_path, None);
+                        return;
+                    };
+                    match pending.commit().await {
+                        Ok(_) => {
+                            delivery_claim = Some(claim);
+                            true
+                        }
+                        Err(error) => {
+                            let error = dictation_history_save_error(error);
+                            retain_low_speech_evidence_recording(
+                                app,
+                                &claim,
+                                &audio_path,
+                                transcript,
+                                &error,
+                            );
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => false,
                 Err(error) => {
+                    let Some(claim) = take.try_begin_delivery() else {
+                        remove_cancelled_dictation_audio(&audio_path, None);
+                        return;
+                    };
                     retain_low_speech_evidence_recording(
                         app,
-                        take,
+                        &claim,
                         &audio_path,
                         transcript,
                         &error,
@@ -4450,6 +4578,7 @@ async fn transcribe_recording_ready_inner(
     deliver_dictation_outcome(
         app,
         take,
+        delivery_claim,
         &audio_path,
         outcome,
         history_already_persisted,
@@ -4461,6 +4590,7 @@ async fn transcribe_recording_ready_inner(
 fn deliver_dictation_outcome(
     app: &AppHandle,
     take: &DictationTakeToken,
+    delivery_claim: Option<DictationDeliveryClaim>,
     audio_path: &std::path::Path,
     outcome: DictationTranscriptionOutcome,
     history_already_persisted: bool,
@@ -4468,10 +4598,11 @@ fn deliver_dictation_outcome(
     composer_request_id: Option<&str>,
 ) {
     let mut helper_command = outcome.helper_command;
-    if !claim_dictation_take_command(take, &mut helper_command) {
+    let claim = delivery_claim.or_else(|| take.try_begin_delivery());
+    let Some(claim) = claim else {
         let _ = std::fs::remove_file(audio_path);
         return;
-    }
+    };
     // Low-evidence transcripts reach this point only after a successful,
     // awaited history write. Normal transcripts keep the existing best-effort
     // background write so their paste path does not gain database latency.
@@ -4499,8 +4630,7 @@ fn deliver_dictation_outcome(
             object.insert("composerRequestId".into(), serde_json::json!(request_id));
         }
     }
-    let state = app.state::<HelperState>();
-    if let Err(error) = send_helper_command(&state, helper_command) {
+    if let Err(error) = send_claimed_dictation_take_command(app, &claim, helper_command) {
         update_shortcut_helper_finalizing(app, false);
         emit_dictation_event_value(app, app_error_event(error));
         let _ = std::fs::remove_file(audio_path);
@@ -4520,7 +4650,7 @@ fn deliver_dictation_outcome(
 
 fn retain_low_speech_evidence_recording(
     app: &AppHandle,
-    take: &DictationTakeToken,
+    claim: &DictationDeliveryClaim,
     audio_path: &std::path::Path,
     transcript: &TranscriptionProviderResult,
     history_error: &AppError,
@@ -4535,14 +4665,11 @@ fn retain_low_speech_evidence_recording(
         "text": transcript.text,
         "keepRecordingFile": true,
     });
-    match send_dictation_take_command(app, take, command) {
-        None => {
-            let _ = std::fs::remove_file(audio_path);
-        }
-        Some(Ok(())) => {
+    match send_claimed_dictation_take_command(app, claim, command) {
+        Ok(()) => {
             update_shortcut_helper_finalizing(app, false);
         }
-        Some(Err(error)) => {
+        Err(error) => {
             update_shortcut_helper_finalizing(app, false);
             emit_dictation_event_value(
                 app,
@@ -5973,14 +6100,39 @@ async fn persist_dictation_history_item(
             &transcript.provider,
         )
         .await
-        .map_err(|error| {
-            tracing::error!(%error, "dictation history insert failed");
-            AppError::new(
-                "dictation_history_save_failed",
-                "Dictation history could not save this transcript.",
-            )
-        })?;
+        .map_err(dictation_history_save_error)?;
     Ok(())
+}
+
+async fn stage_dictation_history_item(
+    app: &AppHandle,
+    transcript: &TranscriptionProviderResult,
+    profile: &str,
+) -> Result<Option<crate::db::repositories::PendingDictationHistoryItem>, AppError> {
+    let repos = crate::commands::repositories(app).await.map_err(|error| {
+        tracing::error!(code = %error.code, "dictation history repository unavailable");
+        AppError::new(
+            "dictation_history_save_failed",
+            "Dictation history could not save this transcript.",
+        )
+    })?;
+    repos
+        .stage_dictation_history_item(
+            profile,
+            &transcript.text,
+            transcript.language.clone(),
+            &transcript.provider,
+        )
+        .await
+        .map_err(dictation_history_save_error)
+}
+
+fn dictation_history_save_error(error: sqlx::error::Error) -> AppError {
+    tracing::error!(%error, "dictation history insert failed");
+    AppError::new(
+        "dictation_history_save_failed",
+        "Dictation history could not save this transcript.",
+    )
 }
 
 fn app_error_event(error: AppError) -> serde_json::Value {
@@ -8779,10 +8931,13 @@ mod tests {
     #[test]
     fn cancelling_a_finalized_take_prevents_late_delivery() {
         let state = DictationTakeState::default();
-        let take = state.begin("take-1".to_string());
+        state.begin("take-1".to_string());
+        let DictationFinalizedTake::Start(take) = state.claim_finalized(Some("take-1")) else {
+            panic!("first ready event should own processing");
+        };
 
         assert!(state.cancel(Some("take-1")));
-        assert!(!take.try_begin_delivery());
+        assert!(take.try_begin_delivery().is_none());
     }
 
     #[test]
@@ -8791,11 +8946,11 @@ mod tests {
         let cancelled = state.begin("take-1".to_string());
         assert!(state.cancel(Some("take-1")));
 
-        let late_ready = state
-            .token_for_finalized(Some("take-1"))
-            .expect("late ready resolves to the cancelled take");
-        assert!(late_ready.same_take(&cancelled));
-        assert!(!late_ready.try_begin_delivery());
+        assert!(matches!(
+            state.claim_finalized(Some("take-1")),
+            DictationFinalizedTake::Cancelled
+        ));
+        assert!(cancelled.try_begin_delivery().is_none());
     }
 
     #[test]
@@ -8805,19 +8960,49 @@ mod tests {
         assert!(state.cancel(Some("take-1")));
 
         let replacement = state.begin("take-2".to_string());
-        let finalized = state
-            .token_for_finalized(Some("take-2"))
-            .expect("replacement take remains active");
+        let DictationFinalizedTake::Start(finalized) = state.claim_finalized(Some("take-2")) else {
+            panic!("replacement take should own processing");
+        };
 
         assert!(!finalized.same_take(&cancelled));
         assert!(finalized.same_take(&replacement));
-        assert!(finalized.try_begin_delivery());
+        assert!(finalized.try_begin_delivery().is_some());
+    }
+
+    #[test]
+    fn duplicate_ready_event_cannot_start_a_second_pipeline() {
+        let state = DictationTakeState::default();
+        state.begin("take-1".to_string());
+
+        assert!(matches!(
+            state.claim_finalized(Some("take-1")),
+            DictationFinalizedTake::Start(_)
+        ));
+        assert!(matches!(
+            state.claim_finalized(Some("take-1")),
+            DictationFinalizedTake::Duplicate
+        ));
+    }
+
+    #[test]
+    fn a_new_start_attempt_invalidates_an_older_auth_result() {
+        let state = DictationTakeState::default();
+        let first = state.begin_start_attempt();
+        assert!(state.is_current_start_attempt(first));
+
+        let second = state.begin_start_attempt();
+
+        assert!(!state.is_current_start_attempt(first));
+        assert!(state.is_current_start_attempt(second));
     }
 
     #[tokio::test]
     async fn cancellation_interrupts_an_in_flight_dictation_step() {
         let state = DictationTakeState::default();
-        let take = state.begin("take-1".to_string());
+        state.begin("take-1".to_string());
+        let DictationFinalizedTake::Start(take) = state.claim_finalized(Some("take-1")) else {
+            panic!("first ready event should own processing");
+        };
         let pending = async {
             std::future::pending::<()>().await;
             "transcribed"
@@ -8836,7 +9021,7 @@ mod tests {
         .expect("cancellation should interrupt the pending request");
 
         assert!(result.is_none());
-        assert!(!take.try_begin_delivery());
+        assert!(take.try_begin_delivery().is_none());
     }
 
     #[test]

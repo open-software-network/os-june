@@ -13,6 +13,7 @@ use hotkeys::{HotkeyEvent, HotkeyManager};
 use permissions::ComApartment;
 use protocol::{error_event, event, simple_event, CommandEnvelope, ShortcutKind};
 use std::{
+    collections::HashSet,
     io::{self, BufRead, Write},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -112,7 +113,7 @@ struct HelperApp {
     pending_composer_ack: Option<PendingComposerAck>,
     awaiting_transcript: bool,
     active_take_id: Option<String>,
-    last_cancelled_take_id: Option<String>,
+    cancelled_take_ids: HashSet<String>,
     last_mic_test_path: Option<std::path::PathBuf>,
 }
 
@@ -202,7 +203,7 @@ impl HelperApp {
             pending_composer_ack: None,
             awaiting_transcript: false,
             active_take_id: None,
-            last_cancelled_take_id: None,
+            cancelled_take_ids: HashSet::new(),
             last_mic_test_path: None,
         }
     }
@@ -291,7 +292,7 @@ impl HelperApp {
                 self.start_mic_test(command.duration_seconds.unwrap_or(5).clamp(1, 10))
             }
             "discard_mic_test" => self.discard_mic_test(),
-            "discard_recording" => self.discard_recording(),
+            "discard_recording" => self.discard_recording(command.take_id),
             "shutdown" => {
                 self.writer.emit(simple_event("shutdown_ack"));
                 return false;
@@ -477,7 +478,7 @@ impl HelperApp {
     ) {
         if !accepts_dictation_take_text(
             self.active_take_id.as_deref(),
-            self.last_cancelled_take_id.as_deref(),
+            &self.cancelled_take_ids,
             take_id.as_deref(),
             self.awaiting_transcript,
         ) {
@@ -646,7 +647,7 @@ impl HelperApp {
     fn copy_text_for_recovery(&mut self, text: String, take_id: Option<String>) {
         if !accepts_dictation_take_text(
             self.active_take_id.as_deref(),
-            self.last_cancelled_take_id.as_deref(),
+            &self.cancelled_take_ids,
             take_id.as_deref(),
             self.awaiting_transcript,
         ) {
@@ -827,7 +828,10 @@ impl HelperApp {
         }
     }
 
-    fn discard_recording(&mut self) {
+    fn discard_recording(&mut self, take_id: Option<String>) {
+        if !accepts_dictation_take_discard(self.active_take_id.as_deref(), take_id.as_deref()) {
+            return;
+        }
         let cancelled_take_id = self.active_take_id.take();
         if let Some(recorder) = self.recorder.take() {
             if let Ok(summary) = recorder.stop() {
@@ -837,7 +841,7 @@ impl HelperApp {
         self.awaiting_transcript = false;
         self.pinned_target = None;
         if let Some(cancelled_take_id) = cancelled_take_id.as_ref() {
-            self.last_cancelled_take_id = Some(cancelled_take_id.clone());
+            self.cancelled_take_ids.insert(cancelled_take_id.clone());
         }
         if let Some(request) = self.direct_composer_request.take() {
             self.writer.emit(event(
@@ -875,13 +879,20 @@ impl HelperApp {
     }
 }
 
+fn accepts_dictation_take_discard(
+    active_take_id: Option<&str>,
+    incoming_take_id: Option<&str>,
+) -> bool {
+    incoming_take_id.is_none() || incoming_take_id == active_take_id
+}
+
 fn accepts_dictation_take_text(
     active_take_id: Option<&str>,
-    last_cancelled_take_id: Option<&str>,
+    cancelled_take_ids: &HashSet<String>,
     incoming_take_id: Option<&str>,
     awaiting_transcript: bool,
 ) -> bool {
-    if incoming_take_id.is_some() && incoming_take_id == last_cancelled_take_id {
+    if incoming_take_id.is_some_and(|take_id| cancelled_take_ids.contains(take_id)) {
         return false;
     }
     match (active_take_id, incoming_take_id) {
@@ -1005,7 +1016,7 @@ mod tests {
             }),
             awaiting_transcript: false,
             active_take_id: None,
-            last_cancelled_take_id: None,
+            cancelled_take_ids: HashSet::new(),
             last_mic_test_path: None,
         };
 
@@ -1015,30 +1026,47 @@ mod tests {
 
     #[test]
     fn cancelled_take_text_is_rejected_but_restart_recovery_remains_available() {
+        let cancelled_take_ids = HashSet::from(["take-1".to_string(), "older-take".to_string()]);
+        let no_cancelled_take_ids = HashSet::new();
+
         assert!(!accepts_dictation_take_text(
             Some("take-1"),
-            Some("take-1"),
+            &cancelled_take_ids,
             Some("take-1"),
             false,
         ));
         assert!(!accepts_dictation_take_text(
             Some("take-2"),
-            Some("take-1"),
-            Some("take-1"),
+            &cancelled_take_ids,
+            Some("older-take"),
             true,
         ));
         assert!(accepts_dictation_take_text(
             None,
-            None,
+            &no_cancelled_take_ids,
             Some("take-from-exited-helper"),
             false,
         ));
         assert!(accepts_dictation_take_text(
             Some("take-1"),
-            None,
+            &no_cancelled_take_ids,
             None,
             true,
         ));
+    }
+
+    #[test]
+    fn tagged_discard_only_targets_the_matching_active_take() {
+        assert!(accepts_dictation_take_discard(
+            Some("take-1"),
+            Some("take-1")
+        ));
+        assert!(!accepts_dictation_take_discard(
+            Some("take-2"),
+            Some("take-1")
+        ));
+        assert!(!accepts_dictation_take_discard(None, Some("take-1")));
+        assert!(accepts_dictation_take_discard(Some("take-1"), None));
     }
 
     fn restore_with_expiry(

@@ -1784,7 +1784,7 @@ final class DictationController {
     private var startPending = false
     private var maxObservedAudioLevel: Float = 0
     private var activeTakeID: String?
-    private var lastCancelledTakeID: String?
+    private var cancelledTakeIDs = Set<String>()
 
     var listening: Bool {
         isListening || isFinalizing || startPending
@@ -1949,7 +1949,10 @@ final class DictationController {
         resetRecordingState(keepRecordingFile: keepRecordingFile && !copied)
     }
 
-    func discard() {
+    func discard(takeID: String? = nil) {
+        if let takeID, activeTakeID != takeID {
+            return
+        }
         // Cancel any start still waiting on the permission prompt — the
         // graze is over, so a later grant must not open the microphone.
         // A discard can also arrive after recording_ready, while the helper is
@@ -1961,7 +1964,7 @@ final class DictationController {
         let cancelledTakeID = activeTakeID
         cancelAndResetRecording()
         if let cancelledTakeID {
-            lastCancelledTakeID = cancelledTakeID
+            cancelledTakeIDs.insert(cancelledTakeID)
         }
         if hadActiveDictation {
             if let cancelledTakeID {
@@ -1973,11 +1976,14 @@ final class DictationController {
     }
 
     private func acceptsDictationText(for takeID: String?) -> Bool {
-        if let takeID, takeID == lastCancelledTakeID {
+        if let takeID, cancelledTakeIDs.contains(takeID) {
             return false
         }
         if let takeID, let activeTakeID {
             return isFinalizing && takeID == activeTakeID
+        }
+        if takeID != nil, listening {
+            return false
         }
         // A helper replacement has no active take. Preserve ADR-0014's
         // clipboard recovery behavior for a result that outlived the helper;
@@ -2688,8 +2694,9 @@ func handleCommandLine(_ line: String) {
             )
         }
     case "discard_recording":
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.discard()
+            dictation.discard(takeID: takeID)
         }
     case "shutdown":
         runOnMain {
