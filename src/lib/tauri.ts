@@ -82,7 +82,11 @@ export const agentRuntimeBindings: AgentRuntimeBindings = {
   listItems: (sessionId) => invoke<AgentItemDto[]>("list_agent_items", { sessionId }),
   startRun: (request) => invoke<AgentRunDto>("start_agent_run", { request }),
   steerRun: (runId, messageId, text) =>
-    invoke<{ accepted: boolean }>("steer_agent_run", { runId, messageId, text }),
+    invoke<{ accepted: boolean; reason?: string }>("steer_agent_run", {
+      runId,
+      messageId,
+      text,
+    }),
   cancelRun: (runId) => invoke<void>("cancel_agent_run", { runId }),
   retryRun: (runId) => invoke<AgentRunDto>("retry_agent_run", { runId }),
   resolveInterruption: (request) => invoke<AgentRunDto>("resolve_agent_interruption", { request }),

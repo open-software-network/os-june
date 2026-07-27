@@ -60,6 +60,7 @@ import {
   loadQueuedAgentFollowUps,
   reconcileConsumedAgentFollowUp,
   saveQueuedAgentFollowUps,
+  type QueuedAgentFollowUp,
   type QueuedAgentFollowUps,
 } from "../../lib/agent-follow-up-queue";
 import {
@@ -216,6 +217,56 @@ export function canShareAgentSession(input: {
 function titleFromPrompt(prompt: string) {
   const normalized = prompt.replace(/\s+/g, " ").trim();
   return normalized.length > 52 ? `${normalized.slice(0, 51).trimEnd()}…` : normalized;
+}
+
+function queuedAttachmentStatus(attachments: readonly string[]) {
+  const count = attachments.length;
+  return `${count} attachment${count === 1 ? "" : "s"} queued for next turn`;
+}
+
+function queuedFollowUpStatus(queued: QueuedAgentFollowUp, failed: boolean) {
+  if (failed) {
+    return queued.delivery === "attachments"
+      ? "Couldn't send queued attachments"
+      : "Couldn't send queued follow-up";
+  }
+  if (queued.delivery === "attachments") {
+    return queuedAttachmentStatus(queued.attachments);
+  }
+  if (queued.steering) {
+    const steeringStatus =
+      queued.steering === "accepted" ? "Steering active run" : "Sending to active run";
+    return queued.attachments.length
+      ? `${steeringStatus}. ${queuedAttachmentStatus(queued.attachments)}`
+      : steeringStatus;
+  }
+  return "Queued follow-up";
+}
+
+function queuedFollowUpText(queued: QueuedAgentFollowUp) {
+  if (queued.delivery !== "attachments") return queued.prompt;
+  return queued.attachments.map((path) => path.split(/[\\/]/).pop() || path).join(", ");
+}
+
+function withQueuedSteering(
+  queued: QueuedAgentFollowUps,
+  sessionId: string,
+  messageId: string,
+  steering: QueuedAgentFollowUp["steering"],
+) {
+  const current = queued[sessionId];
+  if (
+    !current ||
+    current.messageId !== messageId ||
+    current.delivery === "attachments" ||
+    current.steering === steering
+  ) {
+    return queued;
+  }
+  const nextFollowUp = { ...current };
+  if (steering) nextFollowUp.steering = steering;
+  else delete nextFollowUp.steering;
+  return { ...queued, [sessionId]: nextFollowUp };
 }
 
 function artifactView(artifact: AgentArtifactDto): AgentArtifact {
@@ -669,13 +720,11 @@ export function AgentWorkspace({
           next.delete(payload.data.messageId);
           return next;
         });
-        updateQueuedFollowUps((current) => {
-          const queued = current[payload.sessionId];
-          if (queued?.messageId !== payload.data.messageId) return current;
-          const next = { ...current };
-          delete next[payload.sessionId];
-          return next;
-        });
+        updateQueuedFollowUps((current) =>
+          reconcileConsumedAgentFollowUp(current, payload.sessionId, [
+            `steering:${payload.data.messageId}`,
+          ]),
+        );
       }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
@@ -837,14 +886,44 @@ export function AgentWorkspace({
           attachments,
           model: agentRunModelId(model, costQuality),
           thinkingLevel,
+          delivery: "follow_up",
+          steering: "pending",
         },
       }));
       setComposerDraft("");
       setAttachments([]);
-      if (attachments.length === 0 && projection.run) {
+      if (projection.run) {
+        const activeRunId = projection.run.id;
         void agentRuntimeBindings
-          .steerRun(projection.run.id, messageId, prompt)
-          .catch(() => undefined);
+          .steerRun(activeRunId, messageId, prompt)
+          .then((result) => {
+            if (result.accepted) {
+              updateQueuedFollowUps((current) =>
+                withQueuedSteering(current, ownerSessionId, messageId, "accepted"),
+              );
+              return;
+            }
+            // biome-ignore lint/suspicious/noConsole: steering fallback needs a non-sensitive diagnostic
+            console.warn("Live steering was rejected; queued the full follow-up instead.", {
+              reason: result.reason ?? "unknown",
+              runId: activeRunId,
+              messageId,
+            });
+            updateQueuedFollowUps((current) =>
+              withQueuedSteering(current, ownerSessionId, messageId, undefined),
+            );
+          })
+          .catch((cause: unknown) => {
+            // biome-ignore lint/suspicious/noConsole: steering fallback needs a non-sensitive diagnostic
+            console.warn("Live steering failed; queued the full follow-up instead.", {
+              reason: messageFromError(cause),
+              runId: activeRunId,
+              messageId,
+            });
+            updateQueuedFollowUps((current) =>
+              withQueuedSteering(current, ownerSessionId, messageId, undefined),
+            );
+          });
       }
       return;
     }
@@ -2014,14 +2093,25 @@ export function AgentWorkspace({
               {queuedFollowUp ? (
                 <div className="agent-follow-up-row" role="status">
                   <span className="agent-follow-up-copy">
-                    <span className="agent-follow-up-announcement">Queued follow-up</span>
-                    <span className="agent-follow-up-text">{queuedFollowUp.prompt}</span>
+                    <span className="agent-follow-up-text">
+                      {queuedFollowUpText(queuedFollowUp)}
+                    </span>
+                    <span className="agent-follow-up-status">
+                      {queuedFollowUpStatus(
+                        queuedFollowUp,
+                        failedQueuedMessageIds.has(queuedFollowUp.messageId),
+                      )}
+                    </span>
                   </span>
                   <span className="agent-follow-up-actions">
                     {failedQueuedMessageIds.has(queuedFollowUp.messageId) ? (
                       <button
                         type="button"
-                        aria-label="Retry queued follow-up"
+                        aria-label={
+                          queuedFollowUp.delivery === "attachments"
+                            ? "Retry queued attachments"
+                            : "Retry queued follow-up"
+                        }
                         disabled={
                           running || waiting || submitting || Boolean(textActionsDisabledReason)
                         }
@@ -2041,7 +2131,11 @@ export function AgentWorkspace({
                     ) : null}
                     <button
                       type="button"
-                      aria-label="Remove queued follow-up"
+                      aria-label={
+                        queuedFollowUp.delivery === "attachments"
+                          ? "Remove queued attachments"
+                          : "Remove queued follow-up"
+                      }
                       onClick={() => {
                         if (!selectedId) return;
                         attemptedQueuedMessageIdsRef.current.delete(queuedFollowUp.messageId);
@@ -2553,7 +2647,7 @@ function AgentComposer({
                   <button
                     type="submit"
                     className="agent-composer-send"
-                    aria-label="Queue follow-up"
+                    aria-label="Steer active run"
                   >
                     <IconArrowUp size={18} />
                   </button>

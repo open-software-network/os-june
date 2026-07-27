@@ -6,9 +6,13 @@ export type QueuedAgentFollowUp = {
   attachments: string[];
   model: string;
   thinkingLevel: ThinkingLevel;
+  delivery?: "follow_up" | "attachments";
+  steering?: "pending" | "accepted";
 };
 
 export type QueuedAgentFollowUps = Record<string, QueuedAgentFollowUp>;
+
+export const ATTACHMENT_FOLLOW_UP_PROMPT = "Use these attachments with my previous instruction.";
 
 const STORAGE_KEY = "june.agent.queuedFollowUps";
 
@@ -25,7 +29,13 @@ function queuedFollowUp(value: unknown): QueuedAgentFollowUp | undefined {
     typeof record.model !== "string" ||
     !Array.isArray(record.attachments) ||
     !record.attachments.every((path) => typeof path === "string") ||
-    !isThinkingLevel(record.thinkingLevel)
+    !isThinkingLevel(record.thinkingLevel) ||
+    (record.delivery !== undefined &&
+      record.delivery !== "follow_up" &&
+      record.delivery !== "attachments") ||
+    (record.steering !== undefined &&
+      record.steering !== "pending" &&
+      record.steering !== "accepted")
   ) {
     return undefined;
   }
@@ -35,6 +45,8 @@ function queuedFollowUp(value: unknown): QueuedAgentFollowUp | undefined {
     attachments: record.attachments,
     model: record.model,
     thinkingLevel: record.thinkingLevel,
+    ...(record.delivery ? { delivery: record.delivery } : {}),
+    ...(record.steering ? { steering: record.steering } : {}),
   };
 }
 
@@ -67,16 +79,33 @@ export function saveQueuedAgentFollowUps(queued: QueuedAgentFollowUps) {
   }
 }
 
-/** Steering items are persisted as `steering:<messageId>`. Drop a restored
- * fallback once native history proves the active run consumed it. */
+/** Steering items are persisted as `steering:<messageId>`. Once native
+ * history proves the active run consumed the text, retire its full fallback
+ * while preserving any attachments as a contextual next turn. */
 export function reconcileConsumedAgentFollowUp(
   queued: QueuedAgentFollowUps,
   sessionId: string,
   itemIds: readonly string[],
 ): QueuedAgentFollowUps {
   const current = queued[sessionId];
-  if (!current || !itemIds.includes(`steering:${current.messageId}`)) return queued;
+  if (
+    !current ||
+    current.delivery === "attachments" ||
+    !itemIds.includes(`steering:${current.messageId}`)
+  ) {
+    return queued;
+  }
   const next = { ...queued };
-  delete next[sessionId];
+  if (current.attachments.length === 0) {
+    delete next[sessionId];
+    return next;
+  }
+  const attachmentsOnly: QueuedAgentFollowUp = {
+    ...current,
+    prompt: ATTACHMENT_FOLLOW_UP_PROMPT,
+    delivery: "attachments",
+  };
+  delete attachmentsOnly.steering;
+  next[sessionId] = attachmentsOnly;
   return next;
 }

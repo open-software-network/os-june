@@ -38,7 +38,10 @@ import {
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
-import { saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
+import {
+  ATTACHMENT_FOLLOW_UP_PROMPT,
+  saveQueuedAgentFollowUps,
+} from "../lib/agent-follow-up-queue";
 
 const session: AgentSessionDto = {
   id: "session-1",
@@ -151,6 +154,9 @@ describe("AgentWorkspace runtime wiring", () => {
           status: "running",
           model: "auto",
         });
+      }
+      if (command === "steer_agent_run") {
+        return Promise.resolve({ accepted: true });
       }
       return Promise.resolve(undefined);
     });
@@ -950,7 +956,7 @@ describe("AgentWorkspace runtime wiring", () => {
     const activeComposer = screen.getByRole("textbox", { name: "Message June" });
     activeComposer.textContent = "Use the launch plan";
     fireEvent.input(activeComposer);
-    await user.click(await screen.findByRole("button", { name: "Queue follow-up" }));
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
 
     const steerCall = mocks.invoke.mock.calls.find(([command]) => command === "steer_agent_run");
     expect(steerCall?.[1]).toMatchObject({
@@ -958,7 +964,7 @@ describe("AgentWorkspace runtime wiring", () => {
       text: "Use the launch plan",
       messageId: expect.any(String),
     });
-    expect(screen.getByText("Queued follow-up")).toBeVisible();
+    expect(await screen.findByText("Steering active run")).toBeVisible();
 
     act(() => {
       mocks.runtimeListener?.({
@@ -980,7 +986,151 @@ describe("AgentWorkspace runtime wiring", () => {
     });
 
     expect(await screen.findByText("Steering: Use the launch plan")).toBeVisible();
-    expect(screen.queryByText("Queued follow-up")).not.toBeInTheDocument();
+    expect(screen.queryByText("Steering active run")).not.toBeInTheDocument();
+  });
+
+  it("steers text with attachments and submits the attachments once after consumption", async () => {
+    const user = userEvent.setup();
+    mocks.openDialog.mockResolvedValue(["/tmp/brief.pdf"]);
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+
+    let composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Start the analysis");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await screen.findByRole("button", { name: "Stop June" });
+
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+    composer = screen.getByRole("textbox", { name: "Message June" });
+    composer.textContent = "Use the attached brief";
+    fireEvent.input(composer);
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+    const steerCall = mocks.invoke.mock.calls.find(([command]) => command === "steer_agent_run");
+    expect(steerCall?.[1]).toMatchObject({
+      runId: "run-1",
+      text: "Use the attached brief",
+      messageId: expect.any(String),
+    });
+    expect(
+      await screen.findByText("Steering active run. 1 attachment queued for next turn"),
+    ).toBeVisible();
+
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-steering-with-attachment",
+          sessionId: session.id,
+          runId: "run-1",
+          sequence: 3,
+          method: "steering.consumed",
+          data: {
+            itemId: "steering-with-attachment",
+            messageId: String((steerCall?.[1] as { messageId?: string })?.messageId),
+            text: "Use the attached brief",
+            createdAt: "2026-07-22T12:01:00Z",
+          },
+        },
+      });
+    });
+
+    expect(await screen.findByText("Steering: Use the attached brief")).toBeVisible();
+    expect(screen.getByText("1 attachment queued for next turn")).toBeVisible();
+    expect(screen.getByText("brief.pdf")).toBeVisible();
+
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-completed-after-attachment-steer",
+          sessionId: session.id,
+          runId: "run-1",
+          sequence: 4,
+          method: "run.completed",
+          data: { completedAt: "2026-07-22T12:02:00Z" },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      const starts = mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run");
+      expect(starts).toHaveLength(2);
+      expect(starts[1]?.[1]).toMatchObject({
+        request: expect.objectContaining({
+          prompt: ATTACHMENT_FOLLOW_UP_PROMPT,
+          attachments: ["/tmp/brief.pdf"],
+        }),
+      });
+    });
+    await act(async () => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
+    ).toHaveLength(2);
+  });
+
+  it("falls back to the full queued follow-up when steering is rejected", async () => {
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "steer_agent_run") {
+        return Promise.resolve({ accepted: false, reason: "not_active" });
+      }
+      return defaultInvoke?.(command, args);
+    });
+    mocks.openDialog.mockResolvedValue(["/tmp/brief.pdf"]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      const user = userEvent.setup();
+      render(<AgentWorkspace initialSession={session} />);
+      await screen.findByText("Earlier answer");
+
+      let composer = screen.getByRole("textbox", { name: "Message June" });
+      await user.type(composer, "Start the analysis");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      await screen.findByRole("button", { name: "Stop June" });
+
+      await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+      await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+      composer = screen.getByRole("textbox", { name: "Message June" });
+      composer.textContent = "Use the attached brief";
+      fireEvent.input(composer);
+      await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+      expect(await screen.findByText("Queued follow-up")).toBeVisible();
+      expect(warn).toHaveBeenCalledWith(
+        "Live steering was rejected; queued the full follow-up instead.",
+        expect.objectContaining({ reason: "not_active", messageId: expect.any(String) }),
+      );
+
+      act(() => {
+        mocks.runtimeListener?.({
+          payload: {
+            protocolVersion: 1,
+            eventId: "event-completed-after-rejected-steer",
+            sessionId: session.id,
+            runId: "run-1",
+            sequence: 3,
+            method: "run.completed",
+            data: { completedAt: "2026-07-22T12:02:00Z" },
+          },
+        });
+      });
+
+      await waitFor(() => {
+        const starts = mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run");
+        expect(starts).toHaveLength(2);
+        expect(starts[1]?.[1]).toMatchObject({
+          request: expect.objectContaining({
+            prompt: "Use the attached brief",
+            attachments: ["/tmp/brief.pdf"],
+          }),
+        });
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("submits an unconsumed live instruction as the next run after settlement", async () => {
@@ -1003,7 +1153,7 @@ describe("AgentWorkspace runtime wiring", () => {
     composer = screen.getByRole("textbox", { name: "Message June" });
     composer.textContent = "Send this next";
     fireEvent.input(composer);
-    await user.click(await screen.findByRole("button", { name: "Queue follow-up" }));
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
 
     await user.click(screen.getByRole("button", { name: "Model: Auto" }));
     await user.click(screen.getByRole("button", { name: "All models" }));
@@ -1078,12 +1228,16 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByText("follow-up.pdf")).toBeVisible();
     composer.textContent = "Only send this in session A";
     fireEvent.input(composer);
-    await user.click(await screen.findByRole("button", { name: "Queue follow-up" }));
-    expect(screen.getByText("Queued follow-up")).toBeVisible();
+    await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+    expect(
+      await screen.findByText("Steering active run. 1 attachment queued for next turn"),
+    ).toBeVisible();
 
     rerender(<AgentWorkspace initialSession={newSession} />);
     await waitFor(() => expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull());
-    expect(screen.queryByText("Queued follow-up")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Steering active run. 1 attachment queued for next turn"),
+    ).not.toBeInTheDocument();
 
     act(() => {
       mocks.runtimeListener?.({

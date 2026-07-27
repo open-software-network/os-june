@@ -6683,6 +6683,16 @@ button.agent-user-attachment:hover {
   white-space: nowrap;
 }
 
+.agent-follow-up-status {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-follow-up-announcement {
   position: absolute;
   width: 1px;

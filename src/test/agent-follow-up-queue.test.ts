@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  ATTACHMENT_FOLLOW_UP_PROMPT,
   loadQueuedAgentFollowUps,
   reconcileConsumedAgentFollowUp,
   saveQueuedAgentFollowUps,
@@ -12,6 +13,8 @@ const queued = {
     attachments: ["/tmp/brief.pdf"],
     model: "open-software/auto",
     thinkingLevel: "medium" as const,
+    delivery: "follow_up" as const,
+    steering: "accepted" as const,
   },
 };
 
@@ -24,7 +27,31 @@ describe("agent follow-up queue", () => {
   });
 
   it("drops a fallback once persisted history proves steering consumed it", () => {
-    expect(reconcileConsumedAgentFollowUp(queued, "session-1", ["steering:message-1"])).toEqual({});
+    const textOnly = {
+      "session-1": {
+        ...queued["session-1"],
+        attachments: [],
+      },
+    };
+    expect(reconcileConsumedAgentFollowUp(textOnly, "session-1", ["steering:message-1"])).toEqual(
+      {},
+    );
+    expect(reconcileConsumedAgentFollowUp(textOnly, "session-1", ["steering:other"])).toBe(
+      textOnly,
+    );
+  });
+
+  it("keeps pending attachments after steering consumes the text", () => {
+    expect(reconcileConsumedAgentFollowUp(queued, "session-1", ["steering:message-1"])).toEqual({
+      "session-1": {
+        messageId: "message-1",
+        prompt: ATTACHMENT_FOLLOW_UP_PROMPT,
+        attachments: ["/tmp/brief.pdf"],
+        model: "open-software/auto",
+        thinkingLevel: "medium",
+        delivery: "attachments",
+      },
+    });
     expect(reconcileConsumedAgentFollowUp(queued, "session-1", ["steering:other"])).toBe(queued);
   });
 
