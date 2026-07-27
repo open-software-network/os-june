@@ -177,6 +177,12 @@ pub fn meeting_hud_set_end_prompt_expanded(
     };
     if expanded {
         set_orientation(&hud, false, false);
+        // The stored zone must track the forced-horizontal card so that
+        // `apply_zone_now` re-derives the side zone on collapse and re-applies
+        // its quarter turn (Center is the horizontal zone).
+        if let Ok(mut guard) = state.zone.lock() {
+            *guard = Zone::Center;
+        }
         hud.set_size(END_PROMPT_WINDOW_SIZE)
             .map_err(|error| error.to_string())?;
         set_end_prompt_surface(&hud, true);
