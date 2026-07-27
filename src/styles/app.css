@@ -12659,10 +12659,19 @@ button.agent-user-attachment:hover {
    * meter drives --level per frame; the 24ms transition smooths sub-frame steps
    * (sharpened from 40ms to match the HUD so the carrier shimmer reads crisp). */
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--foreground);
   transform: translateY(50%) scaleY(calc(0.1 + var(--level, 0) * 0.8));
   transition: transform 18ms linear;
+}
+
+/* Scaling the whole pill also flattens its corner radius, so the in-note bars
+ * read nearly square. A rounded inset clip changes the visible height while
+ * preserving the 3px capsule caps and the same 10%-to-90% level range. */
+.recorder-bar .waveform span::before {
+  clip-path: inset(calc(45% - var(--level, 0) * 40%) 0 round var(--r-pill));
+  transform: translateY(50%);
+  transition: clip-path 18ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {
