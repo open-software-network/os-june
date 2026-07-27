@@ -250,7 +250,7 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
 
 const HOME_CONVERSATION_GREETING =
   /^(?:(?:hi|hey|hello)(?: there| again)?|(?:good )?(?:morning|afternoon|evening)|greetings|good to see you)(?: june)?$/u;
-const HOME_CONVERSATION_HELLO_FROM = /^hello\s+from\s+(.+?)[.!?]*$/iu;
+const HOME_CONVERSATION_HELLO_FROM = /^hello\s+from\s+(.+?)[\p{P}\p{S}\s]*$/iu;
 const HOME_CONVERSATION_LOCATION_CONNECTORS = new Set([
   "da",
   "de",
@@ -476,12 +476,9 @@ export function isHomeTaskReplayWithoutNewIntent(
   if (homeConversationGreetingReply(latestMessage)) return true;
   const grounding = latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs);
   if (grounding.taskUsesNovelGrounding) return false;
+  if (HOME_TASK_POSITIVE_NEGATION_EXCEPTION.test(intentText)) return false;
   if (negatesRepeat || negatesContext || negatesAction) return true;
-  if (
-    HOME_TASK_POSITIVE_NEGATION_EXCEPTION.test(intentText) ||
-    HOME_TASK_REPEAT_REQUEST.test(intentText) ||
-    HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)
-  ) {
+  if (HOME_TASK_REPEAT_REQUEST.test(intentText) || HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)) {
     return false;
   }
   if (grounding.hasNovelGrounding) return true;

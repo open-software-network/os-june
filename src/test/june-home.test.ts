@@ -248,6 +248,7 @@ describe("June Home", () => {
       "Greetings, June",
       "Good to see you, June",
       "Hello from Stockholm",
+      "Hello from Paris 👋",
       "hello from New York",
       "Morning June",
       "Good morning, June.",
@@ -429,7 +430,7 @@ describe("June Home", () => {
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Flight booking", prompt: "Book that flight." },
-        "Don't forget to book that flight",
+        "Don't forget to book that flight again",
         [
           {
             id: "home-task-flight",
