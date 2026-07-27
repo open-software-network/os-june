@@ -476,6 +476,18 @@ function setCancelHover(isHovered: boolean) {
 // Standalone browser demos own their key events. Native helpers must
 // explicitly advertise a global Escape monitor before the HUD teaches it.
 let escapeCancelAvailable = !HAS_TAURI_BRIDGE;
+let activeDictationTakeId: string | undefined;
+
+function dictationTakeId(event: DictationHudEvent) {
+  const takeId = event.payload?.takeId;
+  return typeof takeId === "string" && takeId.trim().length > 0 && takeId.length <= 128
+    ? takeId.trim()
+    : undefined;
+}
+
+function correlatedHelperCommand(type: "stop_and_paste" | "discard_recording") {
+  return activeDictationTakeId ? { type, takeId: activeDictationTakeId } : { type };
+}
 
 function setCancelTooltipHover(isHovered: boolean) {
   setEscTipVisible(isHovered && escapeCancelAvailable && hud?.dataset.state === "listening");
@@ -1017,6 +1029,7 @@ async function handleDictationEventPayload(payload: unknown) {
   if (!dictationEvent) return;
 
   if (dictationEvent.type === "listening_started") {
+    activeDictationTakeId = dictationTakeId(dictationEvent);
     escapeCancelAvailable =
       !HAS_TAURI_BRIDGE || dictationEvent.payload?.escapeCancelAvailable === true;
     resetBars();
@@ -1053,6 +1066,8 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "finalizing_transcript") {
+    const takeId = dictationTakeId(dictationEvent);
+    if (activeDictationTakeId && takeId && takeId !== activeDictationTakeId) return;
     // Drop any level still queued from listening so it can't push a stray
     // sample into the meter after we've moved on to transcribing.
     cancelPendingAudioLevel();
@@ -1085,11 +1100,15 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "paste_completed") {
+    activeDictationTakeId = undefined;
     void hideHud();
     return;
   }
 
   if (dictationEvent.type === "recording_discarded") {
+    const takeId = dictationTakeId(dictationEvent);
+    if (activeDictationTakeId && takeId && takeId !== activeDictationTakeId) return;
+    activeDictationTakeId = undefined;
     // A grazed push-to-talk key or a signed-out session: the recording was
     // dropped without transcription, so the listening HUD just goes away.
     void hideHud();
@@ -1384,7 +1403,7 @@ stopButton?.addEventListener("click", async (event) => {
   }
   try {
     await invoke("dictation_helper_command", {
-      command: { type: "stop_and_paste" },
+      command: correlatedHelperCommand("stop_and_paste"),
     });
   } catch {
     if (lifecycle.signal.aborted) return;
@@ -1411,7 +1430,7 @@ async function cancelDictation() {
   setCancelTooltipHover(false);
   try {
     await invoke("dictation_helper_command", {
-      command: { type: "discard_recording" },
+      command: correlatedHelperCommand("discard_recording"),
     });
   } catch {
     if (!lifecycle.signal.aborted) triggerShake();

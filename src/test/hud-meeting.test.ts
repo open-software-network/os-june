@@ -734,6 +734,22 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).not.toHaveBeenCalled();
   });
 
+  it("correlates the stop command with the visible take", async () => {
+    await loadHud();
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { takeId: "take-1" },
+    });
+    mocks.invoke.mockClear();
+
+    document.querySelector<HTMLButtonElement>("#hud-stop")?.click();
+    await Promise.resolve();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "stop_and_paste", takeId: "take-1" },
+    });
+  });
+
   it("starts a fresh waveform loop after a hidden webview stalls the previous frame", async () => {
     const pendingFrameIds: number[] = [];
     let nextFrameId = 1;
@@ -772,21 +788,48 @@ describe("meeting detection HUD", () => {
   it("discards the recording when the cancel X is clicked", async () => {
     vi.useFakeTimers();
     await loadHud();
-    await emit("dictation-event", { type: "listening_started" });
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { takeId: "take-1" },
+    });
     mocks.invoke.mockClear();
 
     document.querySelector<HTMLButtonElement>("#hud-cancel")?.click();
     await Promise.resolve();
     expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
-      command: { type: "discard_recording" },
+      command: { type: "discard_recording", takeId: "take-1" },
     });
     expect(hudElement().dataset.state).toBe("listening");
     expect(mocks.hide).not.toHaveBeenCalled();
 
-    await emit("dictation-event", { type: "recording_discarded" });
+    await emit("dictation-event", {
+      type: "recording_discarded",
+      payload: { takeId: "take-1" },
+    });
     await vi.advanceTimersByTimeAsync(320);
 
     expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a stale discard hide a replacement take", async () => {
+    await loadHud();
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { takeId: "take-1" },
+    });
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { takeId: "take-2" },
+    });
+    mocks.hide.mockClear();
+
+    await emit("dictation-event", {
+      type: "recording_discarded",
+      payload: { takeId: "take-1" },
+    });
+
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
   });
 
   it("keeps an active recording visible when the cancel command fails", async () => {

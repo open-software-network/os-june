@@ -1867,7 +1867,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+      await dictationHelperCommand({ type: "start_listening" });
     } catch (cause) {
       setError(messageFromError(cause));
     }

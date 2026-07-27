@@ -1871,7 +1871,10 @@ final class DictationController {
         }
     }
 
-    func stop() {
+    func stop(takeID: String? = nil) {
+        if let takeID, activeTakeID != takeID {
+            return
+        }
         // A stop that lands while a start is still waiting on the permission
         // prompt cancels that start (a grazed push-to-talk key, or the prompt
         // never calling back); erroring not_listening here would wedge the
@@ -1897,7 +1900,7 @@ final class DictationController {
     func toggle(shortcut: String, takeID: String? = nil) {
         if isListening || startPending {
             emit("hotkey_trigger", ["action": "stop", "shortcut": shortcut])
-            stop()
+            stop(takeID: takeID)
         } else if !isFinalizing {
             emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
             start(takeID: takeID)
@@ -2645,8 +2648,9 @@ func handleCommandLine(_ line: String) {
             dictation.start(takeID: takeID)
         }
     case "stop_and_paste":
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.stop()
+            dictation.stop(takeID: takeID)
         }
     case "start_mic_test":
         let durationSeconds = command?["durationSeconds"] as? Double

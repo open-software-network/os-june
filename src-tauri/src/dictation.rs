@@ -282,7 +282,7 @@ enum DictationFinalizedTake {
 #[derive(Default)]
 pub struct DictationTakeState {
     current: Mutex<Option<DictationTakeToken>>,
-    start_attempt_generation: Mutex<u64>,
+    helper_command_generation: Mutex<u64>,
 }
 
 impl DictationTakeState {
@@ -346,22 +346,31 @@ impl DictationTakeState {
         current.as_ref().is_some_and(DictationTakeToken::cancel)
     }
 
-    fn run_new_start_attempt<T>(&self, operation: impl FnOnce() -> T) -> (u64, T) {
+    fn current_take_id(&self) -> Option<String> {
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|take| take.id().to_string())
+    }
+
+    fn run_new_helper_command<T>(&self, operation: impl FnOnce(u64) -> T) -> (u64, T) {
         let mut generation = self
-            .start_attempt_generation
+            .helper_command_generation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *generation = generation.wrapping_add(1);
-        (*generation, operation())
+        let current = *generation;
+        (current, operation(current))
     }
 
-    fn run_new_start_attempt_if<P, T>(
+    fn run_new_helper_command_if<P, T>(
         &self,
         prepare: impl FnOnce() -> Option<P>,
         operation: impl FnOnce(u64, P) -> T,
     ) -> Option<(u64, T)> {
         let mut generation = self
-            .start_attempt_generation
+            .helper_command_generation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let prepared = prepare()?;
@@ -370,13 +379,13 @@ impl DictationTakeState {
         Some((current, operation(current, prepared)))
     }
 
-    fn run_if_current_start_attempt<T>(
+    fn run_if_current_helper_command<T>(
         &self,
         expected_generation: u64,
         operation: impl FnOnce() -> T,
     ) -> Option<T> {
         let generation = self
-            .start_attempt_generation
+            .helper_command_generation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (*generation == expected_generation).then(operation)
@@ -921,6 +930,33 @@ impl ShortcutActivationController {
         self.helper_take_id = Some(take_id.to_string());
     }
 
+    fn prepare_renderer_command(
+        &mut self,
+        command_type: &str,
+        requested_take_id: Option<String>,
+        current_take_id: Option<String>,
+    ) -> (bool, Option<String>) {
+        let starts_recording = command_type == "start_listening"
+            || (command_type == "toggle_listening" && !self.helper_is_listening);
+        let active_take_id = self.helper_take_id.clone().or(current_take_id);
+        let take_id = requested_take_id.or_else(|| {
+            starts_recording
+                .then(|| uuid::Uuid::new_v4().to_string())
+                .or(active_take_id)
+        });
+
+        if helper_command_type_resets_shortcut_activation(command_type) {
+            self.reset();
+        }
+        if starts_recording {
+            if let Some(take_id) = take_id.as_deref() {
+                self.prepare_helper_start(take_id);
+            }
+        }
+
+        (starts_recording, take_id)
+    }
+
     fn reset_for_helper_discard(&mut self, take_id: Option<&str>, reason: Option<&str>) -> bool {
         let matches_active_take = match take_id {
             Some(take_id) => self.helper_take_id.as_deref() == Some(take_id),
@@ -1411,9 +1447,6 @@ pub fn dictation_helper_command(
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .to_string();
-    if command_type == "discard_recording" {
-        cancel_current_dictation_take(&app);
-    }
     if matches!(
         command_type.as_str(),
         "register_composer_delivery" | "unregister_composer_delivery"
@@ -1481,10 +1514,6 @@ pub fn dictation_helper_command(
         }
         command
     };
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if helper_command_resets_shortcut_activation(&command) {
-        reset_shortcut_activation(&app);
-    }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if state
@@ -1498,20 +1527,49 @@ pub fn dictation_helper_command(
 
     if matches!(
         command_type.as_str(),
-        "start_listening" | "toggle_listening"
+        "start_listening" | "stop_and_paste" | "discard_recording" | "toggle_listening"
     ) {
-        let mut command = command;
-        if command.get("takeId").is_none() {
-            if let Some(object) = command.as_object_mut() {
-                object.insert(
-                    "takeId".into(),
-                    serde_json::json!(uuid::Uuid::new_v4().to_string()),
-                );
-            }
-        }
         if let Some(take_state) = app.try_state::<DictationTakeState>() {
-            let (_, result) =
-                take_state.run_new_start_attempt(|| send_helper_command(&state, command));
+            let (_, result) = take_state.run_new_helper_command(|_| {
+                let current_take_id = take_state.current_take_id();
+                let requested_take_id = command
+                    .get("takeId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let (_, take_id) = app
+                    .try_state::<ShortcutActivationState>()
+                    .and_then(|activation| {
+                        activation.controller.lock().ok().map(|mut controller| {
+                            controller.prepare_renderer_command(
+                                &command_type,
+                                requested_take_id.clone(),
+                                current_take_id.clone(),
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        let starts_recording = matches!(
+                            command_type.as_str(),
+                            "start_listening" | "toggle_listening"
+                        );
+                        let take_id = requested_take_id.or_else(|| {
+                            starts_recording
+                                .then(|| uuid::Uuid::new_v4().to_string())
+                                .or(current_take_id)
+                        });
+                        (starts_recording, take_id)
+                    });
+
+                let mut command = command;
+                if let (Some(take_id), Some(object)) = (take_id.as_deref(), command.as_object_mut())
+                {
+                    object.insert("takeId".into(), serde_json::json!(take_id));
+                }
+                if command_type == "discard_recording" {
+                    cancel_dictation_take(&app, take_id.as_deref());
+                }
+                send_helper_command(&state, command)
+            });
             return result;
         }
         return send_helper_command(&state, command);
@@ -1550,10 +1608,10 @@ fn is_foreground_window_handle(_window_handle: isize) -> bool {
     false
 }
 
-fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> bool {
+fn helper_command_type_resets_shortcut_activation(command_type: &str) -> bool {
     matches!(
-        command.get("type").and_then(serde_json::Value::as_str),
-        Some("stop_and_paste" | "discard_recording" | "toggle_listening")
+        command_type,
+        "stop_and_paste" | "discard_recording" | "toggle_listening"
     )
 }
 
@@ -2586,40 +2644,43 @@ fn handle_shortcut_key_event(
                 state.controller.lock().ok().and_then(|mut state| {
                     let command = state.handle_edge(edge, kind, Instant::now())?;
                     let starts_recording = state.command_starts_recording(command);
-                    let start_take_id = starts_recording.then(|| uuid::Uuid::new_v4().to_string());
-                    if let Some(take_id) = start_take_id.as_deref() {
+                    let command_take_id = if starts_recording {
+                        Some(uuid::Uuid::new_v4().to_string())
+                    } else {
+                        state.helper_take_id.clone()
+                    };
+                    if let Some(take_id) = command_take_id.as_deref().filter(|_| starts_recording) {
                         state.prepare_helper_start(take_id);
                     }
-                    Some((command, starts_recording, start_take_id))
+                    Some((command, starts_recording, command_take_id))
                 })
             })
     };
 
-    if matches!(edge, ShortcutKeyEdge::Down) {
-        if let Some(take_state) = app.try_state::<DictationTakeState>() {
-            take_state.run_new_start_attempt_if(prepare_action, |start_attempt, action| {
-                let (command, starts_recording, start_take_id) = action;
-                send_dictation_command(
-                    app,
-                    command,
-                    &shortcut.label,
-                    starts_recording,
-                    Some(start_attempt),
-                    start_take_id,
-                );
-            });
-            return;
-        }
+    if let Some(take_state) = app.try_state::<DictationTakeState>() {
+        take_state.run_new_helper_command_if(prepare_action, |start_attempt, action| {
+            let (command, starts_recording, command_take_id) = action;
+            let command_take_id = command_take_id.or_else(|| take_state.current_take_id());
+            send_dictation_command(
+                app,
+                command,
+                &shortcut.label,
+                starts_recording,
+                Some(start_attempt),
+                command_take_id,
+            );
+        });
+        return;
     }
 
-    if let Some((command, starts_recording, start_take_id)) = prepare_action() {
+    if let Some((command, starts_recording, command_take_id)) = prepare_action() {
         send_dictation_command(
             app,
             command,
             &shortcut.label,
             starts_recording,
             None,
-            start_take_id,
+            command_take_id,
         );
     }
 }
@@ -2656,6 +2717,21 @@ fn dictation_take_id_from_event(event: &serde_json::Value) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|id| !id.is_empty() && id.len() <= 128)
+}
+
+fn dictation_discard_reason_from_event(event: &serde_json::Value) -> Option<&str> {
+    event
+        .get("payload")
+        .and_then(|payload| payload.get("reason"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn helper_discard_cancellation_target(event: &serde_json::Value) -> Option<Option<&str>> {
+    let take_id = dictation_take_id_from_event(event);
+    // New helpers include a reason on terminal events that do not belong to
+    // an active take. Do not let that idle echo cancel crash-recovery work
+    // still owned by Rust. A reasonless event retains legacy compatibility.
+    (take_id.is_some() || dictation_discard_reason_from_event(event).is_none()).then_some(take_id)
 }
 
 fn begin_dictation_take(app: &AppHandle, event: &serde_json::Value) {
@@ -2716,10 +2792,7 @@ fn clear_shortcut_helper_take(app: &AppHandle) {
 
 fn reset_shortcut_for_helper_discard(app: &AppHandle, event: &serde_json::Value) {
     let take_id = dictation_take_id_from_event(event);
-    let reason = event
-        .get("payload")
-        .and_then(|payload| payload.get("reason"))
-        .and_then(serde_json::Value::as_str);
+    let reason = dictation_discard_reason_from_event(event);
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
             controller.reset_for_helper_discard(take_id, reason);
@@ -2733,7 +2806,7 @@ fn send_dictation_command(
     shortcut_label: &str,
     starts_recording: bool,
     start_attempt: Option<u64>,
-    start_take_id: Option<String>,
+    command_take_id: Option<String>,
 ) {
     // The start path needs a signed-in OS Accounts session for the
     // transcription that follows, but the token check must not sit between
@@ -2752,7 +2825,7 @@ fn send_dictation_command(
         command,
         shortcut_label,
         starts_recording,
-        start_take_id.as_deref(),
+        command_take_id.as_deref(),
     );
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
@@ -2775,13 +2848,13 @@ fn send_dictation_command(
                     let Some(take_state) = app.try_state::<DictationTakeState>() else {
                         return;
                     };
-                    let _ = take_state.run_if_current_start_attempt(start_attempt, || {
+                    let _ = take_state.run_if_current_helper_command(start_attempt, || {
                         let forwarded = forward_dictation_command(
                             &app,
                             DictationCommand::DiscardListening,
                             &label,
                             false,
-                            None,
+                            command_take_id.as_deref(),
                         );
                         reset_shortcut_activation(&app);
                         notify_dictation_not_signed_in(&app);
@@ -2798,10 +2871,10 @@ fn forward_dictation_command(
     command: DictationCommand,
     shortcut_label: &str,
     starts_recording: bool,
-    start_take_id: Option<&str>,
+    command_take_id: Option<&str>,
 ) -> bool {
     if matches!(command, DictationCommand::DiscardListening) {
-        cancel_current_dictation_take(app);
+        cancel_dictation_take(app, command_take_id);
     }
     let Some(state) = app.try_state::<HelperState>() else {
         emit_dictation_event_value(
@@ -2815,10 +2888,8 @@ fn forward_dictation_command(
     };
 
     let mut helper_command = command.helper_command(shortcut_label);
-    if starts_recording {
-        if let (Some(take_id), Some(object)) = (start_take_id, helper_command.as_object_mut()) {
-            object.insert("takeId".into(), serde_json::json!(take_id));
-        }
+    if let (Some(take_id), Some(object)) = (command_take_id, helper_command.as_object_mut()) {
+        object.insert("takeId".into(), serde_json::json!(take_id));
     }
     let mut composer_request_id = None;
     if starts_recording {
@@ -4257,7 +4328,9 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     match (event_type, event.as_ref()) {
         (Some("listening_started"), Some(event)) => begin_dictation_take(app, event),
         (Some("recording_discarded"), Some(event)) => {
-            cancel_dictation_take(app, dictation_take_id_from_event(event));
+            if let Some(take_id) = helper_discard_cancellation_target(event) {
+                cancel_dictation_take(app, take_id);
+            }
         }
         (Some("recording_discarded"), None) => cancel_current_dictation_take(app),
         _ => {}
@@ -8238,6 +8311,29 @@ mod tests {
     }
 
     #[test]
+    fn reasoned_untagged_discard_does_not_cancel_crash_recovery_work() {
+        let idle_echo = serde_json::json!({
+            "type": "recording_discarded",
+            "payload": { "reason": "not_listening" },
+        });
+        let tagged = serde_json::json!({
+            "type": "recording_discarded",
+            "payload": { "takeId": "take-a", "reason": "command" },
+        });
+        let legacy = serde_json::json!({
+            "type": "recording_discarded",
+            "payload": {},
+        });
+
+        assert_eq!(helper_discard_cancellation_target(&idle_echo), None);
+        assert_eq!(
+            helper_discard_cancellation_target(&tagged),
+            Some(Some("take-a"))
+        );
+        assert_eq!(helper_discard_cancellation_target(&legacy), Some(None));
+    }
+
+    #[test]
     fn legacy_untagged_discard_still_resets_the_shortcut() {
         let mut controller = ShortcutActivationController::default();
         let down = Instant::now();
@@ -8570,18 +8666,32 @@ mod tests {
 
     #[test]
     fn direct_helper_listening_commands_reset_shortcut_activation() {
-        assert!(helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "stop_and_paste" })
+        assert!(helper_command_type_resets_shortcut_activation(
+            "stop_and_paste"
         ));
-        assert!(helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "discard_recording" })
+        assert!(helper_command_type_resets_shortcut_activation(
+            "discard_recording"
         ));
-        assert!(helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "toggle_listening" })
+        assert!(helper_command_type_resets_shortcut_activation(
+            "toggle_listening"
         ));
-        assert!(!helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "start_shortcut_capture" })
+        assert!(!helper_command_type_resets_shortcut_activation(
+            "start_shortcut_capture"
         ));
+    }
+
+    #[test]
+    fn direct_terminal_command_keeps_the_active_take_id_before_reset() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+
+        let (starts_recording, take_id) =
+            controller.prepare_renderer_command("discard_recording", None, None);
+
+        assert!(!starts_recording);
+        assert_eq!(take_id.as_deref(), Some("take-a"));
+        assert!(controller.helper_take_id.is_none());
+        assert!(controller.helper_is_listening);
     }
 
     #[cfg(target_os = "windows")]
@@ -9224,15 +9334,15 @@ mod tests {
     }
 
     #[test]
-    fn a_new_start_attempt_invalidates_an_older_auth_result() {
+    fn a_new_helper_command_invalidates_an_older_auth_result() {
         let state = DictationTakeState::default();
-        let (first, ()) = state.run_new_start_attempt(|| ());
-        assert!(state.run_if_current_start_attempt(first, || ()).is_some());
+        let (first, ()) = state.run_new_helper_command(|_| ());
+        assert!(state.run_if_current_helper_command(first, || ()).is_some());
 
-        let (second, ()) = state.run_new_start_attempt(|| ());
+        let (second, ()) = state.run_new_helper_command(|_| ());
 
-        assert!(state.run_if_current_start_attempt(first, || ()).is_none());
-        assert!(state.run_if_current_start_attempt(second, || ()).is_some());
+        assert!(state.run_if_current_helper_command(first, || ()).is_none());
+        assert!(state.run_if_current_helper_command(second, || ()).is_some());
     }
 
     #[test]
@@ -9241,13 +9351,13 @@ mod tests {
 
         let state = Arc::new(DictationTakeState::default());
         let controller = Arc::new(Mutex::new(ShortcutActivationController::default()));
-        let (first, ()) = state.run_new_start_attempt(|| ());
+        let (first, ()) = state.run_new_helper_command(|_| ());
         let (auth_entered_tx, auth_entered_rx) = mpsc::channel();
         let (release_auth_tx, release_auth_rx) = mpsc::channel();
         let auth_state = Arc::clone(&state);
         let auth_controller = Arc::clone(&controller);
         let auth = thread::spawn(move || {
-            let result = auth_state.run_if_current_start_attempt(first, || {
+            let result = auth_state.run_if_current_helper_command(first, || {
                 auth_entered_tx
                     .send(())
                     .expect("test should observe the auth discard");
@@ -9274,7 +9384,7 @@ mod tests {
                 .send(())
                 .expect("test should observe the replacement start attempt");
             let (generation, ()) = start_state
-                .run_new_start_attempt_if(
+                .run_new_helper_command_if(
                     || {
                         let mut controller = start_controller
                             .lock()
@@ -9328,6 +9438,65 @@ mod tests {
                 ),
             Some(DictationCommand::StopAndPaste)
         );
+    }
+
+    #[test]
+    fn replacement_start_waits_for_a_terminal_control_write() {
+        use std::sync::mpsc;
+
+        let state = Arc::new(DictationTakeState::default());
+        state.begin("take-a".to_string());
+        let (terminal_entered_tx, terminal_entered_rx) = mpsc::channel();
+        let (release_terminal_tx, release_terminal_rx) = mpsc::channel();
+        let terminal_state = Arc::clone(&state);
+        let terminal = thread::spawn(move || {
+            terminal_state
+                .run_new_helper_command(|_| {
+                    let take_id = terminal_state.current_take_id();
+                    terminal_entered_tx
+                        .send(())
+                        .expect("test should observe the terminal control");
+                    release_terminal_rx
+                        .recv()
+                        .expect("test should release the terminal control");
+                    take_id
+                })
+                .1
+        });
+        terminal_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal control should acquire the command generation lock");
+
+        let (start_entered_tx, start_entered_rx) = mpsc::channel();
+        let replacement_state = Arc::clone(&state);
+        let replacement = thread::spawn(move || {
+            replacement_state.run_new_helper_command(|_| {
+                start_entered_tx
+                    .send(())
+                    .expect("test should observe the replacement start");
+            });
+        });
+        assert!(matches!(
+            start_entered_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_terminal_tx
+            .send(())
+            .expect("test should release the terminal control");
+        assert_eq!(
+            terminal
+                .join()
+                .expect("terminal control thread should finish")
+                .as_deref(),
+            Some("take-a")
+        );
+        start_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement start should run after the terminal write");
+        replacement
+            .join()
+            .expect("replacement start thread should finish");
     }
 
     #[tokio::test]

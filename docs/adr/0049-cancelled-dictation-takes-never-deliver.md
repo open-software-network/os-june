@@ -44,24 +44,27 @@ request must not cancel or deliver into the new take.
   the point of no return: a later discard can still make the helper reject
   text, but it does not retroactively cancel local side effects already
   authorized by a delivery claim that won first.
-- Start-time authentication cancellation and replacement starts share one
-  generation lock. June validates the authentication result, writes its
-  discard, resets the matching shortcut activation, and opens the sign-in
-  surface while holding that lock. Every shortcut start or toggle performs
-  its controller transition, advances the generation, and writes its helper
-  command under the same lock. A stale signed-out result therefore cannot
-  enqueue a discard or reset state behind a newer start.
+- Start-time authentication cancellation and all interactive helper controls
+  share one generation lock. June validates the authentication result, writes
+  its discard, resets the matching shortcut activation, and opens the sign-in
+  surface while holding that lock. Start, stop, discard, and toggle controls
+  snapshot their target take, update shortcut state, advance the generation,
+  and write the helper command under the same lock. A stale signed-out result
+  or delayed terminal-control write therefore cannot enqueue a discard, stop,
+  or state reset behind a newer start.
 - Every terminal helper command carries the `takeId`. A helper that processed
   a discard remembers that ID for its process lifetime and silently rejects
-  later text for it. Tagged text and discard commands cannot affect a
-  different active or pending take. Rust also clears the previous helper take
-  correlation before writing a replacement start, so a delayed discard event
-  cannot reset the replacement shortcut. New helpers explain untagged
-  terminal events with a reason; events with neither a take ID nor a reason
-  retain the older-helper reset behavior. Missing IDs remain accepted for
-  compatibility with an older app or helper. A replacement helper with no
-  active take keeps ADR-0014's clipboard recovery behavior for work that
-  survived a helper crash.
+  later text for it. Tagged text, stop, and discard commands cannot affect a
+  different active or pending take. The Dictation HUD sends the take ID it is
+  displaying and ignores a tagged discard from an older take. Rust also clears
+  the previous helper take correlation before writing a replacement start, so
+  a delayed discard event cannot reset the replacement shortcut. New helpers
+  explain untagged terminal events with a reason; events with neither a take
+  ID nor a reason retain the older-helper reset behavior. A reasoned, untagged
+  idle event does not cancel crash-recovery work still owned by Rust. Missing
+  IDs remain accepted for compatibility with an older app or helper. A
+  replacement helper with no active take keeps ADR-0014's clipboard recovery
+  behavior for work that survived a helper crash.
 
 ## Consequences
 

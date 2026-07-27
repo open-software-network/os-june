@@ -272,10 +272,10 @@ impl HelperApp {
                 command.june_window_handle,
                 command.take_id,
             ),
-            "stop_and_paste" => self.stop_and_paste(),
+            "stop_and_paste" => self.stop_and_paste(command.take_id),
             "toggle_listening" => {
                 if self.recorder.is_some() {
-                    self.stop_and_paste();
+                    self.stop_and_paste(command.take_id);
                 } else {
                     self.start_listening(
                         command.composer_request_id,
@@ -428,7 +428,10 @@ impl HelperApp {
             && (composer_request_id.is_none() || self.pending_composer_ack.is_none())
     }
 
-    fn stop_and_paste(&mut self) {
+    fn stop_and_paste(&mut self, take_id: Option<String>) {
+        if !accepts_dictation_take_control(self.active_take_id.as_deref(), take_id.as_deref()) {
+            return;
+        }
         let Some(recorder) = self.recorder.take() else {
             if self.awaiting_transcript {
                 return;
@@ -842,7 +845,7 @@ impl HelperApp {
     }
 
     fn discard_recording(&mut self, take_id: Option<String>) {
-        if !accepts_dictation_take_discard(self.active_take_id.as_deref(), take_id.as_deref()) {
+        if !accepts_dictation_take_control(self.active_take_id.as_deref(), take_id.as_deref()) {
             return;
         }
         let cancelled_take_id = self.active_take_id.take();
@@ -899,7 +902,7 @@ impl HelperApp {
     }
 }
 
-fn accepts_dictation_take_discard(
+fn accepts_dictation_take_control(
     active_take_id: Option<&str>,
     incoming_take_id: Option<&str>,
 ) -> bool {
@@ -1086,17 +1089,17 @@ mod tests {
     }
 
     #[test]
-    fn tagged_discard_only_targets_the_matching_active_take() {
-        assert!(accepts_dictation_take_discard(
+    fn tagged_terminal_control_only_targets_the_matching_active_take() {
+        assert!(accepts_dictation_take_control(
             Some("take-1"),
             Some("take-1")
         ));
-        assert!(!accepts_dictation_take_discard(
+        assert!(!accepts_dictation_take_control(
             Some("take-2"),
             Some("take-1")
         ));
-        assert!(!accepts_dictation_take_discard(None, Some("take-1")));
-        assert!(accepts_dictation_take_discard(Some("take-1"), None));
+        assert!(!accepts_dictation_take_control(None, Some("take-1")));
+        assert!(accepts_dictation_take_control(Some("take-1"), None));
     }
 
     fn restore_with_expiry(
