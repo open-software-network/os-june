@@ -428,6 +428,9 @@ describe("AgentWorkspace runtime wiring", () => {
     rejectHome?.(new Error("Home is temporarily unavailable"));
 
     expect(await screen.findByText("First message")).toBeVisible();
+    const errorNotice = await screen.findByRole("alert");
+    expect(errorNotice).toHaveTextContent("Home is temporarily unavailable");
+    expect(errorNotice.closest(".agent-composer")).not.toBeNull();
     await waitFor(() =>
       expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent("New draft"),
     );
