@@ -157,6 +157,7 @@ import {
   compareHomeTurnOrder,
   enqueueHomeDirectChat,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
   homeConversationContextFromTurns,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
@@ -1568,15 +1569,17 @@ export function AgentWorkspace({
         priorDirectTurns,
         readHomeTaskHandoffs(storedSessionId),
       );
+      const greetingReply = homeConversationGreetingReply(message);
+      const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
 
-      if (acknowledgesTaskHandoff && messageAttachments.length === 0) {
+      if (directConversationReply && messageAttachments.length === 0) {
         const assistantTurn: AgentChatTurn = {
           id: `home:direct:assistant:${suffix}`,
           role: "assistant",
           createdAt: new Date().toISOString(),
           status: "complete",
-          parts: [{ type: "text", text: "Got it.", status: "complete" }],
+          parts: [{ type: "text", text: directConversationReply, status: "complete" }],
         };
         const nextTurns = insertHomeDirectReply(storedSessionId, userTurn.id, assistantTurn);
         homeDirectTurnsRef.current = nextTurns;

@@ -248,12 +248,32 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
   "yup",
 ]);
 
+const HOME_CONVERSATION_GREETINGS = new Set([
+  "good afternoon",
+  "good afternoon june",
+  "good evening",
+  "good evening june",
+  "good morning",
+  "good morning june",
+  "hello",
+  "hello june",
+  "hey",
+  "hey june",
+  "hi",
+  "hi june",
+]);
+
 function normalizedHomeAcknowledgement(message: string): string {
   return message
     .trim()
     .toLocaleLowerCase()
     .replace(/[.!?,;:]+$/g, "")
     .replace(/\s+/g, " ");
+}
+
+export function homeConversationGreetingReply(message: string): string | undefined {
+  const normalized = normalizedHomeAcknowledgement(message).replace(/,/g, "");
+  return HOME_CONVERSATION_GREETINGS.has(normalized) ? "Hey! What can I help with?" : undefined;
 }
 
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {

@@ -288,7 +288,7 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByRole("button", { name: "Open session" })).toBeVisible();
   });
 
-  it("does not create another Home task when the user acknowledges a handoff", async () => {
+  it("does not create another Home task for conversation after a handoff", async () => {
     const user = userEvent.setup();
     const homeSession: AgentSessionDto = {
       ...session,
@@ -358,6 +358,18 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     expect(await screen.findByText("Got it.")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Hey June");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Hey! What can I help with?")).toBeVisible();
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
     ).toHaveLength(1);

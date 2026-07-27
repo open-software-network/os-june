@@ -22,6 +22,7 @@ import {
   clearHomeTaskHandoffActive,
   compareHomeTurnOrder,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
   isHomeTaskHandoffAcknowledgement,
   insertHomeDirectReply,
   markHomeTaskHandoffActive,
@@ -233,6 +234,15 @@ describe("June Home", () => {
       isHomeTaskHandoffAcknowledgement("ok, compare prices too", [handoffTurn], handoffs),
     ).toBe(false);
     expect(isHomeTaskHandoffAcknowledgement("ok", [handoffTurn], [])).toBe(false);
+  });
+
+  it("keeps bare greetings in the Home conversation", () => {
+    for (const greeting of ["Hey June", "Hey, June!", "hello", "Good morning, June."]) {
+      expect(homeConversationGreetingReply(greeting)).toBe("Hey! What can I help with?");
+    }
+
+    expect(homeConversationGreetingReply("Hey June, research apples in Mexico")).toBeUndefined();
+    expect(homeConversationGreetingReply("Good morning, plan my day")).toBeUndefined();
   });
 
   it("reuses a successful handoff when the same Home turn is replayed", () => {
