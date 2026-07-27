@@ -1468,7 +1468,25 @@ export function AgentWorkspace({
         runId,
         resolution: { kind: "approval", choice },
       });
-      setProjection((current) => ({ ...current, run }));
+      setProjection((current) => ({
+        ...current,
+        run,
+        items: current.items.map((item) =>
+          item.kind === "interruption" && item.interruption.id === interruptionId
+            ? {
+                ...item,
+                interruption: {
+                  ...item.interruption,
+                  status: "resolved",
+                  resolvedAt: new Date().toISOString(),
+                  ...(item.interruption.kind === "approval"
+                    ? { resolution: choice }
+                    : {}),
+                },
+              }
+            : item,
+        ),
+      }));
     } catch (cause) {
       setError(messageFromError(cause));
     } finally {

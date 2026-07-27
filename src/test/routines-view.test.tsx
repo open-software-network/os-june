@@ -56,7 +56,6 @@ const tauriMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   connectorsList: vi.fn(),
   connectorsConnect: vi.fn(),
-  connectorsApplyRuntime: vi.fn(),
   routineTrustGet: vi.fn(),
   routineTrustRecordRun: vi.fn(),
   routineTrustSet: vi.fn(),
@@ -177,7 +176,6 @@ beforeEach(() => {
     command === "connectors_policy" ? representativeConnectorPolicy() : undefined,
   );
   tauriMocks.connectorsConnect.mockResolvedValue(googleAccount());
-  tauriMocks.connectorsApplyRuntime.mockResolvedValue(undefined);
   tauriMocks.routineTrustGet.mockResolvedValue(null);
   tauriMocks.routineBrowserAccessGet.mockResolvedValue({ enabled: false });
   tauriMocks.routineBrowserAccessSet.mockImplementation(async (input: { enabled: boolean }) =>
@@ -578,7 +576,6 @@ describe("RoutinesView connector templates", () => {
         scopes: ["gmail_read", "calendar_read"],
       }),
     );
-    await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
   });
 
@@ -796,7 +793,6 @@ describe("RoutinesView detail", () => {
         enabledToolsets: expect.arrayContaining(["june_browser_routine_abc123"]),
       }),
     );
-    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled();
   });
 
   it("explains the bounded browser access available to routines", async () => {
@@ -865,9 +861,6 @@ describe("RoutinesView detail", () => {
         autonomousTools: ["create_draft"],
       }),
     );
-    // Restoring autonomous trust mints a new token, so the runtime must reload
-    // the auto MCP server instead of leaving its old token in the environment.
-    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
   });
 
   it("does not write the event trigger when the cron save fails", async () => {

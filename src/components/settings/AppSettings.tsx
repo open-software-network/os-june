@@ -32,7 +32,6 @@ import {
   setCostQuality,
   setVeniceApiKey,
   setVeniceModel,
-  connectorsApplyRuntime,
   unpackBundledExtension,
 } from "../../lib/tauri";
 import { LANGUAGE_OPTIONS, languageLabel } from "../../lib/dictation-languages";
@@ -1653,7 +1652,6 @@ export function AppSettings({
     setExperimentalOperation("restart");
     setExperimentalError(undefined);
     try {
-      await connectorsApplyRuntime();
       setRuntimeBrowserUseBaseline(experimentalFlags.browserUseEnabled);
       setAgentRuntimeRunning(true);
     } catch (error) {
