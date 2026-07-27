@@ -10322,7 +10322,14 @@ button.agent-user-attachment:hover {
 }
 
 .sidebar-context-menu {
-  max-height: calc(100vh - 16px);
+  --scroll-fade-size: var(--sp-6);
+
+  max-height: calc(100vh - var(--sp-6));
+  overflow: hidden;
+}
+
+.sidebar-context-menu-scroll {
+  max-height: calc(100vh - var(--sp-6) - 2 * var(--sp-1) - 2 * var(--border-width));
   overflow-y: auto;
 }
 

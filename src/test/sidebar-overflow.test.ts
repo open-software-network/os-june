@@ -40,4 +40,21 @@ describe("sidebar overflow containment", () => {
       ),
     ).toEqual({ right: 568, top: 324 });
   });
+
+  it("re-clamps an open menu when the viewport contracts", () => {
+    const menu = { width: 156, height: 220 };
+
+    expect(
+      positionSidebarContextMenu({ top: 548, bottom: 576, right: 792 }, menu, {
+        width: 900,
+        height: 620,
+      }),
+    ).toEqual({ right: 108, top: 324 });
+    expect(
+      positionSidebarContextMenu({ top: 348, bottom: 376, right: 232 }, menu, {
+        width: 640,
+        height: 420,
+      }),
+    ).toEqual({ right: 408, top: 124 });
+  });
 });

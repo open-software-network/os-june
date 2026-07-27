@@ -104,7 +104,7 @@ import {
   type DateFormatPreference,
 } from "../../lib/date-format";
 import { buildSidebarSessionLists } from "./sidebar-session-lists";
-import { positionSidebarContextMenu, type SidebarContextMenuAnchor } from "./sidebar-context-menu";
+import { positionSidebarContextMenu } from "./sidebar-context-menu";
 
 const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
 
@@ -175,8 +175,8 @@ type SidebarProps = {
 };
 
 type MenuState =
-  | { kind: "note"; noteId: string; anchor: SidebarContextMenuAnchor }
-  | { kind: "agent-session"; sessionId: string; anchor: SidebarContextMenuAnchor };
+  | { kind: "note"; noteId: string; anchor: HTMLElement }
+  | { kind: "agent-session"; sessionId: string; anchor: HTMLElement };
 
 type CommandPromptItem = {
   id: string;
@@ -1011,11 +1011,10 @@ export function Sidebar({
       setMenu(null);
       return;
     }
-    const { top, bottom, right } = anchor.getBoundingClientRect();
     setMenu({
       kind: "note",
       noteId,
-      anchor: { top, bottom, right },
+      anchor,
     });
   }
 
@@ -1024,11 +1023,10 @@ export function Sidebar({
       setMenu(null);
       return;
     }
-    const { top, bottom, right } = anchor.getBoundingClientRect();
     setMenu({
       kind: "agent-session",
       sessionId,
-      anchor: { top, bottom, right },
+      anchor,
     });
   }
 
@@ -2300,7 +2298,7 @@ function AgentSessionContextMenu({
   pinned: boolean;
   completed: boolean;
   deleting: boolean;
-  anchor: SidebarContextMenuAnchor;
+  anchor: HTMLElement;
   folderId?: string;
   onTogglePinned: () => void;
   onToggleCompleted?: () => void;
@@ -2418,7 +2416,7 @@ function NoteContextMenu({
   onClose,
 }: {
   noteId: string;
-  anchor: SidebarContextMenuAnchor;
+  anchor: HTMLElement;
   notes: NoteListItemDto[];
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
@@ -2472,45 +2470,56 @@ function NoteContextMenu({
   );
 }
 
-function SidebarContextMenu({
-  anchor,
-  children,
-}: {
-  anchor: SidebarContextMenuAnchor;
-  children: ReactNode;
-}) {
+function SidebarContextMenu({ anchor, children }: { anchor: HTMLElement; children: ReactNode }) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const fade = useScrollFade(scrollerRef);
   const [position, setPosition] = useState<{ right: number; top: number } | null>(null);
 
   useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!menu) return;
-    const { width, height } = menu.getBoundingClientRect();
-    setPosition(
-      positionSidebarContextMenu(
-        anchor,
+    function updatePosition() {
+      const menu = menuRef.current;
+      if (!menu) return;
+      const { width, height } = menu.getBoundingClientRect();
+      const next = positionSidebarContextMenu(
+        anchor.getBoundingClientRect(),
         { width, height },
         { width: window.innerWidth, height: window.innerHeight },
-      ),
-    );
+      );
+      setPosition((current) =>
+        current?.right === next.right && current.top === next.top ? current : next,
+      );
+    }
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
   }, [anchor]);
+
+  const initialAnchor = anchor.getBoundingClientRect();
 
   return createPortal(
     <div
       ref={menuRef}
-      className="context-menu sidebar-context-menu"
+      className="context-menu sidebar-context-menu scroll-fade"
+      {...fade.props}
       style={
         position
           ? { right: position.right, top: position.top }
           : {
-              right: window.innerWidth - anchor.right,
-              top: anchor.bottom + 4,
+              right: window.innerWidth - initialAnchor.right,
+              top: initialAnchor.bottom + 4,
               visibility: "hidden",
             }
       }
-      role="menu"
     >
-      {children}
+      <div ref={scrollerRef} className="sidebar-context-menu-scroll" role="menu">
+        {children}
+      </div>
     </div>,
     document.body,
   );

@@ -274,6 +274,125 @@ describe("folders UI", () => {
     expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe("[]");
   });
 
+  it("repositions a portaled session menu when the viewport changes", async () => {
+    const user = userEvent.setup();
+    let viewportWidth = 800;
+    let viewportHeight = 600;
+    let anchorRect = {
+      top: 548,
+      bottom: 576,
+      right: 232,
+    };
+    const innerWidthSpy = vi
+      .spyOn(window, "innerWidth", "get")
+      .mockImplementation(() => viewportWidth);
+    const innerHeightSpy = vi
+      .spyOn(window, "innerHeight", "get")
+      .mockImplementation(() => viewportHeight);
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const menuRectSpy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("sidebar-context-menu")) {
+          return {
+            top: 0,
+            bottom: 220,
+            left: 0,
+            right: 156,
+            x: 0,
+            y: 0,
+            width: 156,
+            height: 220,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return originalGetBoundingClientRect.call(this);
+      });
+
+    try {
+      render(
+        <Sidebar
+          notes={notes}
+          activeView="notes"
+          onChangeView={vi.fn()}
+          onSelectNote={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onRemoveNoteFromFolder={vi.fn()}
+          onNewAgentSession={vi.fn()}
+          onRenameAgentSession={vi.fn()}
+          onSelectAgentSession={vi.fn()}
+        />,
+      );
+
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
+            detail: {
+              sessions: [
+                {
+                  id: "session-1",
+                  title: "Viewport menu",
+                  preview: "",
+                  last_active: "2026-06-04T19:00:00Z",
+                },
+              ],
+              selectedSessionId: "session-1",
+              workingSessionIds: [],
+            },
+          }),
+        );
+      });
+
+      const trigger = await screen.findByRole("button", { name: "Actions for Viewport menu" });
+      vi.spyOn(trigger, "getBoundingClientRect").mockImplementation(
+        () =>
+          ({
+            ...anchorRect,
+            top: anchorRect.top,
+            bottom: anchorRect.bottom,
+            left: anchorRect.right - 22,
+            right: anchorRect.right,
+            x: anchorRect.right - 22,
+            y: anchorRect.top,
+            width: 22,
+            height: anchorRect.bottom - anchorRect.top,
+            toJSON: () => ({}),
+          }) as DOMRect,
+      );
+
+      await user.click(trigger);
+      const menu = await screen.findByRole("menu");
+      const menuShell = menu.closest(".sidebar-context-menu") as HTMLElement;
+      expect(menuShell).not.toBeNull();
+      expect(menuShell).toHaveClass("scroll-fade");
+      expect(menuShell.parentElement).toBe(document.body);
+      await waitFor(() => {
+        expect(menuShell).toHaveStyle({ right: "568px", top: "324px" });
+      });
+
+      viewportWidth = 640;
+      viewportHeight = 420;
+      anchorRect = { top: 348, bottom: 376, right: 232 };
+      act(() => window.dispatchEvent(new Event("resize")));
+
+      await waitFor(() => {
+        expect(menuShell).toHaveStyle({ right: "408px", top: "124px" });
+      });
+
+      anchorRect = { top: 300, bottom: 328, right: 232 };
+      act(() => trigger.dispatchEvent(new Event("scroll")));
+
+      await waitFor(() => {
+        expect(menuShell).toHaveStyle({ right: "408px", top: "76px" });
+      });
+    } finally {
+      menuRectSpy.mockRestore();
+      innerHeightSpy.mockRestore();
+      innerWidthSpy.mockRestore();
+    }
+  });
+
   it("retries initial agent session hydration when the runtime is still starting", async () => {
     vi.useFakeTimers();
     try {
