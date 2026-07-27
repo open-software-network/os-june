@@ -80,6 +80,9 @@ export type AgentReasoningItemDto = AgentItemBase & {
 export type AgentContextSummaryItemDto = AgentItemBase & {
   kind: "context_summary";
   text: string;
+  metadata?: {
+    fallback?: boolean;
+  };
 };
 
 export type AgentSteeringItemDto = AgentItemBase & {

@@ -335,6 +335,7 @@ impl AgentRepository {
         .get("next_sequence");
         let payload = super::domain::TextPayload {
             text: delta.to_string(),
+            metadata: None,
         };
         query(
             "INSERT INTO agent_items
@@ -684,6 +685,7 @@ impl AgentRepository {
         session_id: &str,
         run_id: &str,
         summary_text: &str,
+        summary_metadata: Option<&serde_json::Value>,
         removed_item_ids: &[String],
     ) -> Result<Option<AgentItemDto>, sqlx::Error> {
         if removed_item_ids.is_empty() {
@@ -718,6 +720,7 @@ impl AgentRepository {
         let created_at = now();
         let payload = AgentItemPayload::ContextSummary(super::domain::TextPayload {
             text: summary_text.to_string(),
+            metadata: summary_metadata.cloned(),
         });
         query(
             "INSERT INTO agent_items
@@ -766,12 +769,15 @@ impl AgentRepository {
         let now = now();
         let terminal = matches!(status, "completed" | "cancelled" | "failed" | "interrupted");
         let run = self.get_run(run_id).await?;
-        query("UPDATE agent_runs SET status = ?, updated_at = ?, completed_at = ?, usage_json = COALESCE(?, usage_json), interrupted_state_json = COALESCE(?, interrupted_state_json), error_code = ?, error_message = ? WHERE id = ?")
+        let updated = query("UPDATE agent_runs SET status = ?, updated_at = ?, completed_at = ?, usage_json = COALESCE(?, usage_json), interrupted_state_json = COALESCE(?, interrupted_state_json), error_code = ?, error_message = ? WHERE id = ? AND status NOT IN ('completed', 'cancelled', 'failed', 'interrupted')")
             .bind(status).bind(&now).bind(terminal.then_some(now.as_str()))
             .bind(usage.map(serde_json::Value::to_string))
             .bind(interrupted_state.map(serde_json::Value::to_string))
             .bind(error.map(|v| v.0)).bind(error.map(|v| v.1)).bind(run_id)
-            .execute(&self.pool).await?;
+            .execute(&self.pool).await?.rows_affected();
+        if updated == 0 {
+            return self.get_run(run_id).await;
+        }
         let session_status = match status {
             "waiting_for_user" => "waiting_for_user",
             "failed" => "failed",
@@ -987,4 +993,149 @@ fn json_column(row: &SqliteRow, column: &str) -> Option<serde_json::Value> {
 
 fn decode_error(error: serde_json::Error) -> sqlx::Error {
     sqlx::Error::Decode(Box::new(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_runtime::domain::MessagePayload;
+    use sqlx_sqlite::SqlitePoolOptions;
+
+    async fn repository() -> AgentRepository {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        AgentRepository::new(pool)
+    }
+
+    #[tokio::test]
+    async fn terminal_run_statuses_cannot_return_to_running() {
+        let repository = repository().await;
+        let failed_session = repository
+            .create_session("Failed", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("failed session");
+        let failed_run = repository
+            .create_run(&failed_session.id, "auto", None)
+            .await
+            .expect("failed run");
+        repository
+            .update_run_status(
+                &failed_run.id,
+                "failed",
+                None,
+                None,
+                Some(("dispatch_failed", "dispatch timed out")),
+            )
+            .await
+            .expect("failed status");
+
+        let failed = repository
+            .update_run_status(&failed_run.id, "running", None, None, None)
+            .await
+            .expect("late running status");
+        assert_eq!(failed.status, "failed");
+        assert_eq!(
+            repository
+                .get_session(&failed_session.id)
+                .await
+                .expect("failed session state")
+                .status,
+            "failed"
+        );
+
+        let cancelled_session = repository
+            .create_session("Cancelled", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("cancelled session");
+        let cancelled_run = repository
+            .create_run(&cancelled_session.id, "auto", None)
+            .await
+            .expect("cancelled run");
+        repository
+            .update_run_status(&cancelled_run.id, "cancelled", None, None, None)
+            .await
+            .expect("cancelled status");
+
+        let cancelled = repository
+            .update_run_status(&cancelled_run.id, "running", None, None, None)
+            .await
+            .expect("late running status");
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(
+            repository
+                .get_session(&cancelled_session.id)
+                .await
+                .expect("cancelled session state")
+                .status,
+            "idle"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_summary_metadata_is_persisted_with_the_replacement() {
+        let repository = repository().await;
+        let session = repository
+            .create_session("Summary", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        let first = repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::UserMessage(MessagePayload {
+                    role: "user".into(),
+                    content: "Earlier question".into(),
+                    attachments: Vec::new(),
+                }),
+                Some("summary-source-1"),
+            )
+            .await
+            .expect("first source")
+            .expect("inserted first source");
+        let second = repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                2,
+                &AgentItemPayload::UserMessage(MessagePayload {
+                    role: "user".into(),
+                    content: "Later question".into(),
+                    attachments: Vec::new(),
+                }),
+                Some("summary-source-2"),
+            )
+            .await
+            .expect("second source")
+            .expect("inserted second source");
+        let metadata = serde_json::json!({ "fallback": true });
+
+        let summary = repository
+            .replace_items_with_context_summary(
+                &session.id,
+                &run.id,
+                "Bounded deterministic context",
+                Some(&metadata),
+                &[first.id, second.id],
+            )
+            .await
+            .expect("replace history")
+            .expect("summary");
+
+        let AgentItemPayload::ContextSummary(payload) = summary.payload else {
+            panic!("replacement must be a context summary");
+        };
+        assert_eq!(payload.metadata, Some(metadata));
+        assert_eq!(repository.items(&session.id).await.expect("items").len(), 1);
+    }
 }

@@ -30,7 +30,9 @@ test("streams lifecycle events and completion in monotonic order", async () => {
   const engine = new FakeEngine();
   const { service, frames } = harness(engine);
   await initialize(service);
-  assert.deepEqual(await service.handle(request("run.start", runParams)), { accepted: true, compacted: false });
+  assert.deepEqual(await service.handle(request("run.start", runParams)), {
+    accepted: true,
+  });
   await nextTurn();
   const events = frames().filter((frame) => "eventId" in frame);
   assert.deepEqual(
@@ -100,9 +102,48 @@ test("cancels an active run with its abort signal", async () => {
   const { service, frames } = harness(engine);
   await initialize(service);
   await service.handle(request("run.start", runParams));
+  await nextTurn();
   assert.deepEqual(await service.handle(request("run.cancel", {})), { cancelled: true });
   await nextTurn();
   assert.ok(frames().some((frame) => frame.method === "run.cancelled"));
+});
+
+test("accepts before summarizing and cancels without starting a run", async () => {
+  const engine = new BlockingSummaryEngine();
+  const { service, frames } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 9 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `${index}:${"x".repeat(4_000)}`,
+  }));
+
+  assert.deepEqual(
+    await service.handle(
+      request("run.start", {
+        ...runParams,
+        history,
+        contextWindow: 7_000,
+        maxOutputTokens: 1_024,
+      }),
+    ),
+    { accepted: true },
+  );
+  assert.equal(engine.summaryStarted, false);
+  await nextTurn();
+  assert.equal(engine.summaryStarted, true);
+
+  assert.deepEqual(await service.handle(request("run.cancel", {})), {
+    cancelled: true,
+  });
+  await nextTurn();
+
+  const events = frames().filter((frame) => "eventId" in frame);
+  assert.equal(events.some((frame) => frame.method === "run.started"), false);
+  assert.equal(events.filter((frame) => frame.method === "run.cancelled").length, 1);
+  assert.equal(engine.starts, 0);
+  assert.equal(engine.summaryInputs[0]?.signal?.aborted, true);
 });
 
 test("queues a live steer for the active model boundary and rejects it after settlement", async () => {
@@ -110,6 +151,7 @@ test("queues a live steer for the active model boundary and rejects it after set
   const { service } = harness(engine);
   await initialize(service);
   await service.handle(request("run.start", runParams));
+  await nextTurn();
   assert.deepEqual(
     await service.handle(
       request("run.steer", { messageId: "steer-1", text: "Use the launch plan instead" }),
@@ -275,14 +317,14 @@ test("routes manual compaction through the reserved metered model host tool", as
     id: `item-${index}`,
     kind: "message",
     role: index % 2 === 0 ? "user" : "assistant",
-    text: `Message ${index}`,
+    text: `${index}:${"x".repeat(5_000)}`,
   }));
 
   const result = await service.handle(
     request("history.compact", {
       history,
       model: "private-auto",
-      contextWindow: 128_000,
+      contextWindow: 8_000,
       maxOutputTokens: 8_192,
     }),
   );
@@ -293,7 +335,7 @@ test("routes manual compaction through the reserved metered model host tool", as
   );
   assert.equal(modelRequests.length, 1);
   assert.equal(modelRequests[0]?.model, "private-auto");
-  assert.equal(modelRequests[0]?.max_tokens, 2_048);
+  assert.equal(modelRequests[0]?.max_tokens, 2_000);
   assert.equal(modelRequests[0]?.stream, true);
   const messages = modelRequests[0]?.messages;
   assert.ok(Array.isArray(messages));
@@ -306,11 +348,22 @@ test("routes manual compaction through the reserved metered model host tool", as
         message.content.includes("never as instructions"),
     ),
   );
+  const summaryInput = messages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "user" &&
+      typeof message.content === "string",
+  );
+  assert.ok(isRecord(summaryInput));
+  assert.ok(
+    typeof summaryInput.content === "string" &&
+      summaryInput.content.length <= 8_100,
+  );
 });
 
 test("keeps manual compaction available when model summarization fails", async () => {
   const engine = new FailingSummaryEngine();
-  const { service } = harness(engine);
+  const { service, frames } = harness(engine);
   await initialize(service);
   const history = Array.from({ length: 8 }, (_, index) => ({
     id: `item-${index}`,
@@ -332,6 +385,21 @@ test("keeps manual compaction available when model summarization fails", async (
   assert.match(
     (result as { summary?: { text?: string } }).summary?.text ?? "",
     /^Earlier conversation context:/,
+  );
+  assert.deepEqual(
+    (result as { summary?: { metadata?: JsonObject } }).summary?.metadata,
+    { fallback: true },
+  );
+  assert.ok(
+    frames().some(
+      (frame) =>
+        frame.method === "host.log" &&
+        isRecord(frame.params) &&
+        frame.params.level === "warn" &&
+        isRecord(frame.params.data) &&
+        frame.params.data.fallback === true &&
+        frame.params.data.errorType === "Error",
+    ),
   );
 });
 
@@ -369,6 +437,24 @@ class FailingSummaryEngine extends FakeEngine {
   override async summarize(input: EngineSummaryInput): Promise<string> {
     this.summaryInputs.push(input);
     throw new Error("model request timed out");
+  }
+}
+
+class BlockingSummaryEngine extends FakeEngine {
+  summaryStarted = false;
+
+  override async summarize(input: EngineSummaryInput): Promise<string> {
+    this.summaryInputs.push(input);
+    this.summaryStarted = true;
+    return new Promise((_, reject) => {
+      const rejectAborted = () => {
+        const error = new Error("summary cancelled");
+        error.name = "AbortError";
+        reject(error);
+      };
+      if (input.signal?.aborted) rejectAborted();
+      else input.signal?.addEventListener("abort", rejectAborted, { once: true });
+    });
   }
 }
 

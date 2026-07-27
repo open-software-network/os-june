@@ -13,6 +13,7 @@ export type RuntimeHistoryItem = {
   callId?: string;
   groupId?: string;
   payload?: JsonValue;
+  metadata?: JsonObject;
   attachments?: RuntimeAttachmentDescriptor[];
   estimatedTokens?: number;
 };
@@ -174,6 +175,7 @@ export type EngineSummaryInput = {
   history: RuntimeHistoryItem[];
   contextWindow: number;
   maxOutputTokens?: number;
+  signal?: AbortSignal;
 };
 
 export type SteeringMessage = {

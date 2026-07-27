@@ -158,15 +158,19 @@ pub async fn compact_agent_session(
         .context_tokens
         .unwrap_or(128_000)
         .max(1_024);
+    let max_output_tokens = agent_model_output_reserve(context_window);
+    let stream_scope_id = format!("history-compact:{}", uuid::Uuid::new_v4());
     host.ensure_started(&app, repository.clone()).await?;
     let response = host
         .request(
             "history.compact",
             &session_id,
-            &run_id,
-            json!({ "history": history, "model": model, "contextWindow": context_window, "maxOutputTokens": AGENT_MODEL_OUTPUT_RESERVE }),
+            &stream_scope_id,
+            json!({ "history": history, "model": model, "contextWindow": context_window, "maxOutputTokens": max_output_tokens }),
         )
-        .await?;
+        .await;
+    host.cancel_run_streams(&stream_scope_id).await;
+    let response = response?;
     let removed_item_ids = response
         .get("removedItemIds")
         .and_then(Value::as_array)
@@ -182,12 +186,16 @@ pub async fn compact_agent_session(
         .get("summary")
         .and_then(|summary| summary.get("text"))
         .and_then(Value::as_str);
+    let summary_metadata = response
+        .get("summary")
+        .and_then(|summary| summary.get("metadata"));
     if let Some(summary_text) = summary_text {
         repository
             .replace_items_with_context_summary(
                 &session_id,
                 &run_id,
                 summary_text,
+                summary_metadata,
                 &removed_item_ids,
             )
             .await?;
@@ -1366,6 +1374,10 @@ async fn run_params(
 ) -> Result<Value, AppError> {
     let model_capabilities = crate::providers::june_model_runtime_capabilities(request.model).await;
     let supports_vision = model_capabilities.supports_vision;
+    let context_window = model_capabilities
+        .context_tokens
+        .unwrap_or(128_000)
+        .max(1_024);
     let mut history = runtime_history(
         repository.items(request.session_id).await?,
         request.excluded_history_run_id,
@@ -1426,8 +1438,12 @@ async fn run_params(
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
-        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": model_capabilities.context_tokens.unwrap_or(128000), "maxOutputTokens": AGENT_MODEL_OUTPUT_RESERVE }),
+        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
     )
+}
+
+fn agent_model_output_reserve(context_window: i64) -> i64 {
+    AGENT_MODEL_OUTPUT_RESERVE.min((context_window / 4).max(256))
 }
 
 pub(crate) fn resumable_run_config(params: &Value) -> Value {
@@ -1545,7 +1561,7 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
             json!({ "id": item.id, "kind": "message", "role": message.role, "text": message_with_attachment_context(&message.content, &message.attachments), "attachments": message.attachments.iter().map(runtime_attachment).collect::<Vec<_>>() }),
         ),
         AgentItemPayload::ContextSummary(text) => Some(
-            json!({ "id": item.id, "kind": "context_summary", "role": "system", "text": text.text }),
+            json!({ "id": item.id, "kind": "context_summary", "role": "user", "text": text.text, "metadata": text.metadata }),
         ),
         AgentItemPayload::Steering(text) => {
             Some(json!({ "id": item.id, "kind": "message", "role": "user", "text": text.text }))
@@ -1664,7 +1680,9 @@ fn item_json_with_active_run(
             json!({ "kind": "reasoning", "text": v.text, "status": stream_status })
         }
         AgentItemPayload::Steering(v) => json!({ "kind": "steering", "text": v.text }),
-        AgentItemPayload::ContextSummary(v) => json!({ "kind": "context_summary", "text": v.text }),
+        AgentItemPayload::ContextSummary(v) => {
+            json!({ "kind": "context_summary", "text": v.text, "metadata": v.metadata })
+        }
         AgentItemPayload::ToolCall(v) => {
             json!({ "kind": "tool_call", "callId": v.tool_call_id.unwrap_or_default(), "name": v.tool_name.unwrap_or_default(), "arguments": v.arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
         }
@@ -2024,6 +2042,34 @@ mod tests {
     }
 
     #[test]
+    fn output_reserve_is_clamped_for_small_context_windows() {
+        assert_eq!(agent_model_output_reserve(8_192), 2_048);
+        assert_eq!(agent_model_output_reserve(16_000), 4_000);
+        assert_eq!(agent_model_output_reserve(128_000), 8_192);
+    }
+
+    #[test]
+    fn context_summaries_reenter_runtime_history_as_user_data_with_metadata() {
+        let history = history_item(AgentItemDto {
+            id: "summary-1".into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 1,
+            payload: AgentItemPayload::ContextSummary(super::super::TextPayload {
+                text: "Earlier context".into(),
+                metadata: Some(json!({ "fallback": true })),
+            }),
+            external_id: Some("context-summary:run-1".into()),
+            created_at: "2026-07-27T12:00:00Z".into(),
+        })
+        .expect("runtime summary");
+
+        assert_eq!(history["kind"], "context_summary");
+        assert_eq!(history["role"], "user");
+        assert_eq!(history["metadata"]["fallback"], true);
+    }
+
+    #[test]
     fn persisted_attachment_items_expose_complete_artifact_identity() {
         let item = AgentItemDto {
             id: "message-1".into(),
@@ -2163,6 +2209,7 @@ mod tests {
             sequence: 3,
             payload: AgentItemPayload::Steering(super::super::TextPayload {
                 text: "Use the launch plan".into(),
+                metadata: None,
             }),
             external_id: Some("steering:message-1".into()),
             created_at: "2026-07-24T12:00:02Z".into(),
