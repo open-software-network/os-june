@@ -1604,7 +1604,7 @@ fn session_json(session: super::AgentSessionDto) -> Value {
     json!({ "id": session.id, "title": session.title, "status": session.status, "model": session.model, "safetyMode": session.safety_mode, "workspacePath": session.workspace_path.unwrap_or_default(), "source": match session.source.as_str() { "legacy_routine" => "legacy_routine", "routine" => "routine", "user" => "user", _ => "legacy_task" }, "createdAt": session.created_at, "updatedAt": session.updated_at, "error": session.last_error })
 }
 fn run_json(run: super::AgentRunDto) -> Value {
-    json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "error": run.error_message })
+    json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "lastSequence": run.last_sequence, "error": run.error_message })
 }
 
 fn item_json_with_active_run(
@@ -1868,6 +1868,27 @@ fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_json_carries_the_persisted_event_watermark() {
+        let value = run_json(super::super::AgentRunDto {
+            id: "run-1".into(),
+            session_id: "session-1".into(),
+            status: "running".into(),
+            model: "auto".into(),
+            reasoning_effort: None,
+            started_at: "2026-07-26T12:00:00Z".into(),
+            updated_at: "2026-07-26T12:00:01Z".into(),
+            completed_at: None,
+            usage: None,
+            interrupted_state: None,
+            last_sequence: 7,
+            error_code: None,
+            error_message: None,
+        });
+
+        assert_eq!(value["lastSequence"], 7);
+    }
 
     #[test]
     fn retry_uses_the_prompt_owned_by_the_selected_run() {
