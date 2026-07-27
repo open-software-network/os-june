@@ -406,9 +406,7 @@ export function isHomeTaskReplayWithoutNewIntent(
   const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
   const actionCount =
     intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
-  const matchesPriorHandoff = handoffs.some(
-    (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
-  );
+  const matchesPriorHandoff = handoffs.some((handoff) => homeTaskSimilarity(task, handoff) >= 0.6);
   if (!matchesPriorHandoff) return false;
   if (negatesRepeat || negatesContext || (negatesAction && actionCount < 2)) return true;
   if (

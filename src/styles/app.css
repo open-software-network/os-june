@@ -10210,7 +10210,7 @@ button.agent-user-attachment:hover {
 
 .agent-sidebar-row .note-row-main {
   grid-template-columns: minmax(0, 1fr);
-  min-height: 26px;
+  min-height: var(--control-sm);
   padding: var(--sp-1) var(--sp-3);
 }
 

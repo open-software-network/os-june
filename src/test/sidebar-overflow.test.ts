@@ -28,6 +28,9 @@ describe("sidebar overflow containment", () => {
       "min-height: var(--sidebar-active-section-min-h);",
     );
     expect(cssRuleFor(".sidebar-agent-section")).toContain("overflow: hidden;");
+    expect(cssRuleFor(".agent-sidebar-row .note-row-main")).toContain(
+      "min-height: var(--control-sm);",
+    );
   });
 
   it("keeps a menu below its trigger when it fits", () => {

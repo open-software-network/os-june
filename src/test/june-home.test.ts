@@ -268,6 +268,14 @@ describe("June Home", () => {
     };
 
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [prior])).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [{ ...prior, status: "failed" }]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [
+        { ...prior, status: "failed" },
+      ]),
+    ).toBe(false);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Good to see you, June", [prior])).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Please do not repeat that", [prior])).toBe(
       true,
