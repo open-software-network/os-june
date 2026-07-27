@@ -8,15 +8,16 @@ policy-violation close frame with the non-sensitive reason `revoked`; the native
 client treats only that exact close as revocation and treats other closes as
 ordinary offline transitions.
 
-Self-revocation sends the encrypted allowlisted request when possible, calls
-the device-credential-authenticated relay revocation endpoint, disconnects,
-deletes the linked configuration, device credential, and device identity from
-Keychain, and clears render state. A live desktop revocation event performs the
-same native cleanup immediately, including deletion of the encrypted cache and
-its Keychain key, even if no SwiftUI screen is observing the connection.
-The companion records self-revocation before asking the desktop to mirror it,
-so an interrupted relay call is retried independently even after the desktop
-has disabled the encrypted local path.
+Self-revocation sends the encrypted allowlisted request when possible. Desktop
+persists the relay revocation before marking its local device record revoked.
+The companion also calls the device-credential-authenticated relay revocation
+endpoint, disconnects, deletes the linked configuration, device credential,
+and device identity from Keychain, and clears render state. A live desktop
+revocation event performs the same native cleanup immediately, including
+deletion of the encrypted cache and its Keychain key, even if no SwiftUI screen
+is observing the connection. The companion records self-revocation before
+asking the desktop to mirror it, so an interrupted relay call is retried
+independently even after the desktop has disabled the encrypted local path.
 
 Before proposing a pairing, the companion records the relay address and device
 id in Keychain. If any later pairing step fails, it keeps that record, the

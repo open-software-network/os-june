@@ -251,9 +251,13 @@ impl Controller {
                 ))
             }
             Body::DeviceRevokeSelf => {
-                // This mirrors revocation in Desktop's local device list. The
-                // companion performs the authoritative Device-authenticated
-                // relay revocation before deleting its credential and identity.
+                let relay_device_id = uuid::Uuid::parse_str(device_id).map_err(|_| {
+                    AppError::new(
+                        "companion_device_invalid",
+                        "The linked device id is invalid.",
+                    )
+                })?;
+                super::revoke_device_remote(relay_device_id).await?;
                 repositories
                     .revoke_companion_device(account_user_id, device_id)
                     .await?;
