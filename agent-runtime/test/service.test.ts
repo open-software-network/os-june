@@ -112,6 +112,37 @@ test("includes automatic compaction usage while preserving latest request contex
   });
 });
 
+test("counts failed automatic summary usage once", async () => {
+  const engine = new FailingSummaryWithUsageEngine();
+  const { service, frames } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 9 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `${index}:${"x".repeat(4_000)}`,
+  }));
+
+  await service.handle(
+    request("run.start", {
+      ...runParams,
+      history,
+      contextWindow: 7_000,
+      maxOutputTokens: 1_024,
+    }),
+  );
+  await nextTurn();
+
+  const usage = frames().find((frame) => frame.method === "usage.updated")?.params;
+  assert.deepEqual(usage, {
+    inputTokens: 23,
+    outputTokens: 4,
+    totalTokens: 27,
+    requests: 1,
+    latestInputTokens: 3,
+  });
+});
+
 test("serializes an approval interruption for durable host persistence", async () => {
   const engine = new FakeEngine({
     history: [],

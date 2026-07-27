@@ -1349,13 +1349,6 @@ async fn resolve_agent_interruption_inner(
         .request("run.resume", &session.id, &run.id, params)
         .await
     {
-        if is_duplicate_resume_error(&error) {
-            return Ok(run_json(
-                repository
-                    .update_run_status(&run.id, "running", None, None, None)
-                    .await?,
-            ));
-        }
         let restore_result: Result<bool, sqlx::Error> = async {
             let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
             let run_restored = sqlx::query::query(
@@ -1424,6 +1417,13 @@ async fn resolve_agent_interruption_inner(
             );
         }
         restore_result?;
+        if is_duplicate_resume_error(&error) {
+            return Ok(run_json(
+                repository
+                    .update_run_status(&run.id, "running", None, None, None)
+                    .await?,
+            ));
+        }
         return Err(error);
     }
     if origin == InterruptionResolutionOrigin::Desktop {

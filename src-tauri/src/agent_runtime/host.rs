@@ -228,7 +228,7 @@ impl AgentRuntimeHost {
             runtime_request_timeout(method),
             run_id,
             owns_model_scope,
-            !opens_scope,
+            cancels_existing_scope_on_timeout(method),
         )
         .await
     }
@@ -290,6 +290,10 @@ impl AgentRuntimeHost {
 
 fn opens_model_scope(method: &str) -> bool {
     matches!(method, "run.start" | "run.resume" | "history.compact")
+}
+
+fn cancels_existing_scope_on_timeout(method: &str) -> bool {
+    !opens_model_scope(method) || method == "run.resume"
 }
 
 fn runtime_request_timeout(method: &str) -> std::time::Duration {
@@ -1295,6 +1299,14 @@ mod tests {
             runtime_request_timeout("run.start"),
             std::time::Duration::from_secs(15)
         );
+    }
+
+    #[test]
+    fn resume_timeouts_cancel_preexisting_model_scopes() {
+        assert!(cancels_existing_scope_on_timeout("run.resume"));
+        assert!(!cancels_existing_scope_on_timeout("run.start"));
+        assert!(!cancels_existing_scope_on_timeout("history.compact"));
+        assert!(cancels_existing_scope_on_timeout("run.cancel"));
     }
 
     #[tokio::test]
