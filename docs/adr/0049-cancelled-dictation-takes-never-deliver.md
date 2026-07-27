@@ -49,14 +49,19 @@ request must not cancel or deliver into the new take.
   authorized by a delivery claim that won first.
 - Start-time authentication cancellation and all interactive helper controls
   share one generation lock. June validates the authentication result, writes
-  its discard, resets the matching shortcut activation, and opens the sign-in
-  surface while holding that lock. Start, stop, discard, and toggle controls
-  snapshot their target take, update shortcut state, advance the generation,
-  and write the helper command under the same lock. Take-owned helper
-  lifecycle events hold that lock through correlation, controller changes,
-  and frontend emission. A stale signed-out result, delayed terminal-control
-  write, or old helper outcome therefore cannot enqueue a discard, stop, or
-  lifecycle reset behind a newer start.
+  its discard, and resets the matching shortcut activation while holding that
+  lock, then emits the correlated sign-in prompt after releasing it. Start,
+  stop, discard, and toggle controls snapshot their target take, update
+  shortcut state, advance the generation, and write the helper command under
+  the same lock. Take-owned helper lifecycle events hold that lock through
+  correlation, controller changes, and frontend emission. A stale signed-out
+  result, delayed terminal-control write, or old helper outcome therefore
+  cannot enqueue a discard, stop, or lifecycle reset behind a newer start.
+  Because a helper can reject a pending start without advancing the command
+  generation, signed-out cleanup also proves that its exact pending or
+  confirmed take is still owned. It retires only that start and emits a
+  correlated error; an already rejected start cannot clear a previously
+  confirmed recording.
 - Every terminal helper command carries the `takeId`. A helper that processed
   a discard remembers that ID for its process lifetime and silently rejects
   later text for it. Tagged text, stop, and discard commands cannot affect a
@@ -81,6 +86,11 @@ request must not cancel or deliver into the new take.
   take's HUD or controller. A replacement helper with no active take keeps
   ADR-0014's clipboard recovery behavior for work that survived a helper
   crash.
+- Native recorder callbacks carry a recording-instance identity in addition to
+  the take ID. macOS selected-device teardown, level, failure, and speech
+  analysis callbacks may run after discard has started another recorder; only
+  callbacks from the still-current recorder may mutate controller state or
+  emit a take-owned event.
 
 ## Consequences
 

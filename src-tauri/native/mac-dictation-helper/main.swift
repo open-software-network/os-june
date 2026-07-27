@@ -1797,6 +1797,11 @@ final class DictationController {
     private var maxObservedAudioLevel: Float = 0
     private var activeTakeID: String?
     private var cancelledTakeIDs = Set<String>()
+    /// Identifies the recorder whose asynchronous callbacks may mutate the
+    /// controller. A selected-device recorder can finish after discard has
+    /// already started a replacement take, so the take ID alone is not enough:
+    /// every callback must still belong to this exact recorder instance.
+    private var recordingInstanceID: UUID?
 
     var listening: Bool {
         isListening || isFinalizing || startPending
@@ -2048,6 +2053,8 @@ final class DictationController {
         cleanupMicTestSample()
         recordingPurpose = purpose
         recordingStartedAt = ProcessInfo.processInfo.systemUptime
+        let recordingInstanceID = UUID()
+        self.recordingInstanceID = recordingInstanceID
 
         let nextRecordingURL = temporaryRecordingURL()
         // Preserve the legacy Auto-detect behavior: AVAudioRecorder delegates
@@ -2060,7 +2067,8 @@ final class DictationController {
                 device: selectedDevice,
                 url: nextRecordingURL,
                 purpose: purpose,
-                durationSeconds: durationSeconds
+                durationSeconds: durationSeconds,
+                recordingInstanceID: recordingInstanceID
             )
             return
         }
@@ -2088,18 +2096,20 @@ final class DictationController {
 
             audioRecorder = recorder
             recordingURL = nextRecordingURL
-            startAutoDetectMetering()
+            startAutoDetectMetering(recordingInstanceID: recordingInstanceID)
             markRecordingStarted(
                 microphone: preferredMicrophoneName ?? "Auto-detect",
                 purpose: purpose,
                 durationSeconds: durationSeconds
             )
         } catch {
+            let rejectedTakeID = activeTakeID
             resetRecordingState()
             emitRecordingError(
                 purpose: purpose,
                 code: "audio_start_failed",
-                message: error.localizedDescription
+                message: error.localizedDescription,
+                takeID: rejectedTakeID
             )
         }
     }
@@ -2108,7 +2118,8 @@ final class DictationController {
         device: AVCaptureDevice,
         url: URL,
         purpose: RecordingPurpose,
-        durationSeconds: Double?
+        durationSeconds: Double?,
+        recordingInstanceID: UUID
     ) {
         do {
             let recorder = try SelectedDeviceRecorder(
@@ -2116,12 +2127,18 @@ final class DictationController {
                 outputURL: url,
                 onLevel: { [weak self] level in
                     runOnMain {
-                        self?.observeAudioLevel(level)
+                        self?.observeAudioLevel(
+                            level,
+                            recordingInstanceID: recordingInstanceID
+                        )
                     }
                 },
                 onFailure: { [weak self] error in
                     runOnMain {
-                        self?.failSelectedDeviceRecording(error)
+                        self?.failSelectedDeviceRecording(
+                            error,
+                            recordingInstanceID: recordingInstanceID
+                        )
                     }
                 }
             )
@@ -2134,24 +2151,35 @@ final class DictationController {
                 durationSeconds: durationSeconds
             )
         } catch {
+            let rejectedTakeID = activeTakeID
             resetRecordingState()
             emitRecordingError(
                 purpose: purpose,
                 code: "audio_start_failed",
-                message: error.localizedDescription
+                message: error.localizedDescription,
+                takeID: rejectedTakeID
             )
         }
     }
 
-    private func failSelectedDeviceRecording(_ error: Error) {
-        guard selectedDeviceRecorder != nil else {
+    private func failSelectedDeviceRecording(
+        _ error: Error,
+        recordingInstanceID: UUID
+    ) {
+        guard
+            self.recordingInstanceID == recordingInstanceID,
+            selectedDeviceRecorder != nil
+        else {
             return
         }
         selectedDeviceRecorder = nil
         fail(error)
     }
 
-    private func emitRecordingReady() {
+    private func emitRecordingReady(recordingInstanceID: UUID) {
+        guard self.recordingInstanceID == recordingInstanceID else {
+            return
+        }
         guard let recordingURL else {
             fail(DictationError.missingRecording)
             return
@@ -2190,7 +2218,12 @@ final class DictationController {
             return
         }
         analyzeSpeechConfidence(at: recordingURL) { [weak self] speechConfidence in
-            guard let self, self.isFinalizing, self.recordingURL == recordingURL else {
+            guard
+                let self,
+                self.recordingInstanceID == recordingInstanceID,
+                self.isFinalizing,
+                self.recordingURL == recordingURL
+            else {
                 return
             }
             var payload = basePayload
@@ -2243,6 +2276,10 @@ final class DictationController {
     }
 
     private func stopActiveRecording() {
+        guard let recordingInstanceID else {
+            fail(DictationError.missingRecording)
+            return
+        }
         let purpose = recordingPurpose
         if purpose == .dictation {
             // Selected-device recorder teardown is asynchronous, so the paste
@@ -2266,13 +2303,19 @@ final class DictationController {
         if let selectedDeviceRecorder {
             selectedDeviceRecorder.stop { [weak self] error in
                 runOnMain {
-                    self?.selectedDeviceRecorder = nil
-                    RecordingCuePlayer.play(.stop)
-                    if let error {
-                        self?.fail(error)
+                    guard
+                        let self,
+                        self.recordingInstanceID == recordingInstanceID
+                    else {
                         return
                     }
-                    self?.emitRecordingReady()
+                    self.selectedDeviceRecorder = nil
+                    RecordingCuePlayer.play(.stop)
+                    if let error {
+                        self.fail(error)
+                        return
+                    }
+                    self.emitRecordingReady(recordingInstanceID: recordingInstanceID)
                 }
             }
             return
@@ -2280,7 +2323,7 @@ final class DictationController {
 
         audioRecorder?.stop()
         RecordingCuePlayer.play(.stop)
-        emitRecordingReady()
+        emitRecordingReady(recordingInstanceID: recordingInstanceID)
     }
 
     private func scheduleMicTestStop(after seconds: Double) {
@@ -2304,21 +2347,21 @@ final class DictationController {
             .appendingPathExtension("m4a")
     }
 
-    private func startMetering() {
+    private func startMetering(recordingInstanceID: UUID) {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
         // 50Hz (20ms) emit rate: a fresh level roughly every rAF frame so the
         // bars track speech without the steppiness of the old 40ms cadence.
         // Tiny JSON lines, so the IPC channel handles it comfortably.
         timer.schedule(deadline: .now(), repeating: .milliseconds(20))
         timer.setEventHandler { [weak self] in
-            self?.emitAudioRecorderLevel()
+            self?.emitAudioRecorderLevel(recordingInstanceID: recordingInstanceID)
         }
         meteringTimer = timer
         timer.resume()
     }
 
-    private func startAutoDetectMetering() {
-        startMetering()
+    private func startAutoDetectMetering(recordingInstanceID: UUID) {
+        startMetering(recordingInstanceID: recordingInstanceID)
         guard autoDetectRawMeteringEnabled() else {
             return
         }
@@ -2326,7 +2369,10 @@ final class DictationController {
         do {
             let inputMeter = AutoDetectInputMeter { [weak self] level in
                 runOnMain {
-                    self?.observeAudioLevel(level)
+                    self?.observeAudioLevel(
+                        level,
+                        recordingInstanceID: recordingInstanceID
+                    )
                 }
             }
             try inputMeter.start()
@@ -2342,7 +2388,10 @@ final class DictationController {
         }
     }
 
-    private func emitAudioRecorderLevel() {
+    private func emitAudioRecorderLevel(recordingInstanceID: UUID) {
+        guard self.recordingInstanceID == recordingInstanceID else {
+            return
+        }
         guard let audioRecorder, audioRecorder.isRecording else {
             return
         }
@@ -2357,10 +2406,13 @@ final class DictationController {
         let peak = Float(pow(10.0, Double(peakDb) / 20.0))
         let average = Float(pow(10.0, Double(averageDb) / 20.0))
         let level = peak * 0.8 + average * 0.2
-        observeAudioLevel(min(1, level))
+        observeAudioLevel(min(1, level), recordingInstanceID: recordingInstanceID)
     }
 
-    private func observeAudioLevel(_ level: Float) {
+    private func observeAudioLevel(_ level: Float, recordingInstanceID: UUID) {
+        guard self.recordingInstanceID == recordingInstanceID else {
+            return
+        }
         maxObservedAudioLevel = max(maxObservedAudioLevel, level)
         if recordingPurpose == .micTest {
             emit("mic_test_level", ["level": String(format: "%.4f", level)])
@@ -2388,18 +2440,24 @@ final class DictationController {
         emitRecordingError(
             purpose: recordingPurpose,
             code: code,
-            message: error.localizedDescription
+            message: error.localizedDescription,
+            takeID: activeTakeID
         )
         resetRecordingState()
     }
 
-    private func emitRecordingError(purpose: RecordingPurpose, code: String, message: String) {
+    private func emitRecordingError(
+        purpose: RecordingPurpose,
+        code: String,
+        message: String,
+        takeID: String?
+    ) {
         if purpose == .micTest {
             emit("mic_test_error", ["code": code, "message": message])
         } else {
             emit("error", takePayload(
                 ["code": code, "message": message],
-                takeID: activeTakeID
+                takeID: takeID
             ))
         }
     }
@@ -2438,6 +2496,7 @@ final class DictationController {
         isFinalizing = false
         startPending = false
         activeTakeID = nil
+        recordingInstanceID = nil
         DictationEscapeCancelMonitor.shared.stop()
         maxObservedAudioLevel = 0
         recordingStartedAt = 0

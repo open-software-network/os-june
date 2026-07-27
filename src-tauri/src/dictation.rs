@@ -1143,6 +1143,15 @@ impl ShortcutActivationController {
         true
     }
 
+    fn finish_start_for_auth_failure(&mut self, take_id: &str) -> Option<bool> {
+        let owns_start = self.pending_helper_take_id.as_deref() == Some(take_id)
+            || self.helper_take_id.as_deref() == Some(take_id);
+        if !owns_start {
+            return None;
+        }
+        Some(self.finish_helper_take(take_id, None))
+    }
+
     fn reset(&mut self) {
         self.reset_input_activation();
         self.helper_take_id = None;
@@ -2862,6 +2871,17 @@ fn reset_shortcut_activation(app: &AppHandle) {
     }
 }
 
+fn finish_shortcut_start_for_auth_failure(app: &AppHandle, take_id: &str) -> Option<bool> {
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .and_then(|mut controller| controller.finish_start_for_auth_failure(take_id))
+        })
+}
+
 fn dictation_take_id_from_event(event: &serde_json::Value) -> Option<&str> {
     event
         .get("payload")
@@ -3166,18 +3186,38 @@ fn send_dictation_command(
                     let Some(take_state) = app.try_state::<DictationTakeState>() else {
                         return;
                     };
-                    let _ = take_state.run_if_current_helper_command(start_attempt, || {
-                        let forwarded = forward_dictation_command(
+                    let Some(take_id) = command_take_id.as_deref() else {
+                        return;
+                    };
+                    let preserved_confirmed_take = take_state
+                        .run_if_current_helper_command(start_attempt, || {
+                            // A helper may reject this attempted start while a
+                            // previously confirmed take keeps recording. Retire
+                            // only the start this auth result belongs to; if that
+                            // take was already rejected, the result is stale even
+                            // though no newer command advanced the generation.
+                            let preserved_confirmed_take =
+                                finish_shortcut_start_for_auth_failure(&app, take_id)?;
+                            let _ = forward_dictation_command(
+                                &app,
+                                DictationCommand::DiscardListening,
+                                &label,
+                                false,
+                                Some(take_id),
+                            );
+                            Some(preserved_confirmed_take)
+                        })
+                        .flatten();
+                    // Correlated event emission takes the helper-command lock
+                    // itself, so wait until the serialized auth cleanup above
+                    // has released that lock.
+                    if let Some(preserved_confirmed_take) = preserved_confirmed_take {
+                        notify_dictation_not_signed_in(
                             &app,
-                            DictationCommand::DiscardListening,
-                            &label,
-                            false,
-                            command_take_id.as_deref(),
+                            Some(take_id),
+                            !preserved_confirmed_take,
                         );
-                        reset_shortcut_activation(&app);
-                        notify_dictation_not_signed_in(&app, None);
-                        forwarded
-                    });
+                    }
                 }
             }
         });
@@ -3266,7 +3306,11 @@ const NOT_SIGNED_IN_DEDUPE_MS: u64 = 2_000;
 /// Emits the signed-out prompt and pulls the app forward, unless the same
 /// prompt fired within the dedupe window. Owns the focus pull too, so
 /// callers can't split the prompt from it.
-fn notify_dictation_not_signed_in(app: &AppHandle, take: Option<&DictationTakeToken>) {
+fn notify_dictation_not_signed_in(
+    app: &AppHandle,
+    take_id: Option<&str>,
+    force_apply_to_hud: bool,
+) {
     use std::sync::atomic::Ordering;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3283,8 +3327,12 @@ fn notify_dictation_not_signed_in(app: &AppHandle, take: Option<&DictationTakeTo
         // Another path won the race within the same window.
         return;
     }
-    if let Some(take) = take {
-        emit_dictation_take_event(app, take, dictation_not_signed_in_event());
+    if let Some(take_id) = take_id.filter(|_| force_apply_to_hud) {
+        let mut event = dictation_not_signed_in_event();
+        add_dictation_take_id_to_event(&mut event, take_id);
+        emit_dictation_event_value(app, event);
+    } else if let Some(take_id) = take_id {
+        emit_dictation_take_id_event(app, take_id, dictation_not_signed_in_event());
     } else {
         emit_dictation_event_value(app, dictation_not_signed_in_event());
     }
@@ -5057,7 +5105,7 @@ async fn transcribe_recording_ready_inner(
             .is_some()
             {
                 update_shortcut_helper_finalizing(app, false);
-                notify_dictation_not_signed_in(app, Some(take));
+                notify_dictation_not_signed_in(app, Some(take.id()), false);
             }
             let _ = std::fs::remove_file(&audio_path);
             return;
@@ -8713,6 +8761,49 @@ mod tests {
         assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
         assert!(controller.pending_helper_take_id.is_none());
         assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn signed_out_pending_start_cleanup_preserves_the_confirmed_take() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+
+        assert_eq!(
+            controller.finish_start_for_auth_failure("take-b"),
+            Some(true)
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.pending_helper_take_id.is_none());
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn signed_out_cleanup_ignores_an_already_rejected_start() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+        assert_eq!(
+            controller.finish_for_helper_event(Some("take-b"), Some("take-a")),
+            HelperLifecycleDisposition::EmitOnly
+        );
+
+        assert_eq!(controller.finish_start_for_auth_failure("take-b"), None);
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn signed_out_cleanup_finishes_the_confirmed_start_it_owns() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-b"));
+
+        assert_eq!(
+            controller.finish_start_for_auth_failure("take-b"),
+            Some(false)
+        );
+        assert!(controller.helper_take_id.is_none());
+        assert!(!controller.helper_is_listening);
     }
 
     #[test]
