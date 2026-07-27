@@ -532,6 +532,7 @@ export function AgentWorkspace({
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? projection.session;
+  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const running = projection.run?.status === "running" || projection.run?.status === "queued";
   const waiting = projection.run?.status === "waiting_for_user";
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
@@ -1031,7 +1032,7 @@ export function AgentWorkspace({
     // state lets the greeting and suggestions settle underneath the input.
     // The focused new-session hero is inline and remains the only mode that
     // intentionally needs no fixed-composer clearance.
-    if ((!homeMode && (newSessionMode || !selectedSession)) || !scroller || !composer) {
+    if (heroMode || !scroller || !composer) {
       setComposerClearance(0);
       return;
     }
@@ -1051,7 +1052,7 @@ export function AgentWorkspace({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [homeMode, newSessionMode, selectedSession]);
+  }, [heroMode, homeMode, selectedSession]);
 
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");
@@ -1901,7 +1902,6 @@ export function AgentWorkspace({
     await refreshSessions();
   }
 
-  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const sessionActionsAvailable = Boolean(selectedId && selectedSession);
   const homeConversationTurns = useMemo(
     () =>
