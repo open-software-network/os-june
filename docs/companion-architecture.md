@@ -1,7 +1,9 @@
 # June Companion architecture
 
 June Companion is a native SwiftUI iOS/iPadOS application in
-`apps/june-companion/native-ios`. XcodeGen creates the checked-in Xcode project.
+`native-ios/` in the `june-companion-app` repo
+(github.com/open-software-network/june-companion-app). XcodeGen creates the
+checked-in Xcode project there.
 It is not a Tauri target and contains no WebView.
 
 ## Data path

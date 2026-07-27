@@ -14,7 +14,7 @@ copied.
 ## Run
 
 ```sh
-cd apps/june-companion/native-ios
+cd ../june-companion-app/native-ios  # the mobile app lives in the june-companion-app repo
 xcodegen generate
 open JuneCompanion.xcodeproj
 ```
@@ -37,7 +37,7 @@ expiry and explicit Desktop approval are the authorization backstops.
 ## Verify
 
 ```sh
-cd apps/june-companion/native-ios
+cd ../june-companion-app/native-ios  # the mobile app lives in the june-companion-app repo
 xcodegen generate
 xcodebuild -project JuneCompanion.xcodeproj -scheme JuneCompanion \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' test
