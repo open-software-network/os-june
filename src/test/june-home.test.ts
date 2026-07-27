@@ -19,13 +19,17 @@ import {
   writeJuneHomeStoredSessionId,
 } from "../lib/june-home";
 import {
+  clearHomeTaskHandoffActive,
+  compareHomeTurnOrder,
   existingHomeTaskHandoffForSourceTurn,
   isHomeTaskHandoffAcknowledgement,
   insertHomeDirectReply,
+  markHomeTaskHandoffActive,
   persistHomeDirectTurns,
   persistHomeTaskHandoffs,
   readHomeDirectTurns,
   readHomeTaskHandoffs,
+  recoverInterruptedHomeTaskHandoffs,
 } from "../components/agent/home-thread";
 import type { AgentChatTurn } from "../lib/agent-chat-runtime";
 
@@ -186,8 +190,15 @@ describe("June Home", () => {
   });
 
   it("recognizes a brief acknowledgement only after a successful task handoff", () => {
+    const initiatingTurn: AgentChatTurn = {
+      id: "home:direct:user:same-millisecond",
+      role: "user",
+      createdAt: "2026-07-26T15:13:05Z",
+      status: "complete",
+      parts: [{ type: "text", text: "Research wines", status: "complete" }],
+    };
     const handoffTurn: AgentChatTurn = {
-      id: "handoff-turn",
+      id: "home:direct:assistant:same-millisecond",
       role: "assistant",
       createdAt: "2026-07-26T15:13:05Z",
       status: "complete",
@@ -211,7 +222,12 @@ describe("June Home", () => {
       },
     ];
 
-    expect(isHomeTaskHandoffAcknowledgement("ok", [handoffTurn], handoffs)).toBe(true);
+    expect(
+      [...[initiatingTurn, handoffTurn]].sort(compareHomeTurnOrder).map((turn) => turn.role),
+    ).toEqual(["user", "assistant"]);
+    expect(isHomeTaskHandoffAcknowledgement("ok", [initiatingTurn, handoffTurn], handoffs)).toBe(
+      true,
+    );
     expect(isHomeTaskHandoffAcknowledgement("Thanks!", [handoffTurn], handoffs)).toBe(true);
     expect(
       isHomeTaskHandoffAcknowledgement("ok, compare prices too", [handoffTurn], handoffs),
@@ -242,6 +258,29 @@ describe("June Home", () => {
       "home-task-original",
     );
     expect(existingHomeTaskHandoffForSourceTurn(handoffs, "home-user-failed")).toBeUndefined();
+  });
+
+  it("recovers an interrupted starting handoff without failing one active in this process", () => {
+    writeJuneHomeStoredSessionId("default", "home-recovery");
+    const starting = {
+      id: "home-task-starting",
+      title: "Wine research",
+      prompt: "Research wines in southern France",
+      status: "starting" as const,
+      sourceUserTurnId: "home-user-wine",
+    };
+    persistHomeTaskHandoffs("home-recovery", [starting]);
+    markHomeTaskHandoffActive("home-recovery", starting.id);
+
+    expect(recoverInterruptedHomeTaskHandoffs("home-recovery")[0]?.status).toBe("starting");
+
+    clearHomeTaskHandoffActive("home-recovery", starting.id);
+    expect(recoverInterruptedHomeTaskHandoffs("home-recovery")[0]).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: "Session creation was interrupted. Try again.",
+      }),
+    );
   });
 
   it("injects Home context without exposing it in the transcript or previews", () => {

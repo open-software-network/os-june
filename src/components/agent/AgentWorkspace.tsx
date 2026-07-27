@@ -135,16 +135,20 @@ import {
 } from "../../lib/june-home";
 import type { AgentChatTurn } from "../../lib/agent-chat-runtime";
 import {
+  clearHomeTaskHandoffActive,
+  compareHomeTurnOrder,
   enqueueHomeDirectChat,
   existingHomeTaskHandoffForSourceTurn,
   homeConversationContextFromTurns,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
+  markHomeTaskHandoffActive,
   persistHomeDirectTurns,
   persistHomeTaskHandoffs,
   readHomeDirectTurns,
   readHomeTaskHandoffs,
+  recoverInterruptedHomeTaskHandoffs,
   type HomeTaskHandoff,
 } from "./home-thread";
 
@@ -472,7 +476,7 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!homeMode || !selectedId) return;
     const restoredTurns = readHomeDirectTurns(selectedId);
-    const restoredHandoffs = readHomeTaskHandoffs(selectedId);
+    const restoredHandoffs = recoverInterruptedHomeTaskHandoffs(selectedId);
     homeDirectTurnsRef.current = restoredTurns;
     setHomeDirectTurns(restoredTurns);
     setHomeTaskHandoffs(restoredHandoffs);
@@ -1127,6 +1131,7 @@ export function AgentWorkspace({
       return;
     }
     handledHomeTaskToolCallsRef.current.add(toolCallId);
+    markHomeTaskHandoffActive(homeStoredSessionId, handoffId);
     const starting: HomeTaskHandoff = {
       ...request,
       id: handoffId,
@@ -1193,6 +1198,8 @@ export function AgentWorkspace({
         await agentRuntimeBindings.deleteSession(focusedSession.id).catch(() => undefined);
       }
       updateHandoff({ status: "failed", error: messageFromError(cause) });
+    } finally {
+      clearHomeTaskHandoffActive(homeStoredSessionId, handoffId);
     }
   }
 
@@ -1618,10 +1625,7 @@ export function AgentWorkspace({
         ),
         ...homeDirectTurns,
         ...(homeStreamingReply ? [homeStreamingReply] : []),
-      ].sort(
-        (left, right) =>
-          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
-      ),
+      ].sort(compareHomeTurnOrder),
     [homeDirectTurns, homeStreamingReply, turns],
   );
   const homeHandoffsByTurnId = useMemo(() => {
