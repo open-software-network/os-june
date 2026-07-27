@@ -3,6 +3,7 @@ import { AGENT_SESSION_STATUS_EVENT } from "../lib/agent-events";
 import { markOnboardingComplete, resetOnboardingForReplay } from "../lib/onboarding";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
+const originalNavigatorPlatform = navigator.platform;
 
 const mocks = vi.hoisted(() => ({
   listeners: new Map<string, TauriListener>(),
@@ -43,6 +44,11 @@ describe("meeting detection HUD", () => {
 
   afterEach(() => {
     window.dispatchEvent(new Event("pagehide"));
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: originalNavigatorPlatform,
+    });
     vi.useRealTimers();
   });
 
@@ -534,9 +540,13 @@ describe("meeting detection HUD", () => {
 
     expect(hudElement().dataset.state).toBe("listening");
     expect(chromeCalls()).toEqual([]);
+    // 36 = zero-rect pill + the shadow gutter on each side; the height adds
+    // the Esc tooltip's mirrored slot (2 × the --sp-2 gap; the tip itself
+    // measures zero in jsdom), reserved for the whole listening session so
+    // the hover reveal never has to resize a visible window.
     expect(mocks.invoke).toHaveBeenCalledWith(
       "dictation_hud_set_size",
-      expect.objectContaining({ width: 36, height: 36 }),
+      expect.objectContaining({ width: 36, height: 48 }),
     );
   });
 
@@ -566,6 +576,8 @@ describe("meeting detection HUD", () => {
   });
 
   it("switches from listening to transcribing without a morph flash", async () => {
+    // jsdom reports a zero-width pill, so collapseToSpinner takes its atomic
+    // fallback: the same snap-resize-then-show the processing chain uses.
     vi.useFakeTimers();
     await loadHud();
     await emit("dictation-event", { type: "listening_started" });
@@ -584,7 +596,8 @@ describe("meeting detection HUD", () => {
     const finalizing = emit("dictation-event", {
       type: "finalizing_transcript",
     });
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hudElement().dataset.state).toBe("transcribing");
     expect(sizeCalls()).toHaveLength(1);
     expect(sizeCalls()[0]?.[1]).toMatchObject({ animate: false });
     expect(hudShowCalls()).toBe(0);
@@ -594,6 +607,353 @@ describe("meeting detection HUD", () => {
 
     expect(sizeCalls()).toHaveLength(1);
     expect(hudShowCalls()).toBe(1);
+  });
+
+  it("tweens the pill width down to the spinner square on stop", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+    const collapseClassAdds: Array<{ tokens: string[]; state: string | undefined }> = [];
+    const hud = hudElement();
+    const addClass = hud.classList.add.bind(hud.classList);
+    vi.spyOn(hud.classList, "add").mockImplementation((...tokens: string[]) => {
+      collapseClassAdds.push({ tokens, state: hud.dataset.state });
+      addClass(...tokens);
+    });
+
+    // A measurable pill takes the CSS collapse: inline width tweens from the
+    // listening size to the square while the native frame holds still, then
+    // one snap resize fits the frame to the settled square.
+    vi.spyOn(hud, "getBoundingClientRect").mockReturnValue({
+      width: 124,
+      height: 32,
+      top: 0,
+      left: 0,
+      right: 124,
+      bottom: 32,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const finalizing = emit("dictation-event", {
+      type: "finalizing_transcript",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hud.dataset.state).toBe("transcribing");
+    expect(hud.classList.contains("hud-collapse")).toBe(true);
+    expect(hud.classList.contains("hud-collapse-active")).toBe(true);
+    expect(hud.style.width).toBe("32px");
+    expect(collapseClassAdds.find(({ tokens }) => tokens.includes("hud-collapse"))?.state).toBe(
+      "listening",
+    );
+    expect(sizeCalls()).toHaveLength(0);
+
+    // jsdom fires no transitionend, so the collapse settles on its bounded
+    // 600ms fallback.
+    await vi.advanceTimersByTimeAsync(600);
+    await finalizing;
+
+    expect(hud.classList.contains("hud-collapse")).toBe(false);
+    expect(hud.classList.contains("hud-collapse-active")).toBe(false);
+    expect(hud.style.width).toBe("");
+    expect(sizeCalls().length).toBeGreaterThanOrEqual(1);
+    expect(sizeCalls()[0]?.[1]).toMatchObject({ animate: false });
+  });
+
+  it("restarts the spinner animation on the first and repeated condense", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+
+    const hud = hudElement();
+    const spinner = document.querySelector<HTMLElement>("#hud-spinner");
+    expect(spinner).not.toBeNull();
+    vi.spyOn(hud, "getBoundingClientRect").mockReturnValue({
+      width: 124,
+      height: 32,
+      top: 0,
+      left: 0,
+      right: 124,
+      bottom: 32,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    const reflowStates: Array<{ state: string | undefined; reset: boolean }> = [];
+    vi.spyOn(spinner as HTMLElement, "offsetWidth", "get").mockImplementation(() => {
+      reflowStates.push({
+        state: hud.dataset.state,
+        reset: spinner?.classList.contains("hud-spinner-reset") ?? false,
+      });
+      return 24;
+    });
+
+    const firstCondense = emit("dictation-event", { type: "finalizing_transcript" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reflowStates.filter(({ reset }) => reset)).toHaveLength(1);
+    expect(spinner?.classList.contains("hud-spinner-reset")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(600);
+    await firstCondense;
+    await emit("dictation-event", { type: "paste_completed" });
+    await vi.advanceTimersByTimeAsync(320);
+    await emit("dictation-event", { type: "listening_started" });
+
+    const secondCondense = emit("dictation-event", { type: "finalizing_transcript" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(reflowStates.filter(({ reset }) => reset)).toHaveLength(2);
+    expect(spinner?.classList.contains("hud-spinner-reset")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(600);
+    await secondCondense;
+  });
+
+  it("restores listening when the stop command does not reach the helper", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_helper_command") {
+        return Promise.reject(new Error("helper stdin closed"));
+      }
+      return Promise.resolve(undefined);
+    });
+    mocks.invoke.mockClear();
+    mocks.hide.mockClear();
+
+    document.querySelector<HTMLButtonElement>("#hud-stop")?.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_shake", undefined);
+    });
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh waveform loop after a hidden webview stalls the previous frame", async () => {
+    const pendingFrameIds: number[] = [];
+    let nextFrameId = 1;
+    const requestFrame = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((_callback: FrameRequestCallback) => {
+        const id = nextFrameId++;
+        // A hidden WKWebView may never service the frame that was queued while
+        // the first dictation was leaving. Keep every callback pending here so
+        // the test models that suspension instead of Chromium's eager replay.
+        pendingFrameIds.push(id);
+        return id;
+      });
+    const cancelFrame = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+
+    try {
+      await loadHud();
+      const framesBeforeListening = pendingFrameIds.length;
+      await emit("dictation-event", { type: "listening_started" });
+      expect(pendingFrameIds.length).toBeGreaterThan(framesBeforeListening);
+
+      await emit("dictation-event", { type: "finalizing_transcript" });
+      const cancelledFrameIds = cancelFrame.mock.calls.map(([id]) => id);
+      expect(cancelledFrameIds.some((id) => pendingFrameIds.includes(id))).toBe(true);
+
+      // The stale first frame must not suppress the next recording's loop.
+      const framesBeforeRestart = pendingFrameIds.length;
+      await emit("dictation-event", { type: "listening_started" });
+      expect(pendingFrameIds.length).toBeGreaterThan(framesBeforeRestart);
+    } finally {
+      requestFrame.mockRestore();
+      cancelFrame.mockRestore();
+    }
+  });
+
+  it("discards the recording when the cancel X is clicked", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    document.querySelector<HTMLButtonElement>("#hud-cancel")?.click();
+    await Promise.resolve();
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
+
+    await emit("dictation-event", { type: "recording_discarded" });
+    await vi.advanceTimersByTimeAsync(320);
+
+    expect(mocks.hide).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an active recording visible when the cancel command fails", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_helper_command") {
+        return Promise.reject(new Error("helper stdin closed"));
+      }
+      return Promise.resolve(undefined);
+    });
+    mocks.invoke.mockClear();
+    mocks.hide.mockClear();
+
+    document.querySelector<HTMLButtonElement>("#hud-cancel")?.click();
+
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_shake", undefined);
+    });
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_hud_set_cancel_bounds", {
+      rect: null,
+    });
+  });
+
+  it("discards the recording on Escape while listening", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("dictation_helper_command", {
+        command: { type: "discard_recording" },
+      });
+    });
+  });
+
+  it("ignores Escape once transcription has started", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    await emit("dictation-event", { type: "finalizing_transcript" });
+    mocks.invoke.mockClear();
+
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await Promise.resolve();
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+  });
+
+  it("drags from anywhere on the pill except the controls", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+
+    hudElement().dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+    expect(mocks.startDragging).toHaveBeenCalledTimes(1);
+
+    document
+      .querySelector<HTMLButtonElement>("#hud-stop")
+      ?.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+    expect(mocks.startDragging).toHaveBeenCalledTimes(1);
+
+    document
+      .querySelector<HTMLButtonElement>("#hud-cancel")
+      ?.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+    expect(mocks.startDragging).toHaveBeenCalledTimes(1);
+  });
+
+  it("responds to cancel hover immediately but waits for tooltip intent", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+
+    mocks.listeners.get("hud-cancel-hover")?.({ payload: true });
+    expect(document.querySelector("#hud-cancel")?.classList.contains("is-hovered")).toBe(true);
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(false);
+
+    mocks.listeners.get("hud-cancel-tooltip-hover")?.({ payload: true });
+    await vi.waitFor(() => {
+      expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(true);
+    });
+    expect(hudElement().dataset.tipPlacement).toBe("below");
+
+    mocks.listeners.get("hud-cancel-hover")?.({ payload: false });
+    expect(document.querySelector("#hud-cancel")?.classList.contains("is-hovered")).toBe(false);
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(true);
+
+    mocks.listeners.get("hud-cancel-tooltip-hover")?.({ payload: false });
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(false);
+  });
+
+  it("keeps the macOS tooltip outside the Dictation HUD hit-tested frame", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    await loadHud();
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { escapeCancelAvailable: true },
+    });
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "dictation_hud_set_size",
+      expect.objectContaining({ width: 36, height: 36 }),
+    );
+    mocks.invoke.mockClear();
+
+    mocks.listeners.get("hud-cancel-tooltip-hover")?.({ payload: true });
+
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_tooltip_visible", {
+        visible: true,
+        placement: "below",
+      });
+    });
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(false);
+  });
+
+  it("does not teach Escape when the helper could not register it", async () => {
+    await loadHud();
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { escapeCancelAvailable: false },
+    });
+
+    mocks.listeners.get("hud-cancel-hover")?.({ payload: true });
+    mocks.listeners.get("hud-cancel-tooltip-hover")?.({ payload: true });
+    await Promise.resolve();
+
+    expect(document.querySelector("#hud-cancel")?.classList.contains("is-hovered")).toBe(true);
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(false);
+  });
+
+  it("does not teach Escape when a native helper omits the capability", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "Win32",
+    });
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "dictation_hud_set_size",
+      expect.objectContaining({ width: 36, height: 36 }),
+    );
+    mocks.listeners.get("hud-cancel-hover")?.({ payload: true });
+    mocks.listeners.get("hud-cancel-tooltip-hover")?.({ payload: true });
+    await Promise.resolve();
+
+    expect(document.querySelector("#hud-cancel")?.classList.contains("is-hovered")).toBe(true);
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(false);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "dictation_hud_set_tooltip_visible",
+      expect.objectContaining({ visible: true }),
+    );
   });
 
   it("snap-sizes an interrupted fresh listening show before revealing it", async () => {
@@ -708,7 +1068,7 @@ describe("meeting detection HUD", () => {
     // 2 compact HUD gutters all round).
     expect(mocks.invoke).toHaveBeenCalledWith(
       "dictation_hud_set_size",
-      expect.objectContaining({ width: 36, height: 52 }),
+      expect.objectContaining({ width: 36, height: 48 }),
     );
   });
 
@@ -780,6 +1140,168 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).toHaveBeenCalledOnce();
   });
 
+  it("does not finish an in-flight hide after the HUD webview is destroyed", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "finalizing_transcript" });
+
+    await emit("dictation-event", {
+      type: "agent_session_prompt",
+      payload: { prompt: "summarize the open document." },
+    });
+    expect(hudElement().dataset.state).toBe("exiting");
+
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.advanceTimersByTimeAsync(320);
+
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
+  it("cancels an in-flight condense when the HUD webview is destroyed", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    const hud = hudElement();
+    vi.spyOn(hud, "getBoundingClientRect").mockReturnValue({
+      width: 124,
+      height: 32,
+      top: 0,
+      left: 0,
+      right: 124,
+      bottom: 32,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    mocks.invoke.mockClear();
+    mocks.hide.mockClear();
+
+    const finalizing = emit("dictation-event", { type: "finalizing_transcript" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(hud.classList.contains("hud-collapse")).toBe(true);
+
+    window.dispatchEvent(new Event("pagehide"));
+    await finalizing;
+    await vi.advanceTimersByTimeAsync(7000);
+
+    expect(hud.classList.contains("hud-collapse")).toBe(false);
+    expect(sizeCalls()).toEqual([]);
+    expect(hudShowCalls()).toBe(0);
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
+  it("does not finish an in-flight error reveal after the HUD webview is destroyed", async () => {
+    vi.useFakeTimers();
+    let resolvePlacement: ((placement: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return new Promise<string>((resolve) => {
+          resolvePlacement = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    await loadHud();
+    mocks.invoke.mockClear();
+
+    const handlingError = emit("dictation-event", {
+      type: "error",
+      payload: { message: "Dictation failed." },
+    });
+    await Promise.resolve();
+    expect(hudElement().dataset.state).toBe("error");
+
+    window.dispatchEvent(new Event("pagehide"));
+    resolvePlacement?.("below");
+    await handlingError;
+    await vi.advanceTimersByTimeAsync(2200);
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_hud_show", expect.anything());
+    expect(sizeCalls()).toEqual([]);
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_hud_shake");
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
+  it("ignores a delayed latest event after the HUD webview is destroyed", async () => {
+    let resolveLatestEvent: ((payload: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "latest_dictation_event") {
+        return new Promise<string>((resolve) => {
+          resolveLatestEvent = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    await loadHud();
+    mocks.invoke.mockClear();
+
+    window.dispatchEvent(new Event("pagehide"));
+    resolveLatestEvent?.(JSON.stringify({ type: "listening_started" }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(hudElement().dataset.state).toBe("idle");
+    expect(hudShowCalls()).toBe(0);
+    expect(sizeCalls()).toEqual([]);
+  });
+
+  it("does not show a delayed macOS tooltip after the HUD webview is destroyed", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    Object.defineProperty(navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
+    let resolvePlacement: ((placement: string) => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "dictation_hud_preferred_error_placement") {
+        return new Promise<string>((resolve) => {
+          resolvePlacement = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    await loadHud();
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { escapeCancelAvailable: true },
+    });
+    mocks.invoke.mockClear();
+
+    mocks.listeners.get("hud-cancel-tooltip-hover")?.({ payload: true });
+    window.dispatchEvent(new Event("pagehide"));
+    resolvePlacement?.("below");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_tooltip_visible", {
+      visible: false,
+    });
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_hud_set_tooltip_visible", {
+      visible: true,
+      placement: "below",
+    });
+    expect(hudElement().classList.contains("hud-esc-tip-open")).toBe(false);
+  });
+
+  it("removes the Escape handler when the HUD webview is destroyed", async () => {
+    await loadHud();
+    await emit("dictation-event", { type: "listening_started" });
+    mocks.invoke.mockClear();
+    mocks.hide.mockClear();
+
+    window.dispatchEvent(new Event("pagehide"));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await Promise.resolve();
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("dictation_helper_command", {
+      command: { type: "discard_recording" },
+    });
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
   it("does not listen for agent status sounds", async () => {
     await loadHud();
     expect(mocks.listeners.has(AGENT_SESSION_STATUS_EVENT)).toBe(false);
@@ -827,8 +1349,13 @@ function hudElement() {
 
 function hudMarkup() {
   return `
-    <div id="hud" class="hud" data-state="idle">
-      <span id="hud-handle" class="hud-handle" aria-label="Drag dictation HUD"></span>
+    <div
+      id="hud"
+      class="hud"
+      data-state="idle"
+      style="--control-lg: 32px; --sp-2: 6px"
+    >
+      <button id="hud-cancel" class="hud-cancel" type="button" aria-label="Cancel dictation"></button>
       <div class="hud-viz">
         <div class="hud-bars" aria-hidden="true">
           <span class="hud-bar"></span>
@@ -839,8 +1366,9 @@ function hudMarkup() {
           <span class="hud-bar"></span>
           <span class="hud-bar"></span>
         </div>
-        <span id="hud-braille" class="hud-braille" aria-hidden="true"></span>
       </div>
+      <span id="hud-esc-tip" class="hud-esc-tip" aria-hidden="true">Esc to cancel</span>
+      <span id="hud-spinner" class="hud-spinner" aria-hidden="true"></span>
       <span class="hud-error-icon" aria-hidden="true"></span>
       <span class="hud-error-layer" aria-hidden="true">
         <span id="hud-error-text" class="hud-error-message"></span>

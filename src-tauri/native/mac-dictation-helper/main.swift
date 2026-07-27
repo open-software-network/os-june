@@ -641,6 +641,8 @@ struct ShortcutIdentity: Equatable, Hashable {
     }
 }
 
+private let shortcutHotKeySignature = OSType(0x4A_44_48_4B) // "JDHK"
+
 final class ShortcutKeyMonitor {
     static let shared = ShortcutKeyMonitor()
 
@@ -875,7 +877,7 @@ final class ShortcutKeyMonitor {
             if shortcut.modifiers.shift { carbonModifiers |= UInt32(shiftKey) }
 
             var ref: EventHotKeyRef?
-            let hotKeyId = EventHotKeyID(signature: OSType(0x4A_44_48_4B), id: nextCarbonHotKeyId) // "JDHK"
+            let hotKeyId = EventHotKeyID(signature: shortcutHotKeySignature, id: nextCarbonHotKeyId)
             let status = RegisterEventHotKey(
                 UInt32(shortcut.keyCode),
                 carbonModifiers,
@@ -1152,6 +1154,9 @@ private let carbonHotKeyCallback: EventHandlerUPP = { _, eventRef, userInfo in
     )
     guard status == noErr else {
         return status
+    }
+    guard hotKeyId.signature == shortcutHotKeySignature else {
+        return OSStatus(eventNotHandledErr)
     }
     let monitor = Unmanaged<ShortcutKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
     let pressed = GetEventKind(eventRef) == UInt32(kEventHotKeyPressed)
@@ -1656,6 +1661,112 @@ let micTestCapturePaddingSeconds: Double = 0.35
 // during finalization. Sub-window captures are quarantined before this gate.
 let dictationAudioActivityThreshold: Float = 0.04
 
+private let escapeCancelHotKeySignature = OSType(0x4A_44_45_43) // "JDEC"
+
+final class DictationEscapeCancelMonitor {
+    static let shared = DictationEscapeCancelMonitor()
+
+    private var carbonHandlerRef: EventHandlerRef?
+    private var hotKeyRef: EventHotKeyRef?
+    private let hotKeyId = EventHotKeyID(signature: escapeCancelHotKeySignature, id: 1)
+
+    private init() {}
+
+    func start() -> Bool {
+        guard hotKeyRef == nil else {
+            return true
+        }
+
+        installCarbonHotKeyHandler()
+
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            UInt32(kVK_Escape),
+            0,
+            hotKeyId,
+            GetEventDispatcherTarget(),
+            0,
+            &ref
+        )
+        if status == noErr, let ref {
+            hotKeyRef = ref
+            return true
+        } else {
+            emit("escape_cancel_unavailable", [
+                "message": "Could not register Escape to cancel dictation.",
+            ])
+            return false
+        }
+    }
+
+    func stop() {
+        guard let ref = hotKeyRef else {
+            return
+        }
+
+        UnregisterEventHotKey(ref)
+        hotKeyRef = nil
+    }
+
+    private func installCarbonHotKeyHandler() {
+        guard carbonHandlerRef == nil else {
+            return
+        }
+
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(
+            GetEventDispatcherTarget(),
+            escapeCancelHotKeyCallback,
+            2,
+            &specs,
+            userInfo,
+            &carbonHandlerRef
+        )
+    }
+
+    fileprivate func handleCarbonHotKey(pressed: Bool) {
+        guard pressed else {
+            return
+        }
+
+        runOnMain {
+            dictation.discard()
+        }
+    }
+}
+
+private let escapeCancelHotKeyCallback: EventHandlerUPP = { _, eventRef, userInfo in
+    guard let eventRef, let userInfo else {
+        return OSStatus(eventNotHandledErr)
+    }
+
+    var hotKeyId = EventHotKeyID()
+    let status = GetEventParameter(
+        eventRef,
+        EventParamName(kEventParamDirectObject),
+        EventParamType(typeEventHotKeyID),
+        nil,
+        MemoryLayout<EventHotKeyID>.size,
+        nil,
+        &hotKeyId
+    )
+    guard status == noErr else {
+        return status
+    }
+
+    guard hotKeyId.signature == escapeCancelHotKeySignature else {
+        return OSStatus(eventNotHandledErr)
+    }
+
+    let monitor = Unmanaged<DictationEscapeCancelMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+    monitor.handleCarbonHotKey(pressed: GetEventKind(eventRef) == UInt32(kEventHotKeyPressed))
+    return noErr
+}
+
 final class DictationController {
     private var audioRecorder: AVAudioRecorder?
     private var selectedDeviceRecorder: SelectedDeviceRecorder?
@@ -2032,9 +2143,11 @@ final class DictationController {
                 "microphone": microphone,
             ])
         } else {
-            emit("listening_started", [
+            let escapeCancelAvailable = DictationEscapeCancelMonitor.shared.start()
+            emitJSON("listening_started", [
                 "recognitionMode": "venice_recording",
                 "microphone": microphone,
+                "escapeCancelAvailable": escapeCancelAvailable,
             ])
         }
     }
@@ -2048,6 +2161,7 @@ final class DictationController {
         }
         isListening = false
         isFinalizing = true
+        DictationEscapeCancelMonitor.shared.stop()
         micTestStopWorkItem?.cancel()
         micTestStopWorkItem = nil
         stopMetering()
@@ -2223,6 +2337,7 @@ final class DictationController {
         isListening = false
         isFinalizing = false
         startPending = false
+        DictationEscapeCancelMonitor.shared.stop()
         maxObservedAudioLevel = 0
         recordingStartedAt = 0
         micTestStopWorkItem?.cancel()

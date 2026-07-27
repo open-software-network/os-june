@@ -71,10 +71,20 @@ describe("HUD listener lifecycle", () => {
 
   it("releases every Tauri listener on beforeunload", async () => {
     await import("../agent-hud");
+    await vi.waitFor(() => {
+      expect(mocks.unlistenHandles).toHaveLength(8);
+    });
+
     await import("../hud");
-    await import("../meeting-hud");
     await vi.waitFor(() => {
       expect(mocks.unlistenHandles).toHaveLength(16);
+    });
+
+    await import("../meeting-hud");
+    await vi.waitFor(() => {
+      // Main's three meeting-hud listeners plus this branch's
+      // meeting-end-state listener.
+      expect(mocks.unlistenHandles).toHaveLength(20);
     });
 
     window.dispatchEvent(new Event("beforeunload"));

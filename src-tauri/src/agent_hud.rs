@@ -10,8 +10,25 @@ const AGENT_OPEN_EVENT: &str = "june:agent:open";
 // Fired at the webview when the panel swallows a right- or ctrl-click so the
 // in-DOM menu can open. Mirrored by the listener in src/agent-hud.ts.
 const AGENT_HUD_CONTEXT_MENU_EVENT: &str = "june:agent-hud:context-menu";
+// Fired at the webview whenever the main window gains or loses focus. The
+// webview suppresses the HUD while the user is in June itself — the sidebar
+// and inline prompts already show session state there. Mirrored in
+// src/agent-hud.ts.
+const AGENT_HUD_MAIN_FOCUS_EVENT: &str = "june:agent-hud:main-focus";
 const AGENT_HUD_WINDOW_WIDTH: f64 = 304.0;
 const AGENT_HUD_COLLAPSED_WINDOW_HEIGHT: f64 = 58.0;
+
+/// Which screen corner the HUD window parks in. Serialized with the same
+/// kebab-case strings the webview stores (src/lib/agent-hud-settings.ts).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentHudPlacement {
+    TopLeft,
+    #[default]
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
 
 // The custom NSPanel subclass overrides `sendEvent:`, a static C function with
 // no captured state, so it reaches the app through this handle to emit the
@@ -27,6 +44,7 @@ pub struct AgentHudLayoutRequest {
     context_menu_open: Option<bool>,
     width: Option<f64>,
     height: Option<f64>,
+    placement: Option<AgentHudPlacement>,
 }
 
 pub fn setup(app: &mut tauri::App) {
@@ -35,6 +53,35 @@ pub fn setup(app: &mut tauri::App) {
     if let Err(error) = configure_agent_hud_window(app.handle()) {
         tracing::warn!(%error, "failed to configure agent HUD");
     }
+    forward_main_focus_to_hud(app.handle());
+}
+
+/// Streams the main window's focus state at the HUD webview, which owns the
+/// show/hide decision (it also knows whether there is anything to show).
+fn forward_main_focus_to_hud(app: &AppHandle) {
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
+    let handle = app.clone();
+    main.on_window_event(move |event| {
+        let focused = match event {
+            tauri::WindowEvent::Focused(focused) => *focused,
+            // A closed main window can never be focused; without this the
+            // HUD would stay suppressed forever after the last blur.
+            tauri::WindowEvent::Destroyed => false,
+            _ => return,
+        };
+        let _ = handle.emit_to(AGENT_HUD_WINDOW_LABEL, AGENT_HUD_MAIN_FOCUS_EVENT, focused);
+    });
+}
+
+/// The initial answer for a freshly loaded HUD webview, before any focus
+/// change has fired.
+#[tauri::command]
+pub fn agent_hud_main_focused(app: AppHandle) -> bool {
+    app.get_webview_window(MAIN_WINDOW_LABEL)
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -110,20 +157,36 @@ pub fn agent_hud_set_layout(app: AppHandle, request: AgentHudLayoutRequest) -> R
     // Width now follows the rendered surface so the transparent part of the
     // native panel cannot cover nearby controls. Re-anchor from the requested
     // size instead of outer_size(), which can lag behind set_size() on macOS.
-    position_agent_hud_window_with_size(&window, physical_size, scale)
+    position_agent_hud_window_with_size(
+        &window,
+        physical_size,
+        scale,
+        request.placement.unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
 pub fn agent_hud_open_agent(
     app: AppHandle,
     session: Option<serde_json::Value>,
+    stored_session_id: Option<String>,
 ) -> Result<(), String> {
     show_main_window(&app);
-    let payload = session
-        .map(|session| json!({ "session": session }))
-        .unwrap_or_else(|| json!({}));
-    app.emit_to(MAIN_WINDOW_LABEL, AGENT_OPEN_EVENT, payload)
-        .map_err(|error| error.to_string())
+    // Rows without a full session object can still carry the stored id from
+    // their status record; the main window resolves it against session history.
+    let mut payload = serde_json::Map::new();
+    if let Some(session) = session {
+        payload.insert("session".to_string(), session);
+    }
+    if let Some(stored_session_id) = stored_session_id {
+        payload.insert("storedSessionId".to_string(), json!(stored_session_id));
+    }
+    app.emit_to(
+        MAIN_WINDOW_LABEL,
+        AGENT_OPEN_EVENT,
+        serde_json::Value::Object(payload),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// The webview reports the rendered interactive bounds so the native panel can
@@ -191,19 +254,15 @@ fn configure_agent_hud_window(app: &AppHandle) -> Result<(), String> {
 fn position_agent_hud_window(window: &WebviewWindow) -> Result<(), String> {
     let size = window.outer_size().map_err(|error| error.to_string())?;
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
-    position_agent_hud_window_with_size(window, size, scale)
+    position_agent_hud_window_with_size(window, size, scale, AgentHudPlacement::default())
 }
 
 fn position_agent_hud_window_with_size(
     window: &WebviewWindow,
     size: PhysicalSize<u32>,
     scale: f64,
+    placement: AgentHudPlacement,
 ) -> Result<(), String> {
-    // Keep the visible surface at its previous screen position. The old
-    // oversized webview placed it 10px from the right and 8px from the top.
-    const MARGIN_X: f64 = 26.0;
-    const MARGIN_Y: f64 = 20.0;
-
     // Pin the HUD to the primary monitor; picking the monitor from the
     // cursor made it hop between displays whenever a layout change fired
     // while the mouse was on another screen.
@@ -217,13 +276,52 @@ fn position_agent_hud_window_with_size(
     };
 
     let work_area = monitor.work_area();
-    let margin_x = (MARGIN_X * scale).round() as i32;
-    let margin_y = (MARGIN_Y * scale).round() as i32;
-    let x = work_area.position.x + work_area.size.width as i32 - size.width as i32 - margin_x;
-    let y = work_area.position.y + margin_y;
+    let (x, y) = agent_hud_corner_origin(
+        placement,
+        work_area.position.x,
+        work_area.position.y,
+        work_area.size.width as i32,
+        work_area.size.height as i32,
+        size.width as i32,
+        size.height as i32,
+        scale,
+    );
     window
         .set_position(PhysicalPosition::new(x, y))
         .map_err(|error| error.to_string())
+}
+
+/// The window origin (physical pixels) that parks the HUD in the chosen
+/// corner of the work area. Bottom placements anchor the window's bottom
+/// edge, so an expanding HUD grows upward instead of marching off-screen.
+#[allow(clippy::too_many_arguments)]
+fn agent_hud_corner_origin(
+    placement: AgentHudPlacement,
+    work_x: i32,
+    work_y: i32,
+    work_width: i32,
+    work_height: i32,
+    width: i32,
+    height: i32,
+    scale: f64,
+) -> (i32, i32) {
+    // Keep the visible surface at its previous screen position. The old
+    // oversized webview placed it 10px from the right and 8px from the top.
+    const MARGIN_X: f64 = 26.0;
+    const MARGIN_Y: f64 = 20.0;
+
+    let margin_x = (MARGIN_X * scale).round() as i32;
+    let margin_y = (MARGIN_Y * scale).round() as i32;
+    let left = work_x + margin_x;
+    let right = work_x + work_width - width - margin_x;
+    let top = work_y + margin_y;
+    let bottom = work_y + work_height - height - margin_y;
+    match placement {
+        AgentHudPlacement::TopLeft => (left, top),
+        AgentHudPlacement::TopRight => (right, top),
+        AgentHudPlacement::BottomLeft => (left, bottom),
+        AgentHudPlacement::BottomRight => (right, bottom),
+    }
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -372,5 +470,56 @@ mod tests {
             agent_hud_window_size(false, 0, false, Some(0.0), Some(f64::INFINITY)),
             (AGENT_HUD_WINDOW_WIDTH, AGENT_HUD_COLLAPSED_WINDOW_HEIGHT)
         );
+    }
+
+    #[test]
+    fn corner_origin_parks_each_placement_inside_the_work_area() {
+        // 1440x900 work area at origin, 300x100 window, 1x scale:
+        // margins are 26/20, so left=26, right=1440-300-26, top=20,
+        // bottom=900-100-20.
+        let origin = |placement| agent_hud_corner_origin(placement, 0, 0, 1440, 900, 300, 100, 1.0);
+        assert_eq!(origin(AgentHudPlacement::TopLeft), (26, 20));
+        assert_eq!(origin(AgentHudPlacement::TopRight), (1114, 20));
+        assert_eq!(origin(AgentHudPlacement::BottomLeft), (26, 780));
+        assert_eq!(origin(AgentHudPlacement::BottomRight), (1114, 780));
+    }
+
+    #[test]
+    fn corner_origin_anchors_the_bottom_edge_for_bottom_placements() {
+        // A taller window in a bottom corner keeps its bottom edge fixed, so
+        // growth is upward.
+        let short = agent_hud_corner_origin(
+            AgentHudPlacement::BottomRight,
+            0,
+            0,
+            1440,
+            900,
+            300,
+            100,
+            1.0,
+        );
+        let tall = agent_hud_corner_origin(
+            AgentHudPlacement::BottomRight,
+            0,
+            0,
+            1440,
+            900,
+            300,
+            220,
+            1.0,
+        );
+        assert_eq!(short.1 + 100, tall.1 + 220);
+    }
+
+    #[test]
+    fn placement_deserializes_from_the_webview_strings() {
+        let parse = |value: &str| serde_json::from_value::<AgentHudPlacement>(json!(value));
+        assert_eq!(parse("top-left").unwrap(), AgentHudPlacement::TopLeft);
+        assert_eq!(
+            parse("bottom-right").unwrap(),
+            AgentHudPlacement::BottomRight
+        );
+        assert!(parse("notch").is_err());
+        assert_eq!(AgentHudPlacement::default(), AgentHudPlacement::TopRight);
     }
 }

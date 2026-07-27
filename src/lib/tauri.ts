@@ -943,12 +943,17 @@ export async function agentHudSetLayout(input: {
   contextMenuOpen?: boolean;
   width?: number;
   height?: number;
+  placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
 }) {
   return invoke<void>("agent_hud_set_layout", { request: input });
 }
 
-export async function agentHudOpenAgent(session?: AgentSessionDto) {
-  return invoke<void>("agent_hud_open_agent", { session });
+export async function agentHudMainFocused() {
+  return invoke<boolean>("agent_hud_main_focused");
+}
+
+export async function agentHudOpenAgent(session?: AgentSessionDto, storedSessionId?: string) {
+  return invoke<void>("agent_hud_open_agent", { session, storedSessionId });
 }
 
 export async function sendAppNotification(input: {
@@ -963,8 +968,8 @@ export async function sendAppNotification(input: {
 
 /**
  * Tells the backend the webview can receive "june:agent:open" events and
- * returns the session id of a notification clicked before that (the click
- * launched the app), so bootstrap can navigate straight to it.
+ * returns the stored session id of a notification clicked before that (the
+ * click launched the app), so bootstrap can navigate straight to it.
  */
 export async function agentOpenReady() {
   return invoke<string | null>("agent_open_ready");

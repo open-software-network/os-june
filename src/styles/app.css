@@ -12240,18 +12240,17 @@ button.agent-user-attachment:hover {
   overflow: hidden;
 }
 
-/* Width, not scaleX — a scaled layer squishes its corner radius, and the
- * drain's moving edge should carry the button's own rounding. */
+/* A composited clip-path drain, not a width tween (the css-stabilization
+ * guard bans height/width transitions): the full-size wash is clipped from
+ * the right, and the inset's rounding keeps the moving edge on the button's
+ * own radius. */
 .record-dock .meeting-end-notice .meeting-end-stop::before {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: calc(var(--meeting-end-remaining, 1) * 100%);
-  border-radius: inherit;
+  inset: 0;
   background: color-mix(in oklch, currentColor 12%, transparent);
-  transition: width 1s linear;
+  clip-path: inset(0 calc((1 - var(--meeting-end-remaining, 1)) * 100%) 0 0 round var(--r-md));
+  transition: clip-path 1s linear;
   pointer-events: none;
 }
 

@@ -120,8 +120,8 @@ body:active {
  * compact pill: the frost is a native NSVisualEffectView that meeting_hud.rs
  * reframes to the card, and depth is the native NSWindow shadow — no CSS
  * border or shadow. The shimmering June mark stays (recording is still live
- * through the countdown), the countdown is the depleting ring inside Stop
- * now, and the warm capsule sits on the safety action, echoing the
+ * through the countdown), the countdown is the Stop now button's draining
+ * background, and the warm capsule sits on the safety action, echoing the
  * inactivity dialog's quiet-pause / solid-keep pairing. Size and 14px radius
  * must match resize_frost_for_end_prompt in meeting_hud.rs. */
 .mhud[data-mode="meeting-end"] {
@@ -262,18 +262,17 @@ body:has(.mhud[data-mode="meeting-end"]):active {
   color: var(--muted-foreground);
 }
 
-/* Width, not scaleX — a scaled layer squishes its corner radius, and the
- * drain's moving edge should carry the button's own rounding. */
+/* A composited clip-path drain, not a width tween (matching app.css's
+ * css-stabilization discipline): the full-size wash is clipped from the
+ * right, and the inset's rounding keeps the moving edge on the capsule's
+ * radius. */
 #mhud-end-stop::before {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: calc(var(--meeting-end-remaining, 1) * 100%);
-  border-radius: inherit;
+  inset: 0;
   background: color-mix(in oklch, currentColor 12%, transparent);
-  transition: width 1s linear;
+  clip-path: inset(0 calc((1 - var(--meeting-end-remaining, 1)) * 100%) 0 0 round var(--r-pill));
+  transition: clip-path 1s linear;
   pointer-events: none;
 }
 

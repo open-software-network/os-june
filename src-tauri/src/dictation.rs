@@ -76,6 +76,58 @@ const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 /// a destructive silence test: quiet speech can also fall below both cutoffs.
 const DICTATION_SPEECH_CONFIDENCE_THRESHOLD: f32 = 0.4;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
+#[cfg(target_os = "macos")]
+static DICTATION_TOOLTIP_PANEL: OnceLock<usize> = OnceLock::new();
+/// AppKit cannot resolve the webview's CSS custom properties. These native
+/// boundary values mirror the named Dictation HUD tokens in
+/// `src/styles/tokens.css` and the forced-dark colors in
+/// `src/styles/hud.css`; keep the pair together when those tokens change.
+#[cfg(target_os = "macos")]
+/// Mirrors `--control-lg`.
+const DICTATION_TOOLTIP_WIDTH_LOGICAL: f64 = 32.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--control-hud`.
+const DICTATION_TOOLTIP_HEIGHT_LOGICAL: f64 = 24.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--sp-2`.
+const DICTATION_TOOLTIP_GAP_LOGICAL: f64 = 6.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--border-width`.
+const DICTATION_TOOLTIP_BORDER_WIDTH_LOGICAL: f64 = 1.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--r-sm`.
+const DICTATION_TOOLTIP_CORNER_RADIUS_LOGICAL: f64 = 6.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--fs-xs`. Separate HUD webviews intentionally keep font scale 1.
+const DICTATION_TOOLTIP_FONT_SIZE_LOGICAL: f64 = 11.0;
+#[cfg(target_os = "macos")]
+/// AppKit's native equivalent of `--fw-medium` (600).
+const DICTATION_TOOLTIP_FONT_WEIGHT_MEDIUM: f64 = 0.23;
+#[cfg(target_os = "macos")]
+/// sRGB conversion of the forced-dark `--hud-bg`.
+const DICTATION_TOOLTIP_BACKGROUND_RED: f64 = 0.083;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_BACKGROUND_GREEN: f64 = 0.082;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_BACKGROUND_BLUE: f64 = 0.079;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_BACKGROUND_ALPHA: f64 = 0.92;
+#[cfg(target_os = "macos")]
+/// `--hud-border` resolves to a white alpha on the forced-dark HUD.
+const DICTATION_TOOLTIP_BORDER_ALPHA: f64 = 0.12;
+#[cfg(target_os = "macos")]
+/// sRGB conversion of the forced-dark `--muted-foreground`.
+const DICTATION_TOOLTIP_TEXT_RED: f64 = 0.633;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_GREEN: f64 = 0.631;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_BLUE: f64 = 0.627;
+// NSTextField has no tokenized vertical-centering primitive. These two
+// one-off AppKit baseline metrics center the token-sized label in the panel.
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_Y_LOGICAL: f64 = 3.0;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_HEIGHT_LOGICAL: f64 = 17.0;
 
 static SETTINGS_CACHE: OnceLock<Mutex<DictationSettings>> = OnceLock::new();
 
@@ -156,12 +208,14 @@ pub struct HudClientRect {
 /// Hover state for HUD controls. Polled by [`spawn_hud_hover_thread`]; we
 /// don't poll from JS because WebKit throttles timers on the non-key HUD
 /// panel (and CSS :hover is unreliable there for the same reason). The
-/// stop button and the meeting prompt's corner dismiss each get a rect.
+/// stop button, cancel button, and the meeting prompt controls each get a rect.
 /// The window includes a small transparent gutter for the CSS shadow, but
 /// hover still keys off the controls themselves rather than the full frame.
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
+    cancel_bounds: Mutex<Option<HudClientRect>>,
+    last_cancel_hover: std::sync::atomic::AtomicBool,
     dismiss_bounds: Mutex<Option<HudClientRect>>,
     last_dismiss_hover: std::sync::atomic::AtomicBool,
     record_bounds: Mutex<Option<HudClientRect>>,
@@ -835,6 +889,8 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(HudHoverState {
         stop_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
+        cancel_bounds: Mutex::new(None),
+        last_cancel_hover: std::sync::atomic::AtomicBool::new(false),
         dismiss_bounds: Mutex::new(None),
         last_dismiss_hover: std::sync::atomic::AtomicBool::new(false),
         record_bounds: Mutex::new(None),
@@ -1268,6 +1324,16 @@ pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Opti
 }
 
 #[tauri::command]
+pub fn dictation_hud_set_cancel_bounds(
+    state: State<'_, HudHoverState>,
+    rect: Option<HudClientRect>,
+) {
+    if let Ok(mut guard) = state.cancel_bounds.lock() {
+        *guard = rect;
+    }
+}
+
+#[tauri::command]
 pub fn dictation_hud_set_dismiss_bounds(
     state: State<'_, HudHoverState>,
     rect: Option<HudClientRect>,
@@ -1318,6 +1384,93 @@ pub fn dictation_hud_preferred_error_placement(app: AppHandle) -> String {
     } else {
         "below".to_string()
     }
+}
+
+/// Shows the macOS Esc hint in its own click-through panel. Keeping the hint
+/// outside the Dictation HUD means its transparent vertical slot cannot
+/// intercept clicks in the app underneath. Other platforms retain the in-DOM
+/// fallback and return `false`.
+#[tauri::command]
+pub fn dictation_hud_set_tooltip_visible(
+    app: AppHandle,
+    visible: bool,
+    placement: Option<String>,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if !visible {
+            hide_dictation_tooltip(&app);
+            return true;
+        }
+
+        let Some(hud) = app.get_webview_window("hud") else {
+            hide_dictation_tooltip(&app);
+            return true;
+        };
+        if !hud.is_visible().unwrap_or(false) {
+            hide_dictation_tooltip(&app);
+            return true;
+        }
+        let cancel_rect = app
+            .try_state::<HudHoverState>()
+            .and_then(|state| state.cancel_bounds.lock().ok()?.clone());
+        let Some(cancel_rect) = cancel_rect else {
+            hide_dictation_tooltip(&app);
+            return true;
+        };
+        let Ok(hud_handle) = hud.ns_window() else {
+            hide_dictation_tooltip(&app);
+            return true;
+        };
+        if hud_handle.is_null() {
+            hide_dictation_tooltip(&app);
+            return true;
+        }
+        let placement = if placement.as_deref() == Some("above") {
+            HudTooltipPlacement::Above
+        } else {
+            HudTooltipPlacement::Below
+        };
+        let hud_pointer = hud_handle as usize;
+        let _ = app.run_on_main_thread(move || {
+            show_dictation_tooltip(hud_pointer, &cancel_rect, placement);
+        });
+        true
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, visible, placement);
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum HudTooltipPlacement {
+    Above,
+    Below,
+}
+
+#[cfg(target_os = "macos")]
+fn hud_tooltip_origin(
+    hud_frame_x: f64,
+    hud_frame_y: f64,
+    hud_content_height: f64,
+    cancel_rect: &HudClientRect,
+    placement: HudTooltipPlacement,
+) -> (f64, f64) {
+    let control_center_x = hud_frame_x + (cancel_rect.left + cancel_rect.right) / 2.0;
+    let x = control_center_x - DICTATION_TOOLTIP_WIDTH_LOGICAL / 2.0;
+    let control_top = hud_frame_y + hud_content_height - cancel_rect.top;
+    let control_bottom = hud_frame_y + hud_content_height - cancel_rect.bottom;
+    let y = match placement {
+        HudTooltipPlacement::Above => control_top + DICTATION_TOOLTIP_GAP_LOGICAL,
+        HudTooltipPlacement::Below => {
+            control_bottom - DICTATION_TOOLTIP_GAP_LOGICAL - DICTATION_TOOLTIP_HEIGHT_LOGICAL
+        }
+    };
+    (x, y)
 }
 
 /// Serializes window-frame motion (resize morphs, the error shake) so two
@@ -1548,6 +1701,7 @@ pub fn dictation_hud_set_chrome(app: AppHandle, _frostless: bool) {
 /// until hidden.
 #[tauri::command]
 pub fn dictation_hud_exit(app: AppHandle) {
+    hide_dictation_tooltip(&app);
     let Some(hud) = app.get_webview_window("hud") else {
         return;
     };
@@ -1649,12 +1803,61 @@ fn rect_contains(
     cx >= left && cx <= right && cy >= top && cy <= bottom
 }
 
-/// Polls the cursor against the cached control bounds (stop button, meeting
-/// dismiss) and emits hover state changes. Short-circuits when no bounds
+/// Polls the cursor against the cached control bounds (stop button, cancel
+/// button, meeting dismiss) and emits hover state changes. Short-circuits when no bounds
 /// are registered.
+/// Hover intent for the Esc tooltip, in 33ms polls (~330ms). The cancel X's own
+/// hover event is immediate; only this teaching affordance waits for intent.
+const CANCEL_TOOLTIP_IN_POLLS: u32 = 10;
+/// Grace before the Esc tooltip closes, in polls (~130ms). The X's own hover
+/// still clears immediately.
+const CANCEL_TOOLTIP_OUT_POLLS: u32 = 4;
+
+#[derive(Default)]
+struct CancelTooltipIntent {
+    inside_streak: u32,
+    outside_streak: u32,
+    hovered: bool,
+}
+
+impl CancelTooltipIntent {
+    fn update(&mut self, inside: bool) -> Option<bool> {
+        if inside {
+            self.inside_streak = self.inside_streak.saturating_add(1);
+            self.outside_streak = 0;
+        } else {
+            self.outside_streak = self.outside_streak.saturating_add(1);
+            self.inside_streak = 0;
+        }
+
+        let next = if self.hovered {
+            self.outside_streak < CANCEL_TOOLTIP_OUT_POLLS
+        } else {
+            self.inside_streak >= CANCEL_TOOLTIP_IN_POLLS
+        };
+        if next == self.hovered {
+            return None;
+        }
+
+        self.hovered = next;
+        Some(next)
+    }
+
+    fn reset(&mut self) -> Option<bool> {
+        self.inside_streak = 0;
+        self.outside_streak = 0;
+        if !self.hovered {
+            return None;
+        }
+        self.hovered = false;
+        Some(false)
+    }
+}
+
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
         let tick = Duration::from_millis(33);
+        let mut cancel_tooltip_intent = CancelTooltipIntent::default();
         loop {
             thread::sleep(tick);
 
@@ -1669,6 +1872,11 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let visible = hud.is_visible().unwrap_or(false);
 
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
+            let cancel_rect = hover_state
+                .cancel_bounds
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
             let dismiss_rect = hover_state
                 .dismiss_bounds
                 .lock()
@@ -1681,10 +1889,20 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                 .and_then(|g| g.clone());
 
             // Hidden or no hoverable controls on screen: drop stale hover.
-            if !visible || (stop_rect.is_none() && dismiss_rect.is_none() && record_rect.is_none())
+            if !visible
+                || (stop_rect.is_none()
+                    && cancel_rect.is_none()
+                    && dismiss_rect.is_none()
+                    && record_rect.is_none())
             {
                 if hover_state.last_hover.swap(false, Ordering::Relaxed) {
                     let _ = app.emit("hud-stop-hover", false);
+                }
+                if hover_state.last_cancel_hover.swap(false, Ordering::Relaxed) {
+                    let _ = app.emit("hud-cancel-hover", false);
+                }
+                if let Some(hovered) = cancel_tooltip_intent.reset() {
+                    let _ = app.emit("hud-cancel-tooltip-hover", hovered);
                 }
                 if hover_state
                     .last_dismiss_hover
@@ -1720,6 +1938,21 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                     .last_hover
                     .store(stop_hovered, Ordering::Relaxed);
                 let _ = app.emit("hud-stop-hover", stop_hovered);
+            }
+
+            let cancel_inside = match cancel_rect.as_ref() {
+                Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
+                None => false,
+            };
+            let last_cancel = hover_state.last_cancel_hover.load(Ordering::Relaxed);
+            if cancel_inside != last_cancel {
+                hover_state
+                    .last_cancel_hover
+                    .store(cancel_inside, Ordering::Relaxed);
+                let _ = app.emit("hud-cancel-hover", cancel_inside);
+            }
+            if let Some(hovered) = cancel_tooltip_intent.update(cancel_inside) {
+                let _ = app.emit("hud-cancel-tooltip-hover", hovered);
             }
 
             let dismiss_hovered = match dismiss_rect.as_ref() {
@@ -3664,6 +3897,13 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
             update_shortcut_helper_finalizing(app, false);
         }
         _ => {}
+    }
+
+    // An Escape/X cancel mid-hold must also forget the push-to-talk edge, so
+    // the eventual key release can't be misread as a stop for a recording
+    // that no longer exists.
+    if matches!(event_type, Some("recording_discarded")) {
+        reset_shortcut_activation(app);
     }
 
     if matches!(event_type, Some("recording_ready")) {
@@ -5668,6 +5908,7 @@ fn dictation_event_visibility(event_type: Option<&str>) -> DictationEventVisibil
         ) => DictationEventVisibility::Show,
         Some(
             "paste_completed"
+            | "recording_discarded"
             | "agent_session_prompt"
             | "error"
             | "shutdown_ack"
@@ -5773,6 +6014,7 @@ fn schedule_hud_hide(app: &AppHandle, delay: Duration) {
         if let Some(hud) = app.get_webview_window("hud") {
             let _ = hud.hide();
         }
+        hide_dictation_tooltip(&app);
     });
 }
 
@@ -5923,6 +6165,199 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn show_dictation_tooltip(
+    hud_pointer: usize,
+    cancel_rect: &HudClientRect,
+    placement: HudTooltipPlacement,
+) {
+    use objc2::{msg_send, runtime::AnyObject, MainThreadMarker};
+    use objc2_foundation::{NSPoint, NSRect};
+
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let hud = hud_pointer as *mut AnyObject;
+    if hud.is_null() {
+        return;
+    }
+    let Some(panel) = dictation_tooltip_panel() else {
+        return;
+    };
+
+    unsafe {
+        let frame: NSRect = msg_send![hud, frame];
+        let content: *mut AnyObject = msg_send![hud, contentView];
+        if content.is_null() {
+            return;
+        }
+        let bounds: NSRect = msg_send![content, bounds];
+        let (x, y) = hud_tooltip_origin(
+            frame.origin.x,
+            frame.origin.y,
+            bounds.size.height,
+            cancel_rect,
+            placement,
+        );
+        let _: () = msg_send![panel, setFrameOrigin: NSPoint::new(x, y)];
+        let _: () = msg_send![panel, orderFrontRegardless];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dictation_tooltip_panel() -> Option<*mut objc2::runtime::AnyObject> {
+    use objc2::{msg_send, runtime::AnyClass, runtime::AnyObject};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let pointer = *DICTATION_TOOLTIP_PANEL.get_or_init(|| unsafe {
+        let Some(panel_class) = AnyClass::get(c"NSPanel") else {
+            return 0;
+        };
+        let allocated: *mut AnyObject = msg_send![panel_class, alloc];
+        let panel: *mut AnyObject = msg_send![
+            allocated,
+            initWithContentRect: NSRect::new(
+                NSPoint::new(-200.0, -200.0),
+                NSSize::new(
+                    DICTATION_TOOLTIP_WIDTH_LOGICAL,
+                    DICTATION_TOOLTIP_HEIGHT_LOGICAL,
+                ),
+            ),
+            styleMask: (1u64 << 7),
+            backing: 2u64,
+            defer: false
+        ];
+        if panel.is_null() {
+            return 0;
+        }
+        let _: () = msg_send![panel, setOpaque: false];
+        let _: () = msg_send![panel, setHasShadow: true];
+        let _: () = msg_send![panel, setIgnoresMouseEvents: true];
+        let _: () = msg_send![panel, setAcceptsMouseMovedEvents: false];
+        let _: () = msg_send![panel, setBecomesKeyOnlyIfNeeded: true];
+        let _: () = msg_send![panel, setLevel: 25i64];
+        let _: () = msg_send![panel, setCollectionBehavior: (1u64 | (1 << 4) | (1 << 8))];
+        let _: () = msg_send![panel, setReleasedWhenClosed: false];
+        let _: () = msg_send![panel, setHidesOnDeactivate: false];
+
+        if let Some(color_class) = AnyClass::get(c"NSColor") {
+            let clear: *mut AnyObject = msg_send![color_class, clearColor];
+            let _: () = msg_send![panel, setBackgroundColor: clear];
+        }
+
+        let content: *mut AnyObject = msg_send![panel, contentView];
+        if content.is_null() {
+            return 0;
+        }
+        let _: () = msg_send![content, setWantsLayer: true];
+        let layer: *mut AnyObject = msg_send![content, layer];
+        if !layer.is_null() {
+            if let Some(color_class) = AnyClass::get(c"NSColor") {
+                let background: *mut AnyObject = msg_send![
+                    color_class,
+                    colorWithSRGBRed: DICTATION_TOOLTIP_BACKGROUND_RED,
+                    green: DICTATION_TOOLTIP_BACKGROUND_GREEN,
+                    blue: DICTATION_TOOLTIP_BACKGROUND_BLUE,
+                    alpha: DICTATION_TOOLTIP_BACKGROUND_ALPHA
+                ];
+                let border: *mut AnyObject = msg_send![
+                    color_class,
+                    colorWithSRGBRed: 1.0_f64,
+                    green: 1.0_f64,
+                    blue: 1.0_f64,
+                    alpha: DICTATION_TOOLTIP_BORDER_ALPHA
+                ];
+                let background_cg: *mut AnyObject = msg_send![background, CGColor];
+                let border_cg: *mut AnyObject = msg_send![border, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: background_cg];
+                let _: () = msg_send![layer, setBorderColor: border_cg];
+            }
+            let _: () = msg_send![layer, setBorderWidth: DICTATION_TOOLTIP_BORDER_WIDTH_LOGICAL];
+            let _: () = msg_send![layer, setCornerRadius: DICTATION_TOOLTIP_CORNER_RADIUS_LOGICAL];
+            let _: () = msg_send![layer, setMasksToBounds: true];
+        }
+
+        let Some(text_field_class) = AnyClass::get(c"NSTextField") else {
+            return 0;
+        };
+        let field: *mut AnyObject = msg_send![text_field_class, alloc];
+        let field: *mut AnyObject = msg_send![
+            field,
+            initWithFrame: NSRect::new(
+                NSPoint::new(0.0, DICTATION_TOOLTIP_TEXT_Y_LOGICAL),
+                NSSize::new(
+                    DICTATION_TOOLTIP_WIDTH_LOGICAL,
+                    DICTATION_TOOLTIP_TEXT_HEIGHT_LOGICAL,
+                ),
+            )
+        ];
+        if field.is_null() {
+            return 0;
+        }
+        if let Some(string_class) = AnyClass::get(c"NSString") {
+            let text: *mut AnyObject =
+                msg_send![string_class, stringWithUTF8String: c"Esc".as_ptr()];
+            let _: () = msg_send![field, setStringValue: text];
+        }
+        let _: () = msg_send![field, setEditable: false];
+        let _: () = msg_send![field, setSelectable: false];
+        let _: () = msg_send![field, setBezeled: false];
+        let _: () = msg_send![field, setDrawsBackground: false];
+        let _: () = msg_send![field, setAlignment: 1isize];
+        if let Some(font_class) = AnyClass::get(c"NSFont") {
+            // `--font-sans` falls back through system-ui/-apple-system. ABC
+            // Diatype is a WKWebView webfont rather than an installed AppKit
+            // face, so NSFont's system sans is the first native member of the
+            // same token stack.
+            let font: *mut AnyObject = msg_send![
+                font_class,
+                systemFontOfSize: DICTATION_TOOLTIP_FONT_SIZE_LOGICAL,
+                weight: DICTATION_TOOLTIP_FONT_WEIGHT_MEDIUM
+            ];
+            let _: () = msg_send![field, setFont: font];
+        }
+        if let Some(color_class) = AnyClass::get(c"NSColor") {
+            let text_color: *mut AnyObject = msg_send![
+                color_class,
+                colorWithSRGBRed: DICTATION_TOOLTIP_TEXT_RED,
+                green: DICTATION_TOOLTIP_TEXT_GREEN,
+                blue: DICTATION_TOOLTIP_TEXT_BLUE,
+                alpha: 1.0_f64
+            ];
+            let _: () = msg_send![field, setTextColor: text_color];
+        }
+        let _: () = msg_send![content, addSubview: field];
+        panel as usize
+    });
+    (pointer != 0).then_some(pointer as *mut AnyObject)
+}
+
+fn hide_dictation_tooltip(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(|| {
+            use objc2::{msg_send, runtime::AnyObject, MainThreadMarker};
+
+            let Some(_mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let Some(pointer) = DICTATION_TOOLTIP_PANEL
+                .get()
+                .copied()
+                .filter(|pointer| *pointer != 0)
+            else {
+                return;
+            };
+            let panel = pointer as *mut AnyObject;
+            unsafe {
+                let _: () = msg_send![panel, orderOut: std::ptr::null_mut::<AnyObject>()];
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// macOS: reclass the HUD's NSWindow to NSPanel and set the
@@ -6099,6 +6534,54 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancel_tooltip_intent_has_independent_open_and_close_delays() {
+        let mut intent = CancelTooltipIntent::default();
+
+        for _ in 1..CANCEL_TOOLTIP_IN_POLLS {
+            assert_eq!(intent.update(true), None);
+        }
+        assert_eq!(intent.update(true), Some(true));
+
+        for _ in 1..CANCEL_TOOLTIP_OUT_POLLS {
+            assert_eq!(intent.update(false), None);
+        }
+        assert_eq!(intent.update(false), Some(false));
+        assert_eq!(intent.update(false), None);
+    }
+
+    #[test]
+    fn cancel_tooltip_intent_reset_closes_only_an_open_tooltip() {
+        let mut intent = CancelTooltipIntent::default();
+        assert_eq!(intent.reset(), None);
+
+        for _ in 0..CANCEL_TOOLTIP_IN_POLLS {
+            intent.update(true);
+        }
+        assert_eq!(intent.reset(), Some(false));
+        assert_eq!(intent.reset(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_tooltip_tracks_the_cancel_control_above_and_below() {
+        let cancel_rect = HudClientRect {
+            left: 18.0,
+            right: 42.0,
+            top: 18.0,
+            bottom: 50.0,
+        };
+
+        assert_eq!(
+            hud_tooltip_origin(100.0, 200.0, 68.0, &cancel_rect, HudTooltipPlacement::Below,),
+            (114.0, 188.0)
+        );
+        assert_eq!(
+            hud_tooltip_origin(100.0, 200.0, 68.0, &cancel_rect, HudTooltipPlacement::Above,),
+            (114.0, 256.0)
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -7030,6 +7513,29 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_reset_after_cancel_ignores_later_release() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down
+            ),
+            Some(DictationCommand::StartListening)
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
     fn toggle_mode_toggles_on_down_and_ignores_up() {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
@@ -7717,6 +8223,14 @@ mod tests {
     fn helper_unavailable_hides_dictation_hud() {
         assert!(matches!(
             dictation_event_visibility(Some("helper_unavailable")),
+            DictationEventVisibility::Hide
+        ));
+    }
+
+    #[test]
+    fn recording_discarded_hides_dictation_hud() {
+        assert!(matches!(
+            dictation_event_visibility(Some("recording_discarded")),
             DictationEventVisibility::Hide
         ));
     }

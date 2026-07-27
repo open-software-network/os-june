@@ -362,6 +362,7 @@ impl HelperApp {
                 self.writer.emit(event(
                     "listening_started",
                     serde_json::json!({
+                        "escapeCancelAvailable": false,
                         "composerRequestId": self
                             .direct_composer_request
                             .as_ref()

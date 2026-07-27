@@ -6,6 +6,13 @@ import { listAgentSessions } from "../lib/tauri";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { UseAppExternalEventsDependencies } from "./use-app-external-events-types";
 
+type AgentOpenPayload = {
+  session?: AgentSessionDto;
+  storedSessionId?: string;
+  // Notification events predate the qualified stored-session field.
+  sessionId?: string;
+};
+
 export function useAppExternalEvents(dependencies: UseAppExternalEventsDependencies) {
   const { agentMenuBarSessionsRef, setActiveAgentSession, setActiveView, setAgentOrigin } =
     dependencies;
@@ -19,7 +26,7 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
       setActiveView("agent");
     }
 
-    // Notification clicks carry only a session id (the session may have
+    // Notification clicks carry only a stored session id (the session may have
     // changed since the notification was posted). Resolve it against the
     // known sessions, refreshing from the bridge when it is not cached. The
     // workspace opens immediately for feedback and upgrades to the chat when
@@ -32,10 +39,12 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
     const sessionLookupAttempts = 20;
     const sessionLookupRetryMs = 1_000;
     let openSequence = 0;
-    async function openAgentSessionById(sessionId: string) {
+    async function openAgentSessionByStoredId(storedSessionId: string) {
       openSequence += 1;
       const sequence = openSequence;
-      const cached = agentMenuBarSessionsRef.current.find((session) => session.id === sessionId);
+      const cached = agentMenuBarSessionsRef.current.find(
+        (session) => session.id === storedSessionId,
+      );
       if (cached) {
         openAgentWorkspace(cached);
         return;
@@ -51,36 +60,60 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
           continue;
         }
         if (aborted || sequence !== openSequence) return;
-        const session = sessions.find((candidate) => candidate.id === sessionId);
+        const session = sessions.find((candidate) => candidate.id === storedSessionId);
         if (session) openAgentWorkspace(session);
         return;
       }
     }
 
-    function handleOpenPayload(payload?: { session?: AgentSessionDto; sessionId?: string }) {
+    function drainQueuedNotification() {
+      void agentOpenReady()
+        .then((storedSessionId) => {
+          if (!aborted && storedSessionId) {
+            void openAgentSessionByStoredId(storedSessionId);
+          }
+        })
+        .catch(() => {});
+    }
+
+    async function openNotificationSession(deliveredStoredSessionId: string) {
+      let storedSessionId = deliveredStoredSessionId;
+      try {
+        storedSessionId = (await agentOpenReady()) ?? deliveredStoredSessionId;
+      } catch {
+        // The event itself is authoritative when the queue handshake fails.
+      }
+      if (!aborted) await openAgentSessionByStoredId(storedSessionId);
+    }
+
+    function handleOpenPayload(payload?: AgentOpenPayload) {
       if (payload?.session) {
         openAgentWorkspace(payload.session);
         return;
       }
+      if (payload?.storedSessionId) {
+        // Agent HUD opens are already authoritative and must not consume a
+        // notification click that happened to queue at the same time.
+        void openAgentSessionByStoredId(payload.storedSessionId);
+        return;
+      }
       if (payload?.sessionId) {
-        void openAgentSessionById(payload.sessionId);
         // The backend keeps the clicked session queued in case the emit
-        // raced a webview reload; this event was received, so drain it.
-        void agentOpenReady().catch(() => {});
+        // raced a webview reload. Acknowledge notification-originated events
+        // first so a newer queued click wins deterministically.
+        void openNotificationSession(payload.sessionId);
         return;
       }
       openAgentWorkspace(undefined);
     }
 
     function handleOpenEvent(event: Event) {
-      handleOpenPayload(
-        (event as CustomEvent<{ session?: AgentSessionDto; sessionId?: string }>).detail,
-      );
+      handleOpenPayload((event as CustomEvent<AgentOpenPayload>).detail);
     }
 
     let unlisten: (() => void) | undefined;
     window.addEventListener(AGENT_OPEN_EVENT, handleOpenEvent);
-    void listen<{ session?: AgentSessionDto; sessionId?: string }>(AGENT_OPEN_EVENT, (event) => {
+    void listen<AgentOpenPayload>(AGENT_OPEN_EVENT, (event) => {
       handleOpenPayload(event.payload);
     }).then((cleanup) => {
       if (aborted) cleanup();
@@ -89,11 +122,7 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
 
     // Listeners are registered; drain a notification click that launched the
     // app before the webview could hear the open event.
-    void agentOpenReady()
-      .then((sessionId) => {
-        if (!aborted && sessionId) void openAgentSessionById(sessionId);
-      })
-      .catch(() => {});
+    drainQueuedNotification();
 
     return () => {
       aborted = true;

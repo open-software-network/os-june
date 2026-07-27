@@ -5,18 +5,18 @@
 /*
  * Agent HUD.
  *
- * A small always-on-top overlay pinned to the top right of the screen
+ * A small always-on-top Agent HUD parked in a screen corner of the user's
+ * choosing — top right by default; see the HUD position setting
  * (agent_hud.rs owns the window position and sizes the window to the
  * layout the controller requests). Collapsed it is a single quiet pill:
  * the June mark, tinted by the aggregate state, plus "2 running". Click,
  * keyboard focus, or a session needing input expands it into a compact
  * list of sessions, each opening its context in June when clicked.
  *
- * Forced dark regardless of system theme, like the dictation HUD: a
- * transient overlay has to read consistently against any wallpaper or
- * app behind it. The window is transparent with click-through gutters;
- * depth comes from CSS shadows, so the window keeps a margin around the
- * surface for them to paint into (the Rust size math accounts for it).
+ * Forced dark regardless of system theme, like the Dictation HUD: this
+ * transient panel has to read consistently against any wallpaper or
+ * app behind it. The native window is fitted to the rendered surface and
+ * owns the shadow, keeping transparent pixels out of its hit-tested bounds.
  */
 
 :root {
@@ -69,8 +69,7 @@ body {
   position: relative;
   width: 100vw;
   height: 100vh;
-  /* Only the surface is interactive; the transparent gutter around it
-   * (shadow room) is click-through. */
+  /* Only the rendered surface is interactive. */
   pointer-events: none;
 }
 
@@ -87,6 +86,8 @@ body {
   --hud-icon-col: 14px;
   --hud-col-gap: var(--sp-2);
   --hud-expanded-w: 248px;
+  --hud-expanded-pill-h: var(--control-xl);
+  --hud-menu-edge-offset: calc(var(--hud-expanded-pill-h) + var(--sp-3));
 
   position: absolute;
   top: 0;
@@ -154,7 +155,7 @@ body {
   /* A touch taller than the content needs: the extra height gives the
    * collapsed pill more presence. border-radius: 16px above is half of this,
    * so the collapsed surface reads as a true pill. */
-  height: 32px;
+  height: var(--control-lg);
   min-width: 88px;
   padding: 0 9px;
   border: 0;
@@ -179,7 +180,7 @@ body {
 }
 
 .agent-hud[data-expanded="true"] .agent-hud-pill {
-  height: 36px;
+  height: var(--hud-expanded-pill-h);
   padding: 0 var(--hud-inset-x);
   border-radius: 0;
 }
@@ -428,7 +429,10 @@ body {
   align-items: start;
   align-content: center;
   width: 100%;
-  min-height: 46px;
+  /* Matches the expanded header height, so a title-only row sits as one
+   * compact line; a row with a summary grows past this on its own. The old
+   * 46px floor left a phantom second line under summary-less sessions. */
+  min-height: var(--hud-expanded-pill-h);
   padding: var(--sp-2) calc(var(--hud-inset-x) - var(--sp-1));
   border: 0;
   border-radius: inherit;
@@ -479,7 +483,7 @@ body {
 
 .agent-hud-menu {
   position: absolute;
-  top: 44px;
+  top: var(--hud-menu-edge-offset);
   right: 0;
   min-width: 148px;
   padding: var(--sp-1);
@@ -559,4 +563,56 @@ body {
   .agent-hud-status[data-status] {
     animation: none;
   }
+}
+
+/* Corner placements ------------------------------------------------------ */
+
+/* The window parks in the corner the user chose (agent_hud.rs anchors it);
+ * inside the window the surface hugs the matching corner so expansion grows
+ * away from the screen edge. Bottom placements put the pill at the bottom
+ * and reveal the session rows upward, mirroring the top-corner layout. */
+.agent-hud[data-placement="top-left"] .agent-hud-surface,
+.agent-hud[data-placement="bottom-left"] .agent-hud-surface {
+  right: auto;
+  left: 0;
+}
+
+.agent-hud[data-placement="top-left"] .agent-hud-surface {
+  transform-origin: top left;
+}
+
+.agent-hud[data-placement="bottom-left"] .agent-hud-surface,
+.agent-hud[data-placement="bottom-right"] .agent-hud-surface {
+  top: auto;
+  bottom: 0;
+}
+
+.agent-hud[data-placement="bottom-left"] .agent-hud-surface {
+  transform-origin: bottom left;
+}
+
+.agent-hud[data-placement="bottom-right"] .agent-hud-surface {
+  transform-origin: bottom right;
+}
+
+.agent-hud[data-placement="bottom-left"] .agent-hud-pill,
+.agent-hud[data-placement="bottom-right"] .agent-hud-pill {
+  order: 2;
+}
+
+.agent-hud[data-placement="bottom-left"] .agent-hud-reveal,
+.agent-hud[data-placement="bottom-right"] .agent-hud-reveal {
+  order: 1;
+}
+
+.agent-hud[data-placement="top-left"] .agent-hud-menu,
+.agent-hud[data-placement="bottom-left"] .agent-hud-menu {
+  right: auto;
+  left: 0;
+}
+
+.agent-hud[data-placement="bottom-left"] .agent-hud-menu,
+.agent-hud[data-placement="bottom-right"] .agent-hud-menu {
+  top: auto;
+  bottom: var(--hud-menu-edge-offset);
 }
