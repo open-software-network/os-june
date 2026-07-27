@@ -305,9 +305,11 @@ const HOME_TASK_ACTION_REQUEST =
 const HOME_TASK_ACTION_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|investigate|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_REPEAT_REQUEST =
-  /\b(?:again|another one|continue|do (?:it|that|this) again|pick (?:it|that|this) up|redo|repeat|resume|same thing)\b/i;
+  /\b(?:another one|continue (?:it|that|this)|do (?:it|that|this) again|pick (?:it|that|this) up|redo (?:it|that|this)|repeat (?:it|that|this)|resume (?:it|that|this)|same thing)\b/i;
 const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
+const HOME_TASK_CONTEXTUAL_REQUEST =
+  /\b(?:do (?:it|that|this|the same)|how about|one more|same for|what about|(?:first|second|third|next) one)\b/i;
 
 function homeTaskGroundingTokens(value: string): Set<string> {
   return new Set(
@@ -315,20 +317,12 @@ function homeTaskGroundingTokens(value: string): Set<string> {
       .normalize("NFKC")
       .toLocaleLowerCase()
       .match(/[\p{L}\p{N}]+/gu)
-      ?.filter((token) => token.length >= 3 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
-  );
-}
-
-function homeTaskTokenMatches(left: string, right: string): boolean {
-  return (
-    left === right ||
-    (left.length >= 5 && right.length >= 5 && left.slice(0, 5) === right.slice(0, 5))
-  );
-}
-
-function homeTaskTokensOverlap(left: Set<string>, right: Set<string>): boolean {
-  return [...left].some((leftToken) =>
-    [...right].some((rightToken) => homeTaskTokenMatches(leftToken, rightToken)),
+      ?.map((token) =>
+        token.length > 4 && token.endsWith("s") && !token.endsWith("ss")
+          ? token.slice(0, -1)
+          : token,
+      )
+      .filter((token) => token.length >= 3 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
   );
 }
 
@@ -336,9 +330,7 @@ function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskReques
   const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
   const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
   if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
-  const shared = [...leftTokens].filter((leftToken) =>
-    [...rightTokens].some((rightToken) => homeTaskTokenMatches(leftToken, rightToken)),
-  ).length;
+  const shared = [...leftTokens].filter((leftToken) => rightTokens.has(leftToken)).length;
   return shared / Math.max(leftTokens.size, rightTokens.size);
 }
 
@@ -348,21 +340,19 @@ export function isHomeTaskReplayWithoutNewIntent(
   handoffs: HomeTaskHandoff[],
 ): boolean {
   const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(latestMessage);
-  if (!negatesRepeat && HOME_TASK_REPEAT_REQUEST.test(latestMessage)) {
-    return false;
-  }
   const negatesAction = HOME_TASK_ACTION_NEGATION.test(latestMessage);
-  if (!negatesAction && HOME_TASK_ACTION_REQUEST.test(latestMessage)) {
-    return false;
-  }
   const matchesPriorHandoff = handoffs.some(
     (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
   );
   if (!matchesPriorHandoff) return false;
   if (negatesRepeat || negatesAction) return true;
-  const latestTokens = homeTaskGroundingTokens(latestMessage);
-  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
-  if (homeTaskTokensOverlap(latestTokens, taskTokens)) return false;
+  if (
+    HOME_TASK_ACTION_REQUEST.test(latestMessage) ||
+    HOME_TASK_REPEAT_REQUEST.test(latestMessage) ||
+    HOME_TASK_CONTEXTUAL_REQUEST.test(latestMessage)
+  ) {
+    return false;
+  }
   return true;
 }
 
