@@ -60,9 +60,7 @@ export async function compactHistory(input: {
   }
 
   const removed = candidates.flat();
-  const unboundedSummary = input.summarize
-    ? await input.summarize(removed)
-    : deterministicSummary(removed);
+  const unboundedSummary = await summarizeOrFallback(removed, input.summarize);
   const maxSummaryChars = Math.max(1_000, Math.floor(budget * 4 * 0.25));
   const summaryText =
     unboundedSummary.length > maxSummaryChars
@@ -112,12 +110,31 @@ function groupHistory(history: RuntimeHistoryItem[]): RuntimeHistoryItem[][] {
   return groups;
 }
 
-function deterministicSummary(items: RuntimeHistoryItem[]): string {
+async function summarizeOrFallback(
+  items: RuntimeHistoryItem[],
+  summarize?: HistorySummarizer,
+): Promise<string> {
+  if (summarize) {
+    try {
+      const summary = (await summarize(items)).trim();
+      if (summary) return summary;
+    } catch {
+      // The model route owns its request timeout. Any model or transport
+      // failure must leave compaction available through the bounded fallback.
+    }
+  }
+  return formatHistoryForSummary(items);
+}
+
+export function formatHistoryForSummary(
+  items: RuntimeHistoryItem[],
+  maxChars = 12_000,
+): string {
   const lines = items
     .map((item) => summaryLine(item))
     .filter((line): line is string => Boolean(line))
     .join("\n");
-  const bounded = lines.slice(0, 12_000);
+  const bounded = lines.slice(0, maxChars);
   return `Earlier conversation context:\n${bounded}${lines.length > bounded.length ? "\n[older context truncated]" : ""}`;
 }
 

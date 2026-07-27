@@ -59,7 +59,7 @@ export class RuntimeService {
         return this.cancel(request.sessionId, request.runId);
       case "history.compact":
         this.requireInitialized();
-        return this.compact(request.params);
+        return this.compact(request.sessionId, request.runId, request.params);
       case "runtime.shutdown":
         return this.shutdown();
       default:
@@ -89,6 +89,17 @@ export class RuntimeService {
       history: parsed.history,
       contextWindow: parsed.contextWindow,
       ...(parsed.maxOutputTokens === undefined ? {} : { maxOutputTokens: parsed.maxOutputTokens }),
+      summarize: (history) =>
+        this.engine.summarize({
+          sessionId,
+          runId,
+          model: parsed.model,
+          history,
+          contextWindow: parsed.contextWindow,
+          ...(parsed.maxOutputTokens === undefined
+            ? {}
+            : { maxOutputTokens: parsed.maxOutputTokens }),
+        }),
     });
     const controller = new AbortController();
     const active: ActiveRun = { controller, steering: [], steeringIds: new Set() };
@@ -166,15 +177,39 @@ export class RuntimeService {
     return { cancelled: true };
   }
 
-  private async compact(params: JsonObject): Promise<JsonValue> {
+  private async compact(
+    sessionId: string,
+    runId: string,
+    params: JsonObject,
+  ): Promise<JsonValue> {
     const history = params.history;
     if (!Array.isArray(history)) {
       throw new ProtocolError(-32602, "history.compact requires history");
     }
+    const model = typeof params.model === "string" ? params.model.trim() : "";
+    const maxOutputTokens =
+      typeof params.maxOutputTokens === "number" ? params.maxOutputTokens : undefined;
     const result = await compactHistory({
       history: history as RunStartParams["history"],
       contextWindow:
         typeof params.contextWindow === "number" ? params.contextWindow : 128_000,
+      ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+      ...(model
+        ? {
+            summarize: (items) =>
+              this.engine.summarize({
+                sessionId,
+                runId,
+                model,
+                history: items,
+                contextWindow:
+                  typeof params.contextWindow === "number"
+                    ? params.contextWindow
+                    : 128_000,
+                ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+              }),
+          }
+        : {}),
       force: true,
     });
     return result as unknown as JsonValue;

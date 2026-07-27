@@ -167,3 +167,25 @@ test("deterministic summaries retain bounded tool calls and results", async () =
   assert.ok(result.summary?.text?.includes("quarterly plan"));
   assert.ok(result.summary?.text?.includes("roadmap.md"));
 });
+
+test("falls back to deterministic context when model summarization times out", async () => {
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message" as const,
+    role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    text: `Message ${index}`,
+  }));
+
+  const result = await compactHistory({
+    history,
+    contextWindow: 128_000,
+    force: true,
+    summarize: async () => {
+      throw new Error("model request timed out");
+    },
+  });
+
+  assert.equal(result.compacted, true);
+  assert.match(result.summary?.text ?? "", /^Earlier conversation context:/);
+  assert.ok(result.summary?.text?.includes("user: Message 0"));
+});

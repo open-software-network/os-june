@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, State};
 
 const INSTRUCTIONS: &str = "You are June, a private personal AI assistant. Use the tools provided by the June app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
+const AGENT_MODEL_OUTPUT_RESERVE: i64 = 8_192;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,7 +164,7 @@ pub async fn compact_agent_session(
             "history.compact",
             &session_id,
             &run_id,
-            json!({ "history": history, "contextWindow": context_window }),
+            json!({ "history": history, "model": model, "contextWindow": context_window, "maxOutputTokens": AGENT_MODEL_OUTPUT_RESERVE }),
         )
         .await?;
     let removed_item_ids = response
@@ -1425,7 +1426,7 @@ async fn run_params(
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
-        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": model_capabilities.context_tokens.unwrap_or(128000), "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": model_capabilities.context_tokens.unwrap_or(128000), "maxOutputTokens": AGENT_MODEL_OUTPUT_RESERVE }),
     )
 }
 
