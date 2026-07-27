@@ -270,23 +270,44 @@ export function homeConversationGreetingReply(message: string): string | undefin
 }
 
 const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
+  "afternoon",
   "about",
   "agent",
   "create",
+  "day",
+  "evening",
   "focused",
   "for",
   "from",
+  "good",
+  "greetings",
+  "hello",
+  "hey",
+  "hiya",
+  "howdy",
   "june",
+  "morning",
   "please",
   "research",
+  "see",
   "session",
   "start",
   "task",
   "that",
   "the",
+  "there",
   "this",
   "with",
 ]);
+
+const HOME_TASK_ACTION_REQUEST =
+  /\b(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+const HOME_TASK_ACTION_NEGATION =
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|investigate|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+const HOME_TASK_REPEAT_REQUEST =
+  /\b(?:again|another one|continue|do (?:it|that|this) again|pick (?:it|that|this) up|redo|repeat|resume|same thing)\b/i;
+const HOME_TASK_REPEAT_NEGATION =
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
 
 function homeTaskGroundingTokens(value: string): Set<string> {
   return new Set(
@@ -306,17 +327,34 @@ function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskReques
   return shared / new Set([...leftTokens, ...rightTokens]).size;
 }
 
+function homeTaskTokensOverlap(left: Set<string>, right: Set<string>): boolean {
+  return [...left].some((leftToken) =>
+    [...right].some(
+      (rightToken) =>
+        leftToken === rightToken ||
+        (leftToken.length >= 5 &&
+          rightToken.length >= 5 &&
+          leftToken.slice(0, 5) === rightToken.slice(0, 5)),
+    ),
+  );
+}
+
 export function isHomeTaskReplayWithoutNewIntent(
   task: JuneHomeTaskRequest,
   latestMessage: string,
   handoffs: HomeTaskHandoff[],
 ): boolean {
-  if (/\b(?:again|another|continue|redo|repeat|resume|same thing)\b/i.test(latestMessage)) {
+  const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(latestMessage);
+  if (!negatesRepeat && HOME_TASK_REPEAT_REQUEST.test(latestMessage)) {
+    return false;
+  }
+  const negatesAction = HOME_TASK_ACTION_NEGATION.test(latestMessage);
+  if (!negatesAction && HOME_TASK_ACTION_REQUEST.test(latestMessage)) {
     return false;
   }
   const latestTokens = homeTaskGroundingTokens(latestMessage);
   const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
-  if ([...latestTokens].some((token) => taskTokens.has(token))) return false;
+  if (homeTaskTokensOverlap(latestTokens, taskTokens)) return false;
   return handoffs.some(
     (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
   );

@@ -268,12 +268,30 @@ describe("June Home", () => {
     };
 
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Good to see you, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Please do not repeat that", [prior])).toBe(
+      true,
+    );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
       false,
     );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior])).toBe(
       false,
     );
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Apple research Mexico", prompt: "Research apples in Mexico." },
+        "Hey June, look into Mexican apple farming",
+        [
+          {
+            id: "home-task-apples",
+            title: "Apple research Mexico",
+            prompt: "Research apples in Mexico.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
   });
 
   it("reuses a successful handoff when the same Home turn is replayed", () => {
