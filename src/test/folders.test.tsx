@@ -388,6 +388,8 @@ describe("folders UI", () => {
       await waitFor(() => {
         expect(menuShell).toHaveStyle({ right: "568px", top: "324px" });
       });
+      await user.click(menuShell);
+      expect(screen.getByRole("menu")).toBeInTheDocument();
 
       const appShell = trigger.closest(".app-shell") as HTMLElement;
       anchorRect = { top: 548, bottom: 576, right: 280 };

@@ -2552,6 +2552,7 @@ function SidebarContextMenu({
       ref={menuRef}
       className="context-menu sidebar-context-menu scroll-fade"
       {...fade.props}
+      onClick={(event) => event.stopPropagation()}
       style={
         position
           ? { right: position.right, top: position.top }
