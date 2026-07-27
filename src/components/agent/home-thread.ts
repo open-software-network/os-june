@@ -270,15 +270,21 @@ export function homeConversationGreetingReply(message: string): string | undefin
 }
 
 const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
+  "a",
   "afternoon",
   "about",
   "agent",
+  "again",
+  "an",
   "analyze",
   "analyse",
+  "and",
   "build",
   "check",
   "compare",
   "create",
+  "day",
+  "do",
   "draft",
   "edit",
   "email",
@@ -288,8 +294,10 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "generate",
   "help",
   "investigate",
+  "in",
+  "is",
+  "it",
   "look",
-  "day",
   "evening",
   "focused",
   "for",
@@ -303,6 +311,7 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "june",
   "morning",
   "make",
+  "me",
   "plan",
   "prepare",
   "please",
@@ -320,9 +329,19 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "task",
   "that",
   "the",
+  "them",
   "there",
   "this",
+  "those",
+  "to",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
   "with",
+  "you",
+  "your",
 ]);
 
 const HOME_TASK_ACTION_REQUEST =
@@ -335,9 +354,10 @@ const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_REQUEST =
   /\b(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
-const HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST = /\b(?:how about|what about)\b/i;
 const HOME_TASK_CONTEXTUAL_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_ACTION_REPEAT_REQUEST =
+  /\b(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b(?:\s+\w+){0,6}\s+again\b/i;
 
 function homeTaskGroundingTokens(value: string): Set<string> {
   return new Set(
@@ -365,10 +385,6 @@ function normalizedHomeTaskIntent(value: string): string {
     .replace(/\s+/g, " ");
 }
 
-function homeTaskTokensOverlap(left: Set<string>, right: Set<string>): boolean {
-  return [...left].some((token) => right.has(token));
-}
-
 function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
   const normalizedLeftTitle = normalizedHomeTaskIntent(left.title).toLocaleLowerCase();
   const normalizedRightTitle = normalizedHomeTaskIntent(right.title).toLocaleLowerCase();
@@ -382,10 +398,25 @@ function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskReques
 
 function homeMessageTaskSimilarity(task: JuneHomeTaskRequest, message: string): number {
   const messageTokens = homeTaskGroundingTokens(message);
+  if (messageTokens.size === 0) return 0;
+  return Math.max(
+    ...[task.title, task.prompt].map((candidate) => {
+      const taskTokens = homeTaskGroundingTokens(candidate);
+      if (taskTokens.size === 0) return 0;
+      const shared = [...messageTokens].filter((messageToken) =>
+        taskTokens.has(messageToken),
+      ).length;
+      return shared / Math.max(messageTokens.size, taskTokens.size);
+    }),
+  );
+}
+
+function homeMessageTaskCoverage(task: JuneHomeTaskRequest, message: string): number {
+  const messageTokens = homeTaskGroundingTokens(message);
+  if (messageTokens.size === 0) return 0;
   const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
-  if (messageTokens.size === 0 || taskTokens.size === 0) return 0;
   const shared = [...messageTokens].filter((messageToken) => taskTokens.has(messageToken)).length;
-  return shared / Math.max(messageTokens.size, taskTokens.size);
+  return shared / messageTokens.size;
 }
 
 export function isHomeTaskReplayWithoutNewIntent(
@@ -404,14 +435,17 @@ export function isHomeTaskReplayWithoutNewIntent(
   );
   if (!matchesPriorHandoff) return false;
   if (negatesRepeat || negatesContext || (negatesAction && actionCount < 2)) return true;
-  const latestTokens = homeTaskGroundingTokens(latestMessage);
-  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  const normalizedTaskPrompt = normalizedHomeTaskIntent(task.prompt);
+  const taskPromptTokens = homeTaskGroundingTokens(task.prompt);
+  const promptIsGrounded =
+    taskPromptTokens.size >= 2 &&
+    (intentText.includes(normalizedTaskPrompt) || normalizedTaskPrompt.includes(intentText));
   if (
-    homeMessageTaskSimilarity(task, latestMessage) >= 0.6 ||
-    (HOME_TASK_ACTION_REQUEST.test(intentText) &&
-      homeTaskTokensOverlap(latestTokens, taskTokens)) ||
-    (HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST.test(intentText) &&
-      homeTaskTokensOverlap(latestTokens, taskTokens)) ||
+    (task.requiresCurrentResearch && normalizedTaskPrompt === intentText) ||
+    promptIsGrounded ||
+    homeMessageTaskSimilarity(task, latestMessage) > 0.5 ||
+    (HOME_TASK_ACTION_REPEAT_REQUEST.test(intentText) &&
+      homeMessageTaskCoverage(task, latestMessage) > 0.5) ||
     HOME_TASK_REPEAT_REQUEST.test(intentText) ||
     HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)
   ) {

@@ -303,11 +303,39 @@ describe("June Home", () => {
       false,
     );
     expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Research those apples in France again", [prior]),
+    ).toBe(true);
+    expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Compare wine prices", prompt: "Compare prices for those wines." },
+        "Compare prices for those wines",
+        [prior],
+      ),
     ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
-        { title: "Denver weather", prompt: "What is the weather in Denver?" },
+        { title: "French wine research", prompt: "Research wines in France." },
+        "Research apples in France",
+        [
+          {
+            id: "home-task-france-wines",
+            title: "French wine research",
+            prompt: "Research wines in France.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        {
+          title: "Denver weather",
+          prompt: "What is the weather in Denver?",
+          requiresCurrentResearch: true,
+        },
         "What is the weather in Denver?",
         [
           {
@@ -321,7 +349,7 @@ describe("June Home", () => {
     ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
-        { title: "Apple research Mexico", prompt: "Research apples in Mexico." },
+        { title: "Apple research Mexico", prompt: "Look into Mexican apple farming." },
         "Hey June, look into Mexican apple farming",
         [
           {
