@@ -704,6 +704,33 @@ fn finish_frontend_activity(
     Ok(())
 }
 
+pub(super) struct FrontendActivityGuard<'a> {
+    runtime: &'a CompanionRuntime,
+    operation_id: Uuid,
+}
+
+impl<'a> FrontendActivityGuard<'a> {
+    pub(super) fn begin(
+        runtime: &'a CompanionRuntime,
+        operation_id: Uuid,
+    ) -> Result<Self, AppError> {
+        begin_frontend_activity(runtime, operation_id)?;
+        Ok(Self {
+            runtime,
+            operation_id,
+        })
+    }
+}
+
+impl Drop for FrontendActivityGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.runtime.pending_frontend.lock() {
+            pending.remove(&self.operation_id);
+        }
+        let _ = finish_frontend_activity(self.runtime, self.operation_id);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum CompanionAgentEventRequest {
@@ -813,22 +840,7 @@ pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     // A relay task may be awaiting a frontend-backed operation, or pairing may
     // be committing an authorization grant. Wait until all authorized account
     // work observes the sign-out boundary before revoking local state.
-    tokio::time::timeout(ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT, async {
-        loop {
-            let stopped = runtime.account_activity_changed.notified();
-            if runtime.account_activity.load(Ordering::Acquire) == 0 {
-                break;
-            }
-            stopped.await;
-        }
-    })
-    .await
-    .map_err(|_| {
-        AppError::new(
-            "companion_logout_busy",
-            "Companion activity did not stop in time. Try signing out again.",
-        )
-    })?;
+    wait_for_account_activity(&runtime, ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT).await?;
 
     let repos = repositories(app).await?;
     let persisted_account_user_id = repos.companion_account_user_id().await?;
@@ -870,6 +882,28 @@ pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     // may fail offline without allowing a later sign-in to revive old links.
     futures_util::future::join_all(remote_device_ids.into_iter().map(revoke_device_remote)).await;
     Ok(())
+}
+
+async fn wait_for_account_activity(
+    runtime: &CompanionRuntime,
+    timeout: Duration,
+) -> Result<(), AppError> {
+    tokio::time::timeout(timeout, async {
+        loop {
+            let stopped = runtime.account_activity_changed.notified();
+            if runtime.account_activity.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            stopped.await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "companion_logout_busy",
+            "Companion activity did not stop in time. Try signing out again.",
+        )
+    })
 }
 
 pub fn resume_account_transport(app: &AppHandle) {
@@ -1314,19 +1348,35 @@ mod tests {
         assert!(!runtime.pairings.lock().unwrap().contains_key(&pairing_id));
     }
 
-    #[test]
-    fn frontend_activity_survives_a_dropped_transport_waiter_until_completion() {
+    #[tokio::test]
+    async fn frontend_timeout_releases_activity_before_logout_waits() {
         let runtime = CompanionRuntime::default();
         let operation_id = Uuid::new_v4();
-        let (_sender, receiver) = oneshot::channel::<ResultPayload>();
+        let (sender, receiver) = oneshot::channel::<ResultPayload>();
+        runtime
+            .pending_frontend
+            .lock()
+            .unwrap()
+            .insert(operation_id, sender);
 
-        begin_frontend_activity(&runtime, operation_id).unwrap();
-        begin_frontend_activity(&runtime, operation_id).unwrap();
-        drop(receiver);
-        assert_eq!(runtime.account_activity.load(Ordering::Acquire), 1);
+        {
+            let _activity = FrontendActivityGuard::begin(&runtime, operation_id).unwrap();
+            assert!(tokio::time::timeout(Duration::ZERO, receiver)
+                .await
+                .is_err());
+        }
 
-        finish_frontend_activity(&runtime, operation_id).unwrap();
-        finish_frontend_activity(&runtime, operation_id).unwrap();
         assert_eq!(runtime.account_activity.load(Ordering::Acquire), 0);
+        assert!(!runtime
+            .pending_frontend
+            .lock()
+            .unwrap()
+            .contains_key(&operation_id));
+        runtime
+            .account_transport_enabled
+            .store(false, Ordering::Release);
+        wait_for_account_activity(&runtime, Duration::from_millis(10))
+            .await
+            .unwrap();
     }
 }
