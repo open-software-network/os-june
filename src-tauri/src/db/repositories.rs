@@ -2405,6 +2405,10 @@ impl Repositories {
         } else {
             None
         };
+        let item_cursors = items_with_cursors
+            .iter()
+            .map(|(_, cursor)| encode_list_notes_cursor(cursor))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(ListNotesResponse {
             items: items_with_cursors
@@ -2412,6 +2416,7 @@ impl Repositories {
                 .map(|(item, _)| item)
                 .collect(),
             next_cursor,
+            item_cursors,
         })
     }
 

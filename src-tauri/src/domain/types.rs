@@ -42,6 +42,8 @@ pub struct ListNotesResponse {
     pub items: Vec<NoteListItemDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    #[serde(skip)]
+    pub(crate) item_cursors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

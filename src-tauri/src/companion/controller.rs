@@ -8,7 +8,8 @@ use crate::{
 use june_companion_protocol::{
     ActiveRecording, ActiveRecordingSnapshot, ActiveRecordingState, Body, Capability, DeviceSelf,
     DictationStyle, FailureCode, FocusTarget, Frame, NoteConflict, NoteRecord, NoteSummary, Page,
-    ProtocolFailure, Response, ResultPayload, SafeSettings,
+    ProtocolFailure, Response, ResultPayload, SafeSettings, DEFAULT_CONTROL_TTL_MS,
+    MAX_ENCODED_FRAME_BYTES,
 };
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager};
@@ -149,13 +150,14 @@ impl Controller {
                         revision: note.revision,
                         updated_at: note.updated_at,
                     })
-                    .collect();
+                    .collect::<Vec<_>>();
                 ControllerOutcome::Immediate(response(
                     capability,
-                    ResultPayload::Notes(Page {
+                    ResultPayload::Notes(bounded_notes_page(
                         items,
-                        next_cursor: notes.next_cursor,
-                    }),
+                        notes.item_cursors,
+                        notes.next_cursor,
+                    )?),
                 ))
             }
             Body::NoteGet { note_id } => {
@@ -448,6 +450,80 @@ fn response(capability: Capability, result: ResultPayload) -> Response {
     Response { capability, result }
 }
 
+fn bounded_notes_page(
+    items: Vec<NoteSummary>,
+    item_cursors: Vec<String>,
+    repository_next_cursor: Option<String>,
+) -> Result<Page<NoteSummary>, AppError> {
+    if items.len() != item_cursors.len() {
+        return Err(AppError::new(
+            "companion_response_invalid",
+            "The companion notes page could not be encoded.",
+        ));
+    }
+
+    let total_items = items.len();
+    let has_repository_next_page = repository_next_cursor.is_some();
+    let mut included = Vec::with_capacity(total_items);
+    for (index, item) in items.into_iter().enumerate() {
+        included.push(item);
+        let candidate_cursor = (index + 1 < total_items || has_repository_next_page)
+            .then(|| item_cursors[index].clone());
+        if !notes_page_fits(&Page {
+            items: included.clone(),
+            next_cursor: candidate_cursor,
+        })? {
+            included.pop();
+            break;
+        }
+    }
+
+    if included.is_empty() && total_items > 0 {
+        return Err(AppError::new(
+            "companion_response_invalid",
+            "A companion note summary exceeded the response size limit.",
+        ));
+    }
+
+    let next_cursor = if included.len() < total_items {
+        item_cursors.get(included.len().saturating_sub(1)).cloned()
+    } else {
+        repository_next_cursor
+    };
+    let page = Page {
+        items: included,
+        next_cursor,
+    };
+    if !notes_page_fits(&page)? {
+        return Err(AppError::new(
+            "companion_response_invalid",
+            "The companion notes page exceeded the response size limit.",
+        ));
+    }
+    Ok(page)
+}
+
+fn notes_page_fits(page: &Page<NoteSummary>) -> Result<bool, AppError> {
+    let frame = Frame::new(
+        uuid::Uuid::from_u128(u128::MAX),
+        u64::MAX,
+        u64::MAX.saturating_sub(DEFAULT_CONTROL_TTL_MS),
+        Capability::NotesRead,
+        Body::Response(response(
+            Capability::NotesRead,
+            ResultPayload::Notes(page.clone()),
+        )),
+    );
+    serde_json::to_vec(&frame)
+        .map(|encoded| encoded.len() < MAX_ENCODED_FRAME_BYTES)
+        .map_err(|_| {
+            AppError::new(
+                "companion_response_invalid",
+                "The companion notes page could not be encoded.",
+            )
+        })
+}
+
 fn note_record(note: NoteDto) -> Result<NoteRecord, AppError> {
     ensure_note_record_size(&note)?;
     Ok(NoteRecord {
@@ -630,5 +706,43 @@ mod tests {
         let title = bounded_utf8(&"🙂".repeat(200), 512);
         assert!(title.len() <= 512);
         assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn maximum_length_limit_100_notes_paginate_below_the_frame_ceiling() {
+        let mut remaining = (0..100)
+            .map(|index| NoteSummary {
+                id: format!("00000000-0000-0000-0000-{index:012}"),
+                title: "t".repeat(MAX_COMPANION_NOTE_SUMMARY_FIELD_BYTES),
+                preview: "p".repeat(MAX_COMPANION_NOTE_SUMMARY_FIELD_BYTES),
+                revision: u64::MAX,
+                updated_at: "2026-07-27T12:34:56.789Z".to_string(),
+            })
+            .collect::<Vec<_>>();
+        let mut remaining_cursors = (0..100)
+            .map(|index| format!("cursor-{index:03}"))
+            .collect::<Vec<_>>();
+        let mut page_count = 0;
+
+        while !remaining.is_empty() {
+            let page =
+                bounded_notes_page(remaining.clone(), remaining_cursors.clone(), None).unwrap();
+            let included = page.items.len();
+            assert!(included > 0, "every page must make pagination progress");
+            assert!(notes_page_fits(&page).unwrap());
+            if included < remaining.len() {
+                assert_eq!(
+                    page.next_cursor.as_deref(),
+                    remaining_cursors.get(included - 1).map(String::as_str)
+                );
+            } else {
+                assert!(page.next_cursor.is_none());
+            }
+            remaining.drain(..included);
+            remaining_cursors.drain(..included);
+            page_count += 1;
+        }
+
+        assert!(page_count > 1, "the maximum page must be byte-budgeted");
     }
 }
