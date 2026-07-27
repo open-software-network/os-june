@@ -331,6 +331,33 @@ impl MeetingStartRequestState {
         Ok(Some(status))
     }
 
+    /// Dev-only demo hook: install a countdown-phase tracker for the given
+    /// session so the end-of-meeting UI can be exercised without a meeting
+    /// app. The tracked family never holds the mic, so from here on the
+    /// production machinery runs unmodified — the poll keeps observing, Keep
+    /// and Stop work for real, and expiry queues a real auto-finish.
+    #[cfg(debug_assertions)]
+    fn force_meeting_end_countdown(
+        &self,
+        session_id: String,
+        now_ms: u64,
+    ) -> Result<MeetingEndStatus, String> {
+        let mut tracker = MeetingEndTracker::new(
+            session_id,
+            BTreeSet::from(["june.debug.meeting-end".to_string()]),
+        );
+        tracker.phase = MeetingEndTrackerPhase::Countdown {
+            expires_at_ms: now_ms.saturating_add(MEETING_END_COUNTDOWN_MS),
+            countdown_polls: 0,
+        };
+        let status = tracker.status();
+        *self
+            .meeting_end
+            .lock()
+            .map_err(|_| "meeting end detection state is unavailable".to_string())? = Some(tracker);
+        Ok(status)
+    }
+
     fn observe_meeting_end(
         &self,
         active_bundle_families: Option<&BTreeSet<String>>,
@@ -725,6 +752,30 @@ pub fn acknowledge_meeting_end_finish_request(
     request_id: String,
 ) -> Result<bool, String> {
     state.acknowledge_meeting_end_finish(&request_id)
+}
+
+/// Dev-only console-demo hook (`__recordingHud("end")` in the main window's
+/// devtools): forces the live recording into the real meeting-end countdown.
+/// No-op error in release builds.
+#[tauri::command]
+pub fn debug_force_meeting_end_countdown(
+    app: AppHandle,
+    state: State<'_, MeetingStartRequestState>,
+) -> Result<MeetingEndStatus, String> {
+    #[cfg(debug_assertions)]
+    {
+        let session_id = crate::audio::capture::current_status()
+            .map(|status| status.session_id)
+            .ok_or_else(|| "no live recording to end - start one first".to_string())?;
+        let status = state.force_meeting_end_countdown(session_id, wall_clock_millis()?)?;
+        emit_meeting_end_state(&app, Some(status.clone()));
+        Ok(status)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, state);
+        Err("debug commands are unavailable in release builds".to_string())
+    }
 }
 
 pub fn arm_meeting_end_for_recording(
@@ -1903,6 +1954,44 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn forced_countdown_runs_the_real_meeting_end_machinery() {
+        let state = MeetingStartRequestState::default();
+        let status = state
+            .force_meeting_end_countdown("meeting-session".to_string(), 10_000)
+            .expect("force countdown");
+        assert_eq!(status.phase, MeetingEndPhase::Countdown);
+        assert_eq!(status.expires_at_ms, Some(10_000 + MEETING_END_COUNTDOWN_MS));
+
+        // Keep recording suppresses it exactly like a detector-armed countdown.
+        let suppressed = state
+            .keep_meeting_recording("meeting-session")
+            .expect("keep recording");
+        assert_eq!(suppressed.phase, MeetingEndPhase::Suppressed);
+
+        // Re-forced, the ordinary poll drives it to a real queued auto-finish
+        // at expiry — the debug hook changes how the countdown starts, not
+        // what it does.
+        state
+            .force_meeting_end_countdown("meeting-session".to_string(), 10_000)
+            .expect("force countdown again");
+        let empty = BTreeSet::new();
+        let mut transition = None;
+        for poll in 0..60u64 {
+            transition = state
+                .observe_meeting_end(Some(&empty), 10_000 + poll * 1_000)
+                .expect("observe forced countdown");
+            if transition.is_some() {
+                break;
+            }
+        }
+        let Some(MeetingEndTransition::FinishQueued(status, request)) = transition else {
+            panic!("expected queued finish");
+        };
+        assert_eq!(status.phase, MeetingEndPhase::FinishQueued);
+        assert_eq!(request.session_id, "meeting-session");
     }
 
     #[test]

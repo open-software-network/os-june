@@ -945,7 +945,12 @@ describe("meeting start transcription event", () => {
       });
     });
 
-    expect(await screen.findByText(/Meeting ended\. Stopping in 15 seconds\./)).toBeInTheDocument();
+    // The countdown is the depleting ring in the Stop button, so the body is
+    // static prose.
+    const notice = await screen.findByRole("status", {
+      name: "Meeting ended, recording stops soon",
+    });
+    expect(notice.textContent).toContain("Meeting ended.");
     await userEvent.click(screen.getByRole("button", { name: "Keep recording" }));
     expect(mocks.keepMeetingRecording).toHaveBeenCalledWith("meeting-rec-1");
     expect(mocks.finishRecording).not.toHaveBeenCalled();
@@ -956,7 +961,9 @@ describe("meeting start transcription event", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.queryByLabelText("Meeting ended")).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("Meeting ended, recording stops soon"),
+      ).not.toBeInTheDocument();
     });
   });
 
@@ -998,7 +1005,7 @@ describe("meeting start transcription event", () => {
       await initialStatusRead.promise;
     });
 
-    expect(screen.queryByLabelText("Meeting ended")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Meeting ended, recording stops soon")).not.toBeInTheDocument();
   });
 
   it("drains one retained auto-finish request through the normal finish path", async () => {

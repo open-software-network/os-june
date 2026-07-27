@@ -11785,6 +11785,47 @@ button.agent-user-attachment:hover {
   color: var(--foreground);
 }
 
+/* Meeting-end countdown: the Stop now button's own background is the timer —
+ * a subtle currentColor wash that drains left to right over the grace period
+ * and fires when empty (the undo-toast pattern), so the notice body stays
+ * static prose. `--meeting-end-remaining` is the remaining fraction (1 → 0),
+ * stepped once a second by NoteEditor; the 1s linear transform transition
+ * sweeps the drain smoothly between ticks. Keep in sync with #mhud-end-stop
+ * in meeting-hud.css. */
+.record-dock .meeting-end-notice .meeting-end-stop {
+  position: relative;
+  overflow: hidden;
+}
+
+.record-dock .meeting-end-notice .meeting-end-stop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, currentColor 12%, transparent);
+  transform: scaleX(var(--meeting-end-remaining, 1));
+  transform-origin: left center;
+  transition: transform 1s linear;
+  pointer-events: none;
+}
+
+/* The precise seconds, riding the drain: number for precision, drain for
+ * shape (the drain also keeps the ticking value reading as a timer rather
+ * than a click delay). A live-ticking value — the sanctioned tabular-nums
+ * exception (spec/no-tabular-numerals.md). min-width holds the button's
+ * frame through the two-to-one digit drop so the drain doesn't jump. */
+.record-dock .meeting-end-notice .meeting-end-seconds {
+  min-width: 3ch;
+  color: color-mix(in oklch, currentColor 62%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-dock .meeting-end-notice .meeting-end-stop::before {
+    transition: none;
+  }
+}
+
 .record-options-trigger {
   display: inline-grid;
   place-items: center;

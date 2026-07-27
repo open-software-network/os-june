@@ -55,9 +55,11 @@ describe("HUD listener lifecycle", () => {
       <main id="hud"></main>
       <main id="mhud">
         <span class="mhud-bar"></span>
-        <span id="mhud-end-seconds">15</span>
+        <button id="mhud-end-stop" type="button">
+          Stop now
+          <span id="mhud-end-seconds">15s</span>
+        </button>
         <button id="mhud-end-keep" type="button">Keep recording</button>
-        <button id="mhud-end-stop" type="button">Stop now</button>
       </main>
     `;
   });
@@ -101,7 +103,14 @@ describe("HUD listener lifecycle", () => {
     const keep = document.querySelector<HTMLButtonElement>("#mhud-end-keep");
     const stop = document.querySelector<HTMLButtonElement>("#mhud-end-stop");
     expect(pill?.dataset.mode).toBe("meeting-end");
-    expect(document.querySelector("#mhud-end-seconds")?.textContent).toBe("15");
+    // The Stop button's drain holds the freshly computed remaining fraction,
+    // and the seconds suffix mirrors it.
+    const remaining = Number.parseFloat(
+      stop?.style.getPropertyValue("--meeting-end-remaining") ?? "",
+    );
+    expect(remaining).toBeGreaterThan(0.9);
+    expect(remaining).toBeLessThanOrEqual(1);
+    expect(document.querySelector("#mhud-end-seconds")?.textContent).toBe("15s");
     expect(keep?.disabled).toBe(false);
     expect(stop?.disabled).toBe(false);
 

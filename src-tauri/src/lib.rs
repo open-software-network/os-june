@@ -334,6 +334,7 @@ pub fn run() {
             meeting_detection::queue_meeting_end_finish_request,
             meeting_detection::keep_meeting_recording,
             meeting_detection::acknowledge_meeting_end_finish_request,
+            meeting_detection::debug_force_meeting_end_countdown,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
             meeting_hud::meeting_hud_set_end_prompt_expanded,

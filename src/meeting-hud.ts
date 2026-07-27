@@ -28,12 +28,25 @@ const lifecycle = createHudLifecycle();
 // Recolor this HUD window to the selected accent and keep it live-synced.
 lifecycle.trackUnlisten(subscribeBrand());
 
-const appWindow = getCurrentWindow();
+// Absent on the standalone browser page (no Tauri bridge), where the demo
+// driver exercises the pill — getCurrentWindow() throws there. Same guard as
+// hud.ts.
+const appWindow = (() => {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return undefined;
+  }
+})();
 const pill = document.querySelector<HTMLDivElement>("#mhud");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".mhud-bar"));
-const meetingEndSeconds = document.querySelector<HTMLElement>("#mhud-end-seconds");
 const meetingEndKeep = document.querySelector<HTMLButtonElement>("#mhud-end-keep");
 const meetingEndStop = document.querySelector<HTMLButtonElement>("#mhud-end-stop");
+const meetingEndSeconds = document.querySelector<HTMLElement>("#mhud-end-seconds");
+
+/** Must track MEETING_END_COUNTDOWN_MS in meeting_detection.rs — the status
+ * event only carries the deadline, not the countdown's full length. */
+const MEETING_END_COUNTDOWN_MS = 15_000;
 
 lifecycle.addCleanup(installNativeContextMenuGuard());
 
@@ -78,10 +91,17 @@ function applyStatus(status: RecordingStatusDto | RecordingTelemetryDto) {
   meter.pushLevel(visualPeakScale(raw));
 }
 
-function updateMeetingEndSeconds() {
-  if (!meetingEndSeconds || meetingEndStatus?.phase !== "countdown") return;
+function updateMeetingEndDrain() {
+  if (!meetingEndStop || meetingEndStatus?.phase !== "countdown") return;
   const expiresAt = meetingEndStatus.expiresAtMs ?? Date.now();
-  meetingEndSeconds.textContent = String(Math.max(0, Math.ceil((expiresAt - Date.now()) / 1_000)));
+  const remainingMs = Math.max(0, expiresAt - Date.now());
+  meetingEndStop.style.setProperty(
+    "--meeting-end-remaining",
+    String(Math.min(1, remainingMs / MEETING_END_COUNTDOWN_MS)),
+  );
+  if (meetingEndSeconds) {
+    meetingEndSeconds.textContent = `${Math.ceil(remainingMs / 1_000)}s`;
+  }
 }
 
 function applyMeetingEndStatus(status: MeetingEndStatus | null) {
@@ -92,6 +112,9 @@ function applyMeetingEndStatus(status: MeetingEndStatus | null) {
     meetingEndTick = undefined;
   }
   if (pill) {
+    // Mode swaps snap: the native window resize is instant, so a width tween
+    // in either direction would slide the tint out from under the frost.
+    pill.classList.add("mhud-snap");
     if (countdown) {
       pill.dataset.mode = "meeting-end";
       pill.removeAttribute("role");
@@ -101,13 +124,28 @@ function applyMeetingEndStatus(status: MeetingEndStatus | null) {
       delete pill.dataset.mode;
       pill.setAttribute("role", "button");
       pill.setAttribute("tabindex", "0");
+      pill.setAttribute("aria-label", "Recording. Click to open June");
     }
+    // Let the snapped state paint before the transition comes back (same
+    // two-frame dance as applyZone).
+    lifecycle.requestAnimationFrame(() => {
+      lifecycle.requestAnimationFrame(() => pill.classList.remove("mhud-snap"));
+    });
   }
   meetingEndKeep?.toggleAttribute("disabled", !countdown);
   meetingEndStop?.toggleAttribute("disabled", !countdown);
   if (countdown) {
-    updateMeetingEndSeconds();
-    meetingEndTick = window.setInterval(updateMeetingEndSeconds, 1_000);
+    // Snap the drain to the current remaining fraction (no sweep from a
+    // stale value when a countdown restarts), then step it once a second —
+    // the 1s linear transition in CSS carries it smoothly between ticks.
+    meetingEndStop?.classList.add("mhud-end-drain-snap");
+    updateMeetingEndDrain();
+    lifecycle.requestAnimationFrame(() => {
+      lifecycle.requestAnimationFrame(() =>
+        meetingEndStop?.classList.remove("mhud-end-drain-snap"),
+      );
+    });
+    meetingEndTick = window.setInterval(updateMeetingEndDrain, 1_000);
   }
   void invoke("meeting_hud_set_end_prompt_expanded", { expanded: countdown }).catch(() => {});
 }
@@ -193,7 +231,7 @@ document.addEventListener(
       dragging = true;
       // Native drag takes over the gesture; pointerup won't fire on the element,
       // so `dragging` stays true and suppresses the click below.
-      void appWindow.startDragging().catch(() => {});
+      void appWindow?.startDragging().catch(() => {});
     }
   },
   { signal: lifecycle.signal },

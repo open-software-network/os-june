@@ -66,9 +66,9 @@ const VERTICAL_PILL_LENGTH: f64 = 62.0;
 /// gutters above/below (or beside) the pill are part of the window.
 const WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(76.0, 76.0);
 /// The end-of-meeting card replaces the compact presence pill during its
-/// countdown. The window grows around a 320x76 CSS card with a small transparent
+/// countdown. The window grows around a 380x48 CSS card with a small transparent
 /// gutter for the native shadow.
-const END_PROMPT_WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(340.0, 96.0);
+const END_PROMPT_WINDOW_SIZE: LogicalSize<f64> = LogicalSize::new(400.0, 68.0);
 
 /// How long the quarter turn takes. The easing matches the app's `--ease-out`
 /// token (cubic-bezier(0.22, 1, 0.36, 1)) so the HUD moves like the rest of
@@ -345,10 +345,10 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
         .lock()
         .map(|guard| *guard)
         .unwrap_or(false);
-    // The end prompt is the safety grace period, not merely passive presence.
-    // Keep it visible even when the main window is frontmost or is showing a
-    // different note from the recording owner.
-    let should_show = end_prompt_expanded || main_window_dismissed(app);
+    // The end card follows the pill's visibility rule: only while June is not
+    // active. When the main window is frontmost the record dock's inline
+    // notice owns the countdown; the floating card would be a duplicate.
+    let should_show = main_window_dismissed(app);
     let visible = hud.is_visible().unwrap_or(false);
     if should_show && !visible {
         if end_prompt_expanded {
@@ -578,11 +578,12 @@ fn position_window(app: &AppHandle, hud: &WebviewWindow) {
     }
 }
 
+/// Top-right of the work area, notification-style — the card only appears
+/// while June is inactive, so it should land where transient system alerts do.
 fn position_end_prompt(hud: &WebviewWindow) {
-    const BOTTOM_MARGIN: i32 = 16;
+    const MARGIN: i32 = 16;
     let scale = hud.scale_factor().unwrap_or(1.0);
     let width = (END_PROMPT_WINDOW_SIZE.width * scale).round() as i32;
-    let height = (END_PROMPT_WINDOW_SIZE.height * scale).round() as i32;
     let monitor = hud
         .cursor_position()
         .ok()
@@ -593,8 +594,8 @@ fn position_end_prompt(hud: &WebviewWindow) {
         return;
     };
     let work = monitor.work_area();
-    let x = work.position.x + (work.size.width as i32 - width) / 2;
-    let y = work.position.y + work.size.height as i32 - height - BOTTOM_MARGIN;
+    let x = work.position.x + work.size.width as i32 - width - MARGIN;
+    let y = work.position.y + MARGIN;
     let _ = hud.set_position(PhysicalPosition::new(x, y));
 }
 
@@ -770,7 +771,7 @@ unsafe fn resize_frost_for_end_prompt(hud: &WebviewWindow, expanded: bool) {
         return;
     }
     let (window, surface, radius) = if expanded {
-        (END_PROMPT_WINDOW_SIZE, LogicalSize::new(320.0, 76.0), 14.0)
+        (END_PROMPT_WINDOW_SIZE, LogicalSize::new(380.0, 48.0), 14.0)
     } else {
         (WINDOW_SIZE, PILL_SIZE, 10.0)
     };

@@ -10,7 +10,7 @@ import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import type { ReactNode, RefObject } from "react";
+import type { CSSProperties, ReactNode, RefObject } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { FundingTier } from "../account/FundingNotice";
 import { Switch } from "../ui/Switch";
@@ -46,6 +46,11 @@ import {
   userFacingFailureMessage,
 } from "./NoteFailureBanner";
 import { NotePreview } from "./NotePreview";
+
+/** Must track MEETING_END_COUNTDOWN_MS in meeting_detection.rs — the status
+ * only carries seconds remaining, not the countdown's full length, and the
+ * Stop button's draining background needs the ratio. */
+const MEETING_END_COUNTDOWN_SECONDS = 15;
 
 type NoteEditorProps = {
   note: NoteDto;
@@ -617,25 +622,38 @@ export function NoteEditor({
                   <InlineNotice
                     className="record-consent-note-surface record-consent-note-surface-actions meeting-end-notice"
                     role="status"
-                    aria-label="Meeting ended"
-                    body={`Meeting ended. Stopping in ${meetingEndCountdown.secondsRemaining} seconds.`}
+                    aria-label="Meeting ended, recording stops soon"
+                    body="Meeting ended."
                     actions={
                       <>
                         <button
                           type="button"
-                          className="btn btn-ghost"
+                          className="btn btn-ghost meeting-end-stop"
+                          aria-label="Stop recording now"
+                          style={
+                            {
+                              "--meeting-end-remaining": Math.min(
+                                1,
+                                meetingEndCountdown.secondsRemaining /
+                                  MEETING_END_COUNTDOWN_SECONDS,
+                              ),
+                            } as CSSProperties
+                          }
+                          onClick={() => onStopNowAfterMeetingEnd?.(meetingEndCountdown.sessionId)}
+                        >
+                          Stop now
+                          <span className="meeting-end-seconds" aria-hidden>
+                            {meetingEndCountdown.secondsRemaining}s
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
                           onClick={() =>
                             onKeepRecordingAfterMeetingEnd?.(meetingEndCountdown.sessionId)
                           }
                         >
                           Keep recording
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={() => onStopNowAfterMeetingEnd?.(meetingEndCountdown.sessionId)}
-                        >
-                          Stop now
                         </button>
                       </>
                     }
